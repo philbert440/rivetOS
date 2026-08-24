@@ -189,6 +189,7 @@ async function decompressZstd(buf: Buffer): Promise<string> {
       `zstd decoder unavailable (need fzstd for multi-frame session.jsonl.zstd): ${
         err instanceof Error ? err.message : String(err)
       }`,
+      { cause: err },
     )
   }
 }
@@ -207,7 +208,7 @@ export async function readJsonlLine(file: string, lineIndex: number): Promise<st
   if (file.endsWith('.zstd') || file.endsWith('.zst')) {
     const text = await decompressZstd(readFileSync(file))
     const lines = text.split('\n')
-    return lineIndex >= 0 && lineIndex < lines.length ? lines[lineIndex] ?? null : null
+    return lineIndex >= 0 && lineIndex < lines.length ? (lines[lineIndex] ?? null) : null
   }
   return new Promise((resolve, reject) => {
     const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
@@ -237,23 +238,29 @@ export function extractFullFromLine(raw: string): { content: string; toolResult:
   }
 
   // dsh SessionEvent (type is "user/message", "tool/call", …)
-  if (typeof j?.type === 'string' && j.type.includes('/')) {
+  const eventType: unknown = j?.type
+  if (typeof eventType === 'string' && eventType.includes('/')) {
     const data = j.data && typeof j.data === 'object' ? j.data : {}
-    if (j.type === 'user/message') {
+    if (eventType === 'user/message') {
       return { content: extractText(data.content), toolResult: null }
     }
-    if (j.type === 'assistant/message') {
+    if (eventType === 'assistant/message') {
       const message = data.message && typeof data.message === 'object' ? data.message : data
       return { content: extractText(message.content), toolResult: null }
     }
-    if (j.type === 'tool/call') {
+    if (eventType === 'tool/call') {
       const name = typeof data.name === 'string' ? data.name : 'unknown'
       const args = typeof data.arguments === 'string' ? data.arguments : null
       return { content: `[tool] ${name}`, toolResult: args }
     }
-    if (j.type === 'tool/result') {
+    if (eventType === 'tool/result') {
       const message = data.message && typeof data.message === 'object' ? data.message : data
-      const name = typeof message.name === 'string' ? message.name : typeof data.name === 'string' ? data.name : 'unknown'
+      const name =
+        typeof message.name === 'string'
+          ? message.name
+          : typeof data.name === 'string'
+            ? data.name
+            : 'unknown'
       const rawContent = message.content
       let result = extractText(rawContent)
       if (Array.isArray(rawContent)) {
