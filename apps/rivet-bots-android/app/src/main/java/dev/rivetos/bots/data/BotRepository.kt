@@ -111,7 +111,7 @@ class GatewayPool(private val http: HttpFactory, private val strict: () -> Boole
         val key = http.cacheKey(strict())
         val norm = baseUrl.trim().trimEnd('/')
         cache[norm]?.let { (k, g) -> if (k == key) return g }
-        val g = Gateway(http.client(strict()), norm)
+        val g = Gateway(http.client(strict()), norm, http.fallbackClient(strict()))
         cache[norm] = key to g
         return g
     }

@@ -28,9 +28,40 @@ class GatewayException(val status: Int, message: String) : IOException(message)
  * Typed client over one node's gateway — the Kotlin twin of
  * `@rivetos/gateway-client` RivetGateway, scoped to what a bot client needs.
  */
-class Gateway(private val client: OkHttpClient, baseUrl: String) {
+class Gateway(
+    private val primary: OkHttpClient,
+    baseUrl: String,
+    private val fallback: OkHttpClient? = null,
+) {
     val baseUrl: String = baseUrl.trimEnd('/')
     private val base: HttpUrl = this.baseUrl.toHttpUrl()
+
+    /** Sticks to whichever client last worked; a connect timeout flips it. */
+    @Volatile private var preferFallback = false
+
+    private fun clients(): List<OkHttpClient> {
+        val f = fallback ?: return listOf(primary)
+        return if (preferFallback) listOf(f, primary) else listOf(primary, f)
+    }
+
+    /** Run [block] with the preferred client; retry once on the other path when connecting fails. */
+    private inline fun <T> withClients(block: (OkHttpClient) -> T): T {
+        val order = clients()
+        var last: Exception? = null
+        for ((i, c) in order.withIndex()) {
+            try {
+                val out = block(c)
+                if (i == 1) preferFallback = c === fallback
+                return out
+            } catch (e: Exception) {
+                val connectFailure = e is java.net.SocketTimeoutException || e is java.net.ConnectException ||
+                    e is java.net.NoRouteToHostException
+                if (!connectFailure || i == order.lastIndex) throw e
+                last = e
+            }
+        }
+        throw last!!
+    }
 
     /** Appends to the configured base path (a node behind `https://host/rivet` keeps its prefix). */
     private fun url(segments: List<String>, query: Map<String, String?> = emptyMap()): HttpUrl {
@@ -42,10 +73,12 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
 
     private suspend fun <T> get(segments: List<String>, ser: KSerializer<T>, query: Map<String, String?> = emptyMap()): T =
         withContext(Dispatchers.IO) {
-            client.newCall(Request.Builder().url(url(segments, query)).get().build()).execute().use { res ->
-                val body = res.body.string()
-                if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, body))
-                wireJson.decodeFromString(ser, body)
+            withClients { c ->
+                c.newCall(Request.Builder().url(url(segments, query)).get().build()).execute().use { res ->
+                    val body = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, body))
+                    wireJson.decodeFromString(ser, body)
+                }
             }
         }
 
@@ -70,13 +103,15 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
             val body = wireJson.encodeToString(SessionPostRequest.serializer(), SessionPostRequest(text, userId, agent))
                 .toRequestBody("application/json".toMediaType())
             val req = Request.Builder().url(url(listOf("api", "sessions", sessionId, "messages"))).post(body).build()
-            client.newCall(req).execute().use { res ->
-                val text2 = res.body.string()
-                if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text2))
-                // A 2xx is the acceptance signal; an odd/empty body (a proxy, say) must not
-                // turn a turn that is already running server-side into a "send failed".
-                runCatching { wireJson.decodeFromString(SessionPostAccepted.serializer(), text2) }
-                    .getOrDefault(SessionPostAccepted(true, sessionId))
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text2 = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text2))
+                    // A 2xx is the acceptance signal; an odd/empty body (a proxy, say) must not
+                    // turn a turn that is already running server-side into a "send failed".
+                    runCatching { wireJson.decodeFromString(SessionPostAccepted.serializer(), text2) }
+                        .getOrDefault(SessionPostAccepted(true, sessionId))
+                }
             }
         }
 
@@ -86,12 +121,12 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
 
     /** Live message/stream frames; null sessionId watches every session on the node. */
     fun watchSessions(sessionId: String?, onFrame: (SessionFrame) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
-        WsSubscription(client, url(listOf("api", "sessions", "ws"), mapOf("session" to sessionId)).toString(), onStatus) { text ->
+        WsSubscription(clients(), url(listOf("api", "sessions", "ws"), mapOf("session" to sessionId)).toString(), onStatus) { text ->
             parseSessionFrame(text)?.let(onFrame)
         }
 
     fun watchDen(sessionId: String?, onFrame: (DenFrame) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
-        WsSubscription(client, url(listOf("api", "events", "ws"), mapOf("session" to sessionId)).toString(), onStatus) { text ->
+        WsSubscription(clients(), url(listOf("api", "events", "ws"), mapOf("session" to sessionId)).toString(), onStatus) { text ->
             parseDenFrame(text)?.let(onFrame)
         }
 
@@ -107,7 +142,7 @@ enum class WsStatus { CONNECTING, OPEN, CLOSED }
  * can't report OPEN or reset the backoff.
  */
 class WsSubscription(
-    private val client: OkHttpClient,
+    private val clientOrder: List<OkHttpClient>,
     private val url: String,
     private val onStatus: (WsStatus) -> Unit,
     private val onText: (String) -> Unit,
@@ -129,6 +164,8 @@ class WsSubscription(
         old?.cancel()
         onStatus(WsStatus.CONNECTING)
         val req = Request.Builder().url(url).build()
+        // Alternate network paths across attempts — whichever one works wins.
+        val client = clientOrder[attempt % clientOrder.size]
         val socket = client.newWebSocket(req, object : WebSocketListener() {
             private fun live(): Boolean = !closed && myGen == generation
             override fun onOpen(webSocket: WebSocket, response: Response) {

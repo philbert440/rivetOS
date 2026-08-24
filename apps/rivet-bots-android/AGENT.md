@@ -77,11 +77,13 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 
 ## Gotchas
 
-- **Mesh traffic binds to the WiFi/Ethernet `Network`** (`data/LanNetwork.kt` → `HttpFactory.socketFactory`).
-  Android demotes a weak-RSSI WiFi link (`EXITING`) and makes cellular the default network; without the
-  bind, every connect to a 10.x node times out over 5G while `ping -I wlan0` works fine (seen live on the
-  Pixel at RSSI −84). Clients/gateways re-key on network change; sockets opened before a change keep the
-  old binding until their screen reopens or Home refreshes.
+- **Two network paths per gateway** (`HttpFactory.client(strict, bindLan)` → `Gateway.withClients`):
+  primary = the default network (Android routing, including an active VPN/WG), fallback = sockets bound
+  to the WiFi/Ethernet `Network`. HTTP calls retry once on the other path after a connect failure and the
+  gateway sticks to whichever worked; the WS alternates paths per reconnect attempt. Field-proven both
+  ways on the Pixel: a demoted-but-healthy WiFi needs the bind, while a flaky AP / not-yet-validated WiFi
+  makes the bound path a black hole and only the default path works. Clients re-key on identity/TLS/
+  network generation.
 
 - Don't hardcode mesh IPs anywhere in this tree (repo CI secret-scan + private-net rule); placeholders use 192.0.2.x.
 - `EncryptedSharedPreferences` is deprecated upstream but is what the sibling Hub app uses; swap for a
