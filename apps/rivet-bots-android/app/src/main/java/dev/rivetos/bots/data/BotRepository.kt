@@ -68,7 +68,7 @@ class BotRepository(private val gateways: GatewayPool) {
             // Reachable but no catalog: only a bot if the node actually serves chat
             // (a bare den-server like datahub answers /healthz but has no gateway).
             val chats = health != null && withTimeoutOrNull(4_000) { runCatching { gw.sessions() }.isSuccess } == true
-            return if (chats) listOf(Bot("agent", id, nodeName, denUrl, true, nodeSessions = health?.sessions)) else emptyList()
+            return if (chats) listOf(Bot(Bot.DEFAULT_AGENT, id, nodeName, denUrl, true, nodeSessions = health?.sessions)) else emptyList()
         }
         return agents.map { a ->
             Bot(a.id, id, nodeName, denUrl, online || health != null, a.provider, a.model, true, health?.sessions ?: sessions)
@@ -99,6 +99,9 @@ class BotRepository(private val gateways: GatewayPool) {
 /** One Gateway per base URL, rebuilt when the identity or TLS posture changes. */
 class GatewayPool(private val http: HttpFactory, private val strict: () -> Boolean, private val identity: DeviceIdentityStore) {
     private val cache = HashMap<String, Pair<String, Gateway>>()
+
+    @Synchronized
+    fun clear() = cache.clear()
 
     @Synchronized
     fun get(baseUrl: String): Gateway {

@@ -8,7 +8,7 @@ sealed interface Screen {
     data object Enroll : Screen
     data object Home : Screen
     data class Chat(val bot: Bot) : Screen
-    data class Computer(val bot: Bot) : Screen
+    data class Computer(val bot: Bot, val sessionId: String) : Screen
     data class Profile(val bot: Bot) : Screen
     data object Settings : Screen
 }

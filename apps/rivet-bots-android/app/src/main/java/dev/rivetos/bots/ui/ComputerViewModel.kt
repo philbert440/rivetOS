@@ -3,7 +3,9 @@ package dev.rivetos.bots.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dev.rivetos.bots.AppContainer
+import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.data.DenFrame
+import dev.rivetos.bots.data.GatewayException
 import dev.rivetos.bots.data.RoomState
 import dev.rivetos.bots.data.WsStatus
 import dev.rivetos.bots.domain.Bot
@@ -17,11 +19,12 @@ import kotlinx.coroutines.launch
 import java.io.Closeable
 
 /** The bot's "computer": its den RoomState for this thread, live over /api/events/ws. */
-class ComputerViewModel(private val c: AppContainer, val bot: Bot, private val sessionId: String) : ViewModel() {
+class ComputerViewModel(private val c: AppContainer, val bot: Bot, val sessionId: String) : ViewModel() {
     data class UiState(
         val room: RoomState? = null,
         val ws: WsStatus = WsStatus.CONNECTING,
         val loaded: Boolean = false,
+        val error: String? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -31,26 +34,33 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, private val s
 
     init {
         val gw = c.gateways.get(bot.denUrl)
-        viewModelScope.launch {
-            val room = gw.denState(sessionId)
-            _state.update { it.copy(room = room ?: it.room, loaded = true) }
-        }
+        load()
         watch = gw.watchDen(sessionId, onFrame = { f ->
             when (f) {
-                is DenFrame.Snapshot -> {
-                    val room = f.rooms[sessionId] ?: f.rooms.values.firstOrNull()
-                    _state.update { it.copy(room = room ?: it.room, loaded = true) }
-                }
+                // Only this thread's room — never another session's screen.
+                is DenFrame.Snapshot -> _state.update { it.copy(room = f.rooms[sessionId] ?: it.room, loaded = true) }
                 is DenFrame.Event -> {
+                    if (f.session.isNotBlank() && f.session != sessionId) return@watchDen
                     // Events are cheap to coalesce: re-read the reduced state shortly after.
                     refetch?.cancel()
-                    refetch = viewModelScope.launch {
-                        delay(250)
-                        gw.denState(sessionId)?.let { r -> _state.update { it.copy(room = r, loaded = true) } }
-                    }
+                    refetch = viewModelScope.launch { delay(250); load() }
                 }
             }
         }, onStatus = { s -> _state.update { it.copy(ws = s) } })
+    }
+
+    private fun load() {
+        viewModelScope.launch {
+            try {
+                val room = c.gateways.get(bot.denUrl).denState(sessionId)
+                _state.update { it.copy(room = room ?: it.room, loaded = true, error = null) }
+            } catch (e: GatewayException) {
+                if (e.status == 404) _state.update { it.copy(loaded = true) } // no room yet — not an error
+                else _state.update { it.copy(loaded = true, error = BotRepository.friendly(e)) }
+            } catch (e: Exception) {
+                _state.update { it.copy(loaded = true, error = BotRepository.friendly(e)) }
+            }
+        }
     }
 
     override fun onCleared() { watch?.close() }

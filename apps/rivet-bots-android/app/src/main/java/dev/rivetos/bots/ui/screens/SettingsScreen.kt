@@ -55,7 +55,9 @@ import dev.rivetos.bots.ui.theme.Ink
 import dev.rivetos.bots.ui.theme.InkDim
 import dev.rivetos.bots.ui.theme.Panel
 import dev.rivetos.bots.ui.theme.Paper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, onRosterChanged: () -> Unit) {
@@ -78,9 +80,11 @@ fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, on
     val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { pendingP12 = bytes(it) } }
     val pickCa = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { u ->
-            runCatching { c.identity.importCaPem(bytes(u) ?: ByteArray(0)) }
-                .onSuccess { n -> msg = "Imported $n CA certificate(s)."; identityGen++ }
-                .onFailure { e -> msg = e.message }
+            scope.launch {
+                withContext(Dispatchers.IO) { runCatching { c.identity.importCaPem(bytes(u) ?: ByteArray(0)) } }
+                    .onSuccess { n -> msg = "Imported $n CA certificate(s)."; identityGen++; onRosterChanged() }
+                    .onFailure { e -> msg = e.message }
+            }
         }
     }
 
@@ -122,9 +126,13 @@ fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, on
                 VSpace(8)
                 Button(
                     onClick = {
-                        runCatching { c.identity.importPkcs12(pendingP12!!, pass) }
-                            .onSuccess { s -> msg = "Imported ${s.cn}."; pendingP12 = null; pass = ""; identityGen++; onRosterChanged() }
-                            .onFailure { e -> msg = e.message }
+                        val bytesToImport = pendingP12 ?: return@Button
+                        val pw = pass
+                        scope.launch {
+                            withContext(Dispatchers.IO) { runCatching { c.identity.importPkcs12(bytesToImport, pw) } }
+                                .onSuccess { s -> msg = "Imported ${s.cn}."; pendingP12 = null; pass = ""; identityGen++; onRosterChanged() }
+                                .onFailure { e -> msg = e.message }
+                        }
                     },
                     shape = CircleShape, colors = ButtonDefaults.buttonColors(containerColor = Ink, contentColor = Paper),
                 ) { Text("Install certificate") }
@@ -180,7 +188,11 @@ fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, on
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Strict hostname check", color = Ink, fontSize = 15.sp)
-                    Text("Node certs are still verified against the Rivet CA either way.", color = InkDim, fontSize = 12.sp)
+                    Text(
+                        if (prefs.strictHostnames) "Node certs must match the address you dial."
+                        else "Relaxed: any Rivet-CA-issued cert is accepted for any host. Re-enable once node certs carry their IPs.",
+                        color = if (prefs.strictHostnames) InkDim else Danger, fontSize = 12.sp,
+                    )
                 }
                 Switch(checked = prefs.strictHostnames, onCheckedChange = { v ->
                     scope.launch { c.settings.setStrictHostnames(v); c.setStrictHostnames(v); onRosterChanged() }

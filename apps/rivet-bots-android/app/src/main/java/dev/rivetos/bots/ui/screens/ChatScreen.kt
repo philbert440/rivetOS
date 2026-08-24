@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -61,7 +62,6 @@ import dev.rivetos.bots.ui.components.TimeFmt
 import dev.rivetos.bots.ui.theme.Danger
 import dev.rivetos.bots.ui.theme.Ink
 import dev.rivetos.bots.ui.theme.InkDim
-import dev.rivetos.bots.ui.theme.Line
 import dev.rivetos.bots.ui.theme.Panel
 import dev.rivetos.bots.ui.theme.Paper
 
@@ -78,9 +78,14 @@ fun ChatScreen(
     var menu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
 
+    // Follow new content only while the reader is already at the bottom — never yank
+    // someone who scrolled up to read history.
     val rowCount = s.messages.size + (if (s.pendingText.isNotEmpty()) 1 else 0) + (if (s.working != null) 1 else 0)
     LaunchedEffect(rowCount, s.pendingText.length) {
-        if (rowCount > 0) list.animateScrollToItem(rowCount - 1 + 1) // +1 for the header spacer
+        val info = list.layoutInfo
+        val nearBottom = info.totalItemsCount == 0 ||
+            (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 3
+        if (nearBottom && info.totalItemsCount > 0) list.animateScrollToItem(info.totalItemsCount - 1)
     }
 
     Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding().navigationBarsPadding().imePadding()) {
@@ -109,18 +114,16 @@ fun ChatScreen(
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
         ) {
             item { Spacer(Modifier.height(4.dp)) }
-            s.messages.forEachIndexed { i, m ->
+            itemsIndexed(s.messages, key = { _, m -> m.id }) { i, m ->
                 val prev = s.messages.getOrNull(i - 1)
                 val showDivider = prev == null || m.ts - prev.ts > 30 * 60_000L
-                item(key = m.id) {
-                    if (showDivider && m.ts > 0) {
-                        Text(
-                            TimeFmt.divider(m.ts), color = InkDim, fontSize = 12.sp,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        )
-                    }
-                    Bubble(m)
+                if (showDivider && m.ts > 0) {
+                    Text(
+                        TimeFmt.divider(m.ts), color = InkDim, fontSize = 12.sp,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
                 }
+                Bubble(m)
             }
             if (s.pendingText.isNotEmpty()) {
                 item(key = "pending") { Bubble(SessionMessage(id = "pending", role = "assistant", text = s.pendingText, ts = 0)) }
@@ -158,7 +161,8 @@ fun ChatScreen(
             value = draft,
             onValue = { draft = it },
             onSend = { val t = draft; draft = ""; vm.send(t) },
-            onPlus = { vm.newConversation() },
+            onNewConversation = { vm.newConversation() },
+            onComputer = onComputer,
         )
     }
 }
@@ -185,8 +189,7 @@ private fun Bubble(m: SessionMessage) {
                 tools.map { it.name.substringAfterLast(':') }.distinct().take(5).forEach { name ->
                     Text(
                         name, color = InkDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.clip(CircleShape).background(Paper).padding(horizontal = 7.dp, vertical = 2.dp)
-                            .then(Modifier),
+                        modifier = Modifier.clip(CircleShape).background(Paper).padding(horizontal = 7.dp, vertical = 2.dp),
                     )
                 }
                 if (tools.size > 5) Text("+${tools.size - 5}", color = InkDim, fontSize = 10.sp)
@@ -196,12 +199,27 @@ private fun Bubble(m: SessionMessage) {
 }
 
 @Composable
-private fun Composer(placeholder: String, value: String, onValue: (String) -> Unit, onSend: () -> Unit, onPlus: () -> Unit) {
+private fun Composer(
+    placeholder: String,
+    value: String,
+    onValue: (String) -> Unit,
+    onSend: () -> Unit,
+    onNewConversation: () -> Unit,
+    onComputer: () -> Unit,
+) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var plusMenu by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CircleIconButton(Icons.Default.Add, "New conversation", onPlus, background = Paper, tint = Ink, size = 36)
+        Box {
+            CircleIconButton(Icons.Default.Add, "Actions", { plusMenu = true }, background = Paper, tint = Ink, size = 36)
+            DropdownMenu(expanded = plusMenu, onDismissRequest = { plusMenu = false }) {
+                DropdownMenuItem(text = { Text("New conversation") }, onClick = { plusMenu = false; onNewConversation() })
+                DropdownMenuItem(text = { Text("Watch the computer") }, onClick = { plusMenu = false; onComputer() })
+            }
+        }
         Spacer(Modifier.width(8.dp))
         Row(
             Modifier.weight(1f).clip(CircleShape).background(Paper)
@@ -220,11 +238,15 @@ private fun Composer(placeholder: String, value: String, onValue: (String) -> Un
             )
             Spacer(Modifier.width(6.dp))
             if (value.isBlank()) {
-                Icon(Icons.Default.Mic, "Voice", tint = InkDim, modifier = Modifier.size(22.dp).padding(end = 2.dp))
+                Icon(
+                    Icons.Default.Mic, "Voice", tint = InkDim,
+                    modifier = Modifier.size(22.dp).padding(end = 2.dp).clickable {
+                        android.widget.Toast.makeText(ctx, "Dictation isn't wired up yet", android.widget.Toast.LENGTH_SHORT).show()
+                    },
+                )
             } else {
                 CircleIconButton(Icons.Default.ArrowUpward, "Send", onSend, background = Ink, tint = Paper, size = 30)
             }
         }
     }
-    Spacer(Modifier.fillMaxWidth().height(0.dp).background(Line))
 }

@@ -1,6 +1,7 @@
 package dev.rivetos.bots.data
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -31,15 +32,17 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
     val baseUrl: String = baseUrl.trimEnd('/')
     private val base: HttpUrl = this.baseUrl.toHttpUrl()
 
-    private fun url(path: String, query: Map<String, String?> = emptyMap()): HttpUrl {
-        val b = base.newBuilder().encodedPath(path)
+    /** Appends to the configured base path (a node behind `https://host/rivet` keeps its prefix). */
+    private fun url(segments: List<String>, query: Map<String, String?> = emptyMap()): HttpUrl {
+        val b = base.newBuilder()
+        segments.forEach { b.addPathSegment(it) }
         query.forEach { (k, v) -> if (v != null) b.addQueryParameter(k, v) }
         return b.build()
     }
 
-    private suspend fun <T> get(path: String, ser: KSerializer<T>, query: Map<String, String?> = emptyMap()): T =
+    private suspend fun <T> get(segments: List<String>, ser: KSerializer<T>, query: Map<String, String?> = emptyMap()): T =
         withContext(Dispatchers.IO) {
-            client.newCall(Request.Builder().url(url(path, query)).get().build()).execute().use { res ->
+            client.newCall(Request.Builder().url(url(segments, query)).get().build()).execute().use { res ->
                 val body = res.body.string()
                 if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, body))
                 wireJson.decodeFromString(ser, body)
@@ -54,54 +57,47 @@ class Gateway(private val client: OkHttpClient, baseUrl: String) {
         return msg ?: "HTTP ${res.code}"
     }
 
-    suspend fun healthz(): Healthz = get("/healthz", Healthz.serializer())
-    suspend fun mesh(): MeshOverview = get("/api/mesh", MeshOverview.serializer())
-    suspend fun catalogAgents(): CatalogAgentsResponse = get("/api/catalog/agents", CatalogAgentsResponse.serializer())
-    suspend fun sessions(): SessionsListResponse = get("/api/sessions", SessionsListResponse.serializer())
+    suspend fun healthz(): Healthz = get(listOf("healthz"), Healthz.serializer())
+    suspend fun mesh(): MeshOverview = get(listOf("api", "mesh"), MeshOverview.serializer())
+    suspend fun catalogAgents(): CatalogAgentsResponse = get(listOf("api", "catalog", "agents"), CatalogAgentsResponse.serializer())
+    suspend fun sessions(): SessionsListResponse = get(listOf("api", "sessions"), SessionsListResponse.serializer())
 
     suspend fun messages(sessionId: String): List<SessionMessage> =
-        get("/api/sessions/${enc(sessionId)}/messages", SessionMessagesResponse.serializer()).messages
+        get(listOf("api", "sessions", sessionId, "messages"), SessionMessagesResponse.serializer()).messages
 
     suspend fun post(sessionId: String, text: String, userId: String?, agent: String?): SessionPostAccepted =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(SessionPostRequest.serializer(), SessionPostRequest(text, userId, agent))
                 .toRequestBody("application/json".toMediaType())
-            val req = Request.Builder().url(url("/api/sessions/${enc(sessionId)}/messages")).post(body).build()
+            val req = Request.Builder().url(url(listOf("api", "sessions", sessionId, "messages"))).post(body).build()
             client.newCall(req).execute().use { res ->
                 val text2 = res.body.string()
                 if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text2))
                 runCatching { wireJson.decodeFromString(SessionPostAccepted.serializer(), text2) }
-                    .getOrDefault(SessionPostAccepted(true, sessionId))
+                    .getOrElse { throw GatewayException(res.code, "unexpected reply from gateway") }
             }
         }
 
-    suspend fun denState(sessionId: String): RoomState? = runCatching {
-        get("/api/events/state", DenStateResponse.serializer(), mapOf("session" to sessionId)).state
-    }.getOrNull()
+    /** Throws on transport/auth errors; a 404 (no room yet) is a GatewayException(404). */
+    suspend fun denState(sessionId: String): RoomState? =
+        get(listOf("api", "events", "state"), DenStateResponse.serializer(), mapOf("session" to sessionId)).state
 
     /** Live message/stream frames; null sessionId watches every session on the node. */
     fun watchSessions(sessionId: String?, onFrame: (SessionFrame) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
-        WsSubscription(client, wsUrl("/api/sessions/ws", mapOf("session" to sessionId)), onStatus) { text ->
+        WsSubscription(client, url(listOf("api", "sessions", "ws"), mapOf("session" to sessionId)).toString(), onStatus) { text ->
             parseSessionFrame(text)?.let(onFrame)
         }
 
     fun watchDen(sessionId: String?, onFrame: (DenFrame) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
-        WsSubscription(client, wsUrl("/api/events/ws", mapOf("session" to sessionId)), onStatus) { text ->
+        WsSubscription(client, url(listOf("api", "events", "ws"), mapOf("session" to sessionId)).toString(), onStatus) { text ->
             parseDenFrame(text)?.let(onFrame)
         }
 
-    private fun wsUrl(path: String, query: Map<String, String?>): String {
-        val u = url(path, query).newBuilder()
-        // OkHttp accepts ws/wss schemes on Request.url; keep http(s) and let it upgrade.
-        return u.build().toString()
-    }
-
-    private fun enc(s: String): String = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 }
 
 enum class WsStatus { CONNECTING, OPEN, CLOSED }
 
-/** Reconnecting WebSocket: base 500ms, doubling, capped at 15s, jittered. */
+/** Reconnecting WebSocket: base 500ms, doubling, capped at 15s, jittered. One socket, one pending reconnect. */
 class WsSubscription(
     private val client: OkHttpClient,
     private val url: String,
@@ -109,42 +105,57 @@ class WsSubscription(
     private val onText: (String) -> Unit,
 ) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val lock = Any()
     @Volatile private var closed = false
-    @Volatile private var ws: WebSocket? = null
+    private var ws: WebSocket? = null
+    private var reconnectJob: Job? = null
     private var attempt = 0
 
     init { connect() }
 
     private fun connect() {
-        if (closed) return
-        onStatus(WsStatus.CONNECTING)
-        val req = Request.Builder().url(url).build()
-        ws = client.newWebSocket(req, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (closed) { webSocket.close(1000, null); return }
-                attempt = 0
-                onStatus(WsStatus.OPEN)
-            }
-            override fun onMessage(webSocket: WebSocket, text: String) { onText(text) }
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { reconnect() }
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { reconnect() }
-        })
+        synchronized(lock) {
+            if (closed) return
+            reconnectJob?.cancel(); reconnectJob = null
+            ws?.cancel() // never two live sockets for one subscription
+            onStatus(WsStatus.CONNECTING)
+            val req = Request.Builder().url(url).build()
+            var self: WebSocket? = null
+            self = client.newWebSocket(req, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (closed) { webSocket.close(1000, null); return }
+                    attempt = 0
+                    onStatus(WsStatus.OPEN)
+                }
+                override fun onMessage(webSocket: WebSocket, text: String) { if (!closed && isCurrent(webSocket)) onText(text) }
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { if (isCurrent(webSocket)) reconnect() }
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { if (isCurrent(webSocket)) reconnect() }
+            })
+            ws = self
+        }
     }
 
+    private fun isCurrent(socket: WebSocket): Boolean = synchronized(lock) { socket === ws }
+
     private fun reconnect() {
-        onStatus(WsStatus.CLOSED)
-        if (closed) return
-        val backoff = minOf(500L shl minOf(attempt, 6), 15_000L)
-        attempt += 1
-        scope.launch {
-            delay(backoff + Random.nextLong(0, 250))
-            connect()
+        synchronized(lock) {
+            onStatus(WsStatus.CLOSED)
+            if (closed || reconnectJob?.isActive == true) return
+            val backoff = minOf(500L shl minOf(attempt, 6), 15_000L)
+            attempt += 1
+            reconnectJob = scope.launch {
+                delay(backoff + Random.nextLong(0, 250))
+                connect()
+            }
         }
     }
 
     override fun close() {
-        closed = true
-        ws?.close(1000, null)
+        synchronized(lock) {
+            closed = true
+            reconnectJob?.cancel()
+            ws?.close(1000, null)
+        }
         scope.cancel()
     }
 }

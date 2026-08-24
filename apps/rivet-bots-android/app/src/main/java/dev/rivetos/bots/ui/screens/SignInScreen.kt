@@ -23,6 +23,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.rivetos.bots.domain.BlobShape
+import dev.rivetos.bots.domain.BotLook
 import dev.rivetos.bots.domain.BotLooks
 import dev.rivetos.bots.ui.components.BlobAvatar
 import dev.rivetos.bots.ui.components.VSpace
@@ -33,7 +35,7 @@ import dev.rivetos.bots.ui.theme.Paper
 private data class Floater(val agent: String, val x: Float, val y: Float, val size: Int, val phase: Int)
 
 private val floaters = listOf(
-    Floater("unknown-pink", 0.52f, 0.10f, 46, 0),
+    Floater("pink", 0.52f, 0.10f, 46, 0),
     Floater("hermes", 0.18f, 0.20f, 58, 1),
     Floater("claude", 0.78f, 0.24f, 50, 2),
     Floater("grok", 0.12f, 0.36f, 44, 3),
@@ -55,7 +57,7 @@ fun SignInScreen(onJoin: () -> Unit) {
         floaters.forEach { f ->
             val dir = if (f.phase % 2 == 0) 1f else -1f
             BlobAvatar(
-                BotLooks.forAgent(f.agent), f.size.dp,
+                if (f.agent == "pink") BotLook(0xFFF04E98, BlobShape.TRIANGLE) else BotLooks.forAgent(f.agent), f.size.dp,
                 Modifier.offset(x = w * f.x - (f.size / 2).dp, y = h * f.y + (drift * dir).dp),
             )
         }

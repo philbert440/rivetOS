@@ -47,38 +47,43 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    /** Live watches keyed by "url|identityGen|strict" so a cert/TLS change retires the old sockets. */
     private val watches = HashMap<String, Closeable>()
+    private var refreshAgain = false
 
     init {
         viewModelScope.launch {
             c.settings.prefs.collect { p ->
                 c.setStrictHostnames(p.strictHostnames)
                 _state.update { it.copy(prefs = p) }
+                if (p.entryUrl.isBlank()) closeWatches()
             }
         }
-        refresh()
     }
 
-    fun sessionIdFor(bot: Bot): String =
-        _state.value.prefs.sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
+    fun sessionIdFor(bot: Bot, prefs: Prefs = _state.value.prefs): String =
+        prefs.sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
 
     fun setQuery(q: String) = _state.update { it.copy(query = q) }
 
     fun refresh() {
-        if (_state.value.loading) return
+        if (_state.value.loading) { refreshAgain = true; return }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
-                val p = c.settings.snapshot()
+                val p = c.settings.snapshot() // never the empty default — prefs may not have emitted yet
+                _state.update { it.copy(prefs = p) }
                 if (p.entryUrl.isBlank()) throw BotRepository.DiscoveryFailed("No entry node configured.")
+                if (!c.identity.hasIdentity()) throw BotRepository.DiscoveryFailed("No device certificate — sign in again.")
                 val bots = c.bots.discover(p.entryUrl, p.extraNodes)
                 _state.update { it.copy(bots = bots, loadedOnce = true) }
-                openWatches(bots)
-                loadPreviews(bots)
+                openWatches(bots, p)
+                loadPreviews(bots, p)
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: BotRepository.friendly(e), loadedOnce = true) }
             } finally {
                 _state.update { it.copy(loading = false) }
+                if (refreshAgain) { refreshAgain = false; refresh() }
             }
         }
     }
@@ -86,37 +91,49 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     /** Re-read the thread tail for one bot (after a chat closes, a new conversation, …). */
     fun refreshPreview(bot: Bot) {
         viewModelScope.launch {
-            c.bots.preview(bot, sessionIdFor(bot))?.let { p -> _state.update { it.copy(previews = it.previews + (bot.id to p)) } }
+            val p = c.settings.snapshot()
+            c.bots.preview(bot, sessionIdFor(bot, p))?.let { pv -> _state.update { it.copy(previews = it.previews + (bot.id to pv)) } }
         }
     }
 
-    private suspend fun loadPreviews(bots: List<Bot>) = coroutineScope {
+    private suspend fun loadPreviews(bots: List<Bot>, p: Prefs) = coroutineScope {
         val found = bots.filter { it.online }.map { b ->
-            async { c.bots.preview(b, sessionIdFor(b))?.let { b.id to it } }
+            async { c.bots.preview(b, sessionIdFor(b, p))?.let { b.id to it } }
         }.awaitAll().filterNotNull()
         _state.update { it.copy(previews = it.previews + found) }
     }
 
     /** One all-sessions WS per online node keeps the list live without polling. */
-    private fun openWatches(bots: List<Bot>) {
-        val urls = bots.filter { it.online }.map { it.denUrl }.toSet()
-        (watches.keys - urls).forEach { watches.remove(it)?.close() }
-        for (url in urls - watches.keys) {
-            watches[url] = c.gateways.get(url).watchSessions(null, onFrame = { f ->
+    private fun openWatches(bots: List<Bot>, p: Prefs) {
+        val wanted = bots.filter { it.online }.map { it.denUrl }.toSet()
+            .associateBy { url -> "$url|${c.identity.generation()}|${p.strictHostnames}" }
+        (watches.keys - wanted.keys).forEach { watches.remove(it)?.close() }
+        for ((key, url) in wanted) {
+            if (key in watches) continue
+            watches[key] = c.gateways.get(url).watchSessions(null, onFrame = { f ->
                 if (f is SessionFrame.Message) {
                     val m = f.message
-                    val bot = _state.value.bots.firstOrNull { it.denUrl == url && sessionIdFor(it) == m.sessionId } ?: return@watchSessions
+                    val prefs = _state.value.prefs
+                    val bot = _state.value.bots.firstOrNull { it.denUrl == url && sessionIdFor(it, prefs) == m.sessionId } ?: return@watchSessions
                     _state.update { it.copy(previews = it.previews + (bot.id to BotPreview(m.text, m.ts, m.role))) }
                 }
             })
         }
     }
 
+    private fun closeWatches() { watches.values.forEach { it.close() }; watches.clear() }
+
+    /** Sign-out: drop sockets, roster, and pooled TLS clients built on the old identity. */
+    fun shutdown() {
+        closeWatches()
+        c.gateways.clear()
+        _state.update { UiState(prefs = it.prefs) }
+    }
+
     fun togglePin(bot: Bot) { viewModelScope.launch { c.settings.togglePin(bot.id) } }
     fun setHidden(bot: Bot, hidden: Boolean) { viewModelScope.launch { c.settings.setHidden(bot.id, hidden) } }
     fun unhideAll() { viewModelScope.launch { c.settings.unhideAll() } }
     fun addNode(url: String) { viewModelScope.launch { c.settings.addExtraNode(url); refresh() } }
-    fun markSeen(bot: Bot, ts: Long) { viewModelScope.launch { c.settings.markSeen(bot.id, ts) } }
 
-    override fun onCleared() { watches.values.forEach { it.close() }; watches.clear() }
+    override fun onCleared() { closeWatches() }
 }

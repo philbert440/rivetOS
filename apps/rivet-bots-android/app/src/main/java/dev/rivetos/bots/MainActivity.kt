@@ -9,10 +9,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.ViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.rivetos.bots.ui.ChatViewModel
 import dev.rivetos.bots.ui.ComputerViewModel
@@ -38,6 +43,30 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * ViewModel stores scoped to back-stack entries. Chat/Computer VMs own a live
+ * WebSocket each, so they must die with their screen — the activity store
+ * would keep every visited bot's socket alive for the process lifetime.
+ */
+private class ScreenStores {
+    private val stores = HashMap<String, ViewModelStore>()
+    fun owner(key: String): ViewModelStoreOwner {
+        val store = stores.getOrPut(key) { ViewModelStore() }
+        return object : ViewModelStoreOwner { override val viewModelStore: ViewModelStore get() = store }
+    }
+    fun retainOnly(keys: Set<String>) {
+        val gone = stores.keys - keys
+        gone.forEach { stores.remove(it)?.clear() }
+    }
+    fun clearAll() { stores.values.forEach { it.clear() }; stores.clear() }
+}
+
+private fun Screen.storeKey(): String? = when (this) {
+    is Screen.Chat -> "chat:${bot.id}"
+    is Screen.Computer -> "computer:${bot.id}"
+    else -> null
+}
+
 @Composable
 fun App(c: AppContainer) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
@@ -49,33 +78,52 @@ fun App(c: AppContainer) {
     val nav = remember {
         Nav(if (c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) Screen.Home else Screen.SignIn)
     }
+    val stores = remember { ScreenStores() }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
-    val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
+    // Drop VM stores (and their sockets) for entries that left the stack.
+    val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
+    DisposableEffect(liveKeys) {
+        stores.retainOnly(liveKeys)
+        onDispose { }
+    }
 
     when (val s = nav.current) {
         Screen.SignIn -> SignInScreen(onJoin = { nav.push(Screen.Enroll) })
-        Screen.Enroll -> EnrollScreen(c, onBack = { nav.pop() }, onDone = { nav.replaceAll(Screen.Home); homeVm.refresh() })
-        Screen.Home -> HomeScreen(
-            homeVm,
-            onOpenChat = { nav.push(Screen.Chat(it)) },
-            onOpenProfile = { nav.push(Screen.Profile(it)) },
-            onSettings = { nav.push(Screen.Settings) },
-        )
-        is Screen.Chat -> {
-            val vm: ChatViewModel = viewModel(key = "chat:${s.bot.id}") { ChatViewModel(c, s.bot, homeVm.sessionIdFor(s.bot)) }
-            ChatScreen(
-                vm, s.bot,
-                onBack = { homeVm.refreshPreview(s.bot); nav.pop() },
-                onProfile = { nav.push(Screen.Profile(s.bot)) },
-                onComputer = { nav.push(Screen.Computer(s.bot)) },
+        Screen.Enroll -> {
+            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
+            EnrollScreen(c, onBack = { nav.pop() }, onDone = { nav.replaceAll(Screen.Home); homeVm.refresh() })
+        }
+        Screen.Home -> {
+            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
+            HomeScreen(
+                homeVm,
+                onOpenChat = { nav.push(Screen.Chat(it)) },
+                onOpenProfile = { nav.push(Screen.Profile(it)) },
+                onSettings = { nav.push(Screen.Settings) },
             )
         }
+        is Screen.Chat -> {
+            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
+            CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
+                val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot, homeVm.sessionIdFor(s.bot)) }
+                val cs by vm.state.collectAsState()
+                ChatScreen(
+                    vm, s.bot,
+                    onBack = { homeVm.refreshPreview(s.bot); nav.pop() },
+                    onProfile = { nav.push(Screen.Profile(s.bot)) },
+                    // Pass the thread the chat is actually on, not whatever prefs has committed so far.
+                    onComputer = { nav.push(Screen.Computer(s.bot, cs.sessionId)) },
+                )
+            }
+        }
         is Screen.Computer -> {
-            val sid = homeVm.sessionIdFor(s.bot)
-            val vm: ComputerViewModel = viewModel(key = "computer:${s.bot.id}:$sid") { ComputerViewModel(c, s.bot, sid) }
-            ComputerScreen(vm, s.bot, onBack = { nav.pop() }, onProfile = { nav.push(Screen.Profile(s.bot)) })
+            CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
+                val vm: ComputerViewModel = viewModel(key = s.sessionId) { ComputerViewModel(c, s.bot, s.sessionId) }
+                ComputerScreen(vm, s.bot, onBack = { nav.pop() }, onProfile = { nav.push(Screen.Profile(s.bot)) })
+            }
         }
         is Screen.Profile -> {
+            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
             val hs by homeVm.state.collectAsState()
             ProfileScreen(
                 bot = s.bot,
@@ -83,17 +131,23 @@ fun App(c: AppContainer) {
                 pinned = s.bot.id in hs.prefs.pinned,
                 hidden = s.bot.id in hs.prefs.hidden,
                 onBack = { nav.pop() },
-                onMessage = { nav.popTo { it is Screen.Chat && it.bot.id == s.bot.id || it is Screen.Home }; if (nav.current !is Screen.Chat) nav.push(Screen.Chat(s.bot)) },
-                onComputer = { nav.push(Screen.Computer(s.bot)) },
+                onMessage = {
+                    nav.popTo { (it is Screen.Chat && it.bot.id == s.bot.id) || it is Screen.Home }
+                    if (nav.current !is Screen.Chat) nav.push(Screen.Chat(s.bot))
+                },
+                onComputer = { nav.push(Screen.Computer(s.bot, homeVm.sessionIdFor(s.bot))) },
                 onTogglePin = { homeVm.togglePin(s.bot) },
                 onToggleHide = { homeVm.setHidden(s.bot, s.bot.id !in hs.prefs.hidden) },
             )
         }
-        Screen.Settings -> SettingsScreen(
-            c,
-            onBack = { nav.pop() },
-            onForget = { nav.replaceAll(Screen.SignIn) },
-            onRosterChanged = { homeVm.refresh() },
-        )
+        Screen.Settings -> {
+            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
+            SettingsScreen(
+                c,
+                onBack = { nav.pop() },
+                onForget = { homeVm.shutdown(); stores.clearAll(); nav.replaceAll(Screen.SignIn) },
+                onRosterChanged = { homeVm.refresh() },
+            )
+        }
     }
 }

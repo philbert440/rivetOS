@@ -30,20 +30,22 @@ app/src/main/java/dev/rivetos/bots/
 
 ## Build / stage / install (proven 2026-08-24)
 
-- Build host: **pve3** `/opt/work/rivet-bots-build/` (rsync of this dir; `/opt/work` has room, `~/.gradle` warm).
-  ```
-  rsync -a --delete --exclude build/ --exclude .gradle/ --exclude .kotlin/ --exclude local.properties \
-        apps/rivet-bots-android/ pve3:/opt/work/rivet-bots-build/
-  ssh pve3 'cd /opt/work/rivet-bots-build && JAVA_HOME=/usr ANDROID_HOME=/opt/android-sdk \
-        ANDROID_SDK_ROOT=/opt/android-sdk ./gradlew :app:assembleDebug --console=plain'   # ~2m
-  ```
-- Staged: `/rivet-shared/rivet-phone/apk/rivet-bots-debug.apk` (+ SHA256SUMS).
-- Install from **phildesk** only (standing rule): `adb install -r /rivet-shared/rivet-phone/apk/rivet-bots-debug.apk`.
-  New package id → no keystore/wipe concern; debug key is pve3's `/root/.android/debug.keystore` (SHA1 913d…8d15).
-- Device p12: `/rivet-shared/rivet-ca/issued/device-pixel-phil.p12` (expires 2026-11-08);
-  passphrase in Rivet's 1Password → "Rivet device cert p12 passphrase".
+- Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache). rsync this dir
+  there and run `./gradlew :app:assembleDebug` (~2 min cold, seconds warm); `:app:testDebugUnitTest`
+  for the JVM tests; `:app:assembleRelease` to exercise R8. Host names, staging paths, the debug
+  keystore, and where the device p12/passphrase live are **ops notes in Rivet's memory**, not here.
+- Emulator smoke (proven): x86_64 `system-images;android-36;google_apis` under KVM, `-no-window
+  -gpu swiftshader_indirect`; drive with `adb shell input` + `uiautomator dump`. Enroll with any
+  Rivet-CA device p12 packed as `openssl pkcs12 -export -certfile chain.pem …`.
 
-## Contract facts verified against live nodes (2026-08-24, ct115)
+## Verified end-to-end (2026-08-24, emulator against a live mesh)
+
+Enroll with a real device p12 → roster of 10 bots across 8 nodes → two turns to Claude on a live node
+answered and rendered (stream chip → committed message) → home preview + time updated over the
+all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spawn on a node can take
+~2 min; the working chip now times out at 5 min with a refetch.
+
+## Contract facts verified against live nodes (2026-08-24)
 
 - `GET /api/mesh` → `{updatedAt, nodes:[{id,name,denUrl,online,sessions}]}` ✔
 - `GET /api/catalog/agents` → `{agents:[{id,node,local,provider?,model?}]}` ✔ — remote agents only
@@ -51,18 +53,26 @@ app/src/main/java/dev/rivetos/bots/
   individually (`BotRepository.probeNode`), and a den-only node (datahub) is dropped because
   `/api/sessions` isn't served there.
 - Off-loopback requests without a device client cert → 401 `{"error":"unauthorized"}`; `/healthz` is open.
+- Den rooms are keyed by the harness's den session; a gateway turn on a node whose harness doesn't
+  emit den events under the gateway session id leaves the Computer view on the empty room. Wiring
+  that mapping is node-side work (den hooks), not app work.
 - Node leaf certs carry `IP:<lan>` + `IP:127.0.0.1` SANs, so strict hostname verification works.
 - `GET /api/sessions` omits sessions with zero messages — expected; previews come from
   `/api/sessions/:id/messages` per bot.
 
 ## Open items / next
 
-1. **On-device smoke** (blocked on the Pixel being USB'd to phildesk): enroll with the pixel-phil p12,
-   confirm roster, send a turn to Claude@ct115, watch the Computer view.
+1. **Physical-device smoke** (emulator pass is done): install the staged debug APK from the adb host,
+   enroll with the phone's own device p12, repeat the emulator checklist.
 2. Voice: the composer's mic is a placeholder (Grok Bot has dictation). GERTY ASR (:9000) is the obvious backend.
 3. Approvals: Grok Bot surfaces approve/deny cards; our gateway has `/api/harness-sessions` approvals — not wired.
 4. Routines on the profile screen ↔ `/api/tasks` / workflows — not wired.
 5. `confirmValueChange` on SwipeToDismissBox is deprecated in this Material3; still works, revisit when M3 drops it.
+7. Review round 1 (grok + kimi, 2026-08-24) applied: per-screen VM stores, session-filtered frames,
+   transcript merge on (re)connect, single-socket reconnect, watches keyed by identity generation,
+   identity parse errors surfaced, base-path-safe URLs, Computer never shows another room.
+   Deferred from that round: markdown rendering, thinking transcript, approvals cards, CharArray
+   passphrase plumbing, union-with-platform trust.
 6. Push notifications — nothing yet; WS previews only update while the app is foregrounded.
 
 ## Gotchas

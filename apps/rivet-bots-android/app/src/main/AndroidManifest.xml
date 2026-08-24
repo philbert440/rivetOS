@@ -11,6 +11,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:usesCleartextTraffic="false"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.RivetBots">
         <activity
             android:name=".MainActivity"

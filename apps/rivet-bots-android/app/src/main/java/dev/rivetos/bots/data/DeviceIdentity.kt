@@ -34,6 +34,9 @@ class DeviceIdentityStore(context: Context) {
 
     @Volatile private var cached: Loaded? = null
     @Volatile private var cachedGen = -1
+    /** Why the stored identity failed to load (bad passphrase vault, corrupt file), if it did. */
+    @Volatile var lastError: String? = null
+        private set
 
     data class Summary(
         val cn: String,
@@ -105,10 +108,17 @@ class DeviceIdentityStore(context: Context) {
         synchronized(lock) {
             if (!hasIdentity()) return null
             val pass = vault.getString(KEY_PASS, null) ?: return null
-            val loaded = runCatching { parse(p12File.readBytes(), pass.toCharArray(), extraCa = readCaPem()) }.getOrNull()
-            cached = loaded
-            cachedGen = gen
-            return loaded
+            return try {
+                val loaded = parse(p12File.readBytes(), pass.toCharArray(), extraCa = readCaPem())
+                cached = loaded
+                cachedGen = gen
+                lastError = null
+                loaded
+            } catch (e: Exception) {
+                // Not cached: a transient read error must not pin this generation to "no identity".
+                lastError = e.message ?: e.javaClass.simpleName
+                null
+            }
         }
     }
 

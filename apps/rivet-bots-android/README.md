@@ -31,7 +31,7 @@ already caches (AGP 9.2.1, Kotlin 2.3.21, Gradle 9.4.1).
     ./gradlew :app:assembleDebug
     # → app/build/outputs/apk/debug/app-debug.apk
 
-Repo CI does not compile Android; build locally (see AGENT.md for the pve3 recipe).
+Repo CI does not compile Android; build locally (see AGENT.md).
 
 ## First run
 

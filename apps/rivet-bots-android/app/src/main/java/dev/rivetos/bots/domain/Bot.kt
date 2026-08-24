@@ -19,7 +19,10 @@ data class Bot(
 ) {
     val id: String get() = "$nodeId/$agent"
 
-    val displayName: String get() = prettyAgent(agent)
+    val displayName: String get() = if (agent == DEFAULT_AGENT) "Agent" else prettyAgent(agent)
+
+    /** `agent` for POST /api/sessions — null lets the node pick its default. */
+    val sendAgent: String? get() = agent.takeUnless { it == DEFAULT_AGENT }
 
     /** Short host label for chips: "ct115" or the host part of the gateway URL. */
     val nodeLabel: String get() = nodeName.ifBlank { nodeId }
@@ -29,6 +32,9 @@ data class Bot(
         "rivetbots-$deviceTag-${slug(nodeId)}-${slug(agent)}"
 
     companion object {
+        /** Placeholder for a node that serves chat but advertises no agent catalog. */
+        const val DEFAULT_AGENT = "__default__"
+
         fun prettyAgent(agent: String): String = when (agent.lowercase(Locale.US)) {
             "claude" -> "Claude"
             "grok" -> "Grok"

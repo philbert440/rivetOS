@@ -40,7 +40,7 @@ fun BlobAvatar(
         val color = Color(look.color).let { if (dimmed) it.copy(alpha = 0.45f) else it }
         val path = blobPath(look.shape, w, h)
         drawPath(path, color)
-        if (look.shape == BlobShape.TRIANGLE || look.shape == BlobShape.HEX || look.shape == BlobShape.ARCH) {
+        if (look.shape == BlobShape.TRIANGLE || look.shape == BlobShape.HEX) {
             // Soften the corners: a fat stroke with a corner effect over the fill.
             drawPath(
                 path, color,
@@ -118,10 +118,13 @@ fun blobPath(shape: BlobShape, w: Float, h: Float): Path = Path().apply {
             close()
         }
         BlobShape.ARCH -> {
-            moveTo(w * 0.10f, h * 0.96f)
-            lineTo(w * 0.10f, h * 0.48f)
+            // Round top, softly rounded feet — drawn fully, no stroke pass needed.
+            moveTo(w * 0.10f, h * 0.48f)
             cubicTo(w * 0.10f, h * 0.06f, w * 0.90f, h * 0.06f, w * 0.90f, h * 0.48f)
-            lineTo(w * 0.90f, h * 0.96f)
+            lineTo(w * 0.90f, h * 0.88f)
+            cubicTo(w * 0.90f, h * 0.94f, w * 0.86f, h * 0.97f, w * 0.80f, h * 0.97f)
+            lineTo(w * 0.20f, h * 0.97f)
+            cubicTo(w * 0.14f, h * 0.97f, w * 0.10f, h * 0.94f, w * 0.10f, h * 0.88f)
             close()
         }
         BlobShape.CLOUD -> {

@@ -49,7 +49,9 @@ import dev.rivetos.bots.ui.theme.Danger
 import dev.rivetos.bots.ui.theme.Ink
 import dev.rivetos.bots.ui.theme.InkDim
 import dev.rivetos.bots.ui.theme.Paper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** Entry node + device PKCS#12 → verify against /api/mesh → home. */
 @Composable
@@ -60,7 +62,7 @@ fun EnrollScreen(c: AppContainer, onBack: () -> Unit, onDone: () -> Unit) {
     var pass by remember { mutableStateOf("") }
     var p12 by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
     var ca by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
-    var strict by remember { mutableStateOf(true) }
+    var strict by remember { mutableStateOf(c.strictHostnames) } // keep a deliberate relaxation on re-enroll
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val existing = remember { c.identity.summary() }
@@ -154,8 +156,11 @@ fun EnrollScreen(c: AppContainer, onBack: () -> Unit, onDone: () -> Unit) {
                 scope.launch {
                     busy = true
                     try {
-                        ca?.let { c.identity.importCaPem(it.second) }
-                        p12?.let { c.identity.importPkcs12(it.second, pass) }
+                        withContext(Dispatchers.IO) {
+                            ca?.let { c.identity.importCaPem(it.second) }
+                            p12?.let { c.identity.importPkcs12(it.second, pass) }
+                        }
+                        pass = ""; p12 = null // don't keep secret material in composition state
                         if (!c.identity.hasIdentity()) throw IllegalStateException("Pick the device certificate first.")
                         c.settings.setStrictHostnames(strict); c.setStrictHostnames(strict)
                         c.settings.setEntryUrl(entry)
@@ -164,6 +169,10 @@ fun EnrollScreen(c: AppContainer, onBack: () -> Unit, onDone: () -> Unit) {
                         onDone()
                     } catch (e: Exception) {
                         error = e.message ?: e.javaClass.simpleName
+                        if (c.identity.hasIdentity() && c.identity.summary() == null) error = "Certificate didn't load: ${c.identity.lastError}"
+                        else if (e is javax.net.ssl.SSLHandshakeException || e.cause is javax.net.ssl.SSLHandshakeException) {
+                            if (c.identity.summary()?.hasCaChain == false) error = "TLS failed and the .p12 carries no CA chain — add the Rivet CA bundle below."
+                        }
                     } finally { busy = false }
                 }
             },
