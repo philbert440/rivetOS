@@ -30,8 +30,16 @@ import {
   insertSummary,
   leafFloorFor,
   isHeartbeatConversation,
+  isPgDeadlockError,
+  enqueueExtractWiki,
+  DEADLOCK_RETRIES,
+  PG_DEADLOCK_CODE,
 } from './compact-conversation.js'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-postgres'
+
+function deadlockError(message = 'deadlock detected'): Error {
+  return Object.assign(new Error(message), { code: PG_DEADLOCK_CODE })
+}
 
 describe('compact-conversation', () => {
   describe('leafFloorFor', () => {
@@ -198,6 +206,105 @@ describe('compact-conversation', () => {
       const calls = (mockClient.query as any).mock.calls
       expect(calls[0][0]).toBe('BEGIN')
       expect(calls[calls.length - 1][0]).toBe('COMMIT')
+    })
+
+    it('retries 40P01 then commits on the next attempt', async () => {
+      let runs = 0
+      const mockClient = {
+        query: vi.fn(async (sql: string) => {
+          if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+            return { rows: [], rowCount: null }
+          }
+          return { rows: [], rowCount: null }
+        }),
+      }
+
+      const result = await withTransaction(mockClient, async () => {
+        runs += 1
+        if (runs === 1) throw deadlockError()
+        return 'recovered'
+      })
+
+      expect(result).toBe('recovered')
+      expect(runs).toBe(2)
+      const cmds = (mockClient.query as any).mock.calls.map((c: any) => c[0])
+      expect(cmds).toEqual(['BEGIN', 'ROLLBACK', 'BEGIN', 'COMMIT'])
+    })
+
+    it('does not retry a non-deadlock error', async () => {
+      let runs = 0
+      const mockClient = {
+        query: vi.fn(async (sql: string) => {
+          if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [], rowCount: null }
+          return { rows: [], rowCount: null }
+        }),
+      }
+
+      await expect(
+        withTransaction(mockClient, async () => {
+          runs += 1
+          throw new Error('unique_violation')
+        }),
+      ).rejects.toThrow('unique_violation')
+      expect(runs).toBe(1)
+    })
+
+    it('gives up after DEADLOCK_RETRIES and rethrows', async () => {
+      let runs = 0
+      const mockClient = {
+        query: vi.fn(async (sql: string) => {
+          if (sql === 'BEGIN' || sql === 'ROLLBACK') return { rows: [], rowCount: null }
+          return { rows: [], rowCount: null }
+        }),
+      }
+
+      await expect(
+        withTransaction(mockClient, async () => {
+          runs += 1
+          throw deadlockError()
+        }),
+      ).rejects.toThrow(/deadlock detected/)
+      expect(runs).toBe(DEADLOCK_RETRIES + 1)
+    })
+  })
+
+  describe('isPgDeadlockError', () => {
+    it('matches node-pg 40P01', () => {
+      expect(isPgDeadlockError(deadlockError())).toBe(true)
+    })
+
+    it('matches a deadlock message without a code', () => {
+      expect(isPgDeadlockError(new Error('deadlock detected'))).toBe(true)
+    })
+
+    it('rejects unrelated errors', () => {
+      expect(isPgDeadlockError(new Error('unique_violation'))).toBe(false)
+      expect(isPgDeadlockError({ code: '23505' })).toBe(false)
+    })
+  })
+
+  describe('enqueueExtractWiki', () => {
+    it('adds extract-wiki after the caller has committed', async () => {
+      const mockClient = {
+        query: vi.fn(async () => ({ rows: [], rowCount: null })),
+      }
+
+      await enqueueExtractWiki(mockClient, 'sum-1', 'conv-1')
+
+      expect(mockClient.query).toHaveBeenCalledOnce()
+      const [sql, params] = (mockClient.query as any).mock.calls[0] as [string, unknown[]]
+      expect(sql).toMatch(/graphile_worker\.add_job\('extract-wiki'/)
+      expect(params[0]).toBe(JSON.stringify({ summaryId: 'sum-1', conversationId: 'conv-1' }))
+      expect(params[1]).toBe('wiki-ext-sum-1')
+    })
+
+    it('swallows add_job failures so a committed leaf is not rolled back', async () => {
+      const mockClient = {
+        query: vi.fn(async () => {
+          throw deadlockError()
+        }),
+      }
+      await expect(enqueueExtractWiki(mockClient, 'sum-1', 'conv-1')).resolves.toBeUndefined()
     })
   })
 

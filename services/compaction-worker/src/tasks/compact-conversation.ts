@@ -75,17 +75,61 @@ export function isHeartbeatConversation(meta: { session_key?: string | null }): 
   return isHeartbeatSessionKey(meta.session_key)
 }
 
-/** Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw. */
-export async function withTransaction<T>(client: PgClient, fn: () => Promise<T>): Promise<T> {
-  await client.query('BEGIN')
-  try {
-    const result = await fn()
-    await client.query('COMMIT')
-    return result
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
-    throw err
+/** Postgres deadlock SQLSTATE. node-pg puts this on `err.code`. */
+export const PG_DEADLOCK_CODE = '40P01'
+
+/** How many times to re-run a summary write after 40P01. */
+export const DEADLOCK_RETRIES = 3
+
+export function isPgDeadlockError(err: unknown): boolean {
+  if (
+    err &&
+    typeof err === 'object' &&
+    'code' in err &&
+    (err as { code?: string }).code === PG_DEADLOCK_CODE
+  ) {
+    return true
   }
+  const msg = err instanceof Error ? err.message : String(err)
+  return /deadlock detected/i.test(msg)
+}
+
+function deadlockBackoffMs(attempt: number): number {
+  return 25 * (attempt + 1) * (attempt + 1)
+}
+
+/**
+ * Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw.
+ *
+ * `40P01 deadlock detected` is retried with short backoff. Leaf inserts fire
+ * the embed-target trigger (`graphile_worker.add_job`) while they also write
+ * `ros_summary_sources`; concurrent ingest/embed jobs take the same job-table
+ * locks in a different order and abort the whole compact job. graphile then
+ * burns max_attempts and the conversation sits in memory_stats as a stuck
+ * compact-conversation row — live: 5 dead since 2026-08-22.
+ */
+export async function withTransaction<T>(client: PgClient, fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= DEADLOCK_RETRIES; attempt++) {
+    await client.query('BEGIN')
+    try {
+      const result = await fn()
+      await client.query('COMMIT')
+      return result
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {})
+      lastErr = err
+      if (!isPgDeadlockError(err) || attempt === DEADLOCK_RETRIES) {
+        throw err
+      }
+      const delay = deadlockBackoffMs(attempt)
+      console.warn(
+        `[CompactWorker] deadlock on summary write, retry ${String(attempt + 1)}/${String(DEADLOCK_RETRIES)} in ${String(delay)}ms`,
+      )
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+  throw lastErr
 }
 
 interface SummaryInsert {
@@ -96,6 +140,35 @@ interface SummaryInsert {
   messageCount: number
   earliestAt: unknown
   latestAt: unknown
+}
+
+/**
+ * Enqueue wiki extraction for a committed leaf. Best-effort: extract-wiki is
+ * idempotent on summary_id and enqueue-wiki-backfill will pick up a miss.
+ *
+ * Must NOT run inside the summary INSERT transaction. That INSERT already
+ * fires `notify_embedding_queue` → `add_job('embed-target')`. A second
+ * `add_job('extract-wiki')` in the same TX holds graphile job-table locks
+ * together with ros_summaries / ros_summary_sources, which deadlocks against
+ * concurrent ingest/embed workers.
+ */
+export async function enqueueExtractWiki(
+  client: PgClient,
+  summaryId: string,
+  conversationId: string,
+): Promise<void> {
+  try {
+    await client.query(
+      `SELECT graphile_worker.add_job('extract-wiki', $1::json,
+              job_key := $2, max_attempts := 2, priority := 5)`,
+      [JSON.stringify({ summaryId, conversationId }), `wiki-ext-${summaryId}`],
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(
+      `[CompactWorker] extract-wiki enqueue failed for ${summaryId.slice(0, 8)} (backfill will retry): ${msg}`,
+    )
+  }
 }
 
 /** Insert one ros_summaries row and return its id. Caller owns the transaction. */
@@ -157,8 +230,8 @@ async function compactLeaf(
 
   recordSuccess(conversationId)
 
-  return withTransaction(client, async () => {
-    const summaryId = await insertSummary(client, {
+  const summaryId = await withTransaction(client, async () => {
+    const id = await insertSummary(client, {
       conversationId,
       depth: 0,
       kind: 'leaf',
@@ -173,7 +246,7 @@ async function compactLeaf(
     let paramIdx = 1
     for (let i = 0; i < messages.rows.length; i++) {
       valueClauses.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2})`)
-      params.push(summaryId, messages.rows[i].id, i)
+      params.push(id, messages.rows[i].id, i)
       paramIdx += 3
     }
     await client.query(
@@ -182,19 +255,14 @@ async function compactLeaf(
     )
 
     console.log(
-      `[CompactWorker] Leaf ${summaryId} (${messages.rows.length} msgs, conv ${conversationId.slice(0, 8)})`,
+      `[CompactWorker] Leaf ${id} (${messages.rows.length} msgs, conv ${conversationId.slice(0, 8)})`,
     )
-    // Phase 3c: hand the fresh leaf to the wiki extractor. Enqueued INSIDE
-    // the transaction (same client) so a rollback never leaves a dangling
-    // job; the task itself is flag-gated + idempotent, so this is safe to
-    // enqueue even with WIKI_EXTRACTION off.
-    await client.query(
-      `SELECT graphile_worker.add_job('extract-wiki', $1::json,
-              job_key := $2, max_attempts := 2, priority := 5)`,
-      [JSON.stringify({ summaryId, conversationId }), `wiki-ext-${summaryId}`],
-    )
-    return 1
+    return id
   })
+
+  // After COMMIT — extract-wiki is flag-gated + idempotent; backfill covers a miss.
+  await enqueueExtractWiki(client, summaryId, conversationId)
+  return 1
 }
 
 interface ParentLevelConfig {
