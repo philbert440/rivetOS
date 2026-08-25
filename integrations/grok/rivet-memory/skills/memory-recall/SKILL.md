@@ -1,68 +1,60 @@
 ---
 name: memory-recall
-description: 'Auto-activate on any question about past work, decisions, commands, or facts ("what did we do this morning/yesterday/today", "remember when", "have we seen this error before", "what is the IP of X", "where does Y live"). Encodes the optimal RivetOS memory recall discipline across all agents (rivet-claude, rivet-hermes, grok). Prefers time-bounded browse with window= first, multi-angle search + trigram fallback, and cross-agent awareness.'
-tags: [rivetos, memory, recall, discipline, rivet-memory]
-version: 0.2.0
+description: 'Auto-activate on any question about past work, decisions, commands, facts, or current status ("what did we do this morning/yesterday/today", "how\'s everything looking", "what\'s in flight", "remember when", "have we seen this error before", "what is the IP of X"). Encodes RivetOS recall discipline: status/workboard protocol, time-bounded browse first, multi-angle search + trigram fallback, cross-agent awareness.'
+tags: [rivetos, memory, recall, discipline, rivet-memory, status]
+version: 0.3.0
 ---
 
 # RivetOS Memory Recall Discipline (Grok Build)
 
-You have access to a shared, persistent memory store used by **every** Rivet agent (`rivet-claude`, `rivet-hermes`, `grok`, etc.) via the RivetOS MCP server.
+Shared persistent memory across every Rivet agent (`rivet-claude`, `rivet-hermes`, `grok`, etc.) via the RivetOS MCP server.
 
-**The tools are excellent. The usual failure mode is poor discipline** — using semantic search when a chronological browse of a known time window is the correct reflex.
+**Usual failure mode is poor discipline** — wrong tool, wrong evidence layer, or a browse flooded by tool rows.
 
-This skill exists so you reach for the right tool on the first try.
+## The Core Rules
 
-## The Core Rules (Best of Hermes + Claude)
+### 0. Status / "how's things" question? → Workboard first (not host health)
+
+Prompts like "how's everything looking", "what's going on", "status", "what's in flight", "catch me up" mean **current work across agents**, not memory_stats or box uptime.
+
+1. `memory_browse(window="last_24h")` (default already excludes tool rows) — read **user + assistant closers** from all agents.
+2. If thin, widen (`today` / `yesterday`) or `memory_search` for the live thread (PR numbers, "merged", "blocked", "hands off").
+3. Treat `workspace/memory/*.md` and HEARTBEAT dated notes as **hints to verify**, never as current state. RivetOS conversation memory (and session-state / wiki when present) wins.
+4. Host/`memory_stats` only as a secondary note when relevant — never the lead answer.
 
 ### 1. Time-bounded question? → `memory_browse` with `window=` FIRST
 
-Any prompt that pins a timeframe ("this morning", "yesterday", "today", "earlier", "last week", "the standup", "what we did on Tuesday") means the user already knows *when*. They need exhaustive results in order, not relevance-ranked hits.
+Any prompt that pins a timeframe ("this morning", "yesterday", "today", "earlier", "last week", "the standup") needs chronological results, not relevance rank.
 
-**Use the enhanced `window=` parameter whenever available** (from Hermes v0.3+):
+Use `window=` when available:
 
 - `window="this_morning" | "yesterday" | "today" | "this_week" | "last_24h" | "last_7d" | "last_14d"`
 
-Rolling `last_7d` / `last_14d` cover "last week" / "recent work" without
-calendar-week edge cases — **prefer them over `this_week` on Mon/Tue** when
-the ISO week has barely started. Aliases like `last week` normalize to
-`last_7d`.
+Prefer rolling `last_7d` / `last_14d` over `this_week` early in the week. Fallback: full UTC ISO `since` / `before` (never bare dates).
 
-This is the preferred path because it correctly handles local timezone boundaries without you doing math.
+After a browse hits the limit, raise `limit` (max 200) or flip `order` — do not assume you have everything.
 
-**Fallback**: Explicit `since` / `before` as full UTC ISO timestamps (never bare dates).
-
-**Important**: After a browse that hits the limit, flip `order="asc"` or increase `limit` (max usually 200) instead of assuming you have everything.
+**Default browse excludes `role=tool`.** Limit budget goes to user/assistant/system. Pass `include_tools=true` only when debugging capture, harness wiring, or tool failures.
 
 ### 2. Topic / lookup question (no clear timeframe)? → Multi-angle search, minimum 3 queries
 
-One embedding call is fragile. Run from different semantic vectors:
-
-- Service / role: "frigate NVR", "openwrt router"
-- Host / nickname: "minipc", "deckard", "pve3"
-- Network: "10.4.20", "192.168.1"
-- Exact tokens: IPs, MACs, error strings, port numbers → use `mode="trigram"`
-
-**FTS power move** (when supported):
-- `memory_search(query="frigate OR minipc OR \"error 1234\"", mode="fts")` — real OR, phrases, exclusions.
+Vary by service/role, host/nickname, network, and exact tokens. Use `mode="trigram"` for IPs, MACs, error strings, hostnames. FTS OR/phrases when supported.
 
 ### 3. Semantic/FTS returns thin? Immediately retry with `mode="trigram"`
 
-The moment you get 0–2 results on something that *should* exist, re-issue the same queries with trigram mode. Literal token matches (hostnames, error messages, config values) are often indexed under different surrounding text.
+### 4. "No results" / user pushback → change strategy, do not give up
 
-### 4. "No results" is a signal to try harder — never the final answer
-
-Treat empty results + any user pushback as a cue to change strategy:
-- Switch to browse with a wider window
-- Add more angles or trigram
-- Check cross-agent history (filter by `agent` only when you specifically want to exclude other Rivet faces)
-
-Only after exhausting the memory tools should you consider external actions.
+Widen window, add angles/trigram, check other agents. Only then go external.
 
 ## Decision Flow
 
 ```
-User asks about past / "remember" / facts
+User asks about past / status / "remember" / facts
+          │
+          ▼
+Status / how's things / in flight?
+   YES → workboard browse (rule 0)
+   NO
           │
           ▼
 Mentions clear timeframe?
@@ -74,36 +66,25 @@ memory_browse          3× memory_search
     │                       │
     ▼                       ▼
 Still thin?             Thin results?
-    │                       │
-    ▼                       ▼
-Widen window           Retry with mode=trigram
-or raise limit             + FTS OR syntax
-    └───────────┬───────────┘
-                ▼
-User unhappy? → Change strategy again.
-Do not give up and probe externally yet.
+Widen / raise limit    Retry trigram + FTS
 ```
 
-## Grok Build Specific Tool Usage
+## Grok Build Tool Usage
 
-1. Call `search_tool` with a query like "memory" or "rivetos" to discover the exact qualified tool names (typically `rivetos__memory_search`, `rivetos__memory_browse`, `rivetos__memory_stats`).
-2. Then use `use_tool` with the fully-qualified names.
-3. For time-bounded questions, strongly prefer the `window=` parameter on browse when the server supports it.
+1. `search_tool` to discover qualified names (`rivetos__memory_browse`, etc.).
+2. Time-bounded → `window=` on browse.
+3. Status → rule 0 before `memory_stats`.
 
 ## Cross-Agent Reality
 
-Memory hits may be tagged with `agent = "rivet-claude"`, `"rivet-hermes"`, `"grok"`, etc. This is a feature. A question like "what did we decide about X" should surface the best answer regardless of which Rivet face originally did the work.
+Hits from `rivet-claude` / `rivet-hermes` / `grok` are equally valid. Filter by `agent` only when the user wants one lineage.
 
-Only filter by `agent` when the user explicitly wants the history from one specific lineage.
+## Why This Exists
 
-## Why This Exists (Case Study)
+2026-05-23 WAP-DHCP: keyword search returned nothing; `memory_browse` over the morning window recovered the full incident. 2026-08-25 status miss: `memory_stats` + stale `memory/*.md` buried a live Claude workboard (#545 merged, on-device validation).
 
-See the 2026-05-23 WAP-DHCP incident (documented in the Claude and Hermes versions of this skill). Multiple rounds of `memory_search` on topic keywords returned nothing. Only a forced `memory_browse` over the known morning window surfaced the full context (IP, MAC, exact misconfiguration, duplicate static lease).
+## Related
 
-This skill prevents repeating that expensive mistake.
-
-## Related Patterns
-
-- Write synonym-bridging memory entries when you discover facts through probing or user correction.
-- Use `memory_stats` to understand coverage and health.
-- Pre-compaction messages are captured in the Hermes lineage — they are high-value for long sessions.
+- `memory-today` / `memory-yesterday` — thin wrappers around rule 1 with the matching window.
+- `memory_stats` — coverage/health diagnostics, not a status briefing.
+- Pre-compaction Hermes captures are high-value for long sessions.

@@ -17,8 +17,9 @@ You are a specialized subagent whose only job is high-quality recall from the sh
 ## Operating Procedure
 
 1. **Clarify the query** if ambiguous, but prefer to start searching immediately.
-2. **Apply the discipline**:
-   - Time-bounded? → `memory_browse(window=...)` first.
+2. **Apply the discipline** (see `memory-recall` skill):
+   - Status / how's things? → workboard browse `last_24h` (rule 0).
+   - Time-bounded? → `memory_browse(window=...)` first (tools excluded by default).
    - Topic? → 3+ angled searches + trigram fallback.
 3. Synthesize across agents (`rivet-claude`, `rivet-hermes`, `grok`, etc.).
 4. Return a tight summary with the most relevant excerpts and the originating session/agent when possible.
