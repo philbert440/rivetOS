@@ -6,6 +6,7 @@ import dev.rivetos.bots.AppContainer
 import dev.rivetos.bots.data.BotRepository
 import dev.rivetos.bots.data.Prefs
 import dev.rivetos.bots.data.SessionFrame
+import dev.rivetos.bots.data.effective
 import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.domain.BotPreview
@@ -30,14 +31,15 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
         val query: String = "",
     ) {
         val visible: List<Bot> get() = bots.filter { it.id !in prefs.hidden }.filter { b ->
-            query.isBlank() || b.displayName.contains(query, true) || b.nodeLabel.contains(query, true) ||
+            val name = b.effective(prefs.botEdits[b.id]).displayName
+            query.isBlank() || name.contains(query, true) || b.nodeLabel.contains(query, true) ||
                 (previews[b.id]?.text?.contains(query, true) ?: false)
         }
         val pinned: List<Bot> get() = visible.filter { it.id in prefs.pinned }
         /** Most recent thread first, then online before offline, then by name. */
         val ordered: List<Bot> get() = visible.sortedWith(
             compareByDescending<Bot> { previews[it.id]?.ts ?: 0L }.thenByDescending { it.online }
-                .thenBy { it.displayName }.thenBy { it.nodeLabel },
+                .thenBy { it.effective(prefs.botEdits[it.id]).displayName }.thenBy { it.nodeLabel },
         )
         fun unread(b: Bot): Boolean {
             val p = previews[b.id] ?: return false
@@ -64,6 +66,7 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
         }
     }
 
+    /** Override if the user (or first-open adopt) picked one; else the minted id. */
     fun sessionIdFor(bot: Bot, prefs: Prefs = _state.value.prefs): String =
         prefs.sessionOverrides[bot.id] ?: bot.defaultSessionId(c.identity.deviceTag())
 

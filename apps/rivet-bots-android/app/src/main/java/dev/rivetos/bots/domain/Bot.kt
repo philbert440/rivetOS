@@ -58,7 +58,17 @@ data class BotPreview(
     val role: String,
 )
 
-enum class BlobShape { CIRCLE, DROP, TRIANGLE, HEX, SQUIRCLE, EGG, ARCH, CLOUD }
+enum class BlobShape {
+    CIRCLE, DROP, TRIANGLE, HEX, SQUIRCLE, EGG, ARCH, CLOUD;
+
+    companion object {
+        /** Shapes the editor offers. Identity looks may still use TRIANGLE / ARCH. */
+        val editable: List<BlobShape> = listOf(EGG, SQUIRCLE, CIRCLE, HEX, DROP, CLOUD)
+
+        fun fromName(raw: String?): BlobShape? =
+            raw?.let { v -> entries.find { it.name.equals(v, ignoreCase = true) } }
+    }
+}
 
 /** Colour + silhouette for a bot's face. Keyed by agent so the same agent looks the same on every node. */
 data class BotLook(val color: Long, val shape: BlobShape)

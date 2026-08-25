@@ -22,10 +22,15 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,10 +47,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import dev.rivetos.bots.data.NodeSession
 import dev.rivetos.bots.data.RoomState
 import dev.rivetos.bots.data.WsStatus
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.ui.ComputerTab
+import dev.rivetos.bots.ui.rememberEffective
 import dev.rivetos.bots.ui.ComputerViewModel
 import dev.rivetos.bots.ui.TermAttach
 import dev.rivetos.bots.ui.components.BotPill
@@ -53,6 +63,7 @@ import dev.rivetos.bots.ui.components.CircleIconButton
 import dev.rivetos.bots.ui.components.DesktopView
 import dev.rivetos.bots.ui.components.PulsingDot
 import dev.rivetos.bots.ui.components.TerminalView
+import dev.rivetos.bots.ui.components.TimeFmt
 import dev.rivetos.bots.ui.components.VSpace
 import dev.rivetos.bots.ui.theme.Dark
 import dev.rivetos.bots.ui.theme.DarkDim
@@ -75,10 +86,23 @@ private fun activityLabel(a: String): String = when (a) {
     else -> a.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 
-/** Grok Bot's "Computer" tab: Activity (den room), Terminal (PTY), Desktop (noVNC). */
+/** Grok Bot's "Computer" tab: Terminal (PTY), Activity (den room + node sessions), Desktop (noVNC). */
 @Composable
 fun ComputerScreen(vm: ComputerViewModel, bot: Bot, onBack: () -> Unit, onProfile: () -> Unit) {
     val s by vm.state.collectAsState()
+    var sessionsExpanded by remember { mutableStateOf(true) }
+    // Default tab is Terminal — attach even when we never go through selectTab.
+    LaunchedEffect(s.sessionReady, s.sessionId, s.tab) {
+        if (s.sessionReady && s.tab == ComputerTab.Terminal) vm.ensureTerm()
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_RESUME) vm.refreshSessions()
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
     Column(Modifier.fillMaxSize().background(Dark).systemBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, background = DarkPanel, tint = DarkInk)
@@ -94,7 +118,21 @@ fun ComputerScreen(vm: ComputerViewModel, bot: Bot, onBack: () -> Unit, onProfil
                 DesktopView(s.desktopUrl, Modifier.fillMaxSize())
             }
             when (s.tab) {
-                ComputerTab.Activity -> ActivityPane(s.room, s.loaded, s.error, bot)
+                ComputerTab.Activity -> ActivityPane(
+                    room = s.room,
+                    loaded = s.loaded,
+                    error = s.error,
+                    bot = bot,
+                    sessions = s.sessions,
+                    sessionsLoaded = s.sessionsLoaded,
+                    sessionsError = s.sessionsError,
+                    selectedId = s.sessionId,
+                    onSelect = vm::switchSession,
+                    onNew = vm::newSession,
+                    onRetrySessions = vm::refreshSessions,
+                    sessionsExpanded = sessionsExpanded,
+                    onSessionsExpandedChange = { sessionsExpanded = it },
+                )
                 ComputerTab.Terminal -> TerminalPane(vm, s.termStatus, s.termError, s.termRev)
                 ComputerTab.Desktop -> {
                     if (s.desktopUrl.isBlank()) SetDesktopUrl(onSave = vm::setDesktopUrl)
@@ -144,14 +182,29 @@ private fun TabStrip(selected: ComputerTab, onSelect: (ComputerTab) -> Unit) {
 }
 
 @Composable
-private fun ActivityPane(room: RoomState?, loaded: Boolean, error: String?, bot: Bot) {
+private fun ActivityPane(
+    room: RoomState?,
+    loaded: Boolean,
+    error: String?,
+    bot: Bot,
+    sessions: List<NodeSession>,
+    sessionsLoaded: Boolean,
+    sessionsError: String?,
+    selectedId: String,
+    onSelect: (String) -> Unit,
+    onNew: () -> Unit,
+    onRetrySessions: () -> Unit,
+    sessionsExpanded: Boolean,
+    onSessionsExpandedChange: (Boolean) -> Unit,
+) {
+    val shown = rememberEffective(bot)
     Column(Modifier.fillMaxSize().background(Dark).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         VSpace(8)
         Column(
             Modifier.fillMaxWidth().aspectRatio(16f / 10f).clip(RoundedCornerShape(14.dp)).background(DarkPanel).padding(16.dp),
         ) {
             Text(
-                room?.title?.ifBlank { null } ?: "${bot.displayName} on ${bot.nodeLabel}",
+                room?.title?.ifBlank { null } ?: "${shown.displayName} on ${bot.nodeLabel}",
                 color = DarkDim, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.weight(1f))
@@ -159,7 +212,7 @@ private fun ActivityPane(room: RoomState?, loaded: Boolean, error: String?, bot:
                 Text("Can't reach the computer: $error", color = Color(0xFFF08A8E), fontSize = 14.sp, lineHeight = 19.sp)
             } else if (room == null) {
                 Text(
-                    if (loaded) "Nothing on screen yet.\nSend ${bot.displayName} a message." else "Connecting…",
+                    if (loaded) "Nothing on screen yet.\nSend ${shown.displayName} a message." else "Connecting…",
                     color = DarkDim, fontSize = 15.sp, lineHeight = 20.sp,
                 )
             } else {
@@ -182,6 +235,18 @@ private fun ActivityPane(room: RoomState?, loaded: Boolean, error: String?, bot:
             }
             Spacer(Modifier.weight(1f))
         }
+
+        SessionList(
+            sessions = sessions,
+            sessionsLoaded = sessionsLoaded,
+            sessionsError = sessionsError,
+            selectedId = selectedId,
+            onSelect = onSelect,
+            onNew = onNew,
+            onRetry = onRetrySessions,
+            expanded = sessionsExpanded,
+            onExpandedChange = onSessionsExpandedChange,
+        )
 
         if (room != null) {
             if (room.tasks.isNotEmpty()) {
@@ -218,6 +283,137 @@ private fun ActivityPane(room: RoomState?, loaded: Boolean, error: String?, bot:
         }
         VSpace(32)
     }
+}
+
+@Composable
+private fun SessionList(
+    sessions: List<NodeSession>,
+    sessionsLoaded: Boolean,
+    sessionsError: String?,
+    selectedId: String,
+    onSelect: (String) -> Unit,
+    onNew: () -> Unit,
+    onRetry: () -> Unit,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+) {
+    VSpace(20)
+    Row(
+        Modifier.fillMaxWidth().clickable { onExpandedChange(!expanded) }.padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Sessions", color = DarkDim, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            when {
+                !sessionsLoaded && sessions.isEmpty() -> "…"
+                sessions.isEmpty() -> "none yet"
+                else -> "${sessions.size}"
+            },
+            color = DarkDim, fontSize = 12.sp,
+        )
+        Spacer(Modifier.weight(1f))
+        Icon(
+            if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+            contentDescription = if (expanded) "Collapse sessions" else "Expand sessions",
+            tint = DarkDim,
+            modifier = Modifier.size(18.dp),
+        )
+    }
+    if (!expanded) {
+        val current = sessions.firstOrNull { it.id == selectedId }
+        Text(
+            current?.name?.ifBlank { null } ?: selectedId.ifBlank { "No session selected" },
+            color = DarkInk, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        return
+    }
+    VSpace(8)
+    SessionRow(
+        title = "New session",
+        subtitle = "Start a fresh thread on this node",
+        selected = false,
+        leading = {
+            Icon(Icons.Default.Add, contentDescription = null, tint = Emerald, modifier = Modifier.size(16.dp))
+        },
+        onClick = onNew,
+    )
+    VSpace(4)
+    if (!sessionsLoaded && sessions.isEmpty() && sessionsError == null) {
+        Text("Loading…", color = DarkDim, fontSize = 13.sp, modifier = Modifier.padding(vertical = 8.dp))
+    } else if (sessionsError != null && sessions.isEmpty()) {
+        Text(
+            "Couldn't load sessions — tap to retry",
+            color = Color(0xFFF08A8E),
+            fontSize = 13.sp,
+            modifier = Modifier.padding(vertical = 8.dp).clickable(onClick = onRetry),
+        )
+    } else if (sessions.isEmpty()) {
+        Text("No sessions on this node yet.", color = DarkDim, fontSize = 13.sp, modifier = Modifier.padding(vertical = 8.dp))
+    } else {
+        if (sessionsError != null) {
+            Text(
+                "Couldn't load sessions — tap to retry",
+                color = Color(0xFFF08A8E),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(vertical = 8.dp).clickable(onClick = onRetry),
+            )
+        }
+        sessions.forEach { row ->
+            val selected = row.id == selectedId
+            SessionRow(
+                title = row.name.ifBlank { row.id },
+                subtitle = sessionSubtitle(row),
+                selected = selected,
+                leading = {
+                    Box(
+                        Modifier.size(8.dp).clip(CircleShape).background(if (selected) Emerald else DarkDim),
+                    )
+                },
+                onClick = { onSelect(row.id) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SessionRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    leading: @Composable () -> Unit,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) DarkPanel else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        leading()
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = DarkInk, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, color = DarkDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+private fun sessionSubtitle(row: NodeSession): String {
+    val count = when {
+        row.messages == 1 -> "1 message"
+        row.messages > 0 -> "${row.messages} messages"
+        else -> "No messages"
+    }
+    val at = TimeFmt.listTime(row.lastActive)
+    return if (at.isNotEmpty()) "$count · $at" else count
 }
 
 @Composable

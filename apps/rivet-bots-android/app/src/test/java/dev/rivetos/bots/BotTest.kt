@@ -1,6 +1,8 @@
 package dev.rivetos.bots
 
+import dev.rivetos.bots.data.BotEdit
 import dev.rivetos.bots.data.SessionMessage
+import dev.rivetos.bots.data.effective
 import dev.rivetos.bots.domain.BlobShape
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.domain.BotLooks
@@ -37,6 +39,55 @@ class BotTest {
         val server = listOf(SessionMessage("m1", "s", "user", "hi", 11), SessionMessage("m2", "s", "assistant", "yo", 20))
         val merged = mergeTranscript(server, listOf(local, promoted, liveOnly))
         assertEquals(listOf("m1", "m2", "m9"), merged.map { it.id })
+    }
+}
+
+class BotEditTest {
+    private val bot = Bot("claude", "ct115", "ct115", "https://192.0.2.10:5174", true)
+    private val identity = BotLooks.forAgent("claude")
+
+    @Test fun `name falls back to pretty agent when edit is missing or blank`() {
+        assertEquals("Claude", bot.effective(null).displayName)
+        assertEquals("Claude", bot.effective(BotEdit()).displayName)
+        assertEquals("Claude", bot.effective(BotEdit(name = "  ")).displayName)
+    }
+
+    @Test fun `custom name wins and trims`() {
+        assertEquals("Desk", bot.effective(BotEdit(name = "  Desk  ")).displayName)
+    }
+
+    @Test fun `color and shape fall back to identity look`() {
+        val shown = bot.effective(null)
+        assertEquals(identity.color, shown.look.color)
+        assertEquals(identity.shape, shown.look.shape)
+        val partial = bot.effective(BotEdit(color = 0xFF7C5CFF))
+        assertEquals(0xFF7C5CFF, partial.look.color)
+        assertEquals(identity.shape, partial.look.shape)
+    }
+
+    @Test fun `shape name is parsed and unknown values keep the default`() {
+        assertEquals(BlobShape.CLOUD, bot.effective(BotEdit(shape = "cloud")).look.shape)
+        assertEquals(identity.shape, bot.effective(BotEdit(shape = "not-a-shape")).look.shape)
+    }
+
+    @Test fun `clearing the edit is identity`() {
+        val edited = bot.effective(BotEdit(name = "Desk", color = 0xFF2F8CFF, shape = "HEX"))
+        assertEquals("Desk", edited.displayName)
+        assertEquals(0xFF2F8CFF, edited.look.color)
+        assertEquals(BlobShape.HEX, edited.look.shape)
+        val cleared = bot.effective(null)
+        assertEquals(bot.displayName, cleared.displayName)
+        assertEquals(identity, cleared.look)
+    }
+
+    @Test fun `rename does not change session id or bot id`() {
+        val before = bot.defaultSessionId("ab12cd")
+        val renamed = bot.effective(BotEdit(name = "Desk"))
+        assertEquals("Claude", bot.displayName)
+        assertEquals("Desk", renamed.displayName)
+        assertEquals("ct115/claude", bot.id)
+        assertEquals(before, bot.defaultSessionId("ab12cd"))
+        assertFalse(before.contains(':'))
     }
 }
 

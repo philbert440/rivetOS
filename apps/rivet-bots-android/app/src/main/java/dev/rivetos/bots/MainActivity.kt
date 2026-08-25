@@ -23,10 +23,12 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.rivetos.bots.ui.ChatViewModel
 import dev.rivetos.bots.ui.ComputerViewModel
 import dev.rivetos.bots.ui.HomeViewModel
+import dev.rivetos.bots.ui.LocalBotEdits
 import dev.rivetos.bots.ui.Nav
 import dev.rivetos.bots.ui.Screen
 import dev.rivetos.bots.ui.screens.ChatScreen
 import dev.rivetos.bots.ui.screens.ComputerScreen
+import dev.rivetos.bots.ui.screens.EditBotScreen
 import dev.rivetos.bots.ui.screens.EnrollScreen
 import dev.rivetos.bots.ui.screens.HomeScreen
 import dev.rivetos.bots.ui.screens.ProfileScreen
@@ -100,6 +102,7 @@ fun App(c: AppContainer) {
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
     LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
 
+    CompositionLocalProvider(LocalBotEdits provides p.botEdits) {
     when (val s = nav.current) {
         Screen.SignIn -> SignInScreen(onJoin = { nav.push(Screen.Enroll) })
         Screen.Enroll -> {
@@ -119,8 +122,12 @@ fun App(c: AppContainer) {
             val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
                 // `p` is the persisted prefs snapshot App is composed from — no in-memory copy, no async hop.
-                val sid = p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag())
+                val override = p.sessionOverrides[s.bot.id]
+                val sid = override ?: s.bot.defaultSessionId(c.identity.deviceTag())
                 val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot, sid) }
+                // Follow a persisted pick (Computer list / New session). Skip the minted
+                // fallback so we don't yank a first-open adopt back onto a phone-minted id.
+                LaunchedEffect(override) { if (override != null) vm.open(override) }
                 val cs by vm.state.collectAsState()
                 ChatScreen(
                     vm, s.bot,
@@ -153,7 +160,11 @@ fun App(c: AppContainer) {
                 onComputer = { nav.push(Screen.Computer(s.bot, p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag()))) },
                 onTogglePin = { homeVm.togglePin(s.bot) },
                 onToggleHide = { homeVm.setHidden(s.bot, s.bot.id !in hs.prefs.hidden) },
+                onEdit = { nav.push(Screen.EditBot(s.bot)) },
             )
+        }
+        is Screen.EditBot -> {
+            EditBotScreen(bot = s.bot, settings = c.settings, onBack = { nav.pop() })
         }
         Screen.Settings -> {
             val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
@@ -165,6 +176,7 @@ fun App(c: AppContainer) {
                 onRosterChanged = { homeVm.refresh() },
             )
         }
+    }
     }
 }
 

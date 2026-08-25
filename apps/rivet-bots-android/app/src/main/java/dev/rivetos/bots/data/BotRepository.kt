@@ -5,6 +5,7 @@ import dev.rivetos.bots.domain.BotPreview
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Roster discovery. One entry node answers `/api/mesh` (every node's gateway
@@ -83,6 +84,30 @@ class BotRepository(private val gateways: GatewayPool) {
                 BotPreview(text.ifBlank { "…" }, it.ts, it.role)
             }
     }
+
+    /**
+     * Session this bot should use. Fetches `/api/sessions` only when [override]
+     * is blank. A failed fetch returns [minted] without persist so the next
+     * open retries; an empty list persists [minted] (node really has none).
+     */
+    suspend fun resolveSessionId(bot: Bot, override: String?, minted: String): SessionPick {
+        val o = override?.trim().orEmpty()
+        if (o.isNotEmpty()) return SessionResolver.adopt(o, null, minted)
+        val fetched = withTimeoutOrNull(8_000) {
+            try {
+                gateways.get(bot.denUrl).sessions().sessions
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return SessionResolver.adopt(null, fetched, minted)
+    }
+
+    /** Gateway session list for the node that hosts [bot]. Throws on transport/auth errors. */
+    suspend fun nodeSessions(bot: Bot): List<SessionSummary> =
+        gateways.get(bot.denUrl).sessions().sessions
 
     companion object {
         fun hostOf(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)

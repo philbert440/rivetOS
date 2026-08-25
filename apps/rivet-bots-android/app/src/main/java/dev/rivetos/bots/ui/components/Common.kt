@@ -31,7 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.bots.domain.Bot
-import dev.rivetos.bots.domain.BotLooks
+import dev.rivetos.bots.ui.rememberEffective
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -68,6 +68,7 @@ fun CircleIconButton(
 /** Header pill: tiny face + bot name, tappable → profile. `dark` pins the Computer room's always-dark look. */
 @Composable
 fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
+    val shown = rememberEffective(bot)
     Row(
         Modifier
             .minimumInteractiveComponentSize()
@@ -77,10 +78,10 @@ fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
             .padding(start = 8.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        BlobAvatar(BotLooks.forAgent(bot.agent), 24.dp, eyes = true)
+        BlobAvatar(shown.look, 24.dp, eyes = true)
         Spacer(Modifier.width(8.dp))
         Text(
-            bot.displayName,
+            shown.displayName,
             color = if (dark) Color.White else MaterialTheme.colorScheme.onSurface,
             fontSize = 15.sp,
             fontWeight = FontWeight.Medium,

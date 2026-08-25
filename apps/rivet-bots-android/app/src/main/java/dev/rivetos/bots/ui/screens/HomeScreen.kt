@@ -58,9 +58,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.bots.domain.Bot
-import dev.rivetos.bots.domain.BotLooks
 import dev.rivetos.bots.ui.HomeViewModel
 import dev.rivetos.bots.ui.components.BlobAvatar
+import dev.rivetos.bots.ui.rememberEffective
 import dev.rivetos.bots.ui.components.CircleIconButton
 import dev.rivetos.bots.ui.components.TimeFmt
 import dev.rivetos.bots.ui.components.VSpace
@@ -131,13 +131,14 @@ fun HomeScreen(
                             horizontalArrangement = Arrangement.spacedBy(18.dp),
                         ) {
                             items(s.pinned, key = { "pin-" + it.id }) { b ->
+                                val shown = rememberEffective(b)
                                 Column(
                                     Modifier.width(84.dp).combinedClickable(onClick = { onOpenChat(b) }, onLongClick = { onOpenProfile(b) }),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    BlobAvatar(BotLooks.forAgent(b.agent), 68.dp, dimmed = !b.online)
+                                    BlobAvatar(shown.look, 68.dp, dimmed = !b.online)
                                     VSpace(6)
-                                    Text(b.displayName, color = cs.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(shown.displayName, color = cs.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -227,6 +228,7 @@ private fun BotRow(
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
+    val shown = rememberEffective(bot)
     val dismiss = rememberSwipeToDismissBoxState(
         confirmValueChange = { v ->
             when (v) {
@@ -259,11 +261,11 @@ private fun BotRow(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            BlobAvatar(BotLooks.forAgent(bot.agent), 46.dp, dimmed = !bot.online, online = bot.online)
+            BlobAvatar(shown.look, 46.dp, dimmed = !bot.online, online = bot.online)
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(bot.displayName, color = cs.onBackground, fontSize = 16.sp, fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold)
+                    Text(shown.displayName, color = cs.onBackground, fontSize = 16.sp, fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold)
                     Spacer(Modifier.width(6.dp))
                     Text(bot.nodeLabel, color = cs.onSurfaceVariant, fontSize = 12.sp)
                     if (pinned) { Spacer(Modifier.width(4.dp)); Icon(Icons.Default.PushPin, "Pinned", tint = cs.onSurfaceVariant, modifier = Modifier.size(12.dp)) }

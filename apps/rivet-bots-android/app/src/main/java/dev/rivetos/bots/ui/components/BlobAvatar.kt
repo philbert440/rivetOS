@@ -35,23 +35,26 @@ fun BlobAvatar(
     dimmed: Boolean = false,
     eyes: Boolean = true,
     online: Boolean? = null,
+    color: Long? = null,
+    shape: BlobShape? = null,
 ) {
+    val resolved = look.copy(color = color ?: look.color, shape = shape ?: look.shape)
     val ring = MaterialTheme.colorScheme.background
     val offline = MaterialTheme.colorScheme.onSurfaceVariant
     Canvas(modifier.size(size)) {
         val w = this.size.width
         val h = this.size.height
-        val color = Color(look.color).let { if (dimmed) it.copy(alpha = 0.45f) else it }
-        val path = blobPath(look.shape, w, h)
+        val color = Color(resolved.color).let { if (dimmed) it.copy(alpha = 0.45f) else it }
+        val path = blobPath(resolved.shape, w, h)
         drawPath(path, color)
-        if (look.shape == BlobShape.TRIANGLE || look.shape == BlobShape.HEX) {
+        if (resolved.shape == BlobShape.TRIANGLE || resolved.shape == BlobShape.HEX) {
             // Soften the corners: a fat stroke with a corner effect over the fill.
             drawPath(
                 path, color,
                 style = Stroke(width = w * 0.10f, pathEffect = PathEffect.cornerPathEffect(w * 0.18f)),
             )
         }
-        if (eyes) drawEyes(look.shape, w, h, if (dimmed) Paper.copy(alpha = 0.8f) else Paper)
+        if (eyes) drawEyes(resolved.shape, w, h, if (dimmed) Paper.copy(alpha = 0.8f) else Paper)
         if (online != null) {
             val r = w * 0.14f
             val c = Offset(w - r * 1.1f, h - r * 1.1f)
