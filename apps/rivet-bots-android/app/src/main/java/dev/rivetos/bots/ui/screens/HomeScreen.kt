@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SwipeToDismissBox
@@ -49,9 +51,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,12 +64,6 @@ import dev.rivetos.bots.ui.components.BlobAvatar
 import dev.rivetos.bots.ui.components.CircleIconButton
 import dev.rivetos.bots.ui.components.TimeFmt
 import dev.rivetos.bots.ui.components.VSpace
-import dev.rivetos.bots.ui.theme.Danger
-import dev.rivetos.bots.ui.theme.Emerald
-import dev.rivetos.bots.ui.theme.Ink
-import dev.rivetos.bots.ui.theme.InkDim
-import dev.rivetos.bots.ui.theme.Panel
-import dev.rivetos.bots.ui.theme.Paper
 
 /** Bot list — the Grok Bot home: header, pinned faces, then threads by recency. */
 @Composable
@@ -81,18 +77,21 @@ fun HomeScreen(
     var searching by remember { mutableStateOf(false) }
     var sheet by remember { mutableStateOf(false) }
     var addNode by remember { mutableStateOf(false) }
+    val cs = MaterialTheme.colorScheme
     LaunchedEffect(Unit) { if ((s.bots.isEmpty() || s.error != null) && !s.loading) vm.refresh() }
 
-    Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding()) {
+    Column(Modifier.fillMaxSize().background(cs.background).statusBarsPadding()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
-                Modifier.size(36.dp).clip(CircleShape).background(Ink).clickable(onClick = onSettings),
+                Modifier
+                    .minimumInteractiveComponentSize()
+                    .size(36.dp).clip(CircleShape).background(cs.inverseSurface).clickable(onClick = onSettings),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(s.prefs.handle.take(1).uppercase(), color = Paper, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                Text(s.prefs.handle.take(1).uppercase(), color = cs.inverseOnSurface, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             }
             Spacer(Modifier.weight(1f))
             CircleIconButton(if (searching) Icons.Default.Close else Icons.Default.Search, "Search", {
@@ -105,10 +104,10 @@ fun HomeScreen(
             Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                 BasicTextField(
                     value = s.query, onValueChange = vm::setQuery, singleLine = true,
-                    textStyle = TextStyle(color = Ink, fontSize = 15.sp),
-                    modifier = Modifier.fillMaxWidth().clip(CircleShape).background(Panel).padding(horizontal = 16.dp, vertical = 10.dp),
+                    textStyle = TextStyle(color = cs.onSurface, fontSize = 15.sp),
+                    modifier = Modifier.fillMaxWidth().clip(CircleShape).background(cs.surfaceVariant).padding(horizontal = 16.dp, vertical = 10.dp),
                     decorationBox = { inner ->
-                        if (s.query.isEmpty()) Text("Search bots and messages", color = InkDim, fontSize = 15.sp)
+                        if (s.query.isEmpty()) Text("Search bots and messages", color = cs.onSurfaceVariant, fontSize = 15.sp)
                         inner()
                     },
                 )
@@ -120,7 +119,7 @@ fun HomeScreen(
                 s.error?.let { err ->
                     item {
                         Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(err, color = Danger, fontSize = 13.sp)
+                            Text(err, color = cs.error, fontSize = 13.sp, textAlign = TextAlign.Center)
                             TextButton(onClick = vm::refresh) { Text("Retry") }
                         }
                     }
@@ -138,7 +137,7 @@ fun HomeScreen(
                                 ) {
                                     BlobAvatar(BotLooks.forAgent(b.agent), 68.dp, dimmed = !b.online)
                                     VSpace(6)
-                                    Text(b.displayName, color = InkDim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(b.displayName, color = cs.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -146,10 +145,22 @@ fun HomeScreen(
                 }
                 if (s.loadedOnce && !s.loading && s.ordered.isEmpty() && s.error == null) {
                     item {
-                        Text(
-                            if (s.query.isBlank()) "No bots found on the mesh yet." else "No matches.",
-                            color = InkDim, fontSize = 14.sp, modifier = Modifier.padding(24.dp),
-                        )
+                        Column(
+                            Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 48.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(
+                                if (s.query.isBlank()) "No bots found on the mesh yet." else "No matches.",
+                                color = cs.onSurfaceVariant, fontSize = 15.sp, textAlign = TextAlign.Center,
+                            )
+                            if (s.query.isBlank()) {
+                                VSpace(6)
+                                Text(
+                                    "Pull down to rescan, or add a node from +.",
+                                    color = cs.onSurfaceVariant, fontSize = 13.sp, textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
                     }
                 }
                 items(s.ordered, key = { it.id }) { b ->
@@ -163,6 +174,7 @@ fun HomeScreen(
                         onLongClick = { onOpenProfile(b) },
                         onPin = { vm.togglePin(b) },
                         onHide = { vm.setHidden(b, true) },
+                        modifier = Modifier.animateItem(),
                     )
                 }
             }
@@ -170,7 +182,7 @@ fun HomeScreen(
     }
 
     if (sheet) {
-        ModalBottomSheet(onDismissRequest = { sheet = false }, containerColor = Paper) {
+        ModalBottomSheet(onDismissRequest = { sheet = false }, containerColor = cs.surface) {
             ListItem(headlineContent = { Text("Rescan mesh") }, modifier = Modifier.clickable { sheet = false; vm.refresh() })
             ListItem(headlineContent = { Text("Add node by URL…") }, modifier = Modifier.clickable { sheet = false; addNode = true })
             if (s.prefs.hidden.isNotEmpty()) {
@@ -212,7 +224,9 @@ private fun BotRow(
     onLongClick: () -> Unit,
     onPin: () -> Unit,
     onHide: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val cs = MaterialTheme.colorScheme
     val dismiss = rememberSwipeToDismissBoxState(
         confirmValueChange = { v ->
             when (v) {
@@ -225,21 +239,22 @@ private fun BotRow(
     )
     SwipeToDismissBox(
         state = dismiss,
+        modifier = modifier,
         backgroundContent = {
             val toEnd = dismiss.dismissDirection == SwipeToDismissBoxValue.StartToEnd
             Row(
-                Modifier.fillMaxSize().background(if (toEnd) Emerald else InkDim).padding(horizontal = 24.dp),
+                Modifier.fillMaxSize().background(if (toEnd) cs.tertiary else cs.onSurfaceVariant).padding(horizontal = 24.dp),
                 horizontalArrangement = if (toEnd) Arrangement.Start else Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(if (toEnd) Icons.Default.PushPin else Icons.Default.VisibilityOff, null, tint = Paper)
+                Icon(if (toEnd) Icons.Default.PushPin else Icons.Default.VisibilityOff, null, tint = cs.inverseOnSurface)
                 Spacer(Modifier.width(8.dp))
-                Text(if (toEnd) (if (pinned) "Unpin" else "Pin") else "Hide", color = Paper, fontWeight = FontWeight.Medium)
+                Text(if (toEnd) (if (pinned) "Unpin" else "Pin") else "Hide", color = cs.inverseOnSurface, fontWeight = FontWeight.Medium)
             }
         },
     ) {
         Row(
-            Modifier.fillMaxWidth().background(Paper)
+            Modifier.fillMaxWidth().background(cs.background)
                 .combinedClickable(onClick = onClick, onLongClick = onLongClick)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -248,21 +263,21 @@ private fun BotRow(
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(bot.displayName, color = Ink, fontSize = 16.sp, fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold)
+                    Text(bot.displayName, color = cs.onBackground, fontSize = 16.sp, fontWeight = if (unread) FontWeight.Bold else FontWeight.SemiBold)
                     Spacer(Modifier.width(6.dp))
-                    Text(bot.nodeLabel, color = InkDim, fontSize = 12.sp)
-                    if (pinned) { Spacer(Modifier.width(4.dp)); Icon(Icons.Default.PushPin, null, tint = InkDim, modifier = Modifier.size(12.dp)) }
+                    Text(bot.nodeLabel, color = cs.onSurfaceVariant, fontSize = 12.sp)
+                    if (pinned) { Spacer(Modifier.width(4.dp)); Icon(Icons.Default.PushPin, "Pinned", tint = cs.onSurfaceVariant, modifier = Modifier.size(12.dp)) }
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(
                     preview.replace('\n', ' '),
-                    color = if (unread) Ink else InkDim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = if (unread) cs.onBackground else cs.onSurfaceVariant, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
             Spacer(Modifier.width(10.dp))
             Column(horizontalAlignment = Alignment.End) {
-                Text(time, color = InkDim, fontSize = 12.sp)
-                if (unread) { Spacer(Modifier.height(4.dp)); Box(Modifier.size(8.dp).clip(CircleShape).background(Emerald)) }
+                Text(time, color = cs.onSurfaceVariant, fontSize = 12.sp)
+                if (unread) { Spacer(Modifier.height(4.dp)); Box(Modifier.size(8.dp).clip(CircleShape).background(cs.tertiary)) }
             }
         }
     }

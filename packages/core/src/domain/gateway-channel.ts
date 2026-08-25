@@ -39,7 +39,7 @@ import type {
   StreamEvent,
   MessageUsage,
 } from '@rivetos/types'
-import { HARNESS_IDS } from '@rivetos/types'
+import { HARNESS_IDS, splitHermesReasoning } from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('GatewayChannel')
@@ -289,6 +289,13 @@ export function createGatewayChannel(opts?: {
   // Seamless-modes bridge state: per-session accumulated assistant text,
   // flushed to ONE message frame at the turn boundary (see bridgeAgentEvent).
   const pendingAssistant = new Map<string, string>()
+  /** Raw message.agent accumulation — split at emit/flush so a Hermes box
+   *  that arrives in chunks is stripped as a whole, not per delta. */
+  const pendingRaw = new Map<string, string>()
+  /** Previous emitted reasoning for delta calculation (B3). */
+  const pendingReasoning = new Map<string, string>()
+  /** Track harness per session for B5 scoping. */
+  const pendingHarness = new Map<string, string>()
   // Turn stats ride the FINAL message.agent block (Claude Code attaches them);
   // stash until the assistant turn is committed, then attach to the frame.
   const pendingStats = new Map<
@@ -667,7 +674,10 @@ export function createGatewayChannel(opts?: {
       const str = (k: string): string => (typeof ev[k] === 'string' ? ev[k] : '')
       const ts = typeof ev.ts === 'number' ? ev.ts : Date.now()
       const flushAssistant = (): void => {
-        const text = pendingAssistant.get(sid)
+        const raw = pendingRaw.get(sid) ?? pendingAssistant.get(sid)
+        pendingRaw.delete(sid)
+        const isHermes = pendingHarness.get(sid) === 'hermes'
+        const text = raw ? (isHermes ? splitHermesReasoning(raw).text : raw) : ''
         if (text) {
           const stats = pendingStats.get(sid)
           emitFrame({
@@ -683,8 +693,10 @@ export function createGatewayChannel(opts?: {
             ...(stats?.model ? { model: stats.model } : {}),
             ...(stats?.durationMs !== undefined ? { durationMs: stats.durationMs } : {}),
           })
-          pendingAssistant.delete(sid)
         }
+        pendingAssistant.delete(sid)
+        pendingReasoning.delete(sid)
+        pendingHarness.delete(sid)
         // clear stats on EVERY flush boundary, even with no committable text —
         // a stray stats-only event must never bleed into the next turn (grok
         // review).
@@ -716,9 +728,54 @@ export function createGatewayChannel(opts?: {
           break
         }
         case 'message.agent': {
-          // interim block: accumulate + stream (one committed bubble per turn)
-          pendingAssistant.set(sid, (pendingAssistant.get(sid) ?? '') + str('text'))
-          emitFrame({ kind: 'stream', session: sid, event: { type: 'text', content: str('text') } })
+          // interim block: accumulate + stream (one committed bubble per turn).
+          // Hermes TUI reasoning boxes ride this field — split them out so the
+          // live bubble and the committed row are the reply only.
+          const chunk = str('text')
+          const raw = (pendingRaw.get(sid) ?? '') + chunk
+          pendingRaw.set(sid, raw)
+          const isHermes = ev.harness === 'hermes'
+          if (isHermes && !pendingHarness.has(sid)) pendingHarness.set(sid, 'hermes')
+          const split = isHermes ? splitHermesReasoning(raw) : { reasoning: '', text: raw }
+          if (split.reasoning) {
+            const prevReasoning = pendingReasoning.get(sid) ?? ''
+            if (split.reasoning.startsWith(prevReasoning)) {
+              const reasoningDelta = split.reasoning.slice(prevReasoning.length)
+              if (reasoningDelta) {
+                emitFrame({
+                  kind: 'stream',
+                  session: sid,
+                  event: { type: 'reasoning', content: reasoningDelta },
+                })
+                pendingReasoning.set(sid, split.reasoning)
+              }
+            } else if (split.reasoning !== prevReasoning) {
+              emitFrame({
+                kind: 'stream',
+                session: sid,
+                event: { type: 'reasoning', content: split.reasoning },
+              })
+              pendingReasoning.set(sid, split.reasoning)
+            }
+          }
+          const prev = pendingAssistant.get(sid) ?? ''
+          if (split.text.startsWith(prev)) {
+            const delta = split.text.slice(prev.length)
+            if (delta) {
+              emitFrame({
+                kind: 'stream',
+                session: sid,
+                event: { type: 'text', content: delta },
+              })
+            }
+          } else if (split.text && split.text !== prev) {
+            emitFrame({
+              kind: 'stream',
+              session: sid,
+              event: { type: 'text', content: split.text },
+            })
+          }
+          pendingAssistant.set(sid, split.text)
           // the FINAL block of a turn may carry token stats (validated upstream
           // by parseEvent) — stash them for the flush that commits this turn.
           if (

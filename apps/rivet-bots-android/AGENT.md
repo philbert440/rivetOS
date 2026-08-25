@@ -60,6 +60,13 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 - `GET /api/sessions` omits sessions with zero messages — expected; previews come from
   `/api/sessions/:id/messages` per bot.
 
+## Hermes reasoning box (2026-08-24)
+
+Hermes TUI paints `┌─ Reasoning ──┐` plus the thinking text into `assistant_response`.
+The den hook, gateway bridge, harness transcript read, and this app all strip it
+(`splitHermesReasoning` / `HermesReasoning.kt`). Live stream shows `Thinking…`; the
+bubble is the reply only. Already-stored boxed rows are cleaned on display.
+
 ## Open items / next
 
 1. **Physical-device smoke** (emulator pass is done): install the staged debug APK from the adb host,
@@ -91,3 +98,11 @@ all-sessions WS → Computer screen shows the (empty) room. Cold claude-cli spaw
 - `EncryptedSharedPreferences` is deprecated upstream but is what the sibling Hub app uses; swap for a
   Keystore-wrapped blob when androidx ships the replacement.
 - Session ids must not contain `:` (the gateway treats `harness:…` as a canonical SessionId).
+
+## Computer tabs (Activity / Terminal / Desktop) — 2026-08-24
+
+`ComputerScreen` is three tabs. Public entry is unchanged: `ComputerScreen(vm, bot, onBack, onProfile)`.
+
+- **Activity** — existing den RoomState body (bezel + plan + den `term` tail + last said).
+- **Terminal** — spawn-or-get `POST /api/terminal` with `{session, cols, rows}` then attach `WS /api/terminal/ws?id=`. Query params verified in den-server `term/ws.ts`: `id` or `session`. Framing: JSON hello → one binary scrollback → live binary → JSON exit. Client sends binary keystrokes and JSON `{type:resize}`; never `{type:kill}` (detach on leave). Dual-path mTLS via `TermWs` (`data/TermClient.kt`) using `Gateway.clients()`. Pure-Kotlin VT in `ui/term/AnsiTerminal.kt` (SGR 16/256/truecolor + bold, CR/LF/BS/TAB, ED/EL, CUP/CUU/CUD/CUF/CUB). OSC 10/11/12 color queries stripped; reports never forwarded. 5k-line scrollback, pinch font, tap IME, Esc/Tab/Ctrl+C/arrows.
+- **Desktop** — `Prefs.desktopUrl` (`Settings.setDesktopUrl`). Unset → inline field, placeholder `http://192.0.2.30:6080/vnc.html`. WebView (JS, wide viewport) stays composed at full size under the other tabs so noVNC survives switches; navigation locked to that host. Manifest `usesCleartextTraffic=true` is temporary until the desktop is behind TLS.

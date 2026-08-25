@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,22 +51,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.rivetos.bots.data.SessionMessage
 import dev.rivetos.bots.data.WsStatus
+import dev.rivetos.bots.data.visibleAssistantText
 import dev.rivetos.bots.domain.Bot
 import dev.rivetos.bots.ui.ChatViewModel
 import dev.rivetos.bots.ui.components.BotPill
 import dev.rivetos.bots.ui.components.CircleIconButton
 import dev.rivetos.bots.ui.components.PulsingDot
 import dev.rivetos.bots.ui.components.TimeFmt
-import dev.rivetos.bots.ui.theme.Danger
-import dev.rivetos.bots.ui.theme.Ink
-import dev.rivetos.bots.ui.theme.InkDim
-import dev.rivetos.bots.ui.theme.Panel
-import dev.rivetos.bots.ui.theme.Paper
 
 @Composable
 fun ChatScreen(
@@ -78,6 +76,7 @@ fun ChatScreen(
     var draft by remember(s.sessionId) { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     val list = rememberLazyListState()
+    val cs = MaterialTheme.colorScheme
 
     // Bottom-anchored list (reverseLayout: newest row is index 0), so a keyboard
     // opening keeps the tail in view by construction. `stick` follows new rows
@@ -92,7 +91,7 @@ fun ChatScreen(
         if (stick && !s.loading) list.scrollToItem(0)
     }
 
-    Column(Modifier.fillMaxSize().background(Paper).statusBarsPadding().navigationBarsPadding().imePadding()) {
+    Column(Modifier.fillMaxSize().background(cs.background).statusBarsPadding().navigationBarsPadding().imePadding()) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -123,30 +122,39 @@ fun ChatScreen(
                 item(key = "ws") {
                     Text(
                         if (s.ws == WsStatus.CONNECTING) "Connecting…" else "Reconnecting to ${bot.nodeLabel}…",
-                        color = InkDim, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        color = cs.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        textAlign = TextAlign.Center,
                     )
                 }
             }
             s.error?.let { err ->
                 item(key = "error") {
-                    Text(err, color = Danger, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp).clickable { vm.clearError() })
+                    Text(err, color = cs.error, fontSize = 12.sp, modifier = Modifier.padding(vertical = 6.dp).clickable { vm.clearError() })
                 }
             }
             if (s.working != null) {
                 item(key = "working") {
                     Row(
-                        Modifier.padding(vertical = 6.dp).clip(CircleShape).background(Panel).padding(horizontal = 12.dp, vertical = 7.dp),
+                        Modifier.padding(vertical = 6.dp).clip(CircleShape).background(cs.surfaceVariant).padding(horizontal = 12.dp, vertical = 7.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         PulsingDot()
                         Spacer(Modifier.width(8.dp))
-                        Text(s.working ?: "", color = InkDim, fontSize = 13.sp)
+                        Text(s.working ?: "", color = cs.onSurfaceVariant, fontSize = 13.sp)
                     }
                 }
             }
             if (s.pendingText.isNotEmpty()) {
                 item(key = "pending") { Bubble(SessionMessage(id = "pending", role = "assistant", text = s.pendingText, ts = 0)) }
+            }
+            if (s.messages.isEmpty() && s.pendingText.isEmpty() && s.working == null && s.error == null && !s.loading) {
+                item(key = "empty") {
+                    Text(
+                        "Say hello to ${bot.displayName}.",
+                        color = cs.onSurfaceVariant, fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp), textAlign = TextAlign.Center,
+                    )
+                }
             }
             val msgs = s.messages
             itemsIndexed(msgs.asReversed(), key = { _, m -> m.id }) { rev, m ->
@@ -157,8 +165,8 @@ fun ChatScreen(
                 Column {
                     if (showDivider && m.ts > 0) {
                         Text(
-                            TimeFmt.divider(m.ts), color = InkDim, fontSize = 12.sp,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            TimeFmt.divider(m.ts), color = cs.onSurfaceVariant, fontSize = 12.sp,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp), textAlign = TextAlign.Center,
                         )
                     }
                     Bubble(m)
@@ -181,16 +189,17 @@ fun ChatScreen(
 
 @Composable
 private fun Bubble(m: SessionMessage) {
+    val cs = MaterialTheme.colorScheme
     val user = m.role == "user"
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
         Surface(
-            color = if (user) Ink else Panel,
+            color = if (user) cs.inverseSurface else cs.surfaceVariant,
             shape = RoundedCornerShape(18.dp),
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
             Text(
-                m.text.ifBlank { if (user) "" else "…" },
-                color = if (user) Paper else Ink,
+                (if (user) m.text else visibleAssistantText(m.text)).ifBlank { if (user) "" else "…" },
+                color = if (user) cs.inverseOnSurface else cs.onSurface,
                 fontSize = 16.sp, lineHeight = 21.sp,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
             )
@@ -200,11 +209,11 @@ private fun Bubble(m: SessionMessage) {
             Row(Modifier.padding(top = 4.dp, start = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 tools.map { it.name.substringAfterLast(':') }.distinct().take(5).forEach { name ->
                     Text(
-                        name, color = InkDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.clip(CircleShape).background(Paper).padding(horizontal = 7.dp, vertical = 2.dp),
+                        name, color = cs.onSurfaceVariant, fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.clip(CircleShape).background(cs.background).padding(horizontal = 7.dp, vertical = 2.dp),
                     )
                 }
-                if (tools.size > 5) Text("+${tools.size - 5}", color = InkDim, fontSize = 10.sp)
+                if (tools.size > 5) Text("+${tools.size - 5}", color = cs.onSurfaceVariant, fontSize = 10.sp)
             }
         }
     }
@@ -220,6 +229,7 @@ private fun Composer(
     onComputer: () -> Unit,
     canSend: Boolean,
 ) {
+    val cs = MaterialTheme.colorScheme
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var plusMenu by remember { mutableStateOf(false) }
     Row(
@@ -227,7 +237,7 @@ private fun Composer(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box {
-            CircleIconButton(Icons.Default.Add, "Actions", { plusMenu = true }, background = Paper, tint = Ink, size = 36)
+            CircleIconButton(Icons.Default.Add, "Actions", { plusMenu = true }, background = cs.background, tint = cs.onSurface, size = 36)
             DropdownMenu(expanded = plusMenu, onDismissRequest = { plusMenu = false }) {
                 DropdownMenuItem(text = { Text("New conversation") }, onClick = { plusMenu = false; onNewConversation() })
                 DropdownMenuItem(text = { Text("Watch the computer") }, onClick = { plusMenu = false; onComputer() })
@@ -235,32 +245,38 @@ private fun Composer(
         }
         Spacer(Modifier.width(8.dp))
         Row(
-            Modifier.weight(1f).clip(CircleShape).background(Paper)
-                .padding(1.dp).clip(CircleShape).background(Panel)
+            Modifier.weight(1f).clip(CircleShape).background(cs.outline)
+                .padding(1.dp).clip(CircleShape).background(cs.surfaceVariant)
                 .padding(start = 16.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             BasicTextField(
                 value = value, onValueChange = onValue, maxLines = 5,
-                textStyle = TextStyle(color = Ink, fontSize = 16.sp),
+                textStyle = TextStyle(color = cs.onSurface, fontSize = 16.sp),
                 modifier = Modifier.weight(1f).padding(vertical = 6.dp),
                 decorationBox = { inner ->
-                    if (value.isEmpty()) Text(placeholder, color = InkDim, fontSize = 16.sp)
+                    if (value.isEmpty()) Text(placeholder, color = cs.onSurfaceVariant, fontSize = 16.sp)
                     inner()
                 },
             )
             Spacer(Modifier.width(6.dp))
             if (value.isBlank()) {
-                Icon(
-                    Icons.Default.Mic, "Voice", tint = InkDim,
-                    modifier = Modifier.size(22.dp).padding(end = 2.dp).clickable {
-                        android.widget.Toast.makeText(ctx, "Dictation isn't wired up yet", android.widget.Toast.LENGTH_SHORT).show()
-                    },
-                )
+                Box(
+                    Modifier
+                        .minimumInteractiveComponentSize()
+                        .clip(CircleShape)
+                        .clickable {
+                            android.widget.Toast.makeText(ctx, "Dictation isn't wired up yet", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        .padding(8.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Default.Mic, "Voice", tint = cs.onSurfaceVariant, modifier = Modifier.size(22.dp))
+                }
             } else {
                 CircleIconButton(
                     Icons.Default.ArrowUpward, if (canSend) "Send" else "Waiting for reply",
-                    { if (canSend) onSend() }, background = if (canSend) Ink else InkDim, tint = Paper, size = 30,
+                    { if (canSend) onSend() }, background = if (canSend) cs.inverseSurface else cs.onSurfaceVariant, tint = cs.inverseOnSurface, size = 30,
                 )
             }
         }

@@ -205,6 +205,8 @@ export {
   getToolResultImages,
   toolResultHasImages,
 } from './utils.js'
+export { splitHermesReasoning, stripAnsi } from './hermes-reasoning.js'
+export type { HermesSplit } from './hermes-reasoning.js'
 export { MODEL_DEFAULTS } from './defaults.js'
 export type { ProviderName } from './defaults.js'
 export type { GatewayRoute, GatewayHandle } from './gateway.js'
