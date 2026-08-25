@@ -23,6 +23,9 @@ import { classifyUnembeddable } from '../classify.js'
 import { embedBatch } from '../embed-api.js'
 import { composeMessageEmbedText } from '../compose-embed-text.js'
 
+/** Must stay in lockstep with enqueue-unembedded's failed-null heal. */
+export const NULL_EMBED_ERROR = 'Embedding returned null'
+
 export interface EmbedTargetPayload {
   targetTable: 'ros_messages' | 'ros_summaries' | 'ros_wiki_topics'
   targetId: string
@@ -120,20 +123,21 @@ export const embedTargetTask: Task = async (payload, helpers) => {
     }
 
     if (!pooled) {
-      // Throw → graphile-worker will retry with backoff (max_attempts in trigger config).
-      // After max_attempts the job remains stuck and we mark embed_status='failed'.
+      // Null vectors are almost always a transient API blip (429/5xx after
+      // retries, empty payload) — classifyUnembeddable already filtered poison
+      // content. Do NOT set embed_status='failed': that permanently excludes
+      // the row from enqueue-unembedded, which is how live jobs sat dead after
+      // a 2026-08-23 API incident.
+      // Throw so graphile retries this job; if it still dies, the 10-min
+      // sweep re-enqueues because embed_status stays non-terminal.
       await client.query(
         `UPDATE ${targetTable}
             SET embed_failures = COALESCE(embed_failures, 0) + 1,
-                embed_error = $1,
-                embed_status = CASE
-                  WHEN COALESCE(embed_failures, 0) + 1 >= $2 THEN 'failed'
-                  ELSE embed_status
-                END
-          WHERE ${spec.idCol} = $3`,
-        ['Embedding returned null', config.maxFailures, targetId],
+                embed_error = $1
+          WHERE ${spec.idCol} = $2`,
+        [NULL_EMBED_ERROR, targetId],
       )
-      throw new Error('Embedding returned null')
+      throw new Error(NULL_EMBED_ERROR)
     }
 
     const truncatedVec =

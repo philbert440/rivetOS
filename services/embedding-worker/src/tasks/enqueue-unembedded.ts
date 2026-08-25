@@ -12,9 +12,10 @@
  * up to sweepLimit rows per table that:
  *
  *   - have no embedding yet (embedding IS NULL), AND
- *   - are not terminal: embed_status IS NULL — i.e. NOT 'unembeddable' (skipped
- *     by design) and NOT 'failed' (gave up after maxFailures; needs a manual
- *     reset, not endless re-churn), AND
+ *   - are not terminal: embed_status IS NULL (NOT 'unembeddable'). Rows marked
+ *     'failed' because 'Embedding returned null' are healed first — that error
+ *     is a transient API blip, not poison content, and used to orphan the row
+ *     from this sweep. Other 'failed' reasons still need a manual reset, AND
  *   - carry embeddable text (length > 20). For ros_messages that means content
  *     OR tool_result — tool rows store the real payload in tool_result while
  *     content is often a short `[tool] name` placeholder (FTS parity / #440).
@@ -26,6 +27,21 @@
 
 import type { Task } from 'graphile-worker'
 import { config } from '../config.js'
+import { NULL_EMBED_ERROR } from './embed-target.js'
+
+/**
+ * Re-open rows that were permanently excluded because a transient null vector
+ * was recorded as embed_status='failed'. Exported for unit tests.
+ */
+export function healFailedNullSql(table: string): string {
+  return `UPDATE ${table}
+             SET embed_status = NULL,
+                 embed_error = NULL,
+                 embed_failures = 0
+           WHERE embedding IS NULL
+             AND embed_status = 'failed'
+             AND embed_error = '${NULL_EMBED_ERROR}'`
+}
 
 /** Per-table column spec — wiki topics key on slug and embed search_text. */
 const TABLES = [
@@ -60,15 +76,18 @@ export const enqueueUnembeddedTask: Task = async (_payload, helpers) => {
 
     for (const { table, idCol, lengthPredicate } of TABLES) {
       const { rows } = await client
-        .query<UnembeddedRow>(
-          `SELECT ${idCol}::text AS id
+        .query<UnembeddedRow>(healFailedNullSql(table))
+        .then(async () =>
+          client.query<UnembeddedRow>(
+            `SELECT ${idCol}::text AS id
              FROM ${table}
             WHERE embedding IS NULL
               AND embed_status IS NULL
               AND ${lengthPredicate}
             ORDER BY created_at DESC
             LIMIT $1`,
-          [config.sweepLimit],
+            [config.sweepLimit],
+          ),
         )
         // ros_wiki_topics predates some deploys (0005) — missing table is
         // an empty sweep, not a crash.

@@ -11,7 +11,8 @@ vi.mock('../config.js', () => ({
   },
 }))
 
-import { enqueueUnembeddedTask } from './enqueue-unembedded.js'
+import { enqueueUnembeddedTask, healFailedNullSql } from './enqueue-unembedded.js'
+import { NULL_EMBED_ERROR } from './embed-target.js'
 
 interface MockHelpers {
   withPgClient: (
@@ -29,6 +30,9 @@ function makeHelpers(byTable: Record<string, Array<{ id: string }>>): MockHelper
       : sql.includes('ros_wiki_topics')
         ? 'ros_wiki_topics'
         : 'ros_summaries'
+    if (/^\s*UPDATE/i.test(sql)) {
+      return { rows: [], rowCount: 0 }
+    }
     expect(params).toEqual([200]) // sweepLimit threaded as $1
     return { rows: byTable[table] ?? [], rowCount: (byTable[table] ?? []).length }
   })
@@ -62,6 +66,37 @@ describe('enqueue-unembedded', () => {
     expect(helpers.logger.info).toHaveBeenCalledWith(expect.stringContaining('re-enqueued 3'))
   })
 
+  it('heals failed-null rows so a recovered embed API can pick them up', () => {
+    const sql = healFailedNullSql('ros_messages')
+    expect(sql).toMatch(/UPDATE ros_messages/)
+    expect(sql).toMatch(/embed_status = NULL/)
+    expect(sql).toMatch(/embed_failures = 0/)
+    expect(sql).toContain(NULL_EMBED_ERROR)
+  })
+
+  it('runs the failed-null heal UPDATE before the unembedded SELECT', async () => {
+    const sqls: string[] = []
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      sqls.push(sql)
+      if (/^\s*UPDATE/i.test(sql)) return { rows: [], rowCount: 0 }
+      expect(params).toEqual([200])
+      return { rows: [], rowCount: 0 }
+    })
+    const helpers = {
+      withPgClient: async (fn: (c: { query: typeof query }) => Promise<void>) => fn({ query }),
+      addJob: vi.fn(async () => undefined),
+      logger: { info: vi.fn() },
+    }
+
+    await enqueueUnembeddedTask({} as any, helpers as any)
+
+    const msgSqls = sqls.filter((s) => s.includes('ros_messages'))
+    expect(msgSqls.length).toBeGreaterThanOrEqual(2)
+    expect(msgSqls[0]).toMatch(/^\s*UPDATE/i)
+    expect(msgSqls[0]).toContain(NULL_EMBED_ERROR)
+    expect(msgSqls[1]).toMatch(/SELECT/)
+  })
+
   it('message sweep SQL includes tool_result eligibility (not content alone)', async () => {
     const sqls: string[] = []
     const query = vi.fn(async (sql: string) => {
@@ -76,7 +111,7 @@ describe('enqueue-unembedded', () => {
 
     await enqueueUnembeddedTask({} as any, helpers as any)
 
-    const msgSql = sqls.find((s) => s.includes('ros_messages'))
+    const msgSql = sqls.find((s) => s.includes('ros_messages') && /SELECT/i.test(s))
     expect(msgSql).toBeDefined()
     expect(msgSql).toMatch(/tool_result/)
     expect(msgSql).toMatch(/LENGTH\(tool_result\) > 20/)
