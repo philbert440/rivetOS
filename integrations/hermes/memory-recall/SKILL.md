@@ -1,8 +1,8 @@
 ---
 name: memory-recall
-description: 'Auto-load this when the user asks about anything from a past conversation or a specific time window — "what did we do this morning / yesterday / today / recently / earlier / last week", "check memory", "do you remember", "have we seen this before", "what was that thing we tried", "did we already…", "what was the IP/MAC/password of X". Also use for any "where does X live" / "what is the IP of Y" infra lookup. Encodes the rivet-memory recall discipline — browse-with-date-range FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions. Companion to the rivet_memory Hermes memory provider.'
-tags: [rivetos, memory, recall, discipline, rivet-memory]
-version: 0.3.0
+description: 'Auto-load this when the user asks about anything from a past conversation, a specific time window, or current status — "what did we do this morning / yesterday / today / recently", "how\'s everything looking", "what\'s in flight", "check memory", "do you remember", "have we seen this before", "what is the IP of X". Encodes the rivet-memory recall discipline — workboard for status, browse-with-window FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions. Companion to the rivet_memory Hermes memory provider.'
+tags: [rivetos, memory, recall, discipline, rivet-memory, status]
+version: 0.3.1
 ---
 
 # Memory Recall Discipline (Hermes)
@@ -22,7 +22,15 @@ right reflex.
 Read the case study at the bottom before you forget why these rules are
 non-negotiable.
 
-## The four rules
+## The rules
+
+### 0. Status / "how's things" / "what's in flight"? → Workboard first
+
+Prompts like "how's everything looking", "status", "catch me up" mean **current work across agents**, not `rivet_memory_stats` or box health.
+
+1. `rivet_memory_browse(window="last_24h")` — read user/assistant closers across agents.
+2. Treat workspace `memory/*.md` notes as hints to verify, never as current state.
+3. Host/`rivet_memory_stats` only as a secondary note when relevant.
 
 ### 1. Time-bounded question? → `rivet_memory_browse` with `window=...`. FIRST.
 
@@ -64,6 +72,9 @@ hits surface.
 older end, raise `limit` (max 200), or narrow with `window`/`since`/`before`.
 Pair with a topic filter only if the window has more than ~30 entries — never
 as the first cut.
+
+**Default browse excludes `role=tool`.** Pass `include_tools=true` only when
+debugging capture, harness wiring, or tool failures.
 
 ### 2. Topic question, no timeframe? → multi-angle `rivet_memory_search`, three queries minimum.
 
@@ -120,7 +131,12 @@ faces. Only filter by `agent="rivet-hermes"` when the user explicitly means
 ## Decision flow
 
 ```
-User question about past work or facts
+User question about past / status / facts
+         │
+         ▼
+Status / how's things / in flight?
+   YES → workboard browse last_24h (rule 0)
+   NO
          │
          ▼
 Does it mention a timeframe?

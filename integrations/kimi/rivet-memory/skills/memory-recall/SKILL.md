@@ -1,8 +1,8 @@
 ---
 name: memory-recall
-description: 'Auto-activate on any question about past work, decisions, commands, or facts ("what did we do this morning/yesterday/today", "remember when", "have we seen this error before", "what is the IP of X", "where does Y live"). Encodes the optimal RivetOS memory recall discipline across all agents (rivet-claude, rivet-hermes, rivet-grok, rivet-kimi). Prefers time-bounded browse with window= first, multi-angle search + trigram fallback, and cross-agent awareness.'
-tags: [rivetos, memory, recall, discipline, rivet-memory]
-version: 0.2.0
+description: 'Auto-activate on any question about past work, decisions, commands, facts, or current status ("what did we do this morning/yesterday/today", "how\'s everything looking", "what\'s in flight", "remember when", "have we seen this error before", "what is the IP of X"). Encodes RivetOS recall discipline across all agents (rivet-claude, rivet-hermes, rivet-grok, rivet-kimi): status/workboard protocol, time-bounded browse first, multi-angle search + trigram fallback.'
+tags: [rivetos, memory, recall, discipline, rivet-memory, status]
+version: 0.2.1
 ---
 
 # RivetOS Memory Recall Discipline (Kimi Code CLI)
@@ -16,6 +16,14 @@ search when a chronological browse of a known time window is the correct reflex.
 This skill exists so you reach for the right tool on the first try.
 
 ## The Core Rules (Best of Hermes + Claude + Grok)
+
+### 0. Status / "how's things" / "what's in flight"? → Workboard first
+
+Prompts like "how's everything looking", "status", "catch me up" mean **current work across agents**, not `memory_stats` or box health.
+
+1. `memory_browse(window="last_24h")` — read user/assistant closers across agents.
+2. Treat workspace `memory/*.md` notes as hints to verify, never as current state.
+3. Host/`memory_stats` only as a secondary note when relevant.
 
 ### 1. Time-bounded question? → `memory_browse` with `window=` FIRST
 
@@ -35,6 +43,9 @@ without you doing math.
 
 **Important**: After a browse that hits the limit, flip `order="asc"` or increase
 `limit` (max usually 200) instead of assuming you have everything.
+
+**Default browse excludes `role=tool`.** Pass `include_tools=true` only when debugging
+capture, harness wiring, or tool failures.
 
 ### 2. Topic / lookup question (no clear timeframe)? → Multi-angle search, minimum 3 queries
 
@@ -66,7 +77,12 @@ Only after exhausting the memory tools should you consider external actions.
 ## Decision Flow
 
 ```
-User asks about past / "remember" / facts
+User asks about past / status / "remember" / facts
+          │
+          ▼
+Status / how's things / in flight?
+   YES → workboard browse (rule 0)
+   NO
           │
           ▼
 Mentions clear timeframe?

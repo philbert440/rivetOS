@@ -92,7 +92,8 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
       name: `${prefix}memory_browse`,
       description:
         'Browse RivetOS conversation messages chronologically. Unlike memory_search ' +
-        '(which ranks by relevance), this returns messages in time order. Use to ' +
+        '(which ranks by relevance), this returns messages in time order. By default ' +
+        'excludes role=tool rows (pass include_tools=true to see tool calls/results). Use to ' +
         'review what happened in a session, catch up on recent activity, or read a ' +
         'specific conversation by ID. For time-bounded questions ("today", "yesterday", ' +
         '"this morning"), prefer window= over raw since/before so local midnights convert correctly to UTC. ' +
@@ -206,6 +207,12 @@ export const memoryBrowseInputSchema = {
       'Shortcut for time-bounded windows — resolves to (since, before) in the SERVER local timezone, no TZ math required. last_7d/last_14d are rolling (prefer over this_week early in the week). Used only when neither since nor before is provided.',
     ),
   agent: z.string().optional().describe('Filter by agent (opus, grok, etc.)'),
+  include_tools: z
+    .boolean()
+    .optional()
+    .describe(
+      'Include role=tool rows (tool calls/results). Default false — browse returns user/assistant/system only so a limit=50 window is not flooded by tool noise. Set true when debugging capture, harness wiring, or tool failures.',
+    ),
   limit: z
     .number()
     .int()

@@ -14,9 +14,15 @@ This memory contains every meaningful interaction across all Rivet agents (`rive
 
 ### Core Memory Discipline (Non-Negotiable)
 
+0. **Status / "how's things" / "what's in flight"?** → Workboard first.
+   - `memory_browse(window="last_24h")` across agents; lead with user/assistant closers.
+   - Do **not** lead with `memory_stats`, host uptime, or `workspace/memory/*.md` (those go stale).
+   - Full protocol lives in the `memory-recall` skill (rule 0).
+
 1. **Time-bounded question?** → Use `memory_browse` with a `window=` (or explicit date range) **first**.
    - "What did we do this morning / yesterday / today / last week?"
    - Never start with `memory_search` on these. Search is relevance-ranked and often returns empty even when the information exists.
+   - Browse **excludes tool rows by default** (`include_tools=true` only when debugging tools/capture).
 
 2. **Topic / lookup question?** → Run **multiple angled searches**.
    - Vary by service, host, subnet, role, error string, etc.
@@ -34,11 +40,12 @@ This memory contains every meaningful interaction across all Rivet agents (`rive
 
 For most recall tasks:
 1. Start with `search_tool` to discover the exact qualified tool names (e.g. `rivetos__memory_browse`).
-2. If the question mentions a timeframe → call `memory_browse` (with `window=` when available).
-3. Otherwise → run 2–3 `memory_search` calls from different angles.
-4. If results are weak → immediately retry with `mode="trigram"`.
+2. If status / in-flight → workboard browse (`last_24h`) per rule 0.
+3. If the question mentions a timeframe → call `memory_browse` (with `window=` when available).
+4. Otherwise → run 2–3 `memory_search` calls from different angles.
+5. If results are weak → immediately retry with `mode="trigram"`.
 
-The `memory-recall` skill encodes this discipline in detail. Let it activate when the user asks about the past.
+The `memory-recall` skill encodes this discipline in detail. Let it activate on past **or** current-status questions.
 
 ## Cross-Agent Awareness
 

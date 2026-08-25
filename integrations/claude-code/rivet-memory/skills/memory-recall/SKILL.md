@@ -1,7 +1,7 @@
 ---
 name: memory-recall
-description: 'This skill should be used whenever the user asks about something that happened in a past conversation or a specific time window — "what did we do this morning / yesterday / today / recently / earlier / last week", "check memory", "do you remember", "have we seen this before", "what was that thing we tried", "did we already…", "what was the IP/MAC/password of X". Also use for any "where does X live" / "what is the IP of Y" infra lookup. Encodes the rivet-memory recall discipline — browse-with-date-range FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions.'
-version: 0.2.0
+description: 'This skill should be used whenever the user asks about something that happened in a past conversation, a specific time window, or current status — "what did we do this morning / yesterday / today", "how\'s everything looking", "what\'s in flight", "check memory", "do you remember", "have we seen this before", "what is the IP of X". Encodes the rivet-memory recall discipline — workboard for status, browse FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions.'
+version: 0.2.1
 ---
 
 # Memory Recall Discipline
@@ -15,7 +15,17 @@ tools are correct; what fails is **discipline** — reaching for `memory_search`
 This skill exists because of one specific failure mode. Read the case study at
 the bottom before you forget why these rules are non-negotiable.
 
-## The four rules
+## The rules
+
+### 0. Status / "how's things" / "what's in flight"? → Workboard first
+
+Prompts like "how's everything looking", "status", "catch me up" mean **current work across agents**, not `memory_stats` or box health.
+
+1. Prefer `memory_browse` over the last ~24h (use `window="last_24h"` when available; otherwise local-now−24h → UTC `since`). Read user/assistant closers across agents.
+2. Treat workspace `memory/*.md` notes as hints to verify, never as current state.
+3. Host/`memory_stats` only as a secondary note when relevant.
+
+**Default browse excludes `role=tool`.** Pass `include_tools=true` only when debugging capture, harness wiring, or tool failures.
 
 ### 1. Time-bounded question? → `memory_browse` with `since` / `before`. FIRST.
 
@@ -83,7 +93,12 @@ so the next session finds it from any angle.
 ## Decision flow
 
 ```
-User question about past work or facts
+User question about past / status / facts
+         │
+         ▼
+Status / how's things / in flight?
+   YES → workboard browse last_24h (rule 0)
+   NO
          │
          ▼
 Does it mention a timeframe?
