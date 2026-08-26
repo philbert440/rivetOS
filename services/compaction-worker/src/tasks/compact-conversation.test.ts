@@ -32,10 +32,13 @@ import {
   isHeartbeatConversation,
   isPgDeadlockError,
   enqueueExtractWiki,
+  propagateLlmFailure,
   DEADLOCK_RETRIES,
   PG_DEADLOCK_CODE,
 } from './compact-conversation.js'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-postgres'
+import { shouldSkip, breakerThreshold } from '../circuit-breaker.js'
+import { LlmCallError } from '../llm.js'
 
 function deadlockError(message = 'deadlock detected'): Error {
   return Object.assign(new Error(message), { code: PG_DEADLOCK_CODE })
@@ -525,6 +528,29 @@ describe('compact-conversation', () => {
       const cmds = calls.map((c: any) => c[0])
       expect(cmds).toContain('ROLLBACK')
       expect(cmds).not.toContain('COMMIT')
+    })
+  })
+
+  describe('propagateLlmFailure', () => {
+    it('rethrows the original LlmCallError so graphile last_error stays honest', () => {
+      const err = new LlmCallError('LLM unreachable at http://example:8003/v1 (fetch failed)', 4)
+      expect(() => propagateLlmFailure('conv-throw-1', err, 'Leaf')).toThrow(err)
+    })
+
+    it('wraps non-Error throws so graphile still records a message', () => {
+      expect(() => propagateLlmFailure('conv-throw-2', 'boom', 'branch')).toThrow('boom')
+    })
+
+    it('trips the circuit breaker after THRESHOLD failures', () => {
+      const id = 'conv-throw-breaker'
+      const err = new Error('LLM timed out')
+      expect(() => propagateLlmFailure(id, err, 'Leaf')).toThrow(err)
+      expect(shouldSkip(id)).toBe(false)
+      expect(() => propagateLlmFailure(id, err, 'Leaf')).toThrow(err)
+      expect(shouldSkip(id)).toBe(false)
+      expect(() => propagateLlmFailure(id, err, 'Leaf')).toThrow(err)
+      expect(shouldSkip(id)).toBe(true)
+      expect(breakerThreshold).toBe(3)
     })
   })
 })

@@ -99,6 +99,25 @@ function deadlockBackoffMs(attempt: number): number {
 }
 
 /**
+ * LLM failures must fail the graphile job so it retries with backoff.
+ *
+ * Returning 0 used to mark the job successful: enqueue-idle saw no problem
+ * while conversations sat unsummarized (live: 2,966 rivet-claude messages
+ * eligible; compact-conversation last_error stayed empty). The in-process
+ * circuit breaker still trips so a down LLM is not hammered every 5 minutes
+ * after THRESHOLD failures. Callers that already skip via `shouldSkip` keep
+ * exiting cleanly — this is only for an in-flight `callLlm` throw.
+ */
+export function propagateLlmFailure(conversationId: string, err: unknown, kind: string): never {
+  const failures = recordFailure(conversationId)
+  const msg = err instanceof Error ? err.message : String(err)
+  console.error(
+    `[CompactWorker] ${kind} LLM failed for ${conversationId.slice(0, 8)}: ${msg} (failure ${failures}/${breakerThreshold})`,
+  )
+  throw err instanceof Error ? err : new Error(msg)
+}
+
+/**
  * Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw.
  *
  * `40P01 deadlock detected` is retried with short backoff. Leaf inserts fire
@@ -220,12 +239,7 @@ async function compactLeaf(
   try {
     summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
   } catch (err) {
-    const failures = recordFailure(conversationId)
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(
-      `[CompactWorker] Leaf LLM failed for ${conversationId.slice(0, 8)}: ${msg} (failure ${failures}/${breakerThreshold})`,
-    )
-    return 0
+    propagateLlmFailure(conversationId, err, 'Leaf')
   }
 
   recordSuccess(conversationId)
@@ -311,11 +325,7 @@ async function compactParentLevel(
   try {
     summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(
-      `[CompactWorker] ${cfg.kind} LLM failed for ${conversationId.slice(0, 8)}: ${msg}`,
-    )
-    return 0
+    propagateLlmFailure(conversationId, err, cfg.kind)
   }
 
   const totalMessages = children.rows.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
