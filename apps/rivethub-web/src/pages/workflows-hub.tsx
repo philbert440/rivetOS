@@ -3,40 +3,45 @@
  * with journal timeline / graph projection, gate resume, kill, and child-run tree.
  *
  * Live updates: 3s polling on run detail while status is live; 5s on hub list.
- * Graph is a pure projection of already-polled outline + journal (no extra fetch
- * beyond the workflow def outline used for declared shape).
- * WS deltas deferred (server does not emit run journal frames yet).
+ * Graph is a flows workbench (canvas + inspector) projecting outline + journal.
+ * Files remain source of truth. WS deltas deferred.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { Link, useNavigate, useParams } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
-  WorkflowDefSummary,
   WorkflowField,
   WorkflowOpenGate,
   WorkflowRunDetail,
   WorkflowRunStatus,
   WorkflowRunSummary,
 } from '@rivetos/types'
+import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { joinRel } from '../lib/files-ui.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { SegmentedControl } from '../components/segmented-control.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { WorkflowContractForm } from '../components/workflow-contract-form.js'
-import { WorkflowGraph } from '../components/workflow-graph.js'
 import { WorkflowEditPanel } from '../components/workflow-edit-panel.js'
+import { FlowsAuthor } from '../components/flows-author.js'
+import { FlowsWorkbench } from '../components/flows-workbench.js'
 import {
+  authorGraphFromProjection,
   emptyFormValues,
+  FLOWS_FILE,
   formatJournal,
   gateFieldsAsContract,
   isContractError,
   isLiveRunStatus,
   issuesFromGatewayError,
+  parseFlowsFile,
   parseFormValues,
   projectGraph,
   RUN_STATUS_COLORS,
   RUN_STATUS_LABELS,
+  statusByIdFromProjection,
   type FieldFormValues,
   type FieldIssues,
 } from '../lib/workflow-runs/index.js'
@@ -234,6 +239,16 @@ export function WorkflowTriggerPage(): JSX.Element {
   const defVersion = def.data?.workflow.version
   const editPath = def.data?.workflow.editPath
 
+  const defs = useQuery({
+    queryKey: ['workflows', baseUrl],
+    enabled: connected,
+    queryFn: ({ signal }) => useConnection.getState().gateway.listWorkflows(signal),
+  })
+  const workflowOptions = (defs.data?.workflows ?? []).map((w) => ({
+    value: w.id,
+    label: w.name,
+  }))
+
   // Seed form when def loads (or workflowId / version changes) — avoid wipe on refetch.
   useEffect(() => {
     if (!def.data?.workflow) return
@@ -284,35 +299,44 @@ export function WorkflowTriggerPage(): JSX.Element {
 
   if (!connected) return <NotConnected />
 
+  const runWithCanvas =
+    pageMode === 'run' && (Boolean(editPath) || (def.data?.workflow.outline?.length ?? 0) > 0)
+
   return (
-    <div className={`mx-auto px-6 py-8 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`}>
+    <div
+      className={
+        runWithCanvas ? '' : `mx-auto px-6 py-8 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
+      }
+    >
       {discardDialog.element}
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <Link
-          to="/workflows"
-          className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
-        >
-          ← workflows
-        </Link>
-        {def.data && (
-          <SegmentedControl
-            ariaLabel="Workflow page mode"
-            value={pageMode}
-            onChange={(v) => void switchMode(v)}
-            options={[
-              { value: 'run', label: 'Run' },
-              {
-                value: 'edit',
-                label: 'Edit',
-                disabled: !editPath,
-                title: editPath
-                  ? `Edit files under ${editPath}`
-                  : 'Def is not under the files root — edit disabled',
-              },
-            ]}
-          />
-        )}
-      </div>
+      {!runWithCanvas && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <Link
+            to="/workflows"
+            className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+          >
+            ← workflows
+          </Link>
+          {def.data && (
+            <SegmentedControl
+              ariaLabel="Workflow page mode"
+              value={pageMode}
+              onChange={(v) => void switchMode(v)}
+              options={[
+                { value: 'run', label: 'Run' },
+                {
+                  value: 'edit',
+                  label: 'Edit',
+                  disabled: !editPath,
+                  title: editPath
+                    ? `Edit files under ${editPath}`
+                    : 'Def is not under the files root — edit disabled',
+                },
+              ]}
+            />
+          )}
+        </div>
+      )}
 
       {def.isError && <div className="font-mono text-sm text-red">{def.error.message}</div>}
       {def.isLoading && <p className="text-sm text-ink-dim">loading definition…</p>}
@@ -336,7 +360,86 @@ export function WorkflowTriggerPage(): JSX.Element {
         </>
       )}
 
-      {def.data && pageMode === 'run' && (
+      {def.data && pageMode === 'run' && runWithCanvas && (
+        <div className="fixed inset-0 left-56 flex flex-col bg-bg">
+          <FlowsAuthor
+            workflowId={workflowId}
+            editPath={editPath}
+            name={def.data.workflow.name}
+            version={def.data.workflow.version}
+            description={def.data.workflow.description}
+            outline={def.data.workflow.outline}
+            input={def.data.workflow.input}
+            output={def.data.workflow.output}
+            workflowOptions={workflowOptions}
+            onWorkflowChange={(id) =>
+              void navigate({ to: '/workflows/$workflowId', params: { workflowId: id } })
+            }
+            toolbarLeft={
+              <Link
+                to="/workflows"
+                className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+              >
+                ← workflows
+              </Link>
+            }
+            toolbarRight={
+              <SegmentedControl
+                ariaLabel="Workflow page mode"
+                value={pageMode}
+                onChange={(v) => void switchMode(v)}
+                options={[
+                  { value: 'run', label: 'Run' },
+                  {
+                    value: 'edit',
+                    label: 'Edit',
+                    disabled: !editPath,
+                    title: editPath
+                      ? `Edit files under ${editPath}`
+                      : 'Def is not under the files root — edit disabled',
+                  },
+                ]}
+              />
+            }
+            inspectorExtra={
+              <>
+                <p className="mb-3 font-mono text-[11px] text-ink-dim">
+                  {def.data.workflow.id} · v{def.data.workflow.version}
+                </p>
+                {def.data.workflow.description && (
+                  <p className="mb-4 text-sm text-ink-dim">{def.data.workflow.description}</p>
+                )}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void onSubmit()
+                  }}
+                  className="flex flex-col gap-3"
+                >
+                  <WorkflowContractForm
+                    fields={fields}
+                    values={values}
+                    issues={issues}
+                    disabled={submitting}
+                    onChange={onChange}
+                    idPrefix="trigger"
+                  />
+                  {formError && <p className="font-mono text-sm text-red">{formError}</p>}
+                  <button
+                    type="submit"
+                    disabled={submitting}
+                    className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em disabled:opacity-40"
+                  >
+                    {submitting ? 'Starting…' : 'Start run'}
+                  </button>
+                </form>
+              </>
+            }
+          />
+        </div>
+      )}
+
+      {def.data && pageMode === 'run' && !runWithCanvas && (
         <>
           <h1 className="font-mono text-lg font-semibold text-em">{def.data.workflow.name}</h1>
           <p className="mt-1 font-mono text-[11px] text-ink-dim">
@@ -380,26 +483,9 @@ export function WorkflowTriggerPage(): JSX.Element {
               </button>
             </div>
           </form>
-
-          {def.data.workflow.outline && def.data.workflow.outline.length > 0 && (
-            <OutlineGraph outline={def.data.workflow.outline} />
-          )}
         </>
       )}
     </div>
-  )
-}
-
-/** Outline-only graph on the trigger page (declared shape, all pending). */
-function OutlineGraph(props: { outline: NonNullable<WorkflowDefSummary['outline']> }): JSX.Element {
-  const graph = useMemo(() => projectGraph(props.outline, []), [props.outline])
-  return (
-    <section className="mt-8">
-      <h2 className="mb-2 font-mono text-xs font-semibold uppercase tracking-wide text-ink-dim">
-        Outline (display)
-      </h2>
-      <WorkflowGraph nodes={graph.nodes} edges={graph.edges} />
-    </section>
   )
 }
 
@@ -465,13 +551,41 @@ export function WorkflowRunDetailPage(): JSX.Element {
     staleTime: 60_000,
   })
 
-  const [detailView, setDetailView] = useState<'timeline' | 'graph'>('timeline')
+  const [detailView, setDetailView] = useState<'timeline' | 'graph'>('graph')
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const killDialog = useConfirmDialog()
 
   const graph = useMemo(
     () => projectGraph(def.data?.workflow.outline, payload?.journal ?? []),
     [def.data?.workflow.outline, payload?.journal],
   )
+  const editPath = def.data?.workflow.editPath
+  const flowsFile = useQuery({
+    queryKey: ['flows-json', baseUrl, editPath ?? ''],
+    enabled: connected && Boolean(editPath),
+    queryFn: async ({ signal }) => {
+      try {
+        return await useConnection
+          .getState()
+          .gateway.filesReadText(joinRel(editPath!, FLOWS_FILE), signal)
+      } catch (err) {
+        if (err instanceof GatewayError && err.status === 404) return null
+        throw err
+      }
+    },
+    staleTime: 15_000,
+  })
+  const authorGraph = useMemo(() => {
+    if (flowsFile.data) {
+      try {
+        return parseFlowsFile(flowsFile.data)
+      } catch {
+        /* fall through to projection layout */
+      }
+    }
+    return authorGraphFromProjection(graph.nodes, graph.edges)
+  }, [flowsFile.data, graph])
+  const statusById = useMemo(() => statusByIdFromProjection(graph.nodes), [graph])
 
   const onKill = async (): Promise<void> => {
     if (!(await killDialog.confirm(`Kill run “${runId}”? Child runs cascade.`, { danger: true })))
@@ -689,18 +803,16 @@ export function WorkflowRunDetailPage(): JSX.Element {
                 )}
               </ol>
             ) : (
-              <WorkflowGraph
-                nodes={graph.nodes}
-                edges={graph.edges}
-                onNodeClick={(node) => {
-                  if (node.childRunId) {
-                    void navigate({
-                      to: '/workflows/runs/$runId',
-                      params: { runId: node.childRunId },
-                    })
-                  }
-                }}
-              />
+              <div className="h-[70vh] min-h-[28rem] overflow-hidden rounded border border-line">
+                <FlowsWorkbench
+                  graph={authorGraph}
+                  workflowOptions={[]}
+                  workflowId={run.workflowId}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  statusById={statusById}
+                />
+              </div>
             )}
           </section>
         </>
