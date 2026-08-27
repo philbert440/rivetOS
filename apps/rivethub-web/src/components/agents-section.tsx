@@ -11,7 +11,6 @@ import { ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react
 import type { AgentPreset, ThinkingLevel } from '@rivetos/types'
 import { RivetGateway } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
-import { useGateway } from '../lib/use-gateway.js'
 import { useNodeName } from '../lib/node-name.js'
 import { useConfirmDialog } from './confirm-dialog.js'
 import { ModelPicker } from './pickers/model-picker.js'
@@ -75,7 +74,7 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
   })
   const models = modelOptions(catalog.data?.agents ?? [])
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>): void => {
+  const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
     onSave({ name, color, model, effort, systemPrompt, nodeBaseUrl })
   }
@@ -344,7 +343,7 @@ export function AgentsSection(): JSX.Element {
     // Create new session with agent defaults
     const sessionId = uuidv4()
     const settingsKey = `${agent.nodeBaseUrl}::${sessionId}`
-    
+
     // Set agent configuration for this session
     chatSettings.set(settingsKey, {
       agent: agent.model || '',
