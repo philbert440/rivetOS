@@ -8,8 +8,8 @@
  *   GET  /api/sessions                     recency-ordered session list
  *   GET  /api/sessions/:id/messages        transcript ring (last N)
  *   POST /api/sessions/:id/messages        one user turn {text, userId?,
- *        [?wait=1&timeoutMs=]              agent?}; ?wait blocks for the
- *                                          assistant reply (long-poll)
+ *        [?wait=1&timeoutMs=]              agent?, thinking?, systemPrompt?};
+ *                                          ?wait blocks for the assistant reply
  *   WS   /api/sessions/ws?session=<id>     live {kind:'message'|'stream'}
  *                                          frames; no session = all sessions
  *
@@ -39,7 +39,7 @@ import type {
   StreamEvent,
   MessageUsage,
 } from '@rivetos/types'
-import { HARNESS_IDS, splitHermesReasoning } from '@rivetos/types'
+import { HARNESS_IDS, SYSTEM_PROMPT_MAX_CHARS, splitHermesReasoning } from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('GatewayChannel')
@@ -93,6 +93,8 @@ export interface GatewayTurnInput {
   text: string
   agent?: string
   thinking?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Optional system-prompt override; applied once when the session prompt is built. */
+  systemPrompt?: string
   userId?: string
   /** Live StreamEvents for this session while the turn runs. */
   onStream?: (event: StreamEvent) => void
@@ -149,6 +151,32 @@ function contentToText(content: unknown): string {
       )
       .join('')
   return ''
+}
+
+const THINK_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const
+
+function clipSystemPrompt(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  return trimmed.slice(0, SYSTEM_PROMPT_MAX_CHARS)
+}
+
+/** Per-turn extras that ride InboundMessage.metadata (effort + system prompt). */
+function turnMetadata(input: {
+  thinking?: unknown
+  systemPrompt?: unknown
+}): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = {}
+  if (
+    typeof input.thinking === 'string' &&
+    (THINK_LEVELS as readonly string[]).includes(input.thinking)
+  ) {
+    metadata.thinking = input.thinking
+  }
+  const systemPrompt = clipSystemPrompt(input.systemPrompt)
+  if (systemPrompt) metadata.systemPrompt = systemPrompt
+  return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown> | undefined> {
@@ -416,14 +444,9 @@ export function createGatewayChannel(opts?: {
             if (body === undefined || typeof body.text !== 'string' || body.text.trim() === '')
               return json(res, 400, { error: 'text (string) is required' })
 
-            // Per-turn reasoning effort rides in metadata.thinking — the turn
-            // handler reads it and falls back to the session level (RivetHub's
-            // effort dropdown, persisted per-conversation client-side).
-            const THINK = ['off', 'low', 'medium', 'high', 'xhigh']
-            const thinking =
-              typeof body.thinking === 'string' && THINK.includes(body.thinking)
-                ? body.thinking
-                : undefined
+            // Per-turn extras ride in metadata: thinking (effort dropdown) and
+            // systemPrompt (agent-preset override, applied once at session init).
+            const metadata = turnMetadata(body)
             const inbound: InboundMessage = {
               id: randomUUID(),
               userId: typeof body.userId === 'string' ? body.userId : 'gateway-user',
@@ -432,7 +455,7 @@ export function createGatewayChannel(opts?: {
               text: body.text,
               platform: 'gateway',
               agent: typeof body.agent === 'string' ? body.agent : opts?.defaultAgent,
-              ...(thinking ? { metadata: { thinking } } : {}),
+              ...(metadata ? { metadata } : {}),
               timestamp: Math.floor(Date.now() / 1000),
             }
             record(key, 'user', body.text)
@@ -591,16 +614,12 @@ export function createGatewayChannel(opts?: {
       const text = input.text.trim()
       if (!text) return { ok: false, status: 400, error: 'text (string) is required' }
 
-      const THINK = ['off', 'low', 'medium', 'high', 'xhigh'] as const
-      const thinking =
-        input.thinking && (THINK as readonly string[]).includes(input.thinking)
-          ? input.thinking
-          : undefined
       // Same one-key-per-turn discipline as the HTTP POST handler: this is the
       // OpenAI-compat door onto the identical ring, so a canonical session id
       // here must join the transcript the den bridge is filling rather than
       // fork a second one.
       const key = ringKeyFor(input.sessionId)
+      const metadata = turnMetadata(input)
       const inbound: InboundMessage = {
         id: randomUUID(),
         userId: input.userId ?? 'gateway-user',
@@ -609,7 +628,7 @@ export function createGatewayChannel(opts?: {
         text,
         platform: 'gateway',
         agent: input.agent ?? opts?.defaultAgent,
-        ...(thinking ? { metadata: { thinking } } : {}),
+        ...(metadata ? { metadata } : {}),
         timestamp: Math.floor(Date.now() / 1000),
       }
       // Capture the user-message id so we can pick the *last* assistant after

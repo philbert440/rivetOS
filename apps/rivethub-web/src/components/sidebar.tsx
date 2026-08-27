@@ -4,6 +4,7 @@ import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } 
 import { useNotifications } from '../stores/notifications.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
+import { AgentsSection } from './agents-section.js'
 
 /** Primary views — top of the rail. Conversations first; Memory and Files
  *  next as the day-to-day workspace. The standalone Terminal / Den pages are
@@ -79,6 +80,8 @@ export function Sidebar(): JSX.Element {
           <NavLink key={item.to} {...item} />
         ))}
       </nav>
+
+      <AgentsSection />
 
       <div className="mt-auto flex flex-col">
         <div className="flex flex-col gap-1 px-2 pb-1">

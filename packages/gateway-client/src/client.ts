@@ -44,6 +44,10 @@ import type {
   WorkflowKillResponse,
   WorkflowValidateResponse,
   FilesUploadResponse,
+  AgentsListResponse,
+  AgentCreateRequest,
+  AgentUpdateRequest,
+  AgentResponse,
 } from '@rivetos/types'
 import type {
   TermConfigResponse,
@@ -411,6 +415,36 @@ export class RivetGateway {
     return request(this.config, `/api/devices/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       signal,
+    })
+  }
+
+  // -- agent presets ----------------------------------------------------------
+
+  agentsList(signal?: AbortSignal): Promise<AgentsListResponse> {
+    return request(this.config, '/api/agents', { signal })
+  }
+
+  agentCreate(body: AgentCreateRequest): Promise<AgentResponse> {
+    return request(this.config, '/api/agents', {
+      method: 'POST',
+      body,
+    })
+  }
+
+  agentGet(agentId: string, signal?: AbortSignal): Promise<AgentResponse> {
+    return request(this.config, `/api/agents/${encodeURIComponent(agentId)}`, { signal })
+  }
+
+  agentUpdate(agentId: string, body: AgentUpdateRequest): Promise<AgentResponse> {
+    return request(this.config, `/api/agents/${encodeURIComponent(agentId)}`, {
+      method: 'PATCH',
+      body,
+    })
+  }
+
+  agentDelete(agentId: string): Promise<{ ok: true }> {
+    return request(this.config, `/api/agents/${encodeURIComponent(agentId)}`, {
+      method: 'DELETE',
     })
   }
 

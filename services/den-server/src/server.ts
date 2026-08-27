@@ -66,6 +66,7 @@ import {
 } from './term/harness-sessions.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes } from './devices.js'
+import { createAgentsRoutes } from './agents.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
 import { createClaudeStoreHost } from './harness/claude-store.js'
@@ -237,7 +238,7 @@ const API_PATHS = new Set([
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   // x-rivet-conversation / x-rivet-title: OpenAI /v1 bridge conventions (Android)
   'Access-Control-Allow-Headers':
     'content-type, authorization, x-rivet-conversation, x-rivet-title',
@@ -677,6 +678,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       })
     : null
 
+  // Agent presets (Settings → Agents): named model/effort/prompt configs.
+  const agentsRoutes = createAgentsRoutes({
+    stateDir: config.stateDir,
+  })
+
   const authorized = (req: IncomingMessage, _url: URL): boolean =>
     isGatewayAuthorized(req, {
       tlsConfigured: tlsReady,
@@ -867,6 +873,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return json(res, 503, { error: 'device enrollment disabled on this node' })
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
+      }
+
+      // Agent presets (behind the mTLS gate)
+      if (url.pathname === '/api/agents' || url.pathname.startsWith('/api/agents/')) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await agentsRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
       }
 

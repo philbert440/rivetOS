@@ -71,6 +71,7 @@ import type { Duplex } from 'node:stream'
 import { WebSocketServer, type WebSocket } from 'ws'
 import {
   HarnessError,
+  SYSTEM_PROMPT_MAX_CHARS,
   decodeSessionIdSegment,
   type ApprovalDecision,
   type HarnessEvent,
@@ -451,10 +452,13 @@ export function createHarnessRoutes(opts: {
     if (action === 'turns') {
       const body = await parseJsonBody(req, res)
       if (!body) return true
-      const { text, attachments } = body
+      const { text, attachments, systemPrompt } = body
       if (typeof text !== 'string' || text === '')
         return json(res, 400, { error: 'text (non-empty string) is required' })
       const turn: UserTurn = { text }
+      if (typeof systemPrompt === 'string' && systemPrompt.trim()) {
+        turn.systemPrompt = systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
+      }
       if (attachments !== undefined) {
         if (
           !Array.isArray(attachments) ||

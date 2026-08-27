@@ -332,6 +332,13 @@ describe('gateway route mounts (G0)', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe('*')
   })
 
+  it('preflights PATCH for cross-origin agent edits', async () => {
+    const { base } = await start()
+    const res = await fetch(`${base}/api/agents`, { method: 'OPTIONS' })
+    expect(res.status).toBe(204)
+    expect(res.headers.get('access-control-allow-methods')).toContain('PATCH')
+  })
+
   it('longest prefix wins and subpaths route to the mount', async () => {
     const deep = {
       prefix: '/api/ping/deep',

@@ -21,7 +21,19 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
+import {
+  prefixSystemPrompt,
+  type ApprovalDecision,
+  type HarnessSessionSummary,
+  type SessionMessage,
+} from '@rivetos/types'
+import { rekeyAgentLastSessions } from '../lib/agent-session.js'
+import {
+  clearSystemPromptSent,
+  markSystemPromptSent,
+  rekeySystemPromptSent,
+  wasSystemPromptSent,
+} from '../lib/system-prompt-sent.js'
 import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -184,6 +196,8 @@ function migrateSessionKey(baseUrl: string, from: string, to: string): void {
     settings.set(storageKey(baseUrl, to), prior)
   }
   settings.clear(storageKey(baseUrl, from))
+  rekeyAgentLastSessions(from, to)
+  rekeySystemPromptSent(from, to)
 }
 
 export function ChatPage(): JSX.Element {
@@ -828,8 +842,22 @@ function ActiveSession(props: {
     dismissAsk(props.sessionId)
   }
 
+  const peekSystemPrompt = (): string | undefined => {
+    if (wasSystemPromptSent(props.sessionId)) return undefined
+    const chat = useChat.getState()
+    if ((chat.messages[props.sessionId] ?? EMPTY_MESSAGES).length > 0) return undefined
+    if ((chat.transcripts[props.sessionId]?.turns.length ?? 0) > 0) return undefined
+    const prompt = persisted(
+      useChatSettings.getState().byKey,
+      useConnection.getState().baseUrl,
+      props.sessionId,
+    )?.systemPrompt?.trim()
+    return prompt || undefined
+  }
+
   const injectOne = async (text: string, interrupt = false): Promise<void> => {
     const gw = useConnection.getState().gateway
+    const prompt = peekSystemPrompt()
     if (canonicalId) {
       // Control plane: the driver owns spawn-or-resume, so there is no PTY to
       // ensure here. "Inject now" is interrupt-then-send, and only when the
@@ -840,21 +868,41 @@ function ActiveSession(props: {
         // to draw its cancel before the next paste, or the turn swallows it.
         await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
       }
-      await gw.sendHarnessTurn(canonicalId, { text })
+      try {
+        await gw.sendHarnessTurn(canonicalId, {
+          text,
+          ...(prompt ? { systemPrompt: prompt } : {}),
+        })
+        if (prompt) markSystemPromptSent(props.sessionId)
+      } catch (err) {
+        clearSystemPromptSent(props.sessionId)
+        throw err
+      }
       return
     }
-    await ensurePty()
+    const injectText = prompt ? prefixSystemPrompt(prompt, text) : text
     try {
-      await gw.termInject({ session: props.sessionId, text, ...(interrupt ? { interrupt } : {}) })
-    } catch {
-      // The harness may have been LRU-evicted while we held a stale pty ref
-      // (#318 review): drop the ref, respawn (store-existence → --resume so
-      // context is kept), and retry once. A fresh harness has no turn to
-      // interrupt, so the retry never sends Esc.
-      termPtyRef.current = undefined
-      setTermPtyId(undefined)
       await ensurePty()
-      await gw.termInject({ session: props.sessionId, text })
+      try {
+        await gw.termInject({
+          session: props.sessionId,
+          text: injectText,
+          ...(interrupt ? { interrupt } : {}),
+        })
+      } catch {
+        // The harness may have been LRU-evicted while we held a stale pty ref
+        // (#318 review): drop the ref, respawn (store-existence → --resume so
+        // context is kept), and retry once. A fresh harness has no turn to
+        // interrupt, so the retry never sends Esc.
+        termPtyRef.current = undefined
+        setTermPtyId(undefined)
+        await ensurePty()
+        await gw.termInject({ session: props.sessionId, text: injectText })
+      }
+      if (prompt) markSystemPromptSent(props.sessionId)
+    } catch (err) {
+      clearSystemPromptSent(props.sessionId)
+      throw err
     }
   }
 
@@ -1057,6 +1105,7 @@ function ActiveSession(props: {
             settingsKey={settingsKey}
             agent={settings?.agent || undefined}
             effort={settings?.effort ?? 'medium'}
+            systemPrompt={settings?.systemPrompt}
             onSetting={(patch) => setSetting(settingsKey, patch)}
             onSend={sendToHarness}
             handleRef={composerRef}

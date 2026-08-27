@@ -132,6 +132,11 @@ export interface SessionPostRequest {
   /** Reasoning effort for this turn; falls back to the session's level.
    *  RivetHub persists it per-conversation (Claude-app style). */
   thinking?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  /**
+   * Optional system-prompt override. Applied once when the session's prompt
+   * is first built (appended to the workspace prompt). Cap: 16384 chars.
+   */
+  systemPrompt?: string
 }
 
 /** 202 from POST without `?wait` */
@@ -1054,4 +1059,54 @@ export interface DeviceOpenResponse {
   address: string
   expiresAt: number
   qr: DeviceEnrollQr
+}
+
+// ---------------------------------------------------------------------------
+// /api/agents
+// ---------------------------------------------------------------------------
+
+/** Named agent preset (model + effort + system prompt + optional color + node). */
+export interface AgentPreset {
+  id: string
+  name: string
+  /** Hex color (e.g. "#3b82f6"), or empty for default. */
+  color: string
+  /** Agent/harness id; empty = node default. */
+  model: string
+  /** Thinking level. */
+  effort: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** System prompt override; empty = no override. */
+  systemPrompt: string
+  /** Node baseUrl this agent runs on. */
+  nodeBaseUrl: string
+  /** epoch ms */
+  createdAt: number
+  /** epoch ms */
+  updatedAt: number
+}
+
+export interface AgentsListResponse {
+  agents: AgentPreset[]
+}
+
+export interface AgentCreateRequest {
+  name: string
+  color?: string
+  model?: string
+  effort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  systemPrompt?: string
+  nodeBaseUrl: string
+}
+
+export interface AgentUpdateRequest {
+  name?: string
+  color?: string
+  model?: string
+  effort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  systemPrompt?: string
+  nodeBaseUrl?: string
+}
+
+export interface AgentResponse {
+  agent: AgentPreset
 }

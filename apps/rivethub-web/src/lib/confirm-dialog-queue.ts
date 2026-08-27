@@ -12,17 +12,21 @@
  */
 
 export interface DialogRequest {
-  kind: 'confirm' | 'prompt'
+  kind: 'confirm' | 'prompt' | 'choice'
   message: string
   defaultValue?: string
   confirmLabel?: string
+  /** Keep label for `choice` (Enter / primary). */
+  keepLabel?: string
+  /** Reset label for `choice` (destructive). */
+  resetLabel?: string
   /** Red confirm button for destructive actions (delete, kill, revoke). */
   danger?: boolean
   resolve: (value: string | boolean | undefined) => void
 }
 
 /** Cancel resolves false for confirm (matching `window.confirm`) and
- *  undefined for prompt (matching `window.prompt`'s null). */
+ *  undefined for prompt/choice (matching `window.prompt`'s null). */
 export function dialogCancelValue(req: DialogRequest): string | boolean | undefined {
   return req.kind === 'confirm' ? false : undefined
 }

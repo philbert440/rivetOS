@@ -15,6 +15,11 @@ export function useConfirmDialog(): {
     message: string,
     opts?: { defaultValue?: string; confirmLabel?: string },
   ) => Promise<string | undefined>
+  /** Keep / start-over / cancel. Cancel and backdrop resolve `undefined`. */
+  choose: (
+    message: string,
+    opts?: { keepLabel?: string; resetLabel?: string },
+  ) => Promise<'keep' | 'reset' | undefined>
   /** Render once near the page root. */
   element: JSX.Element
 } {
@@ -62,8 +67,24 @@ export function useConfirmDialog(): {
     [queue],
   )
 
+  const choose = useCallback(
+    (
+      message: string,
+      opts?: { keepLabel?: string; resetLabel?: string },
+    ): Promise<'keep' | 'reset' | undefined> =>
+      new Promise((resolve) => {
+        queue.show({
+          kind: 'choice',
+          message,
+          ...opts,
+          resolve: (v) => resolve(v === 'keep' || v === 'reset' ? v : undefined),
+        })
+      }),
+    [queue],
+  )
+
   // Cancel resolves false for confirm (matching `window.confirm`) and
-  // undefined for prompt (matching `window.prompt`'s null).
+  // undefined for prompt/choice (matching `window.prompt`'s null).
   const cancelValue = current?.kind === 'confirm' ? false : undefined
 
   const dialogRef = useRef<HTMLFormElement | null>(null)
@@ -127,7 +148,9 @@ export function useConfirmDialog(): {
         onClick={(e) => e.stopPropagation()}
         onSubmit={(e) => {
           e.preventDefault()
-          queue.settle(current.kind === 'prompt' ? input : true)
+          queue.settle(
+            current.kind === 'prompt' ? input : current.kind === 'choice' ? 'keep' : true,
+          )
         }}
       >
         <p className="mb-3 text-sm text-ink">{current.message}</p>
@@ -154,8 +177,19 @@ export function useConfirmDialog(): {
                 : 'rounded bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em'
             }
           >
-            {current.confirmLabel ?? 'OK'}
+            {current.kind === 'choice'
+              ? (current.keepLabel ?? 'Keep')
+              : (current.confirmLabel ?? 'OK')}
           </button>
+          {current.kind === 'choice' && (
+            <button
+              type="button"
+              onClick={() => queue.settle('reset')}
+              className="rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red"
+            >
+              {current.resetLabel ?? 'Start over'}
+            </button>
+          )}
         </div>
       </form>
     </div>
@@ -163,5 +197,5 @@ export function useConfirmDialog(): {
     <></>
   )
 
-  return { confirm, prompt, element }
+  return { confirm, prompt, choose, element }
 }

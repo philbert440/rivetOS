@@ -141,7 +141,12 @@ export type {
   HarnessDriver,
 } from './harness.js'
 export type { SessionSummary as HarnessSessionSummary } from './harness.js'
-export { HARNESS_IDS } from './harness.js'
+export {
+  HARNESS_IDS,
+  SYSTEM_PROMPT_MAX_CHARS,
+  SYSTEM_PROMPT_INJECT_HEADING,
+  prefixSystemPrompt,
+} from './harness.js'
 export {
   parseSessionId,
   formatSessionId,
@@ -292,6 +297,11 @@ export type {
   DeviceEnrollQr,
   DevicesListResponse,
   DeviceOpenResponse,
+  AgentPreset,
+  AgentsListResponse,
+  AgentCreateRequest,
+  AgentUpdateRequest,
+  AgentResponse,
   WorkflowFieldType,
   WorkflowField,
   WorkflowOutlineStep,

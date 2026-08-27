@@ -114,7 +114,8 @@ export class TurnHandler {
         sessionManager.set(sessionKey, session)
       }
 
-      // System prompt — built once per session, cached
+      // System prompt — built once per session, cached. An inbound
+      // metadata.systemPrompt (RivetHub agent preset) appends on first build.
       if (!session.systemPrompt) {
         session.systemPrompt = await workspace.buildSystemPrompt(
           agent.id,
@@ -124,6 +125,10 @@ export class TurnHandler {
         // Voice turns are spoken aloud — keep them short and unformatted.
         if (message.chatType === 'voice') {
           session.systemPrompt += VOICE_MODE_PROMPT
+        }
+        const extra = message.metadata?.systemPrompt
+        if (typeof extra === 'string' && extra.trim()) {
+          session.systemPrompt += `\n\n${extra.trim()}`
         }
       }
 

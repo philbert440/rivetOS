@@ -265,6 +265,18 @@ describe('sendUserTurn', () => {
     expect(pty.injects).toEqual([{ id: 'pty-1', text: 'hello', submit: true, interrupt: undefined }])
   })
 
+  it('prefixes systemPrompt on the first turn only', async () => {
+    const { driver, pty, emitDen } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(SID, { text: 'hello', systemPrompt: 'be terse' })
+    emitDen(claudeEvent(UUID, { type: 'turn.end' }))
+    await driver.sendUserTurn(SID, { text: 'again', systemPrompt: 'be terse' })
+    expect(pty.injects.map((i) => i.text)).toEqual([
+      '[System instructions]\nbe terse\n\nhello',
+      'again',
+    ])
+  })
+
   it('re-attaches (--resume) when the PTY was LRU-evicted between turns', async () => {
     const { driver, pty } = makeDriver({
       rows: [{ id: UUID, command: 'claude', title: 't', updatedAt: 2 }],
