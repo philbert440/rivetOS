@@ -20,6 +20,15 @@ import { dirname, join } from 'node:path'
 import type { AgentPreset } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
+// helpers
+
+const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const
+
+function isEffortLevel(value: string): value is AgentPreset['effort'] {
+  return (EFFORT_LEVELS as readonly string[]).includes(value)
+}
+
+// ---------------------------------------------------------------------------
 // storage
 
 interface Registry {
@@ -75,10 +84,7 @@ export interface AgentsRoutes {
   handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>
 }
 
-export function createAgentsRoutes(opts: {
-  stateDir: string
-  now?: () => number
-}): AgentsRoutes {
+export function createAgentsRoutes(opts: { stateDir: string; now?: () => number }): AgentsRoutes {
   const now = opts.now ?? Date.now
   const file = join(opts.stateDir, 'agents.json')
 
@@ -116,11 +122,8 @@ export function createAgentsRoutes(opts: {
             : 'Unnamed Agent'
         const color = typeof body.color === 'string' ? body.color.trim().slice(0, 16) : ''
         const model = typeof body.model === 'string' ? body.model.trim().slice(0, 128) : ''
-        const effort =
-          typeof body.effort === 'string' &&
-          ['off', 'low', 'medium', 'high', 'xhigh'].includes(body.effort)
-            ? (body.effort as AgentPreset['effort'])
-            : 'medium'
+        const effortValue = typeof body.effort === 'string' ? body.effort : ''
+        const effort = isEffortLevel(effortValue) ? effortValue : 'medium'
         const systemPrompt =
           typeof body.systemPrompt === 'string' ? body.systemPrompt.slice(0, 16384) : ''
         const nodeBaseUrl =
@@ -154,12 +157,12 @@ export function createAgentsRoutes(opts: {
       if (req.method === 'GET' && idMatch) {
         const id = idMatch[1]
         const reg = loadRegistry(file)
-        const agent = reg.agents.find((a) => a.id === id)
-        if (!agent) {
+        const maybeAgent = reg.agents.find((a) => a.id === id)
+        if (!maybeAgent) {
           json(res, 404, { error: 'agent not found' })
           return true
         }
-        json(res, 200, { agent })
+        json(res, 200, { agent: maybeAgent })
         return true
       }
 
@@ -182,11 +185,12 @@ export function createAgentsRoutes(opts: {
         }
 
         const reg = loadRegistry(file)
-        const agent = reg.agents.find((a) => a.id === id)
-        if (!agent) {
+        const maybeAgent = reg.agents.find((a) => a.id === id)
+        if (!maybeAgent) {
           json(res, 404, { error: 'agent not found' })
           return true
         }
+        const agent = maybeAgent
 
         if (typeof body.name === 'string' && body.name.trim()) {
           agent.name = body.name.trim().slice(0, 128)
@@ -197,11 +201,8 @@ export function createAgentsRoutes(opts: {
         if (typeof body.model === 'string') {
           agent.model = body.model.trim().slice(0, 128)
         }
-        if (
-          typeof body.effort === 'string' &&
-          ['off', 'low', 'medium', 'high', 'xhigh'].includes(body.effort)
-        ) {
-          agent.effort = body.effort as AgentPreset['effort']
+        if (typeof body.effort === 'string' && isEffortLevel(body.effort)) {
+          agent.effort = body.effort
         }
         if (typeof body.systemPrompt === 'string') {
           agent.systemPrompt = body.systemPrompt.slice(0, 16384)

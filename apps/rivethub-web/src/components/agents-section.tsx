@@ -4,11 +4,12 @@
  * Click to open/resume a session with that configuration.
  */
 
-import { useEffect, useState, type JSX } from 'react'
+import { useState, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
 import type { AgentPreset, ThinkingLevel } from '@rivetos/types'
+import { RivetGateway } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useNodeName } from '../lib/node-name.js'
@@ -29,12 +30,7 @@ interface NodeSelectorProps {
 function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Element {
   const { roster, baseUrl: currentBaseUrl } = useConnection()
   const allNodes = [...roster, { name: 'Current Node', baseUrl: currentBaseUrl }]
-  const uniqueNodes = Array.from(
-    new Map(allNodes.map((n) => [n.baseUrl, n])).values(),
-  )
-  
-  const selectedNode = uniqueNodes.find((n) => n.baseUrl === value)
-  const nodeName = useNodeName(value) ?? selectedNode?.name ?? value
+  const uniqueNodes = Array.from(new Map(allNodes.map((n) => [n.baseUrl, n])).values())
 
   return (
     <div className="flex flex-col gap-1">
@@ -74,7 +70,7 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
   const gateway = useGateway()
   const catalog = useQuery({
     queryKey: ['catalog-agents', nodeBaseUrl],
-    queryFn: ({ signal }) => new gateway.constructor({ baseUrl: nodeBaseUrl, authMode: 'mtls' }).catalogAgents(signal),
+    queryFn: ({ signal }) => new RivetGateway({ baseUrl: nodeBaseUrl, authMode: 'mtls' }).catalogAgents(signal),
     staleTime: 300_000,
   })
   const models = modelOptions(catalog.data?.agents ?? [])
@@ -191,11 +187,10 @@ interface AgentRowProps {
 
 function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Element {
   const nodeName = useNodeName(agent.nodeBaseUrl)
-  const gateway = useGateway()
   const { data: health } = useQuery({
     queryKey: ['agent-node-health', agent.nodeBaseUrl],
     queryFn: ({ signal }) => 
-      new gateway.constructor({ baseUrl: agent.nodeBaseUrl, authMode: 'mtls' }).health(signal),
+      new RivetGateway({ baseUrl: agent.nodeBaseUrl, authMode: 'mtls' }).health(signal),
     staleTime: 30_000,
     retry: 0,
   })
@@ -266,7 +261,7 @@ export function AgentsSection(): JSX.Element {
     queryFn: async ({ signal }) => {
       const results = await Promise.allSettled(
         uniqueNodes.map((node) =>
-          new gateway.constructor({ baseUrl: node.baseUrl, authMode: 'mtls' })
+          new RivetGateway({ baseUrl: node.baseUrl, authMode: 'mtls' })
             .agentsList(signal)
             .then((res) => ({ nodeBaseUrl: node.baseUrl, agents: res.agents }))
             .catch(() => ({ nodeBaseUrl: node.baseUrl, agents: [] as AgentPreset[] })),
@@ -294,7 +289,7 @@ export function AgentsSection(): JSX.Element {
 
   const createMutation = useMutation({
     mutationFn: (agent: Partial<AgentPreset>) =>
-      new gateway.constructor({ baseUrl: agent.nodeBaseUrl!, authMode: 'mtls' }).agentCreate({
+      new RivetGateway({ baseUrl: agent.nodeBaseUrl!, authMode: 'mtls' }).agentCreate({
         name: agent.name!,
         color: agent.color,
         model: agent.model,
@@ -310,7 +305,7 @@ export function AgentsSection(): JSX.Element {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, agent, targetNode }: { id: string; agent: Partial<AgentPreset>; targetNode: string }) =>
-      new gateway.constructor({ baseUrl: targetNode, authMode: 'mtls' }).agentUpdate(id, {
+      new RivetGateway({ baseUrl: targetNode, authMode: 'mtls' }).agentUpdate(id, {
         name: agent.name,
         color: agent.color,
         model: agent.model,
@@ -326,7 +321,7 @@ export function AgentsSection(): JSX.Element {
 
   const deleteMutation = useMutation({
     mutationFn: ({ id, targetNode }: { id: string; targetNode: string }) =>
-      new gateway.constructor({ baseUrl: targetNode, authMode: 'mtls' }).agentDelete(id),
+      new RivetGateway({ baseUrl: targetNode, authMode: 'mtls' }).agentDelete(id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] }),
   })
 
