@@ -115,7 +115,21 @@ def test_format_empty_browse_result_guides_agent():
     assert "wider window" in msg
     assert "rivet_memory_search" in msg
     assert "agent/conversation" in msg
+    # Default empty path still suggests the opt-in flag.
     assert "include_tools=true" in msg
+
+    opted_in = format_empty_browse_result(
+        window="yesterday",
+        since="2026-08-06T04:00:00+00:00",
+        before="2026-08-07T04:00:00+00:00",
+        include_tools=True,
+    )
+    assert opted_in.startswith("No messages found.")
+    assert "wider window" in opted_in
+    assert "rivet_memory_search" in opted_in
+    # Caller already set the flag — do not tell them to pass it again.
+    assert "include_tools=true" not in opted_in
+    assert "pass include_tools" not in opted_in
 
 
 def test_browse_tool_empty_with_window_echoes_filters():

@@ -478,7 +478,9 @@ def wants_include_tools(args: Dict[str, Any]) -> bool:
 
     Default browse excludes role=tool so a limit=50 window is readable.
     Truthy non-booleans (``"true"``, ``1``) do not opt in — the MCP sidecar
-    is equally strict (``args.include_tools === true``).
+    is equally strict (``args.include_tools === true``). The Hermes harness
+    delivers JSON-decoded typed args (schema-declared boolean), so strict
+    ``is True`` is safe — same contract as the sibling ``expand`` flag.
     """
     return args.get("include_tools") is True
 
@@ -525,6 +527,7 @@ def format_empty_browse_result(
     ground truth and stop, when the window/agent filter was just too tight
     (residual from #437/#440 — MCP browse already guides; Hermes did not).
     """
+    include_tools_hint = "pass include_tools=true, " if not include_tools else ""
     return (
         "No messages found."
         + format_browse_filter_note(
@@ -534,7 +537,7 @@ def format_empty_browse_result(
             include_tools=include_tools,
         )
         + "\n_Try a wider window, drop agent/conversation filters, flip order, "
-        "pass include_tools=true, or use rivet_memory_search for topic recall._"
+        f"{include_tools_hint}or use rivet_memory_search for topic recall._"
     )
 
 
