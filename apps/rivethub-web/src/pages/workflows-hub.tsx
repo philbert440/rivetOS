@@ -41,7 +41,7 @@ import {
   projectGraph,
   RUN_STATUS_COLORS,
   RUN_STATUS_LABELS,
-  statusByIdFromProjection,
+  statusByIdForCanvas,
   type FieldFormValues,
   type FieldIssues,
 } from '../lib/workflow-runs/index.js'
@@ -221,11 +221,7 @@ export function WorkflowTriggerPage(): JSX.Element {
       // dirty ref here would disarm the guard without any re-render to
       // re-report dirty (same-value setState bails).
       if (next === pageMode) return
-      if (
-        pageMode === 'edit' &&
-        editDirtyRef.current &&
-        !(await discardDialog.confirm('Discard unsaved changes?'))
-      ) {
+      if (editDirtyRef.current && !(await discardDialog.confirm('Discard unsaved changes?'))) {
         return
       }
       editDirtyRef.current = false
@@ -372,9 +368,21 @@ export function WorkflowTriggerPage(): JSX.Element {
             input={def.data.workflow.input}
             output={def.data.workflow.output}
             workflowOptions={workflowOptions}
-            onWorkflowChange={(id) =>
-              void navigate({ to: '/workflows/$workflowId', params: { workflowId: id } })
-            }
+            onDirtyChange={(d) => {
+              editDirtyRef.current = d
+            }}
+            onWorkflowChange={(id) => {
+              void (async () => {
+                if (
+                  editDirtyRef.current &&
+                  !(await discardDialog.confirm('Discard unsaved changes?'))
+                ) {
+                  return
+                }
+                editDirtyRef.current = false
+                void navigate({ to: '/workflows/$workflowId', params: { workflowId: id } })
+              })()
+            }}
             toolbarLeft={
               <Link
                 to="/workflows"
@@ -585,7 +593,10 @@ export function WorkflowRunDetailPage(): JSX.Element {
     }
     return authorGraphFromProjection(graph.nodes, graph.edges)
   }, [flowsFile.data, graph])
-  const statusById = useMemo(() => statusByIdFromProjection(graph.nodes), [graph])
+  const statusById = useMemo(
+    () => statusByIdForCanvas(authorGraph, graph.nodes),
+    [authorGraph, graph],
+  )
 
   const onKill = async (): Promise<void> => {
     if (!(await killDialog.confirm(`Kill run “${runId}”? Child runs cascade.`, { danger: true })))

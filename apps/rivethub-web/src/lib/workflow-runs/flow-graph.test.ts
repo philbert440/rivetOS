@@ -41,4 +41,13 @@ describe('flow graph connect', () => {
     expect(wouldCreateCycle(g, done.id, FLOW_START_ID)).toBe(true)
     expect(canConnect(g, done.id, FLOW_START_ID).ok).toBe(false)
   })
+
+  it('rejects parallel branches that are not agent/script/call', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'parallel')
+    g = addFlowNode(g, 'human')
+    const par = g.nodes.find((n) => n.kind === 'parallel')!
+    const gate = g.nodes.find((n) => n.kind === 'human')!
+    expect(canConnect(g, par.id, gate.id).ok).toBe(false)
+  })
 })

@@ -129,7 +129,14 @@ function NodeInspector(props: {
           <Field
             label="Max turns"
             value={node.maxTurns !== undefined ? String(node.maxTurns) : ''}
-            onChange={(v) => patch({ maxTurns: v === '' ? undefined : Number(v) })}
+            onChange={(v) => {
+              if (v === '') {
+                patch({ maxTurns: undefined })
+                return
+              }
+              const n = Number(v)
+              if (Number.isFinite(n)) patch({ maxTurns: n })
+            }}
           />
         </>
       )}

@@ -170,7 +170,7 @@ function drawScene(
     if (!from || !to) continue
     const s = outPort(from)
     const t = inPort(to)
-    const kind = statusById ? overlayEdgeKind(statusById[from.id], statusById[to.id]) : 'done'
+    const kind = statusById ? overlayEdgeKind(statusById[from.id], statusById[to.id]) : 'pending'
     drawBezier(ctx, s.x, s.y, t.x, t.y, CANVAS_STATUS_EDGE[kind])
   }
 

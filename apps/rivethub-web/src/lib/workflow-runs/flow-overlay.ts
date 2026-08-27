@@ -4,7 +4,7 @@
  */
 
 import type { GraphNode } from './graph-project.js'
-import { FLOW_START_ID } from './flow-graph.js'
+import { FLOW_START_ID, type FlowAuthorGraph } from './flow-graph.js'
 import type { GraphNodeStatus } from './status.js'
 
 /** Canvas 2d cannot use CSS vars — keep in lockstep with theme.css. */
@@ -49,4 +49,32 @@ export function overlayEdgeKind(
 
 export function isLiveNodeStatus(status: GraphNodeStatus | undefined): boolean {
   return status === 'running' || status === 'gate-open'
+}
+
+/** Journal branch ids look like `n1#1/b0:n2` — canvas nodes are `n2`. */
+function branchInnerId(id: string): string | undefined {
+  const m = /\/b\d+:(.+)$/.exec(id)
+  return m?.[1]
+}
+
+/**
+ * Map projection/journal status onto canvas node ids (flows.json layout).
+ * Folds engine `done` label and parallel-branch inner ids.
+ */
+export function statusByIdForCanvas(
+  author: FlowAuthorGraph,
+  projection: GraphNode[],
+): Record<string, GraphNodeStatus> {
+  const map = statusByIdFromProjection(projection)
+  const doneStatus = map.done
+  if (doneStatus) {
+    for (const n of author.nodes) {
+      if (n.kind === 'done') map[n.id] = doneStatus
+    }
+  }
+  for (const p of projection) {
+    const inner = branchInnerId(p.id)
+    if (inner) map[inner] = p.status
+  }
+  return map
 }

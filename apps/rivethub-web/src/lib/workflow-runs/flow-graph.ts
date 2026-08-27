@@ -168,6 +168,17 @@ export function canConnect(
     return { ok: false, reason: 'duplicate' }
   }
   if (wouldCreateCycle(graph, from, to)) return { ok: false, reason: 'cycle' }
+  const branchKinds = new Set(['agent', 'run', 'call'])
+  if (src.kind === 'parallel' && !branchKinds.has(dst.kind)) {
+    return { ok: false, reason: 'parallel branches must be agent, script, or call' }
+  }
+  const existingIn = graph.edges.filter((e) => e.to === to)
+  if (src.kind === 'parallel' && existingIn.length > 0) {
+    return { ok: false, reason: 'parallel child cannot have other incoming wires' }
+  }
+  if (existingIn.some((e) => nodeById(graph, e.from)?.kind === 'parallel')) {
+    return { ok: false, reason: 'node is already a parallel branch' }
+  }
   return { ok: true }
 }
 
@@ -188,6 +199,26 @@ export function disconnectFlowEdge(graph: FlowAuthorGraph, edgeId: string): Flow
 
 export function outgoingIds(graph: FlowAuthorGraph, id: string): string[] {
   return graph.edges.filter((e) => e.from === id).map((e) => e.to)
+}
+
+export function incomingIds(graph: FlowAuthorGraph, id: string): string[] {
+  return graph.edges.filter((e) => e.to === id).map((e) => e.from)
+}
+
+/** Nodes reachable from Start (inclusive). Detached nodes are not compiled. */
+export function reachableFromStart(graph: FlowAuthorGraph): Set<string> {
+  const seen = new Set<string>([FLOW_START_ID])
+  const stack = [FLOW_START_ID]
+  while (stack.length > 0) {
+    const id = stack.pop()!
+    for (const nxt of outgoingIds(graph, id)) {
+      if (!seen.has(nxt)) {
+        seen.add(nxt)
+        stack.push(nxt)
+      }
+    }
+  }
+  return seen
 }
 
 /** Kahn topological order. Isolated nodes follow start, then remaining. */

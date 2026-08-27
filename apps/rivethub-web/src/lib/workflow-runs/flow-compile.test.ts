@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { addFlowNode, connectFlowNodes, emptyFlowGraph, FLOW_START_ID } from './flow-graph.js'
-import { compileFlow, RUN_TS_MARKER } from './flow-compile.js'
+import { compileFlow, FlowCompileError, RUN_TS_MARKER } from './flow-compile.js'
 
 const META = {
   id: 'demo',
@@ -50,5 +50,57 @@ describe('compileFlow', () => {
     expect(files['run.ts']).toContain('step.parallel')
     expect(files['run.ts']).toContain('step.agent')
     expect(files['run.ts']).toContain('step.run')
+  })
+
+  it('does not emit detached nodes', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'agent')
+    g = addFlowNode(g, 'run')
+    const agent = g.nodes.find((n) => n.kind === 'agent')!
+    const script = g.nodes.find((n) => n.kind === 'run')!
+    g = connectFlowNodes(g, FLOW_START_ID, agent.id)
+    const { files } = compileFlow(g, META)
+    expect(files['run.ts']).toContain(JSON.stringify(agent.id))
+    expect(files['run.ts']).not.toContain(JSON.stringify(script.id))
+  })
+
+  it('marks script stubs create-only', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'run')
+    const script = g.nodes.find((n) => n.kind === 'run')!
+    g = connectFlowNodes(g, FLOW_START_ID, script.id)
+    const { createOnly } = compileFlow(g, META)
+    expect(createOnly).toContain(script.scriptPath)
+  })
+
+  it('rejects a gate as a parallel branch', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'parallel')
+    g = addFlowNode(g, 'agent')
+    const par = g.nodes.find((n) => n.kind === 'parallel')!
+    const agent = g.nodes.find((n) => n.kind === 'agent')!
+    g = connectFlowNodes(g, FLOW_START_ID, par.id)
+    g = { ...g, edges: [...g.edges, { id: `${par.id}→${agent.id}`, from: par.id, to: agent.id }] }
+    // Force a human kid past canConnect for the compiler path.
+    g = addFlowNode(g, 'human')
+    const gate = g.nodes.find((n) => n.kind === 'human')!
+    g = {
+      ...g,
+      edges: [...g.edges, { id: `${par.id}→${gate.id}`, from: par.id, to: gate.id }],
+    }
+    expect(() => compileFlow(g, META)).toThrow(FlowCompileError)
+  })
+
+  it('emits declared output fields in step.done', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'done')
+    const done = g.nodes.find((n) => n.kind === 'done')!
+    g = connectFlowNodes(g, FLOW_START_ID, done.id)
+    const { files } = compileFlow(g, {
+      ...META,
+      output: [{ name: 'verdict', type: 'string', required: true }],
+    })
+    expect(files['run.ts']).toContain('"verdict"')
+    expect(files['run.ts']).not.toContain('"result": true')
   })
 })

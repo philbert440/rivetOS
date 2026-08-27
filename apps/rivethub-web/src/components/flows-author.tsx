@@ -2,7 +2,7 @@
  * Load / save a flows graph for a workflow def under the files root.
  */
 
-import { useCallback, useEffect, useState, type JSX, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { parse as parseYaml } from 'yaml'
 import { GatewayError } from '@rivetos/gateway-client'
@@ -28,6 +28,7 @@ export function FlowsAuthor(props: {
   toolbarLeft?: ReactNode
   toolbarRight?: ReactNode
   inspectorExtra?: ReactNode
+  onDirtyChange?: (dirty: boolean) => void
 }): JSX.Element {
   const editable = Boolean(props.editPath)
   const queryClient = useQueryClient()
@@ -37,6 +38,11 @@ export function FlowsAuthor(props: {
   const [dirty, setDirty] = useState(false)
   const [saveMsg, setSaveMsg] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
+  const hadFlowsJson = useRef(false)
+
+  useEffect(() => {
+    props.onDirtyChange?.(dirty)
+  }, [dirty, props.onDirtyChange])
 
   useEffect(() => {
     let cancelled = false
@@ -51,6 +57,7 @@ export function FlowsAuthor(props: {
         try {
           const text = await gw.filesReadText(path)
           if (!cancelled) {
+            hadFlowsJson.current = true
             setGraph(parseFlowsFile(text))
             setLoaded(true)
             return
@@ -62,6 +69,7 @@ export function FlowsAuthor(props: {
         }
       }
       if (!cancelled) {
+        hadFlowsJson.current = false
         setGraph(authorGraphFromOutline(props.outline))
         setLoaded(true)
       }
@@ -88,7 +96,7 @@ export function FlowsAuthor(props: {
       let version = props.version
       let name = props.name
       let description = props.description
-      let budgets: { maxTokens?: number } | undefined
+      let budgets: { maxTokens?: number; maxCost?: number; maxConcurrentRuns?: number } | undefined
       try {
         const raw = await gw.filesReadText(joinRel(props.editPath, 'workflow.yaml'))
         const doc = parseYaml(raw) as Record<string, unknown>
@@ -97,13 +105,19 @@ export function FlowsAuthor(props: {
         if (typeof doc.version === 'string') version = doc.version
         if (typeof doc.name === 'string') name = doc.name
         if (typeof doc.description === 'string') description = doc.description
-        if (doc.budgets && typeof doc.budgets === 'object') {
-          budgets = doc.budgets
+        if (doc.budgets && typeof doc.budgets === 'object' && !Array.isArray(doc.budgets)) {
+          const b = doc.budgets as Record<string, unknown>
+          budgets = {
+            maxTokens: typeof b.maxTokens === 'number' ? b.maxTokens : undefined,
+            maxCost: typeof b.maxCost === 'number' ? b.maxCost : undefined,
+            maxConcurrentRuns:
+              typeof b.maxConcurrentRuns === 'number' ? b.maxConcurrentRuns : undefined,
+          }
         }
       } catch {
         // New def or unreadable yaml — compile with props.
       }
-      const { files } = compileFlow(graph, {
+      const { files, createOnly } = compileFlow(graph, {
         id: props.workflowId,
         name,
         version,
@@ -112,11 +126,27 @@ export function FlowsAuthor(props: {
         output,
         budgets,
       })
+      const skipExisting = new Set(createOnly)
+      if (!hadFlowsJson.current) {
+        for (const rel of Object.keys(files)) {
+          if (rel.startsWith('agents/')) skipExisting.add(rel)
+        }
+      }
       await ensureDir(gw, props.editPath, 'agents')
       await ensureDir(gw, props.editPath, 'scripts')
       for (const [rel, body] of Object.entries(files)) {
-        await gw.filesSave(joinRel(props.editPath, rel), body)
+        const full = joinRel(props.editPath, rel)
+        if (skipExisting.has(rel)) {
+          try {
+            await gw.filesReadText(full)
+            continue
+          } catch (err) {
+            if (!(err instanceof GatewayError && err.status === 404)) throw err
+          }
+        }
+        await gw.filesSave(full, body)
       }
+      hadFlowsJson.current = true
       setDirty(false)
       setSaveMsg('Saved')
       await queryClient.invalidateQueries({ queryKey: ['workflow'] })
