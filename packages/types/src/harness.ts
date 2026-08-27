@@ -166,6 +166,19 @@ export type StartSessionOpts = {
 /** Cap for a session/turn system-prompt override. Same bound as `/api/agents`. */
 export const SYSTEM_PROMPT_MAX_CHARS = 16_384
 
+/**
+ * PTY harnesses have no system-prompt channel, so the first injected turn
+ * prefixes the override. Shared by den-server drivers and the hub raw-inject
+ * path so the two cannot drift.
+ */
+export const SYSTEM_PROMPT_INJECT_HEADING = '[System instructions]'
+
+export function prefixSystemPrompt(prompt: string, text: string): string {
+  const trimmed = prompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
+  if (!trimmed) return text
+  return `${SYSTEM_PROMPT_INJECT_HEADING}\n${trimmed}\n\n${text}`
+}
+
 export type UserTurn = {
   text: string
   /** `pathOrUri` must be node-resolvable — remote clients stage files through

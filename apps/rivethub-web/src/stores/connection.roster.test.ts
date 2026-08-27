@@ -105,3 +105,23 @@ describe('updateNode', () => {
     expect(useConnection.getState().roster).toHaveLength(2)
   })
 })
+
+describe('switchTo', () => {
+  beforeEach(() => {
+    for (const n of [...useConnection.getState().roster]) {
+      useConnection.getState().removeNode(n.baseUrl)
+    }
+    useConnection.getState().addNode(NODE_A)
+    useConnection.getState().addNode(NODE_B)
+  })
+
+  it('returns false when the node is missing from the roster', () => {
+    expect(useConnection.getState().switchTo('https://192.0.2.99:5174')).toBe(false)
+    expect(useConnection.getState().baseUrl).not.toBe('https://192.0.2.99:5174')
+  })
+
+  it('returns true when the switch lands', () => {
+    expect(useConnection.getState().switchTo(NODE_A.baseUrl)).toBe(true)
+    expect(useConnection.getState().baseUrl).toBe(NODE_A.baseUrl)
+  })
+})

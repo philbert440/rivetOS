@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest'
 import type { HarnessEvent, SessionId } from './index.js'
+import { prefixSystemPrompt, SYSTEM_PROMPT_INJECT_HEADING, SYSTEM_PROMPT_MAX_CHARS } from './harness.js'
 
 const SID = 'claude-code:a1b2c3d4-1111-4222-8333-444455556666' as SessionId
 
@@ -28,6 +29,18 @@ const OWNER: Record<HarnessEvent['type'], 'turn' | 'approval' | 'registry'> = {
   'approval-resolved': 'approval',
   'session-created': 'registry',
 }
+
+describe('prefixSystemPrompt', () => {
+  it('prefixes the shared heading and is a no-op on empty prompt', () => {
+    expect(prefixSystemPrompt('be terse', 'hello')).toBe(
+      `${SYSTEM_PROMPT_INJECT_HEADING}\nbe terse\n\nhello`,
+    )
+    expect(prefixSystemPrompt('  ', 'hello')).toBe('hello')
+    expect(prefixSystemPrompt('x'.repeat(SYSTEM_PROMPT_MAX_CHARS + 8), 'hi').length).toBe(
+      SYSTEM_PROMPT_INJECT_HEADING.length + 1 + SYSTEM_PROMPT_MAX_CHARS + 2 + 2,
+    )
+  })
+})
 
 describe('harness event contract', () => {
   it('carries reasoning as a text delta shaped like assistant-delta', () => {

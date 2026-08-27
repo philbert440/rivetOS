@@ -92,7 +92,7 @@ import {
   type HarnessSessionSummary,
   type HarnessTranscriptTurn,
   type SessionId,
-  SYSTEM_PROMPT_MAX_CHARS,
+  prefixSystemPrompt,
   type StartSessionOpts,
   type UserTurn,
 } from '@rivetos/types'
@@ -205,7 +205,7 @@ export function harnessTurnText(turn: UserTurn, applySystemPrompt: boolean): str
   if (!applySystemPrompt) return turn.text
   const prompt = typeof turn.systemPrompt === 'string' ? turn.systemPrompt.trim() : ''
   if (!prompt) return turn.text
-  return `[System instructions]\n${prompt.slice(0, SYSTEM_PROMPT_MAX_CHARS)}\n\n${turn.text}`
+  return prefixSystemPrompt(prompt, turn.text)
 }
 
 /** What a PTY probe last learned. See § capability truthing in the header. */

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  clearAgentLastSession,
   getAgentLastSession,
   rekeyAgentLastSessions,
   setAgentLastSession,
@@ -50,5 +51,20 @@ describe('agent last-session pointer', () => {
     setAgentLastSession('a1', 'sess-1', 'https://node:5174')
     rekeyAgentLastSessions('sess-1', 'sess-1')
     expect(getAgentLastSession('a1')?.sessionId).toBe('sess-1')
+  })
+
+  it('drops the last-session pointer and bind key on delete', () => {
+    setAgentLastSession('a1', 'sess-1', 'https://node:5174')
+    clearAgentLastSession('a1')
+    expect(getAgentLastSession('a1')).toBeUndefined()
+    expect(localStorage.getItem('rivethub.agent.sess-1')).toBeNull()
+  })
+
+  it('retarget leaves no bind behind for the previous session id', () => {
+    setAgentLastSession('a1', 'sess-old', 'https://node:5174')
+    setAgentLastSession('a1', 'sess-new', 'https://node:5174')
+    expect(localStorage.getItem('rivethub.agent.sess-old')).toBeNull()
+    expect(localStorage.getItem('rivethub.agent.sess-new')).toBe('a1')
+    expect(getAgentLastSession('a1')?.sessionId).toBe('sess-new')
   })
 })

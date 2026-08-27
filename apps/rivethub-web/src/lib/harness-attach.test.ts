@@ -3,6 +3,7 @@ import type { HarnessEvent, HarnessTranscriptTurn, SessionId } from '@rivetos/ty
 import type { Subscription } from '@rivetos/gateway-client'
 import { attachHarnessSession, type HarnessAttachGateway } from './harness-attach.js'
 import type { LiveTurn } from './fold-stream.js'
+import { markSystemPromptSent, wasSystemPromptSent } from './system-prompt-sent.js'
 
 const SID = 'claude-code:a1b2c3d4-1111-4222-8333-444455556666' as SessionId
 
@@ -245,5 +246,19 @@ describe('attachHarnessSession', () => {
     h.emit({ type: 'assistant-delta', sessionId: SID, text: 'ghost' })
     await flush()
     expect(seen).toEqual([])
+  })
+
+  it('clears the system-prompt-sent flag on turn error so the prompt can retry', async () => {
+    const h = fakeGateway()
+    const att = attachHarnessSession({
+      gateway: h.gateway,
+      sessionId: SID,
+      onTranscript: () => {},
+      onLive: () => {},
+    })
+    markSystemPromptSent(SID)
+    h.emit({ type: 'error', sessionId: SID, code: 'turn_failed', message: 'driver died' })
+    expect(wasSystemPromptSent(SID)).toBe(false)
+    att.close()
   })
 })

@@ -45,8 +45,19 @@ export function getAgentLastSession(agentId: string): AgentLastSession | undefin
   return { sessionId: row.sessionId, nodeBaseUrl: row.nodeBaseUrl }
 }
 
+function dropBind(sessionId: string | undefined): void {
+  if (!sessionId) return
+  try {
+    localStorage.removeItem(`${BIND_PREFIX}${sessionId}`)
+  } catch {
+    /* storage full / disabled */
+  }
+}
+
 export function setAgentLastSession(agentId: string, sessionId: string, nodeBaseUrl: string): void {
   const map = readMap()
+  const prev = map[agentId]
+  if (prev?.sessionId && prev.sessionId !== sessionId) dropBind(prev.sessionId)
   map[agentId] = { sessionId, nodeBaseUrl }
   writeMap(map)
   try {
@@ -54,6 +65,14 @@ export function setAgentLastSession(agentId: string, sessionId: string, nodeBase
   } catch {
     /* storage full / disabled */
   }
+}
+
+/** Drop the last-session pointer and its bind key (agent delete). */
+export function clearAgentLastSession(agentId: string): void {
+  const map = readMap()
+  const { [agentId]: prev, ...rest } = map
+  writeMap(rest)
+  dropBind(prev?.sessionId)
 }
 
 /** Draft uuid → canonical SessionId (or native-id rotation). */

@@ -18,9 +18,26 @@ import { ModelPicker } from './pickers/model-picker.js'
 import { EffortPicker } from './pickers/effort-picker.js'
 import { modelOptions } from '../lib/model-options.js'
 import { uuidv4 } from '../lib/uuid.js'
-import { getAgentLastSession, setAgentLastSession } from '../lib/agent-session.js'
+import {
+  clearAgentLastSession,
+  getAgentLastSession,
+  setAgentLastSession,
+} from '../lib/agent-session.js'
+import {
+  agentOpenPlan,
+  KEEP_DIALOG_NOTE,
+  nodeHealthStatus,
+  sessionPointerMatches,
+  uniqueRosterNodes,
+  type NodeChoice,
+} from '../lib/agent-roster.js'
+import { nativeIdOf } from '../lib/harness-chat.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
+
+type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
+
+const lastGoodAgentsByNode = new Map<string, AgentPreset[]>()
 
 interface NodeSelectorProps {
   value: string
@@ -30,8 +47,11 @@ interface NodeSelectorProps {
 
 function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Element {
   const { roster, baseUrl: currentBaseUrl } = useConnection()
-  const allNodes = [...roster, { name: 'Current Node', baseUrl: currentBaseUrl }]
-  const uniqueNodes = Array.from(new Map(allNodes.map((n) => [n.baseUrl, n])).values())
+  const rosterNodes = uniqueRosterNodes(roster, currentBaseUrl)
+  const uniqueNodes =
+    value && !rosterNodes.some((n) => n.baseUrl === value)
+      ? [...rosterNodes, { name: value, baseUrl: value }]
+      : rosterNodes
 
   return (
     <div className="flex flex-col gap-1">
@@ -67,6 +87,7 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
   const [effort, setEffort] = useState<ThinkingLevel>(agent?.effort ?? 'medium')
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
   const [nodeBaseUrl, setNodeBaseUrl] = useState(agent?.nodeBaseUrl ?? baseUrl)
+  const nodeLocked = Boolean(agent)
 
   const catalog = useQuery({
     queryKey: ['catalog-agents', nodeBaseUrl],
@@ -78,7 +99,9 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
 
   const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
-    onSave({ name, color, model, effort, systemPrompt, nodeBaseUrl })
+    const patch: Partial<AgentPreset> = { name, color, model, effort, systemPrompt }
+    if (!nodeLocked) patch.nodeBaseUrl = nodeBaseUrl
+    onSave(patch)
   }
 
   return (
@@ -131,7 +154,11 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
         </div>
       </div>
 
-      <NodeSelector value={nodeBaseUrl} onChange={setNodeBaseUrl} disabled={disabled} />
+      <NodeSelector
+        value={nodeBaseUrl}
+        onChange={setNodeBaseUrl}
+        disabled={disabled || nodeLocked}
+      />
 
       <div className="flex flex-col gap-1">
         <label className="text-xs text-ink-dim">Model</label>
@@ -164,7 +191,11 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={!name.trim() || disabled}
+          disabled={
+            !name.trim() ||
+            disabled ||
+            (color.trim() !== '' && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
+          }
           className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
         >
           {agent ? 'Update' : 'Create'}
@@ -183,7 +214,7 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
 }
 
 interface AgentRowProps {
-  agent: AgentPreset
+  agent: RosterAgent
   onOpen: () => void
   onEdit: () => void
   onDelete: () => void
@@ -191,14 +222,22 @@ interface AgentRowProps {
 
 function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Element {
   const nodeName = useNodeName(agent.nodeBaseUrl)
-  const { data: health } = useQuery({
+  const { data: health, isPending } = useQuery({
     queryKey: ['agent-node-health', agent.nodeBaseUrl],
-    queryFn: ({ signal }) =>
-      new RivetGateway({ baseUrl: agent.nodeBaseUrl, authMode: 'mtls' }).health(signal),
+    queryFn: async ({ signal }) => {
+      const ok = await new RivetGateway({
+        baseUrl: agent.nodeBaseUrl,
+        authMode: 'mtls',
+      }).health(signal)
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      return ok
+    },
     staleTime: 30_000,
+    refetchInterval: 60_000,
     retry: 0,
   })
-  const nodeOnline = health === true
+  const status = nodeHealthStatus(health, isPending)
+  const nodeOffline = status === 'offline'
 
   return (
     <div className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2">
@@ -206,7 +245,7 @@ function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Eleme
         onClick={onOpen}
         className="flex min-w-0 flex-1 items-center gap-2 text-left"
         title={`${agent.name} on ${nodeName ?? agent.nodeBaseUrl}`}
-        disabled={!nodeOnline}
+        disabled={nodeOffline}
       >
         {agent.color && (
           <span
@@ -216,7 +255,7 @@ function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Eleme
           />
         )}
         <span className="min-w-0 truncate text-xs text-ink">{agent.name}</span>
-        {!nodeOnline && (
+        {nodeOffline && (
           <span className="shrink-0 text-[10px] text-red" title="Node offline">
             ●
           </span>
@@ -251,39 +290,43 @@ export function AgentsSection(): JSX.Element {
   const { addDraft, setActive } = useChat()
   const chatSettings = useChatSettings()
   const [collapsed, setCollapsed] = useState(false)
-  const [editing, setEditing] = useState<AgentPreset | null>(null)
+  const [editing, setEditing] = useState<RosterAgent | null>(null)
   const [creating, setCreating] = useState(false)
   const dialog = useConfirmDialog()
 
-  // House-wide roster: query /api/agents from all known nodes
-  const allNodes = [{ baseUrl }, ...roster]
-  const uniqueNodes = Array.from(new Map(allNodes.map((n) => [n.baseUrl, n])).values())
+  const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
 
   const nodeQueries = useQuery({
     queryKey: ['agents-all-nodes', uniqueNodes.map((n) => n.baseUrl)],
     queryFn: async ({ signal }) => {
-      const results = await Promise.allSettled(
-        uniqueNodes.map((node) =>
-          new RivetGateway({ baseUrl: node.baseUrl, authMode: 'mtls' })
-            .agentsList(signal)
-            .then((res) => ({ nodeBaseUrl: node.baseUrl, agents: res.agents }))
-            .catch(() => ({ nodeBaseUrl: node.baseUrl, agents: [] as AgentPreset[] })),
-        ),
+      const results = await Promise.all(
+        uniqueNodes.map(async (node) => {
+          try {
+            const res = await new RivetGateway({
+              baseUrl: node.baseUrl,
+              authMode: 'mtls',
+            }).agentsList(signal)
+            lastGoodAgentsByNode.set(node.baseUrl, res.agents)
+            return { nodeBaseUrl: node.baseUrl, agents: res.agents }
+          } catch (err) {
+            if (signal.aborted) throw err
+            const kept = lastGoodAgentsByNode.get(node.baseUrl) ?? []
+            return { nodeBaseUrl: node.baseUrl, agents: kept }
+          }
+        }),
       )
-      const allAgents: AgentPreset[] = []
+      const allAgents: RosterAgent[] = []
       const seen = new Set<string>()
       for (const result of results) {
-        if (result.status === 'fulfilled') {
-          for (const agent of result.value.agents) {
-            if (!seen.has(agent.id)) {
-              seen.add(agent.id)
-              allAgents.push(agent)
-            }
-          }
+        for (const agent of result.agents) {
+          if (seen.has(agent.id)) continue
+          seen.add(agent.id)
+          allAgents.push({ ...agent, sourceNodeBaseUrl: result.nodeBaseUrl })
         }
       }
       return allAgents
     },
+    placeholderData: (prev) => prev,
     refetchInterval: 60_000,
   })
 
@@ -322,7 +365,6 @@ export function AgentsSection(): JSX.Element {
         model: agent.model,
         effort: agent.effort,
         systemPrompt: agent.systemPrompt,
-        nodeBaseUrl: agent.nodeBaseUrl,
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
@@ -345,59 +387,103 @@ export function AgentsSection(): JSX.Element {
     setAgentLastSession(agent.id, sessionId, nodeBaseUrl)
   }
 
-  const openSession = (sessionId: string, agent: AgentPreset, nodeBaseUrl: string): void => {
-    if (nodeBaseUrl !== baseUrl) switchTo(nodeBaseUrl)
-    applyAgentSettings(sessionId, agent, nodeBaseUrl)
-    addDraft(sessionId)
+  const ensureNode = (nodeBaseUrl: string): boolean => {
+    if (nodeBaseUrl === baseUrl) return true
+    if (!switchTo(nodeBaseUrl)) return false
+    return useConnection.getState().baseUrl === nodeBaseUrl
+  }
+
+  const openFresh = (agent: AgentPreset, nodeBaseUrl: string): void => {
+    const plan = agentOpenPlan('fresh')
+    const sessionId = uuidv4()
+    if (!ensureNode(nodeBaseUrl)) {
+      void dialog.confirm(`Can't switch to that node — it is not in the roster.`, {
+        confirmLabel: 'OK',
+      })
+      return
+    }
+    if (plan.applySettings) applyAgentSettings(sessionId, agent, nodeBaseUrl)
+    if (plan.addDraft) addDraft(sessionId)
     setActive(sessionId)
     void navigate({ to: '/', search: { session: sessionId } })
   }
 
-  const handleOpen = (agent: AgentPreset): void => {
+  const openKept = (sessionId: string, nodeBaseUrl: string): void => {
+    if (!ensureNode(nodeBaseUrl)) {
+      void dialog.confirm(`Can't switch to that node — it is not in the roster.`, {
+        confirmLabel: 'OK',
+      })
+      return
+    }
+    setActive(sessionId)
+    void navigate({ to: '/', search: { session: sessionId } })
+  }
+
+  const sessionStillExists = async (sessionId: string, nodeBaseUrl: string): Promise<boolean> => {
+    const chat = useChat.getState()
+    if (chat.drafts.includes(sessionId)) return true
+    if ((chat.messages[sessionId] ?? []).length > 0) return true
+    if ((chat.transcripts[sessionId]?.turns.length ?? 0) > 0) return true
+    try {
+      const listed = await new RivetGateway({
+        baseUrl: nodeBaseUrl,
+        authMode: 'mtls',
+      }).harnessSessions()
+      return listed.sessions.some((s) => sessionPointerMatches(sessionId, s.id, nativeIdOf))
+    } catch {
+      return false
+    }
+  }
+
+  const handleOpen = (agent: RosterAgent): void => {
     const last = getAgentLastSession(agent.id)
     if (!last) {
-      openSession(uuidv4(), agent, agent.nodeBaseUrl)
+      openFresh(agent, agent.nodeBaseUrl)
       return
     }
     void (async () => {
+      const alive = await sessionStillExists(last.sessionId, last.nodeBaseUrl)
+      if (!alive) {
+        openFresh(agent, agent.nodeBaseUrl)
+        return
+      }
       const pick = await dialog.choose(
-        `"${agent.name}" already has a conversation. Keep it, or start over?`,
+        `"${agent.name}" already has a conversation. Keep it, or start over? ${KEEP_DIALOG_NOTE}`,
       )
       if (pick === undefined) return
-      if (pick === 'keep') openSession(last.sessionId, agent, last.nodeBaseUrl)
-      else openSession(uuidv4(), agent, agent.nodeBaseUrl)
+      if (pick === 'keep') openKept(last.sessionId, last.nodeBaseUrl)
+      else openFresh(agent, agent.nodeBaseUrl)
     })()
   }
 
   return (
     <div className="border-t border-line px-2 py-2">
       {dialog.element}
-      <button
-        onClick={() => setCollapsed((c) => !c)}
-        className="flex w-full items-center justify-between px-1 py-1 text-left hover:bg-panel-2"
-      >
-        <span className="font-mono text-xs text-ink-dim">agents</span>
-        <div className="flex items-center gap-1">
-          {!collapsed && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation()
-                setCreating(true)
-              }}
-              className="text-ink-dim hover:text-em"
-              aria-label="add agent"
-              title="add agent"
-            >
-              <Plus className="size-3" />
-            </button>
-          )}
+      <div className="flex w-full items-center justify-between px-1 py-1">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex min-w-0 flex-1 items-center gap-1 text-left hover:bg-panel-2"
+        >
+          <span className="font-mono text-xs text-ink-dim">agents</span>
           {collapsed ? (
             <ChevronRight className="size-3 text-ink-dim" />
           ) : (
             <ChevronDown className="size-3 text-ink-dim" />
           )}
-        </div>
-      </button>
+        </button>
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="text-ink-dim hover:text-em"
+            aria-label="add agent"
+            title="add agent"
+          >
+            <Plus className="size-3" />
+          </button>
+        )}
+      </div>
 
       {!collapsed && (
         <div className="mt-1 flex flex-col gap-1">
@@ -414,7 +500,7 @@ export function AgentsSection(): JSX.Element {
                   updateMutation.mutate({
                     id: agent.id,
                     agent: updated,
-                    targetNode: agent.nodeBaseUrl,
+                    targetNode: agent.sourceNodeBaseUrl,
                   })
                 }
                 onCancel={() => setEditing(null)}
@@ -432,8 +518,13 @@ export function AgentsSection(): JSX.Element {
                       await dialog.confirm(`Delete agent "${agent.name}"?`, {
                         danger: true,
                       })
-                    )
-                      deleteMutation.mutate({ id: agent.id, targetNode: agent.nodeBaseUrl })
+                    ) {
+                      clearAgentLastSession(agent.id)
+                      deleteMutation.mutate({
+                        id: agent.id,
+                        targetNode: agent.sourceNodeBaseUrl,
+                      })
+                    }
                   })()
                 }}
               />

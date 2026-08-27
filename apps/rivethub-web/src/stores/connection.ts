@@ -41,8 +41,8 @@ interface ConnectionState {
   transportEpoch: number
   roster: RosterNode[]
   setConnection: (baseUrl: string) => void
-  /** Switch to a roster node. */
-  switchTo: (baseUrl: string) => void
+  /** Switch to a roster node. Returns false when the URL is invalid or not in the roster. */
+  switchTo: (baseUrl: string) => boolean
   addNode: (node: RosterNode) => void
   /**
    * Edit a saved node in place (position kept). If the edit collides with
@@ -170,10 +170,11 @@ export const useConnection = create<ConnectionState>((set, get) => {
       upgradeTransport(nextBaseUrl, set, get)
     },
 
-    switchTo(rawUrl: string): void {
+    switchTo(rawUrl: string): boolean {
       const nextBaseUrl = normalize(rawUrl)
-      if (!isValidGatewayUrl(nextBaseUrl)) return
-      if (!get().roster.some((n) => n.baseUrl === nextBaseUrl)) return
+      if (!isValidGatewayUrl(nextBaseUrl)) return false
+      if (get().baseUrl === nextBaseUrl) return true
+      if (!get().roster.some((n) => n.baseUrl === nextBaseUrl)) return false
       localStorage.setItem(BASE_KEY, nextBaseUrl)
       if (isValidGatewayUrl(nextBaseUrl)) rememberRemoteUi(localStorage, nextBaseUrl)
       set({
@@ -181,6 +182,7 @@ export const useConnection = create<ConnectionState>((set, get) => {
         gateway: makeGateway(nextBaseUrl),
       })
       upgradeTransport(nextBaseUrl, set, get)
+      return true
     },
 
     addNode(node: RosterNode): void {

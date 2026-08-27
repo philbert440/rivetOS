@@ -20,6 +20,7 @@ import type { HarnessEvent, HarnessTranscriptTurn } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { foldHarnessEvent, isApprovalEvent, type HarnessApprovalEvent } from './harness-fold.js'
 import type { LiveTurn } from './fold-stream.js'
+import { clearSystemPromptSent } from './system-prompt-sent.js'
 
 /** The slice of RivetGateway an attachment needs (also the test seam). */
 export interface HarnessAttachGateway {
@@ -136,12 +137,19 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
         opts.onApproval?.(event)
         return
       }
-      if (event.type === 'error' && FATAL_CODES.has(event.code)) {
-        // The server's attach-failure frame: it closes the socket right after,
-        // and the ws helper would otherwise reconnect into the same refusal
-        // forever, each round trip re-arming a 404 resync.
-        fatal(event.message || event.code)
-        return
+      if (event.type === 'error') {
+        clearSystemPromptSent(opts.sessionId)
+        if (FATAL_CODES.has(event.code)) {
+          // The server's attach-failure frame: it closes the socket right after,
+          // and the ws helper would otherwise reconnect into the same refusal
+          // forever, each round trip re-arming a 404 resync.
+          fatal(event.message || event.code)
+          return
+        }
+      }
+      if (event.type === 'session-updated' && event.status === 'error') {
+        clearSystemPromptSent(opts.sessionId)
+        if (event.previousSessionId) clearSystemPromptSent(event.previousSessionId)
       }
       const next = foldHarnessEvent(live, event)
       if (next !== live) {

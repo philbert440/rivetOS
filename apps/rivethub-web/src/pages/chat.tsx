@@ -21,8 +21,19 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
+import {
+  prefixSystemPrompt,
+  type ApprovalDecision,
+  type HarnessSessionSummary,
+  type SessionMessage,
+} from '@rivetos/types'
 import { rekeyAgentLastSessions } from '../lib/agent-session.js'
+import {
+  clearSystemPromptSent,
+  markSystemPromptSent,
+  rekeySystemPromptSent,
+  wasSystemPromptSent,
+} from '../lib/system-prompt-sent.js'
 import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -100,9 +111,6 @@ type InjectSink = (text: string, interrupt: boolean) => Promise<void>
  * pump tests).
  */
 const outboundPumps = new Map<string, { pump: OutboundPump; sink: { current: InjectSink } }>()
-
-/** Session ids whose agent system prompt already rode the first harness turn. */
-const systemPromptSent = new Set<string>()
 
 function outboundPumpFor(sessionId: string): {
   pump: OutboundPump
@@ -189,10 +197,7 @@ function migrateSessionKey(baseUrl: string, from: string, to: string): void {
   }
   settings.clear(storageKey(baseUrl, from))
   rekeyAgentLastSessions(from, to)
-  if (systemPromptSent.has(from)) {
-    systemPromptSent.delete(from)
-    systemPromptSent.add(to)
-  }
+  rekeySystemPromptSent(from, to)
 }
 
 export function ChatPage(): JSX.Element {
@@ -838,7 +843,7 @@ function ActiveSession(props: {
   }
 
   const peekSystemPrompt = (): string | undefined => {
-    if (systemPromptSent.has(props.sessionId)) return undefined
+    if (wasSystemPromptSent(props.sessionId)) return undefined
     const chat = useChat.getState()
     if ((chat.messages[props.sessionId] ?? EMPTY_MESSAGES).length > 0) return undefined
     if ((chat.transcripts[props.sessionId]?.turns.length ?? 0) > 0) return undefined
@@ -863,32 +868,42 @@ function ActiveSession(props: {
         // to draw its cancel before the next paste, or the turn swallows it.
         await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
       }
-      await gw.sendHarnessTurn(canonicalId, {
-        text,
-        ...(prompt ? { systemPrompt: prompt } : {}),
-      })
-      if (prompt) systemPromptSent.add(props.sessionId)
+      try {
+        await gw.sendHarnessTurn(canonicalId, {
+          text,
+          ...(prompt ? { systemPrompt: prompt } : {}),
+        })
+        if (prompt) markSystemPromptSent(props.sessionId)
+      } catch (err) {
+        clearSystemPromptSent(props.sessionId)
+        throw err
+      }
       return
     }
-    const injectText = prompt ? `[System instructions]\n${prompt}\n\n${text}` : text
-    await ensurePty()
+    const injectText = prompt ? prefixSystemPrompt(prompt, text) : text
     try {
-      await gw.termInject({
-        session: props.sessionId,
-        text: injectText,
-        ...(interrupt ? { interrupt } : {}),
-      })
-    } catch {
-      // The harness may have been LRU-evicted while we held a stale pty ref
-      // (#318 review): drop the ref, respawn (store-existence → --resume so
-      // context is kept), and retry once. A fresh harness has no turn to
-      // interrupt, so the retry never sends Esc.
-      termPtyRef.current = undefined
-      setTermPtyId(undefined)
       await ensurePty()
-      await gw.termInject({ session: props.sessionId, text: injectText })
+      try {
+        await gw.termInject({
+          session: props.sessionId,
+          text: injectText,
+          ...(interrupt ? { interrupt } : {}),
+        })
+      } catch {
+        // The harness may have been LRU-evicted while we held a stale pty ref
+        // (#318 review): drop the ref, respawn (store-existence → --resume so
+        // context is kept), and retry once. A fresh harness has no turn to
+        // interrupt, so the retry never sends Esc.
+        termPtyRef.current = undefined
+        setTermPtyId(undefined)
+        await ensurePty()
+        await gw.termInject({ session: props.sessionId, text: injectText })
+      }
+      if (prompt) markSystemPromptSent(props.sessionId)
+    } catch (err) {
+      clearSystemPromptSent(props.sessionId)
+      throw err
     }
-    if (prompt) systemPromptSent.add(props.sessionId)
   }
 
   pumpEntry.sink.current = injectOne

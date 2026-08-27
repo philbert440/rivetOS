@@ -234,12 +234,11 @@ const API_PATHS = new Set([
   '/files/mkdir',
   '/files/rename',
   '/files/delete',
-  '/agents',
 ])
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   // x-rivet-conversation / x-rivet-title: OpenAI /v1 bridge conventions (Android)
   'Access-Control-Allow-Headers':
     'content-type, authorization, x-rivet-conversation, x-rivet-title',
