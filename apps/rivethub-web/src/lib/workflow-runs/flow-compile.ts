@@ -138,17 +138,13 @@ function emitDone(output: WorkflowField[]): string {
   return `  await step.done({\n${pairs.join('\n')}\n  })`
 }
 
-function emitParallel(
-  graph: FlowAuthorGraph,
-  node: FlowAuthorNode,
-  kids: FlowAuthorNode[],
-): string {
+function emitParallel(node: FlowAuthorNode, kids: FlowAuthorNode[]): string {
   if (kids.length === 0) return `  // parallel ${JSON.stringify(node.id)} has no branches`
   const branches = kids.map((kid) => {
     const body = emitStep(kid).replace(/^\s+/, '      ')
     return `    async (step) => {
 ${body}
-      return ${kid.kind === 'done' ? '{}' : ident(kid.id)}
+      return ${ident(kid.id)}
     }`
   })
   return `  await step.parallel(${JSON.stringify(node.id)}, [
@@ -194,13 +190,13 @@ export function compileFlow(graph: FlowAuthorGraph, meta: CompileMeta): Compiled
         skip.add(k.id)
         outlineNodes.push(k)
       }
-      stepLines.push(emitParallel(graph, node, kids))
+      stepLines.push(emitParallel(node, kids))
       continue
     }
     if (node.kind === 'done') {
       stepLines.push(emitDone(output))
       emittedDone = true
-      continue
+      break
     }
     stepLines.push(emitStep(node))
   }
@@ -209,8 +205,7 @@ export function compileFlow(graph: FlowAuthorGraph, meta: CompileMeta): Compiled
   const input = meta.input.length > 0 ? meta.input : defaultInput()
   const outlineYaml = outlineNodes
     .map((n) => {
-      const kind = n.kind === 'start' ? 'run' : n.kind
-      return `  - id: ${yamlScalar(n.id)}\n    kind: ${kind}\n    label: ${yamlScalar(n.label)}`
+      return `  - id: ${yamlScalar(n.id)}\n    kind: ${n.kind}\n    label: ${yamlScalar(n.label)}`
     })
     .join('\n')
 
@@ -254,10 +249,16 @@ ${stepLines.join('\n\n')}
     `${JSON.stringify({ version: 1, nodes: graph.nodes, edges: graph.edges }, null, 2)}\n`
 
   const createOnly: string[] = []
+  const agentStems = new Map<string, string>()
   for (const n of graph.nodes) {
     if (!reachable.has(n.id) && n.id !== FLOW_START_ID) continue
     if (n.kind === 'agent') {
       const stem = n.agentName || slugify(n.label) || n.id
+      const prev = agentStems.get(stem)
+      if (prev && prev !== n.id) {
+        throw new FlowCompileError(`two agents share agents/${stem}.md ("${prev}" and "${n.id}")`)
+      }
+      agentStems.set(stem, n.id)
       files[`agents/${stem}.md`] = agentFile(n)
     }
     if (n.kind === 'run') {
@@ -270,14 +271,40 @@ ${stepLines.join('\n\n')}
   return { files, createOnly }
 }
 
+const AUTHOR_KINDS = new Set(['agent', 'call', 'done', 'human', 'parallel', 'run', 'start'])
+
 export function parseFlowsFile(text: string): FlowAuthorGraph {
   const raw: unknown = JSON.parse(text)
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new Error('flows.json: expected object')
   }
-  const o = raw as { version?: unknown; nodes?: unknown; edges?: unknown }
+  const o = raw as { nodes?: unknown; edges?: unknown }
   if (!Array.isArray(o.nodes) || !Array.isArray(o.edges)) {
     throw new Error('flows.json: nodes and edges required')
   }
-  return { nodes: o.nodes as FlowAuthorGraph['nodes'], edges: o.edges as FlowAuthorGraph['edges'] }
+  const nodes: FlowAuthorGraph['nodes'] = []
+  for (const item of o.nodes) {
+    if (!item || typeof item !== 'object') throw new Error('flows.json: invalid node')
+    const n = item as Record<string, unknown>
+    if (typeof n.id !== 'string' || n.id.length === 0) throw new Error('flows.json: node.id')
+    if (typeof n.kind !== 'string' || !AUTHOR_KINDS.has(n.kind)) {
+      throw new Error(`flows.json: bad kind on ${n.id}`)
+    }
+    if (typeof n.x !== 'number' || !Number.isFinite(n.x))
+      throw new Error(`flows.json: node.x ${n.id}`)
+    if (typeof n.y !== 'number' || !Number.isFinite(n.y))
+      throw new Error(`flows.json: node.y ${n.id}`)
+    if (typeof n.label !== 'string') throw new Error(`flows.json: node.label ${n.id}`)
+    nodes.push(n as FlowAuthorGraph['nodes'][number])
+  }
+  const edges: FlowAuthorGraph['edges'] = []
+  for (const item of o.edges) {
+    if (!item || typeof item !== 'object') throw new Error('flows.json: invalid edge')
+    const e = item as Record<string, unknown>
+    if (typeof e.id !== 'string' || typeof e.from !== 'string' || typeof e.to !== 'string') {
+      throw new Error('flows.json: invalid edge')
+    }
+    edges.push({ id: e.id, from: e.from, to: e.to })
+  }
+  return { nodes, edges }
 }

@@ -42,6 +42,8 @@ describe('overlayEdgeKind', () => {
     expect(overlayEdgeKind('done', 'done')).toBe('done')
     expect(overlayEdgeKind('pending', 'pending')).toBe('pending')
     expect(overlayEdgeKind('done', 'failed')).toBe('failed')
+    expect(overlayEdgeKind('running', 'pending')).toBe('active')
+    expect(overlayEdgeKind('gate-open', 'pending')).toBe('active')
   })
 })
 

@@ -45,6 +45,15 @@ export function FlowsAuthor(props: {
   }, [dirty, props.onDirtyChange])
 
   useEffect(() => {
+    if (!dirty) return
+    const onUnload = (e: BeforeUnloadEvent): void => {
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', onUnload)
+    return () => window.removeEventListener('beforeunload', onUnload)
+  }, [dirty])
+
+  useEffect(() => {
     let cancelled = false
     setLoaded(false)
     setDirty(false)
@@ -127,6 +136,7 @@ export function FlowsAuthor(props: {
         budgets,
       })
       const skipExisting = new Set(createOnly)
+      const prune = hadFlowsJson.current
       if (!hadFlowsJson.current) {
         for (const rel of Object.keys(files)) {
           if (rel.startsWith('agents/')) skipExisting.add(rel)
@@ -145,6 +155,13 @@ export function FlowsAuthor(props: {
           }
         }
         await gw.filesSave(full, body)
+      }
+      if (prune) {
+        const keep = new Set(
+          Object.keys(files).filter((p) => p.startsWith('agents/') || p.startsWith('scripts/')),
+        )
+        await pruneUnreferenced(gw, props.editPath, 'agents', keep)
+        await pruneUnreferenced(gw, props.editPath, 'scripts', keep)
       }
       hadFlowsJson.current = true
       setDirty(false)
@@ -194,6 +211,24 @@ export function FlowsAuthor(props: {
       inspectorExtra={props.inspectorExtra}
     />
   )
+}
+
+async function pruneUnreferenced(
+  gw: ReturnType<typeof useConnection.getState>['gateway'],
+  editPath: string,
+  dir: string,
+  keep: Set<string>,
+): Promise<void> {
+  try {
+    const listing = await gw.filesList(joinRel(editPath, dir))
+    for (const e of listing.entries) {
+      if (e.type !== 'file') continue
+      const rel = `${dir}/${e.name}`
+      if (!keep.has(rel)) await gw.filesDelete(joinRel(editPath, rel))
+    }
+  } catch {
+    // Listing/delete is best-effort — save already wrote the live files.
+  }
 }
 
 async function ensureDir(

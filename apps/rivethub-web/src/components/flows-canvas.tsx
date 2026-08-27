@@ -2,13 +2,23 @@
  * Flows canvas — pan, select, drag nodes, wire output→input ports.
  */
 
-import { useCallback, useEffect, useRef, useState, type JSX, type PointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent,
+  type PointerEvent,
+} from 'react'
 import { FLOW_NODE_SIZE } from '../lib/workflow-runs/flow-layout.js'
 import { flowNodeFamily, type FlowNodeFamily } from '../lib/workflow-runs/flow-kind.js'
 import {
   canConnect,
   connectFlowNodes,
+  disconnectFlowEdge,
   updateFlowNode,
+  type FlowAuthorEdge,
   type FlowAuthorGraph,
   type FlowAuthorKind,
   type FlowAuthorNode,
@@ -38,6 +48,8 @@ export interface FlowsCanvasProps {
   editable?: boolean
   /** Journal status keyed by authoring node id — same canvas, live overlay. */
   statusById?: Record<string, GraphNodeStatus>
+  selectedEdgeId?: string | null
+  onSelectEdge?: (id: string | null) => void
   className?: string
 }
 
@@ -103,6 +115,32 @@ function hitPort(
   return best ? { id: best.id, side: best.side } : undefined
 }
 
+function cubic(t: number, a: number, b: number, c: number, d: number): number {
+  const mt = 1 - t
+  return mt * mt * mt * a + 3 * mt * mt * t * b + 3 * mt * t * t * c + t * t * t * d
+}
+
+function hitEdge(graph: FlowAuthorGraph, x: number, y: number): FlowAuthorEdge | undefined {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]))
+  let best: { edge: FlowAuthorEdge; d: number } | undefined
+  for (const e of graph.edges) {
+    const from = byId.get(e.from)
+    const to = byId.get(e.to)
+    if (!from || !to) continue
+    const s = outPort(from)
+    const t = inPort(to)
+    const c = Math.max(24, Math.min(80, (t.x - s.x) / 2))
+    for (let i = 0; i <= 20; i++) {
+      const u = i / 20
+      const px = cubic(u, s.x, s.x + c, t.x - c, t.x)
+      const py = cubic(u, s.y, s.y, t.y, t.y)
+      const d = Math.hypot(x - px, y - py)
+      if (d <= 8 && (!best || d < best.d)) best = { edge: e, d }
+    }
+  }
+  return best?.edge
+}
+
 function hitNode(nodes: FlowAuthorNode[], x: number, y: number): FlowAuthorNode | undefined {
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i]
@@ -119,13 +157,14 @@ function drawBezier(
   tx: number,
   ty: number,
   color: string,
+  width = 2,
 ): void {
   const c = Math.max(24, Math.min(80, (tx - sx) / 2))
   ctx.beginPath()
   ctx.moveTo(sx, sy)
   ctx.bezierCurveTo(sx + c, sy, tx - c, ty, tx, ty)
   ctx.strokeStyle = color
-  ctx.lineWidth = 2
+  ctx.lineWidth = width
   ctx.stroke()
 }
 
@@ -138,6 +177,7 @@ function drawScene(
   connecting: { fromId: string; x: number; y: number } | undefined,
   statusById: Record<string, GraphNodeStatus> | undefined,
   pulse: number,
+  selectedEdgeId: string | undefined,
   cssW: number,
   cssH: number,
 ): void {
@@ -171,7 +211,8 @@ function drawScene(
     const s = outPort(from)
     const t = inPort(to)
     const kind = statusById ? overlayEdgeKind(statusById[from.id], statusById[to.id]) : 'pending'
-    drawBezier(ctx, s.x, s.y, t.x, t.y, CANVAS_STATUS_EDGE[kind])
+    const color = e.id === selectedEdgeId ? '#e6edf3' : CANVAS_STATUS_EDGE[kind]
+    drawBezier(ctx, s.x, s.y, t.x, t.y, color, e.id === selectedEdgeId ? 4 : 2)
   }
 
   if (connecting) {
@@ -263,7 +304,17 @@ function drawScene(
 }
 
 export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
-  const { graph, selectedId, onSelect, onChange, editable = false, statusById, className } = props
+  const {
+    graph,
+    selectedId,
+    onSelect,
+    onChange,
+    editable = false,
+    statusById,
+    selectedEdgeId,
+    onSelectEdge,
+    className,
+  } = props
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [pan, setPan] = useState({ x: 0, y: 0 })
@@ -299,8 +350,20 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     if (canvas.height !== ph) canvas.height = ph
     canvas.style.width = `${String(cssW)}px`
     canvas.style.height = `${String(cssH)}px`
-    drawScene(ctx, graph, pan, selectedId, hover, connecting, statusById, pulse, cssW, cssH)
-  }, [graph, pan, selectedId, hover, connecting, statusById, pulse])
+    drawScene(
+      ctx,
+      graph,
+      pan,
+      selectedId,
+      hover,
+      connecting,
+      statusById,
+      pulse,
+      selectedEdgeId ?? undefined,
+      cssW,
+      cssH,
+    )
+  }, [graph, pan, selectedId, hover, connecting, statusById, pulse, selectedEdgeId])
 
   useEffect(() => {
     paint()
@@ -351,6 +414,7 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     }
     const node = hitNode(graph.nodes, world.x, world.y)
     if (node) {
+      onSelectEdge?.(null)
       onSelect?.(node.id)
       drag.current = {
         pointerId: ev.pointerId,
@@ -361,7 +425,15 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
       }
       return
     }
+    const edge = hitEdge(graph, world.x, world.y)
+    if (edge) {
+      onSelect?.(null)
+      onSelectEdge?.(edge.id)
+      drag.current = { pointerId: ev.pointerId, lastX: ev.clientX, lastY: ev.clientY, mode: 'pan' }
+      return
+    }
     onSelect?.(null)
+    onSelectEdge?.(null)
     drag.current = { pointerId: ev.pointerId, lastX: ev.clientX, lastY: ev.clientY, mode: 'pan' }
     setPanning(true)
   }
@@ -410,21 +482,33 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
   let cursor = 'grab'
   if (panning) cursor = 'grabbing'
   else if (connecting) cursor = 'crosshair'
-  else if (hover?.side === 'out') cursor = 'crosshair'
-  else if (hover?.id) cursor = 'pointer'
+  else if (editable && hover?.side === 'out') cursor = 'crosshair'
+  else if (hover?.id) cursor = editable ? 'pointer' : 'default'
+
+  const onKeyDown = (ev: KeyboardEvent<HTMLCanvasElement>): void => {
+    if (!editable || !onChange) return
+    if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
+    if (selectedEdgeId) {
+      ev.preventDefault()
+      onChange(disconnectFlowEdge(graph, selectedEdgeId))
+      onSelectEdge?.(null)
+    }
+  }
 
   return (
     <div ref={wrapRef} className={`relative min-h-0 min-w-0 flex-1 ${className ?? ''}`}>
       <canvas
         ref={canvasRef}
-        role="img"
-        aria-label="Workflow flows canvas"
+        role="application"
+        tabIndex={0}
+        aria-label="Workflow flows canvas. Delete removes the selected wire."
         className="block size-full"
         style={{ cursor }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onKeyDown={onKeyDown}
       />
     </div>
   )

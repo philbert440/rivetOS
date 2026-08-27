@@ -40,7 +40,9 @@ export function overlayEdgeKind(
   to: GraphNodeStatus | undefined,
 ): 'active' | 'done' | 'failed' | 'pending' {
   if (from === 'failed' || to === 'failed') return 'failed'
-  if (to === 'running' || to === 'gate-open') return 'active'
+  if (to === 'running' || to === 'gate-open' || from === 'running' || from === 'gate-open') {
+    return 'active'
+  }
   if (from === 'done' || from === 'gate-resolved' || to === 'done' || to === 'gate-resolved') {
     return 'done'
   }

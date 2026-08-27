@@ -3,8 +3,10 @@ import {
   addFlowNode,
   canConnect,
   connectFlowNodes,
+  deleteFlowNode,
   emptyFlowGraph,
   FLOW_START_ID,
+  topoSort,
   wouldCreateCycle,
 } from './flow-graph.js'
 
@@ -49,5 +51,34 @@ describe('flow graph connect', () => {
     const par = g.nodes.find((n) => n.kind === 'parallel')!
     const gate = g.nodes.find((n) => n.kind === 'human')!
     expect(canConnect(g, par.id, gate.id).ok).toBe(false)
+  })
+
+  it('rejects duplicate wires', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'agent')
+    const agent = g.nodes.find((n) => n.kind === 'agent')!
+    g = connectFlowNodes(g, FLOW_START_ID, agent.id)
+    expect(canConnect(g, FLOW_START_ID, agent.id).ok).toBe(false)
+  })
+
+  it('deleteFlowNode drops incident edges', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'agent')
+    const agent = g.nodes.find((n) => n.kind === 'agent')!
+    g = connectFlowNodes(g, FLOW_START_ID, agent.id)
+    g = deleteFlowNode(g, agent.id)
+    expect(g.nodes.some((n) => n.id === agent.id)).toBe(false)
+    expect(g.edges).toHaveLength(0)
+  })
+
+  it('topoSort walks start then wired children', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'run')
+    g = addFlowNode(g, 'agent')
+    const script = g.nodes.find((n) => n.kind === 'run')!
+    const agent = g.nodes.find((n) => n.kind === 'agent')!
+    g = connectFlowNodes(g, FLOW_START_ID, script.id)
+    g = connectFlowNodes(g, script.id, agent.id)
+    expect(topoSort(g).slice(0, 3)).toEqual([FLOW_START_ID, script.id, agent.id])
   })
 })

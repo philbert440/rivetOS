@@ -23,7 +23,8 @@ function asKind(raw: string | undefined): FlowAuthorKind {
   if (raw === 'gate') return 'human'
   if (raw && KINDS.has(raw as FlowAuthorKind)) return raw as FlowAuthorKind
   if (!raw || raw === 'entry') return 'agent'
-  return 'agent'
+  // Unknown outline kinds are deterministic scripts, not token-spending agents.
+  return 'run'
 }
 
 export function authorGraphFromProjection(nodes: GraphNode[], edges: GraphEdge[]): FlowAuthorGraph {

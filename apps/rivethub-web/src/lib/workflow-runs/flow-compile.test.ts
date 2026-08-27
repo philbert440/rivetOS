@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import { parse as parseYaml } from 'yaml'
 import { addFlowNode, connectFlowNodes, emptyFlowGraph, FLOW_START_ID } from './flow-graph.js'
-import { compileFlow, FlowCompileError, RUN_TS_MARKER } from './flow-compile.js'
+import { compileFlow, FlowCompileError, parseFlowsFile, RUN_TS_MARKER } from './flow-compile.js'
 
 const META = {
   id: 'demo',
@@ -102,5 +103,52 @@ describe('compileFlow', () => {
     })
     expect(files['run.ts']).toContain('"verdict"')
     expect(files['run.ts']).not.toContain('"result": true')
+  })
+
+  it('parses emitted workflow.yaml and rejects duplicate agent files', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'agent')
+    const a = g.nodes.find((n) => n.kind === 'agent')!
+    g = connectFlowNodes(g, FLOW_START_ID, a.id)
+    const { files } = compileFlow(g, META)
+    const doc = parseYaml(files['workflow.yaml']!) as { outline: { id: string }[] }
+    expect(doc.outline.some((s) => s.id === a.id)).toBe(true)
+    g = addFlowNode(g, 'agent')
+    const b = g.nodes.find((n) => n.kind === 'agent' && n.id !== a.id)!
+    g = {
+      ...g,
+      nodes: g.nodes.map((n) => (n.id === b.id ? { ...n, agentName: a.agentName } : n)),
+      edges: [...g.edges, { id: `${a.id}→${b.id}`, from: a.id, to: b.id }],
+    }
+    expect(() => compileFlow(g, META)).toThrow(FlowCompileError)
+  })
+
+  it('compiles parallel join onto done without emitting kids twice', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'parallel')
+    g = addFlowNode(g, 'agent')
+    g = addFlowNode(g, 'run')
+    g = addFlowNode(g, 'done')
+    const par = g.nodes.find((n) => n.kind === 'parallel')!
+    const a = g.nodes.find((n) => n.kind === 'agent')!
+    const s = g.nodes.find((n) => n.kind === 'run')!
+    const d = g.nodes.find((n) => n.kind === 'done')!
+    g = connectFlowNodes(g, FLOW_START_ID, par.id)
+    g = connectFlowNodes(g, par.id, a.id)
+    g = connectFlowNodes(g, par.id, s.id)
+    g = connectFlowNodes(g, a.id, d.id)
+    g = connectFlowNodes(g, s.id, d.id)
+    const { files } = compileFlow(g, META)
+    const run = files['run.ts']!
+    expect(run.match(/step\.agent/g)?.length).toBe(1)
+    expect(run.match(/step\.run/g)?.length).toBe(1)
+    expect(run.match(/step\.done/g)?.length).toBe(1)
+    expect(run.indexOf('step.parallel')).toBeLessThan(run.indexOf('step.done'))
+  })
+
+  it('rejects malformed flows.json coordinates', () => {
+    expect(() =>
+      parseFlowsFile(JSON.stringify({ nodes: [{ id: 'start', kind: 'start', label: 'Start' }], edges: [] })),
+    ).toThrow(/node\.x/)
   })
 })

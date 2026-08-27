@@ -357,7 +357,10 @@ export function WorkflowTriggerPage(): JSX.Element {
       )}
 
       {def.data && pageMode === 'run' && runWithCanvas && (
-        <div className="fixed inset-0 left-56 flex flex-col bg-bg">
+        <div
+          className="fixed inset-y-0 right-0 flex flex-col bg-bg"
+          style={{ left: 'var(--hub-rail, 14rem)' }}
+        >
           <FlowsAuthor
             workflowId={workflowId}
             editPath={editPath}
@@ -387,6 +390,15 @@ export function WorkflowTriggerPage(): JSX.Element {
               <Link
                 to="/workflows"
                 className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+                onClick={(e) => {
+                  if (!editDirtyRef.current) return
+                  e.preventDefault()
+                  void (async () => {
+                    if (!(await discardDialog.confirm('Discard unsaved changes?'))) return
+                    editDirtyRef.current = false
+                    void navigate({ to: '/workflows' })
+                  })()
+                }}
               >
                 ← workflows
               </Link>

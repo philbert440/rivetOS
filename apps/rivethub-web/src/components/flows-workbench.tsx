@@ -2,15 +2,18 @@
  * Flows workbench: palette, canvas, properties. Authoring when `editable`.
  */
 
-import { type JSX, type ReactNode } from 'react'
+import { useState, type JSX, type ReactNode } from 'react'
 import { Select } from './select.js'
 import { FlowsCanvas } from './flows-canvas.js'
 import {
   addFlowNode,
   deleteFlowNode,
+  disconnectFlowEdge,
   FLOW_PALETTE,
   FLOW_START_ID,
+  incomingIds,
   nodeById,
+  reachableFromStart,
   updateFlowNode,
   type FlowAuthorGraph,
   type FlowAuthorKind,
@@ -182,6 +185,25 @@ function NodeInspector(props: {
           onChange={(callRef) => patch({ callRef })}
         />
       )}
+      {props.editable && incomingIds(props.graph, node.id).length > 0 && (
+        <div className="mb-2">
+          <p className="font-mono text-[10px] uppercase tracking-wide text-ink-dim">Wires in</p>
+          {incomingIds(props.graph, node.id).map((from) => {
+            const src = nodeById(props.graph, from)
+            const edgeId = `${from}→${node.id}`
+            return (
+              <button
+                key={edgeId}
+                type="button"
+                onClick={() => props.onChange?.(disconnectFlowEdge(props.graph, edgeId))}
+                className="mt-1 block font-mono text-[11px] text-ink-dim hover:text-red"
+              >
+                disconnect {src?.label ?? from}
+              </button>
+            )
+          })}
+        </div>
+      )}
       {props.editable && node.id !== FLOW_START_ID && (
         <button
           type="button"
@@ -196,6 +218,8 @@ function NodeInspector(props: {
 }
 
 export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const reachable = reachableFromStart(props.graph)
   const add = (kind: Exclude<FlowAuthorKind, 'start'>): void => {
     if (!props.editable || !props.onChange) return
     const next = addFlowNode(props.graph, kind)
@@ -254,18 +278,23 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
             <button
               key={n.id}
               type="button"
-              onClick={() => props.onSelect(n.id)}
+              onClick={() => {
+                setSelectedEdgeId(null)
+                props.onSelect(n.id)
+              }}
               className={`px-3 py-1.5 text-left font-mono text-xs ${
                 props.selectedId === n.id ? 'bg-panel-2 text-em' : 'text-ink-dim hover:text-ink'
               }`}
             >
               <span className="block truncate">{n.label}</span>
               <span className="block truncate text-[10px] opacity-70">
-                {props.statusById?.[n.id]
-                  ? GRAPH_NODE_STATUS_LABELS[props.statusById[n.id]]
-                  : n.kind === 'run'
-                    ? 'script'
-                    : n.kind}
+                {!reachable.has(n.id)
+                  ? 'unwired'
+                  : props.statusById?.[n.id]
+                    ? GRAPH_NODE_STATUS_LABELS[props.statusById[n.id]]
+                    : n.kind === 'run'
+                      ? 'script'
+                      : n.kind}
               </span>
             </button>
           ))}
@@ -274,10 +303,15 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
         <FlowsCanvas
           graph={props.graph}
           selectedId={props.selectedId ?? FLOW_START_ID}
-          onSelect={props.onSelect}
+          onSelect={(id) => {
+            if (id) setSelectedEdgeId(null)
+            props.onSelect(id)
+          }}
           onChange={props.onChange}
           editable={props.editable}
           statusById={props.statusById}
+          selectedEdgeId={selectedEdgeId}
+          onSelectEdge={setSelectedEdgeId}
         />
 
         <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-panel p-3">
