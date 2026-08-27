@@ -473,32 +473,43 @@ def search_tool(
 # ---------------------------------------------------------------------------
 
 
+def wants_include_tools(args: Dict[str, Any]) -> bool:
+    """True only when the caller opted into tool rows (postgres #546 parity).
+
+    Default browse excludes role=tool so a limit=50 window is readable.
+    Truthy non-booleans (``"true"``, ``1``) do not opt in — the MCP sidecar
+    is equally strict (``args.include_tools === true``).
+    """
+    return args.get("include_tools") is True
+
+
 def format_browse_filter_note(
     *,
     window: Optional[str] = None,
     since: Optional[str] = None,
     before: Optional[str] = None,
+    include_tools: bool = False,
 ) -> str:
     """Echo active time filters for browse (postgres MCP parity).
 
     Agents need to see which window/bounds were applied so a tight filter
     isn't misread as "memory is empty". Pure helper — unit-tested.
     """
+    parts: List[str] = []
     if window and (since or before):
-        note = f'\n_window="{window}"'
-        if since:
-            note += f" since={since}"
-        if before:
-            note += f" before={before}"
-        return note + "_"
-    if since or before:
-        parts = []
+        parts.append(f'window="{window}"')
         if since:
             parts.append(f"since={since}")
         if before:
             parts.append(f"before={before}")
-        return "\n_" + " ".join(parts) + "_"
-    return ""
+    elif since or before:
+        if since:
+            parts.append(f"since={since}")
+        if before:
+            parts.append(f"before={before}")
+    if not include_tools:
+        parts.append("tools excluded (include_tools=true to show)")
+    return f"\n_{' '.join(parts)}_" if parts else ""
 
 
 def format_empty_browse_result(
@@ -506,6 +517,7 @@ def format_empty_browse_result(
     window: Optional[str] = None,
     since: Optional[str] = None,
     before: Optional[str] = None,
+    include_tools: bool = False,
 ) -> str:
     """Empty-path UX for ``rivet_memory_browse`` (postgres ``memory_browse`` parity).
 
@@ -515,15 +527,21 @@ def format_empty_browse_result(
     """
     return (
         "No messages found."
-        + format_browse_filter_note(window=window, since=since, before=before)
+        + format_browse_filter_note(
+            window=window,
+            since=since,
+            before=before,
+            include_tools=include_tools,
+        )
         + "\n_Try a wider window, drop agent/conversation filters, flip order, "
-        "or use rivet_memory_search for topic recall._"
+        "pass include_tools=true, or use rivet_memory_search for topic recall._"
     )
 
 
 def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     conditions: List[str] = []
     params: list = []
+    include_tools = wants_include_tools(args)
     since = args.get("since")
     before = args.get("before")
     window_arg = args.get("window") if not (since or before) else None
@@ -538,6 +556,9 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     if args.get("agent"):
         conditions.append("m.agent = %s")
         params.append(args["agent"])
+    # Default: exclude tool rows so chronological catch-up is readable (#546).
+    if not include_tools:
+        conditions.append("m.role <> 'tool'")
     if since:
         conditions.append("m.created_at >= %s")
         params.append(since)
@@ -569,14 +590,20 @@ def browse_tool(client: RivetMemoryClient, args: Dict[str, Any]) -> str:
     # window name only when it drove the bounds (same as MCP browse-tool).
     window_label = str(window_arg) if window_arg else None
     filter_note = format_browse_filter_note(
-        window=window_label, since=since, before=before
+        window=window_label,
+        since=since,
+        before=before,
+        include_tools=include_tools,
     )
 
     if not rows:
         # Echo filters + next-step hints so agents don't conclude "memory is
         # empty" when the window/agent filter was just too tight (MCP parity).
         return format_empty_browse_result(
-            window=window_label, since=since, before=before
+            window=window_label,
+            since=since,
+            before=before,
+            include_tools=include_tools,
         )
 
     lines: List[str] = []

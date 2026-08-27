@@ -88,9 +88,17 @@ def test_format_browse_filter_note_explicit_since_before():
 def test_format_browse_filter_note_empty_without_bounds():
     from rivet_memory.tools import format_browse_filter_note
 
-    assert format_browse_filter_note() == ""
-    # window alone without resolved bounds is not enough to echo
-    assert format_browse_filter_note(window="today") == ""
+    # Default still echoes the tools-excluded note (postgres #546 parity).
+    default = format_browse_filter_note()
+    assert "tools excluded" in default
+    assert default.startswith("\n_")
+    # window alone without resolved bounds is not enough to echo time filters
+    window_only = format_browse_filter_note(window="today")
+    assert 'window="today"' not in window_only
+    assert "tools excluded" in window_only
+    # Opting into tools with no time bounds → empty note
+    assert format_browse_filter_note(include_tools=True) == ""
+    assert format_browse_filter_note(window="today", include_tools=True) == ""
 
 
 def test_format_empty_browse_result_guides_agent():
@@ -107,6 +115,7 @@ def test_format_empty_browse_result_guides_agent():
     assert "wider window" in msg
     assert "rivet_memory_search" in msg
     assert "agent/conversation" in msg
+    assert "include_tools=true" in msg
 
 
 def test_browse_tool_empty_with_window_echoes_filters():
@@ -158,3 +167,6 @@ def test_browse_tool_nonempty_header_includes_filter_note():
     assert out.startswith("## Messages (1 returned")
     assert 'window="last_7d"' in out
     assert "hello" in out
+    assert "tools excluded" in out
+    sql = fake.cursor.executed[0][0]
+    assert "m.role <> 'tool'" in sql
