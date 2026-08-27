@@ -30,6 +30,29 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  authorship-check:
+    name: Commit Authorship
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Self-test the authorship checker
+        run: node --test scripts/authorship-check.test.mjs
+
+      - name: Check commit authorship
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.sha }}"
+          node scripts/authorship-check.mjs "$BASE_SHA..$HEAD_SHA"
+
   secrets-scan:
     name: Secrets & Private IP Scan
     runs-on: ubuntu-latest
