@@ -146,7 +146,9 @@ BROWSE_SCHEMA = {
     "description": (
         "Browse RivetOS conversation messages chronologically. Unlike "
         "rivet_memory_search (ranks by relevance), this returns messages in "
-        "time order. Use for any time-bounded question (\"what did we do "
+        "time order. By default excludes role=tool rows so limit budget goes "
+        "to user/assistant/system (pass include_tools=true to see tool "
+        "calls/results). Use for any time-bounded question (\"what did we do "
         "today / this morning / yesterday\") — pair with `window=...` for the "
         "right local-TZ-to-UTC math. If the response is truncated at `limit`, "
         "flip `order` to see the other end, raise `limit` (max 200), or "
@@ -190,6 +192,15 @@ BROWSE_SCHEMA = {
                 ),
             },
             "agent": {"type": "string", "description": "Filter by agent."},
+            "include_tools": {
+                "type": "boolean",
+                "description": (
+                    "Include role=tool rows (tool calls/results). Default false "
+                    "— browse returns user/assistant/system only so a limit=50 "
+                    "window is not flooded by tool noise. Set true when "
+                    "debugging capture, harness wiring, or tool failures."
+                ),
+            },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
@@ -546,7 +557,8 @@ class RivetMemoryProvider(MemoryProvider):
             "`window=today|yesterday|this_morning|this_week|last_24h|last_7d|last_14d` "
             "for the right local-TZ → UTC math (skip manual ISO dates — Postgres "
             "reads bare dates as UTC midnight, not local). Prefer last_7d over "
-            "this_week early in the week when the calendar week is still short.\n"
+            "this_week early in the week when the calendar week is still short. "
+            "Default excludes role=tool; pass include_tools=true to see tool rows.\n"
             "  - `rivet_memory_search` — relevance-ranked FTS + semantic; use for "
             "topic questions. Use `query=\"foo OR bar OR baz\"` for a multi-"
             "angle sweep in one call (websearch syntax: `OR`, `\"phrase\"`, "
