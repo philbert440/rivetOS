@@ -177,9 +177,16 @@ export function getCommits(range) {
   const delimiter = '---COMMIT-END---'
   const fullFormat = `${format}${delimiter}`
 
+  // Build git log arguments
+  const args = ['log', `--format=${fullFormat}`]
+  
+  // Split range on spaces to handle both "base..head" and "-n 1 HEAD" formats
+  const rangeParts = range.split(/\s+/)
+  args.push(...rangeParts)
+
   let output
   try {
-    output = execFileSync('git', ['log', `--format=${fullFormat}`, range], {
+    output = execFileSync('git', args, {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
     })
@@ -247,9 +254,9 @@ function main() {
   }
 
   // When checking "HEAD", we want to check only the single most recent commit,
-  // not the entire history leading to it. Convert HEAD to HEAD^..HEAD range.
+  // not the entire history leading to it. Use -1 to limit to one commit.
   if (range === 'HEAD') {
-    range = 'HEAD^..HEAD'
+    range = '-1 HEAD'
   }
 
   let violations
