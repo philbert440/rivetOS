@@ -1055,3 +1055,53 @@ export interface DeviceOpenResponse {
   expiresAt: number
   qr: DeviceEnrollQr
 }
+
+// ---------------------------------------------------------------------------
+// /api/agents
+// ---------------------------------------------------------------------------
+
+/** Named agent preset (model + effort + system prompt + optional color + node). */
+export interface AgentPreset {
+  id: string
+  name: string
+  /** Hex color (e.g. "#3b82f6"), or empty for default. */
+  color: string
+  /** Agent/harness id; empty = node default. */
+  model: string
+  /** Thinking level. */
+  effort: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** System prompt override; empty = no override. */
+  systemPrompt: string
+  /** Node baseUrl this agent runs on. */
+  nodeBaseUrl: string
+  /** epoch ms */
+  createdAt: number
+  /** epoch ms */
+  updatedAt: number
+}
+
+export interface AgentsListResponse {
+  agents: AgentPreset[]
+}
+
+export interface AgentCreateRequest {
+  name: string
+  color?: string
+  model?: string
+  effort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  systemPrompt?: string
+  nodeBaseUrl: string
+}
+
+export interface AgentUpdateRequest {
+  name?: string
+  color?: string
+  model?: string
+  effort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  systemPrompt?: string
+  nodeBaseUrl?: string
+}
+
+export interface AgentResponse {
+  agent: AgentPreset
+}
