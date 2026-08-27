@@ -75,9 +75,29 @@ describe('callLlm', () => {
     await expect(callLlm('sys', 'user', 100)).rejects.toMatchObject({
       name: 'LlmCallError',
       message: expect.stringContaining('LLM HTTP 404'),
+      retryable: false,
+      status: 404,
     })
     // 4xx is not retried — only one fetch
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks 429 as retryable so the job layer can back off without going terminal', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}, 429, 'Too Many Requests'))
+    await expect(callLlm('sys', 'user', 100)).rejects.toMatchObject({
+      name: 'LlmCallError',
+      retryable: true,
+      status: 429,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('marks network failures as retryable', async () => {
+    fetchMock.mockRejectedValue(new Error('fetch failed'))
+    const err = await callLlm('sys', 'user', 100).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmCallError)
+    expect((err as LlmCallError).retryable).toBe(true)
+    expect((err as LlmCallError).status).toBeUndefined()
   })
 
   it('throws on empty content after retries with minChars detail', async () => {
