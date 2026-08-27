@@ -1,7 +1,8 @@
 /**
  * Agents section — collapsible named agent presets roster for the sidebar.
  * Each agent carries model, effort, system prompt, color, and target node.
- * Click to open/resume a session with that configuration.
+ * Click to open a session with that configuration. A later click offers
+ * keep-vs-reset when this agent already has a conversation.
  */
 
 import { useState, type JSX } from 'react'
@@ -17,6 +18,7 @@ import { ModelPicker } from './pickers/model-picker.js'
 import { EffortPicker } from './pickers/effort-picker.js'
 import { modelOptions } from '../lib/model-options.js'
 import { uuidv4 } from '../lib/uuid.js'
+import { getAgentLastSession, setAgentLastSession } from '../lib/agent-session.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 
@@ -251,7 +253,7 @@ export function AgentsSection(): JSX.Element {
   const [collapsed, setCollapsed] = useState(false)
   const [editing, setEditing] = useState<AgentPreset | null>(null)
   const [creating, setCreating] = useState(false)
-  const deleteDialog = useConfirmDialog()
+  const dialog = useConfirmDialog()
 
   // House-wide roster: query /api/agents from all known nodes
   const allNodes = [{ baseUrl }, ...roster]
@@ -334,43 +336,42 @@ export function AgentsSection(): JSX.Element {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] }),
   })
 
-  const handleOpen = (agent: AgentPreset): void => {
-    // Switch to agent's node if different
-    if (agent.nodeBaseUrl !== baseUrl) {
-      switchTo(agent.nodeBaseUrl)
-    }
-
-    // Create new session with agent defaults
-    const sessionId = uuidv4()
-    const settingsKey = `${agent.nodeBaseUrl}::${sessionId}`
-
-    // Set agent configuration for this session
-    chatSettings.set(settingsKey, {
+  const applyAgentSettings = (sessionId: string, agent: AgentPreset, nodeBaseUrl: string): void => {
+    chatSettings.set(`${nodeBaseUrl}::${sessionId}`, {
       agent: agent.model || '',
       effort: agent.effort,
+      systemPrompt: agent.systemPrompt || '',
     })
+    setAgentLastSession(agent.id, sessionId, nodeBaseUrl)
+  }
 
-    // Store agent ID for future reset-vs-keep (follow-up feature)
-    try {
-      localStorage.setItem(`rivethub.agent.${sessionId}`, agent.id)
-      // Note: systemPrompt application is a follow-up - not currently wired through
-      // the harness API (UserTurn/SessionPostRequest don't have systemPrompt field)
-      if (agent.systemPrompt) {
-        localStorage.setItem(`rivethub.agent.systemPrompt.${sessionId}`, agent.systemPrompt)
-      }
-    } catch {
-      /* storage full */
-    }
-
-    // Create draft and navigate
+  const openSession = (sessionId: string, agent: AgentPreset, nodeBaseUrl: string): void => {
+    if (nodeBaseUrl !== baseUrl) switchTo(nodeBaseUrl)
+    applyAgentSettings(sessionId, agent, nodeBaseUrl)
     addDraft(sessionId)
     setActive(sessionId)
     void navigate({ to: '/', search: { session: sessionId } })
   }
 
+  const handleOpen = (agent: AgentPreset): void => {
+    const last = getAgentLastSession(agent.id)
+    if (!last) {
+      openSession(uuidv4(), agent, agent.nodeBaseUrl)
+      return
+    }
+    void (async () => {
+      const pick = await dialog.choose(
+        `"${agent.name}" already has a conversation. Keep it, or start over?`,
+      )
+      if (pick === undefined) return
+      if (pick === 'keep') openSession(last.sessionId, agent, last.nodeBaseUrl)
+      else openSession(uuidv4(), agent, agent.nodeBaseUrl)
+    })()
+  }
+
   return (
     <div className="border-t border-line px-2 py-2">
-      {deleteDialog.element}
+      {dialog.element}
       <button
         onClick={() => setCollapsed((c) => !c)}
         className="flex w-full items-center justify-between px-1 py-1 text-left hover:bg-panel-2"
@@ -428,7 +429,7 @@ export function AgentsSection(): JSX.Element {
                 onDelete={() => {
                   void (async () => {
                     if (
-                      await deleteDialog.confirm(`Delete agent "${agent.name}"?`, {
+                      await dialog.confirm(`Delete agent "${agent.name}"?`, {
                         danger: true,
                       })
                     )

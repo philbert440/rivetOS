@@ -70,5 +70,14 @@ describe('createDialogQueue', () => {
   it('dialogCancelValue mirrors window.confirm/prompt', () => {
     expect(dialogCancelValue(req('confirm', 'x'))).toBe(false)
     expect(dialogCancelValue(req('prompt', 'x'))).toBeUndefined()
+    expect(dialogCancelValue(req('choice', 'x'))).toBeUndefined()
+  })
+
+  it('choice cancel on settleAll does not hang the caller', () => {
+    const q = createDialogQueue(() => undefined)
+    const a = req('choice', 'keep or reset?')
+    q.show(a)
+    q.settleAll()
+    expect(a.settledWith).toEqual([undefined])
   })
 })

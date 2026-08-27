@@ -489,6 +489,23 @@ describe('session-scoped actions', () => {
     expect(driver.calls.interrupted).toEqual([SID])
   })
 
+  it('forwards systemPrompt on a turn body', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    expect(
+      (
+        await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
+          text: 'hi',
+          systemPrompt: '  be terse  ',
+        })
+      ).status,
+    ).toBe(202)
+    expect(driver.calls.turns).toEqual([
+      { sessionId: SID, turn: { text: 'hi', systemPrompt: 'be terse' } },
+    ])
+  })
+
   it('requires a non-empty turn text', async () => {
     const driver = new FakeDriver()
     driver.add(SID)

@@ -13,6 +13,8 @@ export interface ChatSettings {
   /** agent id; '' = the node's default agent */
   agent: string
   effort: ThinkingLevel
+  /** Agent-preset system prompt for this thread; '' / omitted = none. */
+  systemPrompt?: string
 }
 
 const KEY = 'rivethub.chatSettings'

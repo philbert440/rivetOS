@@ -6,7 +6,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
-import type { SessionWsFrame } from '@rivetos/types'
+import type { InboundMessage, SessionWsFrame } from '@rivetos/types'
 import { describe, it, expect, afterEach } from 'vitest'
 import {
   bareAliasOf,
@@ -19,13 +19,18 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn()
 })
 
-async function start(opts?: { failTurn?: boolean; delayMs?: number }): Promise<{
+async function start(opts?: {
+  failTurn?: boolean
+  delayMs?: number
+  inbound?: InboundMessage[]
+}): Promise<{
   base: string
   port: number
   gw: GatewayChannelHandle
 }> {
   const gw = createGatewayChannel()
   gw.channel.onMessage(async (message) => {
+    opts?.inbound?.push(message)
     if (opts?.failTurn) throw new Error('provider exploded')
     await new Promise((r) => setTimeout(r, opts?.delayMs ?? 5))
     await gw.channel.send({ channelId: message.channelId, text: `echo: ${message.text}` })
@@ -140,6 +145,27 @@ describe('gateway channel /api/sessions', () => {
   it('validates bodies: 400 on missing text', async () => {
     const { base } = await start()
     expect((await post(base, 's6', {})).status).toBe(400)
+  })
+
+  it('POST forwards systemPrompt and thinking on inbound metadata', async () => {
+    const inbound: InboundMessage[] = []
+    const { base } = await start({ inbound })
+    const res = await post(
+      base,
+      'sp1',
+      { text: 'hi', systemPrompt: '  be terse  ', thinking: 'high' },
+      '?wait=1&timeoutMs=5000',
+    )
+    expect(res.status).toBe(200)
+    expect(inbound).toHaveLength(1)
+    expect(inbound[0]?.metadata).toEqual({ thinking: 'high', systemPrompt: 'be terse' })
+  })
+
+  it('POST omits empty systemPrompt from metadata', async () => {
+    const inbound: InboundMessage[] = []
+    const { base } = await start({ inbound })
+    await post(base, 'sp2', { text: 'hi', systemPrompt: '   ' }, '?wait=1&timeoutMs=5000')
+    expect(inbound[0]?.metadata).toBeUndefined()
   })
 })
 

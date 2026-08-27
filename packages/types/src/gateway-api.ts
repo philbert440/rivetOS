@@ -132,6 +132,11 @@ export interface SessionPostRequest {
   /** Reasoning effort for this turn; falls back to the session's level.
    *  RivetHub persists it per-conversation (Claude-app style). */
   thinking?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  /**
+   * Optional system-prompt override. Applied once when the session's prompt
+   * is first built (appended to the workspace prompt). Cap: 16384 chars.
+   */
+  systemPrompt?: string
 }
 
 /** 202 from POST without `?wait` */

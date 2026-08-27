@@ -22,6 +22,7 @@ import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApprovalDecision, HarnessSessionSummary, SessionMessage } from '@rivetos/types'
+import { rekeyAgentLastSessions } from '../lib/agent-session.js'
 import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -99,6 +100,9 @@ type InjectSink = (text: string, interrupt: boolean) => Promise<void>
  * pump tests).
  */
 const outboundPumps = new Map<string, { pump: OutboundPump; sink: { current: InjectSink } }>()
+
+/** Session ids whose agent system prompt already rode the first harness turn. */
+const systemPromptSent = new Set<string>()
 
 function outboundPumpFor(sessionId: string): {
   pump: OutboundPump
@@ -184,6 +188,11 @@ function migrateSessionKey(baseUrl: string, from: string, to: string): void {
     settings.set(storageKey(baseUrl, to), prior)
   }
   settings.clear(storageKey(baseUrl, from))
+  rekeyAgentLastSessions(from, to)
+  if (systemPromptSent.has(from)) {
+    systemPromptSent.delete(from)
+    systemPromptSent.add(to)
+  }
 }
 
 export function ChatPage(): JSX.Element {
@@ -828,8 +837,22 @@ function ActiveSession(props: {
     dismissAsk(props.sessionId)
   }
 
+  const peekSystemPrompt = (): string | undefined => {
+    if (systemPromptSent.has(props.sessionId)) return undefined
+    const chat = useChat.getState()
+    if ((chat.messages[props.sessionId] ?? EMPTY_MESSAGES).length > 0) return undefined
+    if ((chat.transcripts[props.sessionId]?.turns.length ?? 0) > 0) return undefined
+    const prompt = persisted(
+      useChatSettings.getState().byKey,
+      useConnection.getState().baseUrl,
+      props.sessionId,
+    )?.systemPrompt?.trim()
+    return prompt || undefined
+  }
+
   const injectOne = async (text: string, interrupt = false): Promise<void> => {
     const gw = useConnection.getState().gateway
+    const prompt = peekSystemPrompt()
     if (canonicalId) {
       // Control plane: the driver owns spawn-or-resume, so there is no PTY to
       // ensure here. "Inject now" is interrupt-then-send, and only when the
@@ -840,12 +863,21 @@ function ActiveSession(props: {
         // to draw its cancel before the next paste, or the turn swallows it.
         await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
       }
-      await gw.sendHarnessTurn(canonicalId, { text })
+      await gw.sendHarnessTurn(canonicalId, {
+        text,
+        ...(prompt ? { systemPrompt: prompt } : {}),
+      })
+      if (prompt) systemPromptSent.add(props.sessionId)
       return
     }
+    const injectText = prompt ? `[System instructions]\n${prompt}\n\n${text}` : text
     await ensurePty()
     try {
-      await gw.termInject({ session: props.sessionId, text, ...(interrupt ? { interrupt } : {}) })
+      await gw.termInject({
+        session: props.sessionId,
+        text: injectText,
+        ...(interrupt ? { interrupt } : {}),
+      })
     } catch {
       // The harness may have been LRU-evicted while we held a stale pty ref
       // (#318 review): drop the ref, respawn (store-existence → --resume so
@@ -854,8 +886,9 @@ function ActiveSession(props: {
       termPtyRef.current = undefined
       setTermPtyId(undefined)
       await ensurePty()
-      await gw.termInject({ session: props.sessionId, text })
+      await gw.termInject({ session: props.sessionId, text: injectText })
     }
+    if (prompt) systemPromptSent.add(props.sessionId)
   }
 
   pumpEntry.sink.current = injectOne
@@ -1057,6 +1090,7 @@ function ActiveSession(props: {
             settingsKey={settingsKey}
             agent={settings?.agent || undefined}
             effort={settings?.effort ?? 'medium'}
+            systemPrompt={settings?.systemPrompt}
             onSetting={(patch) => setSetting(settingsKey, patch)}
             onSend={sendToHarness}
             handleRef={composerRef}

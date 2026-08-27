@@ -92,6 +92,7 @@ import {
   type HarnessSessionSummary,
   type HarnessTranscriptTurn,
   type SessionId,
+  SYSTEM_PROMPT_MAX_CHARS,
   type StartSessionOpts,
   type UserTurn,
 } from '@rivetos/types'
@@ -191,6 +192,20 @@ export interface LiveState {
   /** Open tool calls, oldest-first — den carries no tool call ids. */
   openTools: { toolCallId: string; name: string }[]
   toolSeq: number
+  /** First turn already prefixed the agent system prompt into the PTY. */
+  systemPromptApplied?: boolean
+}
+
+/**
+ * PTY inject payload for a user turn. TUI harnesses have no system-prompt
+ * channel, so the first turn that carries `systemPrompt` is prefixed. Later
+ * turns (and resumes of a session that already got it) pass `text` through.
+ */
+export function harnessTurnText(turn: UserTurn, applySystemPrompt: boolean): string {
+  if (!applySystemPrompt) return turn.text
+  const prompt = typeof turn.systemPrompt === 'string' ? turn.systemPrompt.trim() : ''
+  if (!prompt) return turn.text
+  return `[System instructions]\n${prompt.slice(0, SYSTEM_PROMPT_MAX_CHARS)}\n\n${turn.text}`
 }
 
 /** What a PTY probe last learned. See § capability truthing in the header. */
@@ -469,8 +484,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     state.turnInFlight = true
     try {
+      const applySystemPrompt = !state.systemPromptApplied
+      const injected = harnessTurnText(turn, applySystemPrompt)
       let ptyId = await this.ensurePty(pty, native)
-      if (!pty.inject(ptyId, turn.text, true)) {
+      if (!pty.inject(ptyId, injected, true)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
         // resolves to a pty that refuses writes. Answering
@@ -479,7 +496,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // through the same `--resume` path a fully-reaped session takes and try
         // once more.
         ptyId = this.spawnFor(pty, native, true)
-        if (!pty.inject(ptyId, turn.text, true)) {
+        if (!pty.inject(ptyId, injected, true)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
           // full — genuinely transient, so say so instead of 501.
           throw new HarnessError(
@@ -489,6 +506,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
           )
         }
       }
+      if (applySystemPrompt && injected !== turn.text) state.systemPromptApplied = true
     } catch (err) {
       // Nothing was accepted, so the claim has to go back — otherwise one
       // failed turn wedges the session on 409 until the quiet window expires.
@@ -850,6 +868,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.turnInFlight = carried.turnInFlight
       state.openTools = carried.openTools
       state.toolSeq = carried.toolSeq
+      state.systemPromptApplied = carried.systemPromptApplied
       if (carried.quietTimer) {
         clearTimeout(carried.quietTimer)
         carried.quietTimer = undefined

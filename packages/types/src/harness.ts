@@ -163,11 +163,21 @@ export type StartSessionOpts = {
   metadata?: Record<string, string>
 }
 
+/** Cap for a session/turn system-prompt override. Same bound as `/api/agents`. */
+export const SYSTEM_PROMPT_MAX_CHARS = 16_384
+
 export type UserTurn = {
   text: string
   /** `pathOrUri` must be node-resolvable — remote clients stage files through
    *  the gateway upload endpoint, never client filesystem paths. */
   attachments?: Array<{ mime: string; pathOrUri: string; name?: string }>
+  /**
+   * Optional system-prompt override for this session. Applied once on the
+   * first turn that carries it (chat-loop appends to the workspace prompt;
+   * PTY drivers prefix the injected text). Empty/omitted = no override.
+   * Callers must cap at `SYSTEM_PROMPT_MAX_CHARS`.
+   */
+  systemPrompt?: string
 }
 
 /**

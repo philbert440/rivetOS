@@ -27,6 +27,8 @@ export function Composer(props: {
   settingsKey: string
   agent?: string
   effort: ThinkingLevel
+  /** Agent-preset system prompt; sent on the chat-loop POST path. */
+  systemPrompt?: string
   onSetting: (patch: Partial<ChatSettings>) => void
   /** Seamless modes: when set, a turn drives the session's live harness
    *  (inject into its PTY) instead of the chat-loop postMessage — so chat,
@@ -90,6 +92,7 @@ export function Composer(props: {
           text: trimmed,
           agent: props.agent,
           thinking: props.effort,
+          ...(props.systemPrompt?.trim() ? { systemPrompt: props.systemPrompt.trim() } : {}),
         })
       }
     } catch (err) {
