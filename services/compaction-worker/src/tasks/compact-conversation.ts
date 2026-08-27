@@ -27,8 +27,16 @@ import {
   type SummaryRow,
 } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
-import { callLlm } from '../llm.js'
-import { shouldSkip, recordFailure, recordSuccess, breakerThreshold } from '../circuit-breaker.js'
+import { callLlm, LlmCallError } from '../llm.js'
+import {
+  shouldSkip,
+  recordFailure,
+  recordSuccess,
+  recordTerminal,
+  logBreakerSkip,
+  breakerThreshold,
+  type CompactKind,
+} from '../circuit-breaker.js'
 
 export interface CompactConversationPayload {
   conversationId: string
@@ -96,6 +104,91 @@ export function isPgDeadlockError(err: unknown): boolean {
 
 function deadlockBackoffMs(attempt: number): number {
   return 25 * (attempt + 1) * (attempt + 1)
+}
+
+/**
+ * Human-readable message for a thrown value. Prefer Error.message, then a
+ * `.message` field, then JSON — `String({…})` is `[object Object]`.
+ */
+export function formatThrown(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string' && message.length > 0) return message
+    try {
+      const json = JSON.stringify(err)
+      if (json && json !== '{}') return json
+    } catch {
+      // circular / bigint
+    }
+  }
+  return String(err)
+}
+
+/**
+ * True on the job's last graphile attempt (`attempts >= max_attempts`).
+ * Missing job metadata is treated as final so an un-instrumented caller still
+ * records a breaker failure rather than retrying forever with no skip.
+ */
+export function isJobFinalAttempt(job: {
+  attempts?: number
+  max_attempts?: number
+}): boolean {
+  const attempts = job.attempts ?? 1
+  const maxAttempts = job.max_attempts ?? 1
+  return attempts >= maxAttempts
+}
+
+/**
+ * LLM failures must fail the graphile job so it retries with backoff.
+ *
+ * Returning 0 used to mark the job successful: enqueue-idle saw no problem
+ * while conversations sat unsummarized (live: 2,966 rivet-claude messages
+ * eligible; compact-conversation last_error stayed empty). The in-process
+ * circuit breaker still trips so a down LLM is not hammered every 5 minutes
+ * after THRESHOLD failures. Callers that already skip via `shouldSkip` keep
+ * exiting cleanly — this is only for an in-flight `callLlm` throw.
+ *
+ * Breaker semantics (findings 1+2, one coherent design):
+ * - Entries are keyed `${conversationId}:${kind}` (leaf / branch / root).
+ *   `shouldSkip` is consulted per level; a successful leaf cannot wipe a
+ *   failing parent.
+ * - Transient failures increment the breaker only on the job's *final*
+ *   graphile attempt. One job's maxAttempts:3 retries therefore count as a
+ *   single failure; THRESHOLD=3 still means ~3 exhausted jobs (enqueue-idle
+ *   revival) before a 1-hour skip. Intermediate attempts still rethrow so
+ *   graphile last_error stays honest and backoff still runs.
+ * - Non-retryable LlmCallError (permanent 4xx) records a *terminal* skip for
+ *   that level immediately — no threshold, no 1-hour expiry — and still
+ *   throws so this attempt's last_error is recorded. Later jobs skip the LLM.
+ */
+export function propagateLlmFailure(
+  conversationId: string,
+  err: unknown,
+  kind: CompactKind,
+  opts: { isFinalAttempt: boolean },
+): never {
+  const msg = formatThrown(err)
+  const permanent = err instanceof LlmCallError && !err.retryable
+
+  if (permanent) {
+    recordTerminal(conversationId, kind)
+    console.error(
+      `[CompactWorker] ${kind} LLM permanent failure for ${conversationId.slice(0, 8)}: ${msg} (terminal; skipping further attempts at this level)`,
+    )
+  } else if (opts.isFinalAttempt) {
+    const failures = recordFailure(conversationId, kind)
+    console.error(
+      `[CompactWorker] ${kind} LLM failed for ${conversationId.slice(0, 8)}: ${msg} (failure ${failures}/${breakerThreshold})`,
+    )
+  } else {
+    console.error(
+      `[CompactWorker] ${kind} LLM failed for ${conversationId.slice(0, 8)}: ${msg} (graphile will retry; breaker not incremented)`,
+    )
+  }
+
+  throw err instanceof Error ? err : new Error(msg)
 }
 
 /**
@@ -197,7 +290,13 @@ async function compactLeaf(
   convMeta: ConversationMeta,
   conversationId: string,
   minBatch: number = MIN_BATCH_SIZE,
+  isFinalAttempt = true,
 ): Promise<number> {
+  if (shouldSkip(conversationId, 'leaf')) {
+    logBreakerSkip(conversationId, 'leaf')
+    return 0
+  }
+
   const messages = await client.query<CompactMessageRow & { id: string }>(
     `SELECT m.id, m.role, m.content, m.agent, m.created_at, m.tool_name, m.tool_args
      FROM ros_messages m
@@ -220,15 +319,10 @@ async function compactLeaf(
   try {
     summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
   } catch (err) {
-    const failures = recordFailure(conversationId)
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(
-      `[CompactWorker] Leaf LLM failed for ${conversationId.slice(0, 8)}: ${msg} (failure ${failures}/${breakerThreshold})`,
-    )
-    return 0
+    propagateLlmFailure(conversationId, err, 'leaf', { isFinalAttempt })
   }
 
-  recordSuccess(conversationId)
+  recordSuccess(conversationId, 'leaf')
 
   const summaryId = await withTransaction(client, async () => {
     const id = await insertSummary(client, {
@@ -290,7 +384,13 @@ async function compactParentLevel(
   convMeta: ConversationMeta,
   conversationId: string,
   cfg: ParentLevelConfig,
+  isFinalAttempt = true,
 ): Promise<number> {
+  if (shouldSkip(conversationId, cfg.kind)) {
+    logBreakerSkip(conversationId, cfg.kind)
+    return 0
+  }
+
   const children = await client.query<SummaryRow>(
     `SELECT id, content, kind, earliest_at, latest_at, message_count, created_at
      FROM ros_summaries
@@ -311,12 +411,10 @@ async function compactParentLevel(
   try {
     summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(
-      `[CompactWorker] ${cfg.kind} LLM failed for ${conversationId.slice(0, 8)}: ${msg}`,
-    )
-    return 0
+    propagateLlmFailure(conversationId, err, cfg.kind, { isFinalAttempt })
   }
+
+  recordSuccess(conversationId, cfg.kind)
 
   const totalMessages = children.rows.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
   const earliestAt = children.rows[0].earliest_at ?? children.rows[0].created_at
@@ -349,13 +447,7 @@ async function compactParentLevel(
 
 export const compactConversationTask: Task = async (payload, helpers) => {
   const { conversationId, triggerType } = payload as CompactConversationPayload
-
-  if (shouldSkip(conversationId)) {
-    helpers.logger.info(
-      `[compact-conversation] circuit-breaker open for ${conversationId.slice(0, 8)} — skipping`,
-    )
-    return
-  }
+  const isFinalAttempt = isJobFinalAttempt(helpers.job)
 
   const leafFloor = leafFloorFor(triggerType, config.staleMinBatch)
 
@@ -371,34 +463,52 @@ export const compactConversationTask: Task = async (payload, helpers) => {
     let leafRound = 0
     let totalCreated = 0
     while (leafRound < 10) {
-      const created = await compactLeaf(client, convMeta, conversationId, leafFloor)
+      const created = await compactLeaf(
+        client,
+        convMeta,
+        conversationId,
+        leafFloor,
+        isFinalAttempt,
+      )
       if (created === 0) break
       totalCreated += created
       leafRound += 1
     }
 
-    totalCreated += await compactParentLevel(client, convMeta, conversationId, {
-      childKind: 'leaf',
-      depth: 1,
-      kind: 'branch',
-      batchSize: config.branchBatchSize,
-      minChildren: config.minLeavesForBranch,
-      systemPrompt: BRANCH_SYSTEM_PROMPT,
-      maxTokens: BRANCH_MAX_TOKENS,
-      formatPrompt: formatBranchPrompt,
-      label: 'Branch',
-    })
-    totalCreated += await compactParentLevel(client, convMeta, conversationId, {
-      childKind: 'branch',
-      depth: 2,
-      kind: 'root',
-      batchSize: config.rootBatchSize,
-      minChildren: config.minBranchesForRoot,
-      systemPrompt: ROOT_SYSTEM_PROMPT,
-      maxTokens: ROOT_MAX_TOKENS,
-      formatPrompt: formatRootPrompt,
-      label: 'Root',
-    })
+    totalCreated += await compactParentLevel(
+      client,
+      convMeta,
+      conversationId,
+      {
+        childKind: 'leaf',
+        depth: 1,
+        kind: 'branch',
+        batchSize: config.branchBatchSize,
+        minChildren: config.minLeavesForBranch,
+        systemPrompt: BRANCH_SYSTEM_PROMPT,
+        maxTokens: BRANCH_MAX_TOKENS,
+        formatPrompt: formatBranchPrompt,
+        label: 'Branch',
+      },
+      isFinalAttempt,
+    )
+    totalCreated += await compactParentLevel(
+      client,
+      convMeta,
+      conversationId,
+      {
+        childKind: 'branch',
+        depth: 2,
+        kind: 'root',
+        batchSize: config.rootBatchSize,
+        minChildren: config.minBranchesForRoot,
+        systemPrompt: ROOT_SYSTEM_PROMPT,
+        maxTokens: ROOT_MAX_TOKENS,
+        formatPrompt: formatRootPrompt,
+        label: 'Root',
+      },
+      isFinalAttempt,
+    )
 
     if (totalCreated > 0) {
       helpers.logger.info(
