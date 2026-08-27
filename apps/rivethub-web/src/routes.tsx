@@ -37,7 +37,7 @@ function RootLayout(): JSX.Element {
   }, [baseUrl, transportEpoch, connectNotifications])
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full" style={{ ['--hub-rail' as string]: '14rem' }}>
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <Outlet />

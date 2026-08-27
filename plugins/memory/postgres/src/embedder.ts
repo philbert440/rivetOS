@@ -16,7 +16,11 @@ import pg from 'pg'
  *   - NULL (default): row is eligible for embedding
  *   - 'unembeddable': row was classified as never-embeddable (base64 blobs,
  *     media markers, etc.) — permanently skipped
- *   - 'failed': row hit maxFailures transient errors and is poisoned
+ *   - 'failed': row hit maxFailures consecutive null embeddings and is
+ *     poisoned. embed_error is then 'Embedding returned null (permanent)'
+ *     so the enqueue-unembedded heal (which only matches the legacy
+ *     'Embedding returned null' string) will not reopen it. Transient
+ *     nulls stay non-terminal until that cap.
  */
 export async function ensureEmbedderSchema(pool: pg.Pool): Promise<void> {
   await pool.query(`

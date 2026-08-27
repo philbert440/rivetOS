@@ -12,9 +12,13 @@
  * up to sweepLimit rows per table that:
  *
  *   - have no embedding yet (embedding IS NULL), AND
- *   - are not terminal: embed_status IS NULL — i.e. NOT 'unembeddable' (skipped
- *     by design) and NOT 'failed' (gave up after maxFailures; needs a manual
- *     reset, not endless re-churn), AND
+ *   - are not terminal: embed_status IS NULL (NOT 'unembeddable'). Rows marked
+ *     'failed' because 'Embedding returned null' are healed first — that error
+ *     is a transient API blip, not poison content, and used to orphan the row
+ *     from this sweep. The heal also requires the table's length predicate so
+ *     short-content rows are not reopened into a permanent pending state.
+ *     Rows marked 'failed' with 'Embedding returned null (permanent)' (the
+ *     maxFailures cap) and other 'failed' reasons still need a manual reset, AND
  *   - carry embeddable text (length > 20). For ros_messages that means content
  *     OR tool_result — tool rows store the real payload in tool_result while
  *     content is often a short `[tool] name` placeholder (FTS parity / #440).
@@ -26,6 +30,7 @@
 
 import type { Task } from 'graphile-worker'
 import { config } from '../config.js'
+import { NULL_EMBED_ERROR } from './embed-target.js'
 
 /** Per-table column spec — wiki topics key on slug and embed search_text. */
 const TABLES = [
@@ -50,6 +55,26 @@ const TABLES = [
   },
 ]
 
+/**
+ * Re-open rows that were permanently excluded because a transient null vector
+ * was recorded as embed_status='failed'. Bind NULL_EMBED_ERROR as $1 — do not
+ * interpolate. Exported for unit tests.
+ */
+export function healFailedNullSql(table: string): string {
+  const spec = TABLES.find((t) => t.table === table)
+  if (!spec) {
+    throw new Error(`[enqueue-unembedded] unknown table for heal: ${table}`)
+  }
+  return `UPDATE ${table}
+             SET embed_status = NULL,
+                 embed_error = NULL,
+                 embed_failures = 0
+           WHERE embedding IS NULL
+             AND embed_status = 'failed'
+             AND embed_error = $1
+             AND ${spec.lengthPredicate}`
+}
+
 interface UnembeddedRow {
   id: string
 }
@@ -59,8 +84,15 @@ export const enqueueUnembeddedTask: Task = async (_payload, helpers) => {
     let enqueued = 0
 
     for (const { table, idCol, lengthPredicate } of TABLES) {
-      const { rows } = await client
-        .query<UnembeddedRow>(
+      let rows: UnembeddedRow[] = []
+      try {
+        const healed = await client.query(healFailedNullSql(table), [NULL_EMBED_ERROR])
+        if ((healed.rowCount ?? 0) > 0) {
+          helpers.logger.info(
+            `[enqueue-unembedded] healed ${String(healed.rowCount)} failed-null row(s) in ${table}`,
+          )
+        }
+        const selected = await client.query<UnembeddedRow>(
           `SELECT ${idCol}::text AS id
              FROM ${table}
             WHERE embedding IS NULL
@@ -70,9 +102,16 @@ export const enqueueUnembeddedTask: Task = async (_payload, helpers) => {
             LIMIT $1`,
           [config.sweepLimit],
         )
+        rows = selected.rows
+      } catch (err) {
         // ros_wiki_topics predates some deploys (0005) — missing table is
-        // an empty sweep, not a crash.
-        .catch(() => ({ rows: [] as UnembeddedRow[] }))
+        // an empty sweep, not a crash. Log so a real DB error on the heal
+        // is not silent.
+        helpers.logger.warn(
+          `[enqueue-unembedded] ${table} sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        rows = []
+      }
 
       for (const row of rows) {
         await helpers.addJob(
