@@ -67,21 +67,24 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
   const [nodeBaseUrl, setNodeBaseUrl] = useState(agent?.nodeBaseUrl ?? baseUrl)
 
-  const gateway = useGateway()
   const catalog = useQuery({
     queryKey: ['catalog-agents', nodeBaseUrl],
-    queryFn: ({ signal }) => new RivetGateway({ baseUrl: nodeBaseUrl, authMode: 'mtls' }).catalogAgents(signal),
+    queryFn: ({ signal }) =>
+      new RivetGateway({ baseUrl: nodeBaseUrl, authMode: 'mtls' }).catalogAgents(signal),
     staleTime: 300_000,
   })
   const models = modelOptions(catalog.data?.agents ?? [])
 
-  const handleSubmit = (e: React.FormEvent): void => {
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>): void => {
     e.preventDefault()
     onSave({ name, color, model, effort, systemPrompt, nodeBaseUrl })
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex flex-col gap-3 rounded border border-line bg-panel p-3">
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-col gap-3 rounded border border-line bg-panel p-3"
+    >
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-em">{agent ? 'Edit Agent' : 'New Agent'}</span>
         <button
@@ -189,7 +192,7 @@ function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Eleme
   const nodeName = useNodeName(agent.nodeBaseUrl)
   const { data: health } = useQuery({
     queryKey: ['agent-node-health', agent.nodeBaseUrl],
-    queryFn: ({ signal }) => 
+    queryFn: ({ signal }) =>
       new RivetGateway({ baseUrl: agent.nodeBaseUrl, authMode: 'mtls' }).health(signal),
     staleTime: 30_000,
     retry: 0,
@@ -241,7 +244,6 @@ function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Eleme
 }
 
 export function AgentsSection(): JSX.Element {
-  const gateway = useGateway()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { baseUrl, roster, switchTo } = useConnection()
@@ -304,7 +306,15 @@ export function AgentsSection(): JSX.Element {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, agent, targetNode }: { id: string; agent: Partial<AgentPreset>; targetNode: string }) =>
+    mutationFn: ({
+      id,
+      agent,
+      targetNode,
+    }: {
+      id: string
+      agent: Partial<AgentPreset>
+      targetNode: string
+    }) =>
       new RivetGateway({ baseUrl: targetNode, authMode: 'mtls' }).agentUpdate(id, {
         name: agent.name,
         color: agent.color,
@@ -400,7 +410,13 @@ export function AgentsSection(): JSX.Element {
               <AgentEditor
                 key={agent.id}
                 agent={agent}
-                onSave={(updated) => updateMutation.mutate({ id: agent.id, agent: updated, targetNode: agent.nodeBaseUrl })}
+                onSave={(updated) =>
+                  updateMutation.mutate({
+                    id: agent.id,
+                    agent: updated,
+                    targetNode: agent.nodeBaseUrl,
+                  })
+                }
                 onCancel={() => setEditing(null)}
                 disabled={updateMutation.isPending}
               />
@@ -412,7 +428,11 @@ export function AgentsSection(): JSX.Element {
                 onEdit={() => setEditing(agent)}
                 onDelete={() => {
                   void (async () => {
-                    if (await deleteDialog.confirm(`Delete agent "${agent.name}"?`, { danger: true }))
+                    if (
+                      await deleteDialog.confirm(`Delete agent "${agent.name}"?`, {
+                        danger: true,
+                      })
+                    )
                       deleteMutation.mutate({ id: agent.id, targetNode: agent.nodeBaseUrl })
                   })()
                 }}
