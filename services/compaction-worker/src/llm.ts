@@ -36,11 +36,20 @@ function sleep(ms: number): Promise<void> {
 /** Terminal LLM failure after retries — message is safe for graphile last_error. */
 export class LlmCallError extends Error {
   readonly attempts: number
+  /** False for permanent 4xx (except 408/429). Callers must not circuit-break+retry forever. */
+  readonly retryable: boolean
+  readonly status: number | undefined
 
-  constructor(message: string, attempts: number) {
+  constructor(
+    message: string,
+    attempts: number,
+    opts: { retryable?: boolean; status?: number } = {},
+  ) {
     super(message)
     this.name = 'LlmCallError'
     this.attempts = attempts
+    this.retryable = opts.retryable ?? true
+    this.status = opts.status
   }
 }
 
@@ -111,10 +120,14 @@ export async function callLlm(
       })
 
       if (!response.ok && response.status < 500) {
-        // 4xx — not retryable. Throw immediately with a clear status.
+        // 4xx — do not retry inside this call. 408/429 are transient at the
+        // job layer; every other 4xx is permanent (bad prompt, auth, missing
+        // model) and must not be circuit-broken into an hourly hammer.
+        const retryable = response.status === 408 || response.status === 429
         throw new LlmCallError(
           `LLM HTTP ${response.status}: ${response.statusText || 'client error'} (not retrying)`,
           attempt + 1,
+          { retryable, status: response.status },
         )
       }
 

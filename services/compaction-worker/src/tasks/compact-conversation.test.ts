@@ -2,7 +2,7 @@
  * Unit tests for compact-conversation task — transaction handling and summary insertion.
  */
 
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 
 // Mock config to avoid process.exit on missing env vars
 vi.mock('../config.js', () => ({
@@ -25,6 +25,11 @@ vi.mock('../config.js', () => ({
   },
 }))
 
+vi.mock('../llm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../llm.js')>()
+  return { ...actual, callLlm: vi.fn() }
+})
+
 import {
   withTransaction,
   insertSummary,
@@ -33,18 +38,26 @@ import {
   isPgDeadlockError,
   enqueueExtractWiki,
   propagateLlmFailure,
+  formatThrown,
+  isJobFinalAttempt,
+  compactConversationTask,
   DEADLOCK_RETRIES,
   PG_DEADLOCK_CODE,
 } from './compact-conversation.js'
-import { MIN_BATCH_SIZE } from '@rivetos/memory-postgres'
-import { shouldSkip, breakerThreshold } from '../circuit-breaker.js'
-import { LlmCallError } from '../llm.js'
+import { MIN_BATCH_SIZE, BRANCH_SYSTEM_PROMPT } from '@rivetos/memory-postgres'
+import { shouldSkip, breakerThreshold, resetBreaker, recordSuccess } from '../circuit-breaker.js'
+import { LlmCallError, callLlm } from '../llm.js'
 
 function deadlockError(message = 'deadlock detected'): Error {
   return Object.assign(new Error(message), { code: PG_DEADLOCK_CODE })
 }
 
 describe('compact-conversation', () => {
+  afterEach(() => {
+    resetBreaker()
+    vi.mocked(callLlm).mockReset()
+  })
+
   describe('leafFloorFor', () => {
     it('drops to staleMinBatch for a session_stale flush', () => {
       expect(leafFloorFor('session_stale', 2)).toBe(2)
@@ -531,26 +544,252 @@ describe('compact-conversation', () => {
     })
   })
 
+  describe('formatThrown', () => {
+    it('uses Error.message', () => {
+      expect(formatThrown(new Error('nope'))).toBe('nope')
+    })
+
+    it('passes strings through', () => {
+      expect(formatThrown('boom')).toBe('boom')
+    })
+
+    it('extracts .message from thrown objects instead of [object Object]', () => {
+      expect(formatThrown({ message: 'rate limited' })).toBe('rate limited')
+    })
+
+    it('JSON-stringifies objects without a message field', () => {
+      expect(formatThrown({ status: 500, reason: 'down' })).toBe(
+        JSON.stringify({ status: 500, reason: 'down' }),
+      )
+    })
+  })
+
+  describe('isJobFinalAttempt', () => {
+    it('is true when attempts >= max_attempts', () => {
+      expect(isJobFinalAttempt({ attempts: 3, max_attempts: 3 })).toBe(true)
+      expect(isJobFinalAttempt({ attempts: 2, max_attempts: 3 })).toBe(false)
+      expect(isJobFinalAttempt({ attempts: 1, max_attempts: 3 })).toBe(false)
+    })
+  })
+
   describe('propagateLlmFailure', () => {
+    const final = { isFinalAttempt: true }
+    const retry = { isFinalAttempt: false }
+
     it('rethrows the original LlmCallError so graphile last_error stays honest', () => {
       const err = new LlmCallError('LLM unreachable at http://example:8003/v1 (fetch failed)', 4)
-      expect(() => propagateLlmFailure('conv-throw-1', err, 'Leaf')).toThrow(err)
+      expect(() => propagateLlmFailure('conv-throw-1', err, 'leaf', final)).toThrow(err)
     })
 
     it('wraps non-Error throws so graphile still records a message', () => {
-      expect(() => propagateLlmFailure('conv-throw-2', 'boom', 'branch')).toThrow('boom')
+      expect(() => propagateLlmFailure('conv-throw-2', 'boom', 'branch', final)).toThrow('boom')
     })
 
-    it('trips the circuit breaker after THRESHOLD failures', () => {
+    it('wraps thrown objects via formatThrown rather than [object Object]', () => {
+      expect(() =>
+        propagateLlmFailure('conv-throw-obj', { message: 'payload too large' }, 'root', final),
+      ).toThrow('payload too large')
+    })
+
+    it('trips the circuit breaker after THRESHOLD final-attempt failures', () => {
       const id = 'conv-throw-breaker'
       const err = new Error('LLM timed out')
-      expect(() => propagateLlmFailure(id, err, 'Leaf')).toThrow(err)
-      expect(shouldSkip(id)).toBe(false)
-      expect(() => propagateLlmFailure(id, err, 'Leaf')).toThrow(err)
-      expect(shouldSkip(id)).toBe(false)
-      expect(() => propagateLlmFailure(id, err, 'Leaf')).toThrow(err)
-      expect(shouldSkip(id)).toBe(true)
+      expect(() => propagateLlmFailure(id, err, 'leaf', final)).toThrow(err)
+      expect(shouldSkip(id, 'leaf')).toBe(false)
+      expect(() => propagateLlmFailure(id, err, 'leaf', final)).toThrow(err)
+      expect(shouldSkip(id, 'leaf')).toBe(false)
+      expect(() => propagateLlmFailure(id, err, 'leaf', final)).toThrow(err)
+      expect(shouldSkip(id, 'leaf')).toBe(true)
       expect(breakerThreshold).toBe(3)
+    })
+
+    it('does not increment the breaker on intermediate graphile attempts', () => {
+      const id = 'conv-not-final'
+      const err = new Error('LLM timed out')
+      expect(() => propagateLlmFailure(id, err, 'leaf', retry)).toThrow(err)
+      expect(() => propagateLlmFailure(id, err, 'leaf', retry)).toThrow(err)
+      expect(() => propagateLlmFailure(id, err, 'leaf', retry)).toThrow(err)
+      expect(shouldSkip(id, 'leaf')).toBe(false)
+    })
+
+    it('leaf success does not wipe branch failures — branch trips after 3 final attempts', () => {
+      const id = 'conv-leaf-ok-branch-fail'
+      const err = new Error('branch LLM down')
+      recordSuccess(id, 'leaf')
+      expect(() => propagateLlmFailure(id, err, 'branch', final)).toThrow(err)
+      expect(() => propagateLlmFailure(id, err, 'branch', final)).toThrow(err)
+      expect(shouldSkip(id, 'branch')).toBe(false)
+      expect(() => propagateLlmFailure(id, err, 'branch', final)).toThrow(err)
+      expect(shouldSkip(id, 'branch')).toBe(true)
+      expect(shouldSkip(id, 'leaf')).toBe(false)
+    })
+
+    it('records a terminal skip on non-retryable 4xx even on a non-final attempt', () => {
+      const id = 'conv-4xx-terminal'
+      const err = new LlmCallError('LLM HTTP 400: Bad Request (not retrying)', 1, {
+        retryable: false,
+        status: 400,
+      })
+      expect(() => propagateLlmFailure(id, err, 'branch', retry)).toThrow(err)
+      expect(shouldSkip(id, 'branch')).toBe(true)
+      expect(shouldSkip(id, 'leaf')).toBe(false)
+    })
+  })
+
+  describe('compactConversationTask', () => {
+    function makeMessages(n: number) {
+      return Array.from({ length: n }, (_, i) => ({
+        id: `m-${String(i)}`,
+        role: 'user',
+        content: `message content ${String(i)} is long enough`,
+        agent: 'rivet',
+        created_at: new Date('2026-01-01T00:00:00Z'),
+        tool_name: null,
+        tool_args: null,
+      }))
+    }
+
+    function makeLeaves(n: number) {
+      return Array.from({ length: n }, (_, i) => ({
+        id: `leaf-${String(i)}`,
+        content: `leaf summary ${String(i)} with enough detail`,
+        kind: 'leaf',
+        earliest_at: new Date('2026-01-01T00:00:00Z'),
+        latest_at: new Date('2026-01-01T01:00:00Z'),
+        message_count: 5,
+        created_at: new Date('2026-01-01T01:00:00Z'),
+      }))
+    }
+
+    function mockClient(opts: { messages: ReturnType<typeof makeMessages>; leaves?: ReturnType<typeof makeLeaves> }) {
+      let messageQueries = 0
+      return {
+        query: vi.fn(async (sql: string, params?: unknown[]) => {
+          if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+            return { rows: [], rowCount: null }
+          }
+          if (sql.includes('FROM ros_conversations')) {
+            return {
+              rows: [
+                {
+                  id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+                  agent: 'rivet',
+                  channel: 'cli',
+                  channel_id: null,
+                  title: 'test',
+                  session_key: 'grok-build',
+                },
+              ],
+              rowCount: 1,
+            }
+          }
+          if (sql.includes('FROM ros_messages')) {
+            messageQueries += 1
+            if (messageQueries === 1) {
+              return { rows: opts.messages, rowCount: opts.messages.length }
+            }
+            return { rows: [], rowCount: 0 }
+          }
+          if (sql.includes('FROM ros_summaries')) {
+            const kind = params?.[1]
+            if (kind === 'leaf') {
+              const rows = opts.leaves ?? []
+              return { rows, rowCount: rows.length }
+            }
+            return { rows: [], rowCount: 0 }
+          }
+          if (sql.includes('INSERT INTO ros_summaries')) {
+            return { rows: [{ id: '11111111-2222-3333-4444-555555555555' }], rowCount: 1 }
+          }
+          if (sql.includes('INSERT INTO ros_summary_sources')) {
+            return { rows: [], rowCount: null }
+          }
+          if (sql.includes('extract-wiki') || sql.includes('add_job')) {
+            return { rows: [], rowCount: null }
+          }
+          if (sql.includes('UPDATE ros_summaries')) {
+            return { rows: [], rowCount: null }
+          }
+          throw new Error(`Unexpected query: ${sql}`)
+        }),
+      }
+    }
+
+    function mockHelpers(
+      client: { query: ReturnType<typeof vi.fn> },
+      job: { attempts: number; max_attempts: number } = { attempts: 3, max_attempts: 3 },
+    ) {
+      return {
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+        job,
+        withPgClient: async (fn: (c: typeof client) => Promise<unknown>) => fn(client),
+      }
+    }
+
+    it('rejects the task promise when callLlm throws', async () => {
+      const err = new LlmCallError('LLM unreachable at http://llm.test:8003/v1 (fetch failed)', 2)
+      vi.mocked(callLlm).mockRejectedValue(err)
+      const client = mockClient({ messages: makeMessages(5) })
+      const helpers = mockHelpers(client, { attempts: 1, max_attempts: 3 })
+
+      await expect(
+        compactConversationTask(
+          { conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+          helpers as never,
+        ),
+      ).rejects.toThrow(err)
+    })
+
+    it('leaf succeeds, branch fails ×3 → shouldSkip true for branch only', async () => {
+      const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      const branchErr = new LlmCallError('branch LLM down', 4)
+      vi.mocked(callLlm).mockImplementation(async (systemPrompt: string) => {
+        if (systemPrompt === BRANCH_SYSTEM_PROMPT) throw branchErr
+        return 'ok summary text that is long enough'
+      })
+
+      for (let i = 0; i < 3; i++) {
+        const client = mockClient({ messages: makeMessages(5), leaves: makeLeaves(5) })
+        const helpers = mockHelpers(client, { attempts: 3, max_attempts: 3 })
+        await expect(
+          compactConversationTask({ conversationId: id }, helpers as never),
+        ).rejects.toThrow(branchErr)
+      }
+
+      expect(shouldSkip(id, 'branch')).toBe(true)
+      expect(shouldSkip(id, 'leaf')).toBe(false)
+    })
+
+    it('emits circuit_breaker_skip JSON when a level is already open', async () => {
+      const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      const err = new Error('LLM timed out')
+      expect(() =>
+        propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true }),
+      ).toThrow(err)
+      expect(() =>
+        propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true }),
+      ).toThrow(err)
+      expect(() =>
+        propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true }),
+      ).toThrow(err)
+      expect(shouldSkip(id, 'leaf')).toBe(true)
+
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.mocked(callLlm).mockRejectedValue(new Error('should not be called'))
+      const client = mockClient({ messages: makeMessages(5) })
+      const helpers = mockHelpers(client)
+
+      await expect(
+        compactConversationTask({ conversationId: id }, helpers as never),
+      ).resolves.toBeUndefined()
+
+      const skipLines = warn.mock.calls.map((c) => String(c[0])).filter((l) =>
+        l.includes('circuit_breaker_skip'),
+      )
+      expect(skipLines.length).toBeGreaterThan(0)
+      expect(skipLines[0]).toContain('"kind":"leaf"')
+      expect(vi.mocked(callLlm)).not.toHaveBeenCalled()
+      warn.mockRestore()
     })
   })
 })
