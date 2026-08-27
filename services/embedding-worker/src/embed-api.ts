@@ -19,8 +19,44 @@ function isTransientError(err: unknown): boolean {
   return false
 }
 
+/**
+ * HTTP statuses the embed endpoint can recover from if we wait.
+ *
+ * 4xx used to be treated as "not retrying → null vector", which turned
+ * rate-limits (429) and timeouts (408) into permanent `Embedding returned
+ * null` deaths. 5xx was already retried.
+ */
+export function isRetryableHttpStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || status >= 500
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Cap so a huge or far-future Retry-After cannot stall the worker. */
+const RETRY_AFTER_MAX_MS = 60_000
+
+/**
+ * Backoff before the next attempt. 429 honors Retry-After (delta-seconds or
+ * HTTP-date) when present and well-formed; anything else falls back to
+ * exponential `2^attempt` seconds.
+ */
+export function delayForRetry(attempt: number, response?: Response): number {
+  if (response && response.status === 429) {
+    const header = response.headers?.get('Retry-After')
+    if (header) {
+      const seconds = Number(header)
+      if (Number.isFinite(seconds) && seconds >= 0) {
+        return Math.min(seconds * 1000, RETRY_AFTER_MAX_MS)
+      }
+      const when = Date.parse(header)
+      if (Number.isFinite(when)) {
+        return Math.min(Math.max(0, when - Date.now()), RETRY_AFTER_MAX_MS)
+      }
+    }
+  }
+  return Math.pow(2, attempt) * 1000
 }
 
 interface EmbeddingResponse {
@@ -39,20 +75,21 @@ async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'tra
         signal: AbortSignal.timeout(config.apiTimeoutMs),
       })
 
-      if (!response.ok && response.status < 500) {
-        console.error(`[EmbedWorker] API ${response.status}: ${response.statusText} (not retrying)`)
-        return texts.map(() => null)
-      }
-
       if (!response.ok) {
         lastError = new Error(`HTTP ${response.status}: ${response.statusText}`)
-        if (attempt < config.maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000
+        if (isRetryableHttpStatus(response.status) && attempt < config.maxRetries) {
+          const delay = delayForRetry(attempt, response)
           console.error(
             `[EmbedWorker] API ${response.status}, retry ${attempt + 1}/${config.maxRetries} in ${delay}ms`,
           )
           await sleep(delay)
           continue
+        }
+        if (!isRetryableHttpStatus(response.status)) {
+          console.error(
+            `[EmbedWorker] API ${response.status}: ${response.statusText} (not retrying)`,
+          )
+          return texts.map(() => null)
         }
         break
       }
