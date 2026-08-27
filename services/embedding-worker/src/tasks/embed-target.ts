@@ -26,6 +26,12 @@ import { composeMessageEmbedText } from '../compose-embed-text.js'
 /** Must stay in lockstep with enqueue-unembedded's failed-null heal. */
 export const NULL_EMBED_ERROR = 'Embedding returned null'
 
+/**
+ * Terminal marker after config.maxFailures consecutive null vectors.
+ * Must not match the heal, which only reopens NULL_EMBED_ERROR.
+ */
+export const PERMANENT_NULL_EMBED_ERROR = 'Embedding returned null (permanent)'
+
 export interface EmbedTargetPayload {
   targetTable: 'ros_messages' | 'ros_summaries' | 'ros_wiki_topics'
   targetId: string
@@ -125,18 +131,33 @@ export const embedTargetTask: Task = async (payload, helpers) => {
     if (!pooled) {
       // Null vectors are almost always a transient API blip (429/5xx after
       // retries, empty payload) — classifyUnembeddable already filtered poison
-      // content. Do NOT set embed_status='failed': that permanently excludes
-      // the row from enqueue-unembedded, which is how live jobs sat dead after
-      // a 2026-08-23 API incident.
-      // Throw so graphile retries this job; if it still dies, the 10-min
-      // sweep re-enqueues because embed_status stays non-terminal.
-      await client.query(
+      // content. Leave embed_status non-terminal and throw so graphile retries;
+      // the 10-min sweep also re-enqueues. After maxFailures consecutive nulls
+      // the row is poison (non-retryable 4xx / missing embedding): mark
+      // 'failed' with PERMANENT_NULL_EMBED_ERROR so the heal will not match,
+      // and return without throwing so graphile does not keep retrying it.
+      const counted = await client.query<{ embed_failures: number }>(
         `UPDATE ${targetTable}
             SET embed_failures = COALESCE(embed_failures, 0) + 1,
                 embed_error = $1
-          WHERE ${spec.idCol} = $2`,
+          WHERE ${spec.idCol} = $2
+          RETURNING embed_failures`,
         [NULL_EMBED_ERROR, targetId],
       )
+      const failures = counted.rows[0]?.embed_failures ?? 0
+      if (failures >= config.maxFailures) {
+        await client.query(
+          `UPDATE ${targetTable}
+              SET embed_status = 'failed',
+                  embed_error = $1
+            WHERE ${spec.idCol} = $2`,
+          [PERMANENT_NULL_EMBED_ERROR, targetId],
+        )
+        helpers.logger.warn(
+          `[embed-target] ${targetTable} ${targetId.slice(0, 8)} poisoned after ${String(failures)} null embeddings — marking failed`,
+        )
+        return
+      }
       throw new Error(NULL_EMBED_ERROR)
     }
 
