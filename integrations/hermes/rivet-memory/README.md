@@ -36,6 +36,9 @@ modes the rules alone didn't cover.
 - **Truncation hint when browse hits `limit`** — tells the agent to flip
   `order`, raise `limit` (max 200), or narrow the window instead of
   silently capping at 50.
+- **Default browse excludes `role=tool`** — postgres/MCP `#546` parity.
+  Pass `include_tools=true` to see tool calls/results (capture/harness
+  debugging). Without this, a limit=50 window is mostly tool noise.
 - **Prefetch hint instead of silent skip on time cues.** When the user's
   message looks time-bounded ("today", "yesterday", "this morning", "last
   week", "yesterdays standup", ...), prefetch returns a one-line
