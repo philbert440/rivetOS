@@ -249,7 +249,7 @@ export function AgentsSection(): JSX.Element {
   const gateway = useGateway()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { baseUrl, switchTo } = useConnection()
+  const { baseUrl, roster, switchTo } = useConnection()
   const { addDraft, setActive } = useChat()
   const chatSettings = useChatSettings()
   const [collapsed, setCollapsed] = useState(false)
@@ -257,15 +257,44 @@ export function AgentsSection(): JSX.Element {
   const [creating, setCreating] = useState(false)
   const deleteDialog = useConfirmDialog()
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['agents'],
-    queryFn: ({ signal }) => gateway.agentsList(signal),
+  // House-wide roster: query /api/agents from all known nodes
+  const allNodes = [{ baseUrl }, ...roster]
+  const uniqueNodes = Array.from(new Map(allNodes.map((n) => [n.baseUrl, n])).values())
+
+  const nodeQueries = useQuery({
+    queryKey: ['agents-all-nodes', uniqueNodes.map((n) => n.baseUrl)],
+    queryFn: async ({ signal }) => {
+      const results = await Promise.allSettled(
+        uniqueNodes.map((node) =>
+          new gateway.constructor({ baseUrl: node.baseUrl, authMode: 'mtls' })
+            .agentsList(signal)
+            .then((res) => ({ nodeBaseUrl: node.baseUrl, agents: res.agents }))
+            .catch(() => ({ nodeBaseUrl: node.baseUrl, agents: [] as AgentPreset[] })),
+        ),
+      )
+      const allAgents: AgentPreset[] = []
+      const seen = new Set<string>()
+      for (const result of results) {
+        if (result.status === 'fulfilled') {
+          for (const agent of result.value.agents) {
+            if (!seen.has(agent.id)) {
+              seen.add(agent.id)
+              allAgents.push(agent)
+            }
+          }
+        }
+      }
+      return allAgents
+    },
     refetchInterval: 60_000,
   })
 
+  const agents = nodeQueries.data ?? []
+  const isLoading = nodeQueries.isLoading
+
   const createMutation = useMutation({
     mutationFn: (agent: Partial<AgentPreset>) =>
-      gateway.agentCreate({
+      new gateway.constructor({ baseUrl: agent.nodeBaseUrl!, authMode: 'mtls' }).agentCreate({
         name: agent.name!,
         color: agent.color,
         model: agent.model,
@@ -274,14 +303,14 @@ export function AgentsSection(): JSX.Element {
         nodeBaseUrl: agent.nodeBaseUrl!,
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setCreating(false)
     },
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, agent }: { id: string; agent: Partial<AgentPreset> }) =>
-      gateway.agentUpdate(id, {
+    mutationFn: ({ id, agent, targetNode }: { id: string; agent: Partial<AgentPreset>; targetNode: string }) =>
+      new gateway.constructor({ baseUrl: targetNode, authMode: 'mtls' }).agentUpdate(id, {
         name: agent.name,
         color: agent.color,
         model: agent.model,
@@ -290,17 +319,16 @@ export function AgentsSection(): JSX.Element {
         nodeBaseUrl: agent.nodeBaseUrl,
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['agents'] })
+      void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setEditing(null)
     },
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => gateway.agentDelete(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents'] }),
+    mutationFn: ({ id, targetNode }: { id: string; targetNode: string }) =>
+      new gateway.constructor({ baseUrl: targetNode, authMode: 'mtls' }).agentDelete(id),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] }),
   })
-
-  const agents = data?.agents ?? []
 
   const handleOpen = (agent: AgentPreset): void => {
     // Switch to agent's node if different
@@ -318,9 +346,14 @@ export function AgentsSection(): JSX.Element {
       effort: agent.effort,
     })
 
-    // Store agent ID in localStorage for reset-vs-keep dialog
+    // Store agent ID for future reset-vs-keep (follow-up feature)
     try {
       localStorage.setItem(`rivethub.agent.${sessionId}`, agent.id)
+      // Note: systemPrompt application is a follow-up - not currently wired through
+      // the harness API (UserTurn/SessionPostRequest don't have systemPrompt field)
+      if (agent.systemPrompt) {
+        localStorage.setItem(`rivethub.agent.systemPrompt.${sessionId}`, agent.systemPrompt)
+      }
     } catch {
       /* storage full */
     }
@@ -372,7 +405,7 @@ export function AgentsSection(): JSX.Element {
               <AgentEditor
                 key={agent.id}
                 agent={agent}
-                onSave={(updated) => updateMutation.mutate({ id: agent.id, agent: updated })}
+                onSave={(updated) => updateMutation.mutate({ id: agent.id, agent: updated, targetNode: agent.nodeBaseUrl })}
                 onCancel={() => setEditing(null)}
                 disabled={updateMutation.isPending}
               />
@@ -385,7 +418,7 @@ export function AgentsSection(): JSX.Element {
                 onDelete={() => {
                   void (async () => {
                     if (await deleteDialog.confirm(`Delete agent "${agent.name}"?`, { danger: true }))
-                      deleteMutation.mutate(agent.id)
+                      deleteMutation.mutate({ id: agent.id, targetNode: agent.nodeBaseUrl })
                   })()
                 }}
               />
