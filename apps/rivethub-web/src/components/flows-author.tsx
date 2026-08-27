@@ -160,11 +160,6 @@ export function FlowsAuthor(props: {
       })
       const skipExisting = new Set(createOnly)
       const prune = hadFlowsJson.current
-      if (!hadFlowsJson.current) {
-        for (const rel of Object.keys(files)) {
-          if (rel.startsWith('agents/')) skipExisting.add(rel)
-        }
-      }
 
       let previousOwned: string[] | undefined
       let runTsIsGenerated = true
@@ -195,6 +190,14 @@ export function FlowsAuthor(props: {
             if (!(err instanceof GatewayError && err.status === 404)) throw err
           }
         }
+        if (rel.startsWith('agents/')) {
+          try {
+            const existing = await gw.filesReadText(full)
+            if (!existing.includes(RUN_TS_MARKER)) continue
+          } catch {
+            // Read failed — treat as missing and write the generated file.
+          }
+        }
         await gw.filesSave(full, body)
       }
 
@@ -203,6 +206,8 @@ export function FlowsAuthor(props: {
         const toDelete = pathsToPrune(previousOwned, owned)
         for (const rel of toDelete) {
           try {
+            const existing = await gw.filesReadText(joinRel(props.editPath, rel))
+            if (!existing.includes(RUN_TS_MARKER)) continue
             await gw.filesDelete(joinRel(props.editPath, rel))
             removed.push(rel)
           } catch {

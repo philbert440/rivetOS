@@ -65,6 +65,7 @@ describe('compileFlow', () => {
     g = connectFlowNodes(g, par.id, s.id)
     const { files } = compileFlow(g, META)
     expect(files['run.ts']).toContain('step.parallel')
+    expect(files['run.ts']).toContain('Array.isArray')
     expect(files['run.ts']).toContain('step.agent')
     expect(files['run.ts']).toContain('step.run')
     const lines = files['run.ts']!.split('\n')
@@ -184,6 +185,7 @@ describe('compileFlow', () => {
     expect(files['run.ts']).not.toContain(`prompt: ${JSON.stringify(agent.label)}`)
     const md = Object.entries(files).find(([p]) => p.startsWith('agents/') && p.endsWith('.md'))?.[1]
     expect(md).toContain('Review the PR and return findings.')
+    expect(md).toContain(RUN_TS_MARKER)
   })
 
   it('threads step results into step.done via the outputs record', () => {
@@ -331,7 +333,83 @@ describe('compileFlow', () => {
         ]),
         META,
       ),
-    ).toThrow(/duplicate scriptPath/)
+    ).toThrow(/duplicate emitted path/)
+  })
+
+  it('rejects a run scriptPath that collides with an agent file', () => {
+    const start: FlowAuthorNode = { id: FLOW_START_ID, kind: 'start', label: 'Start', x: 0, y: 0 }
+    const agent: FlowAuthorNode = {
+      id: 'a1',
+      kind: 'agent',
+      label: 'A',
+      x: 0,
+      y: 0,
+      agentName: 'reviewer',
+    }
+    const run: FlowAuthorNode = {
+      id: 'r1',
+      kind: 'run',
+      label: 'R',
+      x: 0,
+      y: 0,
+      scriptPath: 'agents/reviewer.md',
+    }
+    expect(() =>
+      compileFlow(
+        {
+          nodes: [start, agent, run],
+          edges: [
+            { id: 's1', from: FLOW_START_ID, to: 'a1' },
+            { id: 's2', from: FLOW_START_ID, to: 'r1' },
+          ],
+        },
+        META,
+      ),
+    ).toThrow(/duplicate emitted path/)
+  })
+
+  it('rejects reserved idents', () => {
+    const start: FlowAuthorNode = { id: FLOW_START_ID, kind: 'start', label: 'Start', x: 0, y: 0 }
+    for (const id of ['__rivetOutputs', '__r', 'step', 'ctx']) {
+      expect(() =>
+        compileFlow(
+          {
+            nodes: [start, { id, kind: 'agent', label: 'A', x: 0, y: 0, agentName: 'a' }],
+            edges: [{ id: 'e', from: FLOW_START_ID, to: id }],
+          },
+          META,
+        ),
+      ).toThrow(/reserved ident/)
+    }
+  })
+
+  it('emits an object literal fallback for json outputs', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'done')
+    const done = g.nodes.find((n) => n.kind === 'done')!
+    g = connectFlowNodes(g, FLOW_START_ID, done.id)
+    const { files } = compileFlow(g, {
+      ...META,
+      output: [{ name: 'payload', type: 'json' }],
+    })
+    expect(files['run.ts']).toContain('?? {}')
+    expect(files['run.ts']).not.toContain("?? '{}'")
+    expect(files['run.ts']).not.toContain('?? "{}"')
+  })
+
+  it('embeds the generated marker in agent files and script stubs', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'agent')
+    g = addFlowNode(g, 'run')
+    const agent = g.nodes.find((n) => n.kind === 'agent')!
+    const script = g.nodes.find((n) => n.kind === 'run')!
+    g = connectFlowNodes(g, FLOW_START_ID, agent.id)
+    g = connectFlowNodes(g, agent.id, script.id)
+    const { files } = compileFlow(g, META)
+    const md = Object.entries(files).find(([p]) => p.startsWith('agents/') && p.endsWith('.md'))?.[1]
+    const sh = files[script.scriptPath!]
+    expect(md).toContain(RUN_TS_MARKER)
+    expect(sh).toContain(RUN_TS_MARKER)
   })
 
   it('records owned agent/script paths in flows.json', () => {
@@ -452,5 +530,42 @@ describe('owned path prune', () => {
         }),
       ),
     ).toEqual(['agents/reviewer.md', 'scripts/load.sh'])
+  })
+
+  it('silently drops traversal, absolute, empty-segment, and reserved owned paths', () => {
+    expect(
+      ownedPathsFromFlowsFile(
+        JSON.stringify({
+          version: 1,
+          nodes: [],
+          edges: [],
+          owned: [
+            'agents/ok.md',
+            'agents/../../etc/passwd',
+            'scripts/../x.sh',
+            '/abs/x.sh',
+            'scripts/foo.sh',
+            'agents/foo/',
+            'run.ts',
+            'C:/windows/x',
+            '',
+          ],
+        }),
+      ),
+    ).toEqual(['agents/ok.md', 'scripts/foo.sh'])
+    expect(
+      ownedPathsFromFlowsFile(
+        JSON.stringify({
+          nodes: [
+            { id: 'start', kind: 'start', label: 'Start' },
+            { id: 'n1', kind: 'run', label: 'X', scriptPath: 'agents/../../x.sh' },
+            { id: 'n2', kind: 'run', label: 'Y', scriptPath: 'scripts/ok.sh' },
+            { id: 'n3', kind: 'agent', label: 'A', agentName: '../secret' },
+            { id: 'n4', kind: 'run', label: 'Z', scriptPath: 'run.ts' },
+          ],
+          edges: [],
+        }),
+      ),
+    ).toEqual(['scripts/ok.sh'])
   })
 })
