@@ -59,7 +59,6 @@ export function FlowsAuthor(props: {
     if (!dirty) return
     const onUnload = (e: BeforeUnloadEvent): void => {
       e.preventDefault()
-      e.returnValue = ''
     }
     window.addEventListener('beforeunload', onUnload)
     return () => window.removeEventListener('beforeunload', onUnload)

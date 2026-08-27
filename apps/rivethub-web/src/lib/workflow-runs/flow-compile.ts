@@ -232,9 +232,7 @@ function validateFlow(graph: FlowAuthorGraph, meta: CompileMeta): void {
       const i = ident(n.id)
       const prev = idents.get(i)
       if (prev && prev !== n.id) {
-        throw new FlowCompileError(
-          `ident collision: "${prev}" and "${n.id}" both compile as ${i}`,
-        )
+        throw new FlowCompileError(`ident collision: "${prev}" and "${n.id}" both compile as ${i}`)
       }
       idents.set(i, n.id)
     }
@@ -243,9 +241,7 @@ function validateFlow(graph: FlowAuthorGraph, meta: CompileMeta): void {
       assertSafeRelPath(path, n.id)
       const prev = scriptPaths.get(path)
       if (prev) {
-        throw new FlowCompileError(
-          `duplicate scriptPath "${path}" ("${prev}" and "${n.id}")`,
-        )
+        throw new FlowCompileError(`duplicate scriptPath "${path}" ("${prev}" and "${n.id}")`)
       }
       scriptPaths.set(path, n.id)
     }
@@ -322,10 +318,7 @@ export function ownedPathsFromFlowsFile(text: string): string[] | undefined {
 }
 
 /** Paths recorded as canvas-owned last save that the new compile no longer emits. */
-export function pathsToPrune(
-  previousOwned: string[] | undefined,
-  nextOwned: string[],
-): string[] {
+export function pathsToPrune(previousOwned: string[] | undefined, nextOwned: string[]): string[] {
   if (!previousOwned || previousOwned.length === 0) return []
   const keep = new Set(nextOwned)
   return previousOwned.filter((p) => !keep.has(p))
@@ -421,9 +414,7 @@ export function compileFlow(graph: FlowAuthorGraph, meta: CompileMeta): Compiled
   const skip = new Set<string>()
   const outlineNodes: FlowAuthorNode[] = []
   const doneNodes: FlowAuthorNode[] = []
-  const stepLines: string[] = [
-    '  const __rivetOutputs: Record<string, unknown> = { ...ctx.input }',
-  ]
+  const stepLines: string[] = ['  const __rivetOutputs: Record<string, unknown> = { ...ctx.input }']
   const output = meta.output.length > 0 ? meta.output : defaultOutput()
 
   for (const id of order) {
@@ -537,15 +528,7 @@ ${stepLines.join('\n\n')}
   return { files, createOnly, owned }
 }
 
-const AUTHOR_KINDS = new Set<string>([
-  'agent',
-  'call',
-  'done',
-  'human',
-  'parallel',
-  'run',
-  'start',
-])
+const AUTHOR_KINDS = new Set<string>(['agent', 'call', 'done', 'human', 'parallel', 'run', 'start'])
 
 export function parseFlowsFile(text: string): FlowAuthorGraph {
   const raw: unknown = JSON.parse(text)
@@ -584,12 +567,12 @@ export function parseFlowsFile(text: string): FlowAuthorGraph {
     if (typeof n.model === 'string') node.model = n.model
     if (typeof n.maxTurns === 'number' && Number.isFinite(n.maxTurns)) node.maxTurns = n.maxTurns
     if (Array.isArray(n.tools) && n.tools.every((t) => typeof t === 'string')) {
-      node.tools = n.tools as string[]
+      node.tools = n.tools
     }
     if (typeof n.scriptPath === 'string') node.scriptPath = n.scriptPath
     if (typeof n.gatePrompt === 'string') node.gatePrompt = n.gatePrompt
     if (Array.isArray(n.gateFields) && n.gateFields.every((t) => typeof t === 'string')) {
-      node.gateFields = n.gateFields as string[]
+      node.gateFields = n.gateFields
     }
     if (typeof n.callRef === 'string') node.callRef = n.callRef
     nodes.push(node)
