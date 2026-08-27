@@ -72,10 +72,12 @@ function graphFromLaid(laid: ReturnType<typeof layoutFlowGraph>): FlowAuthorGrap
     if (kind === 'agent') node.agentName = n.id
     return node
   })
-  const authorEdges = laid.edges.map((e) => ({
-    id: e.id,
-    from: e.from === FLOW_ENTRY_ID ? FLOW_START_ID : e.from,
-    to: e.to === FLOW_ENTRY_ID ? FLOW_START_ID : e.to,
-  }))
+  const authorEdges = laid.edges.map((e) => {
+    const from = e.from === FLOW_ENTRY_ID ? FLOW_START_ID : e.from
+    const to = e.to === FLOW_ENTRY_ID ? FLOW_START_ID : e.to
+    // Layout injects `entry→x` ids while rewriting from/to to `start`. The
+    // inspector disconnects by `${from}→${to}` — keep those in lockstep.
+    return { id: `${from}→${to}`, from, to }
+  })
   return { nodes: authorNodes, edges: authorEdges }
 }

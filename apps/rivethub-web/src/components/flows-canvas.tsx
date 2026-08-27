@@ -9,6 +9,7 @@ import {
   useState,
   type JSX,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
 } from 'react'
 import { FLOW_NODE_SIZE } from '../lib/workflow-runs/flow-layout.js'
@@ -50,6 +51,8 @@ export interface FlowsCanvasProps {
   statusById?: Record<string, GraphNodeStatus>
   selectedEdgeId?: string | null
   onSelectEdge?: (id: string | null) => void
+  childRunIdById?: Record<string, string>
+  onOpenChildRun?: (runId: string) => void
   className?: string
 }
 
@@ -313,6 +316,8 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     statusById,
     selectedEdgeId,
     onSelectEdge,
+    childRunIdById,
+    onOpenChildRun,
     className,
   } = props
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -391,7 +396,7 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     return () => cancelAnimationFrame(raf)
   }, [liveOverlay])
 
-  const toWorld = (ev: PointerEvent<HTMLCanvasElement>): { x: number; y: number } => {
+  const toWorld = (ev: { clientX: number; clientY: number }): { x: number; y: number } => {
     const canvas = canvasRef.current!
     const rect = canvas.getBoundingClientRect()
     return { x: ev.clientX - rect.left - pan.x, y: ev.clientY - rect.top - pan.y }
@@ -483,7 +488,20 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
   if (panning) cursor = 'grabbing'
   else if (connecting) cursor = 'crosshair'
   else if (editable && hover?.side === 'out') cursor = 'crosshair'
+  else if (hover?.id && childRunIdById?.[hover.id] && onOpenChildRun) cursor = 'pointer'
   else if (hover?.id) cursor = editable ? 'pointer' : 'default'
+
+  const onDoubleClick = (ev: MouseEvent<HTMLCanvasElement>): void => {
+    if (!onOpenChildRun || !childRunIdById) return
+    const world = toWorld(ev)
+    const node = hitNode(graph.nodes, world.x, world.y)
+    if (!node) return
+    const child = childRunIdById[node.id]
+    if (child) {
+      ev.preventDefault()
+      onOpenChildRun(child)
+    }
+  }
 
   const onKeyDown = (ev: KeyboardEvent<HTMLCanvasElement>): void => {
     if (!editable || !onChange) return
@@ -508,6 +526,7 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
       />
     </div>

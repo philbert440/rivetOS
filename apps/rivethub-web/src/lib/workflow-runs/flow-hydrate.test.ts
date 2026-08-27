@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FLOW_START_ID } from './flow-graph.js'
+import { disconnectFlowEdge, FLOW_START_ID } from './flow-graph.js'
 import { authorGraphFromOutline } from './flow-hydrate.js'
 
 describe('authorGraphFromOutline', () => {
@@ -17,5 +17,15 @@ describe('authorGraphFromOutline', () => {
   it('maps unknown outline kinds to script, not agent', () => {
     const g = authorGraphFromOutline([{ id: 'x', label: 'X', kind: 'transform' }])
     expect(g.nodes.find((n) => n.id === 'x')?.kind).toBe('run')
+  })
+
+  it('rewrites layout entry edge ids so disconnect matches from/to', () => {
+    const g = authorGraphFromOutline([{ id: 'load', label: 'Load', kind: 'run' }])
+    expect(g.edges.every((e) => e.id === `${e.from}→${e.to}`)).toBe(true)
+    expect(g.edges.some((e) => e.id === `${FLOW_START_ID}→load` && e.from === FLOW_START_ID)).toBe(
+      true,
+    )
+    const next = disconnectFlowEdge(g, `${FLOW_START_ID}→load`)
+    expect(next.edges).toHaveLength(0)
   })
 })

@@ -63,6 +63,22 @@ function branchInnerId(id: string): string | undefined {
  * Map projection/journal status onto canvas node ids (flows.json layout).
  * Folds engine `done` label and parallel-branch inner ids.
  */
+/** Map journaled call-step childRunId onto canvas node ids. */
+export function childRunIdByIdForCanvas(
+  author: FlowAuthorGraph,
+  projection: GraphNode[],
+): Record<string, string> {
+  const known = new Set(author.nodes.map((n) => n.id))
+  const map: Record<string, string> = {}
+  for (const p of projection) {
+    if (!p.childRunId) continue
+    if (known.has(p.id)) map[p.id] = p.childRunId
+    const inner = branchInnerId(p.id)
+    if (inner && known.has(inner)) map[inner] = p.childRunId
+  }
+  return map
+}
+
 export function statusByIdForCanvas(
   author: FlowAuthorGraph,
   projection: GraphNode[],

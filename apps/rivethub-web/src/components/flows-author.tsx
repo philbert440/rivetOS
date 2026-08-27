@@ -9,10 +9,18 @@ import { GatewayError } from '@rivetos/gateway-client'
 import type { WorkflowField, WorkflowOutlineStep } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { joinRel } from '../lib/files-ui.js'
-import { compileFlow, FLOWS_FILE, parseFlowsFile } from '../lib/workflow-runs/flow-compile.js'
+import {
+  compileFlow,
+  FLOWS_FILE,
+  ownedPathsFromFlowsFile,
+  parseFlowsFile,
+  pathsToPrune,
+  RUN_TS_MARKER,
+} from '../lib/workflow-runs/flow-compile.js'
 import { authorGraphFromOutline } from '../lib/workflow-runs/flow-hydrate.js'
 import { emptyFlowGraph, type FlowAuthorGraph } from '../lib/workflow-runs/flow-graph.js'
 import { FlowsWorkbench } from './flows-workbench.js'
+import { useConfirmDialog } from './confirm-dialog.js'
 
 export function FlowsAuthor(props: {
   workflowId: string
@@ -32,6 +40,7 @@ export function FlowsAuthor(props: {
 }): JSX.Element {
   const editable = Boolean(props.editPath)
   const queryClient = useQueryClient()
+  const confirmDialog = useConfirmDialog()
   const [graph, setGraph] = useState<FlowAuthorGraph>(emptyFlowGraph)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -39,6 +48,8 @@ export function FlowsAuthor(props: {
   const [saveMsg, setSaveMsg] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
   const hadFlowsJson = useRef(false)
+  const outlineRef = useRef(props.outline)
+  outlineRef.current = props.outline
 
   useEffect(() => {
     props.onDirtyChange?.(dirty)
@@ -48,17 +59,22 @@ export function FlowsAuthor(props: {
     if (!dirty) return
     const onUnload = (e: BeforeUnloadEvent): void => {
       e.preventDefault()
+      e.returnValue = ''
     }
     window.addEventListener('beforeunload', onUnload)
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [dirty])
 
+  // Key only on the def identity. `props.outline` is an unstable array from
+  // query data — depending on it re-hydrated from disk on every refetch and
+  // wiped unsaved edits. While dirty, a later run of this effect (def switch
+  // is the only trigger) still resets; we never clear dirty on a no-op re-hydrate.
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
-    setDirty(false)
     setSaveMsg(undefined)
     setSelectedId(null)
+    setDirty(false)
     const gw = useConnection.getState().gateway
     const path = props.editPath ? joinRel(props.editPath, FLOWS_FILE) : ''
     void (async () => {
@@ -79,14 +95,14 @@ export function FlowsAuthor(props: {
       }
       if (!cancelled) {
         hadFlowsJson.current = false
-        setGraph(authorGraphFromOutline(props.outline))
+        setGraph(authorGraphFromOutline(outlineRef.current))
         setLoaded(true)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [props.editPath, props.workflowId, props.outline])
+  }, [props.editPath, props.workflowId])
 
   const onChange = useCallback((next: FlowAuthorGraph) => {
     setGraph(next)
@@ -96,6 +112,13 @@ export function FlowsAuthor(props: {
 
   const onSave = async (): Promise<void> => {
     if (!props.editPath) return
+    if (!hadFlowsJson.current && (props.outline?.length ?? 0) > 1) {
+      const ok = await confirmDialog.confirm(
+        'This definition has no flows.json yet. Saving writes the canvas over run.ts and linearizes the existing outline (branches and parallel structure in the old script are replaced). Continue?',
+        { confirmLabel: 'Save' },
+      )
+      if (!ok) return
+    }
     setSaving(true)
     setSaveMsg(undefined)
     const gw = useConnection.getState().gateway
@@ -126,7 +149,7 @@ export function FlowsAuthor(props: {
       } catch {
         // New def or unreadable yaml — compile with props.
       }
-      const { files, createOnly } = compileFlow(graph, {
+      const { files, createOnly, owned } = compileFlow(graph, {
         id: props.workflowId,
         name,
         version,
@@ -134,6 +157,7 @@ export function FlowsAuthor(props: {
         input,
         output,
         budgets,
+        knownWorkflowIds: props.workflowOptions.map((o) => o.value),
       })
       const skipExisting = new Set(createOnly)
       const prune = hadFlowsJson.current
@@ -142,6 +166,24 @@ export function FlowsAuthor(props: {
           if (rel.startsWith('agents/')) skipExisting.add(rel)
         }
       }
+
+      let previousOwned: string[] | undefined
+      let runTsIsGenerated = true
+      if (prune) {
+        try {
+          const prev = await gw.filesReadText(joinRel(props.editPath, FLOWS_FILE))
+          previousOwned = ownedPathsFromFlowsFile(prev)
+        } catch {
+          previousOwned = undefined
+        }
+        try {
+          const runTs = await gw.filesReadText(joinRel(props.editPath, 'run.ts'))
+          runTsIsGenerated = runTs.includes(RUN_TS_MARKER)
+        } catch {
+          runTsIsGenerated = true
+        }
+      }
+
       await ensureDir(gw, props.editPath, 'agents')
       await ensureDir(gw, props.editPath, 'scripts')
       for (const [rel, body] of Object.entries(files)) {
@@ -156,16 +198,22 @@ export function FlowsAuthor(props: {
         }
         await gw.filesSave(full, body)
       }
-      if (prune) {
-        const keep = new Set(
-          Object.keys(files).filter((p) => p.startsWith('agents/') || p.startsWith('scripts/')),
-        )
-        await pruneUnreferenced(gw, props.editPath, 'agents', keep)
-        await pruneUnreferenced(gw, props.editPath, 'scripts', keep)
+
+      const removed: string[] = []
+      if (prune && runTsIsGenerated) {
+        const toDelete = pathsToPrune(previousOwned, owned)
+        for (const rel of toDelete) {
+          try {
+            await gw.filesDelete(joinRel(props.editPath, rel))
+            removed.push(rel)
+          } catch {
+            // Best-effort — save already wrote the live files.
+          }
+        }
       }
       hadFlowsJson.current = true
       setDirty(false)
-      setSaveMsg('Saved')
+      setSaveMsg(removed.length > 0 ? `Saved (removed ${removed.join(', ')})` : 'Saved')
       await queryClient.invalidateQueries({ queryKey: ['workflow'] })
       await queryClient.invalidateQueries({ queryKey: ['workflows'] })
     } catch (err) {
@@ -175,60 +223,45 @@ export function FlowsAuthor(props: {
     }
   }
 
-  return (
-    <FlowsWorkbench
-      graph={graph}
-      onChange={editable ? onChange : undefined}
-      editable={editable && loaded}
-      workflowOptions={props.workflowOptions}
-      workflowId={props.workflowId}
-      onWorkflowChange={props.onWorkflowChange}
-      selectedId={selectedId}
-      onSelect={setSelectedId}
-      toolbarLeft={props.toolbarLeft}
-      toolbarRight={
-        <>
-          {editable && (
-            <button
-              type="button"
-              disabled={saving || !loaded}
-              onClick={() => void onSave()}
-              className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
-            >
-              {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-            </button>
-          )}
-          {saveMsg && (
-            <span
-              className={`font-mono text-[11px] ${saveMsg === 'Saved' ? 'text-em' : 'text-red'}`}
-            >
-              {saveMsg}
-            </span>
-          )}
-          {props.toolbarRight}
-        </>
-      }
-      inspectorExtra={props.inspectorExtra}
-    />
-  )
-}
+  const saveOk = Boolean(saveMsg?.startsWith('Saved'))
 
-async function pruneUnreferenced(
-  gw: ReturnType<typeof useConnection.getState>['gateway'],
-  editPath: string,
-  dir: string,
-  keep: Set<string>,
-): Promise<void> {
-  try {
-    const listing = await gw.filesList(joinRel(editPath, dir))
-    for (const e of listing.entries) {
-      if (e.type !== 'file') continue
-      const rel = `${dir}/${e.name}`
-      if (!keep.has(rel)) await gw.filesDelete(joinRel(editPath, rel))
-    }
-  } catch {
-    // Listing/delete is best-effort — save already wrote the live files.
-  }
+  return (
+    <>
+      {confirmDialog.element}
+      <FlowsWorkbench
+        graph={graph}
+        onChange={editable ? onChange : undefined}
+        editable={editable && loaded}
+        workflowOptions={props.workflowOptions}
+        workflowId={props.workflowId}
+        onWorkflowChange={props.onWorkflowChange}
+        selectedId={selectedId}
+        onSelect={setSelectedId}
+        toolbarLeft={props.toolbarLeft}
+        toolbarRight={
+          <>
+            {editable && (
+              <button
+                type="button"
+                disabled={saving || !loaded}
+                onClick={() => void onSave()}
+                className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+              >
+                {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+              </button>
+            )}
+            {saveMsg && (
+              <span className={`font-mono text-[11px] ${saveOk ? 'text-em' : 'text-red'}`}>
+                {saveMsg}
+              </span>
+            )}
+            {props.toolbarRight}
+          </>
+        }
+        inspectorExtra={props.inspectorExtra}
+      />
+    </>
+  )
 }
 
 async function ensureDir(
@@ -239,7 +272,7 @@ async function ensureDir(
   try {
     await gw.filesMkdir(parent, name)
   } catch (err) {
-    if (err instanceof GatewayError && (err.status === 409 || err.status === 400)) return
+    if (err instanceof GatewayError && err.status === 409) return
     throw err
   }
 }

@@ -34,6 +34,9 @@ export interface FlowsWorkbenchProps {
   toolbarRight?: ReactNode
   /** Live journal status on the same node ids. */
   statusById?: Record<string, GraphNodeStatus>
+  /** Child-run ids from the journal overlay, keyed by canvas node id. */
+  childRunIdById?: Record<string, string>
+  onOpenChildRun?: (runId: string) => void
 }
 
 function Field(props: {
@@ -75,6 +78,8 @@ function NodeInspector(props: {
   editable: boolean
   onChange?: (graph: FlowAuthorGraph) => void
   status?: GraphNodeStatus
+  childRunId?: string
+  onOpenChildRun?: (runId: string) => void
 }): JSX.Element {
   const node = props.selectedId ? nodeById(props.graph, props.selectedId) : undefined
   if (!node) {
@@ -185,23 +190,33 @@ function NodeInspector(props: {
           onChange={(callRef) => patch({ callRef })}
         />
       )}
+      {props.childRunId && props.onOpenChildRun && (
+        <button
+          type="button"
+          onClick={() => props.onOpenChildRun?.(props.childRunId!)}
+          className="mb-2 block font-mono text-[11px] text-em hover:underline"
+        >
+          Open child run
+        </button>
+      )}
       {props.editable && incomingIds(props.graph, node.id).length > 0 && (
         <div className="mb-2">
           <p className="font-mono text-[10px] uppercase tracking-wide text-ink-dim">Wires in</p>
-          {incomingIds(props.graph, node.id).map((from) => {
-            const src = nodeById(props.graph, from)
-            const edgeId = `${from}→${node.id}`
-            return (
-              <button
-                key={edgeId}
-                type="button"
-                onClick={() => props.onChange?.(disconnectFlowEdge(props.graph, edgeId))}
-                className="mt-1 block font-mono text-[11px] text-ink-dim hover:text-red"
-              >
-                disconnect {src?.label ?? from}
-              </button>
-            )
-          })}
+          {props.graph.edges
+            .filter((e) => e.to === node.id)
+            .map((e) => {
+              const src = nodeById(props.graph, e.from)
+              return (
+                <button
+                  key={e.id}
+                  type="button"
+                  onClick={() => props.onChange?.(disconnectFlowEdge(props.graph, e.id))}
+                  className="mt-1 block font-mono text-[11px] text-ink-dim hover:text-red"
+                >
+                  disconnect {src?.label ?? e.from}
+                </button>
+              )
+            })}
         </div>
       )}
       {props.editable && node.id !== FLOW_START_ID && (
@@ -312,6 +327,8 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
           statusById={props.statusById}
           selectedEdgeId={selectedEdgeId}
           onSelectEdge={setSelectedEdgeId}
+          childRunIdById={props.childRunIdById}
+          onOpenChildRun={props.onOpenChildRun}
         />
 
         <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-panel p-3">
@@ -329,6 +346,8 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
             editable={Boolean(props.editable)}
             onChange={props.onChange}
             status={props.selectedId ? props.statusById?.[props.selectedId] : undefined}
+            childRunId={props.selectedId ? props.childRunIdById?.[props.selectedId] : undefined}
+            onOpenChildRun={props.onOpenChildRun}
           />
           {props.inspectorExtra}
         </aside>

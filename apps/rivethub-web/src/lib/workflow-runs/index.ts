@@ -54,4 +54,9 @@ export { compileFlow, FLOWS_FILE, parseFlowsFile } from './flow-compile.js'
 
 export { authorGraphFromOutline, authorGraphFromProjection } from './flow-hydrate.js'
 
-export { statusByIdFromProjection, statusByIdForCanvas, overlayEdgeKind } from './flow-overlay.js'
+export {
+  statusByIdFromProjection,
+  statusByIdForCanvas,
+  childRunIdByIdForCanvas,
+  overlayEdgeKind,
+} from './flow-overlay.js'

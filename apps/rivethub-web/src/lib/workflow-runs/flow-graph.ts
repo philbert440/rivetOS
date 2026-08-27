@@ -15,7 +15,7 @@ export interface FlowAuthorNode {
   y: number
   /** agents/<name>.md stem. */
   agentName?: string
-  /** System prompt written to the agent file. */
+  /** System prompt written to agents/<stem>.md; also emitted as step.agent prompt. */
   prompt?: string
   model?: string
   maxTurns?: number

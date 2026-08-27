@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GraphNode } from './graph-project.js'
 import { addFlowNode, emptyFlowGraph, FLOW_START_ID } from './flow-graph.js'
 import {
+  childRunIdByIdForCanvas,
   overlayEdgeKind,
   statusByIdForCanvas,
   statusByIdFromProjection,
@@ -60,5 +61,17 @@ describe('statusByIdForCanvas', () => {
     ])
     expect(map[done.id]).toBe('done')
     expect(map[agent.id]).toBe('running')
+  })
+})
+
+describe('childRunIdByIdForCanvas', () => {
+  it('maps journaled call childRunId onto canvas nodes', () => {
+    let g = emptyFlowGraph()
+    g = addFlowNode(g, 'call')
+    const call = g.nodes.find((n) => n.kind === 'call')!
+    const map = childRunIdByIdForCanvas(g, [
+      node({ id: call.id, status: 'done', kind: 'call', childRunId: 'child-abc' }),
+    ])
+    expect(map[call.id]).toBe('child-abc')
   })
 })

@@ -41,6 +41,7 @@ import {
   projectGraph,
   RUN_STATUS_COLORS,
   RUN_STATUS_LABELS,
+  childRunIdByIdForCanvas,
   statusByIdForCanvas,
   type FieldFormValues,
   type FieldIssues,
@@ -609,6 +610,10 @@ export function WorkflowRunDetailPage(): JSX.Element {
     () => statusByIdForCanvas(authorGraph, graph.nodes),
     [authorGraph, graph],
   )
+  const childRunIdById = useMemo(
+    () => childRunIdByIdForCanvas(authorGraph, graph.nodes),
+    [authorGraph, graph],
+  )
 
   const onKill = async (): Promise<void> => {
     if (!(await killDialog.confirm(`Kill run “${runId}”? Child runs cascade.`, { danger: true })))
@@ -834,6 +839,10 @@ export function WorkflowRunDetailPage(): JSX.Element {
                   selectedId={selectedId}
                   onSelect={setSelectedId}
                   statusById={statusById}
+                  childRunIdById={childRunIdById}
+                  onOpenChildRun={(id) =>
+                    void navigate({ to: '/workflows/runs/$runId', params: { runId: id } })
+                  }
                 />
               </div>
             )}
