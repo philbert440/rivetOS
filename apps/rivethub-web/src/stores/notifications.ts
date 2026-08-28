@@ -9,6 +9,7 @@ import { create } from 'zustand'
 import type { NotificationFrame } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
+import { rivetShell } from '../lib/shell-bridge.js'
 
 export interface NotificationEntry {
   id: string
@@ -36,28 +37,37 @@ interface TauriGlobal {
   }
 }
 
+function notifyPayload(frame: NotificationFrame): { title: string; body: string } {
+  return frame.kind === 'escalation'
+    ? { title: `⚠ Rivet escalation — ${frame.agentId}`, body: frame.summary }
+    : frame.kind === 'workflow.gate'
+      ? {
+          title: `Rivet gate · ${frame.workflowId}`,
+          body: frame.prompt?.trim() || `${frame.label} — ${frame.runId}`,
+        }
+      : { title: `Rivet task ${frame.status}`, body: frame.taskId }
+}
+
 function nativeNotify(frame: NotificationFrame): void {
+  const shell = rivetShell()
   const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
   const api = tauri?.notification
   // Skip the OS notification only when the window is truly foreground —
   // visible AND focused — where the in-app toast already covers it. A
   // visible-but-unfocused window (behind another, other monitor) still gets
   // the native ping (#306 review: the visibilityState-only gate missed it).
-  if (!api || (document.visibilityState === 'visible' && document.hasFocus())) return
+  if ((!shell && !api) || (document.visibilityState === 'visible' && document.hasFocus())) return
+  if (shell) {
+    // Electron main-process notifications need no permission handshake.
+    void shell.sendNotification(notifyPayload(frame)).catch(() => undefined)
+    return
+  }
+  if (!api) return
   void (async () => {
     let granted = await api.isPermissionGranted()
     if (!granted) granted = (await api.requestPermission()) === 'granted'
     if (!granted) return
-    const payload =
-      frame.kind === 'escalation'
-        ? { title: `⚠ Rivet escalation — ${frame.agentId}`, body: frame.summary }
-        : frame.kind === 'workflow.gate'
-          ? {
-              title: `Rivet gate · ${frame.workflowId}`,
-              body: frame.prompt?.trim() || `${frame.label} — ${frame.runId}`,
-            }
-          : { title: `Rivet task ${frame.status}`, body: frame.taskId }
-    api.sendNotification(payload)
+    api.sendNotification(notifyPayload(frame))
   })()
 }
 
@@ -65,6 +75,11 @@ function nativeNotify(frame: NotificationFrame): void {
  *  no-op in the browser). The tray is the only surface a hidden-to-tray app
  *  has, so it must know when something is waiting. */
 function emitUnreadToShell(count: number): void {
+  const shell = rivetShell()
+  if (shell) {
+    void shell.setUnread(count).catch(() => undefined)
+    return
+  }
   const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
   void tauri?.event?.emit('rivethub:unread', { count }).catch(() => undefined)
 }

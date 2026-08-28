@@ -1,10 +1,10 @@
 # AGENT.md — RivetHub (web + desktop)
 
-> Continuity for any Rivet picking this up. Desktop is a thin Tauri shell over this app.
+> Continuity for any Rivet picking this up. Desktop is a thin Electron shell over this app.
 
 ## What this is
 
-**RivetHub** = the node’s face. React (Vite) UI in `rivethub-web`; **Tauri v2** shell in `rivethub-desktop` bundles the same dist (tray, shortcuts, notifications).
+**RivetHub** = the node’s face. React (Vite) UI in `rivethub-web`; **Electron** shell in `rivethub-electron` bundles the same dist (tray, shortcuts, notifications, loopback mTLS pipe). Replaced the Tauri shell 2026-08-28 — shell detection is `window.rivetShell` first (`src/lib/shell-bridge.ts`), legacy `__TAURI__` shapes kept for the Android WebView shim.
 
 - Served by den-server as static root when `static_dir` points here; den viewer nested at `/den/` (`scripts/copy-den.mjs`).
 - Talks to RivetOS gateway (`@rivetos/gateway-client`, `@rivetos/types`).
@@ -118,7 +118,7 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
 npx nx build @rivetos/rivethub-web   # also builds den into dist/den/
 
 # desktop (after web dist)
-cd apps/rivethub-desktop && cargo tauri build   # or dev
+cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 ```
 
 ## Key files

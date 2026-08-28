@@ -17,6 +17,7 @@ import { RivetGateway } from '@rivetos/gateway-client'
 import { isValidGatewayUrl } from '../lib/gateway-url.js'
 import { rememberRemoteUi } from '../lib/remote-ui.js'
 import { transportBase } from '../lib/mtls-proxy.js'
+import { isDesktopShell } from '../lib/shell-bridge.js'
 
 export { isValidGatewayUrl } from '../lib/gateway-url.js'
 
@@ -122,10 +123,10 @@ function upgradeTransport(
   void transportBase(baseUrl).then((transport) => {
     if (get().baseUrl !== baseUrl) return // switched nodes while resolving
     if (transport === baseUrl) {
-      // Tauri + https with no identity imported yet: keep watching (10 min)
-      // so an identity dropped in mid-run engages without a relaunch or a
-      // node switch — mirrors the Rust side's no-failure-caching.
-      if ('__TAURI__' in window && baseUrl.startsWith('https://') && attempt < 40) {
+      // Desktop shell + https with no identity imported yet: keep watching
+      // (10 min) so an identity dropped in mid-run engages without a relaunch
+      // or a node switch — mirrors the shell side's no-failure-caching.
+      if (isDesktopShell() && baseUrl.startsWith('https://') && attempt < 40) {
         setTimeout(() => {
           if (get().baseUrl === baseUrl) upgradeTransport(baseUrl, set, get, attempt + 1)
         }, 15_000)

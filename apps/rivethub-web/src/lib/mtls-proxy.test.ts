@@ -5,11 +5,11 @@ type TauriGlobal = {
 }
 
 function setTauri(invoke?: TauriGlobal['core']['invoke']): void {
-  // No DOM in the test environment: transportBase reads window.__TAURI__,
-  // so window is a plain stub carrying (or not carrying) the global.
-  const w = globalThis as { window?: { __TAURI__?: TauriGlobal } }
-  if (invoke) w.window = { __TAURI__: { core: { invoke } } }
-  else w.window = {}
+  // transportBase reads globalThis.__TAURI__ (same as every other consumer —
+  // in a real renderer window IS globalThis).
+  const g = globalThis as { __TAURI__?: TauriGlobal }
+  if (invoke) g.__TAURI__ = { core: { invoke } }
+  else delete g.__TAURI__
 }
 
 // The port cache is module-level, so each test gets a fresh module instance.
@@ -23,7 +23,6 @@ beforeEach(() => {
 
 afterEach(() => {
   setTauri(undefined)
-  delete (globalThis as { window?: unknown }).window
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -31,6 +30,15 @@ afterEach(() => {
 describe('transportBase', () => {
   it('is a pass-through outside Tauri', async () => {
     setTauri(undefined)
+    const { transportBase } = await load()
+    await expect(transportBase('https://10.0.0.7:5174')).resolves.toBe('https://10.0.0.7:5174')
+  })
+
+  it('passes through on a PARTIAL __TAURI__ (Android shim: no core.invoke)', async () => {
+    // The Android WebView shim exposes clipboardManager/opener but no core —
+    // an unguarded core.invoke access would throw synchronously out of
+    // transportBase and kill every gateway request (review finding, PR #555).
+    ;(globalThis as { __TAURI__?: unknown }).__TAURI__ = { clipboardManager: {} }
     const { transportBase } = await load()
     await expect(transportBase('https://10.0.0.7:5174')).resolves.toBe('https://10.0.0.7:5174')
   })

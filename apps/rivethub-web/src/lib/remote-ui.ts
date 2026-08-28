@@ -16,10 +16,11 @@ import { isValidGatewayUrl } from './gateway-url.js'
 const REMOTE_UI_KEY = 'rivethub.remoteUi'
 
 export function isBundledOrigin(origin: string, protocol: string): boolean {
-  // tauri://localhost (linux/macOS); http://tauri.localhost (windows) parses
-  // as a legit http origin, so it needs its own case. Anything else that is
-  // not a valid http(s) gateway origin is also treated as bundled.
-  if (protocol === 'tauri:') return true
+  // app://bundle (Electron shell); tauri://localhost (linux/macOS);
+  // http://tauri.localhost (windows) parses as a legit http origin, so it
+  // needs its own case. Anything else that is not a valid http(s) gateway
+  // origin is also treated as bundled.
+  if (protocol === 'app:' || protocol === 'tauri:') return true
   if (/^https?:\/\/tauri\.localhost(?::\d+)?$/.test(origin)) return true
   return !isValidGatewayUrl(origin)
 }

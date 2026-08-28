@@ -1,0 +1,29 @@
+# RivetHub desktop packaging. Targets mirror the Tauri shell it replaces:
+# AppImage (Linux) + NSIS (Windows). The web UI is not bundled into the asar —
+# it ships as an extraResource so the main process serves it over app:// with
+# the same CSP the Tauri config enforced.
+appId: dev.rivetos.rivethub
+productName: RivetHub
+directories:
+  output: release
+# esbuild bundles every runtime dependency into dist-electron — node_modules
+# must stay out (electron-builder otherwise walks up into the workspace root
+# and collects the monorepo's production deps).
+files:
+  - dist-electron/**
+  - icons/icon.png
+  - "!**/node_modules/**"
+extraResources:
+  - from: ../rivethub-web/dist
+    to: web
+linux:
+  target:
+    - AppImage
+  category: Development
+  icon: icons/icon.png
+  executableName: rivethub
+win:
+  target:
+    - nsis
+  icon: icons/icon.png
+npmRebuild: false
