@@ -67,6 +67,29 @@ describe('clampToDisplays', () => {
       height: 820,
     })
   })
+
+  it('shrinks a rect saved on a bigger monitor to the hosting display', () => {
+    // 4K-era size restored onto a laptop: without the shrink the far edges
+    // are unreachable and the window cannot be resized back
+    expect(clampToDisplays({ x: 0, y: 0, width: 3840, height: 2100 }, DISPLAY)).toEqual({
+      x: 0,
+      y: 0,
+      width: 2560,
+      height: 1400,
+    })
+    // centered (position-less) states clamp against the largest display
+    expect(
+      clampToDisplays({ width: 9000, height: 9000 }, [
+        { x: 0, y: 0, width: 1920, height: 1080 },
+        ...DISPLAY,
+      ]),
+    ).toEqual({ width: 2560, height: 1400 })
+  })
+
+  it('no displays reported: state passes through untouched', () => {
+    const s = { x: 10, y: 10, width: 1280, height: 820 }
+    expect(clampToDisplays(s, [])).toEqual(s)
+  })
 })
 
 describe('load/save round trip', () => {

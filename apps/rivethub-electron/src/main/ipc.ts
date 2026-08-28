@@ -79,17 +79,38 @@ export function registerIpc(deps: IpcDeps): void {
 
   guarded('clipboard:readText', () => clipboard.readText())
 
+  // Live notifications: an unreferenced Notification is eligible for GC the
+  // moment the handler returns, and Electron drops its click/close listeners
+  // with the JS object while the OS banner stays on screen — the click
+  // handler silently dies within seconds (grok review of this PR; documented
+  // Electron failure mode, most reliable on Linux). Retained here until the
+  // OS reports click/close/failed.
+  const liveNotifications = new Set<Notification>()
+  const NOTIFY_TEXT_MAX = 512
+
   guarded('notify:send', (_e, opts: unknown): void => {
     if (typeof opts !== 'object' || opts === null) return
     const { title, body } = opts as { title?: unknown; body?: unknown }
     if (typeof title !== 'string' || typeof body !== 'string') return
     if (!Notification.isSupported()) return
-    const n = new Notification({ title, body })
+    const n = new Notification({
+      title: title.slice(0, NOTIFY_TEXT_MAX),
+      body: body.slice(0, NOTIFY_TEXT_MAX),
+    })
+    liveNotifications.add(n)
+    const drop = (): void => {
+      liveNotifications.delete(n)
+    }
     // The native path only fires while the window is hidden/unfocused —
     // exactly when the user needs a way back in. A click-less notification
     // was a dead end: the OS banner did nothing and the tray was the only
     // road back (review punch list #3).
-    n.on('click', deps.summon)
+    n.on('click', () => {
+      deps.summon()
+      drop()
+    })
+    n.on('close', drop)
+    n.on('failed', drop)
     n.show()
   })
 

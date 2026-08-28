@@ -17,6 +17,12 @@ export interface ContextMenuParams {
   isEditable: boolean
   selectionText: string
   linkURL: string
+  /** True when the right-click landed in the window's MAIN frame. Non-role
+   *  items (Copy Link) are main-frame-only: policy must fail closed on
+   *  unknown frames, not rely on which items happen to exist today — the
+   *  next custom item added to this template must not become a den side
+   *  door (grok review of this PR). */
+  mainFrame: boolean
   editFlags: {
     canCut: boolean
     canCopy: boolean
@@ -34,10 +40,17 @@ export interface ContextMenuItem {
   copyLink?: string
 }
 
+/** Same 2048 cap as shell:openExternal — an enormous href must not become a
+ *  clipboard bomb pasted into a terminal. Canonicalized (.href), never the
+ *  raw string. */
+const LINK_MAX = 2048
+
 function webLink(url: string): string | undefined {
+  if (url.length > LINK_MAX) return undefined
   try {
-    const p = new URL(url).protocol
-    return p === 'http:' || p === 'https:' ? url : undefined
+    const u = new URL(url)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return undefined
+    return u.href.length > LINK_MAX ? undefined : u.href
   } catch {
     return undefined
   }
@@ -46,7 +59,7 @@ function webLink(url: string): string | undefined {
 /** Empty array = no menu (right-click on inert chrome stays inert). */
 export function contextMenuTemplate(params: ContextMenuParams): ContextMenuItem[] {
   const items: ContextMenuItem[] = []
-  const link = webLink(params.linkURL)
+  const link = params.mainFrame ? webLink(params.linkURL) : undefined
   if (link) items.push({ label: 'Copy Link Address', copyLink: link })
 
   if (params.isEditable) {

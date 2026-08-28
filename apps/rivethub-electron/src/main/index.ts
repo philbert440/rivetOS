@@ -165,6 +165,7 @@ function createWindow(isMain: boolean): BrowserWindow {
       isEditable: params.isEditable,
       selectionText: params.selectionText,
       linkURL: params.linkURL,
+      mainFrame: params.frame === win.webContents.mainFrame,
       editFlags: params.editFlags,
     })
     if (template.length === 0) return
@@ -172,22 +173,51 @@ function createWindow(isMain: boolean): BrowserWindow {
       template.map((item): MenuItemConstructorOptions => {
         if (item.copyLink !== undefined) {
           const url = item.copyLink
-          return { label: item.label, click: () => clipboard.writeText(url) }
+          return {
+            label: item.label,
+            click: () => {
+              void clipboard.writeText(url)
+            },
+          }
         }
-        return item as MenuItemConstructorOptions
+        return item
       }),
     ).popup({ window: win })
   })
   if (isMain) {
-    // Persist bounds on close (the X button hides, but the geometry is live
-    // and worth keeping) — getNormalBounds so a maximized close restores to
-    // the pre-maximize size, with maximized re-applied separately.
-    win.on('close', () => {
+    // Persist bounds — getNormalBounds so a maximized session restores to
+    // the pre-maximize size, with maximized re-applied separately. The
+    // maximized bit is TRACKED via events, not snapshotted at save time:
+    // win.isMaximized() reads false while the window is minimized, which
+    // would silently drop the flag on a minimize-then-quit (grok review of
+    // this PR). Saves fire on close AND debounced on resize/move — hide-
+    // via-summon never fires close, so a resize followed by a crash would
+    // otherwise lose the geometry.
+    let maximized = state.maximized === true
+    win.on('maximize', () => {
+      maximized = true
+    })
+    win.on('unmaximize', () => {
+      maximized = false
+    })
+    const save = (): void => {
+      if (win.isDestroyed()) return
       saveWindowState(windowStateFile(), {
         ...win.getNormalBounds(),
-        ...(win.isMaximized() ? { maximized: true } : {}),
+        ...(maximized ? { maximized: true } : {}),
       })
-    })
+    }
+    let saveTimer: NodeJS.Timeout | undefined
+    const saveSoon = (): void => {
+      if (saveTimer) clearTimeout(saveTimer)
+      saveTimer = setTimeout(save, 1000)
+    }
+    win.on('resize', saveSoon)
+    win.on('move', saveSoon)
+    win.on('close', save)
+    // a hidden main window can keep phantom focus on some Linux WMs — treat
+    // hide as app-blur so the summon shortcut re-arms
+    win.on('hide', onAppBlur)
   }
   // Top-frame navigation stays on the bundled origin: a target=_self link or
   // a location assignment from rendered content must not walk the privileged
@@ -212,15 +242,20 @@ function createWindow(isMain: boolean): BrowserWindow {
       }
     })
   }
+  // The menu exists for its accelerators; the BAR never shows off macOS —
+  // autoHideMenuBar alone would still let Alt reveal it, and Alt is a
+  // terminal modifier in den xterms (grok review of this PR).
+  if (process.platform !== 'darwin') win.setMenuBarVisibility(false)
   if (isMain && state.maximized) win.maximize()
   void win.loadURL(`${APP_ORIGIN}/index.html`)
   return win
 }
 
 /** Tray "Show": unconditionally bring the window forward — never a hide,
- *  even when it's already focused. */
+ *  even when it's already focused. Destroyed guard: a late notification
+ *  click during quit must no-op, not throw (grok review of this PR). */
 function showMain(): void {
-  if (!mainWindow) return
+  if (!mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
   mainWindow.focus()
@@ -243,7 +278,7 @@ function setUnread(count: number): void {
   // Dock/taskbar badge where the platform has one (macOS dock, Unity
   // launcher); returns false elsewhere — the tooltip stays the fallback.
   try {
-    app.setBadgeCount(count)
+    app.setBadgeCount(Math.min(count, 999))
   } catch {
     /* badge is best-effort */
   }
@@ -261,22 +296,34 @@ const SUMMON_COMBO = 'Control+Shift+R'
 let summonRegistered = false
 let summonConflict = false
 
+function setConflictTip(conflict: boolean): void {
+  summonConflict = conflict
+  baseTip = conflict
+    ? 'RivetHub — shortcut conflict: Ctrl+Shift+R (summon) not registered'
+    : 'RivetHub'
+  tray?.setToolTip(baseTip)
+}
+
 function registerSummon(): void {
-  if (summonRegistered) return
-  let ok = false
+  // quitting is a hard inhibit: tray Quit blurs the windows on their way
+  // out, and a re-grab racing will-quit's unregisterAll could leak the
+  // grab past process exit.
+  if (summonRegistered || quitting) return
+  let ok: boolean
   try {
     ok = globalShortcut.register(SUMMON_COMBO, toggleMain)
   } catch {
     ok = false
   }
   summonRegistered = ok
-  if (!ok && !summonConflict) {
-    summonConflict = true
+  if (ok) {
+    // a conflict can clear (the owning app quit) — un-lie the tooltip
+    if (summonConflict) setConflictTip(false)
+  } else if (!summonConflict) {
     console.error(
       'RivetHub: global shortcut Ctrl+Shift+R (summon) was NOT registered — another application probably owns it',
     )
-    baseTip = 'RivetHub — shortcut conflict: Ctrl+Shift+R (summon) not registered'
-    tray?.setToolTip(baseTip)
+    setConflictTip(true)
   }
 }
 
@@ -284,10 +331,26 @@ function releaseSummon(): void {
   if (!summonRegistered) return
   try {
     globalShortcut.unregister(SUMMON_COMBO)
+    // cleared ONLY on success: flipping the flag on a throw would leave the
+    // OS grab live while the state machine thinks it's gone — the next
+    // focus would skip the release and Ctrl+Shift+R would swallow keys
+    // in-app again (grok review of this PR).
+    summonRegistered = false
   } catch {
-    /* release is best-effort */
+    /* keep summonRegistered=true so the next focus retries the release */
   }
-  summonRegistered = false
+}
+
+/** Blur → re-grab, but deferred: blur also fires transiently between two
+ *  shell windows, when the new context menu pops, and for undocked
+ *  DevTools. Only a REST state with no focused window re-arms the grab. */
+let blurTimer: NodeJS.Timeout | undefined
+function onAppBlur(): void {
+  if (blurTimer) clearTimeout(blurTimer)
+  blurTimer = setTimeout(() => {
+    blurTimer = undefined
+    if (BrowserWindow.getFocusedWindow() === null) registerSummon()
+  }, 150)
 }
 
 // Single instance: launching again must summon the existing window, not
@@ -332,16 +395,14 @@ if (!app.requestSingleInstanceLock()) {
 
     // Summon follows focus (see registerSummon): global while every shell
     // window is blurred or hidden, released the moment one has focus so the
-    // combo reaches the renderer. New Window is a MENU accelerator now —
-    // the old global Ctrl+Shift+N stole Chrome's incognito combo
-    // system-wide for as long as the tray process lived.
+    // combo reaches the renderer. No startup register — the main window is
+    // created focused (registering with no window fails on some Linux WMs
+    // and would stick a false conflict in the tooltip); the first blur or
+    // hide arms it. New Window is a MENU accelerator now — the old global
+    // Ctrl+Shift+N stole Chrome's incognito combo system-wide for as long
+    // as the tray process lived.
     app.on('browser-window-focus', releaseSummon)
-    app.on('browser-window-blur', () => {
-      // blur of one window may mean focus moved to another shell window —
-      // only re-grab when the whole app lost focus
-      if (BrowserWindow.getFocusedWindow() === null) registerSummon()
-    })
-    registerSummon()
+    app.on('browser-window-blur', onAppBlur)
 
     const icon = nativeImage.createFromPath(path.join(__dirname, '../icons/icon.png'))
     tray = new Tray(icon.resize({ width: 24, height: 24 }))
@@ -371,6 +432,11 @@ if (!app.requestSingleInstanceLock()) {
       const out = rest as MenuItemConstructorOptions
       if (submenu) out.submenu = submenu.map(mapMenuItem)
       if (action === 'new-window') out.click = spawnWindow
+      if (action === 'reload')
+        out.click = (_i, win) => {
+          if (win instanceof BrowserWindow) win.webContents.reload()
+        }
+      if (action === 'close-window') out.click = (_i, win) => win?.close()
       if (action === 'quit')
         out.click = () => {
           quitting = true
@@ -379,15 +445,17 @@ if (!app.requestSingleInstanceLock()) {
       return out
     }
     Menu.setApplicationMenu(
-      Menu.buildFromTemplate(appMenuTemplate(process.platform).map(mapMenuItem)),
+      Menu.buildFromTemplate(appMenuTemplate(process.platform, app.isPackaged).map(mapMenuItem)),
     )
     mainWindow = createWindow(true)
+
+    // macOS: dock click / Cmd+Tab onto a hidden-to-tray app must restore
+    // the window — without this, close-to-tray left the dock icon a no-op.
+    // Registered inside the single-instance branch: the losing instance has
+    // no window to restore.
+    app.on('activate', showMain)
   })
 }
-
-// macOS: dock click / Cmd+Tab onto a hidden-to-tray app must restore the
-// window — without this, close-to-tray left the dock icon a no-op.
-app.on('activate', showMain)
 
 // Tray app: closing every window must not exit (main hides to tray; extra
 // windows close for real). Quit is the tray's job on every platform.

@@ -6,6 +6,7 @@ function params(over: Partial<ContextMenuParams>): ContextMenuParams {
     isEditable: false,
     selectionText: '',
     linkURL: '',
+    mainFrame: true,
     editFlags: { canCut: false, canCopy: false, canPaste: true, canSelectAll: true },
     ...over,
   }
@@ -54,6 +55,28 @@ describe('contextMenuTemplate', () => {
     for (const bad of ['file:///etc/passwd', 'app://bundle/index.html', 'not a url']) {
       expect(contextMenuTemplate(params({ linkURL: bad }))).toEqual([])
     }
+  })
+
+  it('copies the CANONICAL href, capped — never the raw string', () => {
+    // canonicalization: parser-normalized form goes to the clipboard
+    expect(contextMenuTemplate(params({ linkURL: 'https://example.com' }))).toEqual([
+      { label: 'Copy Link Address', copyLink: 'https://example.com/' },
+    ])
+    // an enormous href must not become a clipboard bomb (2048 cap, both raw
+    // and canonicalized length)
+    const huge = 'https://example.com/' + 'a'.repeat(3000)
+    expect(contextMenuTemplate(params({ linkURL: huge }))).toEqual([])
+  })
+
+  it('non-role items are main-frame only — den iframes get roles, nothing custom', () => {
+    // a link inside an untrusted iframe grows NO Copy Link item…
+    expect(
+      contextMenuTemplate(params({ linkURL: 'https://example.com/x', mainFrame: false })),
+    ).toEqual([])
+    // …but the role-based edit menu still works there
+    const items = contextMenuTemplate(params({ isEditable: true, mainFrame: false }))
+    expect(items.some((i) => i.role === 'paste')).toBe(true)
+    expect(items.some((i) => i.copyLink !== undefined)).toBe(false)
   })
 
   it('link + editable stack with a separator between', () => {

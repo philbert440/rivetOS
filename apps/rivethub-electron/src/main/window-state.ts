@@ -66,27 +66,52 @@ export function parseWindowState(raw: string): WindowState {
   return out
 }
 
+function overlap(x: number, y: number, w: number, h: number, d: DisplayRect): number {
+  const ow = Math.min(x + w, d.x + d.width) - Math.max(x, d.x)
+  const oh = Math.min(y + h, d.y + d.height) - Math.max(y, d.y)
+  return ow >= MIN_VISIBLE && oh >= MIN_VISIBLE ? ow * oh : 0
+}
+
 /**
- * Drop the saved position unless at least MIN_VISIBLE px of the window in
- * both axes lands on some current display; a position-less state centers,
- * which is always safe.
+ * Fit the saved state onto the CURRENT displays: the position is dropped
+ * unless at least MIN_VISIBLE px of the window in both axes lands on some
+ * display (a position-less state centers, which is always safe), and the
+ * size is shrunk to the hosting display's work area — a rect saved on a 4K
+ * monitor must not come back mostly off a laptop screen with no reachable
+ * resize edge. Sized against the largest display when centering.
  */
 export function clampToDisplays(state: WindowState, displays: DisplayRect[]): WindowState {
-  if (state.x === undefined || state.y === undefined) return state
-  const { x, y, width, height } = state
-  const visible = displays.some((d) => {
-    const w = Math.min(x + width, d.x + d.width) - Math.max(x, d.x)
-    const h = Math.min(y + height, d.y + d.height) - Math.max(y, d.y)
-    return w >= MIN_VISIBLE && h >= MIN_VISIBLE
-  })
-  if (visible) return state
-  const { x: _x, y: _y, ...rest } = state
-  return rest
+  if (displays.length === 0) return state
+  let out = { ...state }
+  let host: DisplayRect | undefined
+  if (out.x !== undefined && out.y !== undefined) {
+    host = displays.reduce(
+      (best: DisplayRect | undefined, d) =>
+        overlap(out.x as number, out.y as number, out.width, out.height, d) >
+        (best ? overlap(out.x as number, out.y as number, out.width, out.height, best) : 0)
+          ? d
+          : best,
+      undefined,
+    )
+    if (!host) {
+      const { x: _x, y: _y, ...rest } = out
+      out = rest
+    }
+  }
+  host ??= displays.reduce((a, b) => (a.width * a.height >= b.width * b.height ? a : b))
+  out.width = Math.max(MIN_WIDTH, Math.min(out.width, host.width))
+  out.height = Math.max(MIN_HEIGHT, Math.min(out.height, host.height))
+  return out
 }
+
+/** State files are a few hundred bytes; refuse to slurp anything bigger
+ *  into the main process at startup. */
+const MAX_FILE_BYTES = 64 * 1024
 
 export function loadWindowState(file: string, displays: DisplayRect[]): WindowState {
   let raw: string
   try {
+    if (fs.statSync(file).size > MAX_FILE_BYTES) return { ...DEFAULT_WINDOW_STATE }
     raw = fs.readFileSync(file, 'utf8')
   } catch {
     return { ...DEFAULT_WINDOW_STATE }
@@ -94,11 +119,16 @@ export function loadWindowState(file: string, displays: DisplayRect[]): WindowSt
   return clampToDisplays(parseWindowState(raw), displays)
 }
 
-/** Best-effort — a full disk or unwritable dir must never break quitting. */
+/** Best-effort — a full disk or unwritable dir must never break quitting.
+ *  Temp-then-rename so a crash mid-write leaves the previous state, not a
+ *  torn file (parseWindowState survives garbage, but defaulting away a good
+ *  position is still a loss). */
 export function saveWindowState(file: string, state: WindowState): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, JSON.stringify(state))
+    const tmp = `${file}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(state))
+    fs.renameSync(tmp, file)
   } catch {
     /* losing a window position is not worth an error surface */
   }
