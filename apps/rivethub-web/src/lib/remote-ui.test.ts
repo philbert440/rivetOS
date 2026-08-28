@@ -15,10 +15,12 @@ function memStorage(init: Record<string, string> = {}): Storage {
 }
 
 describe('isBundledOrigin', () => {
-  it('tauri origins are bundled; http gateway origins are not', () => {
+  it('shell origins are bundled; http gateway origins are not', () => {
     expect(isBundledOrigin('tauri://localhost', 'tauri:')).toBe(true)
-    // windows shell serves the dist over http://tauri.localhost — a legit
-    // http origin, but still the bundled app
+    // electron shell serves the dist over its app:// scheme
+    expect(isBundledOrigin('app://bundle', 'app:')).toBe(true)
+    // windows tauri shell serves the dist over http://tauri.localhost — a
+    // legit http origin, but still the bundled app
     expect(isBundledOrigin('http://tauri.localhost', 'http:')).toBe(true)
     expect(isBundledOrigin('http://192.168.1.10:5174', 'http:')).toBe(false)
   })

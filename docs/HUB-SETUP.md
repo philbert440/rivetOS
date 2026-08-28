@@ -13,7 +13,7 @@
 | Piece | Role |
 |-------|------|
 | `apps/rivethub-web` | React (Vite) UI — chat, terminal, dens, memory wiki, files, tasks, workflows, settings |
-| `apps/rivethub-desktop` | Tauri v2 shell over the same web dist (tray, shortcuts, notifications) |
+| `apps/rivethub-electron` | Electron shell over the same web dist (tray, shortcuts, notifications, mTLS pipe) |
 | den-server | Serves hub dist as static root when configured; hosts gateway + harness APIs |
 | `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces |
 
@@ -53,10 +53,10 @@ Output: `apps/rivethub-web/dist/`.
 
 ```bash
 npx nx build @rivetos/rivethub-web
-cd apps/rivethub-desktop && cargo tauri build   # or: cargo tauri dev
+cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 ```
 
-Desktop starts unconfigured until a node gateway URL is set (Tauri origin is not http(s)).
+Desktop starts unconfigured until a node gateway URL is set (the bundled app:// origin is not http(s)).
 
 ---
 

@@ -1,7 +1,9 @@
 /**
  * Clipboard for every Hub surface. The order matters:
  *
- * 1. Tauri clipboard-manager — desktop shell (withGlobalTauri exposes
+ * 0. rivetShell — the Electron shell's preload bridge (IPC to the main
+ *    process clipboard, which is reliable everywhere Chromium runs).
+ * 1. Tauri clipboard-manager — legacy desktop shell (withGlobalTauri exposes
  *    `__TAURI__.clipboardManager`; we also fall back to
  *    `__TAURI_INTERNALS__.invoke` when the property is missing) and the
  *    Android hub WebView shim (RivetHubBridge → same shape). Required because
@@ -18,6 +20,8 @@
  * Android shells — native WebView clipboard is the broken path. Call
  * `installClipboardBridge()` once at boot so those gestures also ride IPC.
  */
+
+import { rivetShell } from './shell-bridge.js'
 
 interface TauriClipboard {
   writeText(text: string): Promise<void>
@@ -45,7 +49,7 @@ function tauriInternals(): TauriInternals | undefined {
 
 /** True when a host IPC path can write/read the system clipboard. */
 export function hasTauriClipboard(): boolean {
-  return tauriClipboardManager() != null || tauriInternals() != null
+  return rivetShell() != null || tauriClipboardManager() != null || tauriInternals() != null
 }
 
 /**
@@ -62,6 +66,11 @@ export function shouldBridgeNativeCopy(
 }
 
 async function writeViaTauri(text: string): Promise<boolean> {
+  const shell = rivetShell()
+  if (shell) {
+    await shell.clipboardWriteText(text)
+    return true
+  }
   const cm = tauriClipboardManager()
   if (cm) {
     await cm.writeText(text)
@@ -76,6 +85,10 @@ async function writeViaTauri(text: string): Promise<boolean> {
 }
 
 async function readViaTauri(): Promise<string | undefined> {
+  const shell = rivetShell()
+  if (shell) {
+    return await shell.clipboardReadText()
+  }
   const cm = tauriClipboardManager()
   if (cm) {
     return await cm.readText()

@@ -70,7 +70,7 @@ not pnpm and not yarn. Workspace members are enumerated under `workspaces` in
 the root `package.json`: `packages/*`, five per-category plugin globs
 (`plugins/{channels,memory,providers,tools,transports}/*`), `services/*`, four
 explicitly-listed apps (`apps/den`, `apps/site`, `apps/rivethub-web`,
-`apps/rivet-android` — note the Tauri shell `apps/rivethub-desktop` is *not* a
+`apps/rivet-android` — note the Electron shell `apps/rivethub-electron` is *not* a
 member), and the
 two `integrations/*/rivet-memory/capture` packages.
 

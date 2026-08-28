@@ -476,7 +476,7 @@ rivetOS/
     mcp-sidecar/
   apps/
     rivethub-web/                ← RivetHub (primary UI)
-    rivethub-desktop/            ← Tauri shell over hub dist
+    rivethub-electron/           ← Electron shell over hub dist
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site

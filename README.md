@@ -120,7 +120,7 @@ rivetOS/
 ├── apps/
 │   ├── den/            # rivet-den companion renderer
 │   ├── rivethub-web/   # RivetHub web client
-│   ├── rivethub-desktop/ # RivetHub Tauri desktop shell
+│   ├── rivethub-electron/ # RivetHub Electron desktop shell
 │   ├── rivet-android/  # RivetHub Android client (AGPL RikkaHub fork)
 │   └── site/           # Astro docs site
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
@@ -300,7 +300,7 @@ The boundary rules:
   enforcement only. Its real targets are `apk`/`apk-release`/`check`/`verify`
   (gradle wrappers), deliberately not `build`/`test`/`lint`, so CI's
   Android-SDK-less nx sweeps skip it. Builds happen where an SDK lives, same
-  posture as `apps/rivethub-desktop`.
+  posture as `apps/rivethub-electron`.
 - Dependency direction is **one-way**: the Android app may consume this
   repo's published artifacts and gateway APIs; **no code may be copied FROM
   the AGPL-licensed `apps/rivet-android/` tree INTO the Apache-2.0 tree.**

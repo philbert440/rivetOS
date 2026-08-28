@@ -1,13 +1,16 @@
 /**
- * Open a link in the user's browser from any Hub surface. In the Tauri shell
- * window.open is a silent no-op (WebKitGTK drops new-window requests and the
- * shell registers no handler), so external links must ride the opener
- * plugin's IPC; browsers keep plain window.open.
+ * Open a link in the user's browser from any Hub surface. Desktop shells
+ * route external links over IPC (Electron denies window.open into new shell
+ * windows; WebKitGTK silently drops new-window requests); browsers keep
+ * plain window.open.
  *
- * Prefer `__TAURI__.opener` (withGlobalTauri + Android RivetHubBridge shim);
- * fall back to `__TAURI_INTERNALS__.invoke` when the property is missing so
- * a partial global still opens links.
+ * Order: `rivetShell.openExternal` (Electron preload bridge), then
+ * `__TAURI__.opener` (Tauri shell + Android RivetHubBridge shim), then
+ * `__TAURI_INTERNALS__.invoke` when the property is missing so a partial
+ * global still opens links.
  */
+
+import { rivetShell } from './shell-bridge.js'
 
 interface TauriOpener {
   openUrl(url: string): Promise<void>
@@ -35,6 +38,11 @@ function openViaTauri(url: string): boolean {
 
 export function openExternal(url: string): void {
   if (!/^https?:\/\//i.test(url)) return // never forward javascript:/file: etc
+  const shell = rivetShell()
+  if (shell) {
+    void shell.openExternal(url).catch(() => window.open(url, '_blank', 'noopener'))
+    return
+  }
   if (openViaTauri(url)) return
   window.open(url, '_blank', 'noopener')
 }
