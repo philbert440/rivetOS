@@ -175,13 +175,15 @@ async function fileExists(path: string): Promise<boolean> {
 /**
  * Hot spots under the install tree checked for W_OK before `rivetos update`.
  *
- * Missing paths are ignored (npm/cargo will create them). Unwritable existing
- * paths fail the preflight with a copy-paste chown.
+ * Missing paths are ignored (npm/gradle/electron-builder will create them).
+ * Unwritable existing paths fail the preflight with a copy-paste chown.
  *
- * Cargo `target/` trees are included because desktop builds (rivethub +
- * rivet-team) often leave them root- or foreign-owned after `sudo cargo` /
- * cross-user deploys; the old list only covered npm/nx paths, so updates
- * passed preflight and then died mid-cargo with EACCES.
+ * Desktop + Android generated trees are included because `sudo` / cross-user
+ * builds leave them root- or foreign-owned. The previous list still checked
+ * Tauri `src-tauri/target` after #555 replaced that shell with Electron, so
+ * updates passed preflight and then died mid-`electron-builder` or Gradle
+ * with EACCES. Electron writes `dist-electron/` (esbuild) and `release/`
+ * (electron-builder); Android writes `.gradle/` and `build/`.
  */
 export const OWNERSHIP_PREFLIGHT_PATHS: readonly string[] = [
   '.',
@@ -190,8 +192,12 @@ export const OWNERSHIP_PREFLIGHT_PATHS: readonly string[] = [
   'packages',
   '.nx',
   '.git',
-  'apps/rivethub-desktop/src-tauri/target',
-  'apps/rivet-team-desktop/src-tauri/target',
+  'apps/rivethub-electron/dist-electron',
+  'apps/rivethub-electron/release',
+  'apps/rivet-android/.gradle',
+  'apps/rivet-android/build',
+  'apps/rivet-bots-android/.gradle',
+  'apps/rivet-bots-android/build',
 ]
 
 /**
