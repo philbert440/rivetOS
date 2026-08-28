@@ -39,6 +39,52 @@ body {
   background-size: 32px 32px;
 }
 
+/* Scrollbars. color-scheme tells the UA this is a dark page, so every
+   native widget it still owns (scrollbars first among them) renders dark
+   instead of the stock light overlay; scrollbar-color then themes thumbs to
+   the brand. scrollbar-color INHERITS (CSS Scrollbars L1), so nested
+   overflow panes — transcript, drawers, Files — pick it up from html;
+   scrollbar-width does NOT inherit, so `thin` applies to the viewport only
+   and nested scrollers keep auto thickness (deliberate: spec authors advise
+   against forcing width globally). Chromium ≥121 honors the standard
+   properties and ignores ::-webkit-scrollbar-* once scrollbar-color is set.
+   The xterm terminal draws its own DOM scrollbar (VS Code-style) and is NOT
+   covered here. */
+html {
+  color-scheme: dark;
+  scrollbar-color: var(--color-line) transparent;
+  scrollbar-width: thin;
+}
+
+/* Keyboard focus: a fallback ring for focusables that never opted into a
+   treatment of their own — the app's many raw <button>s, sidebar links,
+   drawer rows. MUST live in @layer base: Tailwind v4's import declares the
+   theme/base/components/utilities layers, and an UNLAYERED rule here would
+   beat every utility regardless of specificity or source order — including
+   the outline-none + focus-visible:ring-* pairs on Button/Textarea/Popover
+   and the ~20 outline-none inputs that signal focus via border color.
+   Layered under base, those utilities win as written. (The :where() wrapper
+   only zeroes the element list; :focus-visible still contributes (0,1,0) —
+   it is the layering, not specificity, that keeps this a default.)
+   tabindex="-1" surfaces (dialog forms, portaled popovers) are excluded:
+   they are programmatic focus targets, not controls, and would grow a ring
+   around their whole chrome. */
+@layer base {
+  :where(
+      a,
+      button,
+      [role='button'],
+      [tabindex]:not([tabindex='-1']),
+      input,
+      select,
+      textarea,
+      summary
+    ):focus-visible {
+    outline: 1px solid var(--color-em);
+    outline-offset: 1px;
+  }
+}
+
 /* TenPAL memory surfaces use short tokens; alias onto Rivet brand. */
 :root {
   --bg: var(--color-bg);
