@@ -39,6 +39,7 @@ export interface UpdateCheckResult {
 }
 
 const MANIFEST_TIMEOUT_MS = 15_000
+const MANIFEST_MAX_BYTES = 1024 * 1024
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
 /** Absolute cap regardless of manifest claims — an installer is ~120MB. */
 const HARD_MAX_BYTES = 1024 * 1024 * 1024
@@ -58,7 +59,11 @@ async function fetchManifestEntry(pipes: PipeState, gatewayBase: string): Promis
     signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`no update manifest on this node (${String(res.status)})`)
-  const manifest = (await res.json()) as Record<string, unknown>
+  // Cap the manifest body before parsing — the artifact download is byte-
+  // capped and the manifest must be too (a huge latest.json would OOM main).
+  const text = await res.text()
+  if (text.length > MANIFEST_MAX_BYTES) throw new Error('update manifest is implausibly large')
+  const manifest = JSON.parse(text) as Record<string, unknown>
   return validateManifestEntry(manifest[process.platform], process.platform)
 }
 
@@ -136,8 +141,37 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
       const openErr = await shell.openPath(dest)
       if (openErr) throw new Error(`could not launch installer: ${openErr}`)
     } else {
-      // xdg-open on an AppImage is unreliable (exec bit vs handler); run it.
-      spawn(dest, [], { detached: true, stdio: 'ignore' }).unref()
+      // xdg-open on an AppImage is unreliable (exec bit vs handler); run it
+      // directly — but strip the RUNNING AppImage's runtime vars, or the new
+      // image's runtime resolves against the OLD mount (review, PR #562).
+      const env = { ...process.env }
+      delete env.APPIMAGE
+      delete env.APPDIR
+      delete env.ARGV0
+      const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
+      // A launch that dies within the first second (bad execve, missing
+      // FUSE, broken runtime) must NOT take the running hub down with it —
+      // surface the failure instead of quitting into nothing.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup()
+          resolve()
+        }, 1000)
+        const cleanup = (): void => {
+          clearTimeout(timer)
+          child.removeAllListeners('error')
+          child.removeAllListeners('exit')
+          child.unref()
+        }
+        child.once('error', (err) => {
+          cleanup()
+          reject(new Error(`could not launch update: ${err.message}`))
+        })
+        child.once('exit', (code) => {
+          cleanup()
+          reject(new Error(`update exited immediately (code ${String(code)})`))
+        })
+      })
     }
   } catch (err) {
     await rm(dir, { recursive: true, force: true })
