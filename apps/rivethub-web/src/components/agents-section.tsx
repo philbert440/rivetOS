@@ -3,20 +3,22 @@
  * Each agent carries model, effort, system prompt, color, and target node.
  * Click to open a session with that configuration. A later click offers
  * keep-vs-reset when this agent already has a conversation.
+ *
+ * All node calls go through gatewayFor (desktop mTLS pipe, #491) — a raw
+ * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { useState, type JSX } from 'react'
+import { useEffect, useState, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
 import type { AgentPreset, ThinkingLevel } from '@rivetos/types'
-import { RivetGateway } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { useNodeName } from '../lib/node-name.js'
 import { useConfirmDialog } from './confirm-dialog.js'
-import { ModelPicker } from './pickers/model-picker.js'
-import { EffortPicker } from './pickers/effort-picker.js'
+import { Select } from './select.js'
 import { modelOptions } from '../lib/model-options.js'
+import { gatewayFor } from '../lib/agent-gateway.js'
 import { uuidv4 } from '../lib/uuid.js'
 import {
   clearAgentLastSession,
@@ -39,6 +41,14 @@ type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
 
 const lastGoodAgentsByNode = new Map<string, AgentPreset[]>()
 
+const EFFORT_OPTIONS: { value: ThinkingLevel; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
+]
+
 interface NodeSelectorProps {
   value: string
   onChange: (baseUrl: string) => void
@@ -56,18 +66,14 @@ function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Ele
   return (
     <div className="flex flex-col gap-1">
       <label className="text-xs text-ink-dim">Node</label>
-      <select
+      <Select
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        options={uniqueNodes.map((n) => ({ value: n.baseUrl, label: n.name }))}
+        onChange={onChange}
         disabled={disabled}
-        className="w-full rounded border border-line bg-panel px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-      >
-        {uniqueNodes.map((n) => (
-          <option key={n.baseUrl} value={n.baseUrl}>
-            {n.name}
-          </option>
-        ))}
-      </select>
+        label="Node"
+        className="w-full"
+      />
     </div>
   )
 }
@@ -77,10 +83,17 @@ interface AgentEditorProps {
   onSave: (agent: Partial<AgentPreset>) => void
   onCancel: () => void
   disabled?: boolean
+  errorText?: string
 }
 
-function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): JSX.Element {
-  const { baseUrl } = useConnection()
+function AgentEditor({
+  agent,
+  onSave,
+  onCancel,
+  disabled,
+  errorText,
+}: AgentEditorProps): JSX.Element {
+  const { baseUrl, transportEpoch } = useConnection()
   const [name, setName] = useState(agent?.name ?? '')
   const [color, setColor] = useState(agent?.color ?? '')
   const [model, setModel] = useState(agent?.model ?? '')
@@ -90,12 +103,24 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
   const nodeLocked = Boolean(agent)
 
   const catalog = useQuery({
-    queryKey: ['catalog-agents', nodeBaseUrl],
-    queryFn: ({ signal }) =>
-      new RivetGateway({ baseUrl: nodeBaseUrl, authMode: 'mtls' }).catalogAgents(signal),
+    queryKey: ['catalog-agents', nodeBaseUrl, transportEpoch],
+    queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).catalogAgents(signal),
     staleTime: 300_000,
   })
   const models = modelOptions(catalog.data?.agents ?? [])
+
+  // Escape closes the editor — but not while a picker popover is open:
+  // Radix owns that Escape, and its popper wrapper is still mounted when
+  // this bubble-phase listener runs.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      if (document.querySelector('[data-radix-popper-content-wrapper]')) return
+      onCancel()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [onCancel])
 
   const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
@@ -105,111 +130,138 @@ function AgentEditor({ agent, onSave, onCancel, disabled }: AgentEditorProps): J
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="flex flex-col gap-3 rounded border border-line bg-panel p-3"
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
+      role="presentation"
+      onClick={onCancel}
     >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-em">{agent ? 'Edit Agent' : 'New Agent'}</span>
-        <button
-          type="button"
-          onClick={onCancel}
-          className="text-ink-dim hover:text-em"
-          aria-label="cancel"
-        >
-          <X className="size-4" />
-        </button>
-      </div>
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-label={agent ? 'Edit agent' : 'New agent'}
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
+        className="flex max-h-[85vh] w-96 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-lg"
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-em">
+            {agent ? 'Edit Agent' : 'New Agent'}
+          </span>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-ink-dim hover:text-em"
+            aria-label="cancel"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
 
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-ink-dim">Name</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Agent name"
-          required
-          disabled={disabled}
-          className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-        />
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-ink-dim">Color (optional)</label>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-dim">Name</label>
           <input
-            type="color"
-            value={color || '#3b82f6'}
-            onChange={(e) => setColor(e.target.value)}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Agent name"
+            required
+            autoFocus
             disabled={disabled}
-            className="size-8 rounded border border-line disabled:opacity-50"
-          />
-          <input
-            type="text"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            placeholder="#3b82f6"
-            disabled={disabled}
-            className="flex-1 rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+            className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
           />
         </div>
-      </div>
 
-      <NodeSelector
-        value={nodeBaseUrl}
-        onChange={setNodeBaseUrl}
-        disabled={disabled || nodeLocked}
-      />
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-dim">Color (optional)</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="color"
+              value={color || '#3b82f6'}
+              onChange={(e) => setColor(e.target.value)}
+              disabled={disabled}
+              className="size-8 rounded border border-line disabled:opacity-50"
+            />
+            <input
+              type="text"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              placeholder="#3b82f6"
+              disabled={disabled}
+              className="flex-1 rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+            />
+          </div>
+        </div>
 
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-ink-dim">Model</label>
-        <ModelPicker
-          value={model}
-          options={models}
-          onChange={setModel}
-          disabled={disabled || catalog.isError}
-          unavailable={catalog.isError}
+        <NodeSelector
+          value={nodeBaseUrl}
+          onChange={setNodeBaseUrl}
+          disabled={disabled || nodeLocked}
         />
-      </div>
 
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-ink-dim">Effort</label>
-        <EffortPicker value={effort} onChange={setEffort} />
-      </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-dim">Model</label>
+          <Select
+            value={model}
+            options={models}
+            onChange={setModel}
+            disabled={disabled || catalog.isError}
+            title={catalog.isError ? 'catalog unavailable' : undefined}
+            label="Model"
+            className="w-full"
+          />
+          {catalog.isError && (
+            <span className="text-[10px] text-red">catalog unavailable on this node</span>
+          )}
+        </div>
 
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-ink-dim">System Prompt (optional)</label>
-        <textarea
-          value={systemPrompt}
-          onChange={(e) => setSystemPrompt(e.target.value)}
-          placeholder="Custom system prompt..."
-          rows={4}
-          disabled={disabled}
-          className="resize-y rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-        />
-      </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-dim">Effort</label>
+          <Select
+            value={effort}
+            options={EFFORT_OPTIONS}
+            onChange={(v) => setEffort(v as ThinkingLevel)}
+            disabled={disabled}
+            label="Effort"
+            className="w-full"
+          />
+        </div>
 
-      <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={
-            !name.trim() ||
-            disabled ||
-            (color.trim() !== '' && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
-          }
-          className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
-        >
-          {agent ? 'Update' : 'Create'}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={disabled}
-          className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
-        >
-          Cancel
-        </button>
-      </div>
-    </form>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-dim">System Prompt (optional)</label>
+          <textarea
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            placeholder="Custom system prompt..."
+            rows={4}
+            disabled={disabled}
+            className="resize-y rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+          />
+        </div>
+
+        {errorText && <div className="text-xs text-red">{errorText}</div>}
+
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={
+              !name.trim() ||
+              disabled ||
+              (color.trim() !== '' && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
+            }
+            className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
+          >
+            {agent ? 'Update' : 'Create'}
+          </button>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={disabled}
+            className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    </div>
   )
 }
 
@@ -225,10 +277,7 @@ function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Eleme
   const { data: health, isPending } = useQuery({
     queryKey: ['agent-node-health', agent.nodeBaseUrl],
     queryFn: async ({ signal }) => {
-      const ok = await new RivetGateway({
-        baseUrl: agent.nodeBaseUrl,
-        authMode: 'mtls',
-      }).health(signal)
+      const ok = await (await gatewayFor(agent.nodeBaseUrl)).health(signal)
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
       return ok
     },
@@ -283,10 +332,13 @@ function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Eleme
   )
 }
 
+const mutationError = (err: unknown): string =>
+  err instanceof Error ? err.message : 'request failed'
+
 export function AgentsSection(): JSX.Element {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { baseUrl, roster, switchTo } = useConnection()
+  const { baseUrl, roster, switchTo, transportEpoch } = useConnection()
   const { addDraft, setActive } = useChat()
   const chatSettings = useChatSettings()
   const [collapsed, setCollapsed] = useState(false)
@@ -297,15 +349,12 @@ export function AgentsSection(): JSX.Element {
   const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
 
   const nodeQueries = useQuery({
-    queryKey: ['agents-all-nodes', uniqueNodes.map((n) => n.baseUrl)],
+    queryKey: ['agents-all-nodes', uniqueNodes.map((n) => n.baseUrl), transportEpoch],
     queryFn: async ({ signal }) => {
       const results = await Promise.all(
         uniqueNodes.map(async (node) => {
           try {
-            const res = await new RivetGateway({
-              baseUrl: node.baseUrl,
-              authMode: 'mtls',
-            }).agentsList(signal)
+            const res = await (await gatewayFor(node.baseUrl)).agentsList(signal)
             lastGoodAgentsByNode.set(node.baseUrl, res.agents)
             return { nodeBaseUrl: node.baseUrl, agents: res.agents }
           } catch (err) {
@@ -334,8 +383,8 @@ export function AgentsSection(): JSX.Element {
   const isLoading = nodeQueries.isLoading
 
   const createMutation = useMutation({
-    mutationFn: (agent: Partial<AgentPreset>) =>
-      new RivetGateway({ baseUrl: agent.nodeBaseUrl!, authMode: 'mtls' }).agentCreate({
+    mutationFn: async (agent: Partial<AgentPreset>) =>
+      (await gatewayFor(agent.nodeBaseUrl!)).agentCreate({
         name: agent.name!,
         color: agent.color,
         model: agent.model,
@@ -350,7 +399,7 @@ export function AgentsSection(): JSX.Element {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       id,
       agent,
       targetNode,
@@ -359,7 +408,7 @@ export function AgentsSection(): JSX.Element {
       agent: Partial<AgentPreset>
       targetNode: string
     }) =>
-      new RivetGateway({ baseUrl: targetNode, authMode: 'mtls' }).agentUpdate(id, {
+      (await gatewayFor(targetNode)).agentUpdate(id, {
         name: agent.name,
         color: agent.color,
         model: agent.model,
@@ -373,8 +422,8 @@ export function AgentsSection(): JSX.Element {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: ({ id, targetNode }: { id: string; targetNode: string }) =>
-      new RivetGateway({ baseUrl: targetNode, authMode: 'mtls' }).agentDelete(id),
+    mutationFn: async ({ id, targetNode }: { id: string; targetNode: string }) =>
+      (await gatewayFor(targetNode)).agentDelete(id),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] }),
   })
 
@@ -425,10 +474,7 @@ export function AgentsSection(): JSX.Element {
     if ((chat.messages[sessionId] ?? []).length > 0) return true
     if ((chat.transcripts[sessionId]?.turns.length ?? 0) > 0) return true
     try {
-      const listed = await new RivetGateway({
-        baseUrl: nodeBaseUrl,
-        authMode: 'mtls',
-      }).harnessSessions()
+      const listed = await (await gatewayFor(nodeBaseUrl)).harnessSessions()
       return listed.sessions.some((s) => sessionPointerMatches(sessionId, s.id, nativeIdOf))
     } catch {
       return false
@@ -488,56 +534,63 @@ export function AgentsSection(): JSX.Element {
       {!collapsed && (
         <div className="mt-1 flex flex-col gap-1">
           {isLoading && <div className="px-2 text-xs text-ink-dim">loading…</div>}
-          {!isLoading && agents.length === 0 && !creating && !editing && (
+          {!isLoading && agents.length === 0 && !creating && (
             <div className="px-2 text-xs text-ink-dim">no agents yet</div>
           )}
-          {agents.map((agent) =>
-            editing?.id === agent.id ? (
-              <AgentEditor
-                key={agent.id}
-                agent={agent}
-                onSave={(updated) =>
-                  updateMutation.mutate({
-                    id: agent.id,
-                    agent: updated,
-                    targetNode: agent.sourceNodeBaseUrl,
-                  })
-                }
-                onCancel={() => setEditing(null)}
-                disabled={updateMutation.isPending}
-              />
-            ) : (
-              <AgentRow
-                key={agent.id}
-                agent={agent}
-                onOpen={() => handleOpen(agent)}
-                onEdit={() => setEditing(agent)}
-                onDelete={() => {
-                  void (async () => {
-                    if (
-                      await dialog.confirm(`Delete agent "${agent.name}"?`, {
-                        danger: true,
-                      })
-                    ) {
-                      clearAgentLastSession(agent.id)
-                      deleteMutation.mutate({
-                        id: agent.id,
-                        targetNode: agent.sourceNodeBaseUrl,
-                      })
-                    }
-                  })()
-                }}
-              />
-            ),
-          )}
-          {creating && (
-            <AgentEditor
-              onSave={(agent) => createMutation.mutate(agent)}
-              onCancel={() => setCreating(false)}
-              disabled={createMutation.isPending}
+          {agents.map((agent) => (
+            <AgentRow
+              key={agent.id}
+              agent={agent}
+              onOpen={() => handleOpen(agent)}
+              onEdit={() => setEditing(agent)}
+              onDelete={() => {
+                void (async () => {
+                  if (
+                    await dialog.confirm(`Delete agent "${agent.name}"?`, {
+                      danger: true,
+                    })
+                  ) {
+                    clearAgentLastSession(agent.id)
+                    deleteMutation.mutate({
+                      id: agent.id,
+                      targetNode: agent.sourceNodeBaseUrl,
+                    })
+                  }
+                })()
+              }}
             />
-          )}
+          ))}
         </div>
+      )}
+
+      {editing && (
+        <AgentEditor
+          agent={editing}
+          onSave={(updated) =>
+            updateMutation.mutate({
+              id: editing.id,
+              agent: updated,
+              targetNode: editing.sourceNodeBaseUrl,
+            })
+          }
+          onCancel={() => {
+            setEditing(null)
+            updateMutation.reset()
+          }}
+          disabled={updateMutation.isPending}
+          errorText={updateMutation.error ? mutationError(updateMutation.error) : undefined}
+        />
+      )}
+      {creating && (
+        <AgentEditor
+          onSave={(agent) => createMutation.mutate(agent)}
+          onCancel={() => {
+            setCreating(false)
+            createMutation.reset()
+          }}
+          disabled={createMutation.isPending}
+          errorText={createMutation.error ? mutationError(createMutation.error) : undefined}
+        />
       )}
     </div>
   )
