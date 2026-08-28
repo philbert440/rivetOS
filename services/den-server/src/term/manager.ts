@@ -120,7 +120,9 @@ interface PtyRecord {
 }
 
 export interface TermManager {
-  /** Throws TermSpawnError ('unknown-command' → 404, 'cap' → 409). */
+  /** Throws TermSpawnError ('unknown-command' → 404, 'cap' → 409,
+   *  'user-mismatch' → 403). `routedUser` is the den-stamped identity — the
+   *  reuse guard compares IT, never a value inferred from the env map. */
   spawn(
     rosterKey: string | undefined,
     cols: number,
@@ -129,6 +131,7 @@ export interface TermManager {
     session?: string,
     resume?: string,
     envOverride?: Record<string, string>,
+    routedUser?: string,
   ): PtyInfo
   list(): PtyInfo[]
   get(id: string): PtyInfo | undefined
@@ -440,7 +443,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   return {
-    spawn(rosterKey, cols, rows, remote, session, resume, envOverride): PtyInfo {
+    spawn(rosterKey, cols, rows, remote, session, resume, envOverride, routedUser): PtyInfo {
       // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
       // Re-entering Terminal (or chat inject) for a live conversation reuses
       // the same harness rather than spawning a second (seamless modes).
@@ -455,7 +458,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (existing && existing.state === 'running') {
           // Never hand one user's live harness to another identity: the
           // running child carries the first spawner's memory env.
-          if (existing.routedUser !== (envOverride?.RIVETOS_USER_ID ?? undefined))
+          if (existing.routedUser !== routedUser)
             throw new TermSpawnError('user-mismatch', `session ${session} is owned by another user`)
           return info(existing)
         }
@@ -562,7 +565,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         proc,
         scrollback: [],
         scrollbackSize: 0,
-        routedUser: envOverride?.RIVETOS_USER_ID ?? undefined,
+        routedUser,
         attached: new Set(),
         exitWatchers: new Set(),
         createdAt: now(),

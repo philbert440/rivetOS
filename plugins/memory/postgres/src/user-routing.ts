@@ -19,53 +19,42 @@
  */
 
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
+// One shared policy for what a routable user is — den's stamping, this
+// plugin's stores, and the claude-cli spawn env must agree (see user-dbs.ts).
+export { isUsableUserDb, parseUserDbs } from '@rivetos/types'
+export type { UserDbEntry } from '@rivetos/types'
 
-export interface UserDbEntry {
-  pgUrl?: string
-  /** Env file handed to spawned harness sessions (den PTY / claude-cli);
-   *  carried here so one env var describes a user completely. */
-  envFile?: string
-}
-
-/** A usable target has at least one non-empty string field. */
-export function isUsableUserDb(entry: unknown): entry is UserDbEntry {
-  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
-  const e = entry as Record<string, unknown>
-  const okString = (v: unknown): boolean => typeof v === 'string' && v.trim() !== ''
-  if ('pgUrl' in e && e.pgUrl !== undefined && !okString(e.pgUrl)) return false
-  if ('envFile' in e && e.envFile !== undefined && !okString(e.envFile)) return false
-  return okString(e.pgUrl) || okString(e.envFile)
-}
-
-/** Parse RIVETOS_USER_DBS: {"coco":{"pgUrl":"postgres://…"}}. Entries that
- *  fail shape validation are dropped with a warning; a malformed document
- *  returns undefined (routing off) rather than throwing at boot. */
-export function parseUserDbs(raw: string | undefined): Record<string, UserDbEntry> | undefined {
-  const trimmed = raw?.trim()
-  if (!trimmed) return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(trimmed)
-  } catch {
-    console.error('[memory-postgres] RIVETOS_USER_DBS is not valid JSON — user routing disabled')
-    return undefined
+/**
+ * Tombstone for a configured user whose store failed to initialize: every
+ * call REJECTS. Falling through to the owner store would silently mix the
+ * user's traffic into the owner's database — erroring is the privacy-
+ * preserving direction (same call as the claude-cli spawn refusal).
+ */
+export class BlockedMemory implements Memory {
+  constructor(private readonly userId: string) {}
+  private refuse(): Promise<never> {
+    return Promise.reject(
+      new Error(`memory for user "${this.userId}" is unavailable (store failed to initialize)`),
+    )
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    console.error('[memory-postgres] RIVETOS_USER_DBS is not a JSON object — user routing disabled')
-    return undefined
+  append(): Promise<string> {
+    return this.refuse()
   }
-  const out: Record<string, UserDbEntry> = {}
-  for (const [userId, entry] of Object.entries(parsed as Record<string, unknown>)) {
-    if (userId.trim() === '') continue
-    if (!isUsableUserDb(entry)) {
-      console.error(
-        `[memory-postgres] RIVETOS_USER_DBS entry for "${userId}" is unusable — dropped`,
-      )
-      continue
-    }
-    out[userId] = entry
+  search(): Promise<MemorySearchResult[]> {
+    return this.refuse()
   }
-  return Object.keys(out).length > 0 ? out : undefined
+  getContextForTurn(): Promise<string> {
+    return this.refuse()
+  }
+  getSessionHistory(): Promise<Message[]> {
+    return this.refuse()
+  }
+  saveSessionSettings(): Promise<void> {
+    return this.refuse()
+  }
+  loadSessionSettings(): Promise<Record<string, unknown> | null> {
+    return this.refuse()
+  }
 }
 
 /** The session-key convention is `${channelId}:${userId}` (turn-handler).

@@ -37,6 +37,7 @@ import type {
 } from '@ai-sdk/provider'
 import { APICallError } from '@ai-sdk/provider'
 import type { Tool } from '@rivetos/types'
+import { parseUserDbs } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
   buildArgs,
@@ -318,31 +319,24 @@ function userRoutingEnv(
   const rivetos = providerOptions?.rivetos as { userId?: unknown } | undefined
   const userId = typeof rivetos?.userId === 'string' ? rivetos.userId : undefined
   if (!userId) return undefined
-  const raw = process.env.RIVETOS_USER_DBS?.trim()
-  const fail = (why: string): never => {
+  // Shared policy (@rivetos/types parseUserDbs): a usable entry has pgUrl —
+  // the same predicate den's stamping and the memory plugin use, so a tagged
+  // turn is either fully routable here or refused, never half-routed.
+  const db = parseUserDbs(process.env.RIVETOS_USER_DBS)?.[userId]
+  if (!db) {
     throw new Error(
-      `per-user memory routing for "${userId}" ${why} — refusing to spawn with the node owner's capture env`,
+      `per-user memory routing for "${userId}" has no usable RIVETOS_USER_DBS entry on this node — refusing to spawn with the node owner's capture env`,
     )
   }
-  if (!raw) return fail('has no RIVETOS_USER_DBS on this node')
-  let dbs: Record<string, { pgUrl?: string; envFile?: string }>
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
-      return fail('has malformed RIVETOS_USER_DBS')
-    dbs = parsed as Record<string, { pgUrl?: string; envFile?: string }>
-  } catch {
-    return fail('has malformed RIVETOS_USER_DBS')
+  // Every memory key is emitted explicitly: RIVETOS_PG_URL always (routing
+  // target), RIVETOS_ENV_FILE either the user's or DELETED (undefined —
+  // buildChildEnv removes it), mirroring the PTY's delete-then-apply so no
+  // owner value leaks through to capture or the memory sidecar.
+  return {
+    RIVETOS_USER_ID: userId,
+    RIVETOS_PG_URL: db.pgUrl,
+    RIVETOS_ENV_FILE: db.envFile ?? undefined,
   }
-  const db = dbs[userId]
-  const pgUrl = typeof db?.pgUrl === 'string' && db.pgUrl.trim() !== '' ? db.pgUrl : undefined
-  const envFile =
-    typeof db?.envFile === 'string' && db.envFile.trim() !== '' ? db.envFile : undefined
-  if (!pgUrl && !envFile) return fail('has no usable RIVETOS_USER_DBS entry')
-  const env: Record<string, string | undefined> = { RIVETOS_USER_ID: userId }
-  if (pgUrl) env.RIVETOS_PG_URL = pgUrl
-  if (envFile) env.RIVETOS_ENV_FILE = envFile
-  return env
 }
 
 function emptyUsage(): LanguageModelV3Usage {

@@ -94,6 +94,10 @@ import {
   UNAUTHORIZED_HTML,
 } from './auth.js'
 
+/** Log-once registry for mapped devices whose user has no usable
+ *  RIVETOS_USER_DBS entry — one line per device, not one per request. */
+const warnedUnroutableDevices = new Set<string>()
+
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
@@ -865,9 +869,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const mapped = dev ? config.deviceUsers[dev.deviceId] : undefined
         if (!mapped) return undefined
         if (!config.userDbs?.[mapped]) {
-          console.error(
-            `[den] device "${dev?.deviceId ?? '?'}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — treating as owner`,
-          )
+          const key = dev?.deviceId ?? '?'
+          if (!warnedUnroutableDevices.has(key)) {
+            warnedUnroutableDevices.add(key)
+            console.error(
+              `[den] device "${key}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — treating as owner`,
+            )
+          }
           return undefined
         }
         return mapped
@@ -1095,6 +1103,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               p.session === undefined ? undefined : denJoinKey(p.session),
               p.resume === undefined ? undefined : denJoinKey(p.resume),
               Object.keys(userEnv).length > 0 ? userEnv : undefined,
+              routedUser,
             )
             return json(res, 201, {
               id: pty.id,
