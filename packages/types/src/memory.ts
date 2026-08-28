@@ -34,18 +34,26 @@ export interface Memory {
   /** Append a message/response/tool call to the transcript */
   append(entry: MemoryEntry): Promise<string>
 
-  /** Search the transcript store */
+  /** Search the transcript store. `userId` lets per-user routing stores scope
+   *  the search to that user's memory; stores without routing ignore it. */
   search(
     query: string,
     options?: {
       agent?: string
       limit?: number
       scope?: 'messages' | 'summaries' | 'both'
+      userId?: string
     },
   ): Promise<MemorySearchResult[]>
 
-  /** Build context for the current turn (recent + relevant) */
-  getContextForTurn(query: string, agent: string, options?: { maxTokens?: number }): Promise<string>
+  /** Build context for the current turn (recent + relevant). `userId` lets
+   *  per-user routing stores scope the context to that user's memory; stores
+   *  without routing ignore it. */
+  getContextForTurn(
+    query: string,
+    agent: string,
+    options?: { maxTokens?: number; userId?: string },
+  ): Promise<string>
 
   /** Restore session history from persistent storage */
   getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]>

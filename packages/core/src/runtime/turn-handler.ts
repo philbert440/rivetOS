@@ -178,6 +178,14 @@ export class TurnHandler {
         modelOverride: agent.model,
         onStream: streamHandler,
         agentId: agent.id,
+        // Routing identity only: a real user den resolved from the device
+        // cert. The gateway's 'gateway-user' sentinel and platform ids
+        // (Telegram/Discord) stay out so unmapped turns keep the pre-routing
+        // SessionContext default.
+        userId:
+          message.platform === 'gateway' && message.userId !== 'gateway-user'
+            ? message.userId
+            : undefined,
         workspaceDir: this.deps.workspaceDir,
         imageDir,
         hooks: this.deps.hooks,

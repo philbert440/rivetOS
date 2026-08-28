@@ -44,6 +44,9 @@ export {
 // Schema migration helpers — still needed by agent CTs to ensure columns exist
 export { ensureEmbedderSchema } from './embedder.js'
 
+export { RoutingMemory, parseUserDbs, userFromSessionKey } from './user-routing.js'
+export type { UserDbEntry } from './user-routing.js'
+
 // Compactor types/prompts/formatters — shared with Datahub compaction-worker and CLI
 export {
   LEAF_SYSTEM_PROMPT,
@@ -81,10 +84,11 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 // Plugin manifest
 // ---------------------------------------------------------------------------
 
-import type { PluginManifest, DelegationAfterContext } from '@rivetos/types'
+import type { PluginManifest, DelegationAfterContext, Tool, Memory } from '@rivetos/types'
 import { PostgresMemory } from './adapter.js'
 import { createMemoryTools } from './tools/index.js'
 import { ensureEmbedderSchema } from './embedder.js'
+import { BlockedMemory, parseUserDbs, RoutingMemory } from './user-routing.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -105,16 +109,86 @@ export const manifest: PluginManifest = {
       embedEndpoint: embedEndpoint || undefined,
       embedModel,
     })
-    ctx.registerMemory(memory)
+
+    // Per-user routing (RIVETOS_USER_DBS): additional humans on this node get
+    // their own database; everything unmapped keeps flowing to `memory`.
+    // parseUserDbs already dropped unusable entries (pgUrl required — shared
+    // policy in @rivetos/types). A configured user whose store fails to
+    // construct is TOMBSTONED, not skipped: den still stamps that id, so a
+    // fall-through to the owner store would mix the user's traffic into the
+    // owner's database. Their calls error instead.
+    const userDbs = parseUserDbs(ctx.env.RIVETOS_USER_DBS)
+    const userStores = new Map<string, Memory>()
+    const userEngines = new Map<string, PostgresMemory>()
+    for (const [userId, db] of Object.entries(userDbs ?? {})) {
+      try {
+        const store = new PostgresMemory({
+          connectionString: db.pgUrl,
+          embedEndpoint: embedEndpoint || undefined,
+          embedModel,
+        })
+        userStores.set(userId, store)
+        userEngines.set(userId, store)
+      } catch (err: unknown) {
+        console.error(
+          `[memory-postgres] store for user "${userId}" failed to init — BLOCKED (calls will error):`,
+          err instanceof Error ? err.message : err,
+        )
+        userStores.set(userId, new BlockedMemory(userId))
+      }
+    }
+    ctx.registerMemory(userStores.size > 0 ? new RoutingMemory(memory, userStores) : memory)
 
     const searchEngine = memory.getSearchEngine()
     const expander = memory.getExpander()
     const pool = memory.getPool()
 
     await ensureEmbedderSchema(pool)
+    for (const [userId, m] of userEngines) {
+      try {
+        await ensureEmbedderSchema(m.getPool())
+      } catch (err: unknown) {
+        // Store stays registered — appends still land in the user's DB; only
+        // embedding bookkeeping is degraded until the DB is reachable.
+        console.error(
+          `[memory-postgres] embedder schema for user "${userId}" failed (store kept):`,
+          err instanceof Error ? err.message : err,
+        )
+      }
+    }
 
-    for (const tool of createMemoryTools(searchEngine, expander, { pool })) {
-      ctx.registerTool(tool)
+    // Tools: the main set as before; with routing, each tool delegates
+    // per-call to the store owned by SessionContext.userId (populated by the
+    // loop's tool binding), so a routed user's memory_search never reads the
+    // node owner's database. A configured-but-blocked user's tool calls
+    // error rather than falling through to the owner tools.
+    const mainTools = createMemoryTools(searchEngine, expander, { pool })
+    const userTools = new Map<string, Map<string, Tool>>()
+    for (const [userId, m] of userEngines) {
+      const set = createMemoryTools(m.getSearchEngine(), m.getExpander(), { pool: m.getPool() })
+      userTools.set(userId, new Map(set.map((t) => [t.name, t])))
+    }
+    const configuredUsers = new Set(userStores.keys())
+    for (const tool of mainTools) {
+      ctx.registerTool(
+        configuredUsers.size === 0
+          ? tool
+          : {
+              ...tool,
+              async execute(args, signal, context) {
+                const uid = context?.session?.userId
+                if (uid && configuredUsers.has(uid)) {
+                  const routed = userTools.get(uid)?.get(tool.name)
+                  if (!routed)
+                    throw new Error(
+                      `memory for user "${uid}" is unavailable (store failed to initialize)`,
+                    )
+                  return routed.execute(args, signal, context)
+                }
+                return tool.execute(args, signal, context)
+              },
+            },
+      )
     }
 
     // Opt-in: on main this hook was (accidentally) gated behind the removed
