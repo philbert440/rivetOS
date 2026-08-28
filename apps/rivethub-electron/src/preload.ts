@@ -22,6 +22,35 @@ if (window.self !== window.top) {
   throw new Error('rivetShell preload is top-frame only')
 }
 
+declare const localStorage: {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+// One-time Tauri→Electron localStorage migration: seed rivethub.* keys the
+// new origin lacks BEFORE any page script reads storage (preload runs
+// first; sendSync keeps the ordering strict). Absent-only writes — nothing
+// the user has already re-configured is clobbered — except the roster,
+// which is MERGED (hand-rebuilt entries win, legacy fills in behind).
+import { mergeRoster } from './roster-merge.js'
+
+try {
+  const legacy = ipcRenderer.sendSync('migration:legacy') as Record<string, string> | null
+  if (legacy) {
+    for (const [key, value] of Object.entries(legacy)) {
+      if (key === 'rivethub.roster') {
+        const merged = mergeRoster(localStorage.getItem(key), value)
+        if (merged !== null) localStorage.setItem(key, merged)
+      } else if (localStorage.getItem(key) === null) {
+        localStorage.setItem(key, value)
+      }
+    }
+    ipcRenderer.send('migration:done')
+  }
+} catch {
+  /* storage unavailable — boot fresh, the marker stays unwritten */
+}
+
 const api = {
   /** Which shell this is — lets the web side special-case if it ever must. */
   kind: 'electron' as const,

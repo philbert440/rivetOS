@@ -5,14 +5,24 @@
  * shell capabilities anywhere the shell would not go itself.
  */
 
-import { clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
+import {
+  clipboard,
+  ipcMain,
+  Notification,
+  shell,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+} from 'electron'
 import type { PipeState } from './mtls-pipe.js'
+import type { MigrationHandle } from './tauri-storage-migration.js'
 
 export interface IpcDeps {
   pipes: PipeState
   setUnread: (count: number) => void
   /** True when the given frame URL belongs to the bundled app origin. */
   isBundledUrl: (url: string) => boolean
+  /** One-time Tauri localStorage migration (see tauri-storage-migration.ts). */
+  migration: MigrationHandle
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -76,5 +86,20 @@ export function registerIpc(deps: IpcDeps): void {
   guarded('unread:set', (_e, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
     deps.setUnread(Math.floor(n))
+  })
+
+  // Tauri localStorage migration — sendSync on purpose: the preload must
+  // seed BEFORE the app's first storage reads, and the payload is tiny and
+  // handed out once. Same sender fence as everything else.
+  const trustedSync = (e: IpcMainEvent): boolean => {
+    const frame = e.senderFrame
+    if (!frame || frame !== e.sender.mainFrame) return false
+    return deps.isBundledUrl(frame.url)
+  }
+  ipcMain.on('migration:legacy', (e) => {
+    e.returnValue = trustedSync(e) ? deps.migration.pending() : null
+  })
+  ipcMain.on('migration:done', (e) => {
+    if (trustedSync(e)) deps.migration.markDone()
   })
 }

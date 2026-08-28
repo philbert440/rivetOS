@@ -27,3 +27,6 @@ win:
     - nsis
   icon: icons/icon.png
 npmRebuild: false
+# No electron-updater: without this the post-package update-info task tries
+# to infer a publish channel and dies on "Cannot read properties of null".
+publish: null

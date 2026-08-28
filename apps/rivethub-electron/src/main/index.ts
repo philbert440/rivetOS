@@ -26,6 +26,7 @@ import {
 import { PipeState } from './mtls-pipe.js'
 import { registerIpc } from './ipc.js'
 import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
+import { legacySqlitePath, prepareMigration } from './tauri-storage-migration.js'
 
 // Unpackaged dev runs otherwise derive userData from the scoped package name
 // (~/.config/@rivetos/rivethub-electron), so a dev-time enrollment would land
@@ -186,7 +187,15 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     serveDist(protocol, distDir())
-    registerIpc({ pipes, setUnread, isBundledUrl })
+    // Legacy dir uses appData (not userData): the Tauri identifier was its
+    // own config dir. XDG data home carried the webview's localStorage.
+    const migration = prepareMigration(
+      path.join(app.getPath('userData'), 'tauri-storage-migrated'),
+      legacySqlitePath(
+        process.env.XDG_DATA_HOME ?? path.join(app.getPath('home'), '.local', 'share'),
+      ),
+    )
+    registerIpc({ pipes, setUnread, isBundledUrl, migration })
 
     // Deny every renderer permission request (camera/mic/geolocation/…).
     // Electron's default handler GRANTS, and den iframes render LAN-served
