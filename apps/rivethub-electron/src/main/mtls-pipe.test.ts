@@ -108,6 +108,15 @@ describe('PipeState identity validation', () => {
     const state = new PipeState(() => dir)
     await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(/device\.crt/)
   })
+
+  it('rejects a partial enroll (empty ca.pem) uncached — the completed enroll must recover', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mtls-test-'))
+    writeFileSync(join(dir, 'device.crt'), '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n')
+    writeFileSync(join(dir, 'device.key'), '-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n')
+    writeFileSync(join(dir, 'ca.pem'), '') // enroll wrote leaf+key first; CA not landed yet
+    const state = new PipeState(() => dir)
+    await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(/ca\.pem.*no PEM/)
+  })
 })
 
 describe('ListenerSet', () => {

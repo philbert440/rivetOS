@@ -70,8 +70,11 @@ export function hostAllowed(host: string): boolean {
       return false
     }
     if (canon === '::1') return true
-    // ULA fd00::/7 (WG overlay addressing): first hextet fc00–fdff. An
-    // address opening with `::` has a zero first hextet and correctly fails.
+    // Unique-local fc00::/7 (WG overlays allocate from fd00::/8, but the
+    // mask — first hextet fc00–fdff — matches the Rust reference exactly).
+    // An address opening with `::` has a zero first hextet and correctly
+    // fails. v6 link-local (fe80::/10) is NOT allowed — same as Rust; those
+    // need zone ids and never appear as roster bases.
     const first = canon.split(':', 1)[0]
     if (first === '') return false
     const value = parseInt(first, 16)
@@ -161,10 +164,17 @@ export class ListenerSet<T> {
     this.entries.set(key, entry)
   }
 
-  /** Insert `key`, evicting the STALEST listener to `onEvict` when the cap is
-   *  exceeded. Callers insert only after a `get` miss on the same tick, so
-   *  duplicate keys never reach this. */
+  /** Insert `key`, evicting the STALEST listener to `onEvict` when the cap
+   *  is exceeded. The per-target pending map means duplicate keys should
+   *  never reach this — but if one ever does, the PREVIOUS entry is evicted
+   *  through `onEvict` rather than silently overwritten, which would orphan
+   *  a live identity-serving socket with no record of it. */
   insert(key: string, entry: T, onEvict: (key: string, entry: T) => void): void {
+    const existing = this.entries.get(key)
+    if (existing !== undefined) {
+      this.entries.delete(key)
+      onEvict(key, existing)
+    }
     this.entries.set(key, entry)
     while (this.entries.size > MAX_LISTENERS) {
       const stalest = this.entries.keys().next().value as string
@@ -184,6 +194,11 @@ export class ListenerSet<T> {
   remove(key: string): boolean {
     return this.entries.delete(key)
   }
+
+  /** Snapshot of live keys, insertion (LRU) order — read-only like values(). */
+  keys(): string[] {
+    return [...this.entries.keys()]
+  }
 }
 
 interface Identity {
@@ -200,8 +215,11 @@ interface ListenerEntry {
 export class PipeState {
   readonly listeners = new ListenerSet<ListenerEntry>()
   /** Only a WORKING identity is cached — failures (no identity yet) fall
-   *  through to a fresh disk read next call, so enrollment recovers live. */
-  private identity: Identity | undefined
+   *  through to a fresh disk read next call, so enrollment recovers live.
+   *  Keyed by the dir it came from: identityDir() can legitimately move
+   *  (legacy Tauri dir → own dir once an enroll lands) and the old cache
+   *  must not shadow the new material. */
+  private identity: { dir: string; material: Identity } | undefined
   /** In-flight resolves per key: concurrent windows racing the same target
    *  must share one bind, or the loser leaks an orphaned identity-serving
    *  listener on an unrecorded port. */
@@ -211,21 +229,33 @@ export class PipeState {
 
   private loadIdentity(): Identity {
     const dir = this.identityDir()
-    if (this.identity) return this.identity
-    const read = (name: string): Buffer => {
+    if (this.identity && this.identity.dir === dir) return this.identity.material
+    const read = (name: string, mustContain: string): Buffer => {
       const p = path.join(dir, name)
+      let data: Buffer
       try {
-        return fs.readFileSync(p)
+        data = fs.readFileSync(p)
       } catch (e) {
         throw new Error(`${p}: ${e instanceof Error ? e.message : String(e)}`)
       }
+      // Rust's load_pem_certs / private_key errored on files with no PEM
+      // blocks; createSecureContext alone does not reliably reject an EMPTY
+      // ca.pem, and a partial enroll (leaf+key landed, CA not yet) must fail
+      // THIS resolve uncached so the completed enroll recovers live (review
+      // finding, PR #555).
+      if (!data.includes(mustContain)) throw new Error(`${p}: no PEM ${mustContain} block found`)
+      return data
     }
-    const identity = { cert: read('device.crt'), key: read('device.key'), ca: read('ca.pem') }
-    // Validate the material BEFORE caching — the Rust reference only cached a
-    // connector that fully built. createSecureContext throws on truncated or
-    // garbage PEM, so a corrupt enroll fails THIS resolve (uncached) instead
-    // of minting a port whose every connection dies at handshake, unhealable
-    // until relaunch (review finding, PR #555).
+    const identity = {
+      cert: read('device.crt', '-----BEGIN CERTIFICATE-----'),
+      key: read('device.key', '-----BEGIN'),
+      ca: read('ca.pem', '-----BEGIN CERTIFICATE-----'),
+    }
+    // Cryptographic validation BEFORE caching — the Rust reference only
+    // cached a connector that fully built. createSecureContext throws on
+    // truncated or garbage PEM, so a corrupt enroll fails this resolve
+    // (uncached) instead of minting a port whose every connection dies at
+    // handshake, unhealable until relaunch.
     try {
       tls.createSecureContext({ cert: identity.cert, key: identity.key, ca: identity.ca })
     } catch (e) {
@@ -234,7 +264,7 @@ export class PipeState {
       )
     }
     warnKeyPermissions(path.join(dir, 'device.key'))
-    this.identity = identity
+    this.identity = { dir, material: identity }
     return identity
   }
 
@@ -300,10 +330,12 @@ export class PipeState {
     }
   }
 
-  /** Close every listener (app quit). Best-effort — the OS reclaims the
-   *  sockets on exit either way. */
+  /** Close every listener AND drop the entries — a post-dispose resolve must
+   *  bind fresh, never be handed a closed listener's port. Best-effort on
+   *  the close side: the OS reclaims the sockets on exit either way. */
   dispose(): void {
     for (const entry of this.listeners.values()) entry.server.close()
+    for (const key of this.listeners.keys()) this.listeners.remove(key)
   }
 }
 
