@@ -8,7 +8,7 @@
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { useEffect, useState, type JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
@@ -101,6 +101,15 @@ function AgentEditor({
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
   const [nodeBaseUrl, setNodeBaseUrl] = useState(agent?.nodeBaseUrl ?? baseUrl)
   const nodeLocked = Boolean(agent)
+  const formRef = useRef<HTMLFormElement | null>(null)
+  // A picker's Radix popper still being mounted means that popover owns the
+  // event (its own dismiss handlers run first, in the same dispatch).
+  const pickerOpen = (): boolean =>
+    document.querySelector('[data-radix-popper-content-wrapper]') !== null
+  // Only a press that STARTED on the backdrop (with no picker open) may
+  // cancel — dismissing a picker by clicking outside must not also land on
+  // the backdrop and unmount the editor, losing the draft.
+  const backdropArmed = useRef(false)
 
   const catalog = useQuery({
     queryKey: ['catalog-agents', nodeBaseUrl, transportEpoch],
@@ -109,14 +118,38 @@ function AgentEditor({
   })
   const models = modelOptions(catalog.data?.agents ?? [])
 
-  // Escape closes the editor — but not while a picker popover is open:
-  // Radix owns that Escape, and its popper wrapper is still mounted when
-  // this bubble-phase listener runs.
+  // Restore focus to the opener (Plus / Pencil) when the dialog closes.
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    return () => opener?.focus()
+  }, [])
+
+  // Document-level keys, mirroring confirm-dialog: Escape cancels and Tab
+  // cycles within the dialog — except while a picker popover is open, which
+  // owns both.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return
-      if (document.querySelector('[data-radix-popper-content-wrapper]')) return
-      onCancel()
+      if (pickerOpen()) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onCancel()
+        return
+      }
+      if (e.key !== 'Tab') return
+      e.preventDefault()
+      const el = formRef.current
+      const focusables = el
+        ? Array.from(el.querySelectorAll<HTMLElement>('input, button, textarea')).filter(
+            (n) => !n.hasAttribute('disabled'),
+          )
+        : []
+      if (focusables.length === 0) return
+      const idx = focusables.indexOf(document.activeElement as HTMLElement)
+      const next =
+        idx === -1
+          ? focusables[e.shiftKey ? focusables.length - 1 : 0]
+          : focusables[(idx + (e.shiftKey ? -1 : 1) + focusables.length) % focusables.length]
+      next.focus()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
@@ -133,9 +166,16 @@ function AgentEditor({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
       role="presentation"
-      onClick={onCancel}
+      onPointerDown={(e) => {
+        backdropArmed.current = e.target === e.currentTarget && !pickerOpen()
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && backdropArmed.current) onCancel()
+        backdropArmed.current = false
+      }}
     >
       <form
+        ref={formRef}
         role="dialog"
         aria-modal="true"
         aria-label={agent ? 'Edit agent' : 'New agent'}
@@ -274,8 +314,9 @@ interface AgentRowProps {
 
 function AgentRow({ agent, onOpen, onEdit, onDelete }: AgentRowProps): JSX.Element {
   const nodeName = useNodeName(agent.nodeBaseUrl)
+  const transportEpoch = useConnection((s) => s.transportEpoch)
   const { data: health, isPending } = useQuery({
-    queryKey: ['agent-node-health', agent.nodeBaseUrl],
+    queryKey: ['agent-node-health', agent.nodeBaseUrl, transportEpoch],
     queryFn: async ({ signal }) => {
       const ok = await (await gatewayFor(agent.nodeBaseUrl)).health(signal)
       if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
@@ -427,6 +468,19 @@ export function AgentsSection(): JSX.Element {
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] }),
   })
 
+  // Stable cancel handlers — the editor's document keydown effect depends on
+  // onCancel, so an inline lambda would resubscribe it every parent render.
+  const { reset: resetCreate } = createMutation
+  const { reset: resetUpdate } = updateMutation
+  const cancelCreate = useCallback(() => {
+    setCreating(false)
+    resetCreate()
+  }, [resetCreate])
+  const cancelEdit = useCallback(() => {
+    setEditing(null)
+    resetUpdate()
+  }, [resetUpdate])
+
   const applyAgentSettings = (sessionId: string, agent: AgentPreset, nodeBaseUrl: string): void => {
     chatSettings.set(`${nodeBaseUrl}::${sessionId}`, {
       agent: agent.model || '',
@@ -521,7 +575,10 @@ export function AgentsSection(): JSX.Element {
         {!collapsed && (
           <button
             type="button"
-            onClick={() => setCreating(true)}
+            onClick={() => {
+              setEditing(null)
+              setCreating(true)
+            }}
             className="text-ink-dim hover:text-em"
             aria-label="add agent"
             title="add agent"
@@ -542,7 +599,10 @@ export function AgentsSection(): JSX.Element {
               key={agent.id}
               agent={agent}
               onOpen={() => handleOpen(agent)}
-              onEdit={() => setEditing(agent)}
+              onEdit={() => {
+                setCreating(false)
+                setEditing(agent)
+              }}
               onDelete={() => {
                 void (async () => {
                   if (
@@ -573,10 +633,7 @@ export function AgentsSection(): JSX.Element {
               targetNode: editing.sourceNodeBaseUrl,
             })
           }
-          onCancel={() => {
-            setEditing(null)
-            updateMutation.reset()
-          }}
+          onCancel={cancelEdit}
           disabled={updateMutation.isPending}
           errorText={updateMutation.error ? mutationError(updateMutation.error) : undefined}
         />
@@ -584,10 +641,7 @@ export function AgentsSection(): JSX.Element {
       {creating && (
         <AgentEditor
           onSave={(agent) => createMutation.mutate(agent)}
-          onCancel={() => {
-            setCreating(false)
-            createMutation.reset()
-          }}
+          onCancel={cancelCreate}
           disabled={createMutation.isPending}
           errorText={createMutation.error ? mutationError(createMutation.error) : undefined}
         />
