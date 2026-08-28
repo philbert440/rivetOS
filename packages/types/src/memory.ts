@@ -34,13 +34,15 @@ export interface Memory {
   /** Append a message/response/tool call to the transcript */
   append(entry: MemoryEntry): Promise<string>
 
-  /** Search the transcript store */
+  /** Search the transcript store. `userId` lets per-user routing stores scope
+   *  the search to that user's memory; stores without routing ignore it. */
   search(
     query: string,
     options?: {
       agent?: string
       limit?: number
       scope?: 'messages' | 'summaries' | 'both'
+      userId?: string
     },
   ): Promise<MemorySearchResult[]>
 

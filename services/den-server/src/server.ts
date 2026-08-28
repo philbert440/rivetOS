@@ -854,12 +854,23 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // trusted identity header for downstream gateway handlers. The inbound
       // value is ALWAYS stripped first — only den, as the TLS terminus, may
       // assert it. Unmapped devices (the node owner's) carry no header and
-      // keep today's behavior.
+      // keep today's behavior. A mapped device whose user has NO usable
+      // RIVETOS_USER_DBS target is NOT stamped either: asserting an identity
+      // the memory layer can't route would label owner-DB writes with the
+      // routed user's id — worse than plain owner behavior.
       delete req.headers['x-rivetos-user']
       const routedUser = (() => {
         if (!config.deviceUsers) return undefined
         const dev = clientDevice(req)
-        return dev ? config.deviceUsers[dev.deviceId] : undefined
+        const mapped = dev ? config.deviceUsers[dev.deviceId] : undefined
+        if (!mapped) return undefined
+        if (!config.userDbs?.[mapped]) {
+          console.error(
+            `[den] device "${dev?.deviceId ?? '?'}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — treating as owner`,
+          )
+          return undefined
+        }
+        return mapped
       })()
       if (routedUser) req.headers['x-rivetos-user'] = routedUser
 
@@ -1094,7 +1105,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             })
           } catch (e) {
             if (e instanceof TermSpawnError)
-              return json(res, e.code === 'cap' ? 409 : 404, { error: e.message })
+              return json(
+                res,
+                e.code === 'cap' ? 409 : e.code === 'user-mismatch' ? 403 : 404,
+                { error: e.message },
+              )
             throw e
           }
         }

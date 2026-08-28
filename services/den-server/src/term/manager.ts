@@ -26,7 +26,7 @@ import type { TermRoster } from './roster.js'
 
 export class TermSpawnError extends Error {
   constructor(
-    public readonly code: 'unknown-command' | 'cap',
+    public readonly code: 'unknown-command' | 'cap' | 'user-mismatch',
     message: string,
   ) {
     super(message)
@@ -87,6 +87,9 @@ interface PtyRecord {
   cols: number
   rows: number
   lastOutputTs: number
+  /** Per-user routing: the RIVETOS_USER_ID this PTY was spawned with, or
+   *  undefined for the node owner. Reuse across identities is refused. */
+  routedUser?: string
   state: 'running' | 'exited'
   exitCode?: number | null
   detachTimer?: NodeJS.Timeout
@@ -449,7 +452,16 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           throw new TermSpawnError('unknown-command', `invalid session id: ${session}`)
         const existingId = bySession.get(session)
         const existing = existingId ? records.get(existingId) : undefined
-        if (existing && existing.state === 'running') return info(existing)
+        if (existing && existing.state === 'running') {
+          // Never hand one user's live harness to another identity: the
+          // running child carries the first spawner's memory env.
+          if (existing.routedUser !== (envOverride?.RIVETOS_USER_ID ?? undefined))
+            throw new TermSpawnError(
+              'user-mismatch',
+              `session ${session} is owned by another user`,
+            )
+          return info(existing)
+        }
       }
       const roster = deps.roster()
       const key = rosterKey ?? roster.default
@@ -530,8 +542,16 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
       // Per-user routing (device→user, server.ts): the override lands last so
       // a mapped device's memory env (RIVETOS_PG_URL / RIVETOS_ENV_FILE)
-      // outranks the node owner's process env and roster env.
-      if (envOverride) Object.assign(env, envOverride)
+      // outranks the node owner's process env and roster env. The owner's
+      // values for these keys are removed first — an envFile-only override
+      // must not leave the owner's RIVETOS_PG_URL visible to capture, which
+      // prefers the env var over the env file.
+      if (envOverride) {
+        delete env.RIVETOS_PG_URL
+        delete env.RIVETOS_ENV_FILE
+        delete env.RIVETOS_USER_ID
+        Object.assign(env, envOverride)
+      }
       const proc = deps.spawn(argv, { cwd, env, cols, rows })
       const r: PtyRecord = {
         id,
@@ -545,6 +565,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         proc,
         scrollback: [],
         scrollbackSize: 0,
+        routedUser: envOverride?.RIVETOS_USER_ID ?? undefined,
         attached: new Set(),
         exitWatchers: new Set(),
         createdAt: now(),

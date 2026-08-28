@@ -146,19 +146,62 @@ export interface DenConfig {
   userDbs?: Record<string, { pgUrl?: string; envFile?: string }>
 }
 
-/** Parse a JSON object env var; malformed input logs once and yields undefined
- *  (fail-open to owner behavior, never crash den on a config typo). */
-function jsonEnv<T>(env: NodeJS.ProcessEnv, name: string): T | undefined {
+/** Parse a JSON object env var. Malformed input logs loudly and yields
+ *  undefined: routing collapses to owner behavior rather than crashing den.
+ *  That trade-off (availability of the whole private mesh over hard-failing
+ *  every device on a config typo) is deliberate — the parse error names the
+ *  variable so the typo is caught on the first log read. */
+function jsonEnv(env: NodeJS.ProcessEnv, name: string): Record<string, unknown> | undefined {
   const raw = env[name]?.trim()
   if (!raw) return undefined
   try {
     const parsed = JSON.parse(raw) as unknown
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as T
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>
   } catch {
     /* fall through */
   }
-  console.error(`[den] ${name} is not a JSON object — per-user routing disabled`)
+  console.error(`[den] ${name} is not a JSON object — PER-USER ROUTING DISABLED, fix the env var`)
   return undefined
+}
+
+/** RIVETOS_DEN_DEVICE_USERS: values must be non-empty strings (user ids).
+ *  Keys are bare device ids — the `device:` CN prefix is already stripped by
+ *  deviceIdentityFromCert. Invalid entries are dropped with a warning. */
+function parseDeviceUsers(env: NodeJS.ProcessEnv): Record<string, string> | undefined {
+  const obj = jsonEnv(env, 'RIVETOS_DEN_DEVICE_USERS')
+  if (!obj) return undefined
+  const out: Record<string, string> = {}
+  for (const [deviceId, userId] of Object.entries(obj)) {
+    if (deviceId.trim() !== '' && typeof userId === 'string' && userId.trim() !== '') {
+      out[deviceId] = userId
+    } else {
+      console.error(`[den] RIVETOS_DEN_DEVICE_USERS entry for "${deviceId}" is invalid — dropped`)
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** RIVETOS_USER_DBS: values must be objects with at least one non-empty
+ *  string field of {pgUrl, envFile}. Invalid entries are dropped loudly. */
+function parseUserDbsEnv(
+  env: NodeJS.ProcessEnv,
+): Record<string, { pgUrl?: string; envFile?: string }> | undefined {
+  const obj = jsonEnv(env, 'RIVETOS_USER_DBS')
+  if (!obj) return undefined
+  const out: Record<string, { pgUrl?: string; envFile?: string }> = {}
+  const okString = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+  for (const [userId, entry] of Object.entries(obj)) {
+    const e = entry as Record<string, unknown> | null
+    const pgUrl = e && okString(e.pgUrl) ? e.pgUrl : undefined
+    const envFile = e && okString(e.envFile) ? e.envFile : undefined
+    if (userId.trim() !== '' && (pgUrl || envFile)) {
+      out[userId] = { ...(pgUrl ? { pgUrl } : {}), ...(envFile ? { envFile } : {}) }
+    } else {
+      console.error(`[den] RIVETOS_USER_DBS entry for "${userId}" is unusable — dropped`)
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 /** Staging area for remote-client harness attachments (see harness/uploads.ts). */
@@ -298,10 +341,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     // the top level because it is no longer a devices-only concern: the alias
     // reconstructor reads it with no relation to device enrollment.
     pgUrl: env.RIVETOS_PG_URL ?? '',
-    deviceUsers: jsonEnv<Record<string, string>>(env, 'RIVETOS_DEN_DEVICE_USERS'),
-    userDbs: jsonEnv<Record<string, { pgUrl?: string; envFile?: string }>>(
-      env,
-      'RIVETOS_USER_DBS',
-    ),
+    deviceUsers: parseDeviceUsers(env),
+    userDbs: parseUserDbsEnv(env),
   }
 }

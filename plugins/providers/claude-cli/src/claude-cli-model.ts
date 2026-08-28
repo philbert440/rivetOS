@@ -301,10 +301,16 @@ function mapEffortFromProviderOptions(
 
 /**
  * Per-user memory routing: when the loop tags the turn with
- * `providerOptions.rivetos.userId` and RIVETOS_USER_DBS maps that user to a
- * database, the spawned turn's env points capture (the CLI's Stop-hook
- * transcript ingest) and any in-session memory sidecar at that user's DB
- * instead of the node owner's. Unmapped turns spawn with no override.
+ * `providerOptions.rivetos.userId` (server-built — see AgentLoop; never
+ * client input) and RIVETOS_USER_DBS maps that user to a database, the
+ * spawned turn's env points capture (the CLI's Stop-hook transcript ingest)
+ * and any in-session memory sidecar at that user's DB instead of the node
+ * owner's. Unmapped turns spawn with no override.
+ *
+ * A tagged turn whose mapping is missing or unusable THROWS: silently
+ * inheriting the owner's RIVETOS_PG_URL would capture the routed user's
+ * transcript into the owner's database — failing the turn is the privacy-
+ * preserving direction.
  */
 function userRoutingEnv(
   providerOptions: LanguageModelV3CallOptions['providerOptions'],
@@ -313,20 +319,26 @@ function userRoutingEnv(
   const userId = typeof rivetos?.userId === 'string' ? rivetos.userId : undefined
   if (!userId) return undefined
   const raw = process.env.RIVETOS_USER_DBS?.trim()
-  if (!raw) return undefined
+  const fail = (why: string): never => {
+    throw new Error(`per-user memory routing for "${userId}" ${why} — refusing to spawn with the node owner's capture env`)
+  }
+  if (!raw) return fail('has no RIVETOS_USER_DBS on this node')
   let dbs: Record<string, { pgUrl?: string; envFile?: string }>
   try {
     const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail('has malformed RIVETOS_USER_DBS')
     dbs = parsed as Record<string, { pgUrl?: string; envFile?: string }>
   } catch {
-    return undefined
+    return fail('has malformed RIVETOS_USER_DBS')
   }
   const db = dbs[userId]
-  if (!db) return undefined
+  const pgUrl = typeof db?.pgUrl === 'string' && db.pgUrl.trim() !== '' ? db.pgUrl : undefined
+  const envFile =
+    typeof db?.envFile === 'string' && db.envFile.trim() !== '' ? db.envFile : undefined
+  if (!pgUrl && !envFile) return fail('has no usable RIVETOS_USER_DBS entry')
   const env: Record<string, string | undefined> = { RIVETOS_USER_ID: userId }
-  if (db.pgUrl) env.RIVETOS_PG_URL = db.pgUrl
-  if (db.envFile) env.RIVETOS_ENV_FILE = db.envFile
+  if (pgUrl) env.RIVETOS_PG_URL = pgUrl
+  if (envFile) env.RIVETOS_ENV_FILE = envFile
   return env
 }
 

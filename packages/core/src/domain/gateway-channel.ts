@@ -40,6 +40,7 @@ import type {
   MessageUsage,
 } from '@rivetos/types'
 import { HARNESS_IDS, SYSTEM_PROMPT_MAX_CHARS, splitHermesReasoning } from '@rivetos/types'
+import { routedUserFromHeaders } from './trusted-user.js'
 import { logger } from '../logger.js'
 
 const log = logger('GatewayChannel')
@@ -448,17 +449,14 @@ export function createGatewayChannel(opts?: {
             // systemPrompt (agent-preset override, applied once at session init).
             const metadata = turnMetadata(body)
             // den-server resolves the mTLS device cert to a user and stamps
-            // this header after stripping any inbound value — it outranks the
-            // client-supplied body field (which any caller can set).
-            const certUser = req.headers['x-rivetos-user']
+            // this header after stripping any inbound value. It is the ONLY
+            // identity that may route memory — the body's userId field is
+            // client-controlled and is deliberately ignored (it used to be a
+            // label; with per-user routing it would select a database).
+            const certUser = routedUserFromHeaders(req.headers)
             const inbound: InboundMessage = {
               id: randomUUID(),
-              userId:
-                typeof certUser === 'string' && certUser !== ''
-                  ? certUser
-                  : typeof body.userId === 'string'
-                    ? body.userId
-                    : 'gateway-user',
+              userId: certUser ?? 'gateway-user',
               channelId: key,
               chatType: 'direct',
               text: body.text,

@@ -4,16 +4,18 @@
  * The node owner's memory stays the plugin's main `PostgresMemory` exactly as
  * before. When `RIVETOS_USER_DBS` maps additional user ids to their own
  * Postgres URLs, `RoutingMemory` fronts the registered Memory slot and
- * delegates each call to the store owned by the user the call belongs to:
+ * delegates each call to the store owned by the user the call belongs to.
  *
- *   - `append`      → `entry.metadata.userId`, else the session-key suffix
- *   - session/history methods → the session-key suffix (`channelId:userId`,
- *     see turn-handler's sessionKey)
- *   - `getContextForTurn`     → the explicit `options.userId`
+ * ONE routing key everywhere: the session-key suffix. Session keys are
+ * server-derived (`${channelId}:${userId}` in turn-handler, where userId is
+ * den's cert-stamped identity or a trusted platform id) — client-supplied
+ * fields never reach it. `getContextForTurn`/`search` take an explicit
+ * `userId` option instead, sourced from the same trusted values.
  *
  * Anything that resolves to an unmapped user (including `gateway-user`,
- * `phil`, task sessions `task:<id>`) falls through to the main store —
- * unmapped traffic behaves exactly as it did before this module existed.
+ * platform ids, and the task engine's `task:<id>` namespace) falls through to
+ * the main store — unmapped traffic behaves exactly as it did before this
+ * module existed.
  */
 
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
@@ -25,24 +27,49 @@ export interface UserDbEntry {
   envFile?: string
 }
 
-/** Parse RIVETOS_USER_DBS: {"coco":{"pgUrl":"postgres://…"}}. Malformed input
+/** A usable target has at least one non-empty string field. */
+export function isUsableUserDb(entry: unknown): entry is UserDbEntry {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+  const e = entry as Record<string, unknown>
+  const okString = (v: unknown): boolean => typeof v === 'string' && v.trim() !== ''
+  if ('pgUrl' in e && e.pgUrl !== undefined && !okString(e.pgUrl)) return false
+  if ('envFile' in e && e.envFile !== undefined && !okString(e.envFile)) return false
+  return okString(e.pgUrl) || okString(e.envFile)
+}
+
+/** Parse RIVETOS_USER_DBS: {"coco":{"pgUrl":"postgres://…"}}. Entries that
+ *  fail shape validation are dropped with a warning; a malformed document
  *  returns undefined (routing off) rather than throwing at boot. */
 export function parseUserDbs(raw: string | undefined): Record<string, UserDbEntry> | undefined {
   const trimmed = raw?.trim()
   if (!trimmed) return undefined
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(trimmed) as unknown
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
-      return parsed as Record<string, UserDbEntry>
+    parsed = JSON.parse(trimmed)
   } catch {
-    /* fall through */
+    console.error('[memory-postgres] RIVETOS_USER_DBS is not valid JSON — user routing disabled')
+    return undefined
   }
-  console.error('[memory-postgres] RIVETOS_USER_DBS is not a JSON object — user routing disabled')
-  return undefined
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    console.error('[memory-postgres] RIVETOS_USER_DBS is not a JSON object — user routing disabled')
+    return undefined
+  }
+  const out: Record<string, UserDbEntry> = {}
+  for (const [userId, entry] of Object.entries(parsed as Record<string, unknown>)) {
+    if (userId.trim() === '') continue
+    if (!isUsableUserDb(entry)) {
+      console.error(`[memory-postgres] RIVETOS_USER_DBS entry for "${userId}" is unusable — dropped`)
+      continue
+    }
+    out[userId] = entry
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
-/** The session-key convention is `${channelId}:${userId}` (turn-handler). */
+/** The session-key convention is `${channelId}:${userId}` (turn-handler).
+ *  `task:<id>` is the task engine's reserved namespace, never a user key. */
 export function userFromSessionKey(sessionId: string): string | undefined {
+  if (sessionId.startsWith('task:')) return undefined
   const idx = sessionId.lastIndexOf(':')
   if (idx < 0 || idx === sessionId.length - 1) return undefined
   return sessionId.slice(idx + 1)
@@ -64,16 +91,19 @@ export class RoutingMemory implements Memory {
   }
 
   append(entry: MemoryEntry): Promise<string> {
-    const metaUser =
-      typeof entry.metadata?.userId === 'string' ? (entry.metadata.userId as string) : undefined
-    return this.forUser(metaUser ?? userFromSessionKey(entry.sessionId)).append(entry)
+    return this.forSession(entry.sessionId).append(entry)
   }
 
   search(
     query: string,
-    options?: { agent?: string; limit?: number; scope?: 'messages' | 'summaries' | 'both' },
+    options?: {
+      agent?: string
+      limit?: number
+      scope?: 'messages' | 'summaries' | 'both'
+      userId?: string
+    },
   ): Promise<MemorySearchResult[]> {
-    return this.main.search(query, options)
+    return this.forUser(options?.userId).search(query, options)
   }
 
   getContextForTurn(

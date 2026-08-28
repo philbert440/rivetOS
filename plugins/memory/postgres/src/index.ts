@@ -112,18 +112,28 @@ export const manifest: PluginManifest = {
 
     // Per-user routing (RIVETOS_USER_DBS): additional humans on this node get
     // their own database; everything unmapped keeps flowing to `memory`.
+    // parseUserDbs already dropped unusable entries; a user entry that fails
+    // to construct is skipped (logged) so it can never take the owner store
+    // down with it.
     const userDbs = parseUserDbs(ctx.env.RIVETOS_USER_DBS)
     const userMemories = new Map<string, PostgresMemory>()
     for (const [userId, db] of Object.entries(userDbs ?? {})) {
       if (!db.pgUrl) continue
-      userMemories.set(
-        userId,
-        new PostgresMemory({
-          connectionString: db.pgUrl,
-          embedEndpoint: embedEndpoint || undefined,
-          embedModel,
-        }),
-      )
+      try {
+        userMemories.set(
+          userId,
+          new PostgresMemory({
+            connectionString: db.pgUrl,
+            embedEndpoint: embedEndpoint || undefined,
+            embedModel,
+          }),
+        )
+      } catch (err: unknown) {
+        console.error(
+          `[memory-postgres] failed to init store for user "${userId}" — mapping skipped:`,
+          err instanceof Error ? err.message : err,
+        )
+      }
     }
     ctx.registerMemory(
       userMemories.size > 0 ? new RoutingMemory(memory, userMemories) : memory,
@@ -134,7 +144,18 @@ export const manifest: PluginManifest = {
     const pool = memory.getPool()
 
     await ensureEmbedderSchema(pool)
-    for (const m of userMemories.values()) await ensureEmbedderSchema(m.getPool())
+    for (const [userId, m] of userMemories) {
+      try {
+        await ensureEmbedderSchema(m.getPool())
+      } catch (err: unknown) {
+        // Store stays registered — appends still land in the user's DB; only
+        // embedding bookkeeping is degraded until the DB is reachable.
+        console.error(
+          `[memory-postgres] embedder schema for user "${userId}" failed (store kept):`,
+          err instanceof Error ? err.message : err,
+        )
+      }
+    }
 
     // Tools: the main set as before; with routing, each tool delegates
     // per-call to the store owned by SessionContext.userId (populated by the

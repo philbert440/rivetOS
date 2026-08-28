@@ -25,6 +25,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GatewayRoute, MessageUsage, StreamEvent } from '@rivetos/types'
 import type { GatewayChannelHandle } from './gateway-channel.js'
+import { routedUserFromHeaders } from './trusted-user.js'
 import { logger } from '../logger.js'
 
 const log = logger('OpenAICompat')
@@ -275,13 +276,9 @@ export function createOpenAICompatRoute(opts: OpenAICompatOptions): GatewayRoute
               text,
               agent: model,
               thinking,
-              userId:
-              typeof req.headers['x-rivetos-user'] === 'string' &&
-              req.headers['x-rivetos-user'] !== ''
-                ? req.headers['x-rivetos-user']
-                : typeof body.user === 'string'
-                  ? body.user
-                  : undefined,
+              // Routing identity is den's stamped header ONLY — the OpenAI
+            // `user` field is client-controlled and would select a database.
+            userId: routedUserFromHeaders(req.headers),
             })
             if (!result.ok) return json(res, result.status, { error: { message: result.error } })
             const usage = usageToOpenAI(result.message.usage)
@@ -364,13 +361,9 @@ export function createOpenAICompatRoute(opts: OpenAICompatOptions): GatewayRoute
             text,
             agent: model,
             thinking,
-            userId:
-              typeof req.headers['x-rivetos-user'] === 'string' &&
-              req.headers['x-rivetos-user'] !== ''
-                ? req.headers['x-rivetos-user']
-                : typeof body.user === 'string'
-                  ? body.user
-                  : undefined,
+            // Routing identity is den's stamped header ONLY — the OpenAI
+            // `user` field is client-controlled and would select a database.
+            userId: routedUserFromHeaders(req.headers),
             onStream,
           })
 
