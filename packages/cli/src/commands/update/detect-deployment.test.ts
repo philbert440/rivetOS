@@ -178,37 +178,63 @@ describe('findOwnershipBlockers', () => {
     expect(blockers).not.toContain('(install root)')
   })
 
-  it('flags unwritable desktop Cargo target/ while npm paths stay writable', () => {
+  it('flags unwritable Electron release/ while npm paths stay writable', () => {
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       return
     }
     const root = scratch()
     mkdirSync(join(root, 'node_modules'), { recursive: true })
-    const cargoTarget = join(root, 'apps/rivethub-desktop/src-tauri/target')
-    mkdirSync(cargoTarget, { recursive: true })
-    chmodSync(cargoTarget, 0o555)
+    const release = join(root, 'apps/rivethub-electron/release')
+    mkdirSync(release, { recursive: true })
+    chmodSync(release, 0o555)
     const blockers = findOwnershipBlockers(root)
-    expect(blockers).toContain('apps/rivethub-desktop/src-tauri/target')
+    expect(blockers).toContain('apps/rivethub-electron/release')
     expect(blockers).not.toContain('(install root)')
     expect(blockers).not.toContain('node_modules')
   })
 
-  it('flags unwritable rivet-team-desktop Cargo target/', () => {
+  it('flags unwritable Electron dist-electron/', () => {
     if (typeof process.getuid === 'function' && process.getuid() === 0) {
       return
     }
     const root = scratch()
-    const cargoTarget = join(root, 'apps/rivet-team-desktop/src-tauri/target')
-    mkdirSync(cargoTarget, { recursive: true })
-    chmodSync(cargoTarget, 0o555)
+    const distElectron = join(root, 'apps/rivethub-electron/dist-electron')
+    mkdirSync(distElectron, { recursive: true })
+    chmodSync(distElectron, 0o555)
     const blockers = findOwnershipBlockers(root)
-    expect(blockers).toContain('apps/rivet-team-desktop/src-tauri/target')
+    expect(blockers).toContain('apps/rivethub-electron/dist-electron')
   })
 
-  it('ignores missing desktop Cargo target/ (not every install builds desktop)', () => {
+  it('flags unwritable Android Gradle cache and build dirs', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return
+    }
+    const root = scratch()
+    const gradle = join(root, 'apps/rivet-android/.gradle')
+    const build = join(root, 'apps/rivet-bots-android/build')
+    mkdirSync(gradle, { recursive: true })
+    mkdirSync(build, { recursive: true })
+    chmodSync(gradle, 0o555)
+    chmodSync(build, 0o555)
+    const blockers = findOwnershipBlockers(root)
+    expect(blockers).toContain('apps/rivet-android/.gradle')
+    expect(blockers).toContain('apps/rivet-bots-android/build')
+  })
+
+  it('does not flag leftover Tauri cargo target/ after the Electron migration', () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return
+    }
+    const root = scratch()
+    const cargoTarget = join(root, 'apps/rivethub-desktop/src-tauri/target')
+    mkdirSync(cargoTarget, { recursive: true })
+    chmodSync(cargoTarget, 0o555)
+    expect(findOwnershipBlockers(root)).toEqual([])
+  })
+
+  it('ignores missing Electron/Gradle dirs (not every install builds them)', () => {
     const root = scratch()
     mkdirSync(join(root, 'node_modules'), { recursive: true })
-    // No apps/*/src-tauri/target — should not invent blockers for absent paths.
     expect(findOwnershipBlockers(root)).toEqual([])
   })
 })

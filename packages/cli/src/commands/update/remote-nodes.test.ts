@@ -101,13 +101,10 @@ describe('probeRemoteInstallWritable', () => {
     expect(res.blockers.every((b) => b.owner === 'root:root')).toBe(true)
     // Root label is the absolute install path; nested paths are absolute too.
     expect(res.blockers.some((b) => b.path === REMOTE_INSTALL_ROOT)).toBe(true)
-    // Desktop Cargo trees are part of the same preflight (when present remotely).
-    expect(
-      res.blockers.some((b) => b.path.endsWith('apps/rivethub-desktop/src-tauri/target')),
-    ).toBe(true)
-    expect(
-      res.blockers.some((b) => b.path.endsWith('apps/rivet-team-desktop/src-tauri/target')),
-    ).toBe(true)
+    // Electron + Gradle trees are part of the same preflight (when present remotely).
+    expect(res.blockers.some((b) => b.path.endsWith('apps/rivethub-electron/release'))).toBe(true)
+    expect(res.blockers.some((b) => b.path.endsWith('apps/rivet-android/.gradle'))).toBe(true)
+    expect(res.blockers.some((b) => b.path.endsWith('apps/rivet-bots-android/build'))).toBe(true)
   })
 
   it('rejects root paths that look like shell injection', () => {
@@ -147,7 +144,10 @@ describe('gitUpdateNodeAsync — remote ownership preflight', () => {
 
   it('proceeds to git pull when the install tree is writable', async () => {
     sshExecMock.mockResolvedValue(undefined)
-    stubQuiet({ 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' }, 'writable')
+    stubQuiet(
+      { 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' },
+      'writable',
+    )
 
     const res = await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
 
@@ -197,9 +197,9 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
 
     expect(res.success).toBe(false)
     expect(res.failedStep).toBe('build')
-    expect(sshExecMock.mock.calls.map((c) => c[1]).some((c) => c.includes('systemctl restart'))).toBe(
-      false,
-    )
+    expect(
+      sshExecMock.mock.calls.map((c) => c[1]).some((c) => c.includes('systemctl restart')),
+    ).toBe(false)
   })
 
   it('still restarts the embedder when the compactor restart times out (the bug)', async () => {

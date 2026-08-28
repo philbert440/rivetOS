@@ -29,15 +29,19 @@ export const REMOTE_INSTALL_ROOT = '/opt/rivetos'
 
 /**
  * Relative path labels checked for writability on a remote source install.
- * Mirrors the local ownership preflight hot spots (npm + desktop Cargo trees).
- * Missing paths are SKIP'd — not every mesh node builds the desktop apps.
+ * Mirrors the local ownership preflight hot spots (npm + Electron + Gradle).
+ * Missing paths are SKIP'd — not every mesh node builds desktop or Android.
  */
 export const REMOTE_OWNERSHIP_PATHS = [
   '.',
   '.git',
   'node_modules',
-  'apps/rivethub-desktop/src-tauri/target',
-  'apps/rivet-team-desktop/src-tauri/target',
+  'apps/rivethub-electron/dist-electron',
+  'apps/rivethub-electron/release',
+  'apps/rivet-android/.gradle',
+  'apps/rivet-android/build',
+  'apps/rivet-bots-android/.gradle',
+  'apps/rivet-bots-android/build',
 ] as const
 
 export type RemoteOwnershipProbe =
