@@ -44,6 +44,9 @@ export {
 // Schema migration helpers — still needed by agent CTs to ensure columns exist
 export { ensureEmbedderSchema } from './embedder.js'
 
+export { RoutingMemory, parseUserDbs, userFromSessionKey } from './user-routing.js'
+export type { UserDbEntry } from './user-routing.js'
+
 // Compactor types/prompts/formatters — shared with Datahub compaction-worker and CLI
 export {
   LEAF_SYSTEM_PROMPT,
@@ -81,10 +84,11 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 // Plugin manifest
 // ---------------------------------------------------------------------------
 
-import type { PluginManifest, DelegationAfterContext } from '@rivetos/types'
+import type { PluginManifest, DelegationAfterContext, Tool } from '@rivetos/types'
 import { PostgresMemory } from './adapter.js'
 import { createMemoryTools } from './tools/index.js'
 import { ensureEmbedderSchema } from './embedder.js'
+import { parseUserDbs, RoutingMemory } from './user-routing.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -105,16 +109,56 @@ export const manifest: PluginManifest = {
       embedEndpoint: embedEndpoint || undefined,
       embedModel,
     })
-    ctx.registerMemory(memory)
+
+    // Per-user routing (RIVETOS_USER_DBS): additional humans on this node get
+    // their own database; everything unmapped keeps flowing to `memory`.
+    const userDbs = parseUserDbs(ctx.env.RIVETOS_USER_DBS)
+    const userMemories = new Map<string, PostgresMemory>()
+    for (const [userId, db] of Object.entries(userDbs ?? {})) {
+      if (!db.pgUrl) continue
+      userMemories.set(
+        userId,
+        new PostgresMemory({
+          connectionString: db.pgUrl,
+          embedEndpoint: embedEndpoint || undefined,
+          embedModel,
+        }),
+      )
+    }
+    ctx.registerMemory(
+      userMemories.size > 0 ? new RoutingMemory(memory, userMemories) : memory,
+    )
 
     const searchEngine = memory.getSearchEngine()
     const expander = memory.getExpander()
     const pool = memory.getPool()
 
     await ensureEmbedderSchema(pool)
+    for (const m of userMemories.values()) await ensureEmbedderSchema(m.getPool())
 
-    for (const tool of createMemoryTools(searchEngine, expander, { pool })) {
-      ctx.registerTool(tool)
+    // Tools: the main set as before; with routing, each tool delegates
+    // per-call to the store owned by SessionContext.userId (populated by the
+    // loop's tool binding), so a routed user's memory_search never reads the
+    // node owner's database.
+    const mainTools = createMemoryTools(searchEngine, expander, { pool })
+    const userTools = new Map<string, Map<string, Tool>>()
+    for (const [userId, m] of userMemories) {
+      const set = createMemoryTools(m.getSearchEngine(), m.getExpander(), { pool: m.getPool() })
+      userTools.set(userId, new Map(set.map((t) => [t.name, t])))
+    }
+    for (const tool of mainTools) {
+      ctx.registerTool(
+        userTools.size === 0
+          ? tool
+          : {
+              ...tool,
+              async execute(args, signal, context) {
+                const uid = context?.session?.userId
+                const routed = uid ? userTools.get(uid)?.get(tool.name) : undefined
+                return (routed ?? tool).execute(args, signal, context)
+              },
+            },
+      )
     }
 
     // Opt-in: on main this hook was (accidentally) gated behind the removed

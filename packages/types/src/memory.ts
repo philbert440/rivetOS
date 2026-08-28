@@ -44,8 +44,14 @@ export interface Memory {
     },
   ): Promise<MemorySearchResult[]>
 
-  /** Build context for the current turn (recent + relevant) */
-  getContextForTurn(query: string, agent: string, options?: { maxTokens?: number }): Promise<string>
+  /** Build context for the current turn (recent + relevant). `userId` lets
+   *  per-user routing stores scope the context to that user's memory; stores
+   *  without routing ignore it. */
+  getContextForTurn(
+    query: string,
+    agent: string,
+    options?: { maxTokens?: number; userId?: string },
+  ): Promise<string>
 
   /** Restore session history from persistent storage */
   getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]>

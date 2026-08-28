@@ -447,9 +447,18 @@ export function createGatewayChannel(opts?: {
             // Per-turn extras ride in metadata: thinking (effort dropdown) and
             // systemPrompt (agent-preset override, applied once at session init).
             const metadata = turnMetadata(body)
+            // den-server resolves the mTLS device cert to a user and stamps
+            // this header after stripping any inbound value — it outranks the
+            // client-supplied body field (which any caller can set).
+            const certUser = req.headers['x-rivetos-user']
             const inbound: InboundMessage = {
               id: randomUUID(),
-              userId: typeof body.userId === 'string' ? body.userId : 'gateway-user',
+              userId:
+                typeof certUser === 'string' && certUser !== ''
+                  ? certUser
+                  : typeof body.userId === 'string'
+                    ? body.userId
+                    : 'gateway-user',
               channelId: key,
               chatType: 'direct',
               text: body.text,

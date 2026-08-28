@@ -178,6 +178,7 @@ export class TurnHandler {
         modelOverride: agent.model,
         onStream: streamHandler,
         agentId: agent.id,
+        userId: message.userId,
         workspaceDir: this.deps.workspaceDir,
         imageDir,
         hooks: this.deps.hooks,

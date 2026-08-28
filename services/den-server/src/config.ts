@@ -130,6 +130,35 @@ export interface DenConfig {
    * as `devices`: hand-built test configs predating the field stay valid.
    */
   pgUrl?: string
+  /**
+   * Per-user routing (RIVETOS_DEN_DEVICE_USERS): mTLS device id → user id.
+   * A request from a mapped device gets `x-rivetos-user: <userId>` stamped
+   * before gateway dispatch, and that device's PTY spawns get the user's
+   * memory env (see `userDbs`). Devices not in the map are the node owner:
+   * no header, no env override — existing behavior.
+   */
+  deviceUsers?: Record<string, string>
+  /**
+   * Per-user memory targets (RIVETOS_USER_DBS): user id → { pgUrl, envFile? }.
+   * Read by the PTY env override; the same env var also drives capture
+   * routing in @rivetos/memory-postgres and provider-claude-cli.
+   */
+  userDbs?: Record<string, { pgUrl?: string; envFile?: string }>
+}
+
+/** Parse a JSON object env var; malformed input logs once and yields undefined
+ *  (fail-open to owner behavior, never crash den on a config typo). */
+function jsonEnv<T>(env: NodeJS.ProcessEnv, name: string): T | undefined {
+  const raw = env[name]?.trim()
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as T
+  } catch {
+    /* fall through */
+  }
+  console.error(`[den] ${name} is not a JSON object — per-user routing disabled`)
+  return undefined
 }
 
 /** Staging area for remote-client harness attachments (see harness/uploads.ts). */
@@ -269,5 +298,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     // the top level because it is no longer a devices-only concern: the alias
     // reconstructor reads it with no relation to device enrollment.
     pgUrl: env.RIVETOS_PG_URL ?? '',
+    deviceUsers: jsonEnv<Record<string, string>>(env, 'RIVETOS_DEN_DEVICE_USERS'),
+    userDbs: jsonEnv<Record<string, { pgUrl?: string; envFile?: string }>>(
+      env,
+      'RIVETOS_USER_DBS',
+    ),
   }
 }

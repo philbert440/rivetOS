@@ -275,7 +275,13 @@ export function createOpenAICompatRoute(opts: OpenAICompatOptions): GatewayRoute
               text,
               agent: model,
               thinking,
-              userId: typeof body.user === 'string' ? body.user : undefined,
+              userId:
+              typeof req.headers['x-rivetos-user'] === 'string' &&
+              req.headers['x-rivetos-user'] !== ''
+                ? req.headers['x-rivetos-user']
+                : typeof body.user === 'string'
+                  ? body.user
+                  : undefined,
             })
             if (!result.ok) return json(res, result.status, { error: { message: result.error } })
             const usage = usageToOpenAI(result.message.usage)
@@ -358,7 +364,13 @@ export function createOpenAICompatRoute(opts: OpenAICompatOptions): GatewayRoute
             text,
             agent: model,
             thinking,
-            userId: typeof body.user === 'string' ? body.user : undefined,
+            userId:
+              typeof req.headers['x-rivetos-user'] === 'string' &&
+              req.headers['x-rivetos-user'] !== ''
+                ? req.headers['x-rivetos-user']
+                : typeof body.user === 'string'
+                  ? body.user
+                  : undefined,
             onStream,
           })
 

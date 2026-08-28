@@ -125,6 +125,7 @@ export interface TermManager {
     remote: string,
     session?: string,
     resume?: string,
+    envOverride?: Record<string, string>,
   ): PtyInfo
   list(): PtyInfo[]
   get(id: string): PtyInfo | undefined
@@ -436,7 +437,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   return {
-    spawn(rosterKey, cols, rows, remote, session, resume): PtyInfo {
+    spawn(rosterKey, cols, rows, remote, session, resume, envOverride): PtyInfo {
       // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
       // Re-entering Terminal (or chat inject) for a live conversation reuses
       // the same harness rather than spawning a second (seamless modes).
@@ -527,6 +528,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
       }
 
+      // Per-user routing (device→user, server.ts): the override lands last so
+      // a mapped device's memory env (RIVETOS_PG_URL / RIVETOS_ENV_FILE)
+      // outranks the node owner's process env and roster env.
+      if (envOverride) Object.assign(env, envOverride)
       const proc = deps.spawn(argv, { cwd, env, cols, rows })
       const r: PtyRecord = {
         id,

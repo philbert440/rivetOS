@@ -299,6 +299,37 @@ function mapEffortFromProviderOptions(
   return fallback
 }
 
+/**
+ * Per-user memory routing: when the loop tags the turn with
+ * `providerOptions.rivetos.userId` and RIVETOS_USER_DBS maps that user to a
+ * database, the spawned turn's env points capture (the CLI's Stop-hook
+ * transcript ingest) and any in-session memory sidecar at that user's DB
+ * instead of the node owner's. Unmapped turns spawn with no override.
+ */
+function userRoutingEnv(
+  providerOptions: LanguageModelV3CallOptions['providerOptions'],
+): Record<string, string | undefined> | undefined {
+  const rivetos = providerOptions?.rivetos as { userId?: unknown } | undefined
+  const userId = typeof rivetos?.userId === 'string' ? rivetos.userId : undefined
+  if (!userId) return undefined
+  const raw = process.env.RIVETOS_USER_DBS?.trim()
+  if (!raw) return undefined
+  let dbs: Record<string, { pgUrl?: string; envFile?: string }>
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    dbs = parsed as Record<string, { pgUrl?: string; envFile?: string }>
+  } catch {
+    return undefined
+  }
+  const db = dbs[userId]
+  if (!db) return undefined
+  const env: Record<string, string | undefined> = { RIVETOS_USER_ID: userId }
+  if (db.pgUrl) env.RIVETOS_PG_URL = db.pgUrl
+  if (db.envFile) env.RIVETOS_ENV_FILE = db.envFile
+  return env
+}
+
 function emptyUsage(): LanguageModelV3Usage {
   return {
     inputTokens: {
@@ -445,7 +476,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
 
     let turn: ReturnType<typeof spawnClaudeTurn>
     try {
-      turn = spawnClaudeTurn(flags, cliContent)
+      turn = spawnClaudeTurn(flags, cliContent, { env: userRoutingEnv(options.providerOptions) })
     } catch (err: unknown) {
       if (bridge) await bridge.close().catch(() => undefined)
       const msg = err instanceof Error ? err.message : String(err)
