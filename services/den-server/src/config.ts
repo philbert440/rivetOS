@@ -1,6 +1,7 @@
 // Environment-driven configuration for the den server.
 
 import { homedir } from 'node:os'
+import { parseUserDbs, type UserDbEntry } from '@rivetos/types'
 import { join } from 'node:path'
 import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
 
@@ -130,7 +131,64 @@ export interface DenConfig {
    * as `devices`: hand-built test configs predating the field stay valid.
    */
   pgUrl?: string
+  /**
+   * Per-user routing (RIVETOS_DEN_DEVICE_USERS): mTLS device id → user id.
+   * A request from a mapped device gets `x-rivetos-user: <userId>` stamped
+   * before gateway dispatch, and that device's PTY spawns get the user's
+   * memory env (see `userDbs`). Devices not in the map are the node owner:
+   * no header, no env override — existing behavior.
+   */
+  deviceUsers?: Record<string, string>
+  /**
+   * Per-user memory targets (RIVETOS_USER_DBS): user id → { pgUrl, envFile? }.
+   * Shared policy (@rivetos/types parseUserDbs — pgUrl required). Read by the
+   * PTY env override; the same env var also drives capture routing in
+   * @rivetos/memory-postgres and provider-claude-cli.
+   */
+  userDbs?: Record<string, UserDbEntry>
 }
+
+/** Parse a JSON object env var. Malformed input logs loudly and yields
+ *  undefined: routing collapses to owner behavior rather than crashing den.
+ *  That trade-off (availability of the whole private mesh over hard-failing
+ *  every device on a config typo) is deliberate — the parse error names the
+ *  variable so the typo is caught on the first log read. */
+function jsonEnv(env: NodeJS.ProcessEnv, name: string): Record<string, unknown> | undefined {
+  const raw = env[name]?.trim()
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      return parsed as Record<string, unknown>
+  } catch {
+    /* fall through */
+  }
+  console.error(`[den] ${name} is not a JSON object — PER-USER ROUTING DISABLED, fix the env var`)
+  return undefined
+}
+
+/** RIVETOS_DEN_DEVICE_USERS: values must be non-empty strings (user ids).
+ *  Keys are bare device ids — the `device:` CN prefix is already stripped by
+ *  deviceIdentityFromCert. Invalid entries are dropped with a warning. */
+function parseDeviceUsers(env: NodeJS.ProcessEnv): Record<string, string> | undefined {
+  const obj = jsonEnv(env, 'RIVETOS_DEN_DEVICE_USERS')
+  if (!obj) return undefined
+  const out: Record<string, string> = {}
+  for (const [deviceId, userId] of Object.entries(obj)) {
+    if (deviceId.trim() !== '' && typeof userId === 'string' && userId.trim() !== '') {
+      out[deviceId.trim()] = userId.trim()
+    } else {
+      console.error(`[den] RIVETOS_DEN_DEVICE_USERS entry for "${deviceId}" is invalid — dropped`)
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+// RIVETOS_USER_DBS parsing is the SHARED policy in @rivetos/types
+// (parseUserDbs): pgUrl required, envFile additive. den's stamping, the
+// memory plugin's stores, and the claude-cli spawn env must agree on what a
+// routable user is, or a device can be tagged with an id another layer
+// cannot route.
 
 /** Staging area for remote-client harness attachments (see harness/uploads.ts). */
 export interface DenUploadsConfig {
@@ -269,5 +327,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     // the top level because it is no longer a devices-only concern: the alias
     // reconstructor reads it with no relation to device enrollment.
     pgUrl: env.RIVETOS_PG_URL ?? '',
+    deviceUsers: parseDeviceUsers(env),
+    userDbs: parseUserDbs(env.RIVETOS_USER_DBS),
   }
 }

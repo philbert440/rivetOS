@@ -73,6 +73,9 @@ export interface AgentLoopConfig {
   onStream?: StreamHandler
   /** Agent ID — passed to tools via ToolContext */
   agentId?: string
+  /** User the agent is acting for — passed to tools via SessionContext and to
+   *  providers via providerOptions.rivetos.userId. Absent = the node owner. */
+  userId?: string
   /** Workspace directory — passed to tools via ToolContext for resolving relative paths */
   workspaceDir?: string
   /** Directory to save tool-produced images (default: .data/images in cwd) */
@@ -273,6 +276,7 @@ export class AgentLoop {
     const userTools = toAiSdkTools(this.config.tools, {
       agentId: this.config.agentId,
       sessionId: this.config.sessionId,
+      userId: this.config.userId,
       workingDir: this.config.workspaceDir,
       hooks: this.config.hooks,
       onStreamEvent: (e) => this.emit(e),
@@ -319,7 +323,19 @@ export class AgentLoop {
       agentId: this.config.agentId,
       executableTools: this.config.tools.length > 0 ? this.config.tools : undefined,
     }
-    const rawProviderOptions = bridge.buildProviderOptions(wireMessages, chatOptions)
+    const bridgeProviderOptions = bridge.buildProviderOptions(wireMessages, chatOptions)
+    // Per-user routing: providers that spawn subprocesses (claude-cli) read
+    // rivetos.userId to point capture at that user's memory DB. Merged here
+    // rather than threaded through every bridge.
+    const rawProviderOptions = this.config.userId
+      ? {
+          ...bridgeProviderOptions,
+          rivetos: {
+            ...(bridgeProviderOptions?.rivetos as Record<string, unknown> | undefined),
+            userId: this.config.userId,
+          },
+        }
+      : bridgeProviderOptions
     // AI SDK's ProviderOptions is `SharedV3ProviderOptions` (Record<string,
     // Record<string, JSONValue>>); bridge returns `JSONObject`. Structurally
     // compatible at runtime, but TS narrows JSONValue strictly.

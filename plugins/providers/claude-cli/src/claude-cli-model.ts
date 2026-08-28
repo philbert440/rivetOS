@@ -37,6 +37,7 @@ import type {
 } from '@ai-sdk/provider'
 import { APICallError } from '@ai-sdk/provider'
 import type { Tool } from '@rivetos/types'
+import { parseUserDbs } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
   buildArgs,
@@ -299,6 +300,45 @@ function mapEffortFromProviderOptions(
   return fallback
 }
 
+/**
+ * Per-user memory routing: when the loop tags the turn with
+ * `providerOptions.rivetos.userId` (server-built — see AgentLoop; never
+ * client input) and RIVETOS_USER_DBS maps that user to a database, the
+ * spawned turn's env points capture (the CLI's Stop-hook transcript ingest)
+ * and any in-session memory sidecar at that user's DB instead of the node
+ * owner's. Unmapped turns spawn with no override.
+ *
+ * A tagged turn whose mapping is missing or unusable THROWS: silently
+ * inheriting the owner's RIVETOS_PG_URL would capture the routed user's
+ * transcript into the owner's database — failing the turn is the privacy-
+ * preserving direction.
+ */
+function userRoutingEnv(
+  providerOptions: LanguageModelV3CallOptions['providerOptions'],
+): Record<string, string | undefined> | undefined {
+  const rivetos = providerOptions?.rivetos as { userId?: unknown } | undefined
+  const userId = typeof rivetos?.userId === 'string' ? rivetos.userId : undefined
+  if (!userId) return undefined
+  // Shared policy (@rivetos/types parseUserDbs): a usable entry has pgUrl —
+  // the same predicate den's stamping and the memory plugin use, so a tagged
+  // turn is either fully routable here or refused, never half-routed.
+  const db = parseUserDbs(process.env.RIVETOS_USER_DBS)?.[userId]
+  if (!db) {
+    throw new Error(
+      `per-user memory routing for "${userId}" has no usable RIVETOS_USER_DBS entry on this node — refusing to spawn with the node owner's capture env`,
+    )
+  }
+  // Every memory key is emitted explicitly: RIVETOS_PG_URL always (routing
+  // target), RIVETOS_ENV_FILE either the user's or DELETED (undefined —
+  // buildChildEnv removes it), mirroring the PTY's delete-then-apply so no
+  // owner value leaks through to capture or the memory sidecar.
+  return {
+    RIVETOS_USER_ID: userId,
+    RIVETOS_PG_URL: db.pgUrl,
+    RIVETOS_ENV_FILE: db.envFile ?? undefined,
+  }
+}
+
 function emptyUsage(): LanguageModelV3Usage {
   return {
     inputTokens: {
@@ -445,7 +485,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
 
     let turn: ReturnType<typeof spawnClaudeTurn>
     try {
-      turn = spawnClaudeTurn(flags, cliContent)
+      turn = spawnClaudeTurn(flags, cliContent, { env: userRoutingEnv(options.providerOptions) })
     } catch (err: unknown) {
       if (bridge) await bridge.close().catch(() => undefined)
       const msg = err instanceof Error ? err.message : String(err)

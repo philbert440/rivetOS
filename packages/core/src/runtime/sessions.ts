@@ -159,7 +159,7 @@ export class SessionManager {
         const recentContext = await this.memory.getContextForTurn(
           'recent activity summary',
           agent.id,
-          { maxTokens: 500 },
+          { maxTokens: 500, userId: opts?.userId },
         )
         if (recentContext && recentContext.trim()) {
           history.push({

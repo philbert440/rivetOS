@@ -87,11 +87,16 @@ import {
   type RotationBreadcrumbSource,
 } from './harness/alias-restore.js'
 import {
+  clientDevice,
   isGatewayAuthorized,
   isLoopbackHost,
   wantsHtmlUnauthorized,
   UNAUTHORIZED_HTML,
 } from './auth.js'
+
+/** Log-once registry for mapped devices whose user has no usable
+ *  RIVETOS_USER_DBS entry — one line per device, not one per request. */
+const warnedUnroutableDevices = new Set<string>()
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -849,6 +854,34 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return
       }
 
+      // Per-user routing: resolve the mTLS device to a user and stamp the
+      // trusted identity header for downstream gateway handlers. The inbound
+      // value is ALWAYS stripped first — only den, as the TLS terminus, may
+      // assert it. Unmapped devices (the node owner's) carry no header and
+      // keep today's behavior. A mapped device whose user has NO usable
+      // RIVETOS_USER_DBS target is NOT stamped either: asserting an identity
+      // the memory layer can't route would label owner-DB writes with the
+      // routed user's id — worse than plain owner behavior.
+      delete req.headers['x-rivetos-user']
+      const routedUser = (() => {
+        if (!config.deviceUsers) return undefined
+        const dev = clientDevice(req)
+        const mapped = dev ? config.deviceUsers[dev.deviceId] : undefined
+        if (!mapped) return undefined
+        if (!config.userDbs?.[mapped]) {
+          const key = dev?.deviceId ?? '?'
+          if (!warnedUnroutableDevices.has(key)) {
+            warnedUnroutableDevices.add(key)
+            console.error(
+              `[den] device "${key}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — treating as owner`,
+            )
+          }
+          return undefined
+        }
+        return mapped
+      })()
+      if (routedUser) req.headers['x-rivetos-user'] = routedUser
+
       // Gateway route mounts (G0): longest prefix wins; behind the mTLS
       // gate, ahead of den's own API routes.
       if (opts.extraRoutes?.length) {
@@ -1055,6 +1088,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // from a hub keyed on the identity table resolves to the same
             // room, store filename and `--resume` id a bare native id would
             // (§ Legacy keys).
+            // Per-user routing: a mapped device's terminals capture to (and
+            // search) that user's memory DB, not the node owner's.
+            const userDb = routedUser ? config.userDbs?.[routedUser] : undefined
+            const userEnv: Record<string, string> = {}
+            if (routedUser) userEnv.RIVETOS_USER_ID = routedUser
+            if (userDb?.pgUrl) userEnv.RIVETOS_PG_URL = userDb.pgUrl
+            if (userDb?.envFile) userEnv.RIVETOS_ENV_FILE = userDb.envFile
             const pty = manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
@@ -1062,6 +1102,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               req.socket.remoteAddress ?? '',
               p.session === undefined ? undefined : denJoinKey(p.session),
               p.resume === undefined ? undefined : denJoinKey(p.resume),
+              Object.keys(userEnv).length > 0 ? userEnv : undefined,
+              routedUser,
             )
             return json(res, 201, {
               id: pty.id,
@@ -1072,7 +1114,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             })
           } catch (e) {
             if (e instanceof TermSpawnError)
-              return json(res, e.code === 'cap' ? 409 : 404, { error: e.message })
+              return json(res, e.code === 'cap' ? 409 : e.code === 'user-mismatch' ? 403 : 404, {
+                error: e.message,
+              })
             throw e
           }
         }
