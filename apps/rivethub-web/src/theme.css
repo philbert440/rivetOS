@@ -39,6 +39,25 @@ body {
   background-size: 32px 32px;
 }
 
+/* Scrollbars: Chromium ≥121 and Firefox both honor the standard properties
+   (and Chromium ignores ::-webkit-scrollbar-* once scrollbar-color is set, so
+   the standard pair is the whole story). Set on html so every scroll
+   container — transcript, drawers, Files, xterm viewport — inherits instead
+   of showing the stock light overlay scrollbar on the dark theme. */
+html {
+  scrollbar-color: var(--color-line) transparent;
+  scrollbar-width: thin;
+}
+
+/* Keyboard focus: a default ring for everything focusable, matching the
+   Button ring (ring-1 ring-em). :where() keeps specificity at zero, so any
+   component's own focus treatment — or an explicit outline-none — wins over
+   this without fighting it. */
+:where(a, button, [role='button'], [tabindex], input, select, textarea, summary):focus-visible {
+  outline: 1px solid var(--color-em);
+  outline-offset: 1px;
+}
+
 /* TenPAL memory surfaces use short tokens; alias onto Rivet brand. */
 :root {
   --bg: var(--color-bg);
