@@ -26,6 +26,7 @@ import {
 import { PipeState } from './mtls-pipe.js'
 import { registerIpc } from './ipc.js'
 import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
+import { legacySqlitePath, prepareMigration } from './tauri-storage-migration.js'
 
 // Unpackaged dev runs otherwise derive userData from the scoped package name
 // (~/.config/@rivetos/rivethub-electron), so a dev-time enrollment would land
@@ -94,6 +95,9 @@ function isWebUrl(url: string): boolean {
 let mainWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let quitting = false
+/** webContents ids of windows THIS shell created — the migration IPC's
+ *  sender fence (frame URLs can still be empty at preload time). */
+const shellWindowIds = new Set<number>()
 /** Base tray tooltip — carries a shortcut-conflict warning for app lifetime
  *  so it survives unread-count rewrites. */
 let baseTip = 'RivetHub'
@@ -117,6 +121,8 @@ function createWindow(isMain: boolean): BrowserWindow {
       nodeIntegrationInSubFrames: false,
     },
   })
+  shellWindowIds.add(win.webContents.id)
+  win.on('closed', () => shellWindowIds.delete(win.webContents.id))
   // window.open: DENY, full stop — no shell.openExternal side door. The
   // handler cannot tell which frame asked, and den iframes render untrusted
   // LAN content that must not be able to drive the OS browser (cookies, CSRF
@@ -186,7 +192,24 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     serveDist(protocol, distDir())
-    registerIpc({ pipes, setUnread, isBundledUrl })
+    // The Tauri webview's localStorage lives under XDG DATA home
+    // (~/.local/share/dev.rivetos.rivethub/…) — NOT Electron's appData
+    // (~/.config). Do not "fix" this to app.getPath('appData'); that is
+    // where the mtls identity lives, a different tree (review finding,
+    // PR #556).
+    const migration = prepareMigration(
+      path.join(app.getPath('userData'), 'tauri-storage-migrated'),
+      legacySqlitePath(
+        process.env.XDG_DATA_HOME ?? path.join(app.getPath('home'), '.local', 'share'),
+      ),
+    )
+    registerIpc({
+      pipes,
+      setUnread,
+      isBundledUrl,
+      migration,
+      isShellWindow: (id) => shellWindowIds.has(id),
+    })
 
     // Deny every renderer permission request (camera/mic/geolocation/…).
     // Electron's default handler GRANTS, and den iframes render LAN-served

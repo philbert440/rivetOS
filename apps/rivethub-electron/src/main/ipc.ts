@@ -5,14 +5,26 @@
  * shell capabilities anywhere the shell would not go itself.
  */
 
-import { clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
+import {
+  clipboard,
+  ipcMain,
+  Notification,
+  shell,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+} from 'electron'
 import type { PipeState } from './mtls-pipe.js'
+import type { MigrationHandle } from './tauri-storage-migration.js'
 
 export interface IpcDeps {
   pipes: PipeState
   setUnread: (count: number) => void
   /** True when the given frame URL belongs to the bundled app origin. */
   isBundledUrl: (url: string) => boolean
+  /** One-time Tauri localStorage migration (see tauri-storage-migration.ts). */
+  migration: MigrationHandle
+  /** True when a webContents id belongs to a window this shell created. */
+  isShellWindow: (webContentsId: number) => boolean
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -76,5 +88,34 @@ export function registerIpc(deps: IpcDeps): void {
   guarded('unread:set', (_e, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
     deps.setUnread(Math.floor(n))
+  })
+
+  // Tauri localStorage migration — sendSync on purpose: the preload must
+  // seed BEFORE the app's first storage reads, and the payload is tiny and
+  // handed out once (main writes the marker at hand-out; there is no second
+  // IPC leg to lose). Fence: WINDOW IDENTITY, not the frame URL — at
+  // preload time the committed URL can still be empty, and a fence that
+  // silently never opens would strand every upgrade (review finding,
+  // PR #556). Only frames of windows this app created carry the preload at
+  // all, and only the main frame passes. The whole handler is fail-closed:
+  // sendSync with no returnValue assigned would hang the renderer on a
+  // white screen, so every path assigns.
+  const trustedSync = (e: IpcMainEvent): boolean => {
+    try {
+      const frame = e.senderFrame
+      if (!frame || frame !== e.sender.mainFrame) return false
+      return deps.isShellWindow(e.sender.id)
+    } catch {
+      return false
+    }
+  }
+  ipcMain.on('migration:legacy', (e) => {
+    let payload: Record<string, string> | null = null
+    try {
+      if (trustedSync(e)) payload = deps.migration.consume()
+    } catch {
+      payload = null
+    }
+    e.returnValue = payload
   })
 }
