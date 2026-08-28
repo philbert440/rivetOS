@@ -172,6 +172,12 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     'RIVETOS_DEN_UPLOAD_MAX_BYTES',
     'RIVETOS_DEN_UPLOAD_TTL_MS',
     'RIVETOS_TEAM_PG_ADMIN_URL',
+    // Per-user memory routing (#561): den resolves mTLS device → user →
+    // memory DB from these at loadConfig time. Without the passthrough the
+    // embedded den sees neither var and routing collapses to owner behavior
+    // with no warning — a mapped device's capture lands in the owner's DB.
+    'RIVETOS_DEN_DEVICE_USERS',
+    'RIVETOS_USER_DBS',
   ] as const) {
     const value = process.env[key]?.trim()
     if (value) env[key] = value
