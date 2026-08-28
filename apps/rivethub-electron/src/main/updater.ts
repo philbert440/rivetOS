@@ -58,12 +58,25 @@ async function fetchManifestEntry(pipes: PipeState, gatewayBase: string): Promis
     headers: { 'cache-control': 'no-store' },
     signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
   })
-  if (!res.ok) throw new Error(`no update manifest on this node (${String(res.status)})`)
-  // Cap the manifest body before parsing — the artifact download is byte-
-  // capped and the manifest must be too (a huge latest.json would OOM main).
-  const text = await res.text()
-  if (text.length > MANIFEST_MAX_BYTES) throw new Error('update manifest is implausibly large')
-  const manifest = JSON.parse(text) as Record<string, unknown>
+  if (!res.ok || !res.body)
+    throw new Error(`no update manifest on this node (${String(res.status)})`)
+  // Cap the manifest ON THE WIRE — res.text()/json() materialize the whole
+  // body first, so a huge (or decompression-bombed) latest.json would OOM
+  // main before any length check (review round 2).
+  const reader = (res.body as ReadableStream<Uint8Array>).getReader()
+  const chunks: Uint8Array[] = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    received += value.byteLength
+    if (received > MANIFEST_MAX_BYTES) {
+      await reader.cancel()
+      throw new Error('update manifest is implausibly large')
+    }
+    chunks.push(value)
+  }
+  const manifest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
   return validateManifestEntry(manifest[process.platform], process.platform)
 }
 
@@ -148,10 +161,15 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
       delete env.APPIMAGE
       delete env.APPDIR
       delete env.ARGV0
+      // Release the single-instance lock BEFORE spawning: the new copy of
+      // this app would otherwise lose the lock to the still-running old
+      // process and exit immediately (review round 2 — an `exit` watch here
+      // false-failed every linux update for exactly that reason, so only
+      // `error` is watched: it reliably reports execve failures like a
+      // missing loader or EACCES, and a launch that dies later is the
+      // installer's problem, not a reason to keep the old hub hostage).
+      app.releaseSingleInstanceLock()
       const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
-      // A launch that dies within the first second (bad execve, missing
-      // FUSE, broken runtime) must NOT take the running hub down with it —
-      // surface the failure instead of quitting into nothing.
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           cleanup()
@@ -160,16 +178,11 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
         const cleanup = (): void => {
           clearTimeout(timer)
           child.removeAllListeners('error')
-          child.removeAllListeners('exit')
           child.unref()
         }
         child.once('error', (err) => {
           cleanup()
           reject(new Error(`could not launch update: ${err.message}`))
-        })
-        child.once('exit', (code) => {
-          cleanup()
-          reject(new Error(`update exited immediately (code ${String(code)})`))
         })
       })
     }
