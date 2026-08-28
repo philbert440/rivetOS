@@ -29,11 +29,17 @@ function parseRoster(raw: string | null): RosterNode[] | null {
 
 export function mergeRoster(current: string | null, legacy: string): string | null {
   const legacyNodes = parseRoster(legacy)
-  if (legacyNodes === null) return null // bad legacy — leave storage alone
-  if (current === null) return JSON.stringify(legacyNodes)
-  const currentNodes = parseRoster(current)
+  // Bad legacy OR nothing valid in it — leave storage alone. Writing "[]"
+  // would turn "first run" into "user deliberately has no nodes".
+  if (legacyNodes === null || legacyNodes.length === 0) return null
+  const currentNodes = current === null ? [] : parseRoster(current)
   if (currentNodes === null) return null // current unparseable — don't touch
   const seen = new Set(currentNodes.map((n) => n.baseUrl))
-  const merged = [...currentNodes, ...legacyNodes.filter((n) => !seen.has(n.baseUrl))]
+  const merged = [...currentNodes]
+  for (const node of legacyNodes) {
+    if (seen.has(node.baseUrl)) continue
+    seen.add(node.baseUrl) // legacy dupes collapse too
+    merged.push(node)
+  }
   return merged.length === currentNodes.length ? null : JSON.stringify(merged)
 }

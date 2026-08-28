@@ -47,23 +47,30 @@ describe('readLegacyStorage', () => {
 })
 
 describe('prepareMigration', () => {
-  it('offers the payload once, then writes the marker', () => {
+  it('consume hands the payload out ONCE and writes the marker at hand-out', () => {
     const file = fixtureDb({ 'rivethub.baseUrl': 'https://192.0.2.7:5174' })
     const marker = join(mkdtempSync(join(tmpdir(), 'marker-')), 'done')
     const m = prepareMigration(marker, file)
-    expect(m.pending()).toEqual({ 'rivethub.baseUrl': 'https://192.0.2.7:5174' })
-    m.markDone()
-    expect(m.pending()).toBeNull()
+    expect(m.consume()).toEqual({ 'rivethub.baseUrl': 'https://192.0.2.7:5174' })
+    // Marker exists the moment the payload leaves main — no ack leg.
     expect(existsSync(marker)).toBe(true)
+    expect(m.consume()).toBeNull()
     // A later run sees the marker and never re-reads.
-    expect(prepareMigration(marker, file).pending()).toBeNull()
+    expect(prepareMigration(marker, file).consume()).toBeNull()
   })
 
-  it('is silent when there is no legacy store or the file is garbage', () => {
+  it('no legacy store: silent, no marker (a later install may still migrate)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'no-legacy-'))
-    expect(prepareMigration(join(dir, 'done'), join(dir, 'absent.db')).pending()).toBeNull()
+    expect(prepareMigration(join(dir, 'done'), join(dir, 'absent.db')).consume()).toBeNull()
+    expect(existsSync(join(dir, 'done'))).toBe(false)
+  })
+
+  it('garbage legacy store: skipped AND marked — never re-read every launch', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'garbage-'))
     const garbage = join(dir, 'garbage.db')
     writeFileSync(garbage, 'not a sqlite file')
-    expect(prepareMigration(join(dir, 'done'), garbage).pending()).toBeNull()
+    const marker = join(dir, 'done')
+    expect(prepareMigration(marker, garbage).consume()).toBeNull()
+    expect(existsSync(marker)).toBe(true)
   })
 })

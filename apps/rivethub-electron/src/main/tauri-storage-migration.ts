@@ -45,8 +45,9 @@ export function readLegacyStorage(file: string): Record<string, string> {
       if (row.value == null) continue
       const text =
         typeof row.value === 'string' ? row.value : Buffer.from(row.value).toString('utf16le')
-      // WebKit writes no BOM, but strip one defensively.
-      out[row.key] = text.replace(/^﻿/, '')
+      // WebKit writes no BOM, but strip one defensively (escaped so a
+      // non-ASCII source cleanup can never silently blank the pattern).
+      out[row.key] = text.replace(/^\uFEFF/, '')
     }
     return out
   } finally {
@@ -55,37 +56,55 @@ export function readLegacyStorage(file: string): Record<string, string> {
 }
 
 export interface MigrationHandle {
-  /** Payload for the preload to seed, or null when nothing is pending. */
-  pending: () => Record<string, string> | null
-  /** The renderer finished seeding — write the marker, drop the payload. */
-  markDone: () => void
+  /**
+   * Hand the payload to the renderer — CONSUMES it: the marker is written
+   * here, main-side, before the renderer touches storage, so once-ever
+   * never depends on a second IPC leg that might not arrive (review
+   * finding, PR #556). Null when nothing is pending.
+   */
+  consume: () => Record<string, string> | null
 }
 
 /**
  * Load the legacy payload once per install. `markerPath` lives in userData
  * so a reinstall re-offers the migration but a normal run never re-reads.
+ * A FAILED read also writes the marker: retrying a garbage sqlite on every
+ * launch is noise, not recovery.
  */
 export function prepareMigration(markerPath: string, legacyFile: string): MigrationHandle {
   let payload: Record<string, string> | null = null
+  const writeMarker = (note: string): void => {
+    try {
+      fs.writeFileSync(markerPath, `${note} ${new Date().toISOString()}\n`)
+    } catch (e) {
+      // Loud: an unwritable userData means the migration re-offers next
+      // launch, and the roster merge would re-append nodes the user has
+      // since deleted.
+      console.error(
+        `RivetHub: cannot write migration marker ${markerPath}: ${e instanceof Error ? e.message : String(e)}`,
+      )
+    }
+  }
   try {
     if (!fs.existsSync(markerPath) && fs.existsSync(legacyFile)) {
       const data = readLegacyStorage(legacyFile)
       if (Object.keys(data).length > 0) payload = data
+      else writeMarker('empty')
     }
   } catch (e) {
     console.error(
       `RivetHub: tauri localStorage migration skipped: ${e instanceof Error ? e.message : String(e)}`,
     )
+    writeMarker('failed')
   }
   return {
-    pending: () => payload,
-    markDone: () => {
-      payload = null
-      try {
-        fs.writeFileSync(markerPath, `${new Date().toISOString()}\n`)
-      } catch {
-        /* marker failing just means a redundant (idempotent) re-offer */
+    consume: () => {
+      const out = payload
+      if (out !== null) {
+        payload = null
+        writeMarker('migrated')
       }
+      return out
     },
   }
 }

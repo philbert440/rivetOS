@@ -23,6 +23,8 @@ export interface IpcDeps {
   isBundledUrl: (url: string) => boolean
   /** One-time Tauri localStorage migration (see tauri-storage-migration.ts). */
   migration: MigrationHandle
+  /** True when a webContents id belongs to a window this shell created. */
+  isShellWindow: (webContentsId: number) => boolean
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -90,16 +92,30 @@ export function registerIpc(deps: IpcDeps): void {
 
   // Tauri localStorage migration — sendSync on purpose: the preload must
   // seed BEFORE the app's first storage reads, and the payload is tiny and
-  // handed out once. Same sender fence as everything else.
+  // handed out once (main writes the marker at hand-out; there is no second
+  // IPC leg to lose). Fence: WINDOW IDENTITY, not the frame URL — at
+  // preload time the committed URL can still be empty, and a fence that
+  // silently never opens would strand every upgrade (review finding,
+  // PR #556). Only frames of windows this app created carry the preload at
+  // all, and only the main frame passes. The whole handler is fail-closed:
+  // sendSync with no returnValue assigned would hang the renderer on a
+  // white screen, so every path assigns.
   const trustedSync = (e: IpcMainEvent): boolean => {
-    const frame = e.senderFrame
-    if (!frame || frame !== e.sender.mainFrame) return false
-    return deps.isBundledUrl(frame.url)
+    try {
+      const frame = e.senderFrame
+      if (!frame || frame !== e.sender.mainFrame) return false
+      return deps.isShellWindow(e.sender.id)
+    } catch {
+      return false
+    }
   }
   ipcMain.on('migration:legacy', (e) => {
-    e.returnValue = trustedSync(e) ? deps.migration.pending() : null
-  })
-  ipcMain.on('migration:done', (e) => {
-    if (trustedSync(e)) deps.migration.markDone()
+    let payload: Record<string, string> | null = null
+    try {
+      if (trustedSync(e)) payload = deps.migration.consume()
+    } catch {
+      payload = null
+    }
+    e.returnValue = payload
   })
 }

@@ -29,9 +29,10 @@ declare const localStorage: {
 
 // One-time Tauri→Electron localStorage migration: seed rivethub.* keys the
 // new origin lacks BEFORE any page script reads storage (preload runs
-// first; sendSync keeps the ordering strict). Absent-only writes — nothing
-// the user has already re-configured is clobbered — except the roster,
-// which is MERGED (hand-rebuilt entries win, legacy fills in behind).
+// first; sendSync keeps the ordering strict, and main marks the migration
+// consumed at hand-out — no ack leg). Absent-only writes — nothing the
+// user has already re-configured is clobbered — except the roster, which
+// is MERGED (hand-rebuilt entries win, legacy fills in behind).
 import { mergeRoster } from './roster-merge.js'
 
 try {
@@ -45,10 +46,9 @@ try {
         localStorage.setItem(key, value)
       }
     }
-    ipcRenderer.send('migration:done')
   }
 } catch {
-  /* storage unavailable — boot fresh, the marker stays unwritten */
+  /* storage unavailable — boot fresh; the payload was consumed either way */
 }
 
 const api = {

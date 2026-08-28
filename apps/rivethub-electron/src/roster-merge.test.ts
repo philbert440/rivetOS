@@ -39,4 +39,19 @@ describe('mergeRoster', () => {
       { name: 'Good', baseUrl: 'https://192.0.2.20:5174' },
     ])
   })
+
+  it('never writes "[]" — an all-malformed or empty legacy roster is a no-op', () => {
+    expect(mergeRoster(null, '[]')).toBeNull()
+    expect(mergeRoster(null, JSON.stringify([{ nope: true }]))).toBeNull()
+  })
+
+  it('collapses duplicate legacy baseUrls to one entry', () => {
+    const dupes = JSON.stringify([
+      { name: 'A', baseUrl: 'https://192.0.2.30:5174' },
+      { name: 'A again', baseUrl: 'https://192.0.2.30:5174' },
+    ])
+    expect(JSON.parse(mergeRoster(null, dupes)!)).toEqual([
+      { name: 'A', baseUrl: 'https://192.0.2.30:5174' },
+    ])
+  })
 })
