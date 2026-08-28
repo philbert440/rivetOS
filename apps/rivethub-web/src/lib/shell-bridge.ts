@@ -15,6 +15,20 @@ export interface RivetShell {
   clipboardReadText(): Promise<string>
   sendNotification(opts: { title: string; body: string }): Promise<void>
   setUnread(count: number): Promise<void>
+  // ---- optional surface (post-first-Electron-release additions) ----
+  // Feature-detect at the call site and NEVER add these to SHELL_METHODS:
+  // a required method absent from an installed shell fails the full-shape
+  // check and turns the whole bridge off for that user.
+  platform?: string
+  appVersion?(): Promise<string>
+  /** Main-process update check for the given gateway base. The renderer
+   *  never passes a URL or digest — main owns the manifest and the pipe. */
+  checkUpdate?(gatewayBase: string): Promise<{
+    current: string
+    platform: string
+    available?: { version: string; sizeBytes?: number }
+  }>
+  installUpdate?(gatewayBase: string): Promise<void>
 }
 
 const SHELL_METHODS = [

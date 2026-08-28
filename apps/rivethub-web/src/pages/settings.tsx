@@ -6,6 +6,7 @@ import { isValidWikiBase } from '../lib/wiki-base.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
 import { BUILD_INFO } from '../lib/build-info.js'
 import { DevicesSection } from '../components/devices-section.js'
+import { UpdatesSection } from '../components/updates-section.js'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -251,6 +252,8 @@ export function SettingsPage(): JSX.Element {
       </div>
 
       <DevicesSection />
+
+      <UpdatesSection />
 
       {/* Build stamp — the desktop shell bakes this dist in at build time, so
           this line is how you tell whether a binary has gone stale. */}

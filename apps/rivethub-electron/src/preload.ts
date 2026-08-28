@@ -68,6 +68,31 @@ const api = {
   /** Mirror the unread count to the tray tooltip. */
   setUnread: (count: number): Promise<void> =>
     ipcRenderer.invoke('unread:set', count) as Promise<void>,
+  // ---- optional surface (feature-detected; NOT in the web side's required
+  // shape check, so an older shell keeps working against a newer dist) ----
+  /** Which OS this shell runs on ('win32' | 'linux' | 'darwin'). */
+  platform: process.platform as string,
+  /** Shell binary version (electron app version, not the web dist). */
+  appVersion: (): Promise<string> => ipcRenderer.invoke('app:version') as Promise<string>,
+  /** Ask MAIN to read the mesh update manifest for the given gateway base
+   *  (main resolves its own mTLS pipe; the renderer supplies no URL). */
+  checkUpdate: (
+    gatewayBase: string,
+  ): Promise<{
+    current: string
+    platform: string
+    available?: { version: string; sizeBytes?: number }
+  }> =>
+    ipcRenderer.invoke('update:check', gatewayBase) as Promise<{
+      current: string
+      platform: string
+      available?: { version: string; sizeBytes?: number }
+    }>,
+  /** Download+verify+launch the manifest's build for this platform, then the
+   *  app quits itself. Main re-reads the manifest at install time — the
+   *  renderer supplies only the gateway base, never a URL or digest. */
+  installUpdate: (gatewayBase: string): Promise<void> =>
+    ipcRenderer.invoke('update:install', gatewayBase) as Promise<void>,
 }
 
 export type RivetShellApi = typeof api

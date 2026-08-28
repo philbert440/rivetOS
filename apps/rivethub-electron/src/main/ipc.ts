@@ -6,6 +6,7 @@
  */
 
 import {
+  app,
   clipboard,
   ipcMain,
   Notification,
@@ -15,6 +16,7 @@ import {
 } from 'electron'
 import type { PipeState } from './mtls-pipe.js'
 import type { MigrationHandle } from './tauri-storage-migration.js'
+import { checkForUpdate, downloadAndInstall } from './updater.js'
 
 export interface IpcDeps {
   pipes: PipeState
@@ -117,6 +119,33 @@ export function registerIpc(deps: IpcDeps): void {
   guarded('unread:set', (_e, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
     deps.setUnread(Math.floor(n))
+  })
+
+  guarded('app:version', () => app.getVersion())
+
+  // In-app update (settings → Updates): the renderer names only the gateway
+  // base it is connected to; the manifest fetch, entry validation, URL
+  // construction, download, and digest check all happen in main (updater.ts
+  // — main is the trust root, review PR #562). Serialized; on a successful
+  // install the flag deliberately STAYS set — the process is quitting, and
+  // clearing it early opened a window to race a second installer.
+  const gatewayBaseArg = (raw: unknown): string => {
+    if (typeof raw !== 'string' || raw.length === 0 || raw.length > 512)
+      throw new Error('update: gatewayBase must be the connected gateway base url')
+    return raw
+  }
+  let updating = false
+  guarded('update:check', (_e, raw: unknown) => checkForUpdate(deps.pipes, gatewayBaseArg(raw)))
+  guarded('update:install', async (_e, raw: unknown): Promise<void> => {
+    if (updating) throw new Error('installUpdate: already in progress')
+    const base = gatewayBaseArg(raw)
+    updating = true
+    try {
+      await downloadAndInstall(deps.pipes, base)
+    } catch (err) {
+      updating = false
+      throw err
+    }
   })
 
   // Tauri localStorage migration — sendSync on purpose: the preload must
