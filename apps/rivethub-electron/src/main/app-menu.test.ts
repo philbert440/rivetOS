@@ -9,9 +9,12 @@ describe('appMenuTemplate', () => {
   it('linux/windows carry the accelerators the nulled menu used to drop', () => {
     const all = flatten(appMenuTemplate('linux', true))
     // zoom + fullscreen come back as roles
-    for (const role of ['resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen', 'editMenu']) {
+    for (const role of ['resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen']) {
       expect(all.some((i) => i.role === role)).toBe(true)
     }
+    // NO editMenu off darwin: its role accelerators would eat Ctrl+C/Z/A/V
+    // before a den xterm sees them (Ctrl+C is SIGINT, not copy)
+    expect(all.some((i) => i.role === 'editMenu')).toBe(false)
     // in-window quit exists (tray is no longer the only exit)
     expect(all.some((i) => i.action === 'quit' && i.accelerator === 'CmdOrCtrl+Q')).toBe(true)
     // new window is an app-scoped accelerator, not a global grab
@@ -54,6 +57,8 @@ describe('appMenuTemplate', () => {
   it('darwin keeps the standard app menu and drops the custom Quit', () => {
     const all = flatten(appMenuTemplate('darwin', true))
     expect(all[0]?.role).toBe('appMenu')
+    // Cmd is not a terminal modifier — the Edit menu is safe (and expected) there
+    expect(all.some((i) => i.role === 'editMenu')).toBe(true)
     // Quit lives in the app menu role on macOS; a second one would be noise
     expect(all.some((i) => i.action === 'quit')).toBe(false)
     // Cmd+W is standard there and Cmd is not a terminal modifier

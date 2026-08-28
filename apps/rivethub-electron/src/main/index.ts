@@ -132,9 +132,10 @@ function createWindow(isMain: boolean): BrowserWindow {
     minWidth: 720,
     minHeight: 480,
     backgroundColor: '#0d1117',
-    // The application menu exists for its accelerators (zoom, reload, quit,
-    // new window); the BAR stays hidden on Linux/Windows — Alt reveals it.
-    autoHideMenuBar: true,
+    // NO autoHideMenuBar: an auto-hide bar answers the single Alt key
+    // (Electron docs), and Alt is a terminal modifier in den xterms. The
+    // bar is fully hidden off macOS via setMenuBarVisibility(false) below;
+    // application-menu accelerators work regardless (grok round 2).
     icon: path.join(__dirname, '../icons/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -242,9 +243,7 @@ function createWindow(isMain: boolean): BrowserWindow {
       }
     })
   }
-  // The menu exists for its accelerators; the BAR never shows off macOS —
-  // autoHideMenuBar alone would still let Alt reveal it, and Alt is a
-  // terminal modifier in den xterms (grok review of this PR).
+  // The menu exists for its accelerators; the BAR never shows off macOS.
   if (process.platform !== 'darwin') win.setMenuBarVisibility(false)
   if (isMain && state.maximized) win.maximize()
   void win.loadURL(`${APP_ORIGIN}/index.html`)
@@ -255,7 +254,9 @@ function createWindow(isMain: boolean): BrowserWindow {
  *  even when it's already focused. Destroyed guard: a late notification
  *  click during quit must no-op, not throw (grok review of this PR). */
 function showMain(): void {
-  if (!mainWindow || mainWindow.isDestroyed()) return
+  // quitting: a notification click between before-quit and destroy must not
+  // re-show a window that is on its way out
+  if (quitting || !mainWindow || mainWindow.isDestroyed()) return
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
   mainWindow.focus()
@@ -349,7 +350,10 @@ function onAppBlur(): void {
   if (blurTimer) clearTimeout(blurTimer)
   blurTimer = setTimeout(() => {
     blurTimer = undefined
-    if (BrowserWindow.getFocusedWindow() === null) registerSummon()
+    // a hidden window that the WM still reports focused counts as unfocused
+    // — that phantom state is exactly why hide feeds this path
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused === null || !focused.isVisible()) registerSummon()
   }, 150)
 }
 

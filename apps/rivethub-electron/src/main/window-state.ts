@@ -101,6 +101,14 @@ export function clampToDisplays(state: WindowState, displays: DisplayRect[]): Wi
   host ??= displays.reduce((a, b) => (a.width * a.height >= b.width * b.height ? a : b))
   out.width = Math.max(MIN_WIDTH, Math.min(out.width, host.width))
   out.height = Math.max(MIN_HEIGHT, Math.min(out.height, host.height))
+  // After the shrink, pull the origin back inside the host — a rect saved
+  // hanging off a bigger monitor (x:1800 on a 1920-wide laptop) would keep
+  // its position by the overlap test, shrink to display size, and end up
+  // mostly off-screen with no reachable resize edge (grok round 2).
+  if (out.x !== undefined && out.y !== undefined) {
+    out.x = Math.min(Math.max(out.x, host.x), host.x + host.width - out.width)
+    out.y = Math.min(Math.max(out.y, host.y), host.y + host.height - out.height)
+  }
   return out
 }
 

@@ -6,11 +6,12 @@
  * consolidated punch list #2/#7).
  *
  * The menu exists for its ACCELERATORS: on Linux/Windows the bar itself is
- * never shown (setMenuBarVisibility(false) — Alt must stay a terminal
- * modifier for den xterms, so no Alt-reveal either), on macOS it is the
- * normal top bar. New Window rides a menu accelerator now instead of a
- * GLOBAL Ctrl+Shift+N, which used to steal the combo system-wide (Chrome's
- * incognito) even while RivetHub was in the background.
+ * never shown (setMenuBarVisibility(false) with auto-hide OFF — an
+ * auto-hide bar answers the single Alt key, and Alt must stay a terminal
+ * modifier for den xterms), on macOS it is the normal top bar. New Window
+ * rides a menu accelerator now instead of a GLOBAL Ctrl+Shift+N, which
+ * used to steal the combo system-wide (Chrome's incognito) even while
+ * RivetHub was in the background.
  *
  * Deliberately accelerator-free or absent (grok review of this PR): Reload
  * has NO accelerator and forceReload does not exist — menu accelerators are
@@ -66,7 +67,13 @@ export function appMenuTemplate(platform: NodeJS.Platform, packaged: boolean): A
             ] satisfies AppMenuItem[])),
       ],
     },
-    { role: 'editMenu' },
+    // Edit menu is DARWIN-ONLY: on Linux/Windows editMenu's default role
+    // accelerators (Ctrl+C/Z/A/V/Y) are consumed in main before the focused
+    // frame sees them — Ctrl+C in a den xterm is SIGINT, not copy. Chromium
+    // handles editing keys natively inside inputs without menu roles, and
+    // the context menu covers the pointer path; on macOS Cmd is not a
+    // terminal modifier, so the standard menu stays (grok round 2).
+    ...(darwin ? ([{ role: 'editMenu' }] satisfies AppMenuItem[]) : []),
     {
       label: 'View',
       submenu: [

@@ -86,6 +86,16 @@ describe('clampToDisplays', () => {
     ).toEqual({ width: 2560, height: 1400 })
   })
 
+  it('pulls the origin back on-screen after shrinking', () => {
+    // saved hanging off the right edge of a bigger monitor: overlap test
+    // keeps the position, then the shrink alone would leave 120px visible
+    expect(
+      clampToDisplays({ x: 1800, y: 0, width: 3840, height: 2100 }, [
+        { x: 0, y: 0, width: 1920, height: 1080 },
+      ]),
+    ).toEqual({ x: 0, y: 0, width: 1920, height: 1080 })
+  })
+
   it('no displays reported: state passes through untouched', () => {
     const s = { x: 10, y: 10, width: 1280, height: 820 }
     expect(clampToDisplays(s, [])).toEqual(s)
