@@ -6,6 +6,7 @@
  */
 
 import {
+  app,
   clipboard,
   ipcMain,
   Notification,
@@ -15,6 +16,7 @@ import {
 } from 'electron'
 import type { PipeState } from './mtls-pipe.js'
 import type { MigrationHandle } from './tauri-storage-migration.js'
+import { downloadAndInstall, validateUpdateRequest } from './updater.js'
 
 export interface IpcDeps {
   pipes: PipeState
@@ -117,6 +119,23 @@ export function registerIpc(deps: IpcDeps): void {
   guarded('unread:set', (_e, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
     deps.setUnread(Math.floor(n))
+  })
+
+  guarded('app:version', () => app.getVersion())
+
+  // In-app update (settings → Updates): validation and the full download/
+  // verify/launch flow live in updater.ts. Serialized — a second invoke while
+  // one is in flight is refused rather than racing two installers.
+  let updating = false
+  guarded('update:install', async (_e, raw: unknown): Promise<void> => {
+    if (updating) throw new Error('installUpdate: already in progress')
+    const req = validateUpdateRequest(raw)
+    updating = true
+    try {
+      await downloadAndInstall(req)
+    } finally {
+      updating = false
+    }
   })
 
   // Tauri localStorage migration — sendSync on purpose: the preload must

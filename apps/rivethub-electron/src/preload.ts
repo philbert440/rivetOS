@@ -68,6 +68,17 @@ const api = {
   /** Mirror the unread count to the tray tooltip. */
   setUnread: (count: number): Promise<void> =>
     ipcRenderer.invoke('unread:set', count) as Promise<void>,
+  // ---- optional surface (feature-detected; NOT in the web side's required
+  // shape check, so an older shell keeps working against a newer dist) ----
+  /** Which OS this shell runs on ('win32' | 'linux' | 'darwin'). */
+  platform: process.platform as string,
+  /** Shell binary version (electron app version, not the web dist). */
+  appVersion: (): Promise<string> => ipcRenderer.invoke('app:version') as Promise<string>,
+  /** Download a mesh-hosted installer over the loopback mTLS pipe, verify
+   *  its sha256, and launch it. Resolves once handed to the OS; the app
+   *  quits itself right after. */
+  installUpdate: (req: { url: string; version: string; sha256: string }): Promise<void> =>
+    ipcRenderer.invoke('update:install', req) as Promise<void>,
 }
 
 export type RivetShellApi = typeof api

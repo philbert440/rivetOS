@@ -15,6 +15,13 @@ export interface RivetShell {
   clipboardReadText(): Promise<string>
   sendNotification(opts: { title: string; body: string }): Promise<void>
   setUnread(count: number): Promise<void>
+  // ---- optional surface (post-first-Electron-release additions) ----
+  // Feature-detect at the call site and NEVER add these to SHELL_METHODS:
+  // a required method absent from an installed shell fails the full-shape
+  // check and turns the whole bridge off for that user.
+  platform?: string
+  appVersion?(): Promise<string>
+  installUpdate?(req: { url: string; version: string; sha256: string }): Promise<void>
 }
 
 const SHELL_METHODS = [

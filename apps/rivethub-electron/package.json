@@ -1,8 +1,8 @@
 {
   "name": "@rivetos/rivethub-electron",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
-  "description": "RivetHub desktop — Electron shell over rivethub-web: tray, native notifications, global shortcuts, native mTLS device identity",
+  "description": "RivetHub desktop \u2014 Electron shell over rivethub-web: tray, native notifications, global shortcuts, native mTLS device identity",
   "main": "dist-electron/main.cjs",
   "scripts": {
     "bundle": "node scripts/bundle.mjs",
@@ -11,7 +11,8 @@
     "dev": "npm run bundle && electron .",
     "build": "npm run typecheck && npm run bundle",
     "dist": "npm run build && node scripts/check-webdist.mjs && electron-builder --config electron-builder.yml",
-    "clean": "rm -rf dist-electron release"
+    "clean": "rm -rf dist-electron release",
+    "publish-mesh": "node scripts/publish-mesh.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.19.11",
