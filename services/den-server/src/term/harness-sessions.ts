@@ -807,6 +807,101 @@ const DSH_COMPRESSED_MAX_BYTES = 64 * 1024 * 1024
  *  exact `type` switch. */
 const DSH_FOLD_EVENT_RE = /"type":"(?:user\/message|assistant\/message|tool\/call|tool\/result)"/
 
+/** fzstd allocates each frame's history window straight from the frame header
+ *  (before any output is seen), and the format allows ~2 GiB — so frames are
+ *  validated BEFORE they reach the decoder. Node's zstd writer defaults to an
+ *  8 MiB window; nothing legitimate needs more than this. */
+const DSH_MAX_ZSTD_WINDOW_BYTES = 32 * 1024 * 1024
+
+/**
+ * Walk zstd frame + block headers WITHOUT decompressing (RFC 8878): returns
+ * the byte length of the complete-frame prefix, refusing any frame whose
+ * declared window (or single-segment content size) exceeds `maxWindow`.
+ *
+ * Two jobs at once: (a) a torn last frame — the NORMAL live case, the watcher
+ * fires while dsh is mid-append — is cleanly excluded so the committed prefix
+ * still decodes (the sibling jsonl readers' partial-last-line rule); (b) a
+ * crafted window descriptor is rejected before fzstd allocates it.
+ */
+function scanZstdFrames(
+  buf: Buffer,
+  maxWindow: number,
+): { validEnd: number; windowTooLarge: boolean } {
+  let off = 0
+  let validEnd = 0
+  while (off + 4 <= buf.length) {
+    const magic = buf.readUInt32LE(off)
+    if ((magic & 0xfffffff0) === 0x184d2a50) {
+      // skippable frame: magic + LE32 size + payload
+      if (off + 8 > buf.length) break
+      const size = buf.readUInt32LE(off + 4)
+      if (off + 8 + size > buf.length) break
+      off += 8 + size
+      validEnd = off
+      continue
+    }
+    if (magic !== 0xfd2fb528) break // torn / not zstd — keep the valid prefix
+    let p = off + 4
+    if (p >= buf.length) break
+    const fhd = buf[p]
+    p += 1
+    const fcsFlag = fhd >> 6
+    const singleSegment = (fhd >> 5) & 1
+    const checksumFlag = (fhd >> 2) & 1
+    const didFlag = fhd & 3
+    let windowSize = 0
+    if (!singleSegment) {
+      if (p >= buf.length) break
+      const wd = buf[p]
+      p += 1
+      const base = 2 ** (10 + (wd >> 3))
+      windowSize = base + (base / 8) * (wd & 7)
+    }
+    p += [0, 1, 2, 4][didFlag]
+    const fcsSize = fcsFlag === 0 ? (singleSegment ? 1 : 0) : [0, 2, 4, 8][fcsFlag]
+    if (p + fcsSize > buf.length) break
+    if (fcsSize > 0 && singleSegment) {
+      // single-segment frames (Node's writer default) use content size as the window
+      let cs = 0
+      for (let i = fcsSize - 1; i >= 0; i--) cs = cs * 256 + buf[p + i]
+      if (fcsSize === 2) cs += 256
+      windowSize = cs
+    }
+    p += fcsSize
+    if (windowSize > maxWindow) return { validEnd, windowTooLarge: true }
+    let torn = false
+    for (;;) {
+      if (p + 3 > buf.length) {
+        torn = true
+        break
+      }
+      const bh = buf[p] | (buf[p + 1] << 8) | (buf[p + 2] << 16)
+      p += 3
+      const blockType = (bh >> 1) & 3
+      const blockSize = bh >> 3
+      if (blockType === 3) {
+        torn = true // reserved block type — corrupt from here on
+        break
+      }
+      const stored = blockType === 1 ? 1 : blockSize // RLE stores one byte
+      if (p + stored > buf.length) {
+        torn = true
+        break
+      }
+      p += stored
+      if (bh & 1) break // last block
+    }
+    if (torn) break
+    if (checksumFlag) {
+      if (p + 4 > buf.length) break
+      p += 4
+    }
+    off = p
+    validEnd = off
+  }
+  return { validEnd, windowTooLarge: false }
+}
+
 /**
  * Decode + fold one dsh `session.jsonl.zstd` — the store is MULTI-FRAME zstd
  * (one frame per append) and Node's built-in zlib only decodes the first
@@ -886,16 +981,22 @@ async function parseDshStoreFile(
     }
     const Decompress = mod.Decompress ?? mod.default?.Decompress
     if (!Decompress) return { turns: [], truncated: false }
+    // validate frames first: reject crafted windows before fzstd allocates
+    // them, and cut the torn tail frame dsh is still appending so the
+    // committed prefix decodes instead of an EOF throw discarding everything
+    const scan = scanZstdFrames(raw, DSH_MAX_ZSTD_WINDOW_BYTES)
+    if (scan.windowTooLarge) return { turns: [], truncated: true }
+    if (scan.validEnd === 0) return { turns: [], truncated: false }
+    const framed = raw.subarray(0, scan.validEnd)
     const d = new Decompress(onChunk)
     // feed in slices so fzstd emits output incrementally rather than in one buffer
     const STEP = 1024 * 1024
-    for (let off = 0; off < raw.length; off += STEP) {
-      const end = Math.min(off + STEP, raw.length)
-      d.push(raw.subarray(off, end), end === raw.length)
+    for (let off = 0; off < framed.length; off += STEP) {
+      const end = Math.min(off + STEP, framed.length)
+      d.push(framed.subarray(off, end), end === framed.length)
     }
-    if (raw.length === 0) return { turns: [], truncated: false }
   } catch {
-    // corrupt / not-zstd store — degrade to empty rather than throw
+    // corrupt store the frame scan let through — degrade to empty, never throw
     return { turns: [], truncated: false }
   }
 
@@ -971,7 +1072,11 @@ function dshTurnsFromEvents(events: Record<string, unknown>[]): HarnessTurn[] {
           ? (data.source as Record<string, unknown>)
           : undefined
       if (source?.kind !== 'user') continue
-      const op = data.surfaceOp
+      // SurfaceOp is a TOP-LEVEL SessionEvent field (next to type/seq/data;
+      // observed `"surfaceOp":"append"` on real events) — a compaction
+      // summary arrives user-sourced with `{ op: 'replace', … }` and must not
+      // render as something the user typed
+      const op = ev.surfaceOp ?? data.surfaceOp
       if (op && typeof op === 'object' && (op as { op?: unknown }).op === 'replace') continue
       const text = extractTurnText(data.content, 'user')
       if (text) {

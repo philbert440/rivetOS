@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { zstdCompressSync } from 'node:zlib'
+import { constants as zlibConstants, zstdCompressSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   describeClaudeSession,
@@ -472,9 +472,17 @@ describe('listHarnessSessions', () => {
 describe('readDshTranscript', () => {
   const ID = 'session-11111111-2222-3333-4444-555555555555'
 
-  /** One zstd FRAME per event batch, like dsh appends — a first-frame-only
-   *  decoder (Node zlib) would see only `batches[0]`. */
-  function fakeDshStore(batches: unknown[][], id = ID): string {
+  /** One CHECKSUMMED zstd FRAME per event batch, like dsh appends — a
+   *  first-frame-only decoder (Node zlib) would see only `batches[0]`, and the
+   *  checksum exercises the frame scanner's trailing-bytes handling. */
+  function frame(batch: unknown[]): Buffer {
+    return zstdCompressSync(
+      Buffer.from(batch.map((e) => JSON.stringify(e)).join('\n') + '\n'),
+      { params: { [zlibConstants.ZSTD_c_checksumFlag]: 1 } },
+    )
+  }
+
+  function writeDshStore(bytes: Buffer, id = ID): string {
     const home = process.env.DSH_HOME ?? mkdtempSync(join(tmpdir(), 'dsh-transcript-'))
     if (!process.env.DSH_HOME) {
       dirs.push(home)
@@ -482,11 +490,12 @@ describe('readDshTranscript', () => {
     }
     const dir = join(home, 'sessions', 'home-rivet-workspace', id)
     mkdirSync(dir, { recursive: true })
-    const frames = batches.map((batch) =>
-      zstdCompressSync(Buffer.from(batch.map((e) => JSON.stringify(e)).join('\n') + '\n')),
-    )
-    writeFileSync(join(dir, 'session.jsonl.zstd'), Buffer.concat(frames))
+    writeFileSync(join(dir, 'session.jsonl.zstd'), bytes)
     return dir
+  }
+
+  function fakeDshStore(batches: unknown[][], id = ID): string {
+    return writeDshStore(Buffer.concat(batches.map(frame)), id)
   }
 
   const user = (text: string) => ({
@@ -664,13 +673,14 @@ describe('readDshTranscript', () => {
           type: 'assistant/message',
           data: { message: { role: 'assistant', content: [{ type: 'text', text: 'part two' }] } },
         },
-        // compaction surface replacement: user-sourced but replaces history
+        // compaction surface replacement: user-sourced but replaces history —
+        // surfaceOp rides the EVENT, next to type/seq/data
         {
           type: 'user/message',
+          surfaceOp: { op: 'replace', start: 0, end: 4 },
           data: {
             content: [{ type: 'text', text: 'Summary of the conversation so far…' }],
             source: { kind: 'user' },
-            surfaceOp: { op: 'replace' },
           },
         },
         // orphan tool/result from a window cut upstream — must not crash
@@ -688,6 +698,29 @@ describe('readDshTranscript', () => {
       { role: 'assistant', text: 'part one\n\npart two' },
       { role: 'user', text: 'thanks' },
     ])
+  })
+
+  it('keeps the committed prefix when the last frame is torn mid-append', async () => {
+    // the NORMAL live case: the watcher fires while dsh is still flushing —
+    // a torn tail must not wipe the turns that already decoded
+    const whole = frame([user('committed')])
+    const torn = frame([user('still-flushing')]).subarray(0, 9)
+    writeDshStore(Buffer.concat([whole, torn]))
+    const t = await readDshTranscript(ID)
+    expect(t.truncated).toBeUndefined()
+    expect(t.turns).toEqual([{ role: 'user', text: 'committed' }])
+  })
+
+  it('refuses a frame whose declared window exceeds the cap before decoding', async () => {
+    // crafted header: magic, no single-segment, window descriptor exponent 31
+    // (≈2 TiB) — must be rejected by the frame scan, not allocated by fzstd
+    writeDshStore(Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0xf8, 0x01, 0x00, 0x00]))
+    expect(await readDshTranscript(ID)).toEqual({ id: ID, command: 'dsh', turns: [], truncated: true })
+  })
+
+  it('refuses a store over the compressed-size ceiling without opening it', async () => {
+    writeDshStore(Buffer.alloc(64 * 1024 * 1024 + 1))
+    expect(await readDshTranscript(ID)).toEqual({ id: ID, command: 'dsh', turns: [], truncated: true })
   })
 
   it('serves the watcher path (readHarnessStoreAt) from the same decode', async () => {
