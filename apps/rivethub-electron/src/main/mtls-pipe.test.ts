@@ -1,8 +1,18 @@
 // Ported from the Tauri shell's proxy.rs tests — same cases, same semantics,
 // so the Node pipe cannot silently drift from the behavior the fleet already
 // trusts.
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { hostAllowed, ListenerSet, MAX_LISTENERS, parseTarget } from './mtls-pipe.js'
+import {
+  hostAllowed,
+  ListenerSet,
+  MAX_LISTENERS,
+  parseTarget,
+  PipeState,
+  tlsConnectOptions,
+} from './mtls-pipe.js'
 
 describe('hostAllowed', () => {
   it('allows LAN, mesh and loopback hosts only', () => {
@@ -19,6 +29,15 @@ describe('hostAllowed', () => {
     expect(hostAllowed('2001:db8::1')).toBe(false)
     expect(hostAllowed('example.com')).toBe(false)
     expect(hostAllowed('::ffff:8.8.8.8')).toBe(false) // mapped v4 is not ULA
+  })
+
+  it('canonicalizes v6 spellings like the Rust Ipv6Addr parse did', () => {
+    // Rust parsed to an Ipv6Addr first, so spelling never mattered. Node
+    // canonicalizes through URL — pin the expanded/uppercase forms.
+    expect(hostAllowed('0:0:0:0:0:0:0:1')).toBe(true) // expanded loopback
+    expect(hostAllowed('FD00::7')).toBe(true) // uppercase ULA — secret-scan-allow
+    expect(hostAllowed('fd00:0:0:0:0:0:0:7')).toBe(true) // expanded ULA — secret-scan-allow
+    expect(hostAllowed('0:0:0:0:0:0:0:0')).toBe(false) // expanded :: is not loopback
   })
 })
 
@@ -37,6 +56,57 @@ describe('parseTarget', () => {
     expect(() => parseTarget('https://[fd00::7')).toThrow(/unclosed v6 bracket/) // secret-scan-allow
     expect(() => parseTarget('https://10.0.0.7:port')).toThrow(/bad port/)
     expect(() => parseTarget('https://')).toThrow(/empty host/)
+  })
+
+  it('pins the DELIBERATE strictness deltas vs the Rust reference', () => {
+    // u16::from_str accepted "0" and "+5"; both are useless dial targets and
+    // are refused here on purpose (documented in parsePort). Fail-closed.
+    expect(() => parseTarget('https://10.0.0.7:0')).toThrow(/bad port/)
+    expect(() => parseTarget('https://10.0.0.7:+5')).toThrow(/bad port/)
+  })
+})
+
+describe('tlsConnectOptions', () => {
+  const identity = { cert: Buffer.from('c'), key: Buffer.from('k'), ca: Buffer.from('a') }
+
+  it('sends SNI only for DNS names, never IP literals', () => {
+    expect(tlsConnectOptions('ct112.mesh', 5174, identity).servername).toBe('ct112.mesh')
+    expect(tlsConnectOptions('10.0.0.7', 5174, identity).servername).toBeUndefined()
+    expect(tlsConnectOptions('fd00::7', 5174, identity).servername).toBeUndefined() // secret-scan-allow
+  })
+
+  it('verifies against the Rivet CA only, no ALPN', () => {
+    const opts = tlsConnectOptions('ct112.mesh', 5174, identity)
+    expect(opts.rejectUnauthorized).toBe(true)
+    expect(opts.ca).toBe(identity.ca)
+    expect(opts.cert).toBe(identity.cert)
+    expect(opts.key).toBe(identity.key)
+    expect('ALPNProtocols' in opts).toBe(false)
+  })
+})
+
+describe('PipeState identity validation', () => {
+  it('rejects garbage PEM at resolve time, uncached', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mtls-test-'))
+    for (const f of ['device.crt', 'device.key', 'ca.pem']) {
+      writeFileSync(join(dir, f), '-----BEGIN CERTIFICATE-----\ngarbage\n-----END CERTIFICATE-----\n')
+    }
+    const state = new PipeState(() => dir)
+    // Corrupt material must fail THIS resolve (never mint a dead port)…
+    await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(
+      /device identity rejected/,
+    )
+    // …and must not be cached: the same call fails identically (fresh read),
+    // rather than succeeding off a poisoned cache.
+    await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(
+      /device identity rejected/,
+    )
+  })
+
+  it('rejects missing identity material with the file path', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mtls-test-'))
+    const state = new PipeState(() => dir)
+    await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(/device\.crt/)
   })
 })
 
@@ -98,5 +168,13 @@ describe('ListenerSet', () => {
     set.insert('https://10.0.0.2:5174', 2, (t) => evicted.push(t))
     expect(set.values()).toEqual([1, 2])
     expect(set.values()).toEqual([1, 2]) // second read unchanged
+  })
+
+  it('remove drops a dead listener so a re-resolve binds fresh', () => {
+    const set = new ListenerSet<number>()
+    set.insert('https://10.0.0.1:5174', 1, () => undefined)
+    expect(set.remove('https://10.0.0.1:5174')).toBe(true)
+    expect(set.get('https://10.0.0.1:5174')).toBeUndefined()
+    expect(set.remove('https://10.0.0.1:5174')).toBe(false) // idempotent
   })
 })

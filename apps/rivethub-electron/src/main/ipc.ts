@@ -5,34 +5,54 @@
  * shell capabilities anywhere the shell would not go itself.
  */
 
-import { clipboard, ipcMain, Notification, shell } from 'electron'
+import { clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
 import type { PipeState } from './mtls-pipe.js'
 
 export interface IpcDeps {
   pipes: PipeState
   setUnread: (count: number) => void
+  /** True when the given frame URL belongs to the bundled app origin. */
+  isBundledUrl: (url: string) => boolean
 }
 
 export function registerIpc(deps: IpcDeps): void {
-  ipcMain.handle('mtls:proxyPort', async (_e, target: unknown): Promise<number> => {
+  // Sender fence, defense-in-depth (review finding, PR #555): only the
+  // bundled top frame carries the preload today, but nothing else should
+  // ever reach this surface either — a den iframe, a future subframe with
+  // preloads enabled, anything. A missing senderFrame fails closed.
+  const trusted = (e: IpcMainInvokeEvent): boolean => {
+    const url = e.senderFrame?.url
+    return typeof url === 'string' && deps.isBundledUrl(url)
+  }
+  const guarded = <T>(
+    channel: string,
+    handler: (e: IpcMainInvokeEvent, ...args: unknown[]) => T,
+  ): void => {
+    ipcMain.handle(channel, (e, ...args: unknown[]) => {
+      if (!trusted(e)) throw new Error(`${channel}: untrusted sender`)
+      return handler(e, ...args)
+    })
+  }
+
+  guarded('mtls:proxyPort', (_e, target: unknown): Promise<number> => {
     if (typeof target !== 'string') throw new Error('target must be a string')
     return deps.pipes.proxyPort(target)
   })
 
-  ipcMain.handle('shell:openExternal', async (_e, url: unknown): Promise<void> => {
+  guarded('shell:openExternal', async (_e, url: unknown): Promise<void> => {
     // http(s) only — never file:, never a protocol handler someone registered.
     if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return
     await shell.openExternal(url)
   })
 
-  ipcMain.handle('clipboard:writeText', (_e, text: unknown): void => {
+  guarded('clipboard:writeText', (_e, text: unknown): void => {
     if (typeof text !== 'string') return
     clipboard.writeText(text)
   })
 
-  ipcMain.handle('clipboard:readText', () => clipboard.readText())
+  guarded('clipboard:readText', () => clipboard.readText())
 
-  ipcMain.handle('notify:send', (_e, opts: unknown): void => {
+  guarded('notify:send', (_e, opts: unknown): void => {
     if (typeof opts !== 'object' || opts === null) return
     const { title, body } = opts as { title?: unknown; body?: unknown }
     if (typeof title !== 'string' || typeof body !== 'string') return
@@ -40,7 +60,7 @@ export function registerIpc(deps: IpcDeps): void {
     new Notification({ title, body }).show()
   })
 
-  ipcMain.handle('unread:set', (_e, count: unknown): void => {
+  guarded('unread:set', (_e, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
     deps.setUnread(Math.floor(n))
   })

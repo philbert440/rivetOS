@@ -17,12 +17,26 @@ export interface RivetShell {
   setUnread(count: number): Promise<void>
 }
 
+const SHELL_METHODS = [
+  'mtlsProxyPort',
+  'openExternal',
+  'clipboardWriteText',
+  'clipboardReadText',
+  'sendNotification',
+  'setUnread',
+] as const
+
 export function rivetShell(
   g: { rivetShell?: RivetShell } = globalThis as { rivetShell?: RivetShell },
 ): RivetShell | undefined {
   const shell = g.rivetShell
-  if (shell && typeof shell.mtlsProxyPort === 'function') return shell
-  return undefined
+  if (!shell) return undefined
+  // Full-shape check: a partial/foreign global passing detection would make
+  // the OTHER consumers throw at call time — all methods or nothing.
+  for (const m of SHELL_METHODS) {
+    if (typeof shell[m] !== 'function') return undefined
+  }
+  return shell
 }
 
 /** True inside any desktop shell (Electron bridge or Tauri global). */

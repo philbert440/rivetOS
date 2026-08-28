@@ -7,6 +7,21 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 
+// Renderer context — the app tsconfig is Node-only, so declare the one DOM
+// global this file touches.
+declare const window: { self: unknown; top: unknown }
+
+// Top frame only, explicitly. Electron's default (nodeIntegrationInSubFrames
+// off) already keeps preloads out of iframes, and the main process
+// additionally fences every IPC channel by sender-frame origin — but den
+// iframes render LAN-served content, so the invariant "remote content never
+// sees rivetShell" gets its own guard here rather than resting on a default
+// (review finding, PR #555).
+if (window.self !== window.top) {
+  // eslint-disable-next-line no-restricted-syntax
+  throw new Error('rivetShell preload is top-frame only')
+}
+
 const api = {
   /** Which shell this is — lets the web side special-case if it ever must. */
   kind: 'electron' as const,

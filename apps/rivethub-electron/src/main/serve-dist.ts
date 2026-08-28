@@ -2,9 +2,12 @@
  * app:// protocol — serves the bundled rivethub-web dist to every window.
  *
  * A custom privileged scheme instead of loadFile so the renderer gets a
- * stable secure-context origin (app://bundle): localStorage keys survive
- * updates, navigator.clipboard exists, and remote-ui's isBundledOrigin
- * treats it as bundled (app://bundle is not a valid gateway origin).
+ * stable origin (app://bundle): localStorage keys survive updates, and
+ * remote-ui's isBundledOrigin treats it as bundled (not a valid gateway
+ * origin). NOTE the scheme registers `secure: false` (index.ts explains
+ * why: plain-http LAN nodes must not be mixed-content-blocked), so this is
+ * NOT a secure context — no navigator.clipboard, no crypto.subtle; the web
+ * app's IPC clipboard bridge and uuid fallback cover exactly that.
  *
  * Every response carries the same CSP the Tauri shell enforced through
  * tauri.conf.json — the shell changed, the policy must not.
@@ -43,16 +46,30 @@ const MIME: Record<string, string> = {
 
 /**
  * Resolve a request path to a file inside `distDir`, or null for traversal
- * attempts. SPA fallback: anything without an extension (a router path, or
- * `/`) resolves to index.html — the client router owns those.
+ * attempts and undecodable paths. A trailing slash means the directory's own
+ * index.html (`/den/` → den/index.html — the nested den viewer, not the hub
+ * SPA). SPA fallback: anything else without an extension (a router path, or
+ * `/`) resolves to the root index.html — the client router owns those.
  */
 export function resolveAsset(
   distDir: string,
   urlPath: string,
 ): { file: string; mime: string } | null {
-  const decoded = decodeURIComponent(urlPath.split('?')[0])
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(urlPath.split('?')[0])
+  } catch {
+    return null // malformed escape (%zz) — refuse, don't throw out of the handler
+  }
   const relative = decoded.replace(/^\/+/, '')
-  const wanted = relative === '' || path.extname(relative) === '' ? 'index.html' : relative
+  const wanted =
+    relative === ''
+      ? 'index.html'
+      : relative.endsWith('/')
+        ? `${relative}index.html`
+        : path.extname(relative) === ''
+          ? 'index.html'
+          : relative
   const file = path.normalize(path.join(distDir, wanted))
   // The fence: a normalized path must stay inside the dist root.
   if (file !== distDir && !file.startsWith(distDir + path.sep)) return null
@@ -66,10 +83,18 @@ export function serveDist(
   distDir: string,
 ): void {
   const root = path.normalize(distDir)
+  // Error responses carry the CSP too — constant bodies, but "every app://
+  // response carries the policy" should be true without exceptions.
+  const errorHeaders = { 'content-type': 'text/plain', 'content-security-policy': CSP }
   protocol.handle(APP_SCHEME, async (req) => {
-    const { pathname } = new URL(req.url)
+    let pathname: string
+    try {
+      pathname = new URL(req.url).pathname
+    } catch {
+      return new Response('bad request', { status: 400, headers: errorHeaders })
+    }
     const asset = resolveAsset(root, pathname)
-    if (!asset) return new Response('forbidden', { status: 403 })
+    if (!asset) return new Response('forbidden', { status: 403, headers: errorHeaders })
     try {
       const body = await fs.readFile(asset.file)
       return new Response(body, {
@@ -78,7 +103,7 @@ export function serveDist(
     } catch {
       // A missing hashed asset (stale tab across an update) must 404, not
       // soft-serve index.html as text/javascript.
-      return new Response('not found', { status: 404 })
+      return new Response('not found', { status: 404, headers: errorHeaders })
     }
   })
 }

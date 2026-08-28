@@ -35,4 +35,15 @@ describe('resolveAsset', () => {
   it('ignores query strings', () => {
     expect(resolveAsset(DIST, '/index.html?x=1')?.file).toBe(path.join(DIST, 'index.html'))
   })
+
+  it('refuses malformed escapes instead of throwing', () => {
+    expect(resolveAsset(DIST, '/%zz')).toBeNull()
+    expect(resolveAsset(DIST, '/a/%e0%zz/b')).toBeNull()
+  })
+
+  it('trailing-slash directories get their OWN index.html, not the SPA', () => {
+    // the den viewer is nested at /den/ — it must not land on the hub SPA
+    expect(resolveAsset(DIST, '/den/')?.file).toBe(path.join(DIST, 'den/index.html'))
+    expect(resolveAsset(DIST, '/den/sub/')?.file).toBe(path.join(DIST, 'den/sub/index.html'))
+  })
 })

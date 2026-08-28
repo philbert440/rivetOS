@@ -27,6 +27,12 @@ import { PipeState } from './mtls-pipe.js'
 import { registerIpc } from './ipc.js'
 import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
 
+// Unpackaged dev runs otherwise derive userData from the scoped package name
+// (~/.config/@rivetos/rivethub-electron), so a dev-time enrollment would land
+// where neither the packaged build nor the Tauri fallback ever looks (review
+// finding, PR #555). Must precede any getPath('userData') use.
+app.setName('RivetHub')
+
 // Must run before app ready: privileges are part of scheme registration.
 // `secure: false` is DELIBERATE: a secure origin would mixed-content-block
 // fetch/WS to plain http:// LAN nodes, which must keep working. The web app
@@ -63,6 +69,18 @@ function identityDir(): string {
 
 const pipes = new PipeState(identityDir)
 
+/** True only for the bundled app origin, by PARSED protocol+host — never a
+ *  string-prefix test (Node's URL gives custom schemes origin 'null', so
+ *  origin equality cannot be used either). */
+function isBundledUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return `${u.protocol}//${u.host}` === APP_ORIGIN
+  } catch {
+    return false
+  }
+}
+
 let mainWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let quitting = false
@@ -96,9 +114,11 @@ function createWindow(isMain: boolean): BrowserWindow {
   // Top-frame navigation stays on the bundled origin: a target=_self link or
   // a location assignment from rendered content must not walk the privileged
   // window (preload attached) off to an arbitrary origin. Main-frame-only —
-  // den iframes navigate freely.
+  // den iframes navigate freely. Parsed comparison, not a string prefix:
+  // `app://bundle.evil.com` startsWith the origin string but is a different
+  // host (review finding, PR #555).
   win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(APP_ORIGIN)) {
+    if (!isBundledUrl(url)) {
       e.preventDefault()
       if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     }
@@ -152,15 +172,18 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     serveDist(protocol, distDir())
-    registerIpc({ pipes, setUnread })
+    registerIpc({ pipes, setUnread, isBundledUrl })
 
     // Deny every renderer permission request (camera/mic/geolocation/…).
     // Electron's default handler GRANTS, and den iframes render LAN-served
     // content. The app needs none of them: notifications ride the main
-    // process, clipboard rides IPC.
+    // process, clipboard rides IPC. BOTH gates: the check handler backs
+    // navigator.permissions.query, which would otherwise report 'granted'
+    // for permissions the request handler denies (review finding, PR #555).
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, cb) => {
       cb(false)
     })
+    session.defaultSession.setPermissionCheckHandler(() => false)
 
     // Register each global shortcut and SURFACE a conflict (another app
     // owning the combo at the OS level): stderr for terminal launches, the

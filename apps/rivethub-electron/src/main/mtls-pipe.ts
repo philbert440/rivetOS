@@ -60,7 +60,15 @@ export function hostAllowed(host: string): boolean {
     )
   }
   if (net.isIPv6(host)) {
-    const canon = host.toLowerCase()
+    // Canonicalize first (URL compresses zero runs and lowercases), so the
+    // expanded spelling `0:0:0:0:0:0:0:1` is loopback here exactly as Rust's
+    // Ipv6Addr::is_loopback() treated it — review finding, PR #555.
+    let canon: string
+    try {
+      canon = new URL(`http://[${host}]/`).hostname.replace(/^\[|\]$/g, '')
+    } catch {
+      return false
+    }
     if (canon === '::1') return true
     // ULA fd00::/7 (WG overlay addressing): first hextet fc00–fdff. An
     // address opening with `::` has a zero first hextet and correctly fails.
@@ -110,6 +118,11 @@ export function parseTarget(target: string): { host: string; port: number } {
   return { host, port }
 }
 
+/**
+ * Deliberately STRICTER than the Rust reference: `u16::from_str` accepted
+ * `"0"` and a leading `"+"`, both useless as dial targets. The delta is
+ * fail-closed (we refuse what Rust tolerated) and pinned by tests.
+ */
 function parsePort(raw: string, target: string): number {
   if (!/^\d+$/.test(raw)) throw new Error(`bad port in ${target}`)
   const port = Number(raw)
@@ -166,6 +179,11 @@ export class ListenerSet<T> {
   values(): T[] {
     return [...this.entries.values()]
   }
+
+  /** Drop `key` outright (dead listener). Returns whether it was present. */
+  remove(key: string): boolean {
+    return this.entries.delete(key)
+  }
 }
 
 interface Identity {
@@ -197,14 +215,24 @@ export class PipeState {
     const read = (name: string): Buffer => {
       const p = path.join(dir, name)
       try {
-        const data = fs.readFileSync(p)
-        if (!data.includes('-----BEGIN')) throw new Error('no PEM data')
-        return data
+        return fs.readFileSync(p)
       } catch (e) {
         throw new Error(`${p}: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
     const identity = { cert: read('device.crt'), key: read('device.key'), ca: read('ca.pem') }
+    // Validate the material BEFORE caching — the Rust reference only cached a
+    // connector that fully built. createSecureContext throws on truncated or
+    // garbage PEM, so a corrupt enroll fails THIS resolve (uncached) instead
+    // of minting a port whose every connection dies at handshake, unhealable
+    // until relaunch (review finding, PR #555).
+    try {
+      tls.createSecureContext({ cert: identity.cert, key: identity.key, ca: identity.ca })
+    } catch (e) {
+      throw new Error(
+        `device identity rejected (${dir}): ${e instanceof Error ? e.message : String(e)}`,
+      )
+    }
     warnKeyPermissions(path.join(dir, 'device.key'))
     this.identity = identity
     return identity
@@ -230,9 +258,18 @@ export class PipeState {
         pipe(client, identity, host, port)
       })
       server.on('error', (e) => {
-        // Post-listen errors: log, keep the entry — the web side heals a dead
-        // port by re-resolving (pipeAlive probe → fresh listener).
+        // A post-listen server error is fatal to the listener. Drop the map
+        // entry (only if it is still THIS server — a re-resolve may have
+        // replaced it) so the web side's pipeAlive → re-resolve path binds a
+        // FRESH listener instead of being handed the same dead port forever —
+        // the "bricked until relaunch" failure the Rust accept-retry loop
+        // existed to prevent (review finding, PR #555).
         console.error(`RivetHub mtls-pipe: listener for ${key}: ${e.message}`)
+        const current = this.listeners.values()
+        if (current.some((entry) => entry.server === server)) {
+          this.listeners.remove(key)
+        }
+        server.close()
       })
       await new Promise<void>((res, rej) => {
         server.once('error', rej)
@@ -287,22 +324,33 @@ function warnKeyPermissions(keyPath: string): void {
   }
 }
 
-/** Wrap one accepted loopback connection in TLS to the gateway and splice. */
-function pipe(client: net.Socket, identity: Identity, host: string, port: number): void {
-  const upstream = tls.connect({
+/**
+ * TLS options for one upstream gateway connection. Exported for the parity
+ * tests: no SNI for IP targets (RFC 6066) with cert verification still
+ * running against IP SANs — issue-node leaves must carry every literal
+ * address the roster dials; no ALPN on purpose (the webview speaks HTTP/1.1
+ * into the pipe, and a client offering no ALPN gets the gateway's http/1.1
+ * default); `rejectUnauthorized` with the Rivet CA as the ONLY trust root.
+ */
+export function tlsConnectOptions(
+  host: string,
+  port: number,
+  identity: { cert: Buffer; key: Buffer; ca: Buffer },
+): tls.ConnectionOptions {
+  return {
     host,
     port,
     cert: identity.cert,
     key: identity.key,
     ca: identity.ca,
     rejectUnauthorized: true,
-    // No SNI for IP targets (RFC 6066); cert verification still runs against
-    // IP SANs — issue-node leaves must carry every literal address the
-    // roster dials. No ALPN on purpose: the webview speaks HTTP/1.1 into the
-    // pipe, and a client offering no ALPN gets the gateway's http/1.1
-    // default (Node https server).
     servername: net.isIP(host) ? undefined : host,
-  })
+  }
+}
+
+/** Wrap one accepted loopback connection in TLS to the gateway and splice. */
+function pipe(client: net.Socket, identity: Identity, host: string, port: number): void {
+  const upstream = tls.connect(tlsConnectOptions(host, port, identity))
   const tearDown = (err?: Error): void => {
     if (err) console.error(`RivetHub mtls-pipe: ${host}:${port}: ${err.message}`)
     client.destroy()
