@@ -456,10 +456,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // Never hand one user's live harness to another identity: the
           // running child carries the first spawner's memory env.
           if (existing.routedUser !== (envOverride?.RIVETOS_USER_ID ?? undefined))
-            throw new TermSpawnError(
-              'user-mismatch',
-              `session ${session} is owned by another user`,
-            )
+            throw new TermSpawnError('user-mismatch', `session ${session} is owned by another user`)
           return info(existing)
         }
       }

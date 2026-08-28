@@ -1105,11 +1105,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             })
           } catch (e) {
             if (e instanceof TermSpawnError)
-              return json(
-                res,
-                e.code === 'cap' ? 409 : e.code === 'user-mismatch' ? 403 : 404,
-                { error: e.message },
-              )
+              return json(res, e.code === 'cap' ? 409 : e.code === 'user-mismatch' ? 403 : 404, {
+                error: e.message,
+              })
             throw e
           }
         }

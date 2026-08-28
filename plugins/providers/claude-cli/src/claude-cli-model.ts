@@ -320,13 +320,16 @@ function userRoutingEnv(
   if (!userId) return undefined
   const raw = process.env.RIVETOS_USER_DBS?.trim()
   const fail = (why: string): never => {
-    throw new Error(`per-user memory routing for "${userId}" ${why} — refusing to spawn with the node owner's capture env`)
+    throw new Error(
+      `per-user memory routing for "${userId}" ${why} — refusing to spawn with the node owner's capture env`,
+    )
   }
   if (!raw) return fail('has no RIVETOS_USER_DBS on this node')
   let dbs: Record<string, { pgUrl?: string; envFile?: string }>
   try {
     const parsed = JSON.parse(raw) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fail('has malformed RIVETOS_USER_DBS')
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+      return fail('has malformed RIVETOS_USER_DBS')
     dbs = parsed as Record<string, { pgUrl?: string; envFile?: string }>
   } catch {
     return fail('has malformed RIVETOS_USER_DBS')

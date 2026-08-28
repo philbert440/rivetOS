@@ -135,9 +135,7 @@ export const manifest: PluginManifest = {
         )
       }
     }
-    ctx.registerMemory(
-      userMemories.size > 0 ? new RoutingMemory(memory, userMemories) : memory,
-    )
+    ctx.registerMemory(userMemories.size > 0 ? new RoutingMemory(memory, userMemories) : memory)
 
     const searchEngine = memory.getSearchEngine()
     const expander = memory.getExpander()

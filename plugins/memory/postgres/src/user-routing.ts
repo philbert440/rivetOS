@@ -58,7 +58,9 @@ export function parseUserDbs(raw: string | undefined): Record<string, UserDbEntr
   for (const [userId, entry] of Object.entries(parsed as Record<string, unknown>)) {
     if (userId.trim() === '') continue
     if (!isUsableUserDb(entry)) {
-      console.error(`[memory-postgres] RIVETOS_USER_DBS entry for "${userId}" is unusable — dropped`)
+      console.error(
+        `[memory-postgres] RIVETOS_USER_DBS entry for "${userId}" is unusable — dropped`,
+      )
       continue
     }
     out[userId] = entry
@@ -130,8 +132,6 @@ export class RoutingMemory implements Memory {
   }
 
   loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
-    return (
-      this.forSession(sessionId).loadSessionSettings?.(sessionId) ?? Promise.resolve(null)
-    )
+    return this.forSession(sessionId).loadSessionSettings?.(sessionId) ?? Promise.resolve(null)
   }
 }

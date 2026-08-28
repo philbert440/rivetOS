@@ -277,8 +277,8 @@ export function createOpenAICompatRoute(opts: OpenAICompatOptions): GatewayRoute
               agent: model,
               thinking,
               // Routing identity is den's stamped header ONLY — the OpenAI
-            // `user` field is client-controlled and would select a database.
-            userId: routedUserFromHeaders(req.headers),
+              // `user` field is client-controlled and would select a database.
+              userId: routedUserFromHeaders(req.headers),
             })
             if (!result.ok) return json(res, result.status, { error: { message: result.error } })
             const usage = usageToOpenAI(result.message.usage)
