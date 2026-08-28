@@ -19,12 +19,16 @@ import * as path from 'node:path'
 export const APP_SCHEME = 'app'
 export const APP_ORIGIN = `${APP_SCHEME}://bundle`
 
-/** Mirror of the Tauri config's CSP, verbatim. */
+/** The Tauri config's CSP, plus `frame-ancestors 'none'`: nothing may frame
+ *  an app:// document — without it a den page (frame-src allows http/https
+ *  content INSIDE the hub) could nest app://bundle and clickjack the
+ *  privileged UI (review finding, PR #555). The hub itself never frames
+ *  app:// content, so 'none' costs nothing. */
 export const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: http: https:; font-src 'self' data:; " +
   "connect-src 'self' http: https: ws: wss:; frame-src http: https:; " +
-  "object-src 'none'; base-uri 'self'"
+  "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -87,13 +91,18 @@ export function serveDist(
   // response carries the policy" should be true without exceptions.
   const errorHeaders = { 'content-type': 'text/plain', 'content-security-policy': CSP }
   protocol.handle(APP_SCHEME, async (req) => {
-    let pathname: string
+    let url: URL
     try {
-      pathname = new URL(req.url).pathname
+      url = new URL(req.url)
     } catch {
       return new Response('bad request', { status: 400, headers: errorHeaders })
     }
-    const asset = resolveAsset(root, pathname)
+    // One host, one origin: app://anything-else must not become a second
+    // origin serving the same UI with its own storage partition.
+    if (`${url.protocol}//${url.host}` !== APP_ORIGIN) {
+      return new Response('forbidden', { status: 403, headers: errorHeaders })
+    }
+    const asset = resolveAsset(root, url.pathname)
     if (!asset) return new Response('forbidden', { status: 403, headers: errorHeaders })
     try {
       const body = await fs.readFile(asset.file)

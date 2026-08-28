@@ -17,12 +17,14 @@ export interface IpcDeps {
 
 export function registerIpc(deps: IpcDeps): void {
   // Sender fence, defense-in-depth (review finding, PR #555): only the
-  // bundled top frame carries the preload today, but nothing else should
-  // ever reach this surface either — a den iframe, a future subframe with
-  // preloads enabled, anything. A missing senderFrame fails closed.
+  // bundled MAIN frame carries the preload today, but nothing else should
+  // ever reach this surface either — a den iframe, an app://-URLed subframe,
+  // a future preload-in-subframes flip. Origin AND top-frameness are both
+  // required; a missing senderFrame fails closed.
   const trusted = (e: IpcMainInvokeEvent): boolean => {
-    const url = e.senderFrame?.url
-    return typeof url === 'string' && deps.isBundledUrl(url)
+    const frame = e.senderFrame
+    if (!frame || frame !== e.sender.mainFrame) return false
+    return deps.isBundledUrl(frame.url)
   }
   const guarded = <T>(
     channel: string,
@@ -35,13 +37,24 @@ export function registerIpc(deps: IpcDeps): void {
   }
 
   guarded('mtls:proxyPort', (_e, target: unknown): Promise<number> => {
-    if (typeof target !== 'string') throw new Error('target must be a string')
+    // Real validation (https-only, host allowlist) lives in parseTarget; the
+    // length cap just refuses absurd inputs before they reach a parser.
+    if (typeof target !== 'string' || target.length > 512) {
+      throw new Error('target must be a gateway base url')
+    }
     return deps.pipes.proxyPort(target)
   })
 
   guarded('shell:openExternal', async (_e, url: unknown): Promise<void> => {
-    // http(s) only — never file:, never a protocol handler someone registered.
-    if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return
+    // Parsed http(s) only — never file:, never a registered protocol
+    // handler, never junk that merely starts with a scheme.
+    if (typeof url !== 'string' || url.length > 2048) return
+    try {
+      const p = new URL(url).protocol
+      if (p !== 'http:' && p !== 'https:') return
+    } catch {
+      return
+    }
     await shell.openExternal(url)
   })
 

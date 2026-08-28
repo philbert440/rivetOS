@@ -81,6 +81,16 @@ function isBundledUrl(url: string): boolean {
   }
 }
 
+/** Parsed http(s) check — a prefix regex would pass junk after the scheme. */
+function isWebUrl(url: string): boolean {
+  try {
+    const p = new URL(url).protocol
+    return p === 'http:' || p === 'https:'
+  } catch {
+    return false
+  }
+}
+
 let mainWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let quitting = false
@@ -102,15 +112,19 @@ function createWindow(isMain: boolean): BrowserWindow {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // Explicit, not default-reliant: preloads must never load in den
+      // iframes (review finding, PR #555).
+      nodeIntegrationInSubFrames: false,
     },
   })
-  // External links: the web app routes clicks through rivetShell.openExternal,
-  // but anything that still calls window.open must land in the browser, never
-  // in a new privileged shell window.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
-    return { action: 'deny' }
-  })
+  // window.open: DENY, full stop — no shell.openExternal side door. The
+  // handler cannot tell which frame asked, and den iframes render untrusted
+  // LAN content that must not be able to drive the OS browser (cookies, CSRF
+  // against local services — review finding, PR #555). The hub's own
+  // external links ride rivetShell.openExternal, which is sender-fenced in
+  // main; this matches the Tauri shell, where WebKitGTK dropped new-window
+  // requests outright.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   // Top-frame navigation stays on the bundled origin: a target=_self link or
   // a location assignment from rendered content must not walk the privileged
   // window (preload attached) off to an arbitrary origin. Main-frame-only —
@@ -120,7 +134,7 @@ function createWindow(isMain: boolean): BrowserWindow {
   win.webContents.on('will-navigate', (e, url) => {
     if (!isBundledUrl(url)) {
       e.preventDefault()
-      if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+      if (isWebUrl(url)) void shell.openExternal(url)
     }
   })
   if (isMain) {
@@ -229,7 +243,10 @@ if (!app.requestSingleInstanceLock()) {
     // hosts click events never arrive — the menu is the fallback there.
     tray.on('click', toggleMain)
 
-    Menu.setApplicationMenu(null)
+    // Keep the default menu on macOS — it carries the Edit accelerators
+    // (Cmd+C/V/X/A) that native text fields need. Linux/Windows shipped
+    // menu-less under Tauri too.
+    if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
     mainWindow = createWindow(true)
   })
 }

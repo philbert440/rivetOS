@@ -19,14 +19,17 @@ interface TauriGlobal {
 const resolved = new Map<string, Promise<string>>()
 
 /** Resolve a fresh loopback pipe port from whichever shell is hosting us,
- *  or undefined when no shell bridge exists (plain browser). */
+ *  or undefined when no shell bridge exists (plain browser, or a PARTIAL
+ *  `__TAURI__` like the Android WebView shim, which carries clipboard/opener
+ *  but no `core.invoke` — an unguarded access there would throw
+ *  synchronously out of transportBase and kill the https pass-through). */
 function invokePort(baseUrl: string): Promise<string> | undefined {
   const shell = rivetShell()
   if (shell) {
     return shell.mtlsProxyPort(baseUrl).then((port) => `http://127.0.0.1:${String(port)}`)
   }
-  const tauri = (window as { __TAURI__?: TauriGlobal }).__TAURI__
-  if (tauri) {
+  const tauri = (globalThis as { __TAURI__?: Partial<TauriGlobal> }).__TAURI__
+  if (typeof tauri?.core?.invoke === 'function') {
     return tauri.core
       .invoke('mtls_proxy_port', { target: baseUrl })
       .then((port) => `http://127.0.0.1:${String(port as number)}`)
