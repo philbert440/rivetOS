@@ -795,68 +795,129 @@ export async function describeDshSession(id: string): Promise<HarnessSession | u
   return readDshSession(dir, id)
 }
 
+/** Refuse to even open a pathological store (the previous stub never read the
+ *  file at all, and the turns endpoint is caller-id reachable). A real month of
+ *  dsh sessions compresses far below this. */
+const DSH_COMPRESSED_MAX_BYTES = 64 * 1024 * 1024
+
+/** Cheap line prefilter: only these four SessionEvent types participate in the
+ *  fold. A `"…/…"` literal with unescaped quotes cannot occur inside a JSON
+ *  string value, so a match is a real event-type key; anything the regex lets
+ *  through by riding an enclosing event is dropped by `dshTurnsFromEvents`'s
+ *  exact `type` switch. */
+const DSH_FOLD_EVENT_RE = /"type":"(?:user\/message|assistant\/message|tool\/call|tool\/result)"/
+
 /**
- * dsh transcripts are `session.jsonl.zstd` — MULTI-FRAME zstd, one frame per
- * append. Node's built-in zlib only decodes the first frame, which silently
- * drops most of the conversation, so decoding goes through `fzstd` (a declared
- * dependency of this service; pure JS, full multi-frame decode — same
- * rationale as memory-postgres's get-full tool).
+ * Decode + fold one dsh `session.jsonl.zstd` — the store is MULTI-FRAME zstd
+ * (one frame per append) and Node's built-in zlib only decodes the first
+ * frame, so decoding goes through `fzstd` (a declared dependency of this
+ * service; same rationale as memory-postgres's get-full tool).
+ *
+ * A zstd stream is not tail-seekable, so the recent-first window works on the
+ * DECODED stream: fzstd's streaming `Decompress` hands out plaintext chunks,
+ * which are split into lines as they arrive, and only fold-relevant event
+ * lines are retained — evicting from the front once they exceed
+ * `transcriptMaxBytes`. The raw log is dominated by log-only events
+ * (`*-chunks`, `request/header`, …), so budgeting the four fold types keeps
+ * the window's conversational depth comparable to the sibling jsonl readers,
+ * and decoded bytes are never all materialized at once (an oversized or
+ * crafted store cannot balloon den-server).
+ *
+ * `undefined` = no transcript file (the dir exists before the first flush);
+ * an unreadable/corrupt store answers empty turns, never an error (the chat
+ * view degrades, the terminal still works).
  */
-async function decompressDshTranscript(buf: Buffer): Promise<string | undefined> {
+async function parseDshStoreFile(
+  path: string,
+): Promise<{ turns: HarnessTurn[]; truncated: boolean } | undefined> {
+  let raw: Buffer
   try {
-    const mod = (await import('fzstd')) as {
-      decompress?: (b: Uint8Array) => Uint8Array
-      default?: { decompress?: (b: Uint8Array) => Uint8Array }
-    }
-    const decompress = mod.decompress ?? mod.default?.decompress
-    if (typeof decompress !== 'function') return undefined
-    return Buffer.from(decompress(buf)).toString('utf8')
+    const s = await stat(path)
+    if (!s.isFile()) return undefined
+    if (s.size > DSH_COMPRESSED_MAX_BYTES) return { turns: [], truncated: true }
+    raw = await readFile(path)
   } catch {
     return undefined
   }
-}
 
-/**
- * The `deepseek-harness` driver's hard-resync source. A zstd stream is not
- * tail-seekable, so the parse window (`transcriptMaxBytes`) applies to the
- * DECOMPRESSED text: decode everything, then keep the tail so recent turns
- * survive an oversized store — the same recent-first policy as
- * `parseJsonlObjects`. A store the decoder cannot read answers empty turns,
- * never an error (the chat view degrades, the terminal still works).
- */
-export async function readDshTranscript(id: string): Promise<HarnessTranscript> {
-  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
-  const dir = dshSessionDir(id)
-  if (!dir) return { id, command: '', turns: [] }
-  let raw: Buffer
-  try {
-    raw = await readFile(join(dir, 'session.jsonl.zstd'))
-  } catch {
-    // dir exists before the first transcript flush — still a dsh session
-    return { id, command: 'dsh', turns: [] }
-  }
-  const text = await decompressDshTranscript(raw)
-  if (text === undefined) return { id, command: 'dsh', turns: [] }
-  let window = text
-  let truncated = false
-  if (window.length > transcriptMaxBytes) {
-    window = window.slice(-transcriptMaxBytes)
-    // Drop the partial first line after a mid-stream cut.
-    const nl = window.indexOf('\n')
-    if (nl >= 0) window = window.slice(nl + 1)
-    truncated = true
-  }
-  const events: Record<string, unknown>[] = []
-  for (const line of window.split('\n')) {
+  const kept: string[] = []
+  let keptBytes = 0
+  let evicted = false
+  let pending = ''
+  // a single line larger than the whole window can only be log noise — skip
+  // to the next newline instead of buffering it
+  let skippingOversizeLine = false
+  const utf8 = new TextDecoder('utf-8')
+
+  const takeLine = (line: string): void => {
     const t = line.trim()
-    if (!t.startsWith('{')) continue
+    if (!t.startsWith('{') || !DSH_FOLD_EVENT_RE.test(t)) return
+    kept.push(t)
+    keptBytes += t.length
+    while (keptBytes > transcriptMaxBytes && kept.length > 1) {
+      keptBytes -= (kept.shift() as string).length
+      evicted = true
+    }
+  }
+
+  const onChunk = (chunk: Uint8Array, final: boolean): void => {
+    pending += utf8.decode(chunk, { stream: !final })
+    let nl: number
+    while ((nl = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, nl)
+      pending = pending.slice(nl + 1)
+      if (skippingOversizeLine) skippingOversizeLine = false
+      else takeLine(line)
+    }
+    if (pending.length > transcriptMaxBytes) {
+      pending = ''
+      skippingOversizeLine = true
+    }
+    if (final && !skippingOversizeLine) takeLine(pending)
+  }
+
+  try {
+    type DecompressCtor = new (
+      ondata: (chunk: Uint8Array, final: boolean) => void,
+    ) => { push(chunk: Uint8Array, final?: boolean): void }
+    const mod = (await import('fzstd')) as {
+      Decompress?: DecompressCtor
+      default?: { Decompress?: DecompressCtor }
+    }
+    const Decompress = mod.Decompress ?? mod.default?.Decompress
+    if (!Decompress) return { turns: [], truncated: false }
+    const d = new Decompress(onChunk)
+    // feed in slices so fzstd emits output incrementally rather than in one buffer
+    const STEP = 1024 * 1024
+    for (let off = 0; off < raw.length; off += STEP) {
+      const end = Math.min(off + STEP, raw.length)
+      d.push(raw.subarray(off, end), end === raw.length)
+    }
+    if (raw.length === 0) return { turns: [], truncated: false }
+  } catch {
+    // corrupt / not-zstd store — degrade to empty rather than throw
+    return { turns: [], truncated: false }
+  }
+
+  const events: Record<string, unknown>[] = []
+  for (const line of kept) {
     try {
-      events.push(JSON.parse(t) as Record<string, unknown>)
+      events.push(JSON.parse(line) as Record<string, unknown>)
     } catch {
       // mid-write partial line (dsh appends incrementally) — skip
     }
   }
-  return withTruncated({ id, command: 'dsh', turns: dshTurnsFromEvents(events) }, truncated)
+  return { turns: dshTurnsFromEvents(events), truncated: evicted }
+}
+
+/** The `deepseek-harness` driver's hard-resync source (see parseDshStoreFile). */
+export async function readDshTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const dir = dshSessionDir(id)
+  if (!dir) return { id, command: '', turns: [] }
+  const parsed = await parseDshStoreFile(join(dir, 'session.jsonl.zstd'))
+  if (!parsed) return { id, command: 'dsh', turns: [] }
+  return withTruncated({ id, command: 'dsh', turns: parsed.turns }, parsed.truncated)
 }
 
 /**
@@ -897,8 +958,21 @@ function dshTurnsFromEvents(events: Record<string, unknown>[]): HarnessTurn[] {
     const data = ev.data && typeof ev.data === 'object' ? (ev.data as Record<string, unknown>) : {}
 
     if (ev.type === 'user/message') {
-      // dsh rides workspace-instruction injections (<system-reminder> …) on
-      // user/message events too; extractTurnText's wrapper filter drops them.
+      // dsh rides harness injections on user/message events too — file-change
+      // notices, AGENTS.md/skill content, tool additionalContexts, and the
+      // compaction surface replacement. `source.kind` is the discriminator
+      // (kimi parity: origin.kind === 'user'); only a human message may end
+      // the assistant turn, or an injection splits one agent turn into many
+      // and renders as something the user typed. extractTurnText's wrapper
+      // filter stays as a second line of defense for <system-reminder> text
+      // that DOES arrive with a user source.
+      const source =
+        data.source && typeof data.source === 'object'
+          ? (data.source as Record<string, unknown>)
+          : undefined
+      if (source?.kind !== 'user') continue
+      const op = data.surfaceOp
+      if (op && typeof op === 'object' && (op as { op?: unknown }).op === 'replace') continue
       const text = extractTurnText(data.content, 'user')
       if (text) {
         finishAssistant()
@@ -1735,8 +1809,11 @@ export async function readHarnessStoreAt(
     )
   }
   if (ref.command === 'dsh') {
-    // zstd transcript — no decompressor in this process. Empty is honest.
-    return { id, command: 'dsh', turns: [] }
+    // same decode+fold as readDshTranscript, so the watch path and a hard
+    // resync can never disagree about what the store holds
+    const parsed = await parseDshStoreFile(ref.path)
+    if (!parsed) return { id, command: 'dsh', turns: [] }
+    return withTruncated({ id, command: 'dsh', turns: parsed.turns }, parsed.truncated)
   }
   // hermes reads by id rather than by path (one sqlite db holds every session)
   return { id, command: 'hermes', turns: readHermesTurns(denJoinKey(id)) }

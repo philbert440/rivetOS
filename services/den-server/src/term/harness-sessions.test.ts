@@ -12,6 +12,7 @@ import {
   harnessSessionExists,
   readDshTranscript,
   readGrokTranscript,
+  readHarnessStoreAt,
   readHarnessTranscript,
   readHermesTranscript,
   readKimiTranscript,
@@ -623,6 +624,85 @@ describe('readDshTranscript', () => {
     expect(t.turns.length).toBeLessThan(12)
     expect(t.turns.at(-1)?.text).toContain('turn-11-')
     expect(t.turns.some((x) => x.text?.includes('turn-0-'))).toBe(false)
+  })
+
+  it('budgets the window on fold-relevant lines, not the raw event soup', async () => {
+    setTranscriptMaxBytesForTest(600)
+    // interleave big log-only lines (the store is dominated by chunk spam and
+    // request/header) with three small user turns — the noise must not evict them
+    const noise = () => ({ type: 'assistant/chunk', data: { text: 'y'.repeat(2000) } })
+    fakeDshStore([
+      [user('first'), noise(), noise(), user('second'), noise(), noise(), user('third'), noise()],
+    ])
+    const t = await readDshTranscript(ID)
+    expect(t.truncated).toBeUndefined()
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'first' },
+      { role: 'user', text: 'second' },
+      { role: 'user', text: 'third' },
+    ])
+  })
+
+  it('only a user-sourced message ends the assistant turn (injections do not split)', async () => {
+    fakeDshStore([
+      [
+        user('do the thing'),
+        {
+          type: 'assistant/message',
+          data: { message: { role: 'assistant', content: [{ type: 'text', text: 'part one' }] } },
+        },
+        // harness injection riding user/message (file-change notice, AGENTS.md,
+        // additionalContexts …) — visible text, but not a human turn
+        {
+          type: 'user/message',
+          data: {
+            content: [{ type: 'text', text: 'The file /tmp/x changed on disk.' }],
+            source: { kind: 'plugin' },
+          },
+        },
+        {
+          type: 'assistant/message',
+          data: { message: { role: 'assistant', content: [{ type: 'text', text: 'part two' }] } },
+        },
+        // compaction surface replacement: user-sourced but replaces history
+        {
+          type: 'user/message',
+          data: {
+            content: [{ type: 'text', text: 'Summary of the conversation so far…' }],
+            source: { kind: 'user' },
+            surfaceOp: { op: 'replace' },
+          },
+        },
+        // orphan tool/result from a window cut upstream — must not crash
+        {
+          type: 'tool/result',
+          data: { message: { source: { kind: 'tool', callId: 'gone' }, content: [] } },
+        },
+        user('thanks'),
+      ],
+    ])
+    const t = await readDshTranscript(ID)
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'do the thing' },
+      // one coalesced assistant turn — multi-step text joins, injection ignored
+      { role: 'assistant', text: 'part one\n\npart two' },
+      { role: 'user', text: 'thanks' },
+    ])
+  })
+
+  it('serves the watcher path (readHarnessStoreAt) from the same decode', async () => {
+    const dir = fakeDshStore([
+      [user('watched'), { type: 'tool/call', data: { callId: 'c9', name: 'read', arguments: '{}' } }],
+    ])
+    const t = await readHarnessStoreAt(
+      { command: 'dsh', path: join(dir, 'session.jsonl.zstd') },
+      `deepseek-harness:${ID}`,
+    )
+    expect(t.command).toBe('dsh')
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'watched' },
+      { role: 'assistant', text: '', tools: [{ name: 'read', status: 'running' }] },
+    ])
   })
 })
 
