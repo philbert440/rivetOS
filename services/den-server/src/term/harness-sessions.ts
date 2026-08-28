@@ -877,9 +877,9 @@ async function parseDshStoreFile(
   }
 
   try {
-    type DecompressCtor = new (
-      ondata: (chunk: Uint8Array, final: boolean) => void,
-    ) => { push(chunk: Uint8Array, final?: boolean): void }
+    type DecompressCtor = new (ondata: (chunk: Uint8Array, final: boolean) => void) => {
+      push(chunk: Uint8Array, final?: boolean): void
+    }
     const mod = (await import('fzstd')) as {
       Decompress?: DecompressCtor
       default?: { Decompress?: DecompressCtor }
