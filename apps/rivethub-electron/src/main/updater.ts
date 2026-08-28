@@ -58,8 +58,8 @@ async function fetchManifestEntry(pipes: PipeState, gatewayBase: string): Promis
     headers: { 'cache-control': 'no-store' },
     signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
   })
-  if (!res.ok || !res.body)
-    throw new Error(`no update manifest on this node (${String(res.status)})`)
+  if (!res.ok) throw new Error(`no update manifest on this node (${String(res.status)})`)
+  if (!res.body) throw new Error('update manifest response had an empty body')
   // Cap the manifest ON THE WIRE — res.text()/json() materialize the whole
   // body first, so a huge (or decompression-bombed) latest.json would OOM
   // main before any length check (review round 2).
@@ -163,28 +163,48 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
       delete env.ARGV0
       // Release the single-instance lock BEFORE spawning: the new copy of
       // this app would otherwise lose the lock to the still-running old
-      // process and exit immediately (review round 2 — an `exit` watch here
-      // false-failed every linux update for exactly that reason, so only
-      // `error` is watched: it reliably reports execve failures like a
-      // missing loader or EACCES, and a launch that dies later is the
-      // installer's problem, not a reason to keep the old hub hostage).
+      // process and exit immediately (review round 2). With the lock
+      // released, an exit INSIDE the 1s window is a true launch failure
+      // (missing FUSE, broken payload, failed inner exec — those are `exit`,
+      // not `error`; review round 3), so both signals are watched. A death
+      // after the window is the acknowledged residual.
       app.releaseSingleInstanceLock()
-      const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          cleanup()
-          resolve()
-        }, 1000)
-        const cleanup = (): void => {
-          clearTimeout(timer)
-          child.removeAllListeners('error')
-          child.unref()
-        }
-        child.once('error', (err) => {
-          cleanup()
-          reject(new Error(`could not launch update: ${err.message}`))
+      try {
+        const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            cleanup()
+            resolve()
+          }, 1000)
+          const cleanup = (): void => {
+            clearTimeout(timer)
+            child.removeAllListeners('error')
+            child.removeAllListeners('exit')
+            child.unref()
+          }
+          child.once('error', (err) => {
+            cleanup()
+            reject(new Error(`could not launch update: ${err.message}`))
+          })
+          child.once('exit', (code, signal) => {
+            cleanup()
+            reject(new Error(`update exited immediately (${String(code ?? signal)})`))
+          })
         })
-      })
+      } catch (err) {
+        // The old hub keeps running on a failed launch — it must be the
+        // singleton again, or a second copy could start unnoticed. If the
+        // lock is already gone, something else took over: get out of its way.
+        if (!app.requestSingleInstanceLock()) {
+          setTimeout(() => {
+            app.quit()
+          }, 1500)
+          throw new Error(
+            `${err instanceof Error ? err.message : String(err)} — and another instance took the lock; quitting`,
+          )
+        }
+        throw err
+      }
     }
   } catch (err) {
     await rm(dir, { recursive: true, force: true })
