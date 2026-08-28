@@ -25,6 +25,8 @@ export interface IpcDeps {
   migration: MigrationHandle
   /** True when a webContents id belongs to a window this shell created. */
   isShellWindow: (webContentsId: number) => boolean
+  /** Bring the main window forward (notification click-through). */
+  summon: () => void
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -82,7 +84,13 @@ export function registerIpc(deps: IpcDeps): void {
     const { title, body } = opts as { title?: unknown; body?: unknown }
     if (typeof title !== 'string' || typeof body !== 'string') return
     if (!Notification.isSupported()) return
-    new Notification({ title, body }).show()
+    const n = new Notification({ title, body })
+    // The native path only fires while the window is hidden/unfocused —
+    // exactly when the user needs a way back in. A click-less notification
+    // was a dead end: the OS banner did nothing and the tray was the only
+    // road back (review punch list #3).
+    n.on('click', deps.summon)
+    n.show()
   })
 
   guarded('unread:set', (_e, count: unknown): void => {

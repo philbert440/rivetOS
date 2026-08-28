@@ -1,10 +1,12 @@
 /**
  * RivetHub desktop shell — Electron main. Feature-parity port of the Tauri
  * shell (apps/rivethub-desktop): webview over the bundled rivethub-web dist,
- * tray with show/hide + new-window + quit, global shortcuts (Ctrl+Shift+R
- * summon, Ctrl+Shift+N new window), native notifications, close-to-tray for
- * the main window, single instance, and the loopback mTLS pipe (#491) — here
- * implemented in Node (mtls-pipe.ts) instead of Rust.
+ * tray with show/hide + new-window + quit, a summon shortcut (Ctrl+Shift+R,
+ * global only while unfocused), an accelerator-bearing application menu
+ * (hidden bar on Linux/Windows), right-click context menus, clickable native
+ * notifications, close-to-tray + bounds persistence for the main window,
+ * single instance, and the loopback mTLS pipe (#491) — here implemented in
+ * Node (mtls-pipe.ts) instead of Rust.
  *
  * Renderer isolation: contextIsolation on, sandbox on, nodeIntegration off.
  * The preload's `window.rivetShell` is the entire shell surface.
@@ -15,18 +17,24 @@ import * as path from 'node:path'
 import {
   app,
   BrowserWindow,
+  clipboard,
   globalShortcut,
   Menu,
   nativeImage,
   protocol,
+  screen,
   session,
   shell,
   Tray,
+  type MenuItemConstructorOptions,
 } from 'electron'
 import { PipeState } from './mtls-pipe.js'
 import { registerIpc } from './ipc.js'
 import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
 import { legacySqlitePath, prepareMigration } from './tauri-storage-migration.js'
+import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
+import { contextMenuTemplate } from './context-menu.js'
+import { loadWindowState, saveWindowState, type WindowState } from './window-state.js'
 
 // Unpackaged dev runs otherwise derive userData from the scoped package name
 // (~/.config/@rivetos/rivethub-electron), so a dev-time enrollment would land
@@ -102,14 +110,31 @@ const shellWindowIds = new Set<number>()
  *  so it survives unread-count rewrites. */
 let baseTip = 'RivetHub'
 
+/** Main-window bounds file — see window-state.ts. */
+function windowStateFile(): string {
+  return path.join(app.getPath('userData'), 'window-state.json')
+}
+
 function createWindow(isMain: boolean): BrowserWindow {
+  // Only the MAIN window restores saved bounds; extra windows take the
+  // default so they don't stack pixel-exactly on top of the main one.
+  const state: WindowState = isMain
+    ? loadWindowState(
+        windowStateFile(),
+        screen.getAllDisplays().map((d) => d.workArea),
+      )
+    : { width: 1280, height: 820 }
   const win = new BrowserWindow({
     title: 'RivetHub',
-    width: 1280,
-    height: 820,
+    width: state.width,
+    height: state.height,
+    ...(state.x !== undefined && state.y !== undefined ? { x: state.x, y: state.y } : {}),
     minWidth: 720,
     minHeight: 480,
     backgroundColor: '#0d1117',
+    // The application menu exists for its accelerators (zoom, reload, quit,
+    // new window); the BAR stays hidden on Linux/Windows — Alt reveals it.
+    autoHideMenuBar: true,
     icon: path.join(__dirname, '../icons/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -131,6 +156,39 @@ function createWindow(isMain: boolean): BrowserWindow {
   // main; this matches the Tauri shell, where WebKitGTK dropped new-window
   // requests outright.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // Right-click menu: pure template (context-menu.ts), roles route edit
+  // actions to the FOCUSED frame (den iframes included) without the shell
+  // reading their content; the only custom action is a validated-URL
+  // clipboard write.
+  win.webContents.on('context-menu', (_e, params) => {
+    const template = contextMenuTemplate({
+      isEditable: params.isEditable,
+      selectionText: params.selectionText,
+      linkURL: params.linkURL,
+      editFlags: params.editFlags,
+    })
+    if (template.length === 0) return
+    Menu.buildFromTemplate(
+      template.map((item): MenuItemConstructorOptions => {
+        if (item.copyLink !== undefined) {
+          const url = item.copyLink
+          return { label: item.label, click: () => clipboard.writeText(url) }
+        }
+        return item as MenuItemConstructorOptions
+      }),
+    ).popup({ window: win })
+  })
+  if (isMain) {
+    // Persist bounds on close (the X button hides, but the geometry is live
+    // and worth keeping) — getNormalBounds so a maximized close restores to
+    // the pre-maximize size, with maximized re-applied separately.
+    win.on('close', () => {
+      saveWindowState(windowStateFile(), {
+        ...win.getNormalBounds(),
+        ...(win.isMaximized() ? { maximized: true } : {}),
+      })
+    })
+  }
   // Top-frame navigation stays on the bundled origin: a target=_self link or
   // a location assignment from rendered content must not walk the privileged
   // window (preload attached) off to an arbitrary origin. Main-frame-only —
@@ -154,6 +212,7 @@ function createWindow(isMain: boolean): BrowserWindow {
       }
     })
   }
+  if (isMain && state.maximized) win.maximize()
   void win.loadURL(`${APP_ORIGIN}/index.html`)
   return win
 }
@@ -181,6 +240,54 @@ function spawnWindow(): void {
 
 function setUnread(count: number): void {
   tray?.setToolTip(count === 0 ? baseTip : `${baseTip} — ${count} unread`)
+  // Dock/taskbar badge where the platform has one (macOS dock, Unity
+  // launcher); returns false elsewhere — the tooltip stays the fallback.
+  try {
+    app.setBadgeCount(count)
+  } catch {
+    /* badge is best-effort */
+  }
+}
+
+/**
+ * The summon shortcut is global ONLY while no shell window is focused.
+ * A permanently-global Ctrl+Shift+R swallowed the combo even while the app
+ * was frontmost — hiding the window mid-keystroke and starving xterm (and
+ * the universal hard-reload reflex) of the key it was owed. An OS-level
+ * grab cannot be conditionally forwarded, so registration itself follows
+ * focus: register on blur, release on focus.
+ */
+const SUMMON_COMBO = 'Control+Shift+R'
+let summonRegistered = false
+let summonConflict = false
+
+function registerSummon(): void {
+  if (summonRegistered) return
+  let ok = false
+  try {
+    ok = globalShortcut.register(SUMMON_COMBO, toggleMain)
+  } catch {
+    ok = false
+  }
+  summonRegistered = ok
+  if (!ok && !summonConflict) {
+    summonConflict = true
+    console.error(
+      'RivetHub: global shortcut Ctrl+Shift+R (summon) was NOT registered — another application probably owns it',
+    )
+    baseTip = 'RivetHub — shortcut conflict: Ctrl+Shift+R (summon) not registered'
+    tray?.setToolTip(baseTip)
+  }
+}
+
+function releaseSummon(): void {
+  if (!summonRegistered) return
+  try {
+    globalShortcut.unregister(SUMMON_COMBO)
+  } catch {
+    /* release is best-effort */
+  }
+  summonRegistered = false
 }
 
 // Single instance: launching again must summon the existing window, not
@@ -209,6 +316,7 @@ if (!app.requestSingleInstanceLock()) {
       isBundledUrl,
       migration,
       isShellWindow: (id) => shellWindowIds.has(id),
+      summon: showMain,
     })
 
     // Deny every renderer permission request (camera/mic/geolocation/…).
@@ -222,29 +330,18 @@ if (!app.requestSingleInstanceLock()) {
     })
     session.defaultSession.setPermissionCheckHandler(() => false)
 
-    // Register each global shortcut and SURFACE a conflict (another app
-    // owning the combo at the OS level): stderr for terminal launches, the
-    // tray tooltip for the GUI case, where a dead summon is otherwise
-    // indistinguishable from "app is broken".
-    const failed: string[] = []
-    for (const [combo, label, handler] of [
-      ['Control+Shift+R', 'Ctrl+Shift+R (summon)', toggleMain],
-      ['Control+Shift+N', 'Ctrl+Shift+N (new window)', spawnWindow],
-    ] as const) {
-      let ok = false
-      try {
-        ok = globalShortcut.register(combo, handler)
-      } catch {
-        ok = false
-      }
-      if (!ok) {
-        console.error(
-          `RivetHub: global shortcut ${label} was NOT registered — another application probably owns it`,
-        )
-        failed.push(label)
-      }
-    }
-    if (failed.length > 0) baseTip = `RivetHub — shortcut conflict: ${failed.join(', ')} not registered`
+    // Summon follows focus (see registerSummon): global while every shell
+    // window is blurred or hidden, released the moment one has focus so the
+    // combo reaches the renderer. New Window is a MENU accelerator now —
+    // the old global Ctrl+Shift+N stole Chrome's incognito combo
+    // system-wide for as long as the tray process lived.
+    app.on('browser-window-focus', releaseSummon)
+    app.on('browser-window-blur', () => {
+      // blur of one window may mean focus moved to another shell window —
+      // only re-grab when the whole app lost focus
+      if (BrowserWindow.getFocusedWindow() === null) registerSummon()
+    })
+    registerSummon()
 
     const icon = nativeImage.createFromPath(path.join(__dirname, '../icons/icon.png'))
     tray = new Tray(icon.resize({ width: 24, height: 24 }))
@@ -266,13 +363,31 @@ if (!app.requestSingleInstanceLock()) {
     // hosts click events never arrive — the menu is the fallback there.
     tray.on('click', toggleMain)
 
-    // Keep the default menu on macOS — it carries the Edit accelerators
-    // (Cmd+C/V/X/A) that native text fields need. Linux/Windows shipped
-    // menu-less under Tauri too.
-    if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+    // An accelerator-bearing menu on EVERY platform (app-menu.ts): nulling
+    // it on Linux/Windows dropped zoom/reload/devtools/quit accelerators
+    // with the bar. The bar itself stays hidden there (autoHideMenuBar).
+    const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
+      const { action, submenu, ...rest } = item
+      const out = rest as MenuItemConstructorOptions
+      if (submenu) out.submenu = submenu.map(mapMenuItem)
+      if (action === 'new-window') out.click = spawnWindow
+      if (action === 'quit')
+        out.click = () => {
+          quitting = true
+          app.quit()
+        }
+      return out
+    }
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(appMenuTemplate(process.platform).map(mapMenuItem)),
+    )
     mainWindow = createWindow(true)
   })
 }
+
+// macOS: dock click / Cmd+Tab onto a hidden-to-tray app must restore the
+// window — without this, close-to-tray left the dock icon a no-op.
+app.on('activate', showMain)
 
 // Tray app: closing every window must not exit (main hides to tray; extra
 // windows close for real). Quit is the tray's job on every platform.
