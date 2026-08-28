@@ -796,14 +796,203 @@ export async function describeDshSession(id: string): Promise<HarnessSession | u
 }
 
 /**
- * dsh transcripts are `session.jsonl.zstd` — compressed, no in-process
- * decompressor wired. Honest empty turns rather than a fake parse.
+ * dsh transcripts are `session.jsonl.zstd` — MULTI-FRAME zstd, one frame per
+ * append. Node's built-in zlib only decodes the first frame, which silently
+ * drops most of the conversation, so decoding goes through `fzstd` (a declared
+ * dependency of this service; pure JS, full multi-frame decode — same
+ * rationale as memory-postgres's get-full tool).
  */
-export function readDshTranscript(id: string): Promise<HarnessTranscript> {
-  if (!id || id.includes('/') || id.includes('..') || !dshSessionDir(id)) {
-    return Promise.resolve({ id, command: '', turns: [] })
+async function decompressDshTranscript(buf: Buffer): Promise<string | undefined> {
+  try {
+    const mod = (await import('fzstd')) as {
+      decompress?: (b: Uint8Array) => Uint8Array
+      default?: { decompress?: (b: Uint8Array) => Uint8Array }
+    }
+    const decompress = mod.decompress ?? mod.default?.decompress
+    if (typeof decompress !== 'function') return undefined
+    return Buffer.from(decompress(buf)).toString('utf8')
+  } catch {
+    return undefined
   }
-  return Promise.resolve({ id, command: 'dsh', turns: [] })
+}
+
+/**
+ * The `deepseek-harness` driver's hard-resync source. A zstd stream is not
+ * tail-seekable, so the parse window (`transcriptMaxBytes`) applies to the
+ * DECOMPRESSED text: decode everything, then keep the tail so recent turns
+ * survive an oversized store — the same recent-first policy as
+ * `parseJsonlObjects`. A store the decoder cannot read answers empty turns,
+ * never an error (the chat view degrades, the terminal still works).
+ */
+export async function readDshTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const dir = dshSessionDir(id)
+  if (!dir) return { id, command: '', turns: [] }
+  let raw: Buffer
+  try {
+    raw = await readFile(join(dir, 'session.jsonl.zstd'))
+  } catch {
+    // dir exists before the first transcript flush — still a dsh session
+    return { id, command: 'dsh', turns: [] }
+  }
+  const text = await decompressDshTranscript(raw)
+  if (text === undefined) return { id, command: 'dsh', turns: [] }
+  let window = text
+  let truncated = false
+  if (window.length > transcriptMaxBytes) {
+    window = window.slice(-transcriptMaxBytes)
+    // Drop the partial first line after a mid-stream cut.
+    const nl = window.indexOf('\n')
+    if (nl >= 0) window = window.slice(nl + 1)
+    truncated = true
+  }
+  const events: Record<string, unknown>[] = []
+  for (const line of window.split('\n')) {
+    const t = line.trim()
+    if (!t.startsWith('{')) continue
+    try {
+      events.push(JSON.parse(t) as Record<string, unknown>)
+    } catch {
+      // mid-write partial line (dsh appends incrementally) — skip
+    }
+  }
+  return withTruncated({ id, command: 'dsh', turns: dshTurnsFromEvents(events) }, truncated)
+}
+
+/**
+ * Fold dsh SessionEvents into LOGICAL turns, mirroring `claudeTurnsFromLines`:
+ * one agent turn spans many events — an `assistant/message` per step carrying
+ * `reasoning` / `text` blocks, with `tool/call` + `tool/result` events
+ * interleaved — and only a real `user/message` with visible text ends it.
+ * Tools are taken from `tool/call` events ONLY: the `tool-call` blocks inside
+ * `assistant/message` repeat the same callId and would double-count.
+ */
+function dshTurnsFromEvents(events: Record<string, unknown>[]): HarnessTurn[] {
+  const turns: HarnessTurn[] = []
+  // callId → entry on the current turn; results arrive on later events
+  let toolsById = new Map<string, HarnessTranscriptTool>()
+  let cur: HarnessTurn | null = null
+  let outputTokens = 0
+  let thinking = ''
+
+  const finishAssistant = (): void => {
+    if (cur) {
+      if (thinking) {
+        cur.thinking =
+          thinking.length > THINKING_TAIL_CHARS
+            ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
+            : thinking
+      }
+      if (cur.tools && cur.tools.length === 0) delete cur.tools
+      if (cur.usage) cur.usage.completionTokens = outputTokens
+      if (cur.text || cur.thinking || cur.tools) turns.push(cur)
+    }
+    cur = null
+    outputTokens = 0
+    thinking = ''
+    toolsById = new Map()
+  }
+
+  for (const ev of events) {
+    const data = ev.data && typeof ev.data === 'object' ? (ev.data as Record<string, unknown>) : {}
+
+    if (ev.type === 'user/message') {
+      // dsh rides workspace-instruction injections (<system-reminder> …) on
+      // user/message events too; extractTurnText's wrapper filter drops them.
+      const text = extractTurnText(data.content, 'user')
+      if (text) {
+        finishAssistant()
+        turns.push({ role: 'user', text })
+      }
+      continue
+    }
+
+    if (ev.type === 'assistant/message') {
+      cur ??= { role: 'assistant', text: '', tools: [] }
+      const message =
+        data.message && typeof data.message === 'object'
+          ? (data.message as Record<string, unknown>)
+          : data
+      const content = message.content
+      const blocks = Array.isArray(content)
+        ? content
+        : typeof content === 'string'
+          ? [{ type: 'text', text: content }]
+          : []
+      for (const b of blocks) {
+        if (!b || typeof b !== 'object') continue
+        const block = b as { type?: unknown; text?: unknown }
+        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+          cur.text = cur.text ? cur.text + '\n\n' + block.text.trim() : block.text.trim()
+        } else if (block.type === 'reasoning' && typeof block.text === 'string') {
+          thinking += block.text
+        }
+      }
+      const source =
+        message.source && typeof message.source === 'object'
+          ? (message.source as Record<string, unknown>)
+          : undefined
+      if (typeof source?.model === 'string' && source.model.trim()) cur.model = source.model.trim()
+      const usage =
+        data.usage && typeof data.usage === 'object'
+          ? (data.usage as Record<string, unknown>)
+          : undefined
+      if (usage) {
+        const input = typeof usage.inputTokens === 'number' ? usage.inputTokens : 0
+        const output = typeof usage.outputTokens === 'number' ? usage.outputTokens : 0
+        const cached = typeof usage.cacheReadTokens === 'number' ? usage.cacheReadTokens : 0
+        if (input > 0 || output > 0) {
+          // output tokens SUM across the turn's steps; prompt/cached/model take
+          // the last step that carries them (final context size, den-hook parity)
+          outputTokens += output
+          cur.usage = { promptTokens: input, completionTokens: output, cachedTokens: cached }
+        }
+      }
+      continue
+    }
+
+    if (ev.type === 'tool/call') {
+      cur ??= { role: 'assistant', text: '', tools: [] }
+      const entry: HarnessTranscriptTool = {
+        name: typeof data.name === 'string' ? data.name : 'unknown',
+        status: 'running',
+      }
+      if (typeof data.arguments === 'string') {
+        try {
+          const args = summarizeTurnArgs(JSON.parse(data.arguments))
+          if (args) entry.args = args
+        } catch {
+          // partially-flushed arguments — the tool still renders by name
+        }
+      }
+      if (typeof data.callId === 'string') toolsById.set(data.callId, entry)
+      cur.tools?.push(entry)
+      continue
+    }
+
+    if (ev.type === 'tool/result') {
+      const message =
+        data.message && typeof data.message === 'object'
+          ? (data.message as Record<string, unknown>)
+          : data
+      const source =
+        message.source && typeof message.source === 'object'
+          ? (message.source as Record<string, unknown>)
+          : undefined
+      const entry = typeof source?.callId === 'string' ? toolsById.get(source.callId) : undefined
+      if (entry) {
+        const content = message.content
+        const isError =
+          Array.isArray(content) &&
+          content.some(
+            (b) => !!b && typeof b === 'object' && (b as { isError?: unknown }).isError === true,
+          )
+        entry.status = isError ? 'error' : 'done'
+      }
+    }
+  }
+  finishAssistant()
+  return turns
 }
 
 function dshSessionExists(id: string): boolean {

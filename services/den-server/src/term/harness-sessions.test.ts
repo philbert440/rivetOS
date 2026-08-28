@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { zstdCompressSync } from 'node:zlib'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   describeClaudeSession,
@@ -9,6 +10,7 @@ import {
   describeDshSession,
   listHarnessSessions,
   harnessSessionExists,
+  readDshTranscript,
   readGrokTranscript,
   readHarnessTranscript,
   readHermesTranscript,
@@ -463,6 +465,164 @@ describe('listHarnessSessions', () => {
       command: 'dsh',
       path: join(dir, 'session.jsonl.zstd'),
     })
+  })
+})
+
+describe('readDshTranscript', () => {
+  const ID = 'session-11111111-2222-3333-4444-555555555555'
+
+  /** One zstd FRAME per event batch, like dsh appends — a first-frame-only
+   *  decoder (Node zlib) would see only `batches[0]`. */
+  function fakeDshStore(batches: unknown[][], id = ID): string {
+    const home = process.env.DSH_HOME ?? mkdtempSync(join(tmpdir(), 'dsh-transcript-'))
+    if (!process.env.DSH_HOME) {
+      dirs.push(home)
+      process.env.DSH_HOME = home
+    }
+    const dir = join(home, 'sessions', 'home-rivet-workspace', id)
+    mkdirSync(dir, { recursive: true })
+    const frames = batches.map((batch) =>
+      zstdCompressSync(Buffer.from(batch.map((e) => JSON.stringify(e)).join('\n') + '\n')),
+    )
+    writeFileSync(join(dir, 'session.jsonl.zstd'), Buffer.concat(frames))
+    return dir
+  }
+
+  const user = (text: string) => ({
+    type: 'user/message',
+    data: { content: [{ type: 'text', text }], role: 'user', source: { kind: 'user' } },
+  })
+
+  it('folds multi-frame SessionEvents into logical turns', async () => {
+    fakeDshStore([
+      [
+        { type: 'session', version: 0, id: ID, createdAt: 1, cwd: '/home/rivet' },
+        user('hello dsh'),
+        user('<system-reminder>\ninjected workspace instructions\n</system-reminder>'),
+        {
+          type: 'assistant/message',
+          data: {
+            turn: 1,
+            step: 1,
+            message: {
+              role: 'assistant',
+              content: [
+                { type: 'reasoning', text: 'thinking hard' },
+                { type: 'tool-call', id: 'call_1', name: 'read', arguments: '{"file_path":"/tmp/x"}' },
+              ],
+              source: { kind: 'model', provider: 'deepseek-official', model: 'deepseek-v4-flash' },
+            },
+            usage: { inputTokens: 100, outputTokens: 5, cacheReadTokens: 40 },
+          },
+        },
+        {
+          type: 'tool/call',
+          data: { turn: 1, step: 1, callId: 'call_1', name: 'read', arguments: '{"file_path":"/tmp/x"}' },
+        },
+      ],
+      [
+        {
+          type: 'tool/result',
+          data: {
+            turn: 1,
+            step: 1,
+            message: {
+              source: { kind: 'tool', callId: 'call_1' },
+              content: [{ type: 'tool-result', toolCallId: 'call_1', content: [{ type: 'text', text: 'ok' }] }],
+            },
+          },
+        },
+        {
+          type: 'assistant/message',
+          data: {
+            turn: 1,
+            step: 2,
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'All done.' }],
+              source: { kind: 'model', model: 'deepseek-v4-flash' },
+            },
+            usage: { inputTokens: 120, outputTokens: 7, cacheReadTokens: 60 },
+          },
+        },
+        user('thanks'),
+      ],
+    ])
+    const t = await readDshTranscript(ID)
+    expect(t.command).toBe('dsh')
+    expect(t.truncated).toBeUndefined()
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'hello dsh' },
+      {
+        role: 'assistant',
+        // 'All done.' lives in frame TWO — its presence proves multi-frame decode
+        text: 'All done.',
+        thinking: 'thinking hard',
+        tools: [{ name: 'read', status: 'done', args: { file_path: '/tmp/x' } }],
+        model: 'deepseek-v4-flash',
+        // output tokens sum across steps; prompt/cached take the last step
+        usage: { promptTokens: 120, completionTokens: 12, cachedTokens: 60 },
+      },
+      { role: 'user', text: 'thanks' },
+    ])
+  })
+
+  it('flags a failed tool and tolerates an unreadable store', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-transcript-'))
+    dirs.push(home)
+    process.env.DSH_HOME = home
+    fakeDshStore([
+      [
+        user('run it'),
+        { type: 'tool/call', data: { callId: 'c1', name: 'bash', arguments: '{"command":"boom"}' } },
+        {
+          type: 'tool/result',
+          data: {
+            message: {
+              source: { kind: 'tool', callId: 'c1' },
+              content: [{ type: 'tool-result', toolCallId: 'c1', isError: true, content: [] }],
+            },
+          },
+        },
+      ],
+    ])
+    const t = await readDshTranscript(ID)
+    expect(t.turns).toEqual([
+      { role: 'user', text: 'run it' },
+      { role: 'assistant', text: '', tools: [{ name: 'bash', status: 'error', args: { command: 'boom' } }] },
+    ])
+
+    // not-zstd garbage answers empty turns, never throws
+    const bad = 'session-99999999-9999-9999-9999-999999999999'
+    const dir = join(home, 'sessions', 'home-rivet-workspace', bad)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'session.jsonl.zstd'), 'not zstd at all')
+    expect(await readDshTranscript(bad)).toEqual({ id: bad, command: 'dsh', turns: [] })
+
+    // traversal / unknown ids never touch the store
+    expect(await readDshTranscript('../../etc/passwd')).toEqual({
+      id: '../../etc/passwd',
+      command: '',
+      turns: [],
+    })
+    expect(await readDshTranscript('session-nope')).toEqual({
+      id: 'session-nope',
+      command: '',
+      turns: [],
+    })
+  })
+
+  it('stamps truncated when the decompressed store exceeds the parse window', async () => {
+    setTranscriptMaxBytesForTest(600)
+    fakeDshStore([
+      Array.from({ length: 12 }, (_, i) => user(`turn-${String(i)}-${'x'.repeat(60)}`)),
+    ])
+    const t = await readDshTranscript(ID)
+    expect(t.truncated).toBe(true)
+    expect(t.turns.length).toBeGreaterThan(0)
+    expect(t.turns.length).toBeLessThan(12)
+    expect(t.turns.at(-1)?.text).toContain('turn-11-')
+    expect(t.turns.some((x) => x.text?.includes('turn-0-'))).toBe(false)
   })
 })
 
