@@ -19,6 +19,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
@@ -52,15 +53,27 @@ copyFileSync(src, join(outDir, destName))
 const sha256 = createHash('sha256').update(readFileSync(src)).digest('hex')
 const sizeBytes = statSync(src).size
 
+// Manifest merge: only a genuinely-missing file counts as "first publish".
+// A parse/IO failure on an EXISTING manifest aborts — silently rewriting {}
+// would drop the other platform's entry (review, PR #562). Write goes
+// tmp+rename so a concurrent reader never sees a truncated document.
 const manifestPath = join(outDir, 'latest.json')
 let manifest = {}
 try {
-  manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-} catch {
-  /* first publish */
+  const parsed = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    throw new Error('latest.json is not a JSON object')
+  manifest = parsed
+} catch (err) {
+  if (err?.code !== 'ENOENT') {
+    console.error(`refusing to overwrite unreadable ${manifestPath}: ${err.message}`)
+    process.exit(1)
+  }
 }
 manifest[platform] = { version, file: destName, sha256, sizeBytes }
-writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n')
+const tmp = `${manifestPath}.tmp-${String(process.pid)}`
+writeFileSync(tmp, JSON.stringify(manifest, null, 2) + '\n')
+renameSync(tmp, manifestPath)
 
 console.log(
   `published ${destName} (${(sizeBytes / 1e6).toFixed(1)} MB, sha256 ${sha256.slice(0, 12)}…) → ${outDir}`,

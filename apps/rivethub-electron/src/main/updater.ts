@@ -1,61 +1,150 @@
 /**
- * In-app update — download an installer/AppImage the hub found on the mesh
- * filestore and hand it to the OS.
+ * In-app update — MAIN IS THE TRUST ROOT (review, PR #562).
  *
- * The renderer (settings page) reads `builds/rivethub/latest.json` off any
- * gateway's /api/files surface through its mTLS loopback pipe, compares
- * versions, and calls `rivetShell.installUpdate` with a download URL on that
- * same pipe. Main validates everything again: loopback-only URL (the pipe is
- * the only place a plain-http fetch is legitimate), version and sha256
- * shapes, then streams to a temp file, verifies the digest, and opens the
- * artifact. A digest mismatch deletes the file and throws — never install
- * unverified bytes.
+ * The renderer names the gateway base it is connected to; everything else
+ * happens here: main resolves its OWN mTLS pipe for that gateway
+ * (PipeState.proxyPort — parseTarget enforces https + host shape), fetches
+ * `builds/rivethub/latest.json` itself (no redirects), validates the entry
+ * (semver / hex digest / basename fence — update-manifest.ts), builds the
+ * download URL itself, streams to an exclusive 0600 file in a fresh mkdtemp
+ * dir with a byte cap and timeout, verifies the digest main read from the
+ * manifest, and only then marks executable and launches. The renderer can
+ * never supply a URL or a digest, so a compromised renderer can at worst
+ * install the artifact the mesh manifest already names.
  */
 
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { chmod, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
+import { spawn } from 'node:child_process'
 import { app, shell } from 'electron'
-import type { UpdateRequest } from './update-validate.js'
+import type { PipeState } from './mtls-pipe.js'
+import {
+  BUILDS_PREFIX,
+  MANIFEST_PATH,
+  newerVersion,
+  validateManifestEntry,
+  type ManifestEntry,
+} from './update-manifest.js'
 
-export { validateUpdateRequest, type UpdateRequest } from './update-validate.js'
+export interface UpdateCheckResult {
+  current: string
+  platform: string
+  /** Present when the manifest names a strictly newer build. */
+  available?: { version: string; sizeBytes?: number }
+}
 
-/** Download, verify, launch. Resolves once the artifact has been handed to
- *  the OS; the app quits shortly after so the installer can replace it. */
-export async function downloadAndInstall(req: UpdateRequest): Promise<void> {
-  const ext = process.platform === 'win32' ? 'exe' : 'AppImage'
-  const dest = join(app.getPath('temp'), `RivetHub-update-${req.version}.${ext}`)
+const MANIFEST_TIMEOUT_MS = 15_000
+const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
+/** Absolute cap regardless of manifest claims — an installer is ~120MB. */
+const HARD_MAX_BYTES = 1024 * 1024 * 1024
 
-  const res = await fetch(req.url)
-  if (!res.ok || !res.body) throw new Error(`installUpdate: download failed (${res.status})`)
+function pipeBaseUrl(port: number): string {
+  return `http://127.0.0.1:${String(port)}`
+}
 
-  const hash = createHash('sha256')
-  const file = createWriteStream(dest, { mode: 0o755 })
-  await pipeline(
-    res.body as unknown as NodeJS.ReadableStream,
-    new Writable({
-      write(chunk: Buffer, _enc, cb) {
-        hash.update(chunk)
-        file.write(chunk, cb)
-      },
-      final(cb) {
-        file.end(cb)
-      },
-    }),
-  )
+async function fetchManifestEntry(pipes: PipeState, gatewayBase: string): Promise<ManifestEntry> {
+  // proxyPort re-validates the target (https-only, host shape) and returns
+  // the shell's own loopback pipe — the only URL family main will fetch.
+  const port = await pipes.proxyPort(gatewayBase)
+  const url = `${pipeBaseUrl(port)}/api/files/download?path=${encodeURIComponent(MANIFEST_PATH)}`
+  const res = await fetch(url, {
+    redirect: 'error',
+    headers: { 'cache-control': 'no-store' },
+    signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
+  })
+  if (!res.ok) throw new Error(`no update manifest on this node (${String(res.status)})`)
+  const manifest = (await res.json()) as Record<string, unknown>
+  return validateManifestEntry(manifest[process.platform], process.platform)
+}
 
-  const digest = hash.digest('hex')
-  if (digest !== req.sha256) {
-    await rm(dest, { force: true })
-    throw new Error('installUpdate: sha256 mismatch — refusing to run the artifact')
+export async function checkForUpdate(
+  pipes: PipeState,
+  gatewayBase: string,
+): Promise<UpdateCheckResult> {
+  const current = app.getVersion()
+  const entry = await fetchManifestEntry(pipes, gatewayBase)
+  return {
+    current,
+    platform: process.platform,
+    ...(newerVersion(entry.version, current)
+      ? { available: { version: entry.version, sizeBytes: entry.sizeBytes } }
+      : {}),
   }
+}
 
-  const openErr = await shell.openPath(dest)
-  if (openErr) throw new Error(`installUpdate: could not launch installer: ${openErr}`)
-  // Give the installer a beat to start, then get out of its way.
+/** Re-fetches the manifest at install time (no stale check-time state),
+ *  downloads, verifies, launches, then quits the app. */
+export async function downloadAndInstall(pipes: PipeState, gatewayBase: string): Promise<void> {
+  if (process.platform !== 'win32' && process.platform !== 'linux')
+    throw new Error(`in-app update is not supported on ${process.platform}`)
+
+  const entry = await fetchManifestEntry(pipes, gatewayBase)
+  if (!newerVersion(entry.version, app.getVersion()))
+    throw new Error(`manifest version ${entry.version} is not newer than ${app.getVersion()}`)
+
+  const port = await pipes.proxyPort(gatewayBase)
+  const url = `${pipeBaseUrl(port)}/api/files/download?path=${encodeURIComponent(
+    `${BUILDS_PREFIX}/${entry.file}`,
+  )}`
+
+  const dir = await mkdtemp(join(tmpdir(), 'rivethub-update-'))
+  const dest = join(dir, entry.file)
+  const cap = Math.min(
+    entry.sizeBytes ? Math.ceil(entry.sizeBytes * 1.05) : HARD_MAX_BYTES,
+    HARD_MAX_BYTES,
+  )
+  try {
+    const res = await fetch(url, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    })
+    if (!res.ok || !res.body) throw new Error(`download failed (${String(res.status)})`)
+
+    const hash = createHash('sha256')
+    // Exclusive create, private mode: no symlink following, no clobber, and
+    // nothing can exec a half-written artifact (0600 until verified).
+    const file = createWriteStream(dest, { flags: 'wx', mode: 0o600 })
+    let received = 0
+    await pipeline(
+      res.body as unknown as NodeJS.ReadableStream,
+      new Writable({
+        write(chunk: Buffer, _enc, cb) {
+          received += chunk.length
+          if (received > cap) {
+            cb(new Error(`download exceeded ${String(cap)} bytes — refusing`))
+            return
+          }
+          hash.update(chunk)
+          file.write(chunk, cb)
+        },
+        final(cb) {
+          file.end(cb)
+        },
+      }),
+    )
+
+    const digest = hash.digest('hex')
+    if (digest !== entry.sha256) throw new Error('sha256 mismatch — refusing to run the artifact')
+
+    await chmod(dest, 0o755)
+    if (process.platform === 'win32') {
+      const openErr = await shell.openPath(dest)
+      if (openErr) throw new Error(`could not launch installer: ${openErr}`)
+    } else {
+      // xdg-open on an AppImage is unreliable (exec bit vs handler); run it.
+      spawn(dest, [], { detached: true, stdio: 'ignore' }).unref()
+    }
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true })
+    throw err
+  }
+  // Give the installer a beat to start, then get out of its way. The temp
+  // dir is left for the running installer; the OS owns cleanup.
   setTimeout(() => {
     app.quit()
   }, 1500)

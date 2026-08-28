@@ -74,11 +74,25 @@ const api = {
   platform: process.platform as string,
   /** Shell binary version (electron app version, not the web dist). */
   appVersion: (): Promise<string> => ipcRenderer.invoke('app:version') as Promise<string>,
-  /** Download a mesh-hosted installer over the loopback mTLS pipe, verify
-   *  its sha256, and launch it. Resolves once handed to the OS; the app
-   *  quits itself right after. */
-  installUpdate: (req: { url: string; version: string; sha256: string }): Promise<void> =>
-    ipcRenderer.invoke('update:install', req) as Promise<void>,
+  /** Ask MAIN to read the mesh update manifest for the given gateway base
+   *  (main resolves its own mTLS pipe; the renderer supplies no URL). */
+  checkUpdate: (
+    gatewayBase: string,
+  ): Promise<{
+    current: string
+    platform: string
+    available?: { version: string; sizeBytes?: number }
+  }> =>
+    ipcRenderer.invoke('update:check', gatewayBase) as Promise<{
+      current: string
+      platform: string
+      available?: { version: string; sizeBytes?: number }
+    }>,
+  /** Download+verify+launch the manifest's build for this platform, then the
+   *  app quits itself. Main re-reads the manifest at install time — the
+   *  renderer supplies only the gateway base, never a URL or digest. */
+  installUpdate: (gatewayBase: string): Promise<void> =>
+    ipcRenderer.invoke('update:install', gatewayBase) as Promise<void>,
 }
 
 export type RivetShellApi = typeof api
