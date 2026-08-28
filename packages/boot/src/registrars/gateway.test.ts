@@ -174,6 +174,29 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_TEAM_PG_ADMIN_URL).toBeUndefined()
   })
 
+  it('forwards the per-user routing vars (#561) from process env', () => {
+    // Without these the embedded den's deviceUsers/userDbs are undefined and
+    // routing silently collapses to owner behavior — a mapped device's
+    // capture lands in the node owner's memory DB.
+    const deviceUsers = '{"win-lab":"lab"}'
+    const userDbs = '{"lab":{"pgUrl":"postgres://u:p@192.0.2.60:5432/lab_memory"}}'
+    vi.stubEnv('RIVETOS_DEN_DEVICE_USERS', deviceUsers)
+    vi.stubEnv('RIVETOS_USER_DBS', userDbs)
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_DEVICE_USERS).toBe(deviceUsers)
+    expect(env.RIVETOS_USER_DBS).toBe(userDbs)
+  })
+
+  it('omits the routing vars when the process env is silent', () => {
+    // Stub empty rather than rely on the host env: nodes with live routing
+    // config would otherwise leak the real values into this test.
+    vi.stubEnv('RIVETOS_DEN_DEVICE_USERS', '')
+    vi.stubEnv('RIVETOS_USER_DBS', '')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_DEVICE_USERS).toBeUndefined()
+    expect(env.RIVETOS_USER_DBS).toBeUndefined()
+  })
+
   it('omits PG admin env when devices is on but admin URL is unset', () => {
     const env = buildGatewayEnv(
       base({ devices: { enabled: true, pool: '192.0.2.10-192.0.2.20' } }),
