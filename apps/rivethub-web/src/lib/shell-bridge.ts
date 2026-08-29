@@ -59,18 +59,16 @@ export function rivetShell(
   return shell
 }
 
-/** True inside any desktop shell (Electron bridge or either Tauri-shaped
- *  global — the Android shim / a partial host may expose only INTERNALS). */
+/** True inside any desktop/WebView shell (Electron bridge or the Android
+ *  shim's `__TAURI__` global). */
 export function isDesktopShell(
   g: {
     rivetShell?: RivetShell
     __TAURI__?: unknown
-    __TAURI_INTERNALS__?: unknown
   } = globalThis as {
     rivetShell?: RivetShell
     __TAURI__?: unknown
-    __TAURI_INTERNALS__?: unknown
   },
 ): boolean {
-  return rivetShell(g) !== undefined || g.__TAURI__ != null || g.__TAURI_INTERNALS__ != null
+  return rivetShell(g) !== undefined || g.__TAURI__ != null
 }

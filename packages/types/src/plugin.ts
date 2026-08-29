@@ -128,15 +128,3 @@ export interface Plugin {
 export interface ToolPlugin extends Plugin {
   getTools(): Tool[]
 }
-
-export interface ProviderPlugin extends Plugin {
-  createProvider(config: PluginConfig): Provider
-}
-
-export interface ChannelPlugin extends Plugin {
-  createChannel(config: PluginConfig): Channel
-}
-
-export interface MemoryPlugin extends Plugin {
-  createMemory(config: PluginConfig): Memory
-}

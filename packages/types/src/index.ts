@@ -13,7 +13,6 @@ export type {
   LLMUsage,
   ChatOptions,
   ThinkingLevel,
-  ProviderErrorCode,
   ProviderSessionCapability,
   PreparedTurn,
 } from './provider.js'
@@ -39,11 +38,6 @@ export {
   RuntimeError,
   HarnessError,
   HARNESS_ERROR_CODES,
-  INVALID_SESSION_ID,
-  SESSION_ID_COLLISION,
-  CAPABILITY_UNSUPPORTED,
-  UNKNOWN_APPROVAL,
-  TURN_IN_FLIGHT,
 } from './errors.js'
 export type {
   Channel,
@@ -57,7 +51,7 @@ export type {
 } from './channel.js'
 export type { Tool, ToolDefinition, ToolContext, ToolResult } from './tool.js'
 export type { SessionContext } from './session-context.js'
-export { buildLocalSessionContext, isSessionContext } from './session-context.js'
+export { buildLocalSessionContext } from './session-context.js'
 export type {
   Plugin,
   PluginConfig,
@@ -68,9 +62,6 @@ export type {
   RegistrationContext,
   RegistrationCompleteSnapshot,
   ToolPlugin,
-  ProviderPlugin,
-  ChannelPlugin,
-  MemoryPlugin,
 } from './plugin.js'
 export type { Memory, MemoryEntry, MemorySearchResult } from './memory.js'
 export { isUsableUserDb, parseUserDbs } from './user-dbs.js'
@@ -93,7 +84,6 @@ export type {
   HeartbeatConfig,
   LearningLoopConfig,
 } from './config.js'
-export type { DeploymentConfig, DeploymentTarget } from './deployment.js'
 export type {
   StreamEvent,
   StreamHandler,
@@ -213,22 +203,13 @@ export type {
   MeshNodeEvent,
   MeshDelegationRoute,
 } from './mesh.js'
-export {
-  splitMessage,
-  getTextContent,
-  hasImages,
-  getToolResultText,
-  getToolResultImages,
-  toolResultHasImages,
-} from './utils.js'
+export { hasImages, getToolResultText, getToolResultImages, toolResultHasImages } from './utils.js'
 export { splitHermesReasoning, stripAnsi } from './hermes-reasoning.js'
 export type { HermesSplit } from './hermes-reasoning.js'
 export { MODEL_DEFAULTS } from './defaults.js'
-export type { ProviderName } from './defaults.js'
-export type { GatewayRoute, GatewayHandle } from './gateway.js'
+export type { GatewayRoute } from './gateway.js'
 export { mergeTranscriptWindow } from './gateway-api.js'
 export type {
-  GatewayErrorResponse,
   GatewayAuthMode,
   GatewayClientConfig,
   GatewayTlsClientConfig,
@@ -260,7 +241,6 @@ export type {
   TaskCreateRequest,
   TaskResponse,
   TasksListResponse,
-  TaskSteerRequest,
   TaskSteerAccepted,
   TaskKillResponse,
   TaskWaitTimeoutResponse,

@@ -345,12 +345,6 @@ export const HARNESS_ERROR_CODES = [
 
 export type HarnessErrorCode = (typeof HARNESS_ERROR_CODES)[number]
 
-export const INVALID_SESSION_ID: HarnessErrorCode = 'invalid_session_id'
-export const SESSION_ID_COLLISION: HarnessErrorCode = 'session_id_collision'
-export const CAPABILITY_UNSUPPORTED: HarnessErrorCode = 'capability_unsupported'
-export const UNKNOWN_APPROVAL: HarnessErrorCode = 'unknown_approval'
-export const TURN_IN_FLIGHT: HarnessErrorCode = 'turn_in_flight'
-
 export class HarnessError extends RivetError {
   readonly harnessId?: string
   readonly sessionId?: string

@@ -49,11 +49,10 @@
  * never reaches the den wire, and roster-owned `cwd`/`model` plus attachments
  * are rejected with `capability_unsupported` rather than silently ignored.
  *
- * **Capabilities are runtime-truthed, not just declared** (`capabilities.ts`).
- * `interrupt`/`resume` used to be `!!deps.pty` — a CONFIG question ("are den
- * terminals enabled") standing in for a RUNTIME one ("can this node actually
- * open a PTY"), so a node whose `node-pty` import failed advertised `true` and
- * answered 501. The declaration is still the starting point, because nothing
+ * **Capabilities are runtime-truthed, not just declared** (`capabilities.ts`) —
+ * a config-level answer ("are den terminals enabled") must never stand in for
+ * the runtime one ("can this node actually open a PTY").
+ * The declaration is still the starting point, because nothing
  * has been asked yet at construction time; from there the flags follow what the
  * machinery says:
  *

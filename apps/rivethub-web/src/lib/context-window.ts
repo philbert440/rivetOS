@@ -17,7 +17,7 @@ const WINDOWS: Array<{ match: RegExp; tokens: number }> = [
   { match: /gpt-4|gpt4|o1|o3/i, tokens: 128_000 },
 ]
 
-/** When model is unknown, prefer local window over the old 200k Claude default. */
+/** Context window when the model is unknown. */
 const DEFAULT_WINDOW = 262_144
 
 /** Max context window for a model id; DEFAULT_WINDOW when unknown. */

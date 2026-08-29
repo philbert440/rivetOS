@@ -22,10 +22,3 @@ export interface GatewayRoute {
   prefix: string
   handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
 }
-
-/** Handle returned by the embedded gateway — G1+ mount points + lifecycle. */
-export interface GatewayHandle {
-  /** Bound port (0 until listening). */
-  port: number
-  close(): Promise<void>
-}

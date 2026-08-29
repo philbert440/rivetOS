@@ -4,6 +4,7 @@
  */
 
 import type { WorkflowJournalEntry } from '@rivetos/types'
+import { str } from './graph-project.js'
 
 export interface JournalLine {
   /** Stable key for React lists (type + ts + stepId/label). */
@@ -18,10 +19,6 @@ export interface JournalLine {
   detail?: string
   /** Severity for failed / warn styling. */
   severity: 'normal' | 'em' | 'warn' | 'error'
-}
-
-function str(v: unknown): string | undefined {
-  return typeof v === 'string' && v.length > 0 ? v : undefined
 }
 
 function preview(value: unknown, max = 120): string | undefined {

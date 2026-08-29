@@ -91,13 +91,12 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
   )
 
   const doSwitch = (url: string): void => {
-    const result = performNodeSwitch(url, switchTo)
-    if (!result) {
+    if (!performNodeSwitch(url, switchTo)) {
       setSwitchError('invalid hub URL')
       return
     }
     setSwitchError(undefined)
-    if (result.mode === 'repoint') void queryClient.invalidateQueries()
+    void queryClient.invalidateQueries()
     setOpen(false)
   }
 

@@ -4,7 +4,7 @@
 
 import { describe, it } from 'vitest'
 import * as assert from 'node:assert/strict'
-import { estimateTokens, estimateSystemPromptTokens } from './tokens.js'
+import { estimateTokens } from './tokens.js'
 import type { Message } from '@rivetos/types'
 
 describe('estimateTokens', () => {
@@ -47,12 +47,5 @@ describe('estimateTokens', () => {
     const tokens = estimateTokens(messages)
     // 4 (overhead) + ceil(12/4) (text) + 1000 (image) = 1007
     assert.ok(tokens >= 1004, 'Should include image token estimate')
-  })
-})
-
-describe('estimateSystemPromptTokens', () => {
-  it('should estimate system prompt tokens', () => {
-    const tokens = estimateSystemPromptTokens('You are a helpful assistant.')
-    assert.equal(tokens, Math.ceil(28 / 4) + 4) // 7 + 4 = 11
   })
 })

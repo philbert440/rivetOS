@@ -17,11 +17,7 @@
 
 import type { HarnessEvent } from '@rivetos/types'
 import { humanToolTitle, type ToolArgs } from './tool-titles.js'
-import { nextReasoningText, type LiveToolEntry, type LiveTurn } from './fold-stream.js'
-
-function emptyTurn(): LiveTurn {
-  return { text: '', reasoning: false, reasoningText: '', tools: [] }
-}
+import { emptyTurn, nextReasoningText, type LiveToolEntry, type LiveTurn } from './fold-stream.js'
 
 function toolArgs(input: unknown): ToolArgs {
   if (input && typeof input === 'object' && !Array.isArray(input)) {

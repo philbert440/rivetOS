@@ -15,30 +15,21 @@ type TauriGlobal = {
   }
 }
 
-type Internals = {
-  invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
-}
-
-function setTauri(manager?: TauriGlobal['clipboardManager'], internals?: Internals): void {
-  const g = globalThis as {
-    __TAURI__?: TauriGlobal
-    __TAURI_INTERNALS__?: Internals
-  }
+function setTauri(manager?: TauriGlobal['clipboardManager']): void {
+  const g = globalThis as { __TAURI__?: TauriGlobal }
   if (manager) g.__TAURI__ = { clipboardManager: manager }
   else delete g.__TAURI__
-  if (internals) g.__TAURI_INTERNALS__ = internals
-  else delete g.__TAURI_INTERNALS__
 }
 
 afterEach(() => {
-  setTauri(undefined, undefined)
+  setTauri(undefined)
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
 describe('hasTauriClipboard', () => {
   it('is false with no host bridge', () => {
-    setTauri(undefined, undefined)
+    setTauri(undefined)
     expect(hasTauriClipboard()).toBe(false)
   })
 
@@ -47,11 +38,6 @@ describe('hasTauriClipboard', () => {
       writeText: vi.fn(async () => undefined),
       readText: vi.fn(async () => ''),
     })
-    expect(hasTauriClipboard()).toBe(true)
-  })
-
-  it('detects __TAURI_INTERNALS__.invoke', () => {
-    setTauri(undefined, { invoke: vi.fn(async () => undefined) })
     expect(hasTauriClipboard()).toBe(true)
   })
 })
@@ -211,17 +197,8 @@ describe('copyTextToClipboard', () => {
     expect(writeText).toHaveBeenCalledWith('hello')
   })
 
-  it('falls back to plugin invoke when manager is absent', async () => {
-    const invoke = vi.fn(async () => undefined)
-    setTauri(undefined, { invoke })
-    await copyTextToClipboard('via-invoke')
-    expect(invoke).toHaveBeenCalledWith('plugin:clipboard-manager|write_text', {
-      text: 'via-invoke',
-    })
-  })
-
   it('falls back to navigator.clipboard when no Tauri', async () => {
-    setTauri(undefined, undefined)
+    setTauri(undefined)
     const writeText = vi.fn(async () => undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
     await copyTextToClipboard('browser')
@@ -249,15 +226,5 @@ describe('readTextFromClipboard', () => {
       readText: vi.fn(async () => 'from-manager'),
     })
     await expect(readTextFromClipboard()).resolves.toBe('from-manager')
-  })
-
-  it('reads via invoke', async () => {
-    setTauri(undefined, {
-      invoke: vi.fn(async (cmd) => {
-        if (cmd === 'plugin:clipboard-manager|read_text') return 'from-invoke'
-        return undefined
-      }),
-    })
-    await expect(readTextFromClipboard()).resolves.toBe('from-invoke')
   })
 })

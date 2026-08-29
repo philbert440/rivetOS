@@ -57,9 +57,9 @@ class RivetHubBridge(private val context: Context) {
         private const val TAG = "RivetHubBridge"
 
         /**
-         * Injected on page finish so rivethub-web's `isTauriShell` (mere
-         * presence of `__TAURI__`) flips node-switch to in-place repoint, and
-         * so opener/clipboard IPC works on the non-secure loopback origin.
+         * Injected on page finish so rivethub-web's opener/clipboard IPC
+         * works on the non-secure loopback origin (feature-detected via the
+         * `__TAURI__` global's opener/clipboardManager shape).
          */
         val TAURI_SHIM_JS: String = """
             (function(){

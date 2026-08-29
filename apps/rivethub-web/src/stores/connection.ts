@@ -59,11 +59,6 @@ const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
 
 const ROSTER_MAX = 20
 
-/** Bearer tokens removed — always returns undefined. */
-export function tokenFor(_baseUrl: string): string | undefined {
-  return undefined
-}
-
 function scrubLegacyTokens(): void {
   try {
     for (let i = sessionStorage.length - 1; i >= 0; i--) {

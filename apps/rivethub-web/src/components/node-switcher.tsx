@@ -5,10 +5,9 @@ import { urlLabel, useNodeName } from '../lib/node-name.js'
 import { performNodeSwitch } from '../lib/switch-mode.js'
 
 /**
- * 4h node switcher. Roster persists in localStorage; mesh overview of the
+ * Node switcher. Roster persists in localStorage; mesh overview of the
  * CURRENT node seeds discovery (peers advertise denUrl = hub face).
- * Always re-points the gateway via switchTo — local/bundled UI stays put
- * whether browser, Tauri, or Android WebView.
+ * Always re-points the gateway via switchTo — the local/bundled UI stays put.
  */
 export function NodeSwitcher(): JSX.Element {
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()
@@ -36,14 +35,13 @@ export function NodeSwitcher(): JSX.Element {
   }, [open])
 
   const doSwitch = (url: string): void => {
-    const result = performNodeSwitch(url, switchTo)
-    if (!result) {
+    if (!performNodeSwitch(url, switchTo)) {
       setSwitchError('invalid hub URL')
       return
     }
     setSwitchError(undefined)
-    // repoint stays in-page — invalidate queries so no key serves node A as B.
-    if (result.mode === 'repoint') void queryClient.invalidateQueries()
+    // the switch stays in-page — invalidate queries so no key serves node A as B.
+    void queryClient.invalidateQueries()
     setOpen(false)
   }
 

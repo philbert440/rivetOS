@@ -32,11 +32,6 @@ import type {
 } from './task.js'
 import type { WikiIndexEntry } from './wiki.js'
 
-/** Every non-2xx gateway response body. */
-export interface GatewayErrorResponse {
-  error: string
-}
-
 /**
  * Gateway auth is Rivet CA device client certificates (mTLS).
  * - `none` — loopback / same-origin only (no client identity)
@@ -294,10 +289,6 @@ export interface TaskResponse {
 
 export interface TasksListResponse {
   tasks: TaskWire[]
-}
-
-export interface TaskSteerRequest {
-  message: string
 }
 
 export interface TaskSteerAccepted {

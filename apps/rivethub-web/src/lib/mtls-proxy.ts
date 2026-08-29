@@ -6,35 +6,20 @@
  * loopback pipe; in plain browsers this module is a pass-through — the
  * browser itself presents the OS client cert.
  *
- * Shell resolution order: `window.rivetShell` (Electron preload bridge),
- * then `__TAURI__.core.invoke` (Tauri shell / Android shim).
+ * The pipe exists only under `window.rivetShell` (Electron preload bridge);
+ * the Android WebView shim has no pipe and rides the https pass-through.
  */
 
 import { rivetShell } from './shell-bridge.js'
 
-interface TauriGlobal {
-  core: { invoke: (cmd: string, args: Record<string, unknown>) => Promise<unknown> }
-}
-
 const resolved = new Map<string, Promise<string>>()
 
-/** Resolve a fresh loopback pipe port from whichever shell is hosting us,
- *  or undefined when no shell bridge exists (plain browser, or a PARTIAL
- *  `__TAURI__` like the Android WebView shim, which carries clipboard/opener
- *  but no `core.invoke` — an unguarded access there would throw
- *  synchronously out of transportBase and kill the https pass-through). */
+/** Resolve a fresh loopback pipe port from the hosting shell, or undefined
+ *  when no shell bridge exists (plain browser / Android WebView shim). */
 function invokePort(baseUrl: string): Promise<string> | undefined {
   const shell = rivetShell()
-  if (shell) {
-    return shell.mtlsProxyPort(baseUrl).then((port) => `http://127.0.0.1:${String(port)}`)
-  }
-  const tauri = (globalThis as { __TAURI__?: Partial<TauriGlobal> }).__TAURI__
-  if (typeof tauri?.core?.invoke === 'function') {
-    return tauri.core
-      .invoke('mtls_proxy_port', { target: baseUrl })
-      .then((port) => `http://127.0.0.1:${String(port as number)}`)
-  }
-  return undefined
+  if (!shell) return undefined
+  return shell.mtlsProxyPort(baseUrl).then((port) => `http://127.0.0.1:${String(port)}`)
 }
 
 /**

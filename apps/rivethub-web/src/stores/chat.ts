@@ -39,7 +39,6 @@ import type { HarnessApprovalEvent } from '../lib/harness-fold.js'
 import { denRoomKey } from '../lib/harness-chat.js'
 
 export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
-export { foldStream } from '../lib/fold-stream.js'
 
 export type WsStatus = 'connecting' | 'open' | 'closed'
 

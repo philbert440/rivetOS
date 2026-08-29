@@ -11,8 +11,7 @@ const HARNESS_LABEL: Record<string, string> = {
 
 function label(agent: CatalogAgent): string {
   const base = HARNESS_LABEL[agent.id] ?? agent.id
-  // local agents show their model when configured (increment 2 expands the
-  // local provider into its live-served models)
+  // local agents show their model when configured
   return 'model' in agent && agent.model ? `${base} (${agent.model})` : base
 }
 
