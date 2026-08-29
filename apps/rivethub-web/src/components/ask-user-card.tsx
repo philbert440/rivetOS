@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useRef, useState, type JSX } from 'react'
 import { MessageSquare, X } from 'lucide-react'
 import { composeAskAnswer, type AskQuestion } from '../lib/ask-user.js'
 
@@ -26,6 +26,9 @@ export function AskUserCard(props: {
   // label selections per question index
   const [picked, setPicked] = useState<Record<number, string[]>>({})
   const [own, setOwn] = useState('')
+  // one answer in flight at a time — the async clear made double-click a
+  // double-send (#578 audit); the sync clear used to make this free
+  const inFlight = useRef(false)
   if (props.questions.length === 0) return null
 
   const single = props.questions.length === 1 && !props.questions[0].multiSelect
@@ -42,13 +45,17 @@ export function AskUserCard(props: {
 
   const submit = (extra?: Record<number, string[]>): void => {
     const text = extra ? composeAskAnswer(props.questions, extra, own) : composed
-    if (!text) return
+    if (!text || inFlight.current) return
+    inFlight.current = true
     void props.onAnswer(text).then(
       () => {
+        inFlight.current = false
         setPicked({})
         setOwn('')
       },
-      () => undefined, // send failed: composer shows the error, card keeps state for retry
+      () => {
+        inFlight.current = false // send failed: composer shows the error, card keeps state for retry
+      },
     )
   }
 

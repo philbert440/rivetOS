@@ -177,7 +177,11 @@ export function Composer(props: {
     const trimmed = bare ? body.trim() : withAttachmentText(body.trim(), atts)
     // Seamless queue path: allow stacking while a prior turn is in flight
     // (onSend enqueues and returns). Chat-loop path still serializes via sending.
-    if (!trimmed || (sending && !props.onSend)) return false
+    if (!trimmed) return false
+    if (sending && !props.onSend) {
+      if (bare) setError('previous send still in flight — try again')
+      return false
+    }
     if (!bare && anyUploading(atts)) {
       setError('still uploading an attachment…')
       return false
