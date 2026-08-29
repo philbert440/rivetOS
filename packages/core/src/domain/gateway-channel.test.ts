@@ -424,6 +424,107 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     }
   })
 
+  it('keeps long ask-tool option labels intact (the label IS the answer)', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-ask`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    // 500 chars: over the generic 200 cap, under the ask cap. The Hub sends
+    // the rendered label back verbatim as the user's answer, so truncation
+    // here would make the user "say" a mangled option.
+    const longLabel = 'Use the streaming parser with backpressure — '.repeat(11)
+    const ask = {
+      questions: [
+        {
+          question: 'Which approach?',
+          header: 'Approach',
+          multiSelect: false,
+          options: [{ label: longLabel, description: 'd' }],
+        },
+      ],
+    }
+    gw.bridgeAgentEvent({ session: 'c-ask', type: 'tool.start', tool: 'AskUserQuestion', args: ask })
+    // Same payload under a non-ask tool must still truncate at the generic cap.
+    gw.bridgeAgentEvent({ session: 'c-ask', type: 'tool.start', tool: 'Write', args: ask })
+    // Redaction must survive the wider ask budget.
+    gw.bridgeAgentEvent({
+      session: 'c-ask',
+      type: 'tool.start',
+      tool: 'ask_user',
+      args: { question: 'q', choices: ['a'], api_key: 'sk-super-secret' },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const starts = got.filter((f) => f.kind === 'stream' && f.event.type === 'tool_start')
+    expect(starts).toHaveLength(3)
+    const labelOf = (f: SessionWsFrame): string => {
+      if (f.kind !== 'stream') return ''
+      const args = f.event.metadata?.args as {
+        questions: Array<{ options: Array<{ label: string }> }>
+      }
+      return args.questions[0].options[0].label
+    }
+    expect(labelOf(starts[0])).toBe(longLabel)
+    expect(labelOf(starts[1]).endsWith('…')).toBe(true)
+    expect(labelOf(starts[1]).length).toBeLessThanOrEqual(201)
+    const last = starts.at(-1)
+    if (last?.kind === 'stream') {
+      expect((last.event.metadata?.args as Record<string, unknown>).api_key).toBe('[redacted]')
+    }
+  })
+
+  it('the ask budget is wider, not unlimited: 2000-char cap, value redaction, array cap', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-ask-lim`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    const overLong = 'y'.repeat(2001)
+    const leaky = `deploy with token=sk-abc1234567890live and continue ${'z'.repeat(300)}`
+    gw.bridgeAgentEvent({
+      session: 'c-ask-lim',
+      type: 'tool.start',
+      tool: 'AskUserQuestion',
+      args: {
+        questions: [
+          {
+            question: 'q',
+            multiSelect: false,
+            options: [
+              { label: overLong },
+              { label: leaky },
+              ...Array.from({ length: 21 }, (_, i) => ({ label: `opt-${String(i)}` })),
+            ],
+          },
+        ],
+      },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const frame = got.find((f) => f.kind === 'stream' && f.event.type === 'tool_start')
+    expect(frame?.kind).toBe('stream')
+    if (frame?.kind === 'stream') {
+      const args = frame.event.metadata?.args as {
+        questions: Array<{ options: Array<{ label: string }> }>
+      }
+      const options = args.questions[0].options
+      // array cap still applies to ask payloads
+      expect(options).toHaveLength(20)
+      // 2001 chars → capped at the ASK budget, not the generic one
+      expect(options[0].label.endsWith('…')).toBe(true)
+      expect(options[0].label.length).toBeLessThanOrEqual(2001)
+      expect(options[0].label.length).toBeGreaterThan(1000)
+      // value-pattern redaction runs inside the wider budget too
+      expect(options[1].label).not.toContain('sk-abc1234567890live')
+      expect(options[1].label.toLowerCase()).toContain('[redacted]')
+    }
+  })
+
   it('commits the prior assistant turn when the next user turn starts', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c2`)
