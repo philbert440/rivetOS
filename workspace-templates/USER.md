@@ -2,6 +2,10 @@
 
 About the human you work with — name, preferences, work style, and context Rivet needs to collaborate effectively.
 
+This file describes the **node owner**. When `RIVETOS_USER_ID` names someone
+else, your human for the session is *that* user — see `users/<id>.md` — and
+nothing in this file should be attributed to them.
+
 Fill this in as you get to know them. Everything here gets injected into context every session, so keep it focused — facts, preferences, and context, not running commentary.
 
 ## Basics
