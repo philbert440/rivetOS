@@ -58,7 +58,7 @@ import {
   resolveRequestUser,
   stampUserHeader,
 } from './identity.js'
-import { createSessionOwners } from './session-owners.js'
+import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
 import { createMeshView } from './mesh.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
@@ -260,6 +260,9 @@ const CORS = {
 interface Client {
   ws: WebSocket
   session?: string
+  /** Bound tenancy identity (when a users registry is active) — broadcasts
+   *  for sessions this user does not own are withheld. */
+  user?: UserContext
   /** Heartbeat flag — set on pong, cleared on ping; dead = terminate. */
   alive: boolean
 }
@@ -390,6 +393,9 @@ const safeKey = (k: string): string => (/^[\w.-]{1,64}$/.test(k) ? k : '')
 export function createDenServer(config: DenConfig, opts: DenServerOptions = {}): DenServer {
   let state = initialDenState
   const clients = new Set<Client>()
+  // Persisted session ownership — hoisted above broadcast so the live event
+  // fanout filters by it too, not just the listing routes. Untagged = owner.
+  const sessionOwners = createSessionOwners(join(config.stateDir, 'session-owners.json'))
 
   mkdirSync(join(config.stateDir, 'layouts'), { recursive: true })
 
@@ -399,6 +405,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const broadcast = (s: string, session?: string): void => {
     for (const c of clients) {
       if (c.ws.readyState !== 1 || (session && c.session && c.session !== session)) continue
+      // tenancy: a session-scoped event never reaches a user who does not own it
+      if (session && c.user && !sessionOwners.visible(session, c.user)) continue
       if (c.ws.bufferedAmount > MAX_BUFFERED) {
         c.ws.terminate()
         clients.delete(c)
@@ -523,7 +531,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   // WS /term attach channel — shares the memoized manager (and its 503/gate
   // semantics: gated or disabled terminals destroy the upgrade)
-  const termWs = createTermWs({ manager: ensureManager, enabled: () => termEnabled })
+  const termWs = createTermWs({
+    manager: ensureManager,
+    enabled: () => termEnabled,
+    authorize: (req, denSession) => {
+      const ctx = boundRequestUser(req)
+      if (!sessionForbidden(sessionOwners, ctx, denSession)) return true
+      auditTenancyDeny('WS /term attach', denSession, ctx as UserContext)
+      return false
+    },
+  })
 
   // ── harness control plane ───────────────────────────────────────────────
   // Roster cwd for a harness entry, read at call time — rosterProvider
@@ -596,14 +613,19 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     for (const driver of builtinDrivers) harnesses.register(driver)
   }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
-  const sessionOwners = createSessionOwners(join(config.stateDir, 'session-owners.json'))
   const harnessRoutes = createHarnessRoutes({
     registry: harnesses,
     log: console.error,
     filterSessions: (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions
-      return sessionOwners.filter(sessions, ctx, (s) => String(s.sessionId))
+      return sessionOwners.filter(sessions, ctx, (s) => s.sessionId)
+    },
+    authorizeSession: (req, sessionId) => {
+      const ctx = boundRequestUser(req)
+      if (!sessionForbidden(sessionOwners, ctx, sessionId)) return true
+      auditTenancyDeny('WS harness stream', sessionId, ctx as UserContext)
+      return false
     },
   })
 
@@ -912,6 +934,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
       }
 
+      // Single ownership guard for every session-scoped route below — one
+      // enforcement point, one audit line per refusal (tenancy spec req. 5).
+      // Tenancy off (no bound ctx) allows everything, as before.
+      const denyIfForbidden = (route: string, sessionId: string): boolean => {
+        if (!sessionForbidden(sessionOwners, userCtx, sessionId)) return false
+        auditTenancyDeny(route, sessionId, userCtx as UserContext)
+        json(res, 403, { error: 'session is owned by another user' })
+        return true
+      }
+
       // Gateway route mounts (G0): longest prefix wins; behind the mTLS
       // gate, ahead of den's own API routes.
       if (opts.extraRoutes?.length) {
@@ -1043,9 +1075,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const raw = url.searchParams.get('session')
         const id = raw ? denJoinKey(raw) : raw
         if (!id) return json(res, 404, { error: 'unknown session' })
-        if (userCtx && !sessionOwners.visible(id, userCtx)) {
-          return json(res, 403, { error: 'session is owned by another user' })
-        }
+        if (denyIfForbidden('DELETE /session', id)) return
         // a PTY linked to the session dies with the room — removing the room
         // while its terminal keeps running would leak an invisible shell
         const ptyId = termManager?.ptyForSession(id)
@@ -1129,21 +1159,26 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             const sessionKey = p.session === undefined ? undefined : denJoinKey(p.session)
             const resumeKey = p.resume === undefined ? undefined : denJoinKey(p.resume)
             if (userCtx) {
-              if (resumeKey && !sessionOwners.visible(resumeKey, userCtx)) {
-                return json(res, 403, { error: 'session is owned by another user' })
-              }
-              if (sessionKey && sessionOwners.get(sessionKey) && !sessionOwners.visible(sessionKey, userCtx)) {
-                return json(res, 403, { error: 'session is owned by another user' })
-              }
+              if (resumeKey && denyIfForbidden('POST /term (resume)', resumeKey)) return
+              // sessionKey keeps its claim semantics: an UNTAGGED key is a new
+              // room the spawner may claim; a tagged one must be theirs.
+              if (
+                sessionKey &&
+                sessionOwners.get(sessionKey) &&
+                denyIfForbidden('POST /term (session)', sessionKey)
+              )
+                return
             }
-            const userEnv = captureEnvFor(userCtx) ?? (() => {
-              const userDb = routedUser ? config.userDbs?.[routedUser] : undefined
-              const env: Record<string, string> = {}
-              if (routedUser) env.RIVETOS_USER_ID = routedUser
-              if (userDb?.pgUrl) env.RIVETOS_PG_URL = userDb.pgUrl
-              if (userDb?.envFile) env.RIVETOS_ENV_FILE = userDb.envFile
-              return Object.keys(env).length > 0 ? env : undefined
-            })()
+            const userEnv =
+              captureEnvFor(userCtx) ??
+              (() => {
+                const userDb = routedUser ? config.userDbs?.[routedUser] : undefined
+                const env: Record<string, string> = {}
+                if (routedUser) env.RIVETOS_USER_ID = routedUser
+                if (userDb?.pgUrl) env.RIVETOS_PG_URL = userDb.pgUrl
+                if (userDb?.envFile) env.RIVETOS_ENV_FILE = userDb.envFile
+                return Object.keys(env).length > 0 ? env : undefined
+              })()
             const pty = manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
@@ -1178,9 +1213,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         if (req.method === 'GET' && url.pathname === '/term/list') {
           const ptys = manager.list()
           return json(res, 200, {
-            ptys: userCtx
-              ? ptys.filter((p) => sessionOwners.visible(p.denSession, userCtx))
-              : ptys,
+            ptys: userCtx ? ptys.filter((p) => sessionOwners.visible(p.denSession, userCtx)) : ptys,
           })
         }
 
@@ -1205,6 +1238,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const m = url.pathname.match(/^\/term\/harness-sessions\/([^/]+)\/transcript$/)
           if (req.method === 'GET' && m) {
             const id = decodeURIComponent(m.at(1) ?? '')
+            // the list is filtered; the resource must be too — a transcript
+            // is the whole conversation, not metadata
+            if (denyIfForbidden('GET /term/harness-sessions/:id/transcript', id)) return
             const transcript = await readHarnessTranscript(id)
             return json(res, 200, transcript)
           }
@@ -1212,6 +1248,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
         if (req.method === 'DELETE' && url.pathname === '/term') {
           const id = url.searchParams.get('id') ?? ''
+          // a PTY dies only at its owner's hand
+          const info = manager.get(id)
+          if (info && denyIfForbidden('DELETE /term', info.denSession)) return
           if (!manager.kill(id)) return json(res, 404, { error: 'unknown pty' })
           return json(res, 200, { ok: true })
         }
@@ -1240,7 +1279,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'session (string) is required' })
           if (typeof p.text !== 'string')
             return json(res, 400, { error: 'text (string) is required' })
-          const ptyId = manager.ptyForSession(denJoinKey(p.session))
+          const injectKey = denJoinKey(p.session)
+          // writing a turn into another user's live harness is the worst
+          // cross-user primitive there is — guard before any PTY lookup
+          if (denyIfForbidden('POST /term/inject', injectKey)) return
+          const ptyId = manager.ptyForSession(injectKey)
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
@@ -1259,8 +1302,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // rooms, so that one is necessarily the resolved key.)
         const rawId = url.searchParams.get('session')
         const id = rawId ? denJoinKey(rawId) : rawId
-        const room = id ? (state.rooms[id] as typeof initialRoomState | undefined) : undefined
-        if (!rawId || !id || !room) return json(res, 404, { error: 'unknown session' })
+        if (!rawId || !id) return json(res, 404, { error: 'unknown session' })
+        if (denyIfForbidden('GET /state', id)) return
+        const room = state.rooms[id] as typeof initialRoomState | undefined
+        if (!room) return json(res, 404, { error: 'unknown session' })
         return json(res, 200, { session: rawId, state: room })
       }
 
@@ -1393,7 +1438,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // so an identity-table-keyed client subscribes to the same events.
     const rawSession = url.searchParams.get('session')
     const session = rawSession ? denJoinKey(rawSession) : undefined
-    const client: Client = { ws, session, alive: true }
+    const ctx = boundRequestUser(req)
+    const client: Client = { ws, session, alive: true, ...(ctx ? { user: ctx } : {}) }
     clients.add(client)
     // without an error listener one ECONNRESET from a dropped viewer is an
     // uncaught exception that kills the whole server
@@ -1403,8 +1449,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     })
     ws.on('close', () => clients.delete(client))
     ws.on('pong', () => (client.alive = true))
-    const ctx = boundRequestUser(req)
     if (session && ctx && !sessionOwners.visible(session, ctx)) {
+      auditTenancyDeny('WS /ws attach', session, ctx)
       ws.close(4403, 'session is owned by another user')
       clients.delete(client)
       return

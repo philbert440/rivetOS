@@ -819,7 +819,11 @@ describe('piped real-process smoke', () => {
       cwd: tmpdir(),
       env: {},
       commands: {
-        cat: { label: 'Cat', cmd: ['bash', '-c', 'printf "sess=%s\\n" "$RIVET_DEN_SESSION"; cat'], room: false },
+        cat: {
+          label: 'Cat',
+          cmd: ['bash', '-c', 'printf "sess=%s\\n" "$RIVET_DEN_SESSION"; cat'],
+          room: false,
+        },
       },
     }
     const { manager } = makeManager({}, { roster, spawn: pipeSpawn })

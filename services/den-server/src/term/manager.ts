@@ -501,7 +501,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const cwd = entry.cwd ?? roster.cwd
       const env: Record<string, string> = {}
       // Never clone per-user DB maps or admin URLs into a shell (#564).
-      const ptyEnvDeny = /^(RIVETOS_USER_DBS|RIVETOS_TEAM_PG_ADMIN_URL|RIVETOS_DEN_DEVICES_PG_ADMIN_URL)$/
+      const ptyEnvDeny =
+        /^(RIVETOS_USER_DBS|RIVETOS_TEAM_PG_ADMIN_URL|RIVETOS_DEN_DEVICES_PG_ADMIN_URL)$/
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && !ptyEnvDeny.test(k)) env[k] = v
       }

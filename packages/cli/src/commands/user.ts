@@ -12,7 +12,6 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname } from 'node:path'
 import { parseUsersRegistry, type UsersRegistry } from '@rivetos/types'
 
@@ -22,7 +21,11 @@ function defaultFile(): string {
 
 function load(file: string): UsersRegistry {
   if (!existsSync(file)) {
-    return { ownerUserId: 'phil', unmappedIsOwner: false, users: { phil: { id: 'phil', devices: [] } } }
+    return {
+      ownerUserId: 'phil',
+      unmappedIsOwner: false,
+      users: { phil: { id: 'phil', devices: [] } },
+    }
   }
   const parsed = parseUsersRegistry(readFileSync(file, 'utf8'))
   if (!parsed) {
@@ -59,9 +62,9 @@ function argValue(args: string[], flag: string): string | undefined {
 }
 
 function list(file: string): void {
-  const registry = existsSync(file)
-    ? load(file)
-    : { ownerUserId: 'phil', unmappedIsOwner: true, users: {} as UsersRegistry['users'] }
+  // load() already supplies the missing-file default — same one add() uses,
+  // so list and add can't disagree on unmappedIsOwner.
+  const registry = load(file)
   console.log(`[user] file ${file}`)
   console.log(`[user] owner ${registry.ownerUserId}  unmappedIsOwner=${registry.unmappedIsOwner}`)
   const ids = Object.keys(registry.users)
@@ -79,7 +82,9 @@ function list(file: string): void {
 
 function add(id: string, args: string[]): void {
   if (!id) {
-    console.error('usage: rivetos user add <id> --device <deviceId> [--persona name] [--url postgres://…] [--file path]')
+    console.error(
+      'usage: rivetos user add <id> --device <deviceId> [--persona name] [--url postgres://…] [--file path]',
+    )
     process.exit(1)
   }
   const device = argValue(args, '--device')
@@ -110,7 +115,9 @@ function add(id: string, args: string[]): void {
     console.log(`[user] provisioning SQL (run as a superuser on datahub):`)
     console.log(`  CREATE USER rivet_${id} WITH PASSWORD '...';`)
     console.log(`  CREATE DATABASE ${id}_memory OWNER rivet_${id};`)
-    console.log(`  ALTER TABLE ros_messages OWNER TO rivet_${id};  -- after rivetos db migrate --url …`)
+    console.log(
+      `  ALTER TABLE ros_messages OWNER TO rivet_${id};  -- after rivetos db migrate --url …`,
+    )
   }
 }
 

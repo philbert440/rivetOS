@@ -15,6 +15,25 @@ export interface SessionOwners {
   filter<T>(items: T[], ctx: UserContext, idOf?: (item: T) => string): T[]
 }
 
+/**
+ * The single ownership check every session-scoped route must invoke.
+ * No bound ctx = tenancy off (single-owner node) and everything is allowed.
+ */
+export function sessionForbidden(
+  owners: SessionOwners,
+  ctx: UserContext | undefined,
+  sessionId: string,
+): boolean {
+  return !!ctx && !owners.visible(sessionId, ctx)
+}
+
+/** Isolation violations belong in the audit trail — one line per refusal. */
+export function auditTenancyDeny(route: string, sessionId: string, ctx: UserContext): void {
+  console.error(
+    `[den] tenancy: refused ${route} session=${sessionId} for user "${ctx.userId}" (owned by another user)`,
+  )
+}
+
 export function createSessionOwners(file: string): SessionOwners {
   let map: Record<string, string> = load(file)
 

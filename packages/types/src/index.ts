@@ -82,12 +82,7 @@ export {
   resolveUser,
   sessionVisibleTo,
 } from './users-registry.js'
-export type {
-  ResolveUserResult,
-  UserContext,
-  UserRecord,
-  UsersRegistry,
-} from './users-registry.js'
+export type { ResolveUserResult, UserContext, UserRecord, UsersRegistry } from './users-registry.js'
 export type { Workspace, WorkspaceFile } from './workspace.js'
 export type {
   ContextConfig,

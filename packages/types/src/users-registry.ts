@@ -43,9 +43,7 @@ export interface UsersRegistry {
   users: Record<string, UserRecord>
 }
 
-export type ResolveUserResult =
-  | { ok: true; ctx: UserContext }
-  | { ok: false; error: string }
+export type ResolveUserResult = { ok: true; ctx: UserContext } | { ok: false; error: string }
 
 function asDeviceId(raw: string): string {
   const t = raw.trim()
@@ -169,9 +167,10 @@ export function mergeUserDbs(
 ): UsersRegistry {
   const users: Record<string, UserRecord> = {}
   for (const [id, rec] of Object.entries(registry.users)) {
-    const db = rec.db ?? userDbs?.[id] ?? (id === registry.ownerUserId && ownerPgUrl?.trim()
-      ? { pgUrl: ownerPgUrl.trim() }
-      : undefined)
+    const db =
+      rec.db ??
+      userDbs?.[id] ??
+      (id === registry.ownerUserId && ownerPgUrl?.trim() ? { pgUrl: ownerPgUrl.trim() } : undefined)
     users[id] = { ...rec, db }
   }
   return { ...registry, users }
@@ -188,10 +187,7 @@ function dbFor(record: UserRecord): UserDbEntry | undefined {
  * `unmappedIsOwner` is false, returns an error. Callers must refuse the
  * session — never fall through to another user's store.
  */
-export function resolveUser(
-  registry: UsersRegistry,
-  deviceId: string | null,
-): ResolveUserResult {
+export function resolveUser(registry: UsersRegistry, deviceId: string | null): ResolveUserResult {
   const owner = ownerRecord(registry)
   if (!owner) return { ok: false, error: `owner user "${registry.ownerUserId}" is missing` }
 

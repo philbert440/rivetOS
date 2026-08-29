@@ -42,8 +42,8 @@ describe('session owners', () => {
     const reloaded = createSessionOwners(file)
     expect(reloaded.visible('abc', coco)).toBe(true)
     expect(reloaded.visible('abc', phil)).toBe(false)
-    expect(
-      reloaded.filter([{ id: 'abc' }, { id: 'untagged' }], coco).map((s) => s.id),
-    ).toEqual(['abc'])
+    expect(reloaded.filter([{ id: 'abc' }, { id: 'untagged' }], coco).map((s) => s.id)).toEqual([
+      'abc',
+    ])
   })
 })

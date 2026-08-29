@@ -371,8 +371,23 @@ function loadUsersRegistry(
     : (readRegistryFile('/rivet-shared/rivetos/users.json') ??
       readRegistryFile(join(homedir(), '.rivetos', 'users.json')))
   if (explicit && !fileReg) {
+    // Fail CLOSED: an explicitly configured registry that cannot be read must
+    // never fall back to the env maps — those carry unmappedIsOwner=true, so
+    // a corrupted file would silently widen every unmapped device to owner
+    // (the #563 shape). Instead refuse every device identity until the file
+    // is fixed; the owner keeps working via loopback and their env PG URL.
     console.error(
-      `[den] RIVETOS_USERS_FILE="${explicit}" missing or invalid — falling back to env maps`,
+      `[den] RIVETOS_USERS_FILE="${explicit}" missing or invalid — ALL device identities refused (fail closed); fix or unset the file`,
+    )
+    const ownerUserId = env.RIVETOS_OWNER_USER_ID?.trim() || 'phil'
+    return mergeUserDbs(
+      {
+        ownerUserId,
+        unmappedIsOwner: false,
+        users: { [ownerUserId]: { id: ownerUserId, devices: [] } },
+      },
+      undefined,
+      env.RIVETOS_PG_URL,
     )
   }
   const envReg = registryFromEnv({

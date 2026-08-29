@@ -40,7 +40,8 @@ export const TRUSTED_USER_HEADER = 'x-rivetos-user'
 /** Stamp the trusted header for a non-owner. Owner keeps today's no-header path
  *  so unmapped main-store traffic is unchanged. Always strip inbound first. */
 export function stampUserHeader(req: IncomingMessage, ctx: UserContext | undefined): void {
-  delete req.headers[TRUSTED_USER_HEADER]
+  // literal key (no-dynamic-delete); must stay equal to TRUSTED_USER_HEADER
+  delete req.headers['x-rivetos-user']
   if (ctx && !ctx.isOwner) req.headers[TRUSTED_USER_HEADER] = ctx.userId
 }
 
