@@ -109,18 +109,20 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   // terminal posture — same trust domain as shell/TUI on the node.
   if (terminal?.enabled === true) env.RIVETOS_DEN_AUDIO = '1'
   if (terminal?.open === true) env.RIVETOS_DEN_AUDIO_OPEN = '1'
-  // Mesh device enrollment (Settings → Devices). pgUrl/embedUrl for the QR
-  // come from the runtime's own RIVETOS_PG_URL/EMBED_URL (den-server reads
-  // those directly), so they aren't repeated here.
+  // den-server's loadConfig only sees the env we build here (not the whole
+  // process env). RIVETOS_PG_URL is the owner's db handle in the users
+  // registry (#565): without it a den running under a users.json refuses the
+  // owner's devices AND loopback (fail closed), so it must be forwarded on
+  // every den — not just when device enrollment is on. RIVETOS_EMBED_URL
+  // rides along for the enrollment QR.
+  const pg = process.env.RIVETOS_PG_URL?.trim()
+  const embed = process.env.RIVETOS_EMBED_URL?.trim()
+  if (pg) env.RIVETOS_PG_URL = pg
+  if (embed) env.RIVETOS_EMBED_URL = embed
+  // Mesh device enrollment (Settings → Devices).
   const devices = den.devices
   if (devices?.enabled === true) {
     env.RIVETOS_DEN_DEVICES = '1'
-    // den-server's loadConfig only sees the env we build here (not the whole
-    // process env), so forward the runtime's own datahub coords for the QR.
-    const pg = process.env.RIVETOS_PG_URL?.trim()
-    const embed = process.env.RIVETOS_EMBED_URL?.trim()
-    if (pg) env.RIVETOS_PG_URL = pg
-    if (embed) env.RIVETOS_EMBED_URL = embed
     if (devices.relay_ssh?.trim()) env.RIVETOS_DEN_DEVICES_RELAY_SSH = devices.relay_ssh.trim()
     if (devices.relay_sudo === true) env.RIVETOS_DEN_DEVICES_RELAY_SUDO = '1'
     if (devices.wg_interface?.trim()) env.RIVETOS_DEN_DEVICES_WG_IFACE = devices.wg_interface.trim()
