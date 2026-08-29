@@ -32,6 +32,7 @@ import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
   sessionNodeFor,
+  touchSessionNodeBinding,
 } from '../lib/session-node.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { urlLabel, useNodeName } from '../lib/node-name.js'
@@ -229,6 +230,10 @@ function migrateSessionKey(
     settings.set(storageKey(node, to), prior)
   }
   settings.clear(storageKey(node, from))
+  // Dest-non-clobber (names rule): an existing remembered view on the
+  // canonical key survives adoption. Deliberately the OPPOSITE of the node
+  // binding's last-write-wins below — a stale mode costs one click, a stale
+  // node binding retargets every request for the thread.
   moveSessionMode(storageKey(node, from), storageKey(node, to))
   rekeyAgentLastSessions(from, to)
   rekeySessionNodeBinding(from, to)
@@ -774,6 +779,11 @@ function ActiveSession(props: {
     return next
   }, [props.sessionId, baseUrl, rosterUrls])
   const isRemote = sessionBase !== baseUrl
+  // The open thread is the ONE reader whose interest keeps its binding
+  // alive — store reads are peeks, so viewing refreshes recency explicitly.
+  useEffect(() => {
+    touchSessionNodeBinding(props.sessionId)
+  }, [props.sessionId])
   const remoteNodeName = useNodeName(sessionBase)
   // The session's gateway: the shared global client on the home path (it
   // carries the live transport state), a pipe-routed per-node client when

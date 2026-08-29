@@ -12,12 +12,14 @@
  * current node. `setSessionNodeBinding` enforces cross-node-only storage: a
  * write for the caller's own node CLEARS instead (the session is home now),
  * so no caller can pollute the map with entries that go stale on a node
- * switch. Reads re-tail the entry (true LRU): an open session's binding
- * cannot age out under it just because other sessions were bound since. An
- * off-roster binding is cleared on resolution — the node was removed, and
- * repeating the fallback every resolve would drive a home gateway for a
- * thread that still lives elsewhere (the component layer freezes its own
- * copy per mount for exactly that reason).
+ * switch. Reads are PEEKS — recency refreshes only through the explicit
+ * `touchSessionNodeBinding`, which the session view calls for the thread it
+ * has open. A list, badge poll or bulk resolve naming hundreds of sessions
+ * must not immortalize their entries, or genuinely stale bindings starve
+ * eviction and the cap fills with ghosts. An off-roster binding is cleared
+ * on ANY resolution that sees it — pointer-win included (the component
+ * layer freezes its own copy per mount, so clearing rot here never flips a
+ * mounted view).
  */
 
 import { agentForSession, listAgentSessions } from './agent-session.js'
@@ -44,22 +46,23 @@ function save(map: Record<string, string | undefined>): void {
   }
 }
 
-/** Re-tail one key (LRU touch); no-op when absent. */
-function touch(map: Record<string, string | undefined>, sessionId: string): void {
+/** PEEK — never refreshes recency. Bulk callers (lists, badge polls,
+ *  adoption rekeys) read through this so they cannot rescue stale entries
+ *  from eviction. */
+export function getSessionNodeBinding(sessionId: string): string | undefined {
+  return load()[sessionId]
+}
+
+/** Re-tail one session's binding: the OPEN thread's recency refresh. The
+ *  session view calls this once per mount — the only reader whose interest
+ *  should keep a binding alive. Also re-caps an over-size map. */
+export function touchSessionNodeBinding(sessionId: string): void {
+  const map = load()
   const node = map[sessionId]
   if (node === undefined) return
   const entries = Object.entries(map).filter(([k]) => k !== sessionId)
   entries.push([sessionId, node])
-  save(Object.fromEntries(entries))
-}
-
-/** Access-order read: a get counts as recent use, so an OPEN session's
- *  binding outlives 200 newer writes. */
-export function getSessionNodeBinding(sessionId: string): string | undefined {
-  const map = load()
-  const node = map[sessionId]
-  if (node !== undefined) touch(map, sessionId)
-  return node
+  save(Object.fromEntries(entries.slice(-MAX)))
 }
 
 /** Cross-node entries only: binding a session to the caller's own node
@@ -101,8 +104,10 @@ export function rekeySessionNodeBinding(fromSessionId: string, toSessionId: stri
 }
 
 /** Pure resolution — exported for tests. Pointer wins over binding; both are
- *  roster-validated; anything invalid falls back to the current node after
- *  telling `onInvalidBinding` so the caller can clear the rot. */
+ *  roster-validated; anything invalid falls back to the current node. The
+ *  binding is validated EVEN WHEN the pointer wins, so an off-roster entry
+ *  is reported to `onInvalidBinding` (and cleared by the runtime wrapper)
+ *  instead of sitting in the map forever behind a healthy pointer. */
 export function resolveSessionNode(opts: {
   currentBase: string
   rosterUrls: readonly string[]
@@ -120,7 +125,9 @@ export function resolveSessionNode(opts: {
     }
     return candidate
   }
-  return valid(opts.pointerNode, false) ?? valid(opts.binding, true) ?? opts.currentBase
+  const pointer = valid(opts.pointerNode, false)
+  const binding = valid(opts.binding, true) // always evaluated: clears rot on pointer-win too
+  return pointer ?? binding ?? opts.currentBase
 }
 
 /** The node a session should be driven from (runtime wrapper). An off-roster
