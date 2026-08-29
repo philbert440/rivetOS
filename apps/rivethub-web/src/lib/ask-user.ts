@@ -65,7 +65,8 @@ function optionsFromArray(arr: unknown): AskOption[] {
     if (!o || seen.has(o.label)) continue
     seen.add(o.label)
     out.push(o)
-    if (out.length >= 10) break
+    // 20 matches the bridge's array cap — the wire can't carry more anyway.
+    if (out.length >= 20) break
   }
   return out
 }

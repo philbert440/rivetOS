@@ -7,6 +7,7 @@ import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
+import { SpeakMessage } from './speak-message.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
 function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
@@ -324,6 +325,7 @@ const Bubble = memo(function Bubble(props: {
           {tools && <ToolStack tools={tools} />}
           {props.msg.text && <Markdown>{props.msg.text}</Markdown>}
           {props.msg.text && <CopyMessage text={props.msg.text} />}
+          {props.msg.text && <SpeakMessage id={props.msg.id} text={props.msg.text} />}
           {props.msg.usage && (
             <NerdLine usage={props.msg.usage} durationMs={props.msg.durationMs} />
           )}

@@ -76,11 +76,11 @@ describe('extractAskUserQuestions', () => {
     ])
   })
 
-  it('dedupes options and caps at 10', () => {
+  it('dedupes options and caps at 20 (the bridge array cap)', () => {
     const qs = extractAskUserQuestions({
-      options: ['X', 'X', ...Array.from({ length: 15 }, (_, i) => `o${String(i)}`)],
+      options: ['X', 'X', ...Array.from({ length: 25 }, (_, i) => `o${String(i)}`)],
     })
-    expect(qs[0].options.length).toBe(10)
+    expect(qs[0].options.length).toBe(20)
     expect(qs[0].options[0]).toEqual({ label: 'X' })
   })
 
