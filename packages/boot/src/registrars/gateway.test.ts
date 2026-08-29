@@ -96,10 +96,13 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_EMBED_URL).toBe('http://hub:9402')
   })
 
-  it('does NOT forward PG/embed when devices is off', () => {
+  it('forwards PG/embed even when devices is off — owner db for the users registry', () => {
     vi.stubEnv('RIVETOS_PG_URL', 'postgres://u:p@hub:5432/db')
+    vi.stubEnv('RIVETOS_EMBED_URL', 'http://hub:9402')
     const env = buildGatewayEnv(base({}), '/opt/rivetos')
-    expect(env.RIVETOS_PG_URL).toBeUndefined()
+    expect(env.RIVETOS_PG_URL).toBe('postgres://u:p@hub:5432/db')
+    expect(env.RIVETOS_EMBED_URL).toBe('http://hub:9402')
+    expect(env.RIVETOS_DEN_DEVICES).toBeUndefined()
   })
 
   it('omits relay_sudo when false and leaves optional keys unset', () => {
