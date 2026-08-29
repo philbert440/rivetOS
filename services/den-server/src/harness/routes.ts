@@ -168,6 +168,14 @@ export interface HarnessRoutes {
 export function createHarnessRoutes(opts: {
   registry: HarnessRegistry
   log?: (msg: string) => void
+  /** Tenancy filter: hide sessions the bound user does not own. */
+  filterSessions?: (
+    req: IncomingMessage,
+    sessions: Awaited<ReturnType<HarnessRegistry['listSessions']>>,
+  ) => Awaited<ReturnType<HarnessRegistry['listSessions']>>
+  /** Tenancy gate for live streams: may this request see events for this
+   *  session? Absent = tenancy off. */
+  authorizeSession?: (req: IncomingMessage, sessionId: string) => boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -308,7 +316,9 @@ export function createHarnessRoutes(opts: {
       try {
         // Through the registry, not the driver: superseded ids must never
         // reach a client (§ Contract semantics, canonical-only listSessions).
-        return json(res, 200, { sessions: await registry.listSessions(harnessId) })
+        const listed = await registry.listSessions(harnessId)
+        const sessions = opts.filterSessions ? opts.filterSessions(req, listed) : listed
+        return json(res, 200, { sessions })
       } catch (err) {
         return fail(res, err)
       }
@@ -550,7 +560,18 @@ export function createHarnessRoutes(opts: {
           // see `capabilities.ts`). A client that does not know the second type
           // ignores it, which is why this needed no contract change.
           attach(ws, (sink) => {
-            const offEvents = registry.subscribe(sink, filter)
+            // Tenancy: every HarnessEvent carries a sessionId — drop events
+            // for sessions the bound user does not own.
+            const auth = opts.authorizeSession
+            const offEvents = registry.subscribe(
+              auth
+                ? (e) => {
+                    if ('sessionId' in e && !auth(req, e.sessionId)) return
+                    sink(e)
+                  }
+                : sink,
+              filter,
+            )
             const offCapabilities = registry.subscribeCapabilities(sink, filter)
             return () => {
               offEvents()
@@ -580,6 +601,19 @@ export function createHarnessRoutes(opts: {
                   type: 'error',
                   code: err instanceof HarnessError ? err.code : 'error',
                   message: err instanceof Error ? err.message : String(err),
+                }),
+              )
+              ws.close()
+              return
+            }
+            // Tenancy: the resolved session must belong to the bound user —
+            // refuse before any event can flow.
+            if (opts.authorizeSession && !opts.authorizeSession(req, target.sessionId)) {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  code: 'forbidden',
+                  message: 'session is owned by another user',
                 }),
               )
               ws.close()

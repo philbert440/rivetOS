@@ -55,6 +55,13 @@ describe('@rivetos/types exports', () => {
     assert.ok(mod !== null)
   })
 
+  it('should export from users-registry.ts', async () => {
+    const mod = await import('./users-registry.js')
+    assert.ok(mod !== null)
+    assert.equal(typeof mod.resolveUser, 'function')
+    assert.equal(typeof mod.parseUsersRegistry, 'function')
+  })
+
   it('should export from events.ts', async () => {
     const mod = await import('./events.js')
     assert.ok(mod !== null)

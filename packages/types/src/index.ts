@@ -75,6 +75,14 @@ export type {
 export type { Memory, MemoryEntry, MemorySearchResult } from './memory.js'
 export { isUsableUserDb, parseUserDbs } from './user-dbs.js'
 export type { UserDbEntry } from './user-dbs.js'
+export {
+  mergeUserDbs,
+  parseUsersRegistry,
+  registryFromEnv,
+  resolveUser,
+  sessionVisibleTo,
+} from './users-registry.js'
+export type { ResolveUserResult, UserContext, UserRecord, UsersRegistry } from './users-registry.js'
 export type { Workspace, WorkspaceFile } from './workspace.js'
 export type {
   ContextConfig,

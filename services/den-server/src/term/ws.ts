@@ -59,6 +59,9 @@ export interface TermWsDeps {
   /** Terminals enabled AND not security-gated. Anything else must destroy
    *  the upgrade — a gated deployment never completes the handshake. */
   enabled: () => boolean
+  /** Tenancy gate: may this request attach to a PTY owned by this den
+   *  session? Absent = tenancy off. False destroys the upgrade. */
+  authorize?: (req: IncomingMessage, denSession: string) => boolean
 }
 
 export interface TermWs {
@@ -275,7 +278,13 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       const id =
         url.searchParams.get('id') ??
         (session ? manager.ptyForSession(denJoinKey(session)) : undefined)
-      if (!id || !manager.get(id)) {
+      const info = id ? manager.get(id) : undefined
+      if (!id || !info) {
+        socket.destroy()
+        return
+      }
+      // tenancy: a PTY is its owner's — no cross-user attach, ever
+      if (deps.authorize && !deps.authorize(req, info.denSession)) {
         socket.destroy()
         return
       }

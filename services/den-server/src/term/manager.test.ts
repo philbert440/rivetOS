@@ -670,6 +670,32 @@ describe('term manager', () => {
     expect(ingested[0].type).toBe('session.start')
   })
 
+  it('does not clone RIVETOS_USER_DBS into the PTY env (#564)', () => {
+    const prevDbs = process.env.RIVETOS_USER_DBS
+    const prevAdmin = process.env.RIVETOS_TEAM_PG_ADMIN_URL
+    process.env.RIVETOS_USER_DBS = '{"coco":{"pgUrl":"postgres://coco@db/coco"}}'
+    process.env.RIVETOS_TEAM_PG_ADMIN_URL = 'postgres://admin@db/postgres'
+    try {
+      const { manager, spawns } = makeManager()
+      manager.spawn('shell', 80, 24, '')
+      expect(spawns[0].opts.env.RIVETOS_USER_DBS).toBeUndefined()
+      expect(spawns[0].opts.env.RIVETOS_TEAM_PG_ADMIN_URL).toBeUndefined()
+    } finally {
+      if (prevDbs === undefined) delete process.env.RIVETOS_USER_DBS
+      else process.env.RIVETOS_USER_DBS = prevDbs
+      if (prevAdmin === undefined) delete process.env.RIVETOS_TEAM_PG_ADMIN_URL
+      else process.env.RIVETOS_TEAM_PG_ADMIN_URL = prevAdmin
+    }
+  })
+
+  it('refuses to reuse a live session across users', () => {
+    const { manager } = makeManager()
+    manager.spawn('shell', 80, 24, '', 'chat-x', undefined, undefined, 'phil')
+    expect(() =>
+      manager.spawn('shell', 80, 24, '', 'chat-x', undefined, undefined, 'coco'),
+    ).toThrowError(/owned by another user/)
+  })
+
   it('writes parseable audit lines for spawn, kill and exit', () => {
     const { manager, procs, stateDir } = makeManager()
     const pty = manager.spawn('shell', 80, 24, '192.0.2.7')
@@ -793,7 +819,11 @@ describe('piped real-process smoke', () => {
       cwd: tmpdir(),
       env: {},
       commands: {
-        cat: { label: 'Cat', cmd: ['bash', '-c', 'printf "sess=%s\\n" "$RIVET_DEN_SESSION"; cat'], room: false },
+        cat: {
+          label: 'Cat',
+          cmd: ['bash', '-c', 'printf "sess=%s\\n" "$RIVET_DEN_SESSION"; cat'],
+          room: false,
+        },
       },
     }
     const { manager } = makeManager({}, { roster, spawn: pipeSpawn })

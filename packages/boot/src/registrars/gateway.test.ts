@@ -16,17 +16,11 @@ describe('buildGatewayEnv — MicBridge audio', () => {
     expect(off.RIVETOS_DEN_AUDIO).toBeUndefined()
     expect(off.RIVETOS_DEN_AUDIO_OPEN).toBeUndefined()
 
-    const on = buildGatewayEnv(
-      base({ terminal: { enabled: true, open: false } }),
-      '/opt/rivetos',
-    )
+    const on = buildGatewayEnv(base({ terminal: { enabled: true, open: false } }), '/opt/rivetos')
     expect(on.RIVETOS_DEN_AUDIO).toBe('1')
     expect(on.RIVETOS_DEN_AUDIO_OPEN).toBeUndefined()
 
-    const open = buildGatewayEnv(
-      base({ terminal: { enabled: true, open: true } }),
-      '/opt/rivetos',
-    )
+    const open = buildGatewayEnv(base({ terminal: { enabled: true, open: true } }), '/opt/rivetos')
     expect(open.RIVETOS_DEN_AUDIO).toBe('1')
     expect(open.RIVETOS_DEN_AUDIO_OPEN).toBe('1')
   })
@@ -161,9 +155,7 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_DEN_UPLOAD_DIR).toBe('/var/lib/rivetos/staging')
     expect(env.RIVETOS_DEN_UPLOAD_MAX_BYTES).toBe('52428800')
     expect(env.RIVETOS_DEN_UPLOAD_TTL_MS).toBe('3600000')
-    expect(env.RIVETOS_TEAM_PG_ADMIN_URL).toBe(
-      'postgres://admin:s3cret@192.0.2.50:5432/team',
-    )
+    expect(env.RIVETOS_TEAM_PG_ADMIN_URL).toBe('postgres://admin:s3cret@192.0.2.50:5432/team')
   })
 
   it('omits the upload knobs when the process env is silent (den defaults win)', () => {
@@ -195,6 +187,12 @@ describe('buildGatewayEnv — device enrollment', () => {
     const env = buildGatewayEnv(base({}), '/opt/rivetos')
     expect(env.RIVETOS_DEN_DEVICE_USERS).toBeUndefined()
     expect(env.RIVETOS_USER_DBS).toBeUndefined()
+  })
+
+  it('forwards a new RIVETOS_USER_* key without a hand allowlist edit', () => {
+    vi.stubEnv('RIVETOS_USERS_FILE', '/rivet-shared/rivetos/users.json')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_USERS_FILE).toBe('/rivet-shared/rivetos/users.json')
   })
 
   it('omits PG admin env when devices is on but admin URL is unset', () => {

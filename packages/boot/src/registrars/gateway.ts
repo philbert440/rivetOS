@@ -167,21 +167,16 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   // only this map, never the process env, so without a passthrough the
   // documented cap/TTL/dir knobs would be silently inert on an embedded
   // gateway. Same reasoning as RIVETOS_DEN_DEVICES_PG_ADMIN_URL above.
-  for (const key of [
-    'RIVETOS_DEN_UPLOAD_DIR',
-    'RIVETOS_DEN_UPLOAD_MAX_BYTES',
-    'RIVETOS_DEN_UPLOAD_TTL_MS',
-    'RIVETOS_TEAM_PG_ADMIN_URL',
-    // Per-user memory routing (#561): den resolves mTLS device → user →
-    // memory DB from these at loadConfig time. Without the passthrough the
-    // embedded den sees neither var and routing collapses to owner behavior
-    // with no warning — a mapped device's capture lands in the owner's DB.
-    'RIVETOS_DEN_DEVICE_USERS',
-    'RIVETOS_USER_DBS',
-  ] as const) {
-    const value = process.env[key]?.trim()
+  // Prefix passthrough: adding RIVETOS_DEN_* / RIVETOS_USER_* must never
+  // again be a silent no-op (the #563 footgun). Process env wins for keys
+  // that are set; config-derived values above stand when env is silent.
+  for (const [key, raw] of Object.entries(process.env)) {
+    if (!key.startsWith('RIVETOS_DEN_') && !key.startsWith('RIVETOS_USER')) continue
+    const value = raw?.trim()
     if (value) env[key] = value
   }
+  const teamAdmin = process.env.RIVETOS_TEAM_PG_ADMIN_URL?.trim()
+  if (teamAdmin) env.RIVETOS_TEAM_PG_ADMIN_URL = teamAdmin
 
   // Gateway mTLS — node leaf + CA chain for verifying device client certs.
   // Prefer explicit den.tls_* config; fall back to mesh issue-node paths.
