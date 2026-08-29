@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
-import { ArrowDown, ArrowUp, Clock3, Zap } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import { ArrowDown, ArrowUp, Check, Clock3, Copy, Zap } from 'lucide-react'
 import type { HarnessTranscriptTool, MessageUsage, SessionMessage } from '@rivetos/types'
 import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 import { humanToolTitle, type ToolArgs } from '../lib/tool-titles.js'
 import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
+import { copyTextToClipboard } from '../lib/clipboard.js'
 import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
 
@@ -20,13 +21,15 @@ function stamp(ts: number): string | null {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+const NUM_FMT = new Intl.NumberFormat()
+
 function fmt(n: number): string {
-  return new Intl.NumberFormat().format(n)
+  return NUM_FMT.format(n)
 }
 
-/** The "nerd line" (android web-ui) — per-turn token stats under an assistant
- *  message: prompt (with cached), completion, tokens/sec, duration. Rendered
- *  only when the harness reported usage (Claude Code). */
+/** The "nerd line" — per-turn token stats under an assistant message: prompt
+ *  (with cached), completion, tokens/sec, duration. Rendered only when the
+ *  harness reported usage. */
 function NerdLine(props: { usage: MessageUsage; durationMs?: number }): JSX.Element {
   const { promptTokens, completionTokens, cachedTokens } = props.usage
   const secs = props.durationMs && props.durationMs > 0 ? props.durationMs / 1000 : 0
@@ -84,6 +87,24 @@ function ToolStack(props: { tools: LiveToolEntry[] }): JSX.Element | null {
   )
 }
 
+/** One shared 1s ticker for every spinner line on screen — N messages must
+ *  not arm N intervals (N re-renders/sec each). */
+const tickListeners = new Set<() => void>()
+let tickTimer: ReturnType<typeof setInterval> | undefined
+function subscribeTick(fn: () => void): () => void {
+  tickListeners.add(fn)
+  tickTimer ??= setInterval(() => {
+    for (const f of tickListeners) f()
+  }, 1_000)
+  return () => {
+    tickListeners.delete(fn)
+    if (tickListeners.size === 0 && tickTimer !== undefined) {
+      clearInterval(tickTimer)
+      tickTimer = undefined
+    }
+  }
+}
+
 /** Claude spinner lines freeze between hook events — tick their elapsed time
  *  locally so "(0s · ↓ 0 tokens)" doesn't sit dead while a long thinking
  *  stretch fires no hooks. Non-spinner text passes through untouched. */
@@ -95,9 +116,8 @@ function useSpinnerTick(text: string): string {
   const ticking = meta !== null
   useEffect(() => {
     if (!ticking) return
-    const t = setInterval(() => setTick((n) => n + 1), 1_000)
-    return () => clearInterval(t)
-  }, [ticking, text])
+    return subscribeTick(() => setTick((n) => n + 1))
+  }, [ticking])
   if (!meta) return text
   return formatSpinnerMeta(meta, Math.floor((Date.now() - receivedAt.current.at) / 1000))
 }
@@ -125,9 +145,9 @@ function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | 
   )
 }
 
-/** Avatar + name + model + timestamp row above a message (android web-ui
- *  pattern). Assistant is the den bot ("Rivet"); user is right-aligned.
- *  `accent` colors the bot per harness (claude clay / grok grey / emerald). */
+/** Avatar + name + model + timestamp row above a message. Assistant is the
+ *  den bot ("Rivet"); user is right-aligned. `accent` colors the bot per
+ *  harness (claude clay / grok grey / emerald). */
 function AvatarRow(props: {
   mine: boolean
   ts?: number
@@ -171,17 +191,53 @@ function Row(props: {
   ts?: number
   model?: string
   accent?: string
+  /** Solid messages skip offscreen layout/paint; the live bubble never does. */
+  offscreenSkip?: boolean
   children: ReactNode
 }): JSX.Element {
   return (
-    <div className={`flex flex-col gap-1.5 ${props.mine ? 'items-end' : 'items-start'}`}>
+    <div
+      className={`group/msg flex flex-col gap-1.5 ${props.mine ? 'items-end' : 'items-start'} ${
+        props.offscreenSkip ? '[content-visibility:auto] [contain-intrinsic-size:auto_96px]' : ''
+      }`}
+    >
       <AvatarRow mine={props.mine} ts={props.ts} model={props.model} accent={props.accent} />
       {props.children}
     </div>
   )
 }
 
-function Bubble(props: {
+/** Hover copy for a whole message (fenced code blocks keep their own). */
+function CopyMessage(props: { text: string }): JSX.Element {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const flash = (next: 'copied' | 'failed'): void => {
+    setState(next)
+    if (timerRef.current !== undefined) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setState('idle'), 1500)
+  }
+  return (
+    <button
+      type="button"
+      aria-label="copy message"
+      title="copy message"
+      onClick={() => {
+        void copyTextToClipboard(props.text)
+          .then(() => flash('copied'))
+          .catch(() => flash('failed'))
+      }}
+      className="invisible absolute top-0 right-1 rounded border border-line bg-panel/90 p-1 text-ink-dim group-hover/msg:visible hover:text-em"
+    >
+      {state === 'copied' ? (
+        <Check className="size-3 text-em" />
+      ) : (
+        <Copy className={`size-3 ${state === 'failed' ? 'text-red' : ''}`} />
+      )}
+    </button>
+  )
+}
+
+const Bubble = memo(function Bubble(props: {
   msg: SessionMessage
   accent?: string
   /** Outbound queue status for optimistic user turns. */
@@ -190,16 +246,24 @@ function Bubble(props: {
   onCancel?: (id: string) => void
 }): JSX.Element {
   const mine = props.msg.role === 'user'
+  const tools = useMemo(
+    () =>
+      props.msg.tools && props.msg.tools.length > 0
+        ? props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`))
+        : undefined,
+    [props.msg],
+  )
   return (
     <Row
       mine={mine}
       ts={props.msg.ts}
       model={mine ? undefined : props.msg.model}
       accent={mine ? undefined : props.accent}
+      offscreenSkip
     >
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
-        <div className="max-w-[85%]">
+        <div className="relative max-w-[85%]">
           <div
             className={`whitespace-pre-wrap rounded-lg border px-4 py-2.5 text-sm ${
               props.outboundStatus === 'queued'
@@ -209,6 +273,7 @@ function Bubble(props: {
           >
             {props.msg.text}
           </div>
+          {props.msg.text && <CopyMessage text={props.msg.text} />}
           {props.outboundStatus && (
             <div className="mt-1 flex items-center justify-end gap-2 px-1 font-mono text-[10px] text-ink-dim">
               <span>{props.outboundStatus === 'queued' ? 'queued' : 'sending…'}</span>
@@ -236,17 +301,14 @@ function Bubble(props: {
           )}
         </div>
       ) : (
-        // Assistant is full-width, markdown-rendered (no bubble — android style).
-        // Harness-transcript messages carry the turn's thinking trace and tool
-        // stack (collapsed/inline) so a synced chat looks like the live one did.
-        <div className="w-full px-1">
+        // Assistant is full-width, markdown-rendered (no bubble). Harness
+        // messages carry the turn's thinking trace and tool stack so a synced
+        // chat looks like the live one did.
+        <div className="relative w-full px-1">
           {props.msg.thinking && <ReasoningBlock text={props.msg.thinking} />}
-          {props.msg.tools && props.msg.tools.length > 0 && (
-            <ToolStack
-              tools={props.msg.tools.map((t, i) => toLiveTool(t, `${props.msg.id}:${String(i)}`))}
-            />
-          )}
+          {tools && <ToolStack tools={tools} />}
           {props.msg.text && <Markdown>{props.msg.text}</Markdown>}
+          {props.msg.text && <CopyMessage text={props.msg.text} />}
           {props.msg.usage && (
             <NerdLine usage={props.msg.usage} durationMs={props.msg.durationMs} />
           )}
@@ -254,7 +316,7 @@ function Bubble(props: {
       )}
     </Row>
   )
-}
+})
 
 function LiveBubble(props: { turn: LiveTurn; accent?: string }): JSX.Element {
   const hasTools = props.turn.tools.some((t) => t.status === 'running')
@@ -321,11 +383,13 @@ export function Transcript(props: {
   const endRef = useRef<HTMLDivElement>(null)
   // Stick-to-bottom: auto-scroll ONLY while the user is already at (or near)
   // the bottom. Scrolling up to reread during a streaming reply must not be
-  // yanked back down on every frame — that was the old behavior. The ref
-  // mirrors the state so the content effect reads the current value without
-  // re-arming on every pin flip.
+  // yanked back down on every frame. The ref mirrors the state so the content
+  // effect reads the current value without re-arming on every pin flip.
   const [pinned, setPinned] = useState(true)
   const pinnedRef = useRef(true)
+  // Streaming deltas can land several per frame — coalesce the follow scroll
+  // to one rAF so layout isn't forced per token.
+  const scrollQueued = useRef(false)
   const count = props.messages.length + (props.live ? 1 : 0)
   const liveLen = props.live?.text.length ?? 0
   const toolN = props.live?.tools.length ?? 0
@@ -347,7 +411,12 @@ export function Transcript(props: {
   }
 
   useEffect(() => {
-    if (pinnedRef.current) endRef.current?.scrollIntoView({ block: 'end' })
+    if (!pinnedRef.current || scrollQueued.current) return
+    scrollQueued.current = true
+    requestAnimationFrame(() => {
+      scrollQueued.current = false
+      if (pinnedRef.current) endRef.current?.scrollIntoView({ block: 'end' })
+    })
   }, [count, liveLen, toolN, reasonLen, outboundN])
 
   return (

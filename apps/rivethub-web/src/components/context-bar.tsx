@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { memo, useMemo, type JSX } from 'react'
 import { cn } from '../lib/utils.js'
 import { compactTokens, contextWindowFor, estimatePromptTokens } from '../lib/context-window.js'
 
@@ -7,8 +7,12 @@ import { compactTokens, contextWindowFor, estimatePromptTokens } from '../lib/co
  * is. Prefers harness-reported prompt tokens (Claude Code); when missing
  * (grok / most local models), estimates from the transcript so the bar still
  * shows. Estimated values are labelled "est.".
+ *
+ * Memoized, and the estimate is computed per transcript-array identity — the
+ * fallback scan walks every message text, which must not run on every
+ * streaming tick of the page around it.
  */
-export function ContextBar(props: {
+export const ContextBar = memo(function ContextBar(props: {
   /** Provider-reported prompt tokens for the latest assistant turn. */
   tokens?: number
   /** Model id for window lookup (message model, or selected agent). */
@@ -17,10 +21,12 @@ export function ContextBar(props: {
   transcriptTexts?: string[]
 }): JSX.Element | null {
   const reported = props.tokens && props.tokens > 0 ? props.tokens : undefined
-  const estimated =
-    reported === undefined && props.transcriptTexts && props.transcriptTexts.length > 0
-      ? estimatePromptTokens(props.transcriptTexts)
-      : undefined
+  const texts = props.transcriptTexts
+  const estimated = useMemo(
+    () =>
+      reported === undefined && texts && texts.length > 0 ? estimatePromptTokens(texts) : undefined,
+    [reported, texts],
+  )
   const tokens = reported ?? estimated
   if (!tokens || tokens <= 0) return null
 
@@ -47,4 +53,4 @@ export function ContextBar(props: {
       </span>
     </div>
   )
-}
+})
