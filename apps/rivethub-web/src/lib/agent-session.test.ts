@@ -134,11 +134,20 @@ describe('agent last-session pointer', () => {
   it('prunes a single node pointer with its bind key', () => {
     setAgentLastSession('a1', 'sess-a', NODE_A)
     setAgentLastSession('a1', 'sess-b', NODE_B)
-    clearAgentSessionPointer('a1', NODE_A)
+    clearAgentSessionPointer('a1', NODE_A, 'sess-a')
     expect(getAgentLastSession('a1', NODE_A)).toBeUndefined()
     expect(getAgentLastSession('a1', NODE_B)?.sessionId).toBe('sess-b')
     expect(localStorage.getItem('rivethub.agent.sess-a')).toBeNull()
     expect(localStorage.getItem('rivethub.agent.sess-b')).toBe('a1')
+  })
+
+  it('prune is compare-and-delete: a stale id never wipes a newer pointer', () => {
+    setAgentLastSession('a1', 'sess-old', NODE_A)
+    setAgentLastSession('a1', 'sess-new', NODE_A)
+    // In-flight 404 for the superseded session arrives late.
+    clearAgentSessionPointer('a1', NODE_A, 'sess-old')
+    expect(getAgentLastSession('a1', NODE_A)?.sessionId).toBe('sess-new')
+    expect(localStorage.getItem('rivethub.agent.sess-new')).toBe('a1')
   })
 
   it('drops every node pointer and bind key on delete', () => {

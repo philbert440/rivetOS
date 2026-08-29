@@ -101,12 +101,12 @@ describe('pointersToPoll', () => {
   const C = 'https://192.0.2.12:5174'
   const p = (nodeBaseUrl: string): { nodeBaseUrl: string } => ({ nodeBaseUrl })
 
-  it('puts the current node first and caps the total', () => {
-    expect(pointersToPoll([p(B), p(C), p(A)], A, 2)).toEqual([p(A), p(B)])
+  it('puts the current node first and keeps every pointer within the cap', () => {
+    expect(pointersToPoll([p(B), p(C), p(A)], A, 16)).toEqual([p(A), p(B), p(C)])
   })
 
   it('keeps recency order when the current node holds no pointer', () => {
-    expect(pointersToPoll([p(B), p(C)], A, 2)).toEqual([p(B), p(C)])
+    expect(pointersToPoll([p(B), p(C)], A, 16)).toEqual([p(B), p(C)])
   })
 
   it('always polls at least one pointer even with a degenerate limit', () => {

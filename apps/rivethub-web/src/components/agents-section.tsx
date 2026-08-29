@@ -46,15 +46,20 @@ type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
 
 const lastGoodAgentsByNode = new Map<string, AgentPreset[]>()
 
-/** Nodes polled per row: the current node + the most recent others. */
-const POLL_POINTER_LIMIT = 4
+/** Safety cap on the status fan-out. Pointers are unique per (agent, node),
+ *  so the real bound is roster size — this only guards a pathological map. */
+const POLL_POINTER_LIMIT = 16
 
 /** How long row invalidations coalesce after a burst of harness events. */
 const STATUS_INVALIDATE_DEBOUNCE_MS = 1_000
 
-/** A session the chat store still holds (draft/messages/transcript) — a
- *  control-plane 404 for one of these is not definitive (an unclaimed
- *  draft 404s until its first turn). */
+/** An unclaimed draft 404s on the control plane until its first turn — its
+ *  pointer must survive the poll. */
+function isUnclaimedDraft(sessionId: string): boolean {
+  return useChat.getState().drafts.includes(sessionId)
+}
+
+/** A session the chat store still holds — a liveness (not prune) signal. */
 function knownToChatStore(sessionId: string): boolean {
   const chat = useChat.getState()
   if (chat.drafts.includes(sessionId)) return true
@@ -359,11 +364,12 @@ function AgentRow({ agent, onOpen, onStartOver, onEdit, onDelete }: AgentRowProp
             if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
               throw err
             }
-            // 404 is definitive — unless the chat store still holds the
-            // thread (an unclaimed draft 404s until its first turn).
+            // 404 is definitive for a claimed session. Compare-and-delete:
+            // the prune names the 404'd id, so a stale in-flight poll can
+            // never wipe a just-minted pointer on the same node.
             if (err instanceof GatewayError && err.status === 404) {
-              if (!knownToChatStore(p.sessionId)) {
-                clearAgentSessionPointer(agent.id, p.nodeBaseUrl)
+              if (!isUnclaimedDraft(p.sessionId)) {
+                clearAgentSessionPointer(agent.id, p.nodeBaseUrl, p.sessionId)
                 return null
               }
             }
@@ -567,16 +573,18 @@ export function AgentsSection(): JSX.Element {
       pending: Set<string>
       timer?: ReturnType<typeof setTimeout>
     } = { disposed: false, pending: new Set() }
+    const flushInvalidates = (): void => {
+      if (state.timer) clearTimeout(state.timer)
+      state.timer = undefined
+      const ids = [...state.pending]
+      state.pending.clear()
+      for (const id of ids) {
+        void queryClient.invalidateQueries({ queryKey: ['agent-session-status', id] })
+      }
+    }
     const scheduleInvalidate = (agentId: string): void => {
       state.pending.add(agentId)
-      state.timer ??= setTimeout(() => {
-        state.timer = undefined
-        const ids = [...state.pending]
-        state.pending.clear()
-        for (const id of ids) {
-          void queryClient.invalidateQueries({ queryKey: ['agent-session-status', id] })
-        }
-      }, STATUS_INVALIDATE_DEBOUNCE_MS)
+      state.timer ??= setTimeout(flushInvalidates, STATUS_INVALIDATE_DEBOUNCE_MS)
     }
     void (async () => {
       try {
@@ -599,7 +607,9 @@ export function AgentsSection(): JSX.Element {
     })()
     return () => {
       state.disposed = true
-      if (state.timer) clearTimeout(state.timer)
+      // Flush, don't drop: ids collected right before a collapse or node
+      // switch still deserve their refetch.
+      flushInvalidates()
       state.sub?.close()
     }
   }, [collapsed, baseUrl, transportEpoch, queryClient])
@@ -654,13 +664,20 @@ export function AgentsSection(): JSX.Element {
     }
   }
 
-  // One generation per click/start-over: a stale completion (double-click,
-  // start-over racing a slow liveness probe, node switched mid-await) must
-  // not navigate or mint a second draft.
-  const openGen = useRef(0)
+  // One generation per agent per click/start-over: a stale completion
+  // (double-click, start-over racing a slow liveness probe, node switched
+  // mid-await) must not navigate or mint a second draft — and one agent's
+  // click must not cancel another's in-flight open.
+  const openGen = useRef(new Map<string, number>())
+
+  const bumpGen = (agentId: string): number => {
+    const gen = (openGen.current.get(agentId) ?? 0) + 1
+    openGen.current.set(agentId, gen)
+    return gen
+  }
 
   const handleOpen = (agent: RosterAgent): void => {
-    const gen = ++openGen.current
+    const gen = bumpGen(agent.id)
     void (async () => {
       const last = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
       if (!last) {
@@ -668,17 +685,18 @@ export function AgentsSection(): JSX.Element {
         return
       }
       const alive = await sessionLikelyExists(last.sessionId)
-      if (gen !== openGen.current) return
       // Re-read after the await — start-over or a node switch may have
-      // retargeted the pointer while the probe was in flight.
+      // retargeted the pointer while the probe was in flight — then check
+      // the generation LAST, immediately before navigating.
       const fresh = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
+      if (gen !== openGen.current.get(agent.id)) return
       if (fresh && (fresh.sessionId !== last.sessionId || alive)) openKept(fresh.sessionId)
       else openFresh(agent)
     })()
   }
 
   const handleStartOver = (agent: RosterAgent): void => {
-    openGen.current++
+    bumpGen(agent.id)
     openFresh(agent)
   }
 

@@ -53,9 +53,10 @@ export function aggregateAgentActivity(
 }
 
 /**
- * Bound the status-poll fan-out: the current node's pointer always polls,
- * the rest keep their recency order, capped at `limit` total. Zombie
- * pointers past the cap age out entirely instead of polling forever.
+ * Order the status-poll fan-out: the current node's pointer always polls
+ * first, the rest keep their recency order. Pointers are unique per
+ * (agent, node) so roster size bounds the set — `limit` is only a safety
+ * cap against a pathological map.
  */
 export function pointersToPoll<T extends { nodeBaseUrl: string }>(
   pointers: T[],

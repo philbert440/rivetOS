@@ -42,8 +42,10 @@ function readMap(): LastMap {
     let migrated = false
     for (const [agentId, row] of Object.entries(parsed as Record<string, unknown>)) {
       if (isLegacyRow(row)) {
-        if (row.sessionId) out[agentId] = { [row.nodeBaseUrl]: { sessionId: row.sessionId } }
-        migrated = true
+        if (row.sessionId) {
+          out[agentId] = { [row.nodeBaseUrl]: { sessionId: row.sessionId } }
+          migrated = true
+        }
         continue
       }
       if (!row || typeof row !== 'object' || Array.isArray(row)) continue
@@ -62,8 +64,15 @@ function readMap(): LastMap {
     // Persist a fired migration right away (same key, new shape) so every
     // later read parses the per-node shape directly. Tabs old enough to
     // expect the legacy shape go blind on the first NEW write regardless,
-    // so rewriting here costs nothing extra.
-    if (migrated) writeMap(out)
+    // so rewriting here costs nothing extra. A persist failure must not
+    // turn the successfully parsed result into {}.
+    if (migrated) {
+      try {
+        writeMap(out)
+      } catch {
+        /* keep the parsed result */
+      }
+    }
     return out
   } catch {
     return {}
@@ -133,12 +142,19 @@ export function setAgentLastSession(agentId: string, sessionId: string, nodeBase
   }
 }
 
-/** Drop ONE node's pointer (definitive 404 prune) with its bind key. */
-export function clearAgentSessionPointer(agentId: string, nodeBaseUrl: string): void {
+/** Drop ONE node's pointer (definitive 404 prune) with its bind key —
+ *  compare-and-delete: only when the stored pointer still equals
+ *  `expectedSessionId`, so an in-flight 404 for an old session can never
+ *  wipe a just-minted one on the same node. */
+export function clearAgentSessionPointer(
+  agentId: string,
+  nodeBaseUrl: string,
+  expectedSessionId: string,
+): void {
   const map = readMap()
   const nodes = map[agentId]
   const prev = nodes?.[nodeBaseUrl]
-  if (!nodes || !prev) return
+  if (!nodes || !prev || prev.sessionId !== expectedSessionId) return
   const { [nodeBaseUrl]: _dropped, ...rest } = nodes
   if (Object.keys(rest).length > 0) {
     map[agentId] = rest
