@@ -22,7 +22,17 @@ import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { WebSocket } from 'ws'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { parseUsersRegistry } from '@rivetos/types'
+import {
+  encodeSessionIdSegment,
+  parseUsersRegistry,
+  type HarnessCapabilities,
+  type HarnessDriver,
+  type HarnessEvent,
+  type HarnessSessionSummary,
+  type SessionId,
+  type StartSessionOpts,
+  type UserTurn,
+} from '@rivetos/types'
 import { createDenServer, type DenServer } from './server.js'
 import { baseTestDenConfig } from './test-config.js'
 import type { PtyProc } from './term/pty.js'
@@ -259,6 +269,61 @@ const COCO_EV = {
   title: 'coco',
 }
 
+
+/** Minimal control-plane driver: the harness routes surface (#565's untested
+ *  sibling) needs a registered driver to exercise its tenancy fence e2e. */
+const CP_CAPS: HarnessCapabilities = {
+  interrupt: false,
+  resume: true,
+  approvals: false,
+  liveStream: false,
+  listSessions: true,
+}
+class CpFakeDriver implements HarnessDriver {
+  readonly harnessId = 'claude-code' as const
+  readonly capabilities = CP_CAPS
+  readonly sessions = new Map<SessionId, HarnessSessionSummary>()
+  add(sessionId: SessionId): HarnessSessionSummary {
+    const summary: HarnessSessionSummary = {
+      sessionId,
+      harnessId: this.harnessId,
+      createdAt: '2026-08-29T00:00:00.000Z',
+      updatedAt: '2026-08-29T00:00:00.000Z',
+      status: 'idle',
+    }
+    this.sessions.set(sessionId, summary)
+    return summary
+  }
+  startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
+    return Promise.resolve(this.add(`${this.harnessId}:${opts.nativeSessionId ?? 'minted'}` as SessionId))
+  }
+  resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
+    return Promise.resolve(this.sessions.get(sessionId) ?? this.add(sessionId))
+  }
+  interrupt(): Promise<void> {
+    return Promise.resolve()
+  }
+  sendUserTurn(_sessionId: SessionId, _turn: UserTurn): Promise<void> {
+    return Promise.resolve()
+  }
+  resolveApproval(): Promise<void> {
+    return Promise.resolve()
+  }
+  subscribe(_sessionId: SessionId, _sink: (e: HarnessEvent) => void): () => void {
+    return () => undefined
+  }
+  subscribeEvents(_sink: (e: HarnessEvent) => void): () => void {
+    return () => undefined
+  }
+  listSessions(): Promise<HarnessSessionSummary[]> {
+    return Promise.resolve([...this.sessions.values()])
+  }
+  getSession(sessionId: SessionId): Promise<HarnessSessionSummary | null> {
+    return Promise.resolve(this.sessions.get(sessionId) ?? null)
+  }
+}
+const cpDriver = new CpFakeDriver()
+
 describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)', () => {
   let pki: TenancyPki
   let den: DenServer
@@ -304,7 +369,13 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       }),
     )
     let pid = 9000
-    den = createDenServer(config, { ptySpawn: () => new FakeProc(++pid) })
+    den = createDenServer(config, {
+      ptySpawn: () => new FakeProc(++pid),
+      // real builtins would collide with the fake claude-code driver (and
+      // scan real on-disk stores) — this suite exercises the ROUTE fence
+      skipBuiltinHarnessDrivers: true,
+      harnessDrivers: [cpDriver],
+    })
     await new Promise<void>((resolve) => den.server.listen(0, '0.0.0.0', resolve))
     const addr = den.server.address()
     if (addr === null || typeof addr === 'string') throw new Error('no address')
@@ -483,6 +554,70 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     const outcome = await rawUpgrade(`${remote}/term?id=${philPtyId}`, coco)
     expect(outcome).not.toContain('101')
     expect(outcome).not.toBe('TIMEOUT-NO-CLOSE')
+  })
+
+
+  it('control plane: listing hides sessions owned by the other user', async () => {
+    // phil (loopback owner) and coco each start one; a legacy row predates
+    // ownership entirely
+    const philStart = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
+      ca: pki.ca,
+    }, { nativeSessionId: 'phil-cp' })
+    expect(philStart.status).toBe(201)
+    const cocoStart = await call('POST', `${remote}/api/harnesses/claude-code/sessions`, coco, {
+      nativeSessionId: 'coco-cp',
+    })
+    expect(cocoStart.status).toBe(201)
+    cpDriver.add('claude-code:legacy-cp' as SessionId)
+
+    const cocoList = await call('GET', `${remote}/api/harnesses/claude-code/sessions`, coco)
+    const cocoIds = (JSON.parse(cocoList.body) as { sessions: { sessionId: string }[] }).sessions
+      .map((x) => x.sessionId)
+    expect(cocoIds).toContain('claude-code:coco-cp')
+    expect(cocoIds).not.toContain('claude-code:phil-cp')
+
+    const philList = await call('GET', `${loopback}/api/harnesses/claude-code/sessions`, {
+      ca: pki.ca,
+    })
+    const philIds = (JSON.parse(philList.body) as { sessions: { sessionId: string }[] }).sessions
+      .map((x) => x.sessionId)
+    expect(philIds).toContain('claude-code:phil-cp')
+    expect(philIds).not.toContain('claude-code:coco-cp')
+    // unowned legacy falls to the node owner
+    expect(philIds).toContain('claude-code:legacy-cp')
+  })
+
+  it("control plane: get/transcript/turns refuse another user's session", async () => {
+    const philEnc = encodeSessionIdSegment('claude-code:phil-cp')
+    expect((await call('GET', `${remote}/api/harness-sessions/${philEnc}`, coco)).status).toBe(403)
+    expect(
+      (await call('GET', `${remote}/api/harness-sessions/${philEnc}/transcript`, coco)).status,
+    ).toBe(403)
+    expect(
+      (await call('POST', `${remote}/api/harness-sessions/${philEnc}/turns`, coco, {
+        text: 'hi',
+      })).status,
+    ).toBe(403)
+  })
+
+  it('control plane: resume claims an unowned session for the resumer, then fences it', async () => {
+    const legacyEnc = encodeSessionIdSegment('claude-code:legacy-cp')
+    // coco resumes the pre-fence legacy row — allowed, and claims it
+    expect(
+      (await call('POST', `${remote}/api/harness-sessions/${legacyEnc}/resume`, coco)).status,
+    ).toBe(200)
+    // now even the node owner is fenced off it
+    expect(
+      (await call('GET', `${loopback}/api/harness-sessions/${legacyEnc}/transcript`, {
+        ca: pki.ca,
+      })).status,
+    ).toBe(403)
+    // and a foreign resume is refused rather than re-claimed
+    expect(
+      (await call('POST', `${loopback}/api/harness-sessions/${legacyEnc}/resume`, {
+        ca: pki.ca,
+      })).status,
+    ).toBe(403)
   })
 
   it('WS /term attach to her own PTY completes', async () => {
