@@ -782,31 +782,9 @@ export class RivetGateway {
     u.searchParams.set('dir', dir)
     u.searchParams.set('name', name)
     if (opts.overwrite) u.searchParams.set('overwrite', '1')
-    const headers: Record<string, string> = { 'content-type': 'application/octet-stream' }
-    let res: Response
-    try {
-      res = await fetch(u.toString(), {
-        method: 'POST',
-        headers,
-        body,
-        signal: opts.signal,
-      })
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') throw err
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
-    }
-    const parsed: unknown = await res.json().catch(() => undefined)
-    if (!res.ok) {
-      const message =
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        typeof (parsed as { error?: unknown }).error === 'string'
-          ? (parsed as { error: string }).error
-          : `gateway ${res.status} on /api/files/upload`
-      throw new GatewayError(res.status, message, parsed)
-    }
-    return parsed as FilesUploadResponse
+    return (await rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
+      res.json(),
+    )) as FilesUploadResponse
   }
 
   /** Stage bytes for a harness turn attachment (POST /api/uploads). The
@@ -824,7 +802,7 @@ export class RivetGateway {
     )
     u.searchParams.set('name', name)
     if (opts.mime) u.searchParams.set('mime', opts.mime)
-    return (await this.rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
+    return (await rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
       res.json(),
     )) as StagedUploadResponse
   }
@@ -840,7 +818,7 @@ export class RivetGateway {
       '/api/voice/transcribe',
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
-    return (await this.rawBodyPost(u, audio, mime, opts.signal, (res) =>
+    return (await rawBodyPost(u, audio, mime, opts.signal, (res) =>
       res.json(),
     )) as VoiceTranscribeResponse
   }
@@ -855,44 +833,9 @@ export class RivetGateway {
       '/api/voice/speak',
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
-    return (await this.rawBodyPost(u, JSON.stringify(req), 'application/json', opts.signal, (res) =>
+    return (await rawBodyPost(u, JSON.stringify(req), 'application/json', opts.signal, (res) =>
       res.arrayBuffer(),
     )) as ArrayBuffer
-  }
-
-  /** Shared raw-body POST for the binary endpoints: same unreachable/error
-   *  mapping as filesUpload, parameterized success extraction. */
-  async rawBodyPost(
-    u: URL,
-    body: string | Blob | ArrayBuffer,
-    contentType: string,
-    signal: AbortSignal | undefined,
-    extract: (res: Response) => Promise<unknown>,
-  ): Promise<unknown> {
-    let res: Response
-    try {
-      res = await fetch(u.toString(), {
-        method: 'POST',
-        headers: { 'content-type': contentType },
-        body,
-        signal,
-      })
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') throw err
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
-    }
-    if (!res.ok) {
-      const parsed: unknown = await res.json().catch(() => undefined)
-      const message =
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        typeof (parsed as { error?: unknown }).error === 'string'
-          ? (parsed as { error: string }).error
-          : `gateway ${String(res.status)} on ${u.pathname}`
-      throw new GatewayError(res.status, message, parsed)
-    }
-    return extract(res)
   }
 
   /** Create an empty directory under `dir` named `name`. */
@@ -951,4 +894,40 @@ export class RivetGateway {
       return false
     }
   }
+}
+
+/** Raw-body POST shared by the binary endpoints (files upload, attachment
+ *  staging, voice): one unreachable/error mapping, parameterized success
+ *  extraction. Not exported — the class methods are the API. */
+async function rawBodyPost(
+  u: URL,
+  body: string | Blob | ArrayBuffer,
+  contentType: string,
+  signal: AbortSignal | undefined,
+  extract: (res: Response) => Promise<unknown>,
+): Promise<unknown> {
+  let res: Response
+  try {
+    res = await fetch(u.toString(), {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body,
+      signal,
+    })
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') throw err
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
+  }
+  if (!res.ok) {
+    const parsed: unknown = await res.json().catch(() => undefined)
+    const message =
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === 'string'
+        ? (parsed as { error: string }).error
+        : `gateway ${String(res.status)} on ${u.pathname}`
+    throw new GatewayError(res.status, message, parsed)
+  }
+  return extract(res)
 }

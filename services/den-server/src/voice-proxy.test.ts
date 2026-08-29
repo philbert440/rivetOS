@@ -2,10 +2,14 @@
  * /api/voice — proxy routing over a fake upstream fetch.
  */
 
-import { createServer, type Server } from 'node:http'
+import { createServer, request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createVoiceRoutes, VOICE_SPEAK_INPUT_MAX_CHARS } from './voice-proxy.js'
+import {
+  createVoiceRoutes,
+  VOICE_SPEAK_INPUT_MAX_BYTES,
+  type VoiceRoutesOptions,
+} from './voice-proxy.js'
 
 const STT = 'http://192.0.2.60:9000/v1/audio/transcriptions'
 const TTS = 'http://192.0.2.60:9001/v1/audio/speech'
@@ -15,7 +19,8 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn()
 })
 
-async function serve(routes: ReturnType<typeof createVoiceRoutes>): Promise<string> {
+async function serve(opts: VoiceRoutesOptions): Promise<string> {
+  const routes = createVoiceRoutes(opts)
   const server: Server = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://localhost')
@@ -37,9 +42,43 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
+/** A fetch stub that never settles until its signal aborts. */
+function hungFetch(onAbort?: () => void): typeof fetch {
+  return ((_url: unknown, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        onAbort?.()
+        reject(new DOMException('The operation was aborted', 'AbortError'))
+      })
+    })) as typeof fetch
+}
+
+/** Chunked-transfer POST (no Content-Length at all) — pins that the server
+ *  counts actual bytes rather than trusting headers. */
+function postChunked(
+  base: string,
+  path: string,
+  chunks: string[],
+): Promise<{ status: number | undefined }> {
+  const u = new URL(path, base)
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { host: u.hostname, port: u.port, path: u.pathname, method: 'POST' },
+      (res) => {
+        res.resume()
+        res.on('end', () => resolve({ status: res.statusCode }))
+        res.on('error', () => resolve({ status: res.statusCode }))
+      },
+    )
+    req.on('error', reject)
+    for (const c of chunks) req.write(c)
+    req.end()
+  })
+}
+
 describe('/api/voice', () => {
   it('answers 501 when upstreams are not configured', async () => {
-    const base = await serve(createVoiceRoutes({ sttUrl: '', ttsUrl: '' }))
+    const base = await serve({ sttUrl: '', ttsUrl: '' })
     const t = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', body: 'x' })
     expect(t.status).toBe(501)
     const s = await fetch(`${base}/api/voice/speak`, {
@@ -50,25 +89,29 @@ describe('/api/voice', () => {
   })
 
   it('ignores non-POST and unknown voice paths', async () => {
-    const base = await serve(createVoiceRoutes({ sttUrl: STT, ttsUrl: TTS }))
+    const base = await serve({ sttUrl: STT, ttsUrl: TTS })
     expect((await fetch(`${base}/api/voice/transcribe`)).status).toBe(404)
     expect((await fetch(`${base}/api/voice/nope`, { method: 'POST' })).status).toBe(404)
   })
 
-  it('transcribe forwards multipart and passes the upstream JSON through', async () => {
+  it('transcribe forwards exact multipart framing and parses the upstream JSON', async () => {
     const fetchImpl = vi.fn(async (url: unknown, init?: RequestInit) => {
       expect(String(url)).toBe(STT)
       const ct = (init?.headers as Record<string, string>)['content-type']
-      expect(ct).toMatch(/^multipart\/form-data; boundary=/)
+      const boundary = /^multipart\/form-data; boundary=(.+)$/.exec(ct)?.[1]
+      expect(boundary).toBeTruthy()
       const body = Buffer.from(init?.body as Uint8Array).toString('latin1')
-      expect(body).toContain('name="file"; filename="audio.webm"')
-      expect(body).toContain('Content-Type: audio/webm')
-      expect(body).toContain('AUDIOBYTES')
+      expect(body).toBe(
+        `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="file"; filename="audio.webm"\r\n` +
+          `Content-Type: audio/webm\r\n\r\n` +
+          `AUDIOBYTES\r\n` +
+          `--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\ndefault\r\n` +
+          `--${boundary}--\r\n`,
+      )
       return jsonResponse(200, { text: 'hello world' })
     })
-    const base = await serve(
-      createVoiceRoutes({ sttUrl: STT, ttsUrl: '', fetchImpl: fetchImpl as typeof fetch }),
-    )
+    const base = await serve({ sttUrl: STT, ttsUrl: '', fetchImpl: fetchImpl as typeof fetch })
     const res = await fetch(`${base}/api/voice/transcribe`, {
       method: 'POST',
       headers: { 'content-type': 'audio/webm;codecs=opus' },
@@ -79,49 +122,109 @@ describe('/api/voice', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
-  it('transcribe bounds the audio body', async () => {
-    const fetchImpl = vi.fn()
-    const base = await serve(
-      createVoiceRoutes({
-        sttUrl: STT,
-        ttsUrl: '',
-        maxAudioBytes: 8,
-        fetchImpl: fetchImpl as unknown as typeof fetch,
-      }),
-    )
-    const big = await fetch(`${base}/api/voice/transcribe`, {
-      method: 'POST',
-      body: 'way more than eight bytes',
+  it('sanitizes a hostile client content-type to audio/wav', async () => {
+    let part = ''
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      part = Buffer.from(init?.body as Uint8Array).toString('latin1')
+      return jsonResponse(200, { text: 'ok' })
     })
+    const base = await serve({ sttUrl: STT, ttsUrl: '', fetchImpl: fetchImpl as typeof fetch })
+    const res = await fetch(`${base}/api/voice/transcribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'audio/webm"; x="injected' },
+      body: 'AUDIO',
+    })
+    expect(res.status).toBe(200)
+    expect(part).toContain('filename="audio.wav"')
+    expect(part).toContain('Content-Type: audio/wav\r\n')
+    expect(part).not.toContain('injected')
+    // Unlisted-but-benign types fall back too.
+    await fetch(`${base}/api/voice/transcribe`, {
+      method: 'POST',
+      headers: { 'content-type': 'video/quicktime' },
+      body: 'AUDIO',
+    })
+    expect(part).toContain('Content-Type: audio/wav\r\n')
+  })
+
+  it('counts body bytes (chunked, no Content-Length) against the cap', async () => {
+    const fetchImpl = vi.fn()
+    const base = await serve({
+      sttUrl: STT,
+      ttsUrl: '',
+      maxAudioBytes: 8,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    const big = await postChunked(base, '/api/voice/transcribe', ['fourby', 'tesmore', 'andmore'])
     expect(big.status).toBe(413)
     expect(fetchImpl).not.toHaveBeenCalled()
     const empty = await fetch(`${base}/api/voice/transcribe`, { method: 'POST' })
     expect(empty.status).toBe(400)
   })
 
-  it('transcribe maps upstream failure and unreachable to 502', async () => {
-    let mode: 'error' | 'throw' = 'error'
-    const fetchImpl = vi.fn(async () => {
-      if (mode === 'throw') throw new Error('connect ECONNREFUSED')
-      return new Response('model exploded', { status: 500 })
-    })
-    const base = await serve(
-      createVoiceRoutes({ sttUrl: STT, ttsUrl: '', fetchImpl: fetchImpl as typeof fetch }),
-    )
-    const upstream = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', body: 'x' })
-    expect(upstream.status).toBe(502)
-    expect(((await upstream.json()) as { error: string }).error).toContain('500 model exploded')
-    mode = 'throw'
-    const unreachable = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', body: 'x' })
-    expect(unreachable.status).toBe(502)
+  it('maps upstream failures to 502 with a truncated plain-text snippet', async () => {
+    let body = '<html><body><h1>Bad Gateway</h1><p>secret internals</p></body></html>'
+    let status = 500
+    const fetchImpl = vi.fn(async () => new Response(body, { status }))
+    const base = await serve({ sttUrl: STT, ttsUrl: '', fetchImpl: fetchImpl as typeof fetch })
+    const html = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', body: 'x' })
+    expect(html.status).toBe(502)
+    const err = ((await html.json()) as { error: string }).error
+    expect(err).not.toContain('<html>')
+    expect(err).toContain('upstream 500')
+    expect(err.length).toBeLessThan(240)
+    // Non-JSON 200 is an upstream bug, not a client payload.
+    body = 'plain text, not json'
+    status = 200
+    const nonJson = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', body: 'x' })
+    expect(nonJson.status).toBe(502)
+    expect(((await nonJson.json()) as { error: string }).error).toContain('non-JSON')
   })
 
-  it('speak validates the body', async () => {
-    const fetchImpl = vi.fn()
-    const base = await serve(
-      createVoiceRoutes({ sttUrl: '', ttsUrl: TTS, fetchImpl: fetchImpl as unknown as typeof fetch }),
+  it('times out a hung upstream via the shared abort scope', async () => {
+    const aborted = vi.fn()
+    const base = await serve({
+      sttUrl: STT,
+      ttsUrl: '',
+      sttTimeoutMs: 60,
+      fetchImpl: hungFetch(aborted),
+    })
+    const res = await fetch(`${base}/api/voice/transcribe`, { method: 'POST', body: 'x' })
+    expect(res.status).toBe(502)
+    expect(aborted).toHaveBeenCalledTimes(1)
+  })
+
+  it('aborts the upstream when the client disconnects mid-flight', async () => {
+    const aborted = vi.fn()
+    const base = await serve({ sttUrl: STT, ttsUrl: '', fetchImpl: hungFetch(aborted) })
+    const u = new URL(`${base}/api/voice/transcribe`)
+    await new Promise<void>((resolve, reject) => {
+      const req = httpRequest(
+        { host: u.hostname, port: u.port, path: u.pathname, method: 'POST' },
+        () => undefined,
+      )
+      req.on('error', () => resolve()) // socket reset by our own destroy
+      req.end('AUDIO', () => {
+        setTimeout(() => {
+          req.destroy()
+          resolve()
+        }, 50)
+      })
+      setTimeout(() => reject(new Error('client never settled')), 2000)
+    })
+    await vi.waitFor(() => expect(aborted).toHaveBeenCalledTimes(1), { timeout: 2000 })
+  })
+
+  it('speak validates the body, in UTF-8 bytes', async () => {
+    const fetchImpl = vi.fn(async () => new Response('WAV', { status: 200 }))
+    const base = await serve({
+      sttUrl: '',
+      ttsUrl: TTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })
+    expect((await fetch(`${base}/api/voice/speak`, { method: 'POST', body: '{{' })).status).toBe(
+      400,
     )
-    expect((await fetch(`${base}/api/voice/speak`, { method: 'POST', body: '{{' })).status).toBe(400)
     expect(
       (
         await fetch(`${base}/api/voice/speak`, {
@@ -130,18 +233,31 @@ describe('/api/voice', () => {
         })
       ).status,
     ).toBe(400)
+    // 1366 × '嗨' = 4098 UTF-8 bytes but only 1366 characters — a char-count
+    // check would wrongly accept it.
+    const multiByte = '嗨'.repeat(Math.ceil((VOICE_SPEAK_INPUT_MAX_BYTES + 1) / 3))
+    expect(Buffer.byteLength(multiByte, 'utf8')).toBeGreaterThan(VOICE_SPEAK_INPUT_MAX_BYTES)
     expect(
       (
         await fetch(`${base}/api/voice/speak`, {
           method: 'POST',
-          body: JSON.stringify({ input: 'x'.repeat(VOICE_SPEAK_INPUT_MAX_CHARS + 1) }),
+          body: JSON.stringify({ input: multiByte }),
         })
       ).status,
     ).toBe(413)
-    expect(fetchImpl).not.toHaveBeenCalled()
+    // Exactly the cap is allowed.
+    const exact = 'x'.repeat(VOICE_SPEAK_INPUT_MAX_BYTES)
+    expect(
+      (
+        await fetch(`${base}/api/voice/speak`, {
+          method: 'POST',
+          body: JSON.stringify({ input: exact }),
+        })
+      ).status,
+    ).toBe(200)
   })
 
-  it('speak applies the default instructions and lets explicit ones win', async () => {
+  it('speak applies default instructions; explicit wins; empty string does NOT override', async () => {
     const payloads: unknown[] = []
     const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
       payloads.push(JSON.parse(String(init?.body)))
@@ -150,43 +266,78 @@ describe('/api/voice', () => {
         headers: { 'content-type': 'audio/wav' },
       })
     })
-    const base = await serve(
-      createVoiceRoutes({
-        sttUrl: '',
-        ttsUrl: TTS,
-        ttsInstructions: 'warm default voice',
-        fetchImpl: fetchImpl as typeof fetch,
-      }),
-    )
-    const first = await fetch(`${base}/api/voice/speak`, {
-      method: 'POST',
-      body: JSON.stringify({ input: 'hello' }),
+    const base = await serve({
+      sttUrl: '',
+      ttsUrl: TTS,
+      ttsInstructions: 'warm default voice',
+      fetchImpl: fetchImpl as typeof fetch,
     })
+    const speak = (body: unknown): Promise<Response> =>
+      fetch(`${base}/api/voice/speak`, { method: 'POST', body: JSON.stringify(body) })
+    const first = await speak({ input: 'hello' })
     expect(first.status).toBe(200)
     expect(first.headers.get('content-type')).toBe('audio/wav')
     expect(Buffer.from(await first.arrayBuffer()).toString()).toBe('WAVBYTES')
-    await fetch(`${base}/api/voice/speak`, {
-      method: 'POST',
-      body: JSON.stringify({ input: 'hello', instructions: 'gravelly narrator', voice: 'eric' }),
-    })
+    await speak({ input: 'hello', instructions: 'gravelly narrator', voice: 'eric' })
+    await speak({ input: 'hello', instructions: '' })
     expect(payloads[0]).toEqual({ input: 'hello', instructions: 'warm default voice' })
     expect(payloads[1]).toEqual({
       input: 'hello',
       instructions: 'gravelly narrator',
       voice: 'eric',
     })
+    expect(payloads[2]).toEqual({ input: 'hello', instructions: 'warm default voice' })
+  })
+
+  it('speak streams the upstream body through and enforces the response cap', async () => {
+    const chunkedBody = (chunks: string[]): ReadableStream<Uint8Array> =>
+      new ReadableStream({
+        async start(controller) {
+          for (const c of chunks) {
+            controller.enqueue(new TextEncoder().encode(c))
+            await new Promise((r) => setTimeout(r, 5))
+          }
+          controller.close()
+        },
+      })
+    const fetchImpl = vi.fn(async () => {
+      return new Response(chunkedBody(['WAV-', 'PART-', 'END']), {
+        status: 200,
+        headers: { 'content-type': 'audio/wav' },
+      })
+    })
+    const base = await serve({ sttUrl: '', ttsUrl: TTS, fetchImpl: fetchImpl as typeof fetch })
+    const ok = await fetch(`${base}/api/voice/speak`, {
+      method: 'POST',
+      body: JSON.stringify({ input: 'hi' }),
+    })
+    expect(ok.status).toBe(200)
+    expect(Buffer.from(await ok.arrayBuffer()).toString()).toBe('WAV-PART-END')
+
+    const capped = await serve({
+      sttUrl: '',
+      ttsUrl: TTS,
+      maxTtsResponseBytes: 6,
+      fetchImpl: fetchImpl as typeof fetch,
+    })
+    // Over-cap mid-stream: the 200 head is already gone, so the client sees a
+    // truncated/reset body rather than a tidy error status.
+    await expect(
+      fetch(`${capped}/api/voice/speak`, {
+        method: 'POST',
+        body: JSON.stringify({ input: 'hi' }),
+      }).then((r) => r.arrayBuffer()),
+    ).rejects.toThrow()
   })
 
   it('speak maps upstream failure to 502', async () => {
     const fetchImpl = vi.fn(async () => new Response('tts down', { status: 503 }))
-    const base = await serve(
-      createVoiceRoutes({ sttUrl: '', ttsUrl: TTS, fetchImpl: fetchImpl as typeof fetch }),
-    )
+    const base = await serve({ sttUrl: '', ttsUrl: TTS, fetchImpl: fetchImpl as typeof fetch })
     const res = await fetch(`${base}/api/voice/speak`, {
       method: 'POST',
       body: JSON.stringify({ input: 'hi' }),
     })
     expect(res.status).toBe(502)
-    expect(((await res.json()) as { error: string }).error).toContain('503 tts down')
+    expect(((await res.json()) as { error: string }).error).toContain('upstream 503: tts down')
   })
 })

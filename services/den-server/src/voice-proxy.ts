@@ -3,10 +3,10 @@
  * to the model servers directly (no CORS surface, no upstream addresses in
  * the client, and the same mTLS gate as every other /api/* route).
  *
- *   POST /api/voice/transcribe   raw audio body (audio/wav | audio/webm)
+ *   POST /api/voice/transcribe   raw audio body (audio/wav | audio/webm | …)
  *   → 200 upstream JSON ({ text })
  *   POST /api/voice/speak        { input, instructions?, voice? }
- *   → 200 audio bytes (upstream content-type, audio/wav in practice)
+ *   → 200 audio bytes, streamed through (upstream content-type)
  *
  * Upstreams are per-node env config (RIVETOS_DEN_VOICE_STT_URL /
  * RIVETOS_DEN_VOICE_TTS_URL — the RIVETOS_DEN_ prefix rides buildGatewayEnv's
@@ -16,7 +16,15 @@
  * STT is an OpenAI /v1/audio/transcriptions-compatible endpoint (multipart
  * `file` field). TTS is /v1/audio/speech-compatible; a voice-design model
  * NEEDS `instructions`, so a per-node default (RIVETOS_DEN_VOICE_TTS_
- * INSTRUCTIONS) applies whenever the request carries none.
+ * INSTRUCTIONS) applies whenever the request carries none (an explicit ""
+ * does not override the default — absent and empty mean the same thing).
+ *
+ * Every request runs under ONE AbortController: a route deadline, the client
+ * body read, and the upstream fetch all share it, and a client that
+ * disconnects mid-flight (res 'close' before the response finished) aborts
+ * the upstream work instead of leaving it running to the timeout. Upstream
+ * responses are bounded too — a misconfigured upstream must not be able to
+ * OOM den-server with a giant 200.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -25,12 +33,32 @@ import { randomUUID } from 'node:crypto'
 /** Mic clips, not albums: a minute of 48kHz/16-bit mono WAV is ~5.6MB. */
 export const DEFAULT_VOICE_AUDIO_MAX_BYTES = 15 * 1024 * 1024
 
-/** Spoken replies are short; a whole transcript does not belong in one call. */
-export const VOICE_SPEAK_INPUT_MAX_CHARS = 4096
+/** Spoken replies are short; a whole transcript does not belong in one call.
+ *  Measured in BYTES of UTF-8, not characters — multi-byte text budgets the
+ *  same as ASCII. */
+export const VOICE_SPEAK_INPUT_MAX_BYTES = 4096
+
+/** Transcription JSON for a 15MB clip is a few KB; 1MB is already absurd. */
+export const STT_RESPONSE_MAX_BYTES = 1024 * 1024
+
+/** Streamed-through cap for synthesized audio. */
+export const TTS_RESPONSE_MAX_BYTES = 30 * 1024 * 1024
 
 const STT_TIMEOUT_MS = 60_000
 const TTS_TIMEOUT_MS = 120_000
 const SPEAK_BODY_MAX_BYTES = 64 * 1024
+
+/** Multipart part MIMEs we will state to the upstream. Anything else (or a
+ *  value carrying quote/CR/LF header-injection characters) falls back to
+ *  audio/wav — defense-in-depth; Node's parser blocks raw CRLF anyway. */
+const AUDIO_MIME_ALLOWLIST = new Set([
+  'audio/wav',
+  'audio/x-wav',
+  'audio/webm',
+  'audio/ogg',
+  'audio/mp4',
+  'audio/mpeg',
+])
 
 export interface VoiceRoutesOptions {
   /** Empty = transcribe answers 501. */
@@ -40,8 +68,11 @@ export interface VoiceRoutesOptions {
   /** Default `instructions` when a speak request carries none. */
   ttsInstructions?: string
   maxAudioBytes?: number
-  /** Test seam. */
+  /** Test seams. */
   fetchImpl?: typeof fetch
+  sttTimeoutMs?: number
+  ttsTimeoutMs?: number
+  maxTtsResponseBytes?: number
   log?: (msg: string) => void
 }
 
@@ -50,36 +81,119 @@ export interface VoiceRoutes {
 }
 
 function json(res: ServerResponse, status: number, body: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return true
   res.writeHead(status, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
   return true
 }
 
-/** Bounded body read. Destroys the socket past the cap — the client is
- *  mid-upload of something we will never accept. */
-function readBounded(req: IncomingMessage, cap: number): Promise<Buffer | 'too-large'> {
-  return new Promise((resolve, reject) => {
+/** 413 with Connection: close, then destroy once the response has flushed —
+ *  a body we refused cannot be drained for keep-alive reuse at these sizes. */
+function jsonRefuseBody(req: IncomingMessage, res: ServerResponse, body: unknown): boolean {
+  if (res.writableEnded || res.destroyed) return true
+  res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' })
+  res.end(JSON.stringify(body))
+  res.once('finish', () => req.destroy())
+  return true
+}
+
+type BoundedRead = Buffer | 'too-large' | 'aborted'
+
+/** Bounded, settle-once body read. Counts actual bytes (never trusts
+ *  Content-Length), pauses past the cap, resolves 'aborted' on client
+ *  disconnect / abort signal, and detaches every listener on settle. */
+function readBounded(req: IncomingMessage, cap: number, signal: AbortSignal): Promise<BoundedRead> {
+  return new Promise((resolve) => {
     const chunks: Buffer[] = []
     let size = 0
-    req.on('data', (chunk: Buffer) => {
+    let settled = false
+    const settle = (value: BoundedRead): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(value)
+    }
+    const onData = (chunk: Buffer): void => {
       size += chunk.length
       if (size > cap) {
-        req.removeAllListeners('data')
-        req.removeAllListeners('end')
-        resolve('too-large')
+        req.pause()
+        settle('too-large')
         return
       }
       chunks.push(chunk)
-    })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
-    req.on('error', reject)
+    }
+    const onEnd = (): void => settle(Buffer.concat(chunks))
+    // 'close' before 'end' (which settles first on a normal body) or a
+    // stream error both mean the client is gone.
+    const onGone = (): void => settle('aborted')
+    const onAbort = (): void => {
+      settle('aborted')
+      req.destroy()
+    }
+    const cleanup = (): void => {
+      req.off('data', onData)
+      req.off('end', onEnd)
+      req.off('error', onGone)
+      req.off('close', onGone)
+      signal.removeEventListener('abort', onAbort)
+    }
+    if (signal.aborted) {
+      settled = true
+      resolve('aborted')
+      return
+    }
+    signal.addEventListener('abort', onAbort)
+    req.on('data', onData)
+    req.on('end', onEnd)
+    req.on('error', onGone)
+    req.on('close', onGone)
   })
+}
+
+/** Bounded read of an upstream Response body. */
+async function readUpstreamBounded(upstream: Response, cap: number): Promise<Buffer | 'too-large'> {
+  const body = upstream.body
+  if (!body) {
+    const buf = Buffer.from(await upstream.arrayBuffer())
+    return buf.length > cap ? 'too-large' : buf
+  }
+  const reader = body.getReader() as ReadableStreamDefaultReader<Uint8Array>
+  const chunks: Buffer[] = []
+  let size = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    size += value.byteLength
+    if (size > cap) {
+      await reader.cancel().catch(() => undefined)
+      return 'too-large'
+    }
+    chunks.push(Buffer.from(value))
+  }
+  return Buffer.concat(chunks)
+}
+
+/** Short, plain-text snippet of an upstream error body — never HTML, never
+ *  unbounded, same string to the client and the log. */
+function upstreamSnippet(text: string): string {
+  return text
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 200)
+}
+
+function sanitizeAudioMime(raw: string | undefined): string {
+  if (!raw || /[\r\n"]/.test(raw)) return 'audio/wav'
+  const mime = raw.split(';')[0].trim().toLowerCase()
+  return AUDIO_MIME_ALLOWLIST.has(mime) ? mime : 'audio/wav'
 }
 
 function extFor(mime: string): string {
   if (mime.includes('webm')) return 'webm'
   if (mime.includes('ogg')) return 'ogg'
-  if (mime.includes('mp4') || mime.includes('m4a')) return 'm4a'
+  if (mime.includes('mp4')) return 'm4a'
+  if (mime.includes('mpeg')) return 'mp3'
   return 'wav'
 }
 
@@ -114,94 +228,180 @@ export function createVoiceRoutes(opts: VoiceRoutesOptions): VoiceRoutes {
     opts.maxAudioBytes && opts.maxAudioBytes > 0
       ? opts.maxAudioBytes
       : DEFAULT_VOICE_AUDIO_MAX_BYTES
+  const maxTtsResponse =
+    opts.maxTtsResponseBytes && opts.maxTtsResponseBytes > 0
+      ? opts.maxTtsResponseBytes
+      : TTS_RESPONSE_MAX_BYTES
+  const sttTimeout = opts.sttTimeoutMs ?? STT_TIMEOUT_MS
+  const ttsTimeout = opts.ttsTimeoutMs ?? TTS_TIMEOUT_MS
   const fetchImpl = opts.fetchImpl ?? fetch
   const log = opts.log ?? ((): void => undefined)
 
   const upstreamFail = (res: ServerResponse, route: string, detail: string): boolean => {
-    log(`[voice] ${route} upstream failed: ${detail}`)
-    return json(res, 502, { error: `voice upstream failed: ${detail.slice(0, 500)}` })
+    const snippet = upstreamSnippet(detail)
+    log(`[voice] ${route} upstream failed: ${snippet}`)
+    return json(res, 502, { error: `voice upstream failed: ${snippet}` })
   }
 
-  const transcribe = async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
-    if (!sttUrl) {
-      return json(res, 501, { error: 'voice transcription is not configured on this node' })
+  /** One deadline + one abort scope for read + upstream + write. The res
+   *  'close' listener fires on client disconnect (writableEnded is still
+   *  false then) — normal completion unhooks first. */
+  const scoped = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+    timeoutMs: number,
+    run: (signal: AbortSignal) => Promise<boolean>,
+  ): Promise<boolean> => {
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), timeoutMs)
+    const onClose = (): void => {
+      if (!res.writableEnded) ac.abort()
     }
-    const audio = await readBounded(req, maxAudio)
-    if (audio === 'too-large') {
-      return json(res, 413, { error: `audio exceeds ${String(maxAudio)} bytes` })
-    }
-    if (audio.length === 0) return json(res, 400, { error: 'empty audio body' })
-    const mime = (req.headers['content-type'] ?? 'audio/wav').split(';')[0].trim() || 'audio/wav'
-    const { body, contentType } = multipartFile('file', `audio.${extFor(mime)}`, mime, audio)
-    let upstream: Response
+    res.on('close', onClose)
     try {
-      upstream = await fetchImpl(sttUrl, {
-        method: 'POST',
-        headers: { 'content-type': contentType },
-        body: new Uint8Array(body),
-        signal: AbortSignal.timeout(STT_TIMEOUT_MS),
-      })
-    } catch (err) {
-      return upstreamFail(res, 'transcribe', err instanceof Error ? err.message : String(err))
+      return await run(ac.signal)
+    } finally {
+      clearTimeout(timer)
+      res.off('close', onClose)
     }
-    const text = await upstream.text().catch(() => '')
-    if (!upstream.ok) return upstreamFail(res, 'transcribe', `${String(upstream.status)} ${text}`)
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(text)
-    return true
   }
 
-  const speak = async (req: IncomingMessage, res: ServerResponse): Promise<boolean> => {
-    if (!ttsUrl) {
-      return json(res, 501, { error: 'voice synthesis is not configured on this node' })
-    }
-    const raw = await readBounded(req, SPEAK_BODY_MAX_BYTES)
-    if (raw === 'too-large') return json(res, 413, { error: 'speak body too large' })
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw.toString('utf8'))
-    } catch {
-      return json(res, 400, { error: 'speak body must be JSON' })
-    }
-    const body = (parsed ?? {}) as { input?: unknown; instructions?: unknown; voice?: unknown }
-    if (typeof body.input !== 'string' || body.input.trim() === '') {
-      return json(res, 400, { error: 'input required' })
-    }
-    if (body.input.length > VOICE_SPEAK_INPUT_MAX_CHARS) {
-      return json(res, 413, { error: `input exceeds ${String(VOICE_SPEAK_INPUT_MAX_CHARS)} chars` })
-    }
-    const instructions =
-      typeof body.instructions === 'string' && body.instructions.trim() !== ''
-        ? body.instructions
-        : defaultInstructions
-    const payload: Record<string, string> = { input: body.input }
-    if (instructions) payload.instructions = instructions
-    if (typeof body.voice === 'string' && body.voice.trim() !== '') payload.voice = body.voice
-    let upstream: Response
-    try {
-      upstream = await fetchImpl(ttsUrl, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
-      })
-    } catch (err) {
-      return upstreamFail(res, 'speak', err instanceof Error ? err.message : String(err))
-    }
-    if (!upstream.ok) {
-      const text = await upstream.text().catch(() => '')
-      return upstreamFail(res, 'speak', `${String(upstream.status)} ${text}`)
-    }
-    // Spoken replies are small (a sentence ≈ 100KB of WAV); buffering keeps
-    // the fetch seam trivial to fake and sidesteps web-vs-node stream piping.
-    const audio = Buffer.from(await upstream.arrayBuffer())
-    res.writeHead(200, {
-      'Content-Type': upstream.headers.get('content-type') ?? 'audio/wav',
-      'Content-Length': String(audio.length),
+  const transcribe = (req: IncomingMessage, res: ServerResponse): Promise<boolean> =>
+    scoped(req, res, sttTimeout, async (signal) => {
+      if (!sttUrl) {
+        return json(res, 501, { error: 'voice transcription is not configured on this node' })
+      }
+      const audio = await readBounded(req, maxAudio, signal)
+      if (audio === 'too-large') {
+        return jsonRefuseBody(req, res, { error: `audio exceeds ${String(maxAudio)} bytes` })
+      }
+      if (audio === 'aborted') {
+        res.destroy()
+        return true
+      }
+      if (audio.length === 0) return json(res, 400, { error: 'empty audio body' })
+      const mime = sanitizeAudioMime(req.headers['content-type'])
+      const { body, contentType } = multipartFile('file', `audio.${extFor(mime)}`, mime, audio)
+      let upstream: Response
+      try {
+        upstream = await fetchImpl(sttUrl, {
+          method: 'POST',
+          headers: { 'content-type': contentType },
+          body: new Uint8Array(body),
+          signal,
+        })
+      } catch (err) {
+        return upstreamFail(res, 'transcribe', err instanceof Error ? err.message : String(err))
+      }
+      const raw = await readUpstreamBounded(upstream, STT_RESPONSE_MAX_BYTES)
+      if (raw === 'too-large') return upstreamFail(res, 'transcribe', 'oversized upstream response')
+      const text = raw.toString('utf8')
+      if (!upstream.ok) {
+        return upstreamFail(res, 'transcribe', `upstream ${String(upstream.status)}: ${text}`)
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        return upstreamFail(res, 'transcribe', 'upstream returned non-JSON')
+      }
+      return json(res, 200, parsed)
     })
-    res.end(audio)
-    return true
-  }
+
+  const speak = (req: IncomingMessage, res: ServerResponse): Promise<boolean> =>
+    scoped(req, res, ttsTimeout, async (signal) => {
+      if (!ttsUrl) {
+        return json(res, 501, { error: 'voice synthesis is not configured on this node' })
+      }
+      const raw = await readBounded(req, SPEAK_BODY_MAX_BYTES, signal)
+      if (raw === 'too-large') return jsonRefuseBody(req, res, { error: 'speak body too large' })
+      if (raw === 'aborted') {
+        res.destroy()
+        return true
+      }
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw.toString('utf8'))
+      } catch {
+        return json(res, 400, { error: 'speak body must be JSON' })
+      }
+      const body = (parsed ?? {}) as { input?: unknown; instructions?: unknown; voice?: unknown }
+      if (typeof body.input !== 'string' || body.input.trim() === '') {
+        return json(res, 400, { error: 'input required' })
+      }
+      if (Buffer.byteLength(body.input, 'utf8') > VOICE_SPEAK_INPUT_MAX_BYTES) {
+        return json(res, 413, {
+          error: `input exceeds ${String(VOICE_SPEAK_INPUT_MAX_BYTES)} UTF-8 bytes`,
+        })
+      }
+      const instructions =
+        typeof body.instructions === 'string' && body.instructions.trim() !== ''
+          ? body.instructions
+          : defaultInstructions
+      const payload: Record<string, string> = { input: body.input }
+      if (instructions) payload.instructions = instructions
+      if (typeof body.voice === 'string' && body.voice.trim() !== '') payload.voice = body.voice
+      let upstream: Response
+      try {
+        upstream = await fetchImpl(ttsUrl, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal,
+        })
+      } catch (err) {
+        return upstreamFail(res, 'speak', err instanceof Error ? err.message : String(err))
+      }
+      if (!upstream.ok) {
+        const errBody = await readUpstreamBounded(upstream, STT_RESPONSE_MAX_BYTES)
+        const detail =
+          errBody === 'too-large' ? 'oversized upstream error' : errBody.toString('utf8')
+        return upstreamFail(res, 'speak', `upstream ${String(upstream.status)}: ${detail}`)
+      }
+      // Stream through with a byte counter — audio goes out as it arrives,
+      // nothing is buffered whole, and an over-cap upstream is cut off.
+      const stream = upstream.body
+      if (!stream) {
+        const buf = Buffer.from(await upstream.arrayBuffer())
+        if (buf.length > maxTtsResponse) {
+          return upstreamFail(res, 'speak', 'oversized upstream response')
+        }
+        res.writeHead(200, { 'Content-Type': upstream.headers.get('content-type') ?? 'audio/wav' })
+        res.end(buf)
+        return true
+      }
+      res.writeHead(200, { 'Content-Type': upstream.headers.get('content-type') ?? 'audio/wav' })
+      const reader = stream.getReader() as ReadableStreamDefaultReader<Uint8Array>
+      let sent = 0
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          sent += value.byteLength
+          if (sent > maxTtsResponse) {
+            log('[voice] speak upstream exceeded response cap — truncating')
+            await reader.cancel().catch(() => undefined)
+            res.destroy()
+            return true
+          }
+          const ok = await new Promise<boolean>((resolve) => {
+            res.write(Buffer.from(value), (err) => resolve(!err))
+          })
+          if (!ok) {
+            await reader.cancel().catch(() => undefined)
+            return true
+          }
+        }
+      } catch (err) {
+        // Mid-stream upstream failure: the 200 head is gone already — all we
+        // can do is cut the connection so the client sees a short read.
+        log(`[voice] speak stream failed: ${err instanceof Error ? err.message : String(err)}`)
+        res.destroy()
+        return true
+      }
+      res.end()
+      return true
+    })
 
   return {
     async handle(req, res, url): Promise<boolean> {
