@@ -644,6 +644,10 @@ export async function registerAgentTools(
     const wikiRoot = process.env.WIKI_DIR ?? '/rivet-shared/wiki'
     const userWikis = new Map<string, { index: WikiIndex; wikiDir: string }>()
     const wikiFor = (userId: string): { index: WikiIndex; wikiDir: string } | null => {
+      // path.join drops earlier segments on an absolute id and walks '..' —
+      // den + USER_DBS gate real ids, but the file-root seam must not depend
+      // on them (#579 review finding 4; the core resolver rejects these too).
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(userId) || userId.includes('..')) return null
       const userPool = userPools?.get(userId)
       if (!userPool) return null
       let entry = userWikis.get(userId)

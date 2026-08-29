@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { CITATIONS_MAX, HISTORY_MAX, serializeWikiPage, SOURCES_MAX } from '@rivetos/wiki-core'
-import { createWikiApiRoute, type WikiIndexLike } from './wiki-api.js'
+import { createWikiApiRoute, resolveWikiSurface, type WikiIndexLike } from './wiki-api.js'
 import { createWikiHtmlRoute, renderMarkdown } from './wiki-html.js'
 
 const TOPIC = {
@@ -321,29 +321,81 @@ describe('per-user routing (x-rivetos-user)', () => {
     expect((await fetch(`${base}/wiki`, stranger)).status).toBe(503)
   })
 
+  it('keeps the owner surfaces owner-only under the forUser injection', async () => {
+    const base = await serveRouted()
+    const ownerHtml = await (await fetch(`${base}/wiki`)).text()
+    expect(ownerHtml).toContain(TOPIC.title)
+    expect(ownerHtml).not.toContain(COCO_TOPIC.title)
+  })
+
+  it('serves the /wiki/:slug article from the routed file root only', async () => {
+    const base = await serveRouted()
+    const routedArticle = await fetch(`${base}/wiki/${COCO_TOPIC.slug}`, routed)
+    expect(routedArticle.status).toBe(200)
+    expect(await routedArticle.text()).toContain('Coco-only')
+    expect((await fetch(`${base}/wiki/${COCO_TOPIC.slug}`)).status).toBe(404)
+  })
+
   it('refuses a present-but-malformed header instead of defaulting to owner', async () => {
     const base = await serveRouted()
-    expect(
-      (await fetch(`${base}/api/wiki`, { headers: { 'x-rivetos-user': '' } })).status,
-    ).toBe(503)
+    const emptyApi = await fetch(`${base}/api/wiki`, { headers: { 'x-rivetos-user': '' } })
+    expect(emptyApi.status).toBe(503)
+    const emptyHtml = await fetch(`${base}/wiki`, { headers: { 'x-rivetos-user': '' } })
+    expect(emptyHtml.status).toBe(503)
+    expect(await emptyHtml.text()).not.toContain(TOPIC.title)
 
-    // duplicated header (array form) via direct handler invocation
-    const api = createWikiApiRoute({ index: fakeIndex(), wikiDir, forUser })
-    let code = 0
-    await api.handler(
-      {
-        method: 'GET',
-        url: '/api/wiki',
-        headers: { 'x-rivetos-user': ['coco', 'phil'] },
-      } as never,
-      {
-        writeHead: (c: number) => {
-          code = c
-        },
-        end: () => undefined,
-      } as never,
-    )
-    expect(code).toBe(503)
+    // duplicated header (array form) via direct handler invocation, both surfaces
+    const badHeaders = { 'x-rivetos-user': ['coco', 'phil'] }
+    for (const route of [
+      createWikiApiRoute({ index: fakeIndex(), wikiDir, forUser }),
+      createWikiHtmlRoute({ index: fakeIndex(), wikiDir, forUser }),
+    ]) {
+      let code = 0
+      let body = ''
+      await route.handler(
+        { method: 'GET', url: route.prefix, headers: badHeaders } as never,
+        {
+          writeHead: (c: number) => {
+            code = c
+          },
+          end: (b?: unknown) => {
+            body = typeof b === 'string' ? b : ''
+          },
+        } as never,
+      )
+      expect(code).toBe(503)
+      expect(body).not.toContain(TOPIC.title)
+    }
+  })
+
+  it('refuses hostile stamped userIds before any lookup or path join', async () => {
+    const base = await serveRouted()
+    for (const evil of ['..', '../..', 'coco/../../..', '/etc/passwd']) {
+      const headers = { 'x-rivetos-user': evil }
+      const api = await fetch(`${base}/api/wiki`, { headers })
+      expect(api.status).toBe(503)
+      expect(await api.text()).not.toContain(TOPIC.slug)
+      const html = await fetch(`${base}/wiki`, { headers })
+      expect(html.status).toBe(503)
+      const htmlBody = await html.text()
+      expect(htmlBody).not.toContain(TOPIC.title)
+      expect(htmlBody).not.toContain('Port :5174')
+      const file = await fetch(`${base}/wiki/${TOPIC.slug}`, { headers })
+      expect(file.status).toBe(503)
+      expect(await file.text()).not.toContain('ros_tasks')
+    }
+  })
+
+  it('resolveWikiSurface: one resolver, all refusal classes', () => {
+    const opts = { index: fakeIndex(), forUser }
+    const ok = resolveWikiSurface(opts, '/owner', {})
+    expect(ok).toEqual({ ok: true, index: opts.index, wikiDir: '/owner' })
+    const coco = resolveWikiSurface(opts, '/owner', { 'x-rivetos-user': 'coco' })
+    expect(coco.ok && coco.wikiDir === cocoDir).toBe(true)
+    for (const bad of ['', 'stranger', '..', 'a/b', 'a\\b', '.hidden']) {
+      const r = resolveWikiSurface(opts, '/owner', { 'x-rivetos-user': bad })
+      expect(r.ok).toBe(false)
+    }
   })
 })
 

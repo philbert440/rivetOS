@@ -25,9 +25,9 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ServerResponse } from 'node:http'
 import { HISTORY_MAX, parseWikiPage, SOURCES_MAX } from '@rivetos/wiki-core'
-import { routedUserResult, type GatewayRoute } from '@rivetos/types'
+import type { GatewayRoute } from '@rivetos/types'
 import { logger } from '../../logger.js'
-import type { WikiIndexLike } from './wiki-api.js'
+import { resolveWikiSurface, type WikiIndexLike } from './wiki-api.js'
 
 const log = logger('WikiHtml')
 
@@ -76,16 +76,15 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return text(res, 405, 'method not allowed')
-        const routed = routedUserResult(req.headers)
-        if (routed.kind === 'invalid') return text(res, 503, 'malformed routing identity')
-        let index = opts.index
-        let wikiDir = ownerDir
-        if (routed.kind === 'user') {
-          const user = opts.forUser?.(routed.id) ?? null
-          if (!user) return text(res, 503, `wiki is not available for user "${routed.id}"`)
-          index = user.index
-          wikiDir = user.wikiDir
+        // Shared resolver with /api/wiki (#579 review: the duplicated blocks
+        // had already drifted); refusals are JSON on this surface too.
+        const surface = resolveWikiSurface(opts, ownerDir, req.headers)
+        if (!surface.ok) {
+          res.writeHead(503, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: surface.error }))
+          return
         }
+        const { index, wikiDir } = surface
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/wiki'.length).replace(/^\//, '')
         const { topics, total } = await topicSet(index)
