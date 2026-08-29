@@ -14,6 +14,8 @@ describe('isBundledOrigin', () => {
     // electron shell serves the dist over its app:// scheme
     expect(isBundledOrigin('app://bundle', 'app:')).toBe(true)
     expect(isBundledOrigin('http://192.168.1.10:5174', 'http:')).toBe(false)
+    // fallback: non-gateway custom schemes still count as bundled
+    expect(isBundledOrigin('file://', 'file:')).toBe(true)
   })
 })
 

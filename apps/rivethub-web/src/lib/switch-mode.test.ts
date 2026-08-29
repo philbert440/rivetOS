@@ -30,6 +30,11 @@ describe('switch-mode', () => {
       'data:text/html,hi',
       'file:///etc/passwd',
       'http://user:pw@192.168.1.5:5174',
+      'ftp://192.168.1.5/',
+      'http://127.0.0.1:5174@evil.com',
+      '',
+      '   ',
+      'not-a-url',
     ]) {
       expect(performNodeSwitch(bad, switchTo)).toBeNull()
     }
