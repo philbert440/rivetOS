@@ -95,6 +95,34 @@ function json(res: ServerResponse, code: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+/** A userId that may participate in a file-root path join. Anything with a
+ *  separator or dot-dot is refused before forUser is even consulted — den +
+ *  USER_DBS are the real gate, but the path seam must not depend on them
+ *  (defense in depth; #579 review finding 4). */
+const SAFE_USER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/
+
+/** Resolve which wiki surface (index + file root) a request may see — the
+ *  ONE resolver for both /api/wiki and /wiki so the #571 trichotomy cannot
+ *  drift between them: absent den-stamped header = owner; stamped user =
+ *  their forUser entry; malformed header, unsafe id, unknown or tombstoned
+ *  user = refusal, NEVER the owner's wiki. Refusals are JSON on both
+ *  surfaces. */
+export function resolveWikiSurface(
+  opts: Pick<WikiApiOptions, 'index' | 'forUser'>,
+  ownerDir: string,
+  headers: Record<string, string | string[] | undefined>,
+): { ok: true; index: WikiIndexLike; wikiDir: string } | { ok: false; error: string } {
+  const routed = routedUserResult(headers)
+  if (routed.kind === 'invalid') return { ok: false, error: 'malformed routing identity' }
+  if (routed.kind === 'owner') return { ok: true, index: opts.index, wikiDir: ownerDir }
+  if (!SAFE_USER_ID_RE.test(routed.id) || routed.id.includes('..')) {
+    return { ok: false, error: 'invalid routing identity' }
+  }
+  const user = opts.forUser?.(routed.id) ?? null
+  if (!user) return { ok: false, error: `wiki is not available for user "${routed.id}"` }
+  return { ok: true, index: user.index, wikiDir: user.wikiDir }
+}
+
 export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
   const ownerDir = opts.wikiDir ?? '/rivet-shared/wiki'
 
@@ -103,20 +131,9 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
-        const routed = routedUserResult(req.headers)
-        if (routed.kind === 'invalid') {
-          return json(res, 503, { error: 'malformed routing identity' })
-        }
-        let index = opts.index
-        let wikiDir = ownerDir
-        if (routed.kind === 'user') {
-          const user = opts.forUser?.(routed.id) ?? null
-          if (!user) {
-            return json(res, 503, { error: `wiki is not available for user "${routed.id}"` })
-          }
-          index = user.index
-          wikiDir = user.wikiDir
-        }
+        const surface = resolveWikiSurface(opts, ownerDir, req.headers)
+        if (!surface.ok) return json(res, 503, { error: surface.error })
+        const { index, wikiDir } = surface
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/api/wiki'.length).replace(/^\//, '')
         const [slug, sub] = rest === '' ? [undefined, undefined] : rest.split('/')
