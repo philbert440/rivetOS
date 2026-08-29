@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  bridgeSelectionText,
   claimNativeCopy,
   copyTextToClipboard,
   hasTauriClipboard,
@@ -56,39 +57,149 @@ describe('hasTauriClipboard', () => {
 })
 
 describe('shouldBridgeNativeCopy / claimNativeCopy', () => {
-  it('bridges when Tauri is present', () => {
-    expect(shouldBridgeNativeCopy({ hasTauri: true, secureContext: true })).toBe(true)
+  it('bridges a Tauri-shaped host without rivetShell (WebKitGTK / Android shim)', () => {
+    expect(shouldBridgeNativeCopy({ hasShell: false, hasTauri: true })).toBe(true)
   })
 
-  it('bridges on non-secure context even without Tauri', () => {
-    expect(shouldBridgeNativeCopy({ hasTauri: false, secureContext: false })).toBe(true)
+  it('leaves the Electron shell alone — Chromium native copy is the one writer', () => {
+    expect(shouldBridgeNativeCopy({ hasShell: true, hasTauri: true })).toBe(false)
+    expect(shouldBridgeNativeCopy({ hasShell: true, hasTauri: false })).toBe(false)
   })
 
-  it('leaves secure browsers alone', () => {
-    expect(shouldBridgeNativeCopy({ hasTauri: false, secureContext: true })).toBe(false)
+  it('leaves plain browsers alone regardless of secure context', () => {
+    expect(shouldBridgeNativeCopy({ hasShell: false, hasTauri: false })).toBe(false)
   })
 
-  it('claims selection: setData + preventDefault', () => {
-    const setData = vi.fn()
+  it('claims a selection on a bridged host with preventDefault only', () => {
     const preventDefault = vi.fn()
-    const claimed = claimNativeCopy(
-      'selected-text',
-      { setData },
-      preventDefault,
-      { hasTauri: true, secureContext: true },
-    )
+    const claimed = claimNativeCopy('selected-text', preventDefault, {
+      hasShell: false,
+      hasTauri: true,
+    })
     expect(claimed).toBe(true)
-    expect(setData).toHaveBeenCalledWith('text/plain', 'selected-text')
     expect(preventDefault).toHaveBeenCalled()
   })
 
-  it('does not claim empty selection', () => {
-    const setData = vi.fn()
+  it('does not claim under rivetShell', () => {
     const preventDefault = vi.fn()
+    expect(claimNativeCopy('selected-text', preventDefault, { hasShell: true, hasTauri: true })).toBe(
+      false,
+    )
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('does not claim empty selection', () => {
+    const preventDefault = vi.fn()
+    expect(claimNativeCopy('', preventDefault, { hasShell: false, hasTauri: true })).toBe(false)
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('does not claim in a plain browser (no host IPC at all)', () => {
+    const preventDefault = vi.fn()
+    expect(claimNativeCopy('selected-text', preventDefault, { hasShell: false, hasTauri: false })).toBe(
+      false,
+    )
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
+})
+
+describe('bridgeSelectionText', () => {
+  const doc = (activeElement: unknown): Pick<Document, 'activeElement'> =>
+    ({ activeElement }) as Pick<Document, 'activeElement'>
+
+  it('slices the focused textarea selection when the DOM selection is empty', () => {
     expect(
-      claimNativeCopy('', { setData }, preventDefault, { hasTauri: true, secureContext: true }),
-    ).toBe(false)
-    expect(setData).not.toHaveBeenCalled()
+      bridgeSelectionText(
+        doc({ tagName: 'TEXTAREA', value: 'hello world', selectionStart: 6, selectionEnd: 11 }),
+      ),
+    ).toBe('world')
+  })
+
+  it('slices text-like inputs', () => {
+    expect(
+      bridgeSelectionText(
+        doc({ tagName: 'INPUT', type: 'text', value: 'abcdef', selectionStart: 1, selectionEnd: 3 }),
+      ),
+    ).toBe('bc')
+  })
+
+  it('never claims a password field', () => {
+    expect(
+      bridgeSelectionText(
+        doc({
+          tagName: 'INPUT',
+          type: 'password',
+          value: 'hunter2',
+          selectionStart: 0,
+          selectionEnd: 7,
+        }),
+      ),
+    ).toBe('')
+  })
+
+  it('returns empty for collapsed ranges and non-field elements', () => {
+    expect(
+      bridgeSelectionText(
+        doc({ tagName: 'TEXTAREA', value: 'abc', selectionStart: 2, selectionEnd: 2 }),
+      ),
+    ).toBe('')
+    expect(bridgeSelectionText(doc({ tagName: 'DIV' }))).toBe('')
+    expect(bridgeSelectionText(doc(null))).toBe('')
+  })
+})
+
+describe('write serialization', () => {
+  it('keeps issue order under a slow first write — clipboard ends on the newest copy', async () => {
+    const written: string[] = []
+    let releaseA: (() => void) | undefined
+    const writeText = vi.fn((t: string) => {
+      written.push(t)
+      if (t === 'A') return new Promise<void>((resolve) => (releaseA = resolve))
+      return Promise.resolve()
+    })
+    setTauri({ writeText, readText: vi.fn(async () => '') })
+
+    const a = copyTextToClipboard('A')
+    const b = copyTextToClipboard('B')
+    // B must not be issued while A is in flight.
+    expect(written).toEqual(['A'])
+    releaseA?.()
+    await a
+    await b
+    // A settled late, then B issued — final clipboard content is B.
+    expect(written).toEqual(['A', 'B'])
+  })
+
+  it('drops a queued write superseded before it was issued', async () => {
+    const written: string[] = []
+    let releaseA: (() => void) | undefined
+    const writeText = vi.fn((t: string) => {
+      written.push(t)
+      if (t === 'A') return new Promise<void>((resolve) => (releaseA = resolve))
+      return Promise.resolve()
+    })
+    setTauri({ writeText, readText: vi.fn(async () => '') })
+
+    const a = copyTextToClipboard('A')
+    const b = copyTextToClipboard('B') // queued
+    const c = copyTextToClipboard('C') // supersedes B before issue
+    releaseA?.()
+    await Promise.all([a, b, c])
+    // B was never handed to the host — exactly one effective queued write.
+    expect(written).toEqual(['A', 'C'])
+  })
+
+  it('propagates a write failure so bridge callers can log it', async () => {
+    setTauri({
+      writeText: vi.fn(async () => {
+        throw new Error('ipc denied')
+      }),
+      readText: vi.fn(async () => ''),
+    })
+    // No navigator.clipboard and no DOM in this environment — every
+    // fallback is exhausted and the caller must see the rejection.
+    vi.stubGlobal('navigator', {})
+    await expect(copyTextToClipboard('lost')).rejects.toThrow()
   })
 })
 

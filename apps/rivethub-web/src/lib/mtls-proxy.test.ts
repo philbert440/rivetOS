@@ -66,6 +66,25 @@ describe('transportBase', () => {
     )
   })
 
+  it('resolves per target — a second base never rides the first pipe', async () => {
+    // Settings "Test connection" probes an arbitrary typed origin through
+    // gatewayFor/transportBase. The pipe map must key on the base it is
+    // GIVEN: a base the shell refuses falls back to that same base, never
+    // to another (enrolled) node's transport — a wrong URL must not
+    // false-pass against the saved node.
+    const invoke = vi.fn(async (_cmd: string, args: Record<string, unknown>) => {
+      if (args.target === 'https://10.0.0.7:5174') return 40001
+      throw new Error('no identity for target')
+    })
+    setTauri(invoke)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(null)))
+    const { transportBase } = await load()
+    await expect(transportBase('https://10.0.0.7:5174')).resolves.toBe('http://127.0.0.1:40001')
+    await expect(transportBase('https://10.0.0.9:5174')).resolves.toBe('https://10.0.0.9:5174')
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(invoke).toHaveBeenLastCalledWith('mtls_proxy_port', { target: 'https://10.0.0.9:5174' })
+  })
+
   it('recovers when the cached pipe was evicted shell-side', async () => {
     // First resolve hands out port 40001; the shell then evicts that listener
     // (proxy.rs cap) — the probe gets ECONNREFUSED — and the re-invoke starts
