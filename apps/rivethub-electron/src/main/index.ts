@@ -32,6 +32,7 @@ import { registerIpc } from './ipc.js'
 import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
 import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
 import { contextMenuTemplate } from './context-menu.js'
+import { RendererReloadPolicy } from './reload-policy.js'
 import { totalUnread } from './unread.js'
 import { cascadePoint, loadWindowState, saveWindowState, type WindowState } from './window-state.js'
 
@@ -224,20 +225,18 @@ function createWindow(isMain: boolean): BrowserWindow {
     }
     return { action: 'deny' }
   })
-  // A dead renderer must not read as "the app closed": log and reload — but
-  // only MAX_RENDERER_RELOADS times in a row. A renderer that dies without
-  // ever finishing a load again is a crash loop; reloading forever would
-  // just burn CPU behind an unusable window. did-finish-load re-arms.
-  const MAX_RENDERER_RELOADS = 3
-  let rendererReloads = 0
+  // A dead renderer must not read as "the app closed": log and reload,
+  // capped by RendererReloadPolicy — a finish-then-die cycle (post-load
+  // script crash) must count against the cap, not re-arm it; only a load
+  // that SURVIVES the healthy window resets the streak.
+  const reloadPolicy = new RendererReloadPolicy()
   win.webContents.on('did-finish-load', () => {
-    rendererReloads = 0
+    reloadPolicy.finished(Date.now())
   })
   win.webContents.on('render-process-gone', (_e, details) => {
     logFault('render-process-gone', `${details.reason} exitCode=${String(details.exitCode ?? '')}`)
     if (details.reason === 'clean-exit' || win.isDestroyed()) return
-    if (rendererReloads >= MAX_RENDERER_RELOADS) return
-    rendererReloads += 1
+    if (!reloadPolicy.shouldReload(Date.now())) return
     win.webContents.reload()
   })
   // Right-click menu: pure template (context-menu.ts), roles route edit
