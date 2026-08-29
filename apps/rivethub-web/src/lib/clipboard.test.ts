@@ -56,39 +56,41 @@ describe('hasTauriClipboard', () => {
 })
 
 describe('shouldBridgeNativeCopy / claimNativeCopy', () => {
-  it('bridges when Tauri is present', () => {
-    expect(shouldBridgeNativeCopy({ hasTauri: true, secureContext: true })).toBe(true)
+  it('bridges a Tauri-shaped host without rivetShell (WebKitGTK / Android shim)', () => {
+    expect(shouldBridgeNativeCopy({ hasShell: false, hasTauri: true })).toBe(true)
   })
 
-  it('bridges on non-secure context even without Tauri', () => {
-    expect(shouldBridgeNativeCopy({ hasTauri: false, secureContext: false })).toBe(true)
+  it('leaves the Electron shell alone — Chromium native copy is the one writer', () => {
+    expect(shouldBridgeNativeCopy({ hasShell: true, hasTauri: true })).toBe(false)
+    expect(shouldBridgeNativeCopy({ hasShell: true, hasTauri: false })).toBe(false)
   })
 
-  it('leaves secure browsers alone', () => {
-    expect(shouldBridgeNativeCopy({ hasTauri: false, secureContext: true })).toBe(false)
+  it('leaves plain browsers alone regardless of secure context', () => {
+    expect(shouldBridgeNativeCopy({ hasShell: false, hasTauri: false })).toBe(false)
   })
 
-  it('claims selection: setData + preventDefault', () => {
-    const setData = vi.fn()
+  it('claims a selection on a bridged host with preventDefault only', () => {
     const preventDefault = vi.fn()
-    const claimed = claimNativeCopy(
-      'selected-text',
-      { setData },
-      preventDefault,
-      { hasTauri: true, secureContext: true },
-    )
+    const claimed = claimNativeCopy('selected-text', preventDefault, {
+      hasShell: false,
+      hasTauri: true,
+    })
     expect(claimed).toBe(true)
-    expect(setData).toHaveBeenCalledWith('text/plain', 'selected-text')
     expect(preventDefault).toHaveBeenCalled()
   })
 
-  it('does not claim empty selection', () => {
-    const setData = vi.fn()
+  it('does not claim under rivetShell', () => {
     const preventDefault = vi.fn()
-    expect(
-      claimNativeCopy('', { setData }, preventDefault, { hasTauri: true, secureContext: true }),
-    ).toBe(false)
-    expect(setData).not.toHaveBeenCalled()
+    expect(claimNativeCopy('selected-text', preventDefault, { hasShell: true, hasTauri: true })).toBe(
+      false,
+    )
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('does not claim empty selection', () => {
+    const preventDefault = vi.fn()
+    expect(claimNativeCopy('', preventDefault, { hasShell: false, hasTauri: true })).toBe(false)
+    expect(preventDefault).not.toHaveBeenCalled()
   })
 })
 

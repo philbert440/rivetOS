@@ -1,12 +1,12 @@
 /**
- * Clipboard for every Hub surface. The order matters:
+ * Clipboard for every Hub surface. Programmatic writes/reads
+ * (`copyTextToClipboard` / `readTextFromClipboard`) try, in order:
  *
  * 0. rivetShell — the Electron shell's preload bridge (IPC to the main
  *    process clipboard, which is reliable everywhere Chromium runs).
- * 1. Tauri clipboard-manager — legacy desktop shell (withGlobalTauri exposes
- *    `__TAURI__.clipboardManager`; we also fall back to
- *    `__TAURI_INTERNALS__.invoke` when the property is missing) and the
- *    Android hub WebView shim (RivetHubBridge → same shape). Required because
+ * 1. Tauri clipboard-manager — `__TAURI__.clipboardManager`, with a
+ *    `__TAURI_INTERNALS__.invoke` fallback — the Android hub WebView shim
+ *    (RivetHubBridge) exposes the same shape. Required because
  *    WebKitGTK-on-Wayland system clipboard is flaky and non-secure origins
  *    (http:// LAN / loopback in WebView) have no `navigator.clipboard`.
  * 2. navigator.clipboard — browsers on secure origins (https / localhost).
@@ -16,9 +16,13 @@
  * still works through native paste events (composer textarea, xterm's
  * hidden textarea); readText() is only needed for explicit shortcuts.
  *
- * Selection copy (Ctrl/Cmd+C, context menu) is NOT automatic in the Tauri /
- * Android shells — native WebView clipboard is the broken path. Call
- * `installClipboardBridge()` once at boot so those gestures also ride IPC.
+ * NATIVE copy gestures (Ctrl/Cmd+C, context-menu Copy) are claimed by
+ * `installClipboardBridge()` ONLY on Tauri-shaped hosts without rivetShell
+ * (WebKitGTK shell, Android WebView shim) — the hosts whose native clipboard
+ * is actually broken. Everywhere Chromium owns the document — the Electron
+ * shell included, secure context or not — the engine's own copy is the
+ * reliable single writer, and claiming it (preventDefault + async IPC write)
+ * both loses the app's rich payload and races consecutive copies.
  */
 
 import { rivetShell } from './shell-bridge.js'
@@ -54,15 +58,18 @@ export function hasTauriClipboard(): boolean {
 
 /**
  * Whether the document-level copy bridge should take over a native copy
- * gesture. Exported for unit tests.
+ * gesture: only on a Tauri-shaped host with no rivetShell (WebKitGTK /
+ * Android shim — the broken-native-clipboard cases). Chromium hosts keep
+ * native copy: it works regardless of secure context, and it is the only
+ * way to avoid a second writer racing the gesture. Exported for unit tests.
  */
 export function shouldBridgeNativeCopy(
-  opts: { hasTauri: boolean; secureContext: boolean } = {
-    hasTauri: hasTauriClipboard(),
-    secureContext: typeof window !== 'undefined' ? window.isSecureContext : true,
+  opts: { hasShell: boolean; hasTauri: boolean } = {
+    hasShell: rivetShell() != null,
+    hasTauri: tauriClipboardManager() != null || tauriInternals() != null,
   },
 ): boolean {
-  return opts.hasTauri || !opts.secureContext
+  return !opts.hasShell && opts.hasTauri
 }
 
 async function writeViaTauri(text: string): Promise<boolean> {
@@ -162,42 +169,35 @@ function fallbackCopy(text: string): Promise<void> {
 }
 
 /**
- * Handle one native `copy` event. Returns true when we claimed the gesture
- * (caller should still fire async `copyTextToClipboard`). Pure enough to unit
- * test without a full DOM.
+ * Handle one native `copy` event. Returns true when we claimed the gesture —
+ * the caller then fires `copyTextToClipboard` as the ONE writer (no
+ * clipboardData.setData leg: on the hosts that get here the native clipboard
+ * is the broken path, and a second writer is how consecutive copies race).
+ * Pure enough to unit test without a full DOM.
  */
 export function claimNativeCopy(
   selection: string,
-  clipboardData: { setData(type: string, data: string): void } | null | undefined,
   preventDefault: () => void,
-  opts?: { hasTauri?: boolean; secureContext?: boolean },
+  opts?: { hasShell?: boolean; hasTauri?: boolean },
 ): boolean {
   if (!selection) return false
   if (
     !shouldBridgeNativeCopy({
-      hasTauri: opts?.hasTauri ?? hasTauriClipboard(),
-      secureContext:
-        opts?.secureContext ?? (typeof window !== 'undefined' ? window.isSecureContext : true),
+      hasShell: opts?.hasShell ?? rivetShell() != null,
+      hasTauri: opts?.hasTauri ?? (tauriClipboardManager() != null || tauriInternals() != null),
     })
   ) {
     return false
   }
-  try {
-    clipboardData?.setData('text/plain', selection)
-    preventDefault()
-  } catch {
-    // Some hosts throw on setData; still claim so the async IPC path runs.
-  }
+  preventDefault()
   return true
 }
 
 /**
  * Route native selection copy (Ctrl/Cmd+C, context-menu Copy) through the
- * same fallback chain as the code-block button. Without this, those gestures
- * only touch the WebView's broken clipboard and never reach the system.
- *
- * Idempotent — safe to call more than once. No-op when neither Tauri IPC nor
- * a non-secure context needs help (secure browser keeps native behavior).
+ * IPC chain on hosts whose native clipboard is broken (see module doc).
+ * Idempotent — safe to call more than once. No-op wherever Chromium owns
+ * the document (Electron shell, any plain browser).
  */
 let bridgeInstalled = false
 
@@ -208,7 +208,7 @@ export function installClipboardBridge(): void {
   document.addEventListener('copy', (e) => {
     const sel = typeof window !== 'undefined' ? (window.getSelection()?.toString() ?? '') : ''
     if (
-      !claimNativeCopy(sel, e.clipboardData, () => {
+      !claimNativeCopy(sel, () => {
         e.preventDefault()
       })
     ) {

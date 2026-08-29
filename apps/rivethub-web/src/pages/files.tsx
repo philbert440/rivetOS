@@ -13,6 +13,7 @@ import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
+import { openExternal } from '../lib/open-external.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -531,13 +532,10 @@ export function FilesPage(): JSX.Element {
                             else setPreviewPath(child)
                           }}
                           onDoubleClick={() => {
-                            if (e.type === 'file') {
-                              window.open(
-                                gateway.fileDownloadUrl(child),
-                                '_blank',
-                                'noopener,noreferrer',
-                              )
-                            }
+                            // openExternal, not window.open — the desktop
+                            // shell denies window.open, making this a dead
+                            // click there.
+                            if (e.type === 'file') openExternal(gateway.fileDownloadUrl(child))
                           }}
                           className="flex items-center gap-2 text-left"
                         >
@@ -607,6 +605,12 @@ function PreviewPane(props: {
           href={props.downloadUrl}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={(ev) => {
+            // Shell denies target=_blank; browsers keep the anchor semantics
+            // via openExternal's window.open fallback.
+            ev.preventDefault()
+            openExternal(props.downloadUrl)
+          }}
           className="font-mono text-[11px] text-ink-dim hover:text-em"
         >
           open
