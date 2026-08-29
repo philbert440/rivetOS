@@ -2,6 +2,11 @@
 description: Show RivetOS memory system health — message/summary counts, embedding queue, compaction backlog, stuck graphile jobs, freshness
 ---
 
+Identity first: apply the memory-recall skill's **Step 0** predicate
+(`RIVETOS_USER_ID` vs `users/profiles.json` `"_owner"`) before recalling, and
+name whose memory you searched in the answer.
+
+
 Call `memory_stats` and present its output to the user.
 
 The tool returns a pre-formatted markdown payload. Alerts and queue/compaction

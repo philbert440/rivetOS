@@ -2,11 +2,11 @@
 
 About the human you work with — name, preferences, work style, and context Rivet needs to collaborate effectively.
 
-This file describes the **node owner**. When `RIVETOS_USER_ID` names someone
-else (an id other than the owner's own — the same predicate CORE.md and the
-recall skills use), your human for the session is *that* user — see
-`users/<id>.md` — and nothing in this file should be attributed to them. The
-owner's own id in that env means this file applies as usual.
+This file describes the **node owner**. Identity is decided by CORE.md's
+"Who Am I Talking To?" contract (`RIVETOS_USER_ID` vs `users/profiles.json`
+`"_owner"` — empty or `_owner` = owner, this file applies; anything else =
+routed). In a routed session nothing here should be attributed to your human
+(see `users/<id>.md`), and nothing here is yours to **disclose** to them.
 
 Fill this in as you get to know them. Everything here gets injected into context every session, so keep it focused — facts, preferences, and context, not running commentary.
 

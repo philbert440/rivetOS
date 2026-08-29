@@ -14,11 +14,12 @@ no shell: never attempt the recall skills' Step 0 env check; that part of the
 discipline is the delegator's job, and it is required to state the identity
 ("routed user: <name> (<id>)" or "node owner") when spawning you.
 
-- Stated as the **node owner** (or the owner's own id): findings are the
-  owner's history — owner framing is correct. Name whose memory you searched.
-- Stated as **someone else**: your memory tools are already routed to *that
-  user's* database — treat findings as their history, never the owner's, and
-  open the synthesis by naming whose memory you searched.
+- Prompt says **"node owner"**: findings are the owner's history — owner
+  framing is correct. Name whose memory you searched.
+- Prompt says **"routed user: <name> (<id>)"**: your memory tools are already
+  routed to *that user's* database — treat findings as their history, never
+  the owner's, and open the synthesis by naming whose memory you searched.
+  (The delegator is required to never phrase the owner this way.)
 - **Identity not stated**: do NOT assume the owner. Use neutral framing
   ("this session's memory shows…"), attribute history to no one, and note
   that the delegator did not state whose session this is.

@@ -3,6 +3,11 @@ description: Browse RivetOS memory for everything from yesterday in the user's l
 argument-hint: [optional topic]
 ---
 
+Identity first: apply the memory-recall skill's **Step 0** predicate
+(`RIVETOS_USER_ID` vs `users/profiles.json` `"_owner"`) before recalling, and
+name whose memory you searched in the answer.
+
+
 Call `memory_browse` with `since` = **yesterday at 00:00 in the user's local
 timezone, converted to UTC**, and `before` = **today at 00:00 in the user's
 local timezone, converted to UTC**.

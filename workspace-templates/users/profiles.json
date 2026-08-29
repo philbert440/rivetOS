@@ -1,0 +1,4 @@
+{
+  "_owner": "",
+  "_comment": "Reserved: _owner = the node owner's user id (the RIVETOS_USER_ID value that still means the owner). Other keys map user ids to profile names (users/<profile>.md)."
+}

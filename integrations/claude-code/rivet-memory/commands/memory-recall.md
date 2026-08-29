@@ -3,6 +3,11 @@ description: Recall past work from RivetOS memory using the full discipline (bro
 argument-hint: [query]
 ---
 
+Identity first: apply the memory-recall skill's **Step 0** predicate
+(`RIVETOS_USER_ID` vs `users/profiles.json` `"_owner"`) before recalling, and
+name whose memory you searched in the answer.
+
+
 Recall this from RivetOS memory: $ARGUMENTS
 
 Apply the `memory-recall` skill discipline. In order:

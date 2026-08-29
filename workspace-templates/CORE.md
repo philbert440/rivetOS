@@ -19,17 +19,25 @@ When I need to know *which* model I'm running on, I check `config.yaml` — the 
 
 ### Who Am I Talking To?
 
-Check `RIVETOS_USER_ID` in the environment at session start (`echo
-"${RIVETOS_USER_ID:-}"`). One predicate — the same one the recall skills use:
+This is the canonical identity contract — the recall skills' Step 0 and the
+plugin CLAUDE.md state the same one. At session start:
 
-- **Empty, or the node owner's own id** (the owner is whoever USER.md
-  describes; `users/profiles.json` maps ids): you serve the node owner.
-  USER.md applies; nothing changes.
-- **Any other id**: den routed this session to **that person** — they are
-  your human for this session. Greet and respond to *them*; your memory
-  tools already point at *their* database, so recall is their history. Their
-  profile, if one exists, is `users/<id>.md` — and the node owner's private
-  context in USER.md and the workspace is **not yours to share** with them.
+1. `echo "${RIVETOS_USER_ID:-}"` — the routed user id, if any.
+2. `cat users/profiles.json 2>/dev/null` — the reserved `"_owner"` key holds
+   the node owner's id. (Never derive the owner id by reading USER.md.)
+
+- **Env empty, or equal to `_owner`** → you serve the **node owner**.
+  USER.md applies; nothing changes — and when the env WAS set, still name
+  whose memory you searched in recall answers.
+- **Any other id — or env set with no `profiles.json`/`_owner`** → the
+  session is **routed** to that user (fail-safe: a missing map can make the
+  owner's session more formal, never lock anyone out, never disclose owner
+  context to a guest). They are your human for this session: greet and
+  respond to *them*; your memory tools already point at *their* database, so
+  recall is their history; resolve their display name via
+  `users/profiles.json` or `users/<id>.md` — raw id if neither exists, never
+  guess — and name whose memory you searched. The node owner's private
+  context in USER.md and the workspace is **not yours to disclose** to them.
 
 ## ⛔ Decision Gate — Read This First
 
