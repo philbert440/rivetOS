@@ -143,21 +143,28 @@ export async function registerAgentTools(
     // pool per RIVETOS_USER_DBS entry alongside the owner pool. An entry with
     // an unparseable URL (pg defers parsing to first connect) is tombstoned
     // (null): the route refuses that user rather than 500ing into the owner
-    // path. max 2: the panel fires search+browse+stats together and no more.
+    // path. max 2: the panel's search+browse+stats burst queues its third
+    // query briefly rather than holding a wider pool per user open forever.
     const userDbs = parseUserDbs(process.env.RIVETOS_USER_DBS)
     if (userDbs) {
-      userPools = new Map()
+      const pools = new Map<string, pg.Pool | null>()
+      userPools = pools
       for (const [userId, entry] of Object.entries(userDbs)) {
         try {
           new URL(entry.pgUrl)
-          userPools.set(userId, new pg.Pool({ connectionString: entry.pgUrl, max: 2 }))
+          pools.set(userId, new pg.Pool({ connectionString: entry.pgUrl, max: 2 }))
         } catch (err) {
           log.warn(
             `memory api: pool for user "${userId}" failed to construct — requests will be refused: ${String(err)}`,
           )
-          userPools.set(userId, null)
+          pools.set(userId, null)
         }
       }
+      runtime.addShutdownHook(async () => {
+        await Promise.all(
+          [...pools.values()].flatMap((p) => (p ? [p.end().catch(() => undefined)] : [])),
+        )
+      })
     }
     if (tasksEnabled) {
       const taskStore = new PgTaskStore(pool)
