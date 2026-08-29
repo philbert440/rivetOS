@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { useRef, useState, type JSX } from 'react'
 import { MessageSquare, X } from 'lucide-react'
 import { composeAskAnswer, type AskQuestion } from '../lib/ask-user.js'
 
@@ -9,14 +9,16 @@ import { composeAskAnswer, type AskQuestion } from '../lib/ask-user.js'
  *
  * Submit semantics live in composeAskAnswer (pure, tested): picks and the
  * free-text row COMBINE — typing your own words never silently drops a
- * selection, and vice versa. Fast path: ONE single-select question with no
- * typed text answers on click. "Chat about it" focuses the composer (typing
- * + sending there retires the card — that IS chatting about it).
+ * selection, and vice versa. Fast path: ONE single-select question answers on
+ * click, combining any typed text. "Chat about it" focuses the composer
+ * (typing + sending there retires the card — that IS chatting about it).
  */
 export function AskUserCard(props: {
   questions: AskQuestion[]
   disabled?: boolean
-  onAnswer: (text: string) => void
+  /** Resolves when the answer was actually sent — the card keeps its state
+   *  (the only retry surface) until then; a rejected send leaves it intact. */
+  onAnswer: (text: string) => Promise<void>
   onDismiss: () => void
   /** Focus the composer textarea ("chat about it"). */
   onFocusComposer?: () => void
@@ -24,6 +26,9 @@ export function AskUserCard(props: {
   // label selections per question index
   const [picked, setPicked] = useState<Record<number, string[]>>({})
   const [own, setOwn] = useState('')
+  // one answer in flight at a time — the async clear made double-click a
+  // double-send (#578 audit); the sync clear used to make this free
+  const inFlight = useRef(false)
   if (props.questions.length === 0) return null
 
   const single = props.questions.length === 1 && !props.questions[0].multiSelect
@@ -40,10 +45,18 @@ export function AskUserCard(props: {
 
   const submit = (extra?: Record<number, string[]>): void => {
     const text = extra ? composeAskAnswer(props.questions, extra, own) : composed
-    if (!text) return
-    props.onAnswer(text)
-    setPicked({})
-    setOwn('')
+    if (!text || inFlight.current) return
+    inFlight.current = true
+    void props.onAnswer(text).then(
+      () => {
+        inFlight.current = false
+        setPicked({})
+        setOwn('')
+      },
+      () => {
+        inFlight.current = false // send failed: composer shows the error, card keeps state for retry
+      },
+    )
   }
 
   return (

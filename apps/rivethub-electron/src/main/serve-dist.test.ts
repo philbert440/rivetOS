@@ -75,17 +75,25 @@ describe('media permission fences', () => {
     expect(allowMediaRequest({ ...ok, mediaTypes: [] })).toBe(false)
     expect(allowMediaRequest({ ...ok, mediaTypes: undefined })).toBe(false)
     expect(allowMediaRequest({ ...ok, isMainFrame: false })).toBe(false)
+    expect(allowMediaRequest({ ...ok, isMainFrame: undefined })).toBe(false) // fail closed
     expect(allowMediaRequest({ ...ok, requestingUrl: 'http://192.0.2.7/den' })).toBe(false)
     expect(allowMediaRequest({ ...ok, requestingUrl: undefined })).toBe(false)
   })
 
-  it('check: bundled origin, bundled-or-absent embedder, never video', async () => {
+  it('check: bundled main frame, bundled-or-absent embedder, never video', async () => {
     const { allowMediaCheck } = await import('./serve-dist.js')
-    expect(allowMediaCheck('app://bundle', { mediaType: 'audio' })).toBe(true)
-    expect(allowMediaCheck('app://bundle', {})).toBe(true) // permissions.query('microphone')
-    expect(allowMediaCheck('app://bundle', { embeddingOrigin: 'app://bundle' })).toBe(true)
-    expect(allowMediaCheck('app://bundle', { mediaType: 'video' })).toBe(false)
-    expect(allowMediaCheck('app://bundle', { embeddingOrigin: 'http://192.0.2.9' })).toBe(false)
-    expect(allowMediaCheck('http://192.0.2.9', { mediaType: 'audio' })).toBe(false)
+    const main = { isMainFrame: true }
+    expect(allowMediaCheck('app://bundle', { ...main, mediaType: 'audio' })).toBe(true)
+    expect(allowMediaCheck('app://bundle', main)).toBe(true) // permissions.query('microphone')
+    expect(allowMediaCheck('app://bundle', { ...main, embeddingOrigin: 'app://bundle' })).toBe(true)
+    expect(allowMediaCheck('app://bundle', { ...main, mediaType: 'video' })).toBe(false)
+    expect(allowMediaCheck('app://bundle', { ...main, embeddingOrigin: 'http://192.0.2.9' })).toBe(
+      false,
+    )
+    expect(allowMediaCheck('http://192.0.2.9', { ...main, mediaType: 'audio' })).toBe(false)
+    // a same-origin subframe keeps the parent origin and omits embeddingOrigin —
+    // the frame check is what keeps the twins in agreement (#576 review)
+    expect(allowMediaCheck('app://bundle', { isMainFrame: false, mediaType: 'audio' })).toBe(false)
+    expect(allowMediaCheck('app://bundle', { mediaType: 'audio' })).toBe(false) // fail closed
   })
 })

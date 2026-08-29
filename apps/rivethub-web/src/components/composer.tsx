@@ -114,18 +114,27 @@ export function Composer(props: {
     }
     return undefined
   })
+  // null = unseeded. Seeding must wait for HYDRATION, not just mount: the
+  // pre-hydration effect run used to mark the session seeded-empty and the
+  // hydrated backlog's tail then read aloud (#576 fix-audit). A hydrated but
+  // assistant-less thread seeds '' so its first real reply still speaks.
+  const hydrated = useChat((s) => s.messages[props.sessionId] !== undefined)
   const spokenRef = useRef<string | null>(null)
   const seededFor = useRef<string | undefined>(undefined)
   useEffect(() => {
     if (seededFor.current !== props.sessionId) {
       seededFor.current = props.sessionId
+      spokenRef.current = null
+    }
+    if (!hydrated) return
+    if (spokenRef.current === null) {
       spokenRef.current = lastAssistant?.id ?? ''
       return
     }
     if (!autoSpeak || !lastAssistant || lastAssistant.id === spokenRef.current) return
     spokenRef.current = lastAssistant.id
     void speak(lastAssistant.text, lastAssistant.id).catch(() => undefined)
-  }, [autoSpeak, lastAssistant, props.sessionId])
+  }, [autoSpeak, hydrated, lastAssistant, props.sessionId])
 
   // Model dropdown (Claude Code / grok Build / local + mesh) from the catalog.
   const catalog = useQuery({
@@ -158,7 +167,9 @@ export function Composer(props: {
     }
   }
 
-  const sendBody = async (body: string, opts?: { bare?: boolean }): Promise<void> => {
+  /** Returns true when the turn was handed off; false on validation stop or
+   *  send failure (error banner set) — ask answers key retry on this. */
+  const sendBody = async (body: string, opts?: { bare?: boolean }): Promise<boolean> => {
     // Ask-card answers ride sendBody with bare=true: an option label must go
     // out verbatim — never with leftover chips appended, and never blocked by
     // an in-flight upload that has nothing to do with the question.
@@ -166,10 +177,14 @@ export function Composer(props: {
     const trimmed = bare ? body.trim() : withAttachmentText(body.trim(), atts)
     // Seamless queue path: allow stacking while a prior turn is in flight
     // (onSend enqueues and returns). Chat-loop path still serializes via sending.
-    if (!trimmed || (sending && !props.onSend)) return
+    if (!trimmed) return false
+    if (sending && !props.onSend) {
+      if (bare) setError('previous send still in flight — try again')
+      return false
+    }
     if (!bare && anyUploading(atts)) {
       setError('still uploading an attachment…')
-      return
+      return false
     }
     setError(undefined)
     setSending(true)
@@ -196,9 +211,11 @@ export function Composer(props: {
     } catch (err) {
       setError((err as Error).message)
       if (!bare) setText(trimmed) // give the draft back (answers never clobber it)
+      return false
     } finally {
       setSending(false)
     }
+    return true
   }
 
   const send = async (): Promise<void> => {
@@ -290,7 +307,9 @@ export function Composer(props: {
         <AskUserCard
           questions={props.ask ?? []}
           disabled={!connected || sending}
-          onAnswer={(label) => void sendBody(label, { bare: true })}
+          onAnswer={async (label) => {
+            if (!(await sendBody(label, { bare: true }))) throw new Error('answer not sent')
+          }}
           onDismiss={() => props.onDismissAsk?.()}
           onFocusComposer={() => taRef.current?.focus()}
         />

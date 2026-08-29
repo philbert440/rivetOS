@@ -341,13 +341,24 @@ describe('/api/voice', () => {
     expect(Buffer.from(await first.arrayBuffer()).toString()).toBe('WAVBYTES')
     await speak({ input: 'hello', instructions: 'gravelly narrator', voice: 'eric' })
     await speak({ input: 'hello', instructions: '' })
-    expect(payloads[0]).toEqual({ input: 'hello', instructions: 'warm default voice' })
+    // response_format wav is ALWAYS requested — the qwentts default is raw
+    // headerless PCM (found live on the first fleet roundtrip)
+    expect(payloads[0]).toEqual({
+      input: 'hello',
+      response_format: 'wav',
+      instructions: 'warm default voice',
+    })
     expect(payloads[1]).toEqual({
       input: 'hello',
+      response_format: 'wav',
       instructions: 'gravelly narrator',
       voice: 'eric',
     })
-    expect(payloads[2]).toEqual({ input: 'hello', instructions: 'warm default voice' })
+    expect(payloads[2]).toEqual({
+      input: 'hello',
+      response_format: 'wav',
+      instructions: 'warm default voice',
+    })
   })
 
   it('speak streams the upstream body through and enforces the response cap', async () => {
