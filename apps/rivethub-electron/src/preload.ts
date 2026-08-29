@@ -1,8 +1,8 @@
 /**
  * Preload — the ONLY bridge between the hub renderer and the shell. Exposes a
- * minimal typed surface as `window.rivetShell`; the web app feature-detects it
- * (lib/shell-bridge.ts) the same way it detects `__TAURI__` for the Tauri
- * shell and the Android WebView shim.
+ * minimal typed surface as `window.rivetShell`; the web app feature-detects
+ * it in lib/shell-bridge.ts (alongside the `__TAURI__` shapes the Android
+ * WebView shim still uses).
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
@@ -20,35 +20,6 @@ declare const window: { self: unknown; top: unknown }
 if (window.self !== window.top) {
   // eslint-disable-next-line no-restricted-syntax
   throw new Error('rivetShell preload is top-frame only')
-}
-
-declare const localStorage: {
-  getItem(key: string): string | null
-  setItem(key: string, value: string): void
-}
-
-// One-time Tauri→Electron localStorage migration: seed rivethub.* keys the
-// new origin lacks BEFORE any page script reads storage (preload runs
-// first; sendSync keeps the ordering strict, and main marks the migration
-// consumed at hand-out — no ack leg). Absent-only writes — nothing the
-// user has already re-configured is clobbered — except the roster, which
-// is MERGED (hand-rebuilt entries win, legacy fills in behind).
-import { mergeRoster } from './roster-merge.js'
-
-try {
-  const legacy = ipcRenderer.sendSync('migration:legacy') as Record<string, string> | null
-  if (legacy) {
-    for (const [key, value] of Object.entries(legacy)) {
-      if (key === 'rivethub.roster') {
-        const merged = mergeRoster(localStorage.getItem(key), value)
-        if (merged !== null) localStorage.setItem(key, merged)
-      } else if (localStorage.getItem(key) === null) {
-        localStorage.setItem(key, value)
-      }
-    }
-  }
-} catch {
-  /* storage unavailable — boot fresh; the payload was consumed either way */
 }
 
 const api = {
@@ -70,8 +41,16 @@ const api = {
     ipcRenderer.invoke('unread:set', count) as Promise<void>,
   // ---- optional surface (feature-detected; NOT in the web side's required
   // shape check, so an older shell keeps working against a newer dist) ----
-  /** Which OS this shell runs on ('win32' | 'linux' | 'darwin'). */
-  platform: process.platform as string,
+  /** Which OS this shell runs on. */
+  platform: process.platform as 'win32' | 'linux' | 'darwin',
+  /** Open one more shell window (no application menu on Windows — the
+   *  renderer owns the chord and forwards it here). */
+  newWindow: (): Promise<void> => ipcRenderer.invoke('window:new') as Promise<void>,
+  /** Zoom this window: 1 = in, -1 = out, 0 = reset. */
+  zoomAdjust: (delta: 1 | -1 | 0): Promise<void> =>
+    ipcRenderer.invoke('window:zoom', delta) as Promise<void>,
+  /** Quit the app for real (close-to-tray does not apply). */
+  quitApp: (): Promise<void> => ipcRenderer.invoke('app:quit') as Promise<void>,
   /** Shell binary version (electron app version, not the web dist). */
   appVersion: (): Promise<string> => ipcRenderer.invoke('app:version') as Promise<string>,
   /** Ask MAIN to read the mesh update manifest for the given gateway base

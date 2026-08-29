@@ -259,3 +259,29 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_DEN_DEVICES_ROSTER).toBeUndefined()
   })
 })
+
+describe('buildGatewayEnv — voice proxy passthrough', () => {
+  it('forwards the voice proxy vars from process env', () => {
+    // den-server's loadConfig reads only this map — if the RIVETOS_DEN_
+    // prefix passthrough ever stopped covering the voice upstreams, the
+    // /api/voice routes would silently answer 501 on every embedded node
+    // (the #563 failure shape, pinned here for the voice keys).
+    vi.stubEnv('RIVETOS_DEN_VOICE_STT_URL', 'http://192.0.2.60:9000/v1/audio/transcriptions')
+    vi.stubEnv('RIVETOS_DEN_VOICE_TTS_URL', 'http://192.0.2.60:9001/v1/audio/speech')
+    vi.stubEnv('RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS', 'warm default voice')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_VOICE_STT_URL).toBe('http://192.0.2.60:9000/v1/audio/transcriptions')
+    expect(env.RIVETOS_DEN_VOICE_TTS_URL).toBe('http://192.0.2.60:9001/v1/audio/speech')
+    expect(env.RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS).toBe('warm default voice')
+  })
+
+  it('omits the voice proxy vars when the process env is silent', () => {
+    vi.stubEnv('RIVETOS_DEN_VOICE_STT_URL', '')
+    vi.stubEnv('RIVETOS_DEN_VOICE_TTS_URL', '')
+    vi.stubEnv('RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS', '')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_VOICE_STT_URL).toBeUndefined()
+    expect(env.RIVETOS_DEN_VOICE_TTS_URL).toBeUndefined()
+    expect(env.RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS).toBeUndefined()
+  })
+})

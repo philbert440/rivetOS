@@ -1,16 +1,10 @@
 /**
- * Right-click context menu — the shell shipped without one, so right-click
- * in the composer, the transcript, Files, and the terminal did nothing and
- * clipboard access was chord-only (four-agent desktop review, consolidated
- * punch list #2; user-reported "copy and paste broken").
- *
- * The template builder is pure so the menu policy is testable without
- * Electron. Roles only for edit actions — Chromium routes them to the
- * FOCUSED frame, so they behave in den iframes too without the shell ever
- * touching iframe content. The one custom item (Copy Link Address) is a
- * clipboard write of a parsed http(s) URL, the same rule as
- * shell:openExternal's validation — a context menu on untrusted content must
- * not become a side door to anything beyond the clipboard.
+ * Right-click context menu. The template builder is pure so the menu policy
+ * is testable without Electron. Roles only for edit actions — Chromium
+ * routes them to the FOCUSED frame, so they behave in den iframes too
+ * without the shell ever touching iframe content. Custom items (Copy Link
+ * Address, New Window) never carry frame content: a context menu on
+ * untrusted content must not become a side door beyond the clipboard.
  */
 
 export interface ContextMenuParams {
@@ -38,6 +32,8 @@ export interface ContextMenuItem {
   type?: 'separator'
   /** Present only on Copy Link Address — the parsed, validated URL. */
   copyLink?: string
+  /** Present only on New Window. */
+  newWindow?: true
 }
 
 /** Same 2048 cap as shell:openExternal — an enormous href must not become a
@@ -56,7 +52,8 @@ function webLink(url: string): string | undefined {
   }
 }
 
-/** Empty array = no menu (right-click on inert chrome stays inert). */
+/** New Window rides every menu: with no menu bar (and none at all on
+ *  Windows), right-click is the discoverable path to a second window. */
 export function contextMenuTemplate(params: ContextMenuParams): ContextMenuItem[] {
   const items: ContextMenuItem[] = []
   const link = params.mainFrame ? webLink(params.linkURL) : undefined
@@ -71,12 +68,12 @@ export function contextMenuTemplate(params: ContextMenuParams): ContextMenuItem[
       { type: 'separator' },
       { role: 'selectAll', enabled: params.editFlags.canSelectAll },
     )
-    return items
-  }
-
-  if (params.selectionText.trim().length > 0) {
+  } else if (params.selectionText.trim().length > 0) {
     if (items.length > 0) items.push({ type: 'separator' })
     items.push({ role: 'copy', enabled: params.editFlags.canCopy })
   }
+
+  if (items.length > 0) items.push({ type: 'separator' })
+  items.push({ label: 'New Window', newWindow: true })
   return items
 }

@@ -89,6 +89,7 @@ import { createDeepseekStoreHost } from './harness/deepseek-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
+import { createVoiceRoutes } from './voice-proxy.js'
 import {
   startAliasRestore,
   type AliasRestoreResult,
@@ -654,6 +655,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     log: console.error,
   })
 
+  // Voice proxy (POST /api/voice/*) — mic bytes → node-configured STT, reply
+  // text → TTS audio. Clients never see the upstream addresses; nodes without
+  // the env config answer 501 and the hub hides the feature.
+  const voiceRoutes = createVoiceRoutes({
+    sttUrl: config.voice?.sttUrl ?? '',
+    ttsUrl: config.voice?.ttsUrl ?? '',
+    ttsInstructions: config.voice?.ttsInstructions ?? '',
+    log: console.error,
+  })
+
   // MicBridge — same off-loopback rule as terminals (gateway TLS required).
   const audioGateError =
     config.audio.enabled && !tlsReady && !isLoopbackHost(config.host)
@@ -989,6 +1000,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       ) {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await harnessRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
+      }
+
+      // Voice proxy (behind the mTLS gate) — see voice-proxy.ts.
+      if (url.pathname.startsWith('/api/voice/')) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await voiceRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
       }
 

@@ -9,8 +9,7 @@
  * NOT a secure context — no navigator.clipboard, no crypto.subtle; the web
  * app's IPC clipboard bridge and uuid fallback cover exactly that.
  *
- * Every response carries the same CSP the Tauri shell enforced through
- * tauri.conf.json — the shell changed, the policy must not.
+ * Every response carries the CSP below.
  */
 
 import * as fs from 'node:fs/promises'
@@ -19,11 +18,11 @@ import * as path from 'node:path'
 export const APP_SCHEME = 'app'
 export const APP_ORIGIN = `${APP_SCHEME}://bundle`
 
-/** The Tauri config's CSP, plus `frame-ancestors 'none'`: nothing may frame
- *  an app:// document — without it a den page (frame-src allows http/https
- *  content INSIDE the hub) could nest app://bundle and clickjack the
- *  privileged UI (review finding, PR #555). The hub itself never frames
- *  app:// content, so 'none' costs nothing. */
+/** `frame-ancestors 'none'`: nothing may frame an app:// document — without
+ *  it a den page (frame-src allows http/https content INSIDE the hub) could
+ *  nest app://bundle and clickjack the privileged UI (review finding,
+ *  PR #555). The hub itself never frames app:// content, so 'none' costs
+ *  nothing. */
 export const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: http: https:; font-src 'self' data:; " +
