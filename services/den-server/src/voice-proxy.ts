@@ -150,6 +150,20 @@ function readBounded(req: IncomingMessage, cap: number, signal: AbortSignal): Pr
   })
 }
 
+/** readUpstreamBounded, with abort/stream failures folded into an outcome —
+ *  an aborted fetch body throwing out of a handler must never become an
+ *  unhandled rejection. */
+async function readUpstreamSafe(
+  upstream: Response,
+  cap: number,
+): Promise<Buffer | 'too-large' | 'failed'> {
+  try {
+    return await readUpstreamBounded(upstream, cap)
+  } catch {
+    return 'failed'
+  }
+}
+
 /** Bounded read of an upstream Response body. */
 async function readUpstreamBounded(upstream: Response, cap: number): Promise<Buffer | 'too-large'> {
   const body = upstream.body
@@ -293,7 +307,14 @@ export function createVoiceRoutes(opts: VoiceRoutesOptions): VoiceRoutes {
       } catch (err) {
         return upstreamFail(res, 'transcribe', err instanceof Error ? err.message : String(err))
       }
-      const raw = await readUpstreamBounded(upstream, STT_RESPONSE_MAX_BYTES)
+      const raw = await readUpstreamSafe(upstream, STT_RESPONSE_MAX_BYTES)
+      if (raw === 'failed') {
+        if (signal.aborted) {
+          res.destroy()
+          return true
+        }
+        return upstreamFail(res, 'transcribe', 'upstream body unreadable')
+      }
       if (raw === 'too-large') return upstreamFail(res, 'transcribe', 'oversized upstream response')
       const text = raw.toString('utf8')
       if (!upstream.ok) {
@@ -353,7 +374,14 @@ export function createVoiceRoutes(opts: VoiceRoutesOptions): VoiceRoutes {
         return upstreamFail(res, 'speak', err instanceof Error ? err.message : String(err))
       }
       if (!upstream.ok) {
-        const errBody = await readUpstreamBounded(upstream, STT_RESPONSE_MAX_BYTES)
+        const errBody = await readUpstreamSafe(upstream, STT_RESPONSE_MAX_BYTES)
+        if (errBody === 'failed') {
+          if (signal.aborted) {
+            res.destroy()
+            return true
+          }
+          return upstreamFail(res, 'speak', 'upstream error body unreadable')
+        }
         const detail =
           errBody === 'too-large' ? 'oversized upstream error' : errBody.toString('utf8')
         return upstreamFail(res, 'speak', `upstream ${String(upstream.status)}: ${detail}`)
@@ -362,21 +390,50 @@ export function createVoiceRoutes(opts: VoiceRoutesOptions): VoiceRoutes {
       // nothing is buffered whole, and an over-cap upstream is cut off.
       const stream = upstream.body
       if (!stream) {
-        const buf = Buffer.from(await upstream.arrayBuffer())
-        if (buf.length > maxTtsResponse) {
-          return upstreamFail(res, 'speak', 'oversized upstream response')
+        const buf = await readUpstreamSafe(upstream, maxTtsResponse)
+        if (buf === 'too-large') return upstreamFail(res, 'speak', 'oversized upstream response')
+        if (buf === 'failed') {
+          if (signal.aborted) {
+            res.destroy()
+            return true
+          }
+          return upstreamFail(res, 'speak', 'upstream body unreadable')
         }
         res.writeHead(200, { 'Content-Type': upstream.headers.get('content-type') ?? 'audio/wav' })
         res.end(buf)
         return true
       }
+      // CONTRACT past this writeHead: the 200 head is irrevocable, so every
+      // failure — abort, over-cap, upstream stall, client gone — must
+      // res.destroy(), never end(): a clean short body would look like a
+      // complete (corrupt) audio file to the client.
       res.writeHead(200, { 'Content-Type': upstream.headers.get('content-type') ?? 'audio/wav' })
       const reader = stream.getReader() as ReadableStreamDefaultReader<Uint8Array>
+      // Abort can fire while we are parked on reader.read() (stalled
+      // upstream) — destroy the response immediately so the client sees a
+      // failed transfer without waiting for the read to return.
+      const onPipeAbort = (): void => {
+        res.destroy()
+      }
+      signal.addEventListener('abort', onPipeAbort, { once: true })
       let sent = 0
       try {
         for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
+          let done: boolean
+          let value: Uint8Array | undefined
+          try {
+            ;({ done, value } = await reader.read())
+          } catch (err) {
+            log(`[voice] speak stream failed: ${err instanceof Error ? err.message : String(err)}`)
+            res.destroy()
+            return true
+          }
+          if (signal.aborted) {
+            await reader.cancel().catch(() => undefined)
+            res.destroy()
+            return true
+          }
+          if (done || !value) break
           sent += value.byteLength
           if (sent > maxTtsResponse) {
             log('[voice] speak upstream exceeded response cap — truncating')
@@ -384,20 +441,28 @@ export function createVoiceRoutes(opts: VoiceRoutesOptions): VoiceRoutes {
             res.destroy()
             return true
           }
+          // Abortable drain: resolve false on abort so a stalled client
+          // socket cannot park the handler past its deadline.
           const ok = await new Promise<boolean>((resolve) => {
-            res.write(Buffer.from(value), (err) => resolve(!err))
+            if (signal.aborted) {
+              resolve(false)
+              return
+            }
+            const onAbort = (): void => resolve(false)
+            signal.addEventListener('abort', onAbort, { once: true })
+            res.write(Buffer.from(value), (err) => {
+              signal.removeEventListener('abort', onAbort)
+              resolve(!err)
+            })
           })
           if (!ok) {
             await reader.cancel().catch(() => undefined)
+            res.destroy()
             return true
           }
         }
-      } catch (err) {
-        // Mid-stream upstream failure: the 200 head is gone already — all we
-        // can do is cut the connection so the client sees a short read.
-        log(`[voice] speak stream failed: ${err instanceof Error ? err.message : String(err)}`)
-        res.destroy()
-        return true
+      } finally {
+        signal.removeEventListener('abort', onPipeAbort)
       }
       res.end()
       return true

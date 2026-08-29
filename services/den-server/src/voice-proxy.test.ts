@@ -42,19 +42,29 @@ function jsonResponse(status: number, body: unknown): Response {
   })
 }
 
-/** A fetch stub that never settles until its signal aborts. */
+/** A fetch stub that never settles until its signal aborts — including a
+ *  signal that was ALREADY aborted when the stub is invoked (client destroy
+ *  racing ahead of the fetch call must still be observable). */
 function hungFetch(onAbort?: () => void): typeof fetch {
   return ((_url: unknown, init?: RequestInit) =>
     new Promise((_resolve, reject) => {
-      init?.signal?.addEventListener('abort', () => {
+      const fail = (): void => {
         onAbort?.()
         reject(new DOMException('The operation was aborted', 'AbortError'))
-      })
+      }
+      if (init?.signal?.aborted) {
+        fail()
+        return
+      }
+      init?.signal?.addEventListener('abort', fail, { once: true })
     })) as typeof fetch
 }
 
 /** Chunked-transfer POST (no Content-Length at all) — pins that the server
- *  counts actual bytes rather than trusting headers. */
+ *  counts actual bytes rather than trusting headers. The refused-body path
+ *  responds 413 + Connection: close and then destroys the socket, so a
+ *  client-side ECONNRESET AFTER the status arrived is the expected shape,
+ *  not a failure. */
 function postChunked(
   base: string,
   path: string,
@@ -62,15 +72,20 @@ function postChunked(
 ): Promise<{ status: number | undefined }> {
   const u = new URL(path, base)
   return new Promise((resolve, reject) => {
+    let status: number | undefined
     const req = httpRequest(
       { host: u.hostname, port: u.port, path: u.pathname, method: 'POST' },
       (res) => {
+        status = res.statusCode
         res.resume()
-        res.on('end', () => resolve({ status: res.statusCode }))
-        res.on('error', () => resolve({ status: res.statusCode }))
+        res.on('end', () => resolve({ status }))
+        res.on('error', () => resolve({ status }))
       },
     )
-    req.on('error', reject)
+    req.on('error', (err) => {
+      if (status !== undefined) resolve({ status })
+      else reject(err)
+    })
     for (const c of chunks) req.write(c)
     req.end()
   })
@@ -204,15 +219,61 @@ describe('/api/voice', () => {
         () => undefined,
       )
       req.on('error', () => resolve()) // socket reset by our own destroy
+      req.on('close', () => resolve())
       req.end('AUDIO', () => {
+        // Body flushed; give the server a beat to enter the hung fetch (a
+        // pre-fetch abort is equally valid — hungFetch observes both).
         setTimeout(() => {
           req.destroy()
           resolve()
-        }, 50)
+        }, 100)
       })
-      setTimeout(() => reject(new Error('client never settled')), 2000)
+      setTimeout(() => reject(new Error('client never settled')), 3000)
     })
-    await vi.waitFor(() => expect(aborted).toHaveBeenCalledTimes(1), { timeout: 2000 })
+    await vi.waitFor(() => expect(aborted).toHaveBeenCalledTimes(1), { timeout: 3000 })
+  })
+
+  it('destroys a half-written 200 when the abort scope fires mid-pipe', async () => {
+    // One chunk arrives, then the upstream stalls forever — the route
+    // deadline must cut the client connection (failed transfer), never
+    // end() a clean-looking short body.
+    const stalled = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('WAV-'))
+        // never closes
+      },
+    })
+    const fetchImpl = (async () =>
+      new Response(stalled, {
+        status: 200,
+        headers: { 'content-type': 'audio/wav' },
+      })) as unknown as typeof fetch
+    const base = await serve({ sttUrl: '', ttsUrl: TTS, ttsTimeoutMs: 80, fetchImpl })
+    const u = new URL(`${base}/api/voice/speak`)
+    const outcome = await new Promise<{ status: number | undefined; clean: boolean }>(
+      (resolve, reject) => {
+        const req = httpRequest(
+          {
+            host: u.hostname,
+            port: u.port,
+            path: u.pathname,
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+          },
+          (res) => {
+            res.resume()
+            res.on('error', () => resolve({ status: res.statusCode, clean: false }))
+            res.on('aborted', () => resolve({ status: res.statusCode, clean: false }))
+            res.on('end', () => resolve({ status: res.statusCode, clean: res.complete }))
+          },
+        )
+        req.on('error', reject)
+        req.end(JSON.stringify({ input: 'hi' }))
+        setTimeout(() => reject(new Error('mid-pipe abort never surfaced')), 3000)
+      },
+    )
+    expect(outcome.status).toBe(200)
+    expect(outcome.clean).toBe(false)
   })
 
   it('speak validates the body, in UTF-8 bytes', async () => {
