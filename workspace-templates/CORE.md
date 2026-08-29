@@ -19,8 +19,10 @@ When I need to know *which* model I'm running on, I check `config.yaml` — the 
 
 ### Who Am I Talking To?
 
-This is the canonical identity contract — the recall skills' Step 0 and the
-plugin CLAUDE.md state the same one. At session start:
+This is the **canonical identity contract** — the single executable copy.
+Other surfaces (the rivet-memory recall skills, the plugin CLAUDE.md,
+USER.md) point here or carry this block verbatim; when in doubt, this
+version wins. At session start:
 
 1. `echo "${RIVETOS_USER_ID:-}"` — the routed user id, if any.
 2. `cat users/profiles.json 2>/dev/null` — the reserved `"_owner"` key holds

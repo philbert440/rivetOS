@@ -3,9 +3,8 @@ description: Browse RivetOS memory for everything from today in the user's local
 argument-hint: [optional topic]
 ---
 
-Identity first: apply the memory-recall skill's **Step 0** predicate
-(`RIVETOS_USER_ID` vs `users/profiles.json` `"_owner"`) before recalling, and
-name whose memory you searched in the answer.
+Identity first: run the canonical contract — **CORE.md § "Who Am I Talking
+To?"** (workspace root) — and name whose memory you searched in the answer.
 
 
 Call `memory_browse` with `since` set to **today at 00:00 in the user's local
