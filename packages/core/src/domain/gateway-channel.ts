@@ -844,7 +844,10 @@ export function createGatewayChannel(opts?: {
           const toolName = str('tool')
           const rawArgs = ev.args ?? ev.input ?? ev.arguments
           const metadata: Record<string, unknown> = { tool: toolName }
-          const summarized = summarizeBridgeArgs(rawArgs)
+          const summarized = summarizeBridgeArgs(
+            rawArgs,
+            ASK_TOOL_RE.test(toolName) ? ASK_LIMITS : BRIDGE_LIMITS,
+          )
           if (summarized !== undefined) metadata.args = summarized
           emitFrame({
             kind: 'stream',
@@ -900,6 +903,24 @@ const BRIDGE_ARG_KEYS_MAX = 40
 const BRIDGE_ARG_STR_MAX = 200
 /** Deep enough for AskUserQuestion { questions: [{ options: [{ label }] }] }. */
 const BRIDGE_ARG_DEPTH_MAX = 5
+
+/** Ask-tool args are user-facing verbatim: the option label the Hub renders
+ *  IS the text sent back as the user's answer, so the generic 200-char cap
+ *  would make the user "say" a mangled label. Wider string/depth budget for
+ *  the ask shapes only — redaction and the array/key caps stay. */
+const ASK_TOOL_RE = /^ask[_-]?user(?:[_-]?question)?$/i
+const ASK_ARG_STR_MAX = 2000
+const ASK_ARG_DEPTH_MAX = BRIDGE_ARG_DEPTH_MAX + 2
+
+interface BridgeArgLimits {
+  strMax: number
+  depthMax: number
+}
+const BRIDGE_LIMITS: BridgeArgLimits = {
+  strMax: BRIDGE_ARG_STR_MAX,
+  depthMax: BRIDGE_ARG_DEPTH_MAX,
+}
+const ASK_LIMITS: BridgeArgLimits = { strMax: ASK_ARG_STR_MAX, depthMax: ASK_ARG_DEPTH_MAX }
 const SECRET_KEY_RE =
   /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
 
@@ -920,9 +941,9 @@ function redactValuePatterns(s: string): string {
     )
 }
 
-function capStr(s: string): string {
+function capStr(s: string, max: number): string {
   const r = redactValuePatterns(s)
-  return r.length > BRIDGE_ARG_STR_MAX ? r.slice(0, BRIDGE_ARG_STR_MAX) + '…' : r
+  return r.length > max ? r.slice(0, max) + '…' : r
 }
 
 /**
@@ -931,31 +952,34 @@ function capStr(s: string): string {
  * - string values run through value-pattern redact then length-capped
  * - nested objects to depth 5, key count 40 (den-hook parity)
  */
-function summarizeBridgeArgs(raw: unknown): Record<string, unknown> | undefined {
+function summarizeBridgeArgs(
+  raw: unknown,
+  lim: BridgeArgLimits = BRIDGE_LIMITS,
+): Record<string, unknown> | undefined {
   if (raw === undefined || raw === null) return undefined
   let obj: unknown = raw
   if (typeof raw === 'string') {
     try {
       obj = JSON.parse(raw) as unknown
     } catch {
-      return { value: capStr(raw) }
+      return { value: capStr(raw, lim.strMax) }
     }
   }
   if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return undefined
-  return summarizeBridgeValue(obj, 0) as Record<string, unknown>
+  return summarizeBridgeValue(obj, 0, lim) as Record<string, unknown>
 }
 
-function summarizeBridgeValue(value: unknown, depth: number): unknown {
+function summarizeBridgeValue(value: unknown, depth: number, lim: BridgeArgLimits): unknown {
   if (value === null || value === undefined) return value
-  if (typeof value === 'string') return capStr(value)
+  if (typeof value === 'string') return capStr(value, lim.strMax)
   if (typeof value === 'number' || typeof value === 'boolean') return value
-  if (depth >= BRIDGE_ARG_DEPTH_MAX) {
+  if (depth >= lim.depthMax) {
     if (Array.isArray(value)) return `[array:${value.length}]`
     if (typeof value === 'object') return '[omitted]'
     return value
   }
   if (Array.isArray(value)) {
-    return value.slice(0, 20).map((item) => summarizeBridgeValue(item, depth + 1))
+    return value.slice(0, 20).map((item) => summarizeBridgeValue(item, depth + 1, lim))
   }
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {}
@@ -969,7 +993,7 @@ function summarizeBridgeValue(value: unknown, depth: number): unknown {
         out[key] = '[redacted]'
         continue
       }
-      out[key] = summarizeBridgeValue(v, depth + 1)
+      out[key] = summarizeBridgeValue(v, depth + 1, lim)
     }
     return out
   }
