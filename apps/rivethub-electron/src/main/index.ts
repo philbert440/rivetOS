@@ -428,29 +428,36 @@ if (!app.requestSingleInstanceLock()) {
     // hosts click events never arrive — the menu is the fallback there.
     tray.on('click', toggleMain)
 
-    // An accelerator-bearing menu on EVERY platform (app-menu.ts): nulling
-    // it on Linux/Windows dropped zoom/reload/devtools/quit accelerators
-    // with the bar. The bar itself stays hidden there (autoHideMenuBar).
-    const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
-      const { action, submenu, ...rest } = item
-      const out = rest as MenuItemConstructorOptions
-      if (submenu) out.submenu = submenu.map(mapMenuItem)
-      if (action === 'new-window') out.click = spawnWindow
-      if (action === 'reload')
-        out.click = (_i, win) => {
-          if (win instanceof BrowserWindow) win.webContents.reload()
-        }
-      if (action === 'close-window') out.click = (_i, win) => win?.close()
-      if (action === 'quit')
-        out.click = () => {
-          quitting = true
-          app.quit()
-        }
-      return out
+    // Application menu. On Windows, Menu.setApplicationMenu() makes Chromium
+    // round-trip EVERY keydown through the main-process accelerator matcher.
+    // That is the den-xterm typing lag that landed with #560 — typing was
+    // fine on the Electron shell before that commit. Null the menu on win32;
+    // the tray still has Show / New Window / Quit. Linux and macOS keep the
+    // accelerator-bearing menu (bar stays hidden off darwin).
+    if (process.platform === 'win32') {
+      Menu.setApplicationMenu(null)
+    } else {
+      const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
+        const { action, submenu, ...rest } = item
+        const out = rest as MenuItemConstructorOptions
+        if (submenu) out.submenu = submenu.map(mapMenuItem)
+        if (action === 'new-window') out.click = spawnWindow
+        if (action === 'reload')
+          out.click = (_i, win) => {
+            if (win instanceof BrowserWindow) win.webContents.reload()
+          }
+        if (action === 'close-window') out.click = (_i, win) => win?.close()
+        if (action === 'quit')
+          out.click = () => {
+            quitting = true
+            app.quit()
+          }
+        return out
+      }
+      Menu.setApplicationMenu(
+        Menu.buildFromTemplate(appMenuTemplate(process.platform, app.isPackaged).map(mapMenuItem)),
+      )
     }
-    Menu.setApplicationMenu(
-      Menu.buildFromTemplate(appMenuTemplate(process.platform, app.isPackaged).map(mapMenuItem)),
-    )
     mainWindow = createWindow(true)
 
     // macOS: dock click / Cmd+Tab onto a hidden-to-tray app must restore
