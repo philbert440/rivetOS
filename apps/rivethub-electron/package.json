@@ -1,8 +1,8 @@
 {
   "name": "@rivetos/rivethub-electron",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
-  "description": "RivetHub desktop \u2014 Electron shell over rivethub-web: tray, native notifications, global shortcuts, native mTLS device identity",
+  "description": "RivetHub desktop \u2014 Electron shell over rivethub-web: tray, native notifications, multi-window, native mTLS device identity",
   "main": "dist-electron/main.cjs",
   "scripts": {
     "bundle": "node scripts/bundle.mjs",

@@ -5,30 +5,23 @@
  * shell capabilities anywhere the shell would not go itself.
  */
 
-import {
-  app,
-  clipboard,
-  ipcMain,
-  Notification,
-  shell,
-  type IpcMainEvent,
-  type IpcMainInvokeEvent,
-} from 'electron'
+import { app, clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
 import type { PipeState } from './mtls-pipe.js'
-import type { MigrationHandle } from './tauri-storage-migration.js'
 import { checkForUpdate, downloadAndInstall } from './updater.js'
 
 export interface IpcDeps {
   pipes: PipeState
-  setUnread: (count: number) => void
+  /** Per-window unread report; the shell aggregates across windows. */
+  setUnread: (webContentsId: number, count: number) => void
   /** True when the given frame URL belongs to the bundled app origin. */
   isBundledUrl: (url: string) => boolean
-  /** One-time Tauri localStorage migration (see tauri-storage-migration.ts). */
-  migration: MigrationHandle
-  /** True when a webContents id belongs to a window this shell created. */
-  isShellWindow: (webContentsId: number) => boolean
-  /** Bring the main window forward (notification click-through). */
-  summon: () => void
+  /** Bring a window forward (notification click-through) — the sender when
+   *  it is still alive, a sane fallback otherwise. */
+  summon: (webContentsId?: number) => void
+  /** Open one more shell window. */
+  newWindow: () => void
+  /** Quit for real (bypasses close-to-tray). */
+  quit: () => void
 }
 
 export function registerIpc(deps: IpcDeps): void {
@@ -90,11 +83,12 @@ export function registerIpc(deps: IpcDeps): void {
   const liveNotifications = new Set<Notification>()
   const NOTIFY_TEXT_MAX = 512
 
-  guarded('notify:send', (_e, opts: unknown): void => {
+  guarded('notify:send', (e, opts: unknown): void => {
     if (typeof opts !== 'object' || opts === null) return
     const { title, body } = opts as { title?: unknown; body?: unknown }
     if (typeof title !== 'string' || typeof body !== 'string') return
     if (!Notification.isSupported()) return
+    const senderId = e.sender.id
     const n = new Notification({
       title: title.slice(0, NOTIFY_TEXT_MAX),
       body: body.slice(0, NOTIFY_TEXT_MAX),
@@ -108,7 +102,7 @@ export function registerIpc(deps: IpcDeps): void {
     // was a dead end: the OS banner did nothing and the tray was the only
     // road back (review punch list #3).
     n.on('click', () => {
-      deps.summon()
+      deps.summon(senderId)
       drop()
     })
     n.on('close', drop)
@@ -116,9 +110,29 @@ export function registerIpc(deps: IpcDeps): void {
     n.show()
   })
 
-  guarded('unread:set', (_e, count: unknown): void => {
+  guarded('unread:set', (e, count: unknown): void => {
     const n = typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : 0
-    deps.setUnread(Math.floor(n))
+    deps.setUnread(e.sender.id, Math.floor(n))
+  })
+
+  guarded('window:new', (): void => {
+    deps.newWindow()
+  })
+
+  guarded('app:quit', (): void => {
+    deps.quit()
+  })
+
+  // Zoom on the SENDER's contents. No application menu carries the zoom
+  // roles on Windows (per-keystroke accelerator matching is the #566 typing
+  // lag), so the renderer forwards the chords here. ±0.5 matches the
+  // zoomIn/zoomOut menu-role step.
+  guarded('window:zoom', (e, delta: unknown): void => {
+    if (delta !== 1 && delta !== -1 && delta !== 0) return
+    const wc = e.sender
+    wc.setZoomLevel(
+      delta === 0 ? 0 : Math.max(-8, Math.min(9, wc.getZoomLevel() + (delta as number) * 0.5)),
+    )
   })
 
   guarded('app:version', () => app.getVersion())
@@ -146,34 +160,5 @@ export function registerIpc(deps: IpcDeps): void {
       updating = false
       throw err
     }
-  })
-
-  // Tauri localStorage migration — sendSync on purpose: the preload must
-  // seed BEFORE the app's first storage reads, and the payload is tiny and
-  // handed out once (main writes the marker at hand-out; there is no second
-  // IPC leg to lose). Fence: WINDOW IDENTITY, not the frame URL — at
-  // preload time the committed URL can still be empty, and a fence that
-  // silently never opens would strand every upgrade (review finding,
-  // PR #556). Only frames of windows this app created carry the preload at
-  // all, and only the main frame passes. The whole handler is fail-closed:
-  // sendSync with no returnValue assigned would hang the renderer on a
-  // white screen, so every path assigns.
-  const trustedSync = (e: IpcMainEvent): boolean => {
-    try {
-      const frame = e.senderFrame
-      if (!frame || frame !== e.sender.mainFrame) return false
-      return deps.isShellWindow(e.sender.id)
-    } catch {
-      return false
-    }
-  }
-  ipcMain.on('migration:legacy', (e) => {
-    let payload: Record<string, string> | null = null
-    try {
-      if (trustedSync(e)) payload = deps.migration.consume()
-    } catch {
-      payload = null
-    }
-    e.returnValue = payload
   })
 }
