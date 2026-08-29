@@ -168,4 +168,41 @@ describe('/api/memory', () => {
     const body = (await res.json()) as { conversations: number }
     expect(body.conversations).toBe(0)
   })
+
+  describe('per-user routing (x-rivetos-user)', () => {
+    const routed = { headers: { 'x-rivetos-user': 'coco' } }
+
+    it('serves the routed user from their own pool, owner from the owner pool', async () => {
+      const base = await serve({
+        pool: fakePool({ browse: [] }),
+        userPools: new Map([['coco', fakePool()]]),
+        search: async () => [],
+      })
+      const owner = (await (await fetch(`${base}/api/memory/browse`)).json()) as {
+        messages: unknown[]
+      }
+      expect(owner.messages).toHaveLength(0)
+      const coco = (await (await fetch(`${base}/api/memory/browse`, routed)).json()) as {
+        messages: unknown[]
+      }
+      expect(coco.messages).toHaveLength(1)
+    })
+
+    it('refuses a stamped user with no pool — never the owner fallback', async () => {
+      const base = await serve({ pool: fakePool(), search: async () => [] })
+      const res = await fetch(`${base}/api/memory/browse`, routed)
+      expect(res.status).toBe(503)
+    })
+
+    it('refuses a tombstoned user (pool construction failed)', async () => {
+      const base = await serve({
+        pool: fakePool(),
+        userPools: new Map([['coco', null]]),
+        search: async () => [],
+      })
+      for (const ep of ['search?q=x', 'browse', 'stats', 'health']) {
+        expect((await fetch(`${base}/api/memory/${ep}`, routed)).status).toBe(503)
+      }
+    })
+  })
 })

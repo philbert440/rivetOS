@@ -75,6 +75,7 @@ export type {
 export type { Memory, MemoryEntry, MemorySearchResult } from './memory.js'
 export { isUsableUserDb, parseUserDbs } from './user-dbs.js'
 export type { UserDbEntry } from './user-dbs.js'
+export { TRUSTED_USER_HEADER, routedUserFromHeaders } from './trusted-user.js'
 export {
   mergeUserDbs,
   parseUsersRegistry,

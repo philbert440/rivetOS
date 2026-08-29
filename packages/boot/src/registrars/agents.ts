@@ -57,7 +57,13 @@ import {
 import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
-import type { GatewayRoute, HarnessId, MeshConfig, MeshRegistry } from '@rivetos/types'
+import {
+  parseUserDbs,
+  type GatewayRoute,
+  type HarnessId,
+  type MeshConfig,
+  type MeshRegistry,
+} from '@rivetos/types'
 import { WikiIndex, createMemoryApiRoute } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
@@ -602,11 +608,37 @@ export async function registerAgentTools(
   // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
   if (pool) {
     const wikiIndex = new WikiIndex(pool)
+    // /api/memory must answer with the den-stamped user's database, so build a
+    // pool per RIVETOS_USER_DBS entry alongside the owner pool. A user whose
+    // pool cannot be constructed is tombstoned (null): the route refuses them
+    // rather than falling through to the owner's data.
+    const userDbs = parseUserDbs(process.env.RIVETOS_USER_DBS)
+    let userPools: Map<string, pg.Pool | null> | undefined
+    if (userDbs) {
+      userPools = new Map()
+      for (const [userId, entry] of Object.entries(userDbs)) {
+        try {
+          userPools.set(userId, new pg.Pool({ connectionString: entry.pgUrl, max: 2 }))
+        } catch (err) {
+          log.warn(
+            `memory api: pool for user "${userId}" failed to construct — requests will be refused: ${String(err)}`,
+          )
+          userPools.set(userId, null)
+        }
+      }
+      const pools = userPools
+      runtime.addShutdownHook(async () => {
+        await Promise.all(
+          [...pools.values()].flatMap((p) => (p ? [p.end().catch(() => undefined)] : [])),
+        )
+      })
+    }
     gatewayRoutes.push(
       createWikiApiRoute({ index: wikiIndex }),
       createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
       createMemoryApiRoute({
         pool,
+        userPools,
         embedEndpoint: embedEndpoint || undefined,
       }),
     )

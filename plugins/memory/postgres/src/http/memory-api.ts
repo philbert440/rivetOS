@@ -11,14 +11,15 @@
  */
 
 import type { ServerResponse } from 'node:http'
-import type {
-  GatewayRoute,
-  MemoryBrowseMessage,
-  MemoryBrowseResponse,
-  MemoryHealthResponse,
-  MemorySearchHit,
-  MemorySearchResponse,
-  MemoryStatsResponse,
+import {
+  routedUserFromHeaders,
+  type GatewayRoute,
+  type MemoryBrowseMessage,
+  type MemoryBrowseResponse,
+  type MemoryHealthResponse,
+  type MemorySearchHit,
+  type MemorySearchResponse,
+  type MemoryStatsResponse,
 } from '@rivetos/types'
 import type pg from 'pg'
 import { SearchEngine, type SearchHit, type SearchOptions } from '../search.js'
@@ -27,7 +28,11 @@ import { applyWindowArgs } from '../tools/helpers.js'
 export type MemorySearchFn = (query: string, options?: SearchOptions) => Promise<SearchHit[]>
 
 export interface MemoryApiOptions {
+  /** The node owner's database — used only for requests den left unstamped. */
   pool: pg.Pool
+  /** Per-user pools from RIVETOS_USER_DBS. `null` = configured but unusable
+   *  (tombstone): the user must get an error, never the owner's data. */
+  userPools?: ReadonlyMap<string, pg.Pool | null>
   embedEndpoint?: string
   embedModel?: string
   /** Test seam — production uses SearchEngine. */
@@ -90,28 +95,42 @@ async function sessionKeys(pool: pg.Pool, conversationIds: string[]): Promise<Ma
 }
 
 export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
-  const search: MemorySearchFn =
-    opts.search ??
-    ((query, options) =>
-      new SearchEngine(opts.pool, {
-        embedEndpoint: opts.embedEndpoint,
-        embedModel: opts.embedModel,
-      }).search(query, options))
   const embedOk = Boolean(opts.embedEndpoint)
+
+  /** den stamps `x-rivetos-user` only for resolved non-owner identities, so an
+   *  absent header is the owner. A stamped user must resolve to their own pool;
+   *  unknown or tombstoned entries are refused — falling through to the owner
+   *  pool is exactly the cross-tenant leak this route existed without. */
+  const resolvePool = (routed: string | undefined): pg.Pool | 'unavailable' => {
+    if (routed === undefined) return opts.pool
+    return opts.userPools?.get(routed) ?? 'unavailable'
+  }
 
   return {
     prefix: '/api/memory',
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        const routed = routedUserFromHeaders(req.headers)
+        const pool = resolvePool(routed)
+        if (pool === 'unavailable') {
+          return json(res, 503, { error: `memory is not available for user "${routed ?? ''}"` })
+        }
+        const search: MemorySearchFn =
+          opts.search ??
+          ((query, options) =>
+            new SearchEngine(pool, {
+              embedEndpoint: opts.embedEndpoint,
+              embedModel: opts.embedModel,
+            }).search(query, options))
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/api/memory'.length).replace(/^\//, '')
         const [head] = rest.split('/')
 
-        if (head === 'search') return await handleSearch(url, res, search, opts.pool, embedOk)
-        if (head === 'browse') return await handleBrowse(url, res, opts.pool)
-        if (head === 'stats') return await handleStats(res, opts.pool)
-        if (head === 'health') return await handleHealth(res, opts.pool, embedOk)
+        if (head === 'search') return await handleSearch(url, res, search, pool, embedOk)
+        if (head === 'browse') return await handleBrowse(url, res, pool)
+        if (head === 'stats') return await handleStats(res, pool)
+        if (head === 'health') return await handleHealth(res, pool, embedOk)
         return json(res, 404, { error: 'unknown memory resource' })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
