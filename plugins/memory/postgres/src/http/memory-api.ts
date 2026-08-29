@@ -12,7 +12,7 @@
 
 import type { ServerResponse } from 'node:http'
 import {
-  routedUserFromHeaders,
+  routedUserResult,
   type GatewayRoute,
   type MemoryBrowseMessage,
   type MemoryBrowseResponse,
@@ -25,7 +25,11 @@ import type pg from 'pg'
 import { SearchEngine, type SearchHit, type SearchOptions } from '../search.js'
 import { applyWindowArgs } from '../tools/helpers.js'
 
-export type MemorySearchFn = (query: string, options?: SearchOptions) => Promise<SearchHit[]>
+export type MemorySearchFn = (
+  pool: pg.Pool,
+  query: string,
+  options?: SearchOptions,
+) => Promise<SearchHit[]>
 
 export interface MemoryApiOptions {
   /** The node owner's database — used only for requests den left unstamped. */
@@ -96,33 +100,41 @@ async function sessionKeys(pool: pg.Pool, conversationIds: string[]): Promise<Ma
 
 export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
   const embedOk = Boolean(opts.embedEndpoint)
-
-  /** den stamps `x-rivetos-user` only for resolved non-owner identities, so an
-   *  absent header is the owner. A stamped user must resolve to their own pool;
-   *  unknown or tombstoned entries are refused — falling through to the owner
-   *  pool is exactly the cross-tenant leak this route existed without. */
-  const resolvePool = (routed: string | undefined): pg.Pool | 'unavailable' => {
-    if (routed === undefined) return opts.pool
-    return opts.userPools?.get(routed) ?? 'unavailable'
-  }
+  const search: MemorySearchFn =
+    opts.search ??
+    ((pool, query, options) =>
+      new SearchEngine(pool, {
+        embedEndpoint: opts.embedEndpoint,
+        embedModel: opts.embedModel,
+      }).search(query, options))
 
   return {
     prefix: '/api/memory',
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
-        const routed = routedUserFromHeaders(req.headers)
-        const pool = resolvePool(routed)
-        if (pool === 'unavailable') {
-          return json(res, 503, { error: `memory is not available for user "${routed ?? ''}"` })
+        // HARD INVARIANT: this route must only ever be dispatched by den-server
+        // AFTER its unconditional strip-and-stamp of x-rivetos-user (embedded
+        // gateway extraRoutes). den stamps only resolved non-owner identities,
+        // so absent = owner; a PRESENT-but-malformed value is refused, and a
+        // stamped user must resolve to their own pool — unknown or tombstoned
+        // entries are refused too. Falling through to the owner pool is exactly
+        // the cross-tenant leak this routing exists to close. Never mount this
+        // route on an unauthenticated port.
+        const routed = routedUserResult(req.headers)
+        if (routed.kind === 'invalid') {
+          return json(res, 503, { error: 'malformed routing identity' })
         }
-        const search: MemorySearchFn =
-          opts.search ??
-          ((query, options) =>
-            new SearchEngine(pool, {
-              embedEndpoint: opts.embedEndpoint,
-              embedModel: opts.embedModel,
-            }).search(query, options))
+        let pool: pg.Pool
+        if (routed.kind === 'owner') {
+          pool = opts.pool
+        } else {
+          const userPool = opts.userPools?.get(routed.id)
+          if (!userPool) {
+            return json(res, 503, { error: `memory is not available for user "${routed.id}"` })
+          }
+          pool = userPool
+        }
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/api/memory'.length).replace(/^\//, '')
         const [head] = rest.split('/')
@@ -156,7 +168,7 @@ async function handleSearch(
   const scope =
     scopeRaw === 'messages' || scopeRaw === 'summaries' || scopeRaw === 'both' ? scopeRaw : 'both'
   const limit = Math.min(Math.max(intParam(url, 'limit', 20), 1), 50)
-  const hits = await search(q, { scope, limit })
+  const hits = await search(pool, q, { scope, limit })
   const keys = await sessionKeys(
     pool,
     hits.map((h) => h.conversationId).filter((id): id is string => Boolean(id)),

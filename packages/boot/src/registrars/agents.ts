@@ -135,9 +135,30 @@ export async function registerAgentTools(
   let taskWaiter: TaskCompletionWaiter | undefined
   let meshRegistryRef: MeshRegistry | undefined
   let delegationRecorder: DelegationRunsRecorder | undefined
+  let userPools: Map<string, pg.Pool | null> | undefined
 
   if (pgUrl) {
     pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
+    // /api/memory answers with the den-stamped user's database, so build a
+    // pool per RIVETOS_USER_DBS entry alongside the owner pool. An entry with
+    // an unparseable URL (pg defers parsing to first connect) is tombstoned
+    // (null): the route refuses that user rather than 500ing into the owner
+    // path. max 2: the panel fires search+browse+stats together and no more.
+    const userDbs = parseUserDbs(process.env.RIVETOS_USER_DBS)
+    if (userDbs) {
+      userPools = new Map()
+      for (const [userId, entry] of Object.entries(userDbs)) {
+        try {
+          new URL(entry.pgUrl)
+          userPools.set(userId, new pg.Pool({ connectionString: entry.pgUrl, max: 2 }))
+        } catch (err) {
+          log.warn(
+            `memory api: pool for user "${userId}" failed to construct — requests will be refused: ${String(err)}`,
+          )
+          userPools.set(userId, null)
+        }
+      }
+    }
     if (tasksEnabled) {
       const taskStore = new PgTaskStore(pool)
       if (await taskStore.isReady()) {
@@ -608,31 +629,6 @@ export async function registerAgentTools(
   // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
   if (pool) {
     const wikiIndex = new WikiIndex(pool)
-    // /api/memory must answer with the den-stamped user's database, so build a
-    // pool per RIVETOS_USER_DBS entry alongside the owner pool. A user whose
-    // pool cannot be constructed is tombstoned (null): the route refuses them
-    // rather than falling through to the owner's data.
-    const userDbs = parseUserDbs(process.env.RIVETOS_USER_DBS)
-    let userPools: Map<string, pg.Pool | null> | undefined
-    if (userDbs) {
-      userPools = new Map()
-      for (const [userId, entry] of Object.entries(userDbs)) {
-        try {
-          userPools.set(userId, new pg.Pool({ connectionString: entry.pgUrl, max: 2 }))
-        } catch (err) {
-          log.warn(
-            `memory api: pool for user "${userId}" failed to construct — requests will be refused: ${String(err)}`,
-          )
-          userPools.set(userId, null)
-        }
-      }
-      const pools = userPools
-      runtime.addShutdownHook(async () => {
-        await Promise.all(
-          [...pools.values()].flatMap((p) => (p ? [p.end().catch(() => undefined)] : [])),
-        )
-      })
-    }
     gatewayRoutes.push(
       createWikiApiRoute({ index: wikiIndex }),
       createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
