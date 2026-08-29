@@ -3,6 +3,8 @@ import {
   extractAskUserQuestions,
   isAskUserTool,
   questionsFromLiveTools,
+  composeAskAnswer,
+  type AskQuestion,
 } from './ask-user.js'
 
 describe('isAskUserTool', () => {
@@ -76,11 +78,11 @@ describe('extractAskUserQuestions', () => {
     ])
   })
 
-  it('dedupes options and caps at 10', () => {
+  it('dedupes options and caps at 20 (the bridge array cap)', () => {
     const qs = extractAskUserQuestions({
-      options: ['X', 'X', ...Array.from({ length: 15 }, (_, i) => `o${String(i)}`)],
+      options: ['X', 'X', ...Array.from({ length: 25 }, (_, i) => `o${String(i)}`)],
     })
-    expect(qs[0].options.length).toBe(10)
+    expect(qs[0].options.length).toBe(20)
     expect(qs[0].options[0]).toEqual({ label: 'X' })
   })
 
@@ -128,5 +130,36 @@ describe('questionsFromLiveTools', () => {
       },
     ])
     expect(qs[0].options.map((o) => o.label)).toEqual(['Go', 'Stop'])
+  })
+})
+
+describe('composeAskAnswer', () => {
+  const mk = (over: Partial<AskQuestion> = {}): AskQuestion => ({
+    multiSelect: false,
+    options: [{ label: 'A' }, { label: 'B' }],
+    ...over,
+  })
+
+  it('joins one question’s labels', () => {
+    expect(composeAskAnswer([mk({ multiSelect: true })], { 0: ['A', 'B'] }, '')).toBe('A, B')
+  })
+
+  it('prefixes per-question when several are answered', () => {
+    const qs = [mk({ header: 'Auth' }), mk({ question: 'Which db?' })]
+    expect(composeAskAnswer(qs, { 0: ['A'], 1: ['B'] }, '')).toBe('Auth: A\nWhich db?: B')
+  })
+
+  it('free text alone answers', () => {
+    expect(composeAskAnswer([mk()], {}, '  my own take  ')).toBe('my own take')
+  })
+
+  it('picks and free text COMBINE — typing never drops a selection', () => {
+    expect(composeAskAnswer([mk({ multiSelect: true })], { 0: ['A'] }, 'also: be careful')).toBe(
+      'A\nalso: be careful',
+    )
+  })
+
+  it('empty picks + empty text compose nothing', () => {
+    expect(composeAskAnswer([mk()], {}, '   ')).toBe('')
   })
 })

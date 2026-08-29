@@ -65,7 +65,8 @@ function optionsFromArray(arr: unknown): AskOption[] {
     if (!o || seen.has(o.label)) continue
     seen.add(o.label)
     out.push(o)
-    if (out.length >= 10) break
+    // 20 matches the bridge's array cap — the wire can't carry more anyway.
+    if (out.length >= 20) break
   }
   return out
 }
@@ -113,6 +114,39 @@ export function extractAskUserQuestions(args: unknown): AskQuestion[] {
     return [{ question, multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] }]
   }
   return []
+}
+
+/**
+ * Compose the outgoing answer from option picks (keyed by question index)
+ * and free text. Multi-question picks are prefixed ("Auth method: JWT") so
+ * the agent can match them up; free text rides on its own line so a mixed
+ * answer keeps both. Empty when there is nothing to send. Pure — the card's
+ * submit semantics are pinned here, not in JSX.
+ */
+export function composeAskAnswer(
+  questions: AskQuestion[],
+  picked: Record<number, string[]>,
+  own: string,
+): string {
+  const answered = questions
+    .map((q, qi) => ({ q, labels: picked[qi] ?? [] }))
+    .filter((a) => a.labels.length > 0)
+  const parts: string[] = []
+  if (answered.length > 0) {
+    parts.push(
+      questions.length === 1
+        ? answered[0].labels.join(', ')
+        : answered
+            .map((a) => {
+              const prefix = a.q.header ?? a.q.question
+              return prefix ? `${prefix}: ${a.labels.join(', ')}` : a.labels.join(', ')
+            })
+            .join('\n'),
+    )
+  }
+  const free = own.trim()
+  if (free) parts.push(free)
+  return parts.join('\n')
 }
 
 /**

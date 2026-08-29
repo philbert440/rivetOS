@@ -18,6 +18,46 @@ import * as path from 'node:path'
 export const APP_SCHEME = 'app'
 export const APP_ORIGIN = `${APP_SCHEME}://bundle`
 
+/** True only for the bundled app origin, by PARSED protocol+host — never a
+ *  string-prefix test (custom schemes give URL.origin 'null', so neither
+ *  startsWith nor origin equality is safe). Accepts both shapes Electron
+ *  hands the two permission gates — a full URL (request handler) and a bare
+ *  origin (check handler) — so the fences cannot disagree (PR #555). */
+export function isBundledUrl(url: string): boolean {
+  try {
+    const u = new URL(url)
+    return `${u.protocol}//${u.host}` === APP_ORIGIN
+  } catch {
+    return false
+  }
+}
+
+/** The shell's ONE permission hole: microphone capture for the bundled UI's
+ *  main frame (voice dictation). Camera, iframes, and every other origin
+ *  stay denied — den iframes render LAN-served content. */
+export function allowMediaRequest(details: {
+  requestingUrl?: string
+  isMainFrame?: boolean
+  mediaTypes?: readonly string[]
+}): boolean {
+  if (!details.requestingUrl || !isBundledUrl(details.requestingUrl)) return false
+  if (details.isMainFrame === false) return false
+  const types = details.mediaTypes ?? []
+  return types.length > 0 && types.every((t) => t === 'audio')
+}
+
+/** Check-handler twin of allowMediaRequest (permissions.query must agree
+ *  with getUserMedia — the #555 split). The check API has no mediaTypes
+ *  array, only a single mediaType; anything video answers false. */
+export function allowMediaCheck(
+  requestingOrigin: string,
+  details: { embeddingOrigin?: string; mediaType?: string },
+): boolean {
+  if (!isBundledUrl(requestingOrigin)) return false
+  if (details.embeddingOrigin && !isBundledUrl(details.embeddingOrigin)) return false
+  return details.mediaType !== 'video'
+}
+
 /** `frame-ancestors 'none'`: nothing may frame an app:// document — without
  *  it a den page (frame-src allows http/https content INSIDE the hub) could
  *  nest app://bundle and clickjack the privileged UI (review finding,
