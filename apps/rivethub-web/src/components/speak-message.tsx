@@ -12,7 +12,9 @@ export function SpeakMessage(props: { id: string; text: string }): JSX.Element {
   useEffect(() => onSpeakingChange(() => setPlaying(speakingKey() === props.id)), [props.id])
   const onClick = (): void => {
     setFailed(false)
-    if (playing) {
+    // Never disabled: Stop must work mid-fetch. A re-click while a fetch is
+    // in flight supersedes it (speak() generations drop the stale clip).
+    if (speakingKey() === props.id) {
       stopSpeaking()
       return
     }
@@ -24,11 +26,10 @@ export function SpeakMessage(props: { id: string; text: string }): JSX.Element {
   return (
     <button
       type="button"
-      aria-label={playing ? 'stop speaking' : 'speak message'}
+      aria-label={failed ? 'voice unavailable' : playing ? 'stop speaking' : 'speak message'}
       title={failed ? 'voice unavailable' : playing ? 'stop' : 'speak message'}
       onClick={onClick}
-      disabled={busy}
-      className="absolute top-0 right-8 rounded border border-line bg-panel/90 p-1 text-ink-dim opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100 hover:text-em disabled:animate-pulse"
+      className={`absolute top-0 right-8 rounded border border-line bg-panel/90 p-1 text-ink-dim opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100 hover:text-em ${busy ? 'animate-pulse' : ''}`}
     >
       {playing ? (
         <Square className="size-3 text-em" />

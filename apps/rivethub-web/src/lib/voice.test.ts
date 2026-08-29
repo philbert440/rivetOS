@@ -8,7 +8,7 @@ vi.mock('../stores/connection.js', () => ({
   useConnection: { getState: () => ({ gateway: {} }) },
 }))
 
-const { encodeWavPcm16, stripForSpeech } = await import('./voice.js')
+const { encodeWavPcm16, monoResample, stripForSpeech } = await import('./voice.js')
 
 describe('encodeWavPcm16', () => {
   it('writes a valid mono PCM16 header + clipped samples', () => {
@@ -59,5 +59,44 @@ describe('stripForSpeech', () => {
 
   it('collapses whitespace and trims', () => {
     expect(stripForSpeech('  a\n\n\n b  ')).toBe('a b')
+  })
+})
+
+describe('monoResample', () => {
+  const buf = (channels: Float32Array[], sampleRate: number) => ({
+    numberOfChannels: channels.length,
+    length: channels[0]?.length ?? 0,
+    sampleRate,
+    getChannelData: (i: number) => channels[i],
+  })
+
+  it('empty buffer resolves to zero samples (no src[-1] read)', () => {
+    expect(monoResample(buf([], 48_000), 16_000)).toHaveLength(0)
+  })
+
+  it('downmixes channels at identity rate', () => {
+    const out = monoResample(
+      buf([new Float32Array([1, 0.5]), new Float32Array([0, 0.5])], 16_000),
+      16_000,
+    )
+    expect([...out]).toEqual([0.5, 0.5])
+  })
+
+  it('downsamples 2:1', () => {
+    const out = monoResample(buf([new Float32Array([0, 0.25, 0.5, 0.75])], 32_000), 16_000)
+    expect(out).toHaveLength(2)
+    expect(out[0]).toBeCloseTo(0, 5)
+    expect(out[1]).toBeCloseTo(0.5, 5)
+  })
+
+  it('upsamples with linear interpolation between neighbours', () => {
+    const out = monoResample(buf([new Float32Array([0, 1])], 8_000), 16_000)
+    expect(out).toHaveLength(4)
+    expect(out[0]).toBeCloseTo(0, 5)
+    expect(out[1]).toBeCloseTo(0.5, 5)
+    for (const v of out) {
+      expect(v).toBeGreaterThanOrEqual(0)
+      expect(v).toBeLessThanOrEqual(1)
+    }
   })
 })

@@ -63,7 +63,9 @@ export function Composer(props: {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | undefined>()
   const [atts, setAtts] = useState<PendingAttachment[]>([])
-  const [micState, setMicState] = useState<'idle' | 'recording' | 'transcribing'>('idle')
+  const [micState, setMicState] = useState<'idle' | 'starting' | 'recording' | 'transcribing'>(
+    'idle',
+  )
   const [autoSpeak, setAutoSpeakState] = useState(getAutoSpeak)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -87,9 +89,12 @@ export function Composer(props: {
     }
   }, [handleRef])
 
-  // Drop the mic on unmount — never leave a tab holding the capture device.
+  // Drop the mic on unmount (or a superseded start still resolving) — never
+  // leave a tab holding the capture device.
+  const micToken = useRef(0)
   useEffect(
     () => () => {
+      micToken.current++
       recRef.current?.cancel()
       recRef.current = undefined
     },
@@ -98,7 +103,8 @@ export function Composer(props: {
 
   // Auto-speak: voice out for each assistant turn that COMMITS while the
   // toggle is on. Committed messages only (the live turn is separate state),
-  // seeded on mount so reopening a thread doesn't read history aloud.
+  // re-seeded per SESSION so neither reopening a thread nor switching to
+  // another one reads existing history aloud.
   const lastAssistant = useChat((s) => {
     const msgs = s.messages[props.sessionId]
     if (!msgs) return undefined
@@ -109,15 +115,17 @@ export function Composer(props: {
     return undefined
   })
   const spokenRef = useRef<string | null>(null)
+  const seededFor = useRef<string | undefined>(undefined)
   useEffect(() => {
-    if (spokenRef.current === null) {
+    if (seededFor.current !== props.sessionId) {
+      seededFor.current = props.sessionId
       spokenRef.current = lastAssistant?.id ?? ''
       return
     }
     if (!autoSpeak || !lastAssistant || lastAssistant.id === spokenRef.current) return
     spokenRef.current = lastAssistant.id
     void speak(lastAssistant.text, lastAssistant.id).catch(() => undefined)
-  }, [autoSpeak, lastAssistant])
+  }, [autoSpeak, lastAssistant, props.sessionId])
 
   // Model dropdown (Claude Code / grok Build / local + mesh) from the catalog.
   const catalog = useQuery({
@@ -150,19 +158,25 @@ export function Composer(props: {
     }
   }
 
-  const sendBody = async (body: string): Promise<void> => {
-    const trimmed = withAttachmentText(body.trim(), atts)
+  const sendBody = async (body: string, opts?: { bare?: boolean }): Promise<void> => {
+    // Ask-card answers ride sendBody with bare=true: an option label must go
+    // out verbatim — never with leftover chips appended, and never blocked by
+    // an in-flight upload that has nothing to do with the question.
+    const bare = opts?.bare === true
+    const trimmed = bare ? body.trim() : withAttachmentText(body.trim(), atts)
     // Seamless queue path: allow stacking while a prior turn is in flight
     // (onSend enqueues and returns). Chat-loop path still serializes via sending.
     if (!trimmed || (sending && !props.onSend)) return
-    if (anyUploading(atts)) {
+    if (!bare && anyUploading(atts)) {
       setError('still uploading an attachment…')
       return
     }
     setError(undefined)
     setSending(true)
-    setText('')
-    setAtts([])
+    if (!bare) {
+      setText('')
+      setAtts([])
+    }
     try {
       if (props.onSend) {
         // Enqueue + pump (returns immediately). Messages show as queued/sending
@@ -181,7 +195,7 @@ export function Composer(props: {
       }
     } catch (err) {
       setError((err as Error).message)
-      setText(trimmed) // give the draft back
+      if (!bare) setText(trimmed) // give the draft back (answers never clobber it)
     } finally {
       setSending(false)
     }
@@ -223,12 +237,27 @@ export function Composer(props: {
       return
     }
     if (micState !== 'idle') return
+    // Synchronous guard: a double-click (or Strict-Mode double invoke) before
+    // startRecording resolves must not open a second capture. A resolved
+    // recorder that lost the race (superseded or unmounted) is cancelled,
+    // never assigned.
+    setMicState('starting')
+    const token = ++micToken.current
     void startRecording()
       .then((rec) => {
+        if (token !== micToken.current) {
+          rec.cancel()
+          return
+        }
         recRef.current = rec
         setMicState('recording')
       })
-      .catch((err: unknown) => setError((err as Error).message))
+      .catch((err: unknown) => {
+        if (token === micToken.current) {
+          setError((err as Error).message)
+          setMicState('idle')
+        }
+      })
   }
 
   // Seamless: never lock out Enter for a second queued message.
@@ -261,7 +290,7 @@ export function Composer(props: {
         <AskUserCard
           questions={props.ask ?? []}
           disabled={!connected || sending}
-          onAnswer={(label) => void sendBody(label)}
+          onAnswer={(label) => void sendBody(label, { bare: true })}
           onDismiss={() => props.onDismissAsk?.()}
           onFocusComposer={() => taRef.current?.focus()}
         />
@@ -363,7 +392,13 @@ export function Composer(props: {
             <button
               type="button"
               onClick={toggleMic}
-              aria-label={micState === 'recording' ? 'stop recording' : 'dictate'}
+              aria-label={
+                micState === 'recording'
+                  ? 'stop recording'
+                  : micState === 'transcribing'
+                    ? 'transcribing'
+                    : 'dictate'
+              }
               title={
                 micState === 'recording'
                   ? 'stop and transcribe'
@@ -371,7 +406,7 @@ export function Composer(props: {
                     ? 'transcribing…'
                     : 'dictate (node ASR)'
               }
-              disabled={micState === 'transcribing'}
+              disabled={micState === 'transcribing' || micState === 'starting'}
               className={cn(
                 'flex size-8 items-center justify-center rounded-full transition-colors',
                 micState === 'recording'
@@ -391,6 +426,7 @@ export function Composer(props: {
               setAutoSpeak(next)
               setAutoSpeakState(next)
             }}
+            aria-pressed={autoSpeak}
             aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
             title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
             className={cn(

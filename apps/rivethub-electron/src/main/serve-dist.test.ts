@@ -47,3 +47,45 @@ describe('resolveAsset', () => {
     expect(resolveAsset(DIST, '/den/sub/')?.file).toBe(path.join(DIST, 'den/sub/index.html'))
   })
 })
+
+describe('isBundledUrl — both shapes the permission gates receive', () => {
+  it('accepts the bare origin (check handler) and full URLs (request handler)', async () => {
+    const { isBundledUrl } = await import('./serve-dist.js')
+    expect(isBundledUrl('app://bundle')).toBe(true)
+    expect(isBundledUrl('app://bundle/index.html')).toBe(true)
+    expect(isBundledUrl('app://bundle/?q=1#h')).toBe(true)
+  })
+
+  it('rejects lookalikes, other schemes and junk', async () => {
+    const { isBundledUrl } = await import('./serve-dist.js')
+    expect(isBundledUrl('app://bundle.evil.com')).toBe(false)
+    expect(isBundledUrl('app://evil')).toBe(false)
+    expect(isBundledUrl('http://bundle')).toBe(false)
+    expect(isBundledUrl('not a url')).toBe(false)
+    expect(isBundledUrl('')).toBe(false)
+  })
+})
+
+describe('media permission fences', () => {
+  it('request: audio-only from the bundled main frame', async () => {
+    const { allowMediaRequest } = await import('./serve-dist.js')
+    const ok = { requestingUrl: 'app://bundle/index.html', isMainFrame: true, mediaTypes: ['audio'] }
+    expect(allowMediaRequest(ok)).toBe(true)
+    expect(allowMediaRequest({ ...ok, mediaTypes: ['audio', 'video'] })).toBe(false)
+    expect(allowMediaRequest({ ...ok, mediaTypes: [] })).toBe(false)
+    expect(allowMediaRequest({ ...ok, mediaTypes: undefined })).toBe(false)
+    expect(allowMediaRequest({ ...ok, isMainFrame: false })).toBe(false)
+    expect(allowMediaRequest({ ...ok, requestingUrl: 'http://192.0.2.7/den' })).toBe(false)
+    expect(allowMediaRequest({ ...ok, requestingUrl: undefined })).toBe(false)
+  })
+
+  it('check: bundled origin, bundled-or-absent embedder, never video', async () => {
+    const { allowMediaCheck } = await import('./serve-dist.js')
+    expect(allowMediaCheck('app://bundle', { mediaType: 'audio' })).toBe(true)
+    expect(allowMediaCheck('app://bundle', {})).toBe(true) // permissions.query('microphone')
+    expect(allowMediaCheck('app://bundle', { embeddingOrigin: 'app://bundle' })).toBe(true)
+    expect(allowMediaCheck('app://bundle', { mediaType: 'video' })).toBe(false)
+    expect(allowMediaCheck('app://bundle', { embeddingOrigin: 'http://192.0.2.9' })).toBe(false)
+    expect(allowMediaCheck('http://192.0.2.9', { mediaType: 'audio' })).toBe(false)
+  })
+})

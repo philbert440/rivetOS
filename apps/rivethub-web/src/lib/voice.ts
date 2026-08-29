@@ -24,6 +24,10 @@ const ASR_SAMPLE_RATE = 16_000
 const SPEAK_MAX_CHARS = 1200
 
 export function voiceInputSupported(): boolean {
+  // The DOM types promise mediaDevices unconditionally; insecure contexts
+  // (plain-http LAN, older shells without the origin switch) break that
+  // promise at runtime — the guards are load-bearing despite the types.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   return typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia !== undefined
 }
 
@@ -62,8 +66,14 @@ export function encodeWavPcm16(samples: Float32Array, sampleRate: number): Array
   return buf
 }
 
-/** Downmix to mono + linear-resample an AudioBuffer to the ASR rate. */
-function monoResample(decoded: AudioBuffer, targetRate: number): Float32Array {
+/** Downmix to mono + linear-resample to the ASR rate. Exported for tests —
+ *  the browser-audio path can't run under vitest, but the resample math must
+ *  be pinned (the AudioBuffer shape is structural). */
+export function monoResample(
+  decoded: Pick<AudioBuffer, 'numberOfChannels' | 'length' | 'sampleRate' | 'getChannelData'>,
+  targetRate: number,
+): Float32Array {
+  if (decoded.length === 0) return new Float32Array(0)
   const channels = decoded.numberOfChannels
   const src = new Float32Array(decoded.length)
   for (let c = 0; c < channels; c++) {
@@ -103,7 +113,17 @@ export async function startRecording(): Promise<ActiveRecording> {
           : MIC_UNAVAILABLE,
       )
     })
-  const recorder = new MediaRecorder(stream)
+  const releaseMic = (): void => stream.getTracks().forEach((t) => t.stop())
+  let recorder: MediaRecorder
+  try {
+    recorder = new MediaRecorder(stream)
+    recorder.start()
+  } catch (err) {
+    // Construct/start can throw (unsupported mime, backend failure) — the
+    // tracks must not stay hot behind a dead recorder.
+    releaseMic()
+    throw err instanceof Error ? err : new Error(MIC_UNAVAILABLE)
+  }
   const chunks: Blob[] = []
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data)
@@ -111,33 +131,43 @@ export async function startRecording(): Promise<ActiveRecording> {
   const stopped = new Promise<void>((resolve) => {
     recorder.onstop = () => resolve()
   })
-  recorder.start()
-  const releaseMic = (): void => stream.getTracks().forEach((t) => t.stop())
+  // Read through a call, not a narrowed binding: cancel() flips this from
+  // another task mid-await, which TS control-flow cannot see.
+  let cancelled = false
+  const isCancelled = (): boolean => cancelled
+
+  const stopCapture = (): void => {
+    try {
+      recorder.stop()
+    } catch {
+      /* already stopped (cancel then finish, or double-stop) */
+    }
+    releaseMic()
+  }
 
   return {
     cancel: () => {
-      try {
-        recorder.stop()
-      } catch {
-        /* already stopped */
-      }
-      releaseMic()
+      cancelled = true
+      stopCapture()
     },
     finish: async () => {
-      recorder.stop()
+      stopCapture()
       await stopped
-      releaseMic()
+      // A cancel() that raced this finish wins: the clip was discarded and
+      // must never leave the device.
+      if (isCancelled()) return ''
       const clip = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
       if (clip.size === 0) return ''
       const ctx = new AudioContext()
       try {
         const decoded = await ctx.decodeAudioData(await clip.arrayBuffer())
+        if (isCancelled()) return ''
         const wav = encodeWavPcm16(monoResample(decoded, ASR_SAMPLE_RATE), ASR_SAMPLE_RATE)
         const gw = useConnection.getState().gateway
         const res = await gw.voiceTranscribe(wav, 'audio/wav').catch((err: unknown) => {
           throw friendly(err)
         })
-        return res.text.trim()
+        return isCancelled() ? '' : res.text.trim()
       } finally {
         void ctx.close().catch(() => undefined)
       }
@@ -197,26 +227,43 @@ export function stripForSpeech(md: string): string {
     .trim()
 }
 
+/** Monotonic speak generation: a slower EARLIER request must never preempt
+ *  a newer clip, and an interrupted play()'s rejection must not stop its
+ *  successor. Only the newest generation touches the shared player. */
+let speakGen = 0
+
 /** Speak text via the node TTS. Replaces any current playback. `key`
  *  identifies the clip for speakingKey() (per-message play/stop buttons). */
 export async function speak(text: string, key?: string): Promise<void> {
   const plain = stripForSpeech(text).slice(0, SPEAK_MAX_CHARS)
   if (!plain) return
+  const gen = ++speakGen
   stopSpeaking()
   const gw = useConnection.getState().gateway
   const audio = await gw.voiceSpeak({ input: plain }).catch((err: unknown) => {
     throw friendly(err)
   })
-  stopSpeaking() // a concurrent speak may have started while we fetched
+  // Superseded while fetching — drop this clip without touching the player
+  // (the newer generation owns it now).
+  if (gen !== speakGen) return
+  stopSpeaking()
   const url = URL.createObjectURL(new Blob([audio], { type: 'audio/wav' }))
   playerUrl = url
   currentKey = key ?? plain
   player = player ?? new Audio()
   player.src = url
-  player.onended = () => stopSpeaking()
-  player.onerror = () => stopSpeaking()
+  player.onended = () => {
+    if (gen === speakGen) stopSpeaking()
+  }
+  player.onerror = () => {
+    if (gen === speakGen) stopSpeaking()
+  }
   notifySpeaking(true)
-  await player.play().catch(() => stopSpeaking())
+  await player.play().catch(() => {
+    // Interrupting src rejects the PREVIOUS play(); only the current
+    // generation may tear down on a genuine playback failure.
+    if (gen === speakGen) stopSpeaking()
+  })
 }
 
 // ---------------------------------------------------------------------------

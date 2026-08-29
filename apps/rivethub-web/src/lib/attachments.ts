@@ -38,12 +38,22 @@ export function anyUploading(atts: PendingAttachment[]): boolean {
   return atts.some((a) => a.status === 'uploading')
 }
 
+/** A uri interpolated into `[attached: …]` must not be able to leave the
+ *  bracket line: control chars split it and `]` closes it early, smuggling
+ *  arbitrary prompt text under the app's voice (the server echoes the staged
+ *  file NAME into the uri, so it is not fully server-controlled). Percent-
+ *  encode the closers, strip the controls. */
+function sanitizeUri(uri: string): string {
+  // eslint-disable-next-line no-control-regex
+  return uri.replace(/[\u0000-\u001f\u007f]/g, '').replaceAll(']', '%5D')
+}
+
 /** Message text with `[attached: …]` reference lines for the staged files.
  *  Failed/uploading entries never make it into the message. */
 export function withAttachmentText(text: string, atts: PendingAttachment[]): string {
   const lines = atts
     .filter((a) => a.status === 'ready' && a.uri)
-    .map((a) => `[attached: ${a.uri as string}]`)
+    .map((a) => `[attached: ${sanitizeUri(a.uri as string)}]`)
   if (lines.length === 0) return text
   return text ? `${text}\n${lines.join('\n')}` : lines.join('\n')
 }

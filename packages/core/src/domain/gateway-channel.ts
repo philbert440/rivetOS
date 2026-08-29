@@ -950,7 +950,8 @@ function capStr(s: string, max: number): string {
  * Cap + redact tool args for the sessions WS (all-subscribers).
  * - secret-ish keys → "[redacted]"
  * - string values run through value-pattern redact then length-capped
- * - nested objects to depth 5, key count 40 (den-hook parity)
+ * - nesting to `lim.depthMax` (5 generic, 7 for ask tools), key count 40
+ *   (den-hook parity); array cap 20 applies to every tool
  */
 function summarizeBridgeArgs(
   raw: unknown,

@@ -476,6 +476,55 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
     }
   })
 
+  it('the ask budget is wider, not unlimited: 2000-char cap, value redaction, array cap', async () => {
+    const { gw, port } = await start()
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c-ask-lim`)
+    const got: SessionWsFrame[] = []
+    ws.on('message', (d: Buffer) => got.push(JSON.parse(d.toString()) as SessionWsFrame))
+    await new Promise((r) => ws.once('open', r))
+
+    const overLong = 'y'.repeat(2001)
+    const leaky = `deploy with token=sk-abc1234567890live and continue ${'z'.repeat(300)}`
+    gw.bridgeAgentEvent({
+      session: 'c-ask-lim',
+      type: 'tool.start',
+      tool: 'AskUserQuestion',
+      args: {
+        questions: [
+          {
+            question: 'q',
+            multiSelect: false,
+            options: [
+              { label: overLong },
+              { label: leaky },
+              ...Array.from({ length: 21 }, (_, i) => ({ label: `opt-${String(i)}` })),
+            ],
+          },
+        ],
+      },
+    })
+    await new Promise((r) => setTimeout(r, 40))
+    ws.close()
+
+    const frame = got.find((f) => f.kind === 'stream' && f.event.type === 'tool_start')
+    expect(frame?.kind).toBe('stream')
+    if (frame?.kind === 'stream') {
+      const args = frame.event.metadata?.args as {
+        questions: Array<{ options: Array<{ label: string }> }>
+      }
+      const options = args.questions[0].options
+      // array cap still applies to ask payloads
+      expect(options).toHaveLength(20)
+      // 2001 chars → capped at the ASK budget, not the generic one
+      expect(options[0].label.endsWith('…')).toBe(true)
+      expect(options[0].label.length).toBeLessThanOrEqual(2001)
+      expect(options[0].label.length).toBeGreaterThan(1000)
+      // value-pattern redaction runs inside the wider budget too
+      expect(options[1].label).not.toContain('sk-abc1234567890live')
+      expect(options[1].label.toLowerCase()).toContain('[redacted]')
+    }
+  })
+
   it('commits the prior assistant turn when the next user turn starts', async () => {
     const { gw, port } = await start()
     const ws = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/ws?session=c2`)

@@ -29,7 +29,14 @@ import {
 import { CrashLog } from './crash-log.js'
 import { PipeState } from './mtls-pipe.js'
 import { registerIpc } from './ipc.js'
-import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
+import {
+  allowMediaCheck,
+  allowMediaRequest,
+  APP_ORIGIN,
+  APP_SCHEME,
+  isBundledUrl,
+  serveDist,
+} from './serve-dist.js'
 import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
 import { contextMenuTemplate } from './context-menu.js'
 import { RendererReloadPolicy } from './reload-policy.js'
@@ -129,17 +136,6 @@ function identityDir(): string {
 
 const pipes = new PipeState(identityDir)
 
-/** True only for the bundled app origin, by PARSED protocol+host — never a
- *  string-prefix test (Node's URL gives custom schemes origin 'null', so
- *  origin equality cannot be used either). */
-function isBundledUrl(url: string): boolean {
-  try {
-    const u = new URL(url)
-    return `${u.protocol}//${u.host}` === APP_ORIGIN
-  } catch {
-    return false
-  }
-}
 
 /** Parsed http(s) check — a prefix regex would pass junk after the scheme. */
 function isWebUrl(url: string): boolean {
@@ -524,18 +520,25 @@ function startup(): void {
     },
   })
 
-  // Deny every renderer permission request EXCEPT the mic for the bundled
-  // UI (voice dictation). Electron's default handler GRANTS, and den iframes
-  // render LAN-served content — they must never reach the mic or anything
-  // else. BOTH gates: the check handler backs navigator.permissions.query,
-  // which would otherwise report 'granted' for permissions the request
-  // handler denies (review finding, PR #555).
+  // Deny every renderer permission request EXCEPT microphone capture for the
+  // bundled UI's main frame (voice dictation). Electron's default handler
+  // GRANTS, and den iframes render LAN-served content — they must never
+  // reach the mic or anything else. BOTH gates ride the same pure fences in
+  // serve-dist.ts (unit-tested against the URL-vs-origin shape split): the
+  // check handler backs navigator.permissions.query, which would otherwise
+  // disagree with getUserMedia (review finding, PR #555).
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => {
-    cb(permission === 'media' && isBundledUrl(details.requestingUrl))
+    cb(
+      permission === 'media' &&
+        allowMediaRequest(
+          details as { requestingUrl?: string; isMainFrame?: boolean; mediaTypes?: string[] },
+        ),
+    )
   })
   session.defaultSession.setPermissionCheckHandler(
-    (_wc, permission, requestingOrigin) =>
-      permission === 'media' && isBundledUrl(requestingOrigin),
+    (_wc, permission, requestingOrigin, details) =>
+      permission === 'media' &&
+      allowMediaCheck(requestingOrigin, details as { embeddingOrigin?: string; mediaType?: string }),
   )
 
   // Summon follows focus (see registerSummon): global while every shell
