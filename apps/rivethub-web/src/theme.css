@@ -79,10 +79,18 @@ html {
       select,
       textarea,
       summary
-    ):focus-visible {
+    ):focus-visible:not(.xterm, .xterm *) {
     outline: 1px solid var(--color-em);
     outline-offset: 1px;
   }
+}
+
+/* xterm's helper textarea and tabindex=0 screen match the rule above
+   (textarea, [tabindex]). Outline-offset on a focused terminal during
+   every keystroke is paint work the TUI cannot afford (#559). */
+.xterm textarea,
+.xterm-helper-textarea {
+  outline: none;
 }
 
 /* TenPAL memory surfaces use short tokens; alias onto Rivet brand. */

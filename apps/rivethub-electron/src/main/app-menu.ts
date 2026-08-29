@@ -5,10 +5,13 @@
  * Quit, leaving the tray as the only exit (four-agent desktop review,
  * consolidated punch list #2/#7).
  *
- * The menu exists for its ACCELERATORS: on Linux/Windows the bar itself is
- * never shown (setMenuBarVisibility(false) with auto-hide OFF — an
- * auto-hide bar answers the single Alt key, and Alt must stay a terminal
- * modifier for den xterms), on macOS it is the normal top bar. New Window
+ * The menu exists for its ACCELERATORS on Linux and macOS. On Windows it
+ * is NOT installed: Chromium round-trips every keydown through the
+ * accelerator matcher, which is the den-xterm typing lag from #560. The
+ * tray keeps Show / New Window / Quit there. Off Windows the bar itself is
+ * never shown on Linux (setMenuBarVisibility(false) with auto-hide OFF —
+ * an auto-hide bar answers the single Alt key, and Alt must stay a
+ * terminal modifier), and on macOS it is the normal top bar. New Window
  * rides a menu accelerator now instead of a GLOBAL Ctrl+Shift+N, which
  * used to steal the combo system-wide (Chrome's incognito) even while
  * RivetHub was in the background.

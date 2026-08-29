@@ -6,8 +6,12 @@ function flatten(items: AppMenuItem[]): AppMenuItem[] {
 }
 
 describe('appMenuTemplate', () => {
-  it('linux/windows carry the accelerators the nulled menu used to drop', () => {
+  it('linux template carries the accelerators the nulled menu used to drop', () => {
+    // win32 uses the same template data, but index.ts must NOT install it:
+    // Electron's application-menu accelerator matcher lags every keystroke
+    // on Windows (the #560 typing-lag regression).
     const all = flatten(appMenuTemplate('linux', true))
+    expect(flatten(appMenuTemplate('win32', true)).some((i) => i.action === 'quit')).toBe(true)
     // zoom + fullscreen come back as roles
     for (const role of ['resetZoom', 'zoomIn', 'zoomOut', 'togglefullscreen']) {
       expect(all.some((i) => i.role === role)).toBe(true)
