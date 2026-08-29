@@ -131,13 +131,28 @@ export function formatThrown(err: unknown): string {
  * Missing job metadata is treated as final so an un-instrumented caller still
  * records a breaker failure rather than retrying forever with no skip.
  */
-export function isJobFinalAttempt(job: {
-  attempts?: number
-  max_attempts?: number
-}): boolean {
+export function isJobFinalAttempt(job: { attempts?: number; max_attempts?: number }): boolean {
   const attempts = job.attempts ?? 1
   const maxAttempts = job.max_attempts ?? 1
   return attempts >= maxAttempts
+}
+
+const TRUNCATION_RE = /truncated at max_tokens=/i
+
+/** True when callLlm exhausted the output budget — same prompt will not help. */
+export function isLlmTruncationError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return TRUNCATION_RE.test(msg)
+}
+
+/**
+ * Next smaller leaf batch after a truncated LLM response.
+ * Null when the batch is already at the floor (cannot shrink further).
+ */
+export function shrinkLeafBatch(current: number, minBatch: number): number | null {
+  if (current <= minBatch) return null
+  const next = Math.max(minBatch, Math.floor(current / 2))
+  return next < current ? next : null
 }
 
 /**
@@ -309,17 +324,31 @@ async function compactLeaf(
 
   if (messages.rows.length < minBatch) return 0
 
-  const formatted = formatLeafPrompt(convMeta, messages.rows)
-
-  console.log(
-    `[CompactWorker] Leaf: ${messages.rows.length} messages for ${conversationId.slice(0, 8)}`,
-  )
-
+  // Truncation at max_tokens is a batch-size problem, not a transient blip:
+  // retrying the same 10 huge capture rows just burns graphile attempts
+  // (live: 122 dead compact-conversation jobs since 2026-08-28). Shrink the
+  // prefix we send; leftover rows stay unsummarized for the next leaf round.
+  let batch = messages.rows
   let summaryText: string
-  try {
-    summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
-  } catch (err) {
-    propagateLlmFailure(conversationId, err, 'leaf', { isFinalAttempt })
+  for (;;) {
+    const formatted = formatLeafPrompt(convMeta, batch)
+    console.log(
+      `[CompactWorker] Leaf: ${String(batch.length)} messages for ${conversationId.slice(0, 8)}`,
+    )
+    try {
+      summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
+      break
+    } catch (err) {
+      const next = shrinkLeafBatch(batch.length, minBatch)
+      if (isLlmTruncationError(err) && next !== null) {
+        console.warn(
+          `[CompactWorker] leaf truncated at ${String(batch.length)} msgs for ${conversationId.slice(0, 8)}, retrying with ${String(next)}`,
+        )
+        batch = batch.slice(0, next)
+        continue
+      }
+      propagateLlmFailure(conversationId, err, 'leaf', { isFinalAttempt })
+    }
   }
 
   recordSuccess(conversationId, 'leaf')
@@ -330,17 +359,17 @@ async function compactLeaf(
       depth: 0,
       kind: 'leaf',
       content: summaryText,
-      messageCount: messages.rows.length,
-      earliestAt: messages.rows[0].created_at,
-      latestAt: messages.rows[messages.rows.length - 1].created_at,
+      messageCount: batch.length,
+      earliestAt: batch[0].created_at,
+      latestAt: batch[batch.length - 1].created_at,
     })
 
     const valueClauses: string[] = []
     const params: unknown[] = []
     let paramIdx = 1
-    for (let i = 0; i < messages.rows.length; i++) {
+    for (let i = 0; i < batch.length; i++) {
       valueClauses.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2})`)
-      params.push(id, messages.rows[i].id, i)
+      params.push(id, batch[i].id, i)
       paramIdx += 3
     }
     await client.query(
@@ -349,7 +378,7 @@ async function compactLeaf(
     )
 
     console.log(
-      `[CompactWorker] Leaf ${id} (${messages.rows.length} msgs, conv ${conversationId.slice(0, 8)})`,
+      `[CompactWorker] Leaf ${id} (${String(batch.length)} msgs, conv ${conversationId.slice(0, 8)})`,
     )
     return id
   })
@@ -463,13 +492,7 @@ export const compactConversationTask: Task = async (payload, helpers) => {
     let leafRound = 0
     let totalCreated = 0
     while (leafRound < 10) {
-      const created = await compactLeaf(
-        client,
-        convMeta,
-        conversationId,
-        leafFloor,
-        isFinalAttempt,
-      )
+      const created = await compactLeaf(client, convMeta, conversationId, leafFloor, isFinalAttempt)
       if (created === 0) break
       totalCreated += created
       leafRound += 1

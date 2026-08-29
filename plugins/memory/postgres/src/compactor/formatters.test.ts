@@ -5,8 +5,13 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { formatLeafPrompt, formatBranchPrompt, formatRootPrompt } from './compactor.ts'
-import { fmtIsoMinute } from './types.ts'
+import {
+  formatLeafPrompt,
+  formatBranchPrompt,
+  formatRootPrompt,
+  capLeafMessageContent,
+} from './compactor.ts'
+import { fmtIsoMinute, LEAF_MESSAGE_CHAR_CAP } from './types.ts'
 import type { ConversationMeta, CompactMessageRow, SummaryRow } from './types.ts'
 
 // ---------------------------------------------------------------------
@@ -152,7 +157,7 @@ describe('formatLeafPrompt', () => {
     expect(output).toContain('(tool call) read')
   })
 
-  it('truncates huge tool_args blobs at 2000 chars', () => {
+  it('truncates huge tool_args blobs at LEAF_MESSAGE_CHAR_CAP', () => {
     const huge = 'x'.repeat(5000)
     const output = formatLeafPrompt(conv, [
       msg({
@@ -166,6 +171,23 @@ describe('formatLeafPrompt', () => {
     ])
     // Should not include the full 5000-char blob
     expect(output.length).toBeLessThan(3000)
+    expect(output).toContain('…[truncated]')
+  })
+
+  it('caps huge message content at LEAF_MESSAGE_CHAR_CAP', () => {
+    const huge = 'y'.repeat(5000)
+    const output = formatLeafPrompt(conv, [
+      msg({ id: '1', role: 'user', content: huge, created_at: t1 }),
+    ])
+    expect(output).toContain(`${'y'.repeat(LEAF_MESSAGE_CHAR_CAP)}…[truncated]`)
+    expect(output).not.toContain('y'.repeat(LEAF_MESSAGE_CHAR_CAP + 1))
+  })
+
+  it('capLeafMessageContent is a no-op under the cap', () => {
+    expect(capLeafMessageContent('short')).toBe('short')
+    expect(capLeafMessageContent('z'.repeat(LEAF_MESSAGE_CHAR_CAP))).toBe(
+      'z'.repeat(LEAF_MESSAGE_CHAR_CAP),
+    )
   })
 
   it('separates messages with --- delimiter', () => {
