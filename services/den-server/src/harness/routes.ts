@@ -168,6 +168,11 @@ export interface HarnessRoutes {
 export function createHarnessRoutes(opts: {
   registry: HarnessRegistry
   log?: (msg: string) => void
+  /** Tenancy filter: hide sessions the bound user does not own. */
+  filterSessions?: (
+    req: IncomingMessage,
+    sessions: Awaited<ReturnType<HarnessRegistry['listSessions']>>,
+  ) => Awaited<ReturnType<HarnessRegistry['listSessions']>>
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -308,7 +313,9 @@ export function createHarnessRoutes(opts: {
       try {
         // Through the registry, not the driver: superseded ids must never
         // reach a client (§ Contract semantics, canonical-only listSessions).
-        return json(res, 200, { sessions: await registry.listSessions(harnessId) })
+        const listed = await registry.listSessions(harnessId)
+        const sessions = opts.filterSessions ? opts.filterSessions(req, listed) : listed
+        return json(res, 200, { sessions })
       } catch (err) {
         return fail(res, err)
       }

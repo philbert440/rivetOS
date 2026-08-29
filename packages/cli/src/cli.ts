@@ -68,6 +68,7 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   gateway: () => import('./commands/gateway.js').then((m) => m.default()),
   memory: () => import('./commands/memory.js').then((m) => m.default()),
   db: () => import('./commands/db.js').then((m) => m.default()),
+  user: (args) => import('./commands/user.js').then((m) => m.default(args)),
   test: () => import('./commands/test.js').then((m) => m.default()),
   skills: () => import('./commands/skills.js').then((m) => m.default()),
   plugins: () => import('./commands/plugins.js').then((m) => m.default()),
@@ -152,6 +153,10 @@ export function helpText(): string {
   Database:
     rivetos db migrate                  Apply pending Postgres migrations
     rivetos db status                   Show applied migrations
+
+  Users:
+    rivetos user list                   Show the tenancy registry
+    rivetos user add <id> --device <id> Add a user (device → their database)
 
   Testing:
     rivetos test                        Run smoke tests (config, provider, memory, tools)

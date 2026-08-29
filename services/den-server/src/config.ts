@@ -1,7 +1,15 @@
 // Environment-driven configuration for the den server.
 
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { parseUserDbs, type UserDbEntry } from '@rivetos/types'
+import {
+  mergeUserDbs,
+  parseUserDbs,
+  parseUsersRegistry,
+  registryFromEnv,
+  type UserDbEntry,
+  type UsersRegistry,
+} from '@rivetos/types'
 import { join } from 'node:path'
 import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
 
@@ -146,6 +154,12 @@ export interface DenConfig {
    * @rivetos/memory-postgres and provider-claude-cli.
    */
   userDbs?: Record<string, UserDbEntry>
+  /**
+   * First-class tenancy registry. File (`RIVETOS_USERS_FILE`) wins; otherwise
+   * synthesized from the #561 env maps so live Coco routing keeps working.
+   * Undefined = tenancy off (single-owner node).
+   */
+  usersRegistry?: UsersRegistry
 }
 
 /** Parse a JSON object env var. Malformed input logs loudly and yields
@@ -252,6 +266,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     requireClientRaw === 'false' ||
     requireClientRaw === 'no'
   )
+  const deviceUsers = parseDeviceUsers(env)
+  const userDbs = parseUserDbs(env.RIVETOS_USER_DBS)
   return {
     port: intEnv(env, 'RIVETOS_DEN_PORT', 5174),
     // fail safe: loopback unless explicitly exposed. Off-loopback needs TLS
@@ -327,7 +343,45 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     // the top level because it is no longer a devices-only concern: the alias
     // reconstructor reads it with no relation to device enrollment.
     pgUrl: env.RIVETOS_PG_URL ?? '',
-    deviceUsers: parseDeviceUsers(env),
-    userDbs: parseUserDbs(env.RIVETOS_USER_DBS),
+    deviceUsers,
+    userDbs,
+    usersRegistry: loadUsersRegistry(env, deviceUsers, userDbs),
   }
+}
+
+function readRegistryFile(path: string | undefined): UsersRegistry | undefined {
+  if (!path) return undefined
+  if (!existsSync(path)) return undefined
+  try {
+    return parseUsersRegistry(readFileSync(path, 'utf8'))
+  } catch {
+    console.error(`[den] users registry "${path}" unreadable`)
+    return undefined
+  }
+}
+
+function loadUsersRegistry(
+  env: NodeJS.ProcessEnv,
+  deviceUsers: Record<string, string> | undefined,
+  userDbs: Record<string, UserDbEntry> | undefined,
+): UsersRegistry | undefined {
+  const explicit = env.RIVETOS_USERS_FILE?.trim()
+  const fileReg = explicit
+    ? readRegistryFile(explicit)
+    : (readRegistryFile('/rivet-shared/rivetos/users.json') ??
+      readRegistryFile(join(homedir(), '.rivetos', 'users.json')))
+  if (explicit && !fileReg) {
+    console.error(
+      `[den] RIVETOS_USERS_FILE="${explicit}" missing or invalid — falling back to env maps`,
+    )
+  }
+  const envReg = registryFromEnv({
+    deviceUsers,
+    userDbs,
+    ownerPgUrl: env.RIVETOS_PG_URL,
+    ownerUserId: env.RIVETOS_OWNER_USER_ID,
+  })
+  const base = fileReg ?? envReg
+  if (!base) return undefined
+  return mergeUserDbs(base, userDbs, env.RIVETOS_PG_URL)
 }

@@ -49,8 +49,16 @@ import {
   reduceDen,
   type DenState,
 } from '@rivetos/den-protocol'
-import type { HarnessDriver } from '@rivetos/types'
+import type { HarnessDriver, UserContext } from '@rivetos/types'
 import type { DenConfig } from './config.js'
+import {
+  bindRequestUser,
+  boundRequestUser,
+  captureEnvFor,
+  resolveRequestUser,
+  stampUserHeader,
+} from './identity.js'
+import { createSessionOwners } from './session-owners.js'
 import { createMeshView } from './mesh.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
@@ -588,7 +596,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     for (const driver of builtinDrivers) harnesses.register(driver)
   }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
-  const harnessRoutes = createHarnessRoutes({ registry: harnesses, log: console.error })
+  const sessionOwners = createSessionOwners(join(config.stateDir, 'session-owners.json'))
+  const harnessRoutes = createHarnessRoutes({
+    registry: harnesses,
+    log: console.error,
+    filterSessions: (req, sessions) => {
+      const ctx = boundRequestUser(req)
+      if (!ctx) return sessions
+      return sessionOwners.filter(sessions, ctx, (s) => String(s.sessionId))
+    },
+  })
 
   // Post-restart alias reconstruction (§ Rotation migration story). The alias
   // store is in-memory and died with the last process; the rotation
@@ -854,33 +871,46 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return
       }
 
-      // Per-user routing: resolve the mTLS device to a user and stamp the
-      // trusted identity header for downstream gateway handlers. The inbound
-      // value is ALWAYS stripped first — only den, as the TLS terminus, may
-      // assert it. Unmapped devices (the node owner's) carry no header and
-      // keep today's behavior. A mapped device whose user has NO usable
-      // RIVETOS_USER_DBS target is NOT stamped either: asserting an identity
-      // the memory layer can't route would label owner-DB writes with the
-      // routed user's id — worse than plain owner behavior.
+      // Tenancy: resolve identity ONCE at the TLS edge. Fail closed when a
+      // registry exists and the cert does not map to a usable DB. The inbound
+      // x-rivetos-user is always stripped — only den may assert it.
       delete req.headers['x-rivetos-user']
-      const routedUser = (() => {
-        if (!config.deviceUsers) return undefined
+      let userCtx: UserContext | undefined
+      let routedUser: string | undefined
+      if (config.usersRegistry) {
+        const resolved = resolveRequestUser(config.usersRegistry, req)
+        if (!resolved.ok) {
+          console.error(`[den] unroutable identity: ${resolved.error}`)
+          for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+          return json(res, 403, { error: 'unroutable identity', detail: resolved.error })
+        }
+        userCtx = resolved.ctx
+        bindRequestUser(req, userCtx)
+        stampUserHeader(req, userCtx)
+        if (!userCtx.isOwner) routedUser = userCtx.userId
+      } else {
+        // Legacy #561 path when no registry could be built (single-owner node).
         const dev = clientDevice(req)
-        const mapped = dev ? config.deviceUsers[dev.deviceId] : undefined
-        if (!mapped) return undefined
-        if (!config.userDbs?.[mapped]) {
+        const mapped = dev && config.deviceUsers ? config.deviceUsers[dev.deviceId] : undefined
+        if (mapped && !config.userDbs?.[mapped]) {
           const key = dev?.deviceId ?? '?'
           if (!warnedUnroutableDevices.has(key)) {
             warnedUnroutableDevices.add(key)
             console.error(
-              `[den] device "${key}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — treating as owner`,
+              `[den] device "${key}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — refusing`,
             )
           }
-          return undefined
+          for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+          return json(res, 403, {
+            error: 'unroutable identity',
+            detail: `user "${mapped}" has no usable database`,
+          })
         }
-        return mapped
-      })()
-      if (routedUser) req.headers['x-rivetos-user'] = routedUser
+        if (mapped) {
+          routedUser = mapped
+          req.headers['x-rivetos-user'] = mapped
+        }
+      }
 
       // Gateway route mounts (G0): longest prefix wins; behind the mTLS
       // gate, ahead of den's own API routes.
@@ -993,7 +1023,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       }
 
       if (req.method === 'GET' && url.pathname === '/sessions') {
-        return json(res, 200, { sessions: decorateSessions(listSessions(state)) })
+        const sessions = decorateSessions(listSessions(state))
+        return json(res, 200, {
+          sessions: userCtx ? sessionOwners.filter(sessions, userCtx) : sessions,
+        })
       }
 
       // `.json` deliberately: the extensionless /mesh belongs to the viewer
@@ -1010,6 +1043,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const raw = url.searchParams.get('session')
         const id = raw ? denJoinKey(raw) : raw
         if (!id) return json(res, 404, { error: 'unknown session' })
+        if (userCtx && !sessionOwners.visible(id, userCtx)) {
+          return json(res, 403, { error: 'session is owned by another user' })
+        }
         // a PTY linked to the session dies with the room — removing the room
         // while its terminal keeps running would leak an invisible shell
         const ptyId = termManager?.ptyForSession(id)
@@ -1090,21 +1126,39 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // (§ Legacy keys).
             // Per-user routing: a mapped device's terminals capture to (and
             // search) that user's memory DB, not the node owner's.
-            const userDb = routedUser ? config.userDbs?.[routedUser] : undefined
-            const userEnv: Record<string, string> = {}
-            if (routedUser) userEnv.RIVETOS_USER_ID = routedUser
-            if (userDb?.pgUrl) userEnv.RIVETOS_PG_URL = userDb.pgUrl
-            if (userDb?.envFile) userEnv.RIVETOS_ENV_FILE = userDb.envFile
+            const sessionKey = p.session === undefined ? undefined : denJoinKey(p.session)
+            const resumeKey = p.resume === undefined ? undefined : denJoinKey(p.resume)
+            if (userCtx) {
+              if (resumeKey && !sessionOwners.visible(resumeKey, userCtx)) {
+                return json(res, 403, { error: 'session is owned by another user' })
+              }
+              if (sessionKey && sessionOwners.get(sessionKey) && !sessionOwners.visible(sessionKey, userCtx)) {
+                return json(res, 403, { error: 'session is owned by another user' })
+              }
+            }
+            const userEnv = captureEnvFor(userCtx) ?? (() => {
+              const userDb = routedUser ? config.userDbs?.[routedUser] : undefined
+              const env: Record<string, string> = {}
+              if (routedUser) env.RIVETOS_USER_ID = routedUser
+              if (userDb?.pgUrl) env.RIVETOS_PG_URL = userDb.pgUrl
+              if (userDb?.envFile) env.RIVETOS_ENV_FILE = userDb.envFile
+              return Object.keys(env).length > 0 ? env : undefined
+            })()
             const pty = manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
               clamp(p.rows, 5, 200, 24),
               req.socket.remoteAddress ?? '',
-              p.session === undefined ? undefined : denJoinKey(p.session),
-              p.resume === undefined ? undefined : denJoinKey(p.resume),
-              Object.keys(userEnv).length > 0 ? userEnv : undefined,
+              sessionKey,
+              resumeKey,
+              userEnv,
               routedUser,
             )
+            if (userCtx) {
+              sessionOwners.set(pty.denSession, userCtx.userId)
+              if (sessionKey) sessionOwners.set(sessionKey, userCtx.userId)
+              if (resumeKey) sessionOwners.set(resumeKey, userCtx.userId)
+            }
             return json(res, 201, {
               id: pty.id,
               denSession: pty.denSession,
@@ -1122,7 +1176,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
 
         if (req.method === 'GET' && url.pathname === '/term/list') {
-          return json(res, 200, { ptys: manager.list() })
+          const ptys = manager.list()
+          return json(res, 200, {
+            ptys: userCtx
+              ? ptys.filter((p) => sessionOwners.visible(p.denSession, userCtx))
+              : ptys,
+          })
         }
 
         // GET /term/harness-sessions — list the node's harness sessions
@@ -1134,7 +1193,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
           const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 500) : 100
           const sessions = await listHarnessSessions(Object.keys(roster.commands), limit)
-          return json(res, 200, { sessions })
+          return json(res, 200, {
+            sessions: userCtx ? sessionOwners.filter(sessions, userCtx) : sessions,
+          })
         }
 
         // GET /term/harness-sessions/:id/transcript — hard-resync source: the
@@ -1296,6 +1357,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       socket.destroy()
       return
     }
+    if (config.usersRegistry) {
+      const resolved = resolveRequestUser(config.usersRegistry, req)
+      if (!resolved.ok) {
+        console.error(`[den] unroutable identity on upgrade: ${resolved.error}`)
+        socket.destroy()
+        return
+      }
+      bindRequestUser(req, resolved.ctx)
+    }
     if (url.pathname === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
       return
@@ -1333,13 +1403,26 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     })
     ws.on('close', () => clients.delete(client))
     ws.on('pong', () => (client.alive = true))
+    const ctx = boundRequestUser(req)
+    if (session && ctx && !sessionOwners.visible(session, ctx)) {
+      ws.close(4403, 'session is owned by another user')
+      clients.delete(client)
+      return
+    }
     // catch the viewer up with a single snapshot instead of replayed events
+    const snapSessions = decorateSessions(listSessions(state))
     ws.send(
       JSON.stringify({
         type: 'snapshot',
         v: 1,
-        sessions: decorateSessions(listSessions(state)),
-        rooms: session ? { [session]: state.rooms[session] ?? initialRoomState } : state.rooms,
+        sessions: ctx ? sessionOwners.filter(snapSessions, ctx) : snapSessions,
+        rooms: session
+          ? { [session]: state.rooms[session] ?? initialRoomState }
+          : ctx
+            ? Object.fromEntries(
+                Object.entries(state.rooms).filter(([id]) => sessionOwners.visible(id, ctx)),
+              )
+            : state.rooms,
       }),
     )
   })

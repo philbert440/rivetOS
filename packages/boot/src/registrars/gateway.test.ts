@@ -197,6 +197,12 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_USER_DBS).toBeUndefined()
   })
 
+  it('forwards a new RIVETOS_USER_* key without a hand allowlist edit', () => {
+    vi.stubEnv('RIVETOS_USERS_FILE', '/rivet-shared/rivetos/users.json')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_USERS_FILE).toBe('/rivet-shared/rivetos/users.json')
+  })
+
   it('omits PG admin env when devices is on but admin URL is unset', () => {
     const env = buildGatewayEnv(
       base({ devices: { enabled: true, pool: '192.0.2.10-192.0.2.20' } }),
