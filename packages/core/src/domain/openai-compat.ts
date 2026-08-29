@@ -25,7 +25,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { GatewayRoute, MessageUsage, StreamEvent } from '@rivetos/types'
 import type { GatewayChannelHandle } from './gateway-channel.js'
-import { routedUserFromHeaders } from './trusted-user.js'
+import { routedUserFromHeaders } from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('OpenAICompat')

@@ -41,6 +41,65 @@ export function previewKind(name: string, size: number): PreviewKind {
   return 'none'
 }
 
+/** In-shell downloads buffer the whole file in the renderer (blob) — bound
+ *  it so a multi-GB artifact can't OOM the window. */
+export const DOWNLOAD_BLOB_MAX = 64 * 1024 * 1024
+
+/** Human-readable refusal for an oversized in-shell download, or undefined
+ *  when the size is acceptable/unknown-at-precheck. */
+export function downloadTooLargeError(sizeBytes: number | undefined): string | undefined {
+  if (sizeBytes === undefined || sizeBytes <= DOWNLOAD_BLOB_MAX) return undefined
+  const mb = String(Math.round(DOWNLOAD_BLOB_MAX / 1024 / 1024))
+  return `file exceeds the ${mb} MB in-app download limit — fetch it from the node directly`
+}
+
+/** Content-Length as a usable byte count, or null when absent/empty/NaN/
+ *  negative — an unparseable header must read as UNKNOWN, never as 0, or an
+ *  oversized chunked response sails past the size check. */
+export function parseContentLength(raw: string | null): number | null {
+  if (raw == null || raw.trim() === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+/** The subset of Response the bounded reader touches — structural so tests
+ *  can hand in a fake stream. */
+export interface BoundedBodyResponse {
+  headers: { get(name: string): string | null }
+  body: ReadableStream<Uint8Array> | null
+  blob(): Promise<Blob>
+}
+
+/**
+ * Buffer a response body under DOWNLOAD_BLOB_MAX, enforced on the ACTUAL
+ * bytes read: a chunked or lying response cannot be bounded by its header,
+ * so the declared length is only a fast refusal — the byte counter is the
+ * cap. Aborts the stream the moment the count passes the limit.
+ */
+export async function readBlobBounded(res: BoundedBodyResponse): Promise<Blob> {
+  const declared = parseContentLength(res.headers.get('content-length'))
+  const declaredErr = downloadTooLargeError(declared ?? undefined)
+  if (declaredErr) throw new Error(declaredErr)
+  if (!res.body) return res.blob() // no stream API — the header check is all we have
+  const reader = res.body.getReader()
+  // Network reads are always plain-ArrayBuffer-backed; the assertion only
+  // narrows the ArrayBufferLike generic BlobPart refuses.
+  const chunks: Array<Uint8Array<ArrayBuffer>> = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > DOWNLOAD_BLOB_MAX) {
+      await reader.cancel().catch(() => undefined)
+      const err = downloadTooLargeError(total)
+      throw new Error(err ?? 'download exceeded the in-app limit')
+    }
+    chunks.push(value as Uint8Array<ArrayBuffer>)
+  }
+  return new Blob(chunks)
+}
+
 /** Join root-relative path segments without trailing slash on root. */
 export function joinRel(dir: string, name: string): string {
   if (!dir) return name

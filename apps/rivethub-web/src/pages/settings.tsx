@@ -1,7 +1,7 @@
 import { useEffect, useState, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
-import { RivetGateway } from '@rivetos/gateway-client'
+import { gatewayFor } from '../lib/agent-gateway.js'
 import { isValidWikiBase } from '../lib/wiki-base.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
 import { BUILD_INFO } from '../lib/build-info.js'
@@ -134,18 +134,24 @@ export function SettingsPage(): JSX.Element {
 
   const test = async (): Promise<void> => {
     setProbe({ kind: 'testing' })
-    const gw = new RivetGateway({
-      baseUrl: draftUrl.trim().replace(/\/+$/, ''),
-      authMode: 'mtls',
-    })
-    if (!(await gw.health())) {
-      setProbe({ kind: 'fail', message: 'unreachable (healthz failed)' })
-      return
-    }
     try {
+      // gatewayFor, not a raw RivetGateway on the typed URL: in a desktop
+      // shell the page cannot present a client certificate, so a direct
+      // https probe false-fails nodes that work fine after Save (the #554
+      // transport rule). transportBase keys its pipe map on the base it is
+      // GIVEN (per-target shell pipe, falling back to that same base), so
+      // this always exercises the typed origin — never the saved node's
+      // transport.
+      const gw = await gatewayFor(draftUrl.trim().replace(/\/+$/, ''))
+      if (!(await gw.health())) {
+        setProbe({ kind: 'fail', message: 'unreachable (healthz failed)' })
+        return
+      }
       const sheet = await gw.catalog()
       setProbe({ kind: 'ok', node: sheet.node, agents: sheet.agents.length })
     } catch (err) {
+      // Without this, a throw out of transport resolution would stick the
+      // probe on 'testing' forever.
       setProbe({ kind: 'fail', message: (err as Error).message })
     }
   }
