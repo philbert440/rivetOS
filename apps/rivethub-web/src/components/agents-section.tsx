@@ -27,9 +27,9 @@ import {
   agentForSession,
   clearAgentLastSession,
   clearAgentSessionPointer,
-  getAgentLastSession,
   listAgentSessions,
   setAgentLastSession,
+  type AgentSessionPointer,
 } from '../lib/agent-session.js'
 import {
   aggregateAgentActivity,
@@ -39,6 +39,7 @@ import {
   type NodeChoice,
 } from '../lib/agent-roster.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
+import { clearSessionNodeBinding, setSessionNodeBinding } from '../lib/session-node.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 
@@ -647,20 +648,35 @@ export function AgentsSection(): JSX.Element {
   // history still renders), a wrong "false" silently abandons a live one. So
   // only a definitive miss (control plane 404 AND absent from the on-disk
   // store scan) answers false; transient errors keep the pointer.
-  const sessionLikelyExists = async (sessionId: string): Promise<boolean> => {
-    if (knownToChatStore(sessionId)) return true
+  /** 'dead' ONLY on a definitive miss: control-plane 404 AND absent from the
+   *  on-disk scan. Every transport-shaped failure is 'unreachable' — the walk
+   *  must stop there and open THAT thread (attach retries/banners), never
+   *  fall through to an older candidate because the newest node blinked. */
+  const probeSession = async (
+    sessionId: string,
+    nodeBaseUrl: string,
+  ): Promise<'alive' | 'dead' | 'unreachable'> => {
+    const local = nodeBaseUrl === useConnection.getState().baseUrl
+    if (local && knownToChatStore(sessionId)) return 'alive'
+    let gw
     try {
-      const gw = await gatewayFor(useConnection.getState().baseUrl)
-      try {
-        await gw.getHarnessSession(sessionId)
-        return true
-      } catch (err) {
-        if (!(err instanceof GatewayError) || err.status !== 404) return true
-      }
-      const listed = await gw.harnessSessions()
-      return listed.sessions.some((s) => sessionPointerMatches(sessionId, s.id, nativeIdOf))
+      gw = await gatewayFor(nodeBaseUrl)
     } catch {
-      return true
+      return 'unreachable'
+    }
+    try {
+      await gw.getHarnessSession(sessionId)
+      return 'alive'
+    } catch (err) {
+      if (!(err instanceof GatewayError) || err.status !== 404) return 'unreachable'
+    }
+    try {
+      const listed = await gw.harnessSessions()
+      return listed.sessions.some((se) => sessionPointerMatches(sessionId, se.id, nativeIdOf))
+        ? 'alive'
+        : 'dead'
+    } catch {
+      return 'unreachable'
     }
   }
 
@@ -679,19 +695,51 @@ export function AgentsSection(): JSX.Element {
   const handleOpen = (agent: RosterAgent): void => {
     const gen = bumpGen(agent.id)
     void (async () => {
-      const last = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
-      if (!last) {
-        openFresh(agent)
+      // Most recent thread across EVERY node — current node first (a local
+      // thread never loses to a remote one), then recency. The walk opens
+      // the first candidate that is alive OR unreachable (a blinking node
+      // must not hand the click to an older thread); a DEFINITIVE miss
+      // prunes that pointer and its binding and moves on. Bounded re-walk:
+      // the pointer map is re-read before navigating, and if it changed
+      // under the probe the walk runs once more on the fresh map.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const currentBase = useConnection.getState().baseUrl
+        const candidates = pointersToPoll(
+          listAgentSessions(agent.id),
+          currentBase,
+          POLL_POINTER_LIMIT,
+        )
+        let target: AgentSessionPointer | undefined
+        for (const p of candidates) {
+          const verdict = await probeSession(p.sessionId, p.nodeBaseUrl)
+          // Another click / start-over may have superseded us mid-probe.
+          if (gen !== openGen.current.get(agent.id)) return
+          if (verdict === 'dead') {
+            clearAgentSessionPointer(agent.id, p.nodeBaseUrl, p.sessionId)
+            clearSessionNodeBinding(p.sessionId)
+            continue
+          }
+          target = p
+          break
+        }
+        if (!target) {
+          openFresh(agent)
+          return
+        }
+        // Re-validate against the live map right before navigating — a
+        // background adopt/rekey in another tab may have retargeted it.
+        const base = useConnection.getState().baseUrl
+        const fresh = pointersToPoll(listAgentSessions(agent.id), base, POLL_POINTER_LIMIT)
+        const still = fresh.find(
+          (p) => p.nodeBaseUrl === target.nodeBaseUrl && p.sessionId === target.sessionId,
+        )
+        if (!still) continue // map moved under us — one re-walk
+        setSessionNodeBinding(target.sessionId, target.nodeBaseUrl, base)
+        openKept(target.sessionId)
         return
       }
-      const alive = await sessionLikelyExists(last.sessionId)
-      // Re-read after the await — start-over or a node switch may have
-      // retargeted the pointer while the probe was in flight — then check
-      // the generation LAST, immediately before navigating.
-      const fresh = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
-      if (gen !== openGen.current.get(agent.id)) return
-      if (fresh && (fresh.sessionId !== last.sessionId || alive)) openKept(fresh.sessionId)
-      else openFresh(agent)
+      // Two walks raced two map changes — mint a fresh thread over looping.
+      if (gen === openGen.current.get(agent.id)) openFresh(agent)
     })()
   }
 

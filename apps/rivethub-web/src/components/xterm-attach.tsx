@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
+import { gatewayFor } from '../lib/agent-gateway.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
@@ -25,7 +26,12 @@ import { openExternal } from '../lib/open-external.js'
  * stdin → visible garbage `]11;rgb:…` in the TUI. Strip queries on write and
  * drop report replies on onData.
  */
-export function XtermAttach(props: { ptyId: string }): JSX.Element {
+export function XtermAttach(props: {
+  ptyId: string
+  /** Node the PTY lives on when it is not the globally connected one —
+   *  cross-node sessions attach over that node's own (pipe-routed) gateway. */
+  base?: string
+}): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | undefined>(undefined)
   const fitRef = useRef<FitAddon | undefined>(undefined)
@@ -114,9 +120,6 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     const fit = fitRef.current
     if (!host || !term || !fit) return
 
-    // disposed guard: StrictMode dev runs mount→cleanup→mount; frames from
-    // the first (closing) socket must never write into a disposed terminal.
-    let disposed = false
     setStatus('connecting')
     // Reattach (epoch rebind) replays scrollback — clear the buffer so the
     // replay doesn't append a second copy. First attach: no-op. Silence
@@ -127,61 +130,88 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     term.reset()
     selSuppressRef.current = false
 
-    const { gateway } = useConnection.getState()
-    const ws = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
-    ws.binaryType = 'arraybuffer'
-
-    ws.onopen = () => {
-      if (disposed) return
-      setStatus('attached')
-      // Always re-fit and declare our size on (re)attach — a rebind would
-      // otherwise keep whatever PTY size the previous socket negotiated.
-      fit.fit()
-      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-    }
-    ws.onclose = () => {
-      if (!disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
-    }
-    ws.onmessage = (event: MessageEvent) => {
-      if (disposed) return
-      if (typeof event.data === 'string') {
-        const frame = JSON.parse(event.data) as TermHelloFrame | TermExitFrame
-        if (frame.type === 'hello') {
-          if (frame.cols !== term.cols || frame.rows !== term.rows)
-            ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-          if (frame.state === 'exited') setStatus('exited')
-        } else {
-          setStatus('exited')
-          term.write(`\r\n\x1b[2m[process exited ${String(frame.code)}]\x1b[0m\r\n`)
-        }
-        return
-      }
-      // Drop color queries so attach/scrollback replay doesn't generate
-      // OSC rgb: replies that leak into the harness as fake keystrokes.
-      term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
-    }
+    // disposed guard: StrictMode dev runs mount→cleanup→mount; frames from
+    // the first (closing) socket must never write into a disposed terminal.
+    // Cross-node PTYs dial their own node's gateway; resolving the pipe base
+    // is async, so the socket setup runs behind it with the same guard
+    // covering the gap, and the teardown closes whatever the async body
+    // managed to create before unmount.
+    // holder, not a bare let: the async body reads it AFTER awaits, and TS
+    // narrows a closed-over let to its initializer across those boundaries.
+    const life = { disposed: false }
+    // Filled once the async dial lands. Input/resize subscribe SYNCHRONOUSLY
+    // against this ref — the home path used to subscribe before any await,
+    // and a remote dial must not open a keystroke-dropping window beyond the
+    // pre-open drop both paths always had (readyState !== 1 → ignored).
+    const sockRef: { current: WebSocket | undefined } = { current: undefined }
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined
 
     const dataSub = term.onData((data) => {
-      if (ws.readyState !== 1) return
+      const sock = sockRef.current
+      if (!sock || sock.readyState !== 1) return
       // Belt-and-suspenders: if a color report still fires (live query path),
       // do not forward it as PTY input — harnesses treat it as typed text.
       if (isOscColorReport(data)) return
-      ws.send(new TextEncoder().encode(data))
+      sock.send(new TextEncoder().encode(data))
     })
-    let resizeTimer: ReturnType<typeof setTimeout> | undefined
     const resizeObserver = new ResizeObserver(() => {
       if (resizeTimer) clearTimeout(resizeTimer)
       resizeTimer = setTimeout(() => {
-        if (disposed) return
+        if (life.disposed) return
         fit.fit()
-        if (ws.readyState === 1)
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+        const sock = sockRef.current
+        if (sock && sock.readyState === 1)
+          sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
       }, 150)
     })
     resizeObserver.observe(host)
 
+    void (async () => {
+      let gateway
+      try {
+        gateway = props.base ? await gatewayFor(props.base) : useConnection.getState().gateway
+      } catch {
+        if (!life.disposed) setStatus('closed')
+        return
+      }
+      if (life.disposed) return
+      const sock = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
+      sockRef.current = sock
+      sock.binaryType = 'arraybuffer'
+
+      sock.onopen = () => {
+        if (life.disposed) return
+        setStatus('attached')
+        // Always re-fit and declare our size on (re)attach — a rebind would
+        // otherwise keep whatever PTY size the previous socket negotiated.
+        fit.fit()
+        sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      }
+      sock.onclose = () => {
+        if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+      }
+      sock.onmessage = (event: MessageEvent) => {
+        if (life.disposed) return
+        if (typeof event.data === 'string') {
+          const frame = JSON.parse(event.data) as TermHelloFrame | TermExitFrame
+          if (frame.type === 'hello') {
+            if (frame.cols !== term.cols || frame.rows !== term.rows)
+              sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+            if (frame.state === 'exited') setStatus('exited')
+          } else {
+            setStatus('exited')
+            term.write(`\r\n\x1b[2m[process exited ${String(frame.code)}]\x1b[0m\r\n`)
+          }
+          return
+        }
+        // Drop color queries so attach/scrollback replay doesn't generate
+        // OSC rgb: replies that leak into the harness as fake keystrokes.
+        term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
+      }
+    })()
+
     return () => {
-      disposed = true
+      life.disposed = true
       if (resizeTimer) clearTimeout(resizeTimer)
       resizeObserver.disconnect()
       try {
@@ -189,9 +219,14 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
       } catch {
         // terminal may already be disposed when the PTY itself changed
       }
-      ws.close()
+      sockRef.current?.close()
     }
-  }, [props.ptyId, transportEpoch])
+    // transportEpoch on the remote path too: the epoch tracks the shell's
+    // mTLS pipe lifecycle, and gatewayFor(base) resolves THROUGH that pipe —
+    // when it dies/reappears, remote sockets are as stranded as home ones.
+    // A home-only reconnect costs a remote pane one reset+replay; a missed
+    // pipe swap costs it the session. Rebind.
+  }, [props.ptyId, transportEpoch, props.base])
 
   return (
     <div className="relative min-h-0 flex-1 p-2">

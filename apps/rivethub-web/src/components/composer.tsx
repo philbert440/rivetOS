@@ -7,6 +7,7 @@ import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion } from '../lib/ask-user.js'
 import { useChat } from '../stores/chat.js'
 import { useConnection } from '../stores/connection.js'
+import { gatewayFor } from '../lib/agent-gateway.js'
 import { modelOptions } from '../lib/model-options.js'
 import { uuidv4 } from '../lib/uuid.js'
 import { cn } from '../lib/utils.js'
@@ -54,6 +55,10 @@ export function Composer(props: {
    *  terminal, and den are one conversation. The reply streams back via the
    *  den→sessions-WS bridge. */
   onSend?: (text: string) => Promise<void>
+  /** Node this session lives on when it is not the connected one — uploads
+   *  and chat-loop posts must land there (the harness reads staged paths on
+   *  ITS node). Absent = the global gateway. */
+  gatewayBase?: string
   /** Ask-user card content (agent prompted the user). Empty hides the card. */
   ask?: AskQuestion[]
   onDismissAsk?: () => void
@@ -144,6 +149,10 @@ export function Composer(props: {
   })
   const models = modelOptions(catalog.data?.agents ?? [])
 
+  const composerGateway = props.gatewayBase
+    ? () => gatewayFor(props.gatewayBase as string)
+    : () => Promise.resolve(useConnection.getState().gateway)
+
   const addFiles = (files: Iterable<File>): void => {
     for (const file of files) {
       const id = uuidv4()
@@ -157,11 +166,12 @@ export function Composer(props: {
           status: 'uploading',
         },
       ])
-      void useConnection
-        .getState()
-        .gateway.stageUpload(file.name || 'pasted-image.png', file, {
-          mime: file.type || undefined,
-        })
+      void composerGateway()
+        .then((gw) =>
+          gw.stageUpload(file.name || 'pasted-image.png', file, {
+            mime: file.type || undefined,
+          }),
+        )
         .then((res) => setAtts((prev) => markStaged(prev, id, res.uri)))
         .catch(() => setAtts((prev) => markFailed(prev, id)))
     }
@@ -201,7 +211,9 @@ export function Composer(props: {
         // Fire-and-forget; the reply (and this message's echo) arrive on the
         // sessions WS. Model (agent) + effort (thinking) ride the request and
         // persist per-conversation.
-        await useConnection.getState().gateway.postMessage(props.sessionId, {
+        await (
+          await composerGateway()
+        ).postMessage(props.sessionId, {
           text: trimmed,
           agent: props.agent,
           thinking: props.effort,

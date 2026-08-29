@@ -18,6 +18,7 @@ import {
   nativeIdOf,
   patchSessionUpdated,
   shortNativeId,
+  chatItemFromSummary,
 } from './harness-chat.js'
 
 const UUID_A = 'a1b2c3d4-1111-4222-8333-444455556666'
@@ -443,5 +444,30 @@ describe('registry stream → plane session list merge', () => {
         sessionId: created.sessionId,
       }),
     ).toBe(active)
+  })
+})
+
+describe('chatItemFromSummary', () => {
+  it('builds a cross-node drawer row from one control-plane summary', () => {
+    const item = chatItemFromSummary({
+      sessionId: 'claude-code:abc-123' as never,
+      harnessId: 'claude-code',
+      title: 'remote thread',
+      status: 'idle',
+      updatedAt: '2026-08-29T12:00:00.000Z',
+    } as never)
+    expect(item).toMatchObject({
+      key: 'claude-code:abc-123',
+      kind: 'harness',
+      title: 'remote thread',
+      harnessId: 'claude-code',
+      command: 'claude',
+      status: 'idle',
+    })
+    expect(item?.updatedAt).toBe(Date.parse('2026-08-29T12:00:00.000Z'))
+  })
+
+  it('refuses a malformed session id', () => {
+    expect(chatItemFromSummary({ sessionId: '???', harnessId: 'claude-code' } as never)).toBeUndefined()
   })
 })
