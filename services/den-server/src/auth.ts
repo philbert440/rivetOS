@@ -21,20 +21,6 @@ import type { PeerCertificate, TLSSocket } from 'node:tls'
 
 export const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost', '::ffff:127.0.0.1'])
 
-export interface DenTlsConfig {
-  /** PEM (or path contents already read) for the node server certificate. */
-  cert: string
-  /** Matching private key. */
-  key: string
-  /** CA chain used to verify client certificates (intermediate + root). */
-  ca: string
-  /**
-   * When true (default), remote clients must present a device client cert.
-   * Loopback connections never require a client cert even when this is true.
-   */
-  requireClientCert: boolean
-}
-
 /** Parsed identity from a verified peer certificate, or null if not a device. */
 export interface DeviceIdentity {
   /** Full subject CN (e.g. device:pixel-phil). */

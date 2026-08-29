@@ -1,12 +1,11 @@
 /**
  * Chat drawer ↔ harness control plane binding (pure logic).
  *
- * The drawer used to be one list: the node's on-disk harness stores, read
- * through the legacy `/api/terminal/harness-sessions` scan. The control plane
- * (`GET /api/harnesses/:id/sessions`) is the surface that replaces it, but
- * only for harnesses that actually have a registered driver — `claude-code`
- * today. The legacy scan still reads every roster harness (grok, hermes), so
- * dropping it now would delete those conversations from the drawer.
+ * Two session sources feed the drawer: the control plane
+ * (`GET /api/harnesses/:id/sessions`) for harnesses with a registered driver
+ * (`claude-code` today), and the on-disk store scan
+ * (`/api/terminal/harness-sessions`) which still reads every roster harness
+ * (grok, hermes) — dropping the scan would delete those conversations.
  *
  * So the drawer unions the two, keyed by native session id, with the control
  * plane winning: a driver-owned row carries a canonical `SessionId`, a harness

@@ -71,7 +71,7 @@ export interface GraphProjection {
 // Journal parsing helpers
 // ---------------------------------------------------------------------------
 
-function str(v: unknown): string | undefined {
+export function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined
 }
 

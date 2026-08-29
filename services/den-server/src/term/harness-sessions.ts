@@ -1308,9 +1308,8 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
 /**
  * Claude-only transcript read — the `claude-code` driver's hard-resync source.
  *
- * Same store-scoping rule as `readGrokTranscript` below, applied to the
- * reference driver at driver three (it was the leftover the `grok-build` slice
- * recorded): a `claude-code` id whose `.jsonl` has been deleted must read as an
+ * Same store-scoping rule as `readGrokTranscript` below: a `claude-code`
+ * id whose `.jsonl` has been deleted must read as an
  * empty transcript, not as whichever other store happens to hold that id.
  */
 export async function readClaudeTranscript(id: string): Promise<HarnessTranscript> {

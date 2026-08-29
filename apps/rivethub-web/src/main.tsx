@@ -13,7 +13,7 @@ import { routeTree } from './routes.js'
 import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { installClipboardBridge } from './lib/clipboard.js'
 import { installShellKeys } from './lib/shell-keys.js'
-import { maybeRedirectToRemoteUi } from './lib/remote-ui.js'
+import { adoptStoredRemoteUi } from './lib/remote-ui.js'
 import { useConnection } from './stores/connection.js'
 
 // Selection copy (Ctrl/Cmd+C, context menu) must ride Tauri/Android IPC on
@@ -40,7 +40,7 @@ if (!rootEl) throw new Error('missing #root element')
 // 1) Adopt last-active remote into the gateway (repoint only).
 // 2) Honor ?node= (Android drawer deep-link). Auth is device mTLS.
 // 3) Mount React.
-void maybeRedirectToRemoteUi((baseUrl) => {
+void adoptStoredRemoteUi((baseUrl) => {
   const { baseUrl: current, setConnection } = useConnection.getState()
   if (!current) setConnection(baseUrl)
 }).then(() => {

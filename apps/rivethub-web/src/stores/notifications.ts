@@ -21,22 +21,6 @@ export interface NotificationEntry {
 const TOAST_MS = 8_000
 const INBOX_MAX = 50
 
-/**
- * Desktop shell bridge (4j): under Tauri (withGlobalTauri) forward frames to
- * OS notifications when the window isn't visible — the in-app toast covers
- * the focused case. Feature-detected; the web app takes no Tauri dependency.
- */
-interface TauriGlobal {
-  notification?: {
-    isPermissionGranted(): Promise<boolean>
-    requestPermission(): Promise<string>
-    sendNotification(opts: { title: string; body: string }): void
-  }
-  event?: {
-    emit(event: string, payload?: unknown): Promise<void>
-  }
-}
-
 function notifyPayload(frame: NotificationFrame): { title: string; body: string } {
   return frame.kind === 'escalation'
     ? { title: `⚠ Rivet escalation — ${frame.agentId}`, body: frame.summary }
@@ -50,38 +34,22 @@ function notifyPayload(frame: NotificationFrame): { title: string; body: string 
 
 function nativeNotify(frame: NotificationFrame): void {
   const shell = rivetShell()
-  const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
-  const api = tauri?.notification
   // Skip the OS notification only when the window is truly foreground —
   // visible AND focused — where the in-app toast already covers it. A
   // visible-but-unfocused window (behind another, other monitor) still gets
   // the native ping (#306 review: the visibilityState-only gate missed it).
-  if ((!shell && !api) || (document.visibilityState === 'visible' && document.hasFocus())) return
-  if (shell) {
-    // Electron main-process notifications need no permission handshake.
-    void shell.sendNotification(notifyPayload(frame)).catch(() => undefined)
-    return
-  }
-  if (!api) return
-  void (async () => {
-    let granted = await api.isPermissionGranted()
-    if (!granted) granted = (await api.requestPermission()) === 'granted'
-    if (!granted) return
-    api.sendNotification(notifyPayload(frame))
-  })()
+  if (!shell || (document.visibilityState === 'visible' && document.hasFocus())) return
+  // Electron main-process notifications need no permission handshake.
+  void shell.sendNotification(notifyPayload(frame)).catch(() => undefined)
 }
 
 /** Mirror the unread count to the desktop shell's tray (feature-detected —
  *  no-op in the browser). The tray is the only surface a hidden-to-tray app
  *  has, so it must know when something is waiting. */
 function emitUnreadToShell(count: number): void {
-  const shell = rivetShell()
-  if (shell) {
-    void shell.setUnread(count).catch(() => undefined)
-    return
-  }
-  const tauri = (globalThis as { __TAURI__?: TauriGlobal }).__TAURI__
-  void tauri?.event?.emit('rivethub:unread', { count }).catch(() => undefined)
+  void rivetShell()
+    ?.setUnread(count)
+    .catch(() => undefined)
 }
 
 interface NotificationsState {
@@ -118,7 +86,7 @@ export const useNotifications = create<NotificationsState>((set) => ({
     }
     currentEndpoint = endpointKey
     // Skip the socket when no http(s) gateway is configured (desktop shell
-    // first-run: origin is tauri://localhost) — #4j.
+    // first-run before a node is enrolled).
     if (!isValidGatewayUrl(useConnection.getState().baseUrl)) return
     const { gateway } = useConnection.getState()
     subscription = gateway.watchNotifications((frame) => {

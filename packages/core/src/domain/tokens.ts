@@ -36,10 +36,3 @@ export function estimateTokens(messages: Message[]): number {
   }
   return total
 }
-
-/**
- * Estimate token count for a system prompt string.
- */
-export function estimateSystemPromptTokens(prompt: string): number {
-  return Math.ceil(prompt.length / 4) + 4
-}

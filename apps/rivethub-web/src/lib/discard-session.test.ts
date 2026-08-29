@@ -66,7 +66,7 @@ describe('discardDraft', () => {
     expect(useArchived.getState().isArchived(KEY)).toBe(false)
     expect(getSessionMode(KEY)).toBe('chat')
     expect(wasSystemPromptSent(SID)).toBe(false)
-    expect(getAgentLastSession('agent-1')).toBeUndefined()
+    expect(getAgentLastSession('agent-1', BASE)).toBeUndefined()
     expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
   })
 
@@ -79,7 +79,7 @@ describe('discardDraft', () => {
 
     discardDraft(BASE, SID)
 
-    expect(getAgentLastSession('agent-2')?.sessionId).toBe('newer-session')
+    expect(getAgentLastSession('agent-2', BASE)?.sessionId).toBe('newer-session')
     expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
   })
 })

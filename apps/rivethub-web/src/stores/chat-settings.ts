@@ -97,11 +97,3 @@ export const useChatSettings = create<SettingsState>()(
     { name: KEY, storage, partialize: (s) => ({ byKey: s.byKey }) },
   ),
 )
-
-export const EFFORTS: { value: ThinkingLevel; label: string }[] = [
-  { value: 'off', label: 'no thinking' },
-  { value: 'low', label: 'think: low' },
-  { value: 'medium', label: 'think: medium' },
-  { value: 'high', label: 'think: high' },
-  { value: 'xhigh', label: 'think: xhigh' },
-]

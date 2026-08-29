@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  isBundledOrigin,
-  rememberRemoteUi,
-  shouldRedirect,
-  storedRemoteUi,
-} from './remote-ui.js'
+import { isBundledOrigin, rememberRemoteUi, storedRemoteUi } from './remote-ui.js'
 
 function memStorage(init: Record<string, string> = {}): Storage {
   const m = new Map(Object.entries(init))
@@ -16,12 +11,8 @@ function memStorage(init: Record<string, string> = {}): Storage {
 
 describe('isBundledOrigin', () => {
   it('shell origins are bundled; http gateway origins are not', () => {
-    expect(isBundledOrigin('tauri://localhost', 'tauri:')).toBe(true)
     // electron shell serves the dist over its app:// scheme
     expect(isBundledOrigin('app://bundle', 'app:')).toBe(true)
-    // windows tauri shell serves the dist over http://tauri.localhost — a
-    // legit http origin, but still the bundled app
-    expect(isBundledOrigin('http://tauri.localhost', 'http:')).toBe(true)
     expect(isBundledOrigin('http://192.168.1.10:5174', 'http:')).toBe(false)
   })
 })
@@ -34,7 +25,6 @@ describe('storedRemoteUi / rememberRemoteUi', () => {
   })
 
   it('rejects junk (poisoned storage never becomes a nav target)', () => {
-    expect(storedRemoteUi(memStorage({ 'rivethub.remoteUi': 'tauri://localhost' }))).toBeUndefined()
     expect(
       storedRemoteUi(memStorage({ 'rivethub.remoteUi': 'javascript:alert(1)' })),
     ).toBeUndefined()
@@ -42,21 +32,5 @@ describe('storedRemoteUi / rememberRemoteUi', () => {
     const s = memStorage()
     rememberRemoteUi(s, 'javascript:alert(1)')
     expect(storedRemoteUi(s)).toBeUndefined()
-  })
-})
-
-describe('shouldRedirect', () => {
-  it('never redirects — repoint-only (local dist always stays)', () => {
-    const base = {
-      bundled: true,
-      localOverride: false,
-      target: 'http://192.168.1.10:5174',
-      probeOk: true,
-    }
-    expect(shouldRedirect(base)).toBe(false)
-    expect(shouldRedirect({ ...base, bundled: false })).toBe(false)
-    expect(shouldRedirect({ ...base, localOverride: true })).toBe(false)
-    expect(shouldRedirect({ ...base, target: undefined })).toBe(false)
-    expect(shouldRedirect({ ...base, probeOk: false })).toBe(false)
   })
 })

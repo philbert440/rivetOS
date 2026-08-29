@@ -10,7 +10,6 @@ import { cn } from '../../lib/utils.js'
  */
 export const Popover = PopoverPrimitive.Root
 export const PopoverTrigger = PopoverPrimitive.Trigger
-export const PopoverAnchor = PopoverPrimitive.Anchor
 
 export const PopoverContent = forwardRef<
   ComponentRef<typeof PopoverPrimitive.Content>,

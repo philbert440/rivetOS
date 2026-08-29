@@ -14,7 +14,6 @@ import type {
   OutcomesResponse,
   SessionMessagesResponse,
   SessionPostAccepted,
-  SessionPostReply,
   SessionPostRequest,
   SessionsListResponse,
   SessionWsFrame,
@@ -55,7 +54,6 @@ import type {
 import type {
   TermConfigResponse,
   HarnessSessionsResponse,
-  HarnessTranscriptResponse,
   TermInjectRequest,
   TermInjectResponse,
   TermListResponse,
@@ -175,20 +173,6 @@ export class RivetGateway {
     })
   }
 
-  /** Long-poll variant: blocks until the assistant reply (or 504s). */
-  postMessageAndWait(
-    sessionId: string,
-    body: SessionPostRequest,
-    opts: Omit<WaitOptions, 'wait'> = {},
-  ): Promise<SessionPostReply> {
-    return request(this.config, `/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
-      method: 'POST',
-      body,
-      query: { wait: 1, timeoutMs: opts.timeoutMs },
-      signal: opts.signal,
-    })
-  }
-
   /** Live message/stream frames; omit sessionId to watch every session. */
   watchSessions(
     onFrame: (frame: SessionWsFrame) => void,
@@ -293,13 +277,6 @@ export class RivetGateway {
 
   getTask(taskId: string, signal?: AbortSignal): Promise<TaskResponse> {
     return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}`, { signal })
-  }
-
-  waitTask(taskId: string, opts: Omit<WaitOptions, 'wait'> = {}): Promise<TaskResponse> {
-    return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}/wait`, {
-      query: { timeoutMs: opts.timeoutMs },
-      signal: opts.signal,
-    })
   }
 
   steerTask(taskId: string, message: string): Promise<TaskSteerAccepted> {
@@ -434,10 +411,6 @@ export class RivetGateway {
     })
   }
 
-  agentGet(agentId: string, signal?: AbortSignal): Promise<AgentResponse> {
-    return request(this.config, `/api/agents/${encodeURIComponent(agentId)}`, { signal })
-  }
-
   agentUpdate(agentId: string, body: AgentUpdateRequest): Promise<AgentResponse> {
     return request(this.config, `/api/agents/${encodeURIComponent(agentId)}`, {
       method: 'PATCH',
@@ -466,15 +439,6 @@ export class RivetGateway {
    *  with { session, resume: <id> }. */
   harnessSessions(signal?: AbortSignal): Promise<HarnessSessionsResponse> {
     return request(this.config, '/api/terminal/harness-sessions', { signal })
-  }
-
-  /** On-disk harness transcript for hard-resync of the chat UI from TUI state. */
-  harnessTranscript(sessionId: string, signal?: AbortSignal): Promise<HarnessTranscriptResponse> {
-    return request(
-      this.config,
-      `/api/terminal/harness-sessions/${encodeURIComponent(sessionId)}/transcript`,
-      { signal },
-    )
   }
 
   termSpawn(body: TermSpawnRequest = {}): Promise<TermSpawnResponse> {

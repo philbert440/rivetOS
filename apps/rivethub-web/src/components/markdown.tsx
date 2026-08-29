@@ -107,7 +107,7 @@ const COMPONENTS: Components = {
       target="_blank"
       rel="noopener noreferrer"
       onClick={(e) => {
-        // Tauri shell: window.open/target=_blank are silent no-ops — route
+        // Desktop/Android shells: window.open/target=_blank are denied or dropped — route
         // http(s) through the opener IPC. Everything else (mailto:, relative
         // anchors) keeps default behavior; preventDefault only when we
         // actually take over, or those become dead clicks (grok review).

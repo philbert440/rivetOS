@@ -20,10 +20,10 @@
  *     deepseek-harness cannot spawn a session for a task to run in — the grok
  *     and dsh drivers spawn a PTY, and hermes/dsh can only ADOPT a session the
  *     roster started (neither has a flag to pin a new id) — so their
- *     executors are explicit rejections, not absences. `kimi-code` used to be
- *     one of them and no longer is: it has a real executor over headless
- *     `kimi -p` (`@rivetos/harness-kimi-code`), and registers a rejection
- *     only where boot's binary probe fails, carrying the probe's own reason.
+ *     executors are explicit rejections, not absences. `kimi-code` has a real
+ *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`), and
+ *     registers a rejection only where boot's binary probe fails, carrying
+ *     the probe's own reason.
  *     A task aimed at a rejection fails immediately with the typed
  *     `capability_unsupported` code and a message that says what is missing,
  *     rather than the registry's anonymous `executor_not_registered` miss, and

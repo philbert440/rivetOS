@@ -12,5 +12,3 @@ export const MODEL_DEFAULTS = {
   vllm: 'default',
   'llama-server': 'default',
 } as const
-
-export type ProviderName = keyof typeof MODEL_DEFAULTS

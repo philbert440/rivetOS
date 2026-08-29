@@ -16,7 +16,7 @@ export interface BootNodeHandlers {
 }
 
 /**
- * Parse `node` from a query string (legacy `token` param is discarded).
+ * Parse `node` from a query string.
  * Returns the canonical origin when present, else null.
  */
 export function parseBootNodeParam(search: string): {

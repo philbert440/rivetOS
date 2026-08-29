@@ -166,18 +166,6 @@ export interface Provider {
 }
 
 // ---------------------------------------------------------------------------
-// Provider Error Codes
-// ---------------------------------------------------------------------------
-
-export type ProviderErrorCode =
-  | 'PROVIDER_AUTH_FAILED'
-  | 'PROVIDER_RATE_LIMITED'
-  | 'PROVIDER_UNAVAILABLE'
-  | 'PROVIDER_TIMEOUT'
-  | 'PROVIDER_INVALID_RESPONSE'
-  | 'PROVIDER_REQUEST_FAILED'
-
-// ---------------------------------------------------------------------------
 // ProviderError — thrown by providers for HTTP failures
 // ---------------------------------------------------------------------------
 

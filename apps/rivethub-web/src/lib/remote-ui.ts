@@ -1,14 +1,9 @@
 /**
- * Last-active node persistence for the thin/bundled shell.
- *
- * Historically the desktop shell redirected (`location.replace`) to the
- * configured node's live-served dist so updates rode mesh deploy. That is
- * gone: the local/bundled UI always stays put and only the gateway baseUrl
- * is repointed (see connection store + switch-mode).
- *
- * `rivethub.remoteUi` is still written so a stored last-active can be adopted
- * at boot without a full-page navigation. Escape hatch `?local=1` skips
- * adopting a stored remote target (debugging).
+ * Last-active node persistence for the thin/bundled shell. The local/bundled
+ * UI always stays put; only the gateway baseUrl is repointed (connection
+ * store + switch-mode). `rivethub.remoteUi` lets a stored last-active be
+ * adopted at boot without navigation. Escape hatch `?local=1` skips adopting
+ * a stored remote target (debugging).
  */
 
 import { isValidGatewayUrl } from './gateway-url.js'
@@ -16,12 +11,9 @@ import { isValidGatewayUrl } from './gateway-url.js'
 const REMOTE_UI_KEY = 'rivethub.remoteUi'
 
 export function isBundledOrigin(origin: string, protocol: string): boolean {
-  // app://bundle (Electron shell); tauri://localhost (linux/macOS);
-  // http://tauri.localhost (windows) parses as a legit http origin, so it
-  // needs its own case. Anything else that is not a valid http(s) gateway
-  // origin is also treated as bundled.
-  if (protocol === 'app:' || protocol === 'tauri:') return true
-  if (/^https?:\/\/tauri\.localhost(?::\d+)?$/.test(origin)) return true
+  // app://bundle (Electron shell). Anything else that is not a valid
+  // http(s) gateway origin is also treated as bundled.
+  if (protocol === 'app:') return true
   return !isValidGatewayUrl(origin)
 }
 
@@ -40,33 +32,13 @@ export function rememberRemoteUi(storage: Pick<Storage, 'setItem'>, url: string)
 }
 
 /**
- * Pure decision helper (tests / call sites). Always false now — we never
- * full-page redirect to a remote dist.
+ * Boot-time hook, awaited before React mounts. Never navigates away from the
+ * local/bundled dist: if a last-active remote is stored and the connection
+ * store has not already adopted it (empty baseUrl under a bundled origin),
+ * repoints via setConnection and stays.
  */
-export function shouldRedirect(_opts: {
-  bundled: boolean
-  localOverride: boolean
-  target: string | undefined
-  probeOk: boolean
-}): boolean {
-  return false
-}
-
-/**
- * Boot-time hook, awaited before React mounts.
- *
- * Never navigates away from the local/bundled dist. If a last-active remote
- * is stored and the connection store has not already adopted it (empty
- * baseUrl under a bundled origin), repoints via setConnection and stays.
- * Always returns `'stay'` so the caller mounts React.
- *
- * `'redirecting'` remains in the return type for call-site compatibility
- * but is never produced.
- */
-export function maybeRedirectToRemoteUi(
-  apply?: (baseUrl: string) => void,
-): Promise<'redirecting' | 'stay'> {
-  if (typeof window === 'undefined') return Promise.resolve('stay')
+export function adoptStoredRemoteUi(apply?: (baseUrl: string) => void): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve()
 
   const bundled = isBundledOrigin(window.location.origin, window.location.protocol)
   const localOverride = new URLSearchParams(window.location.search).has('local')
@@ -79,5 +51,5 @@ export function maybeRedirectToRemoteUi(
     apply(target)
   }
 
-  return Promise.resolve('stay')
+  return Promise.resolve()
 }

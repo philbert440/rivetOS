@@ -135,7 +135,7 @@ export const WikiMarkdown = memo(function WikiMarkdown(props: {
 }): JSX.Element {
   const src = wikiLinksToMarkdown(props.children)
   return (
-    <div className="wiki-prose max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+    <div className="max-w-none [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={makeComponents(props.knownSlugs)}>
         {src}
       </ReactMarkdown>

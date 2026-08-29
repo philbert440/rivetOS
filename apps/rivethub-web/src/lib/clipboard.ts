@@ -4,11 +4,9 @@
  *
  * 0. rivetShell — the Electron shell's preload bridge (IPC to the main
  *    process clipboard, which is reliable everywhere Chromium runs).
- * 1. Tauri clipboard-manager — `__TAURI__.clipboardManager`, with a
- *    `__TAURI_INTERNALS__.invoke` fallback — the Android hub WebView shim
- *    (RivetHubBridge) exposes the same shape. Required because
- *    WebKitGTK-on-Wayland system clipboard is flaky and non-secure origins
- *    (http:// LAN / loopback in WebView) have no `navigator.clipboard`.
+ * 1. `__TAURI__.clipboardManager` — the Android hub WebView shim
+ *    (RivetHubBridge). Required because non-secure origins (http:// LAN /
+ *    loopback in WebView) have no `navigator.clipboard`.
  * 2. navigator.clipboard — browsers on secure origins (https / localhost).
  * 3. execCommand('copy') — LAN http:// in a plain browser (write only).
  *
@@ -32,10 +30,6 @@ interface TauriClipboard {
   readText(): Promise<string>
 }
 
-interface TauriInternals {
-  invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>
-}
-
 function tauriClipboardManager(): TauriClipboard | undefined {
   const tauri = (globalThis as { __TAURI__?: { clipboardManager?: TauriClipboard } }).__TAURI__
   const cm = tauri?.clipboardManager
@@ -45,15 +39,9 @@ function tauriClipboardManager(): TauriClipboard | undefined {
   return undefined
 }
 
-function tauriInternals(): TauriInternals | undefined {
-  const internals = (globalThis as { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__
-  if (internals && typeof internals.invoke === 'function') return internals
-  return undefined
-}
-
 /** True when a host IPC path can write/read the system clipboard. */
 export function hasTauriClipboard(): boolean {
-  return rivetShell() != null || tauriClipboardManager() != null || tauriInternals() != null
+  return rivetShell() != null || tauriClipboardManager() != null
 }
 
 /**
@@ -66,7 +54,7 @@ export function hasTauriClipboard(): boolean {
 export function shouldBridgeNativeCopy(
   opts: { hasShell: boolean; hasTauri: boolean } = {
     hasShell: rivetShell() != null,
-    hasTauri: tauriClipboardManager() != null || tauriInternals() != null,
+    hasTauri: tauriClipboardManager() != null,
   },
 ): boolean {
   return !opts.hasShell && opts.hasTauri
@@ -83,11 +71,6 @@ async function writeViaTauri(text: string): Promise<boolean> {
     await cm.writeText(text)
     return true
   }
-  const internals = tauriInternals()
-  if (internals) {
-    await internals.invoke('plugin:clipboard-manager|write_text', { text })
-    return true
-  }
   return false
 }
 
@@ -99,11 +82,6 @@ async function readViaTauri(): Promise<string | undefined> {
   const cm = tauriClipboardManager()
   if (cm) {
     return await cm.readText()
-  }
-  const internals = tauriInternals()
-  if (internals) {
-    const text = await internals.invoke('plugin:clipboard-manager|read_text')
-    return typeof text === 'string' ? text : undefined
   }
   return undefined
 }
@@ -290,7 +268,7 @@ export function claimNativeCopy(
   if (
     !shouldBridgeNativeCopy({
       hasShell: opts?.hasShell ?? rivetShell() != null,
-      hasTauri: opts?.hasTauri ?? (tauriClipboardManager() != null || tauriInternals() != null),
+      hasTauri: opts?.hasTauri ?? tauriClipboardManager() != null,
     })
   ) {
     return false

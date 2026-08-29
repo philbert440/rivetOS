@@ -98,19 +98,3 @@ export function buildLocalSessionContext(partial: {
     expiresAt: now + (partial.ttlMs ?? 24 * 60 * 60 * 1000),
   }
 }
-
-/** Type guard — useful when a tool receives `unknown` from a proxy hop. */
-export function isSessionContext(value: unknown): value is SessionContext {
-  if (typeof value !== 'object' || value === null) return false
-  const v = value as Partial<SessionContext>
-  return (
-    typeof v.sessionToken === 'string' &&
-    typeof v.agentId === 'string' &&
-    typeof v.nodeId === 'string' &&
-    typeof v.conversationId === 'string' &&
-    typeof v.userId === 'string' &&
-    Array.isArray(v.allowlist) &&
-    typeof v.issuedAt === 'number' &&
-    typeof v.expiresAt === 'number'
-  )
-}

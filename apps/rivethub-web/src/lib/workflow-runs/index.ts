@@ -15,9 +15,7 @@ export {
   RUN_STATUS_COLORS,
   RUN_STATUS_LABELS,
   isLiveRunStatus,
-  GRAPH_NODE_STATUS_COLORS,
   GRAPH_NODE_STATUS_LABELS,
-  GRAPH_NODE_STATUS_STROKE,
   type GraphNodeStatus,
 } from './status.js'
 

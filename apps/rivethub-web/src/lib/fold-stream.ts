@@ -27,7 +27,7 @@ export interface LiveTurn {
   tools: LiveToolEntry[]
 }
 
-function emptyTurn(): LiveTurn {
+export function emptyTurn(): LiveTurn {
   return { text: '', reasoning: false, reasoningText: '', tools: [] }
 }
 
