@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  agentOpenPlan,
-  KEEP_DIALOG_NOTE,
-  nodeHealthStatus,
+  aggregateAgentActivity,
   sessionPointerMatches,
   uniqueRosterNodes,
 } from './agent-roster.js'
@@ -28,28 +26,6 @@ describe('uniqueRosterNodes', () => {
   })
 })
 
-describe('nodeHealthStatus', () => {
-  it('treats pending as unknown so the row stays enabled without a red dot', () => {
-    expect(nodeHealthStatus(undefined, true)).toBe('unknown')
-    expect(nodeHealthStatus(undefined, false)).toBe('unknown')
-    expect(nodeHealthStatus(true, false)).toBe('online')
-    expect(nodeHealthStatus(false, false)).toBe('offline')
-    expect(nodeHealthStatus(true, true)).toBe('online')
-    expect(nodeHealthStatus(false, true)).toBe('offline')
-  })
-})
-
-describe('agentOpenPlan', () => {
-  it('keep does not add a draft or rewrite settings', () => {
-    expect(agentOpenPlan('keep')).toEqual({ addDraft: false, applySettings: false })
-    expect(agentOpenPlan('fresh')).toEqual({ addDraft: true, applySettings: true })
-  })
-
-  it('keep dialog tells the operator prompt/model changes apply to new conversations', () => {
-    expect(KEEP_DIALOG_NOTE).toMatch(/new conversations/i)
-  })
-})
-
 describe('sessionPointerMatches', () => {
   const nativeOf = (id: string): string | undefined => {
     const i = id.indexOf(':')
@@ -61,5 +37,39 @@ describe('sessionPointerMatches', () => {
     expect(sessionPointerMatches('claude-code:abc', 'abc', nativeOf)).toBe(true)
     expect(sessionPointerMatches('claude-code:abc', 'claude-code:abc', nativeOf)).toBe(true)
     expect(sessionPointerMatches('abc', 'other', nativeOf)).toBe(false)
+  })
+})
+
+describe('aggregateAgentActivity', () => {
+  const A = 'https://192.0.2.10:5174'
+  const B = 'https://192.0.2.11:5174'
+
+  it('active wins over idle and names its node', () => {
+    expect(
+      aggregateAgentActivity([
+        { nodeBaseUrl: A, status: 'idle' },
+        { nodeBaseUrl: B, status: 'active' },
+      ]),
+    ).toEqual({ level: 'active', nodeBaseUrl: B })
+  })
+
+  it('idle shows when nothing is active', () => {
+    expect(
+      aggregateAgentActivity([
+        { nodeBaseUrl: A, status: 'ended' },
+        { nodeBaseUrl: B, status: 'idle' },
+      ]),
+    ).toEqual({ level: 'idle', nodeBaseUrl: B })
+  })
+
+  it('ended, error, unknown, and empty all read as none', () => {
+    expect(aggregateAgentActivity([])).toEqual({ level: 'none' })
+    expect(
+      aggregateAgentActivity([
+        { nodeBaseUrl: A, status: 'ended' },
+        { nodeBaseUrl: B, status: 'error' },
+        { nodeBaseUrl: A, status: undefined },
+      ]),
+    ).toEqual({ level: 'none' })
   })
 })

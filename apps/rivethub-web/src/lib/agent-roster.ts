@@ -1,7 +1,6 @@
 /**
- * Pure helpers for the agents sidebar: node picker order, health-row UX,
- * and the keep-vs-reset open plan (keep must not mint a draft or rewrite
- * settings).
+ * Pure helpers for the agents sidebar: node picker order, session-pointer
+ * matching, and the row activity indicator.
  */
 
 export type NodeChoice = { name: string; baseUrl: string }
@@ -20,29 +19,6 @@ export function uniqueRosterNodes(roster: NodeChoice[], currentBaseUrl: string):
   return [...byUrl.values()]
 }
 
-export type NodeHealthStatus = 'online' | 'offline' | 'unknown'
-
-/** Pending with no result is unknown — not offline. A prior true/false wins. */
-export function nodeHealthStatus(
-  health: boolean | undefined,
-  _isPending?: boolean,
-): NodeHealthStatus {
-  if (health === true) return 'online'
-  if (health === false) return 'offline'
-  return 'unknown'
-}
-
-export type AgentOpenPlan = {
-  addDraft: boolean
-  applySettings: boolean
-}
-
-/** Keep reuses the existing thread; only a fresh uuid path drafts + writes settings. */
-export function agentOpenPlan(kind: 'keep' | 'fresh'): AgentOpenPlan {
-  if (kind === 'keep') return { addDraft: false, applySettings: false }
-  return { addDraft: true, applySettings: true }
-}
-
 export function sessionPointerMatches(
   storedId: string,
   listedId: string,
@@ -54,4 +30,20 @@ export function sessionPointerMatches(
   return storedNative === listedNative
 }
 
-export const KEEP_DIALOG_NOTE = 'Prompt and model changes apply to new conversations.'
+export type AgentActivity = { level: 'active' | 'idle'; nodeBaseUrl: string } | { level: 'none' }
+
+/**
+ * Collapse per-node session statuses into one row indicator. Any `active`
+ * session wins over `idle`; `ended`/`error`/unknown count as nothing
+ * running. The winning node rides along so the pip can name where the
+ * session lives — a non-current node is Phil's "remote session active" case.
+ */
+export function aggregateAgentActivity(
+  statuses: Array<{ nodeBaseUrl: string; status?: string }>,
+): AgentActivity {
+  const active = statuses.find((s) => s.status === 'active')
+  if (active) return { level: 'active', nodeBaseUrl: active.nodeBaseUrl }
+  const idle = statuses.find((s) => s.status === 'idle')
+  if (idle) return { level: 'idle', nodeBaseUrl: idle.nodeBaseUrl }
+  return { level: 'none' }
+}
