@@ -144,12 +144,24 @@ let pendingWrite:
   { text: string; gen: number; resolve: () => void; reject: (e: unknown) => void } | undefined
 
 /** One hung IPC must not deadlock every later copy: after this long the
- *  queue fails open (warn, treat as settled, issue the pending write). A
- *  hung write that completes even later can still land out of order — IPC
- *  is not cancellable — but a deadlocked clipboard is strictly worse. */
+ *  queue fails open (warn, treat as settled, issue the pending write). IPC
+ *  is not cancellable, so a timed-out write that eventually SUCCEEDS may
+ *  land after newer writes — the late-settle hook re-issues the newest
+ *  requested text so the clipboard converges instead of ending stale. A
+ *  late FAILURE wrote nothing and is left alone (re-writing could stomp
+ *  something the user copied in another app meanwhile). */
 const WRITE_SETTLE_MS = 10_000
 
-function withSettleTimeout(p: Promise<void>): Promise<void> {
+/** Newest text any caller asked us to write — the convergence target. */
+let latestText: string | undefined
+
+function onLateSettle(text: string, failed: boolean): void {
+  if (failed || latestText === undefined || text === latestText) return
+  console.warn('[clipboard] timed-out write landed late — re-issuing the newest copy')
+  void copyTextToClipboard(latestText).catch(() => undefined)
+}
+
+function withSettleTimeout(p: Promise<void>, text: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false
     const timer = setTimeout(() => {
@@ -160,13 +172,19 @@ function withSettleTimeout(p: Promise<void>): Promise<void> {
     }, WRITE_SETTLE_MS)
     p.then(
       () => {
-        if (settled) return
+        if (settled) {
+          onLateSettle(text, false)
+          return
+        }
         settled = true
         clearTimeout(timer)
         resolve()
       },
       (e: unknown) => {
-        if (settled) return
+        if (settled) {
+          onLateSettle(text, true)
+          return
+        }
         settled = true
         clearTimeout(timer)
         reject(e instanceof Error ? e : new Error(String(e)))
@@ -181,7 +199,7 @@ function drainWrites(): void {
   pendingWrite = undefined
   if (!next) return
   inFlight = true
-  withSettleTimeout(issueWrite(next.text)).then(
+  withSettleTimeout(issueWrite(next.text), next.text).then(
     () => {
       next.resolve()
       drainWrites()
@@ -195,6 +213,7 @@ function drainWrites(): void {
 
 export function copyTextToClipboard(text: string): Promise<void> {
   const gen = ++writeGen
+  latestText = text
   if (inFlight) {
     // Supersede any queued-but-unissued older write.
     if (pendingWrite && pendingWrite.gen < gen) pendingWrite.resolve()
@@ -203,7 +222,7 @@ export function copyTextToClipboard(text: string): Promise<void> {
     })
   }
   inFlight = true
-  const p = withSettleTimeout(issueWrite(text))
+  const p = withSettleTimeout(issueWrite(text), text)
   p.then(
     () => {
       drainWrites()

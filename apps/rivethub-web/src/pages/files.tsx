@@ -20,6 +20,7 @@ import {
   joinRel,
   parentRel,
   previewKind,
+  readBlobBounded,
 } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -52,12 +53,8 @@ async function saveViaGateway(url: string, name: string, sizeBytes?: number): Pr
   if (preErr) throw new Error(preErr)
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`download failed (HTTP ${String(res.status)})`)
-  // Size unknown at precheck (preview of an unlisted path): bound on the
-  // response header before buffering.
-  const contentLength = Number(res.headers.get('content-length') ?? '')
-  const hdrErr = downloadTooLargeError(Number.isFinite(contentLength) ? contentLength : undefined)
-  if (hdrErr) throw new Error(hdrErr)
-  const blob = await res.blob()
+  // Bounded on the actual bytes read (header alone can lie or be absent).
+  const blob = await readBlobBounded(res)
   if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl)
   const objectUrl = URL.createObjectURL(blob)
   lastObjectUrl = objectUrl
