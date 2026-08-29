@@ -25,11 +25,12 @@ import {
   SOURCES_MAX,
   TAGS_MAX,
 } from '@rivetos/wiki-core'
-import type {
-  GatewayRoute,
-  WikiGapsResponse,
-  WikiIndexResponse,
-  WikiPageResponse,
+import {
+  routedUserResult,
+  type GatewayRoute,
+  type WikiGapsResponse,
+  type WikiIndexResponse,
+  type WikiPageResponse,
 } from '@rivetos/types'
 import { logger } from '../../logger.js'
 
@@ -78,6 +79,13 @@ export interface WikiApiOptions {
   index: WikiIndexLike
   /** Root of the wiki git repo (default /rivet-shared/wiki). */
   wikiDir?: string
+  /** Per-user wiki for a den-stamped `x-rivetos-user` (#571's memory-api
+   *  trust model, applied to the wiki — the last unrouted read surface).
+   *  Returns the routed user's index + file root, or null when the user is
+   *  unknown or tombstoned; the route then refuses rather than ever serving
+   *  the owner's wiki. Absent header = owner (den stamps only resolved
+   *  non-owners); a PRESENT-but-malformed value is refused. */
+  forUser?: (userId: string) => { index: WikiIndexLike; wikiDir: string } | null
 }
 
 const SLUG_RE = /^[a-z0-9-]{1,80}$/
@@ -88,13 +96,27 @@ function json(res: ServerResponse, code: number, body: unknown): void {
 }
 
 export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
-  const wikiDir = opts.wikiDir ?? '/rivet-shared/wiki'
+  const ownerDir = opts.wikiDir ?? '/rivet-shared/wiki'
 
   return {
     prefix: '/api/wiki',
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        const routed = routedUserResult(req.headers)
+        if (routed.kind === 'invalid') {
+          return json(res, 503, { error: 'malformed routing identity' })
+        }
+        let index = opts.index
+        let wikiDir = ownerDir
+        if (routed.kind === 'user') {
+          const user = opts.forUser?.(routed.id) ?? null
+          if (!user) {
+            return json(res, 503, { error: `wiki is not available for user "${routed.id}"` })
+          }
+          index = user.index
+          wikiDir = user.wikiDir
+        }
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/api/wiki'.length).replace(/^\//, '')
         const [slug, sub] = rest === '' ? [undefined, undefined] : rest.split('/')
@@ -103,13 +125,13 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
         if (!slug) {
           const q = url.searchParams.get('q')
           if (q) {
-            const hits = await opts.index.searchTopics(q, { limit: intParam(url, 'limit', 10) })
+            const hits = await index.searchTopics(q, { limit: intParam(url, 'limit', 10) })
             return json(res, 200, {
               topics: hits.map(toIndexEntry),
               total: hits.length,
             } satisfies WikiIndexResponse)
           }
-          const { topics, total } = await opts.index.listTopics({
+          const { topics, total } = await index.listTopics({
             tag: url.searchParams.get('tag') ?? undefined,
             entity: url.searchParams.get('entity') ?? undefined,
             limit: intParam(url, 'limit', 100),
@@ -124,7 +146,7 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
         // GET /api/wiki/_gaps — underscore keeps it outside SLUG_RE, so no
         // topic slug can ever shadow it (#289 review).
         if (slug === '_gaps' && !sub) {
-          const gaps = await opts.index.gaps({ staleLimit: intParam(url, 'limit', 10) })
+          const gaps = await index.gaps({ staleLimit: intParam(url, 'limit', 10) })
           return json(res, 200, {
             redLinks: gaps.redLinks,
             stalest: gaps.stalest.map(toIndexEntry),
@@ -148,12 +170,12 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
 
         // GET /api/wiki/:slug — parsed page + index metadata
         const page = parseWikiPage(markdown)
-        const row = await opts.index.getTopic(slug).catch(() => undefined)
+        const row = await index.getTopic(slug).catch(() => undefined)
         // Related: explicit seeAlso/related first, then title search fill.
         const explicit = [
           ...new Set([...(page.seeAlso ?? []), ...(page.meta.related ?? [])]),
         ].filter((s) => s && s !== slug)
-        const searched = await opts.index
+        const searched = await index
           .searchTopics(page.meta.title, { limit: 6 })
           .then((hits) => hits.map((h) => h.slug).filter((s) => s !== slug))
           .catch(() => [] as string[])

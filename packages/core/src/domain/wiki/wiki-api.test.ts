@@ -235,6 +235,118 @@ describe('/wiki HTML', () => {
   })
 })
 
+describe('per-user routing (x-rivetos-user)', () => {
+  const COCO_TOPIC = {
+    ...TOPIC,
+    slug: 'coco-first-topic',
+    title: 'Coco First Topic',
+    currentState: 'Coco-only wiki content.',
+  }
+  const cocoIndex = (): WikiIndexLike => ({
+    getTopic: async (slug) => (slug === COCO_TOPIC.slug ? COCO_TOPIC : undefined),
+    listTopics: async () => ({ topics: [COCO_TOPIC], total: 1 }),
+    searchTopics: async () => [COCO_TOPIC],
+    gaps: async () => ({ redLinks: [], stalest: [COCO_TOPIC] }),
+  })
+
+  let cocoDir: string
+  beforeAll(() => {
+    cocoDir = mkdtempSync(join(tmpdir(), 'wiki-coco-'))
+    mkdirSync(join(cocoDir, 'topics'), { recursive: true })
+    writeFileSync(
+      join(cocoDir, 'topics', `${COCO_TOPIC.slug}.md`),
+      serializeWikiPage({
+        meta: {
+          title: COCO_TOPIC.title,
+          slug: COCO_TOPIC.slug,
+          aliases: [],
+          tags: ['coco'],
+          entities: [],
+          sources: [],
+        },
+        currentState: COCO_TOPIC.currentState,
+        history: [],
+        citations: [],
+      }),
+    )
+  })
+  afterAll(() => rmSync(cocoDir, { recursive: true, force: true }))
+
+  const forUser = (userId: string): { index: WikiIndexLike; wikiDir: string } | null =>
+    userId === 'coco' ? { index: cocoIndex(), wikiDir: cocoDir } : null
+
+  async function serveRouted(): Promise<string> {
+    const api = createWikiApiRoute({ index: fakeIndex(), wikiDir, forUser })
+    const page = createWikiHtmlRoute({ index: fakeIndex(), wikiDir, nodeName: 'testnode', forUser })
+    const server: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? '/', 'http://localhost')
+      const route = url.pathname.startsWith('/api/wiki') ? api : page
+      void route.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    cleanups.push(() => new Promise((r) => server.close(r)))
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  }
+
+  const routed = { headers: { 'x-rivetos-user': 'coco' } }
+
+  it('routes the index, page file, and HTML view by the stamped user', async () => {
+    const base = await serveRouted()
+    const owner = (await (await fetch(`${base}/api/wiki`)).json()) as {
+      topics: Array<{ slug: string }>
+    }
+    expect(owner.topics[0].slug).toBe(TOPIC.slug)
+    const coco = (await (await fetch(`${base}/api/wiki`, routed)).json()) as {
+      topics: Array<{ slug: string }>
+    }
+    expect(coco.topics[0].slug).toBe(COCO_TOPIC.slug)
+
+    // page content comes from the routed user's file root
+    const pageRes = (await (
+      await fetch(`${base}/api/wiki/${COCO_TOPIC.slug}`, routed)
+    ).json()) as { currentState: string }
+    expect(pageRes.currentState).toContain('Coco-only')
+    // …and the owner's root does not serve it
+    expect((await fetch(`${base}/api/wiki/${COCO_TOPIC.slug}`)).status).toBe(404)
+
+    const html = await (await fetch(`${base}/wiki`, routed)).text()
+    expect(html).toContain(COCO_TOPIC.title)
+    expect(html).not.toContain(TOPIC.title)
+  })
+
+  it('refuses an unknown stamped user on both surfaces — never the owner wiki', async () => {
+    const base = await serveRouted()
+    const stranger = { headers: { 'x-rivetos-user': 'stranger' } }
+    expect((await fetch(`${base}/api/wiki`, stranger)).status).toBe(503)
+    expect((await fetch(`${base}/wiki`, stranger)).status).toBe(503)
+  })
+
+  it('refuses a present-but-malformed header instead of defaulting to owner', async () => {
+    const base = await serveRouted()
+    expect(
+      (await fetch(`${base}/api/wiki`, { headers: { 'x-rivetos-user': '' } })).status,
+    ).toBe(503)
+
+    // duplicated header (array form) via direct handler invocation
+    const api = createWikiApiRoute({ index: fakeIndex(), wikiDir, forUser })
+    let code = 0
+    await api.handler(
+      {
+        method: 'GET',
+        url: '/api/wiki',
+        headers: { 'x-rivetos-user': ['coco', 'phil'] },
+      } as never,
+      {
+        writeHead: (c: number) => {
+          code = c
+        },
+        end: () => undefined,
+      } as never,
+    )
+    expect(code).toBe(503)
+  })
+})
+
 function fatHubMarkdown(): string {
   const aliases = Array.from({ length: 50 }, (_, i) => `  - alias-${i}`).join('\n')
   const tags = Array.from({ length: 40 }, (_, i) => `  - tag-${i}`).join('\n')
