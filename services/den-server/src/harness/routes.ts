@@ -366,7 +366,12 @@ export function createHarnessRoutes(opts: {
           ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
           ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
         })
-        opts.claimSession?.(req, summary.sessionId)
+        if (opts.claimSession && !opts.claimSession(req, summary.sessionId)) {
+          // a client-supplied nativeSessionId can resolve to an EXISTING
+          // session owned by someone else — leaking its summary on 201 is
+          // the same cross-user read this fence exists to stop
+          return json(res, 403, { error: 'session is owned by another user' })
+        }
         return json(res, 201, summary)
       } catch (err) {
         return fail(res, err)
@@ -398,6 +403,11 @@ export function createHarnessRoutes(opts: {
     // uses claim semantics instead (term's spawn rule): an unowned session —
     // every pre-fence control-plane session — is claimed by whoever resumes
     // it, so routed users keep their own history across the cutover.
+    // DELIBERATE CUTOVER RULE (first-resumer-wins): listings hide unowned
+    // rows from routed users, so claiming one requires already knowing its
+    // id (a local pointer to your own pre-fence session). The node owner
+    // could lose an unowned row to a routed user who has its id — accepted:
+    // ids aren't guessable and the alternative strands routed users' history.
     if (action === 'resume') {
       if (opts.claimSession && !opts.claimSession(req, sessionId)) {
         return json(res, 403, { error: 'session is owned by another user' })
