@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  bridgeSelectionText,
   claimNativeCopy,
   copyTextToClipboard,
   hasTauriClipboard,
@@ -99,6 +100,51 @@ describe('shouldBridgeNativeCopy / claimNativeCopy', () => {
       false,
     )
     expect(preventDefault).not.toHaveBeenCalled()
+  })
+})
+
+describe('bridgeSelectionText', () => {
+  const doc = (activeElement: unknown): Pick<Document, 'activeElement'> =>
+    ({ activeElement }) as Pick<Document, 'activeElement'>
+
+  it('slices the focused textarea selection when the DOM selection is empty', () => {
+    expect(
+      bridgeSelectionText(
+        doc({ tagName: 'TEXTAREA', value: 'hello world', selectionStart: 6, selectionEnd: 11 }),
+      ),
+    ).toBe('world')
+  })
+
+  it('slices text-like inputs', () => {
+    expect(
+      bridgeSelectionText(
+        doc({ tagName: 'INPUT', type: 'text', value: 'abcdef', selectionStart: 1, selectionEnd: 3 }),
+      ),
+    ).toBe('bc')
+  })
+
+  it('never claims a password field', () => {
+    expect(
+      bridgeSelectionText(
+        doc({
+          tagName: 'INPUT',
+          type: 'password',
+          value: 'hunter2',
+          selectionStart: 0,
+          selectionEnd: 7,
+        }),
+      ),
+    ).toBe('')
+  })
+
+  it('returns empty for collapsed ranges and non-field elements', () => {
+    expect(
+      bridgeSelectionText(
+        doc({ tagName: 'TEXTAREA', value: 'abc', selectionStart: 2, selectionEnd: 2 }),
+      ),
+    ).toBe('')
+    expect(bridgeSelectionText(doc({ tagName: 'DIV' }))).toBe('')
+    expect(bridgeSelectionText(doc(null))).toBe('')
   })
 })
 

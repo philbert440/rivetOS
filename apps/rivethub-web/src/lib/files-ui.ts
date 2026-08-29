@@ -41,6 +41,18 @@ export function previewKind(name: string, size: number): PreviewKind {
   return 'none'
 }
 
+/** In-shell downloads buffer the whole file in the renderer (blob) — bound
+ *  it so a multi-GB artifact can't OOM the window. */
+export const DOWNLOAD_BLOB_MAX = 64 * 1024 * 1024
+
+/** Human-readable refusal for an oversized in-shell download, or undefined
+ *  when the size is acceptable/unknown-at-precheck. */
+export function downloadTooLargeError(sizeBytes: number | undefined): string | undefined {
+  if (sizeBytes === undefined || sizeBytes <= DOWNLOAD_BLOB_MAX) return undefined
+  const mb = String(Math.round(DOWNLOAD_BLOB_MAX / 1024 / 1024))
+  return `file exceeds the ${mb} MB in-app download limit — fetch it from the node directly`
+}
+
 /** Join root-relative path segments without trailing slash on root. */
 export function joinRel(dir: string, name: string): string {
   if (!dir) return name

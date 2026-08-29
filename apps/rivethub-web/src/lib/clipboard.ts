@@ -143,13 +143,45 @@ let inFlight = false
 let pendingWrite:
   { text: string; gen: number; resolve: () => void; reject: (e: unknown) => void } | undefined
 
+/** One hung IPC must not deadlock every later copy: after this long the
+ *  queue fails open (warn, treat as settled, issue the pending write). A
+ *  hung write that completes even later can still land out of order — IPC
+ *  is not cancellable — but a deadlocked clipboard is strictly worse. */
+const WRITE_SETTLE_MS = 10_000
+
+function withSettleTimeout(p: Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      console.warn('[clipboard] write did not settle within 10s — failing open')
+      resolve()
+    }, WRITE_SETTLE_MS)
+    p.then(
+      () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        resolve()
+      },
+      (e: unknown) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      },
+    )
+  })
+}
+
 function drainWrites(): void {
   inFlight = false
   const next = pendingWrite
   pendingWrite = undefined
   if (!next) return
   inFlight = true
-  issueWrite(next.text).then(
+  withSettleTimeout(issueWrite(next.text)).then(
     () => {
       next.resolve()
       drainWrites()
@@ -171,7 +203,7 @@ export function copyTextToClipboard(text: string): Promise<void> {
     })
   }
   inFlight = true
-  const p = issueWrite(text)
+  const p = withSettleTimeout(issueWrite(text))
   p.then(
     () => {
       drainWrites()
@@ -256,19 +288,41 @@ export function claimNativeCopy(
  */
 let bridgeInstalled = false
 
+/** Text-like form fields whose selection range the bridge may read. Never
+ *  password — a claimed copy would push the secret through IPC — and never
+ *  the input types whose selectionStart access throws (number, date, …). */
+const TEXT_LIKE_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'email'])
+
+interface SelectionField {
+  value: string
+  selectionStart: number | null
+  selectionEnd: number | null
+}
+
+function textLikeField(el: { tagName?: string; type?: string } | null): SelectionField | undefined {
+  if (!el?.tagName) return undefined
+  if (el.tagName === 'TEXTAREA') return el as unknown as SelectionField
+  if (el.tagName !== 'INPUT') return undefined
+  if (!TEXT_LIKE_INPUT_TYPES.has((el.type ?? 'text').toLowerCase())) return undefined
+  return el as unknown as SelectionField
+}
+
 /** The gesture's payload: DOM selection, falling back to the focused
- *  textarea/input's selection range — WebKit often reports an empty
+ *  text-like field's selection range — WebKit often reports an empty
  *  `window.getSelection()` inside form fields, and bailing there would hand
  *  the composer back to the broken native path this bridge exists for. */
-export function bridgeSelectionText(doc: Document = document): string {
+export function bridgeSelectionText(doc: Pick<Document, 'activeElement'> = document): string {
   const sel = typeof window !== 'undefined' ? (window.getSelection()?.toString() ?? '') : ''
   if (sel) return sel
-  const el = doc.activeElement
-  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-    const { selectionStart, selectionEnd, value } = el
+  const field = textLikeField(doc.activeElement)
+  if (!field) return ''
+  try {
+    const { selectionStart, selectionEnd, value } = field
     if (selectionStart != null && selectionEnd != null && selectionEnd > selectionStart) {
       return value.slice(selectionStart, selectionEnd)
     }
+  } catch {
+    // selectionStart access throws on some input types — treat as no selection
   }
   return ''
 }

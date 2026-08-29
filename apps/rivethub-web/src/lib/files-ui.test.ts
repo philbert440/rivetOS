@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest'
-import { baseName, joinRel, parentRel, previewKind } from './files-ui.js'
+import {
+  DOWNLOAD_BLOB_MAX,
+  baseName,
+  downloadTooLargeError,
+  joinRel,
+  parentRel,
+  previewKind,
+} from './files-ui.js'
+
+describe('downloadTooLargeError', () => {
+  it('accepts unknown and in-bound sizes', () => {
+    expect(downloadTooLargeError(undefined)).toBeUndefined()
+    expect(downloadTooLargeError(0)).toBeUndefined()
+    expect(downloadTooLargeError(DOWNLOAD_BLOB_MAX)).toBeUndefined()
+  })
+
+  it('refuses past the blob bound with the limit in the message', () => {
+    const err = downloadTooLargeError(DOWNLOAD_BLOB_MAX + 1)
+    expect(err).toContain('64 MB')
+  })
+})
 
 describe('joinRel / parentRel / baseName', () => {
   it('joins and splits paths', () => {

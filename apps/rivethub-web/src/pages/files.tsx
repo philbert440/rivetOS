@@ -14,7 +14,13 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { rivetShell } from '../lib/shell-bridge.js'
-import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
+import {
+  baseName,
+  downloadTooLargeError,
+  joinRel,
+  parentRel,
+  previewKind,
+} from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { FileEditor } from '../components/file-editor.js'
@@ -31,24 +37,36 @@ function fmtMtime(ms: number): string {
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
 }
 
+/** The previous save's object URL. Kept alive until the NEXT save rather
+ *  than revoked on a timer — a timed revoke can race a still-writing
+ *  download, and one retained blob per session is bounded (≤64 MB). */
+let lastObjectUrl: string | undefined
+
 /** In-shell file save: the OS browser sits outside the shell's mTLS pipe and
  *  cannot authenticate to the gateway, so pull the bytes over the app's own
- *  transport and hand them to Chromium as a download (Electron's default
- *  will-download handler shows the save dialog). */
-async function saveViaGateway(url: string, name: string): Promise<void> {
+ *  transport and hand them to Chromium as a blob-anchor download. What the
+ *  shell does with that download (dialog vs default dir) is its policy, not
+ *  ours — callers surface their own "download started" notice. */
+async function saveViaGateway(url: string, name: string, sizeBytes?: number): Promise<void> {
+  const preErr = downloadTooLargeError(sizeBytes)
+  if (preErr) throw new Error(preErr)
   const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`download failed (HTTP ${String(res.status)})`)
+  // Size unknown at precheck (preview of an unlisted path): bound on the
+  // response header before buffering.
+  const contentLength = Number(res.headers.get('content-length') ?? '')
+  const hdrErr = downloadTooLargeError(Number.isFinite(contentLength) ? contentLength : undefined)
+  if (hdrErr) throw new Error(hdrErr)
   const blob = await res.blob()
+  if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl)
   const objectUrl = URL.createObjectURL(blob)
+  lastObjectUrl = objectUrl
   const a = document.createElement('a')
   a.href = objectUrl
   a.download = name
   document.body.appendChild(a)
   a.click()
   a.remove()
-  // Chromium starts the download stream from the blob on click; revoke on a
-  // delay so a slow disc never races the revocation.
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
 }
 
 type SortKey = 'name' | 'mtime' | 'size'
@@ -561,9 +579,13 @@ export function FilesPage(): JSX.Element {
                               // download over the authenticated transport.
                               if (previewKind(e.name, e.size) !== 'none') setPreviewPath(child)
                               else
-                                void saveViaGateway(url, e.name).catch((err: unknown) => {
-                                  showNotice({ kind: 'err', text: (err as Error).message })
-                                })
+                                void saveViaGateway(url, e.name, e.size)
+                                  .then(() => {
+                                    showNotice({ kind: 'ok', text: `download started: ${e.name}` })
+                                  })
+                                  .catch((err: unknown) => {
+                                    showNotice({ kind: 'err', text: (err as Error).message })
+                                  })
                             } else {
                               window.open(url, '_blank', 'noopener,noreferrer')
                             }
@@ -598,6 +620,7 @@ export function FilesPage(): JSX.Element {
           <PreviewPane
             path={previewPath}
             onClose={() => setPreviewPath(undefined)}
+            onNotice={showNotice}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size
@@ -621,6 +644,7 @@ function PreviewPane(props: {
   path: string
   downloadUrl: string
   onClose: () => void
+  onNotice: (n: Notice) => void
   /** Optional size from the listing — drives previewKind / edit eligibility. */
   size?: number
 }): JSX.Element {
@@ -645,9 +669,13 @@ function PreviewPane(props: {
             inShell
               ? (ev) => {
                   ev.preventDefault()
-                  void saveViaGateway(props.downloadUrl, name).catch((err: unknown) => {
-                    console.warn('[files] download failed', err)
-                  })
+                  void saveViaGateway(props.downloadUrl, name, props.size)
+                    .then(() => {
+                      props.onNotice({ kind: 'ok', text: `download started: ${name}` })
+                    })
+                    .catch((err: unknown) => {
+                      props.onNotice({ kind: 'err', text: (err as Error).message })
+                    })
                 }
               : undefined
           }
