@@ -57,7 +57,13 @@ import {
 import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
-import type { GatewayRoute, HarnessId, MeshConfig, MeshRegistry } from '@rivetos/types'
+import {
+  parseUserDbs,
+  type GatewayRoute,
+  type HarnessId,
+  type MeshConfig,
+  type MeshRegistry,
+} from '@rivetos/types'
 import { WikiIndex, createMemoryApiRoute } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
@@ -129,9 +135,37 @@ export async function registerAgentTools(
   let taskWaiter: TaskCompletionWaiter | undefined
   let meshRegistryRef: MeshRegistry | undefined
   let delegationRecorder: DelegationRunsRecorder | undefined
+  let userPools: Map<string, pg.Pool | null> | undefined
 
   if (pgUrl) {
     pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
+    // /api/memory answers with the den-stamped user's database, so build a
+    // pool per RIVETOS_USER_DBS entry alongside the owner pool. An entry with
+    // an unparseable URL (pg defers parsing to first connect) is tombstoned
+    // (null): the route refuses that user rather than 500ing into the owner
+    // path. max 2: the panel's search+browse+stats burst queues its third
+    // query briefly rather than holding a wider pool per user open forever.
+    const userDbs = parseUserDbs(process.env.RIVETOS_USER_DBS)
+    if (userDbs) {
+      const pools = new Map<string, pg.Pool | null>()
+      userPools = pools
+      for (const [userId, entry] of Object.entries(userDbs)) {
+        try {
+          new URL(entry.pgUrl)
+          pools.set(userId, new pg.Pool({ connectionString: entry.pgUrl, max: 2 }))
+        } catch (err) {
+          log.warn(
+            `memory api: pool for user "${userId}" failed to construct — requests will be refused: ${String(err)}`,
+          )
+          pools.set(userId, null)
+        }
+      }
+      runtime.addShutdownHook(async () => {
+        await Promise.all(
+          [...pools.values()].flatMap((p) => (p ? [p.end().catch(() => undefined)] : [])),
+        )
+      })
+    }
     if (tasksEnabled) {
       const taskStore = new PgTaskStore(pool)
       if (await taskStore.isReady()) {
@@ -607,6 +641,7 @@ export async function registerAgentTools(
       createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
       createMemoryApiRoute({
         pool,
+        userPools,
         embedEndpoint: embedEndpoint || undefined,
       }),
     )
