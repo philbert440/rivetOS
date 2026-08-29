@@ -57,8 +57,10 @@ export function SplitHandle(props: {
         const d = drag.current
         if (!d) return
         if (e.buttons === 0) {
-          // capture silently lost (alt-tab, browser gesture) — end, no commit
-          endDrag(e, false)
+          // button already released — some UAs emit this move before the
+          // pointerup. The user finished a drag, so COMMIT it; only
+          // pointercancel/lostpointercapture abandon uncommitted.
+          endDrag(e, true)
           return
         }
         props.onResize(clampDrawerWidth(d.base + e.clientX - d.startX))

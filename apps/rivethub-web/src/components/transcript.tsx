@@ -212,13 +212,15 @@ function CopyMessage(props: { text: string }): JSX.Element {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const mountedRef = useRef(true)
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Strict Mode runs mount → cleanup → remount on ONE instance: setup must
+    // re-arm the flag or the flash guard stays false for the component's life.
+    mountedRef.current = true
+    return () => {
       mountedRef.current = false
       if (timerRef.current !== undefined) clearTimeout(timerRef.current)
-    },
-    [],
-  )
+    }
+  }, [])
   const flash = (next: 'copied' | 'failed'): void => {
     if (!mountedRef.current) return
     setState(next)
@@ -235,7 +237,9 @@ function CopyMessage(props: { text: string }): JSX.Element {
           .then(() => flash('copied'))
           .catch(() => flash('failed'))
       }}
-      className="invisible absolute top-0 right-1 rounded border border-line bg-panel/90 p-1 text-ink-dim group-hover/msg:visible focus-visible:visible [@media(pointer:coarse)]:visible hover:text-em"
+      // opacity, not visibility: a visibility-hidden control drops out of the
+      // tab order, so keyboard users could never reach copy at all
+      className="absolute top-0 right-1 rounded border border-line bg-panel/90 p-1 text-ink-dim opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 [@media(pointer:coarse)]:opacity-100 hover:text-em"
     >
       {state === 'copied' ? (
         <Check className="size-3 text-em" />
