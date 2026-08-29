@@ -116,8 +116,9 @@ export const CASCADE_OFFSET = 32
 
 /**
  * Origin for one more window: down-right of `base` by the offset, each axis
- * wrapping back to the work-area origin when the cascade would push the
- * window's top-left out of the visible area (MIN_VISIBLE matches the
+ * clamped into the work area — pulled up to the origin when the base sits
+ * left of/above it, wrapped back to the origin when the cascade would push
+ * the window's top-left out of the visible area (MIN_VISIBLE matches the
  * clamp policy above). Positionless windows CENTER in Electron, which
  * stacks them pixel-exactly.
  */
@@ -126,8 +127,8 @@ export function cascadePoint(
   work: DisplayRect,
   offset = CASCADE_OFFSET,
 ): { x: number; y: number } {
-  let x = base.x + offset
-  let y = base.y + offset
+  let x = Math.max(base.x + offset, work.x)
+  let y = Math.max(base.y + offset, work.y)
   if (x + MIN_VISIBLE > work.x + work.width) x = work.x
   if (y + MIN_VISIBLE > work.y + work.height) y = work.y
   return { x, y }

@@ -53,21 +53,32 @@ if (process.platform === 'linux') app.setDesktopName('rivethub.desktop')
 /** Faults that would otherwise read as "the app just closed" get a trail. */
 const crashLog = new CrashLog(() => path.join(app.getPath('userData'), 'logs', 'main.log'))
 
+/** Every fault-path append rides this: CrashLog.append is contractually
+ *  never-throw, but the code between a fault and its log line must not be
+ *  able to abort the handler it runs in. */
+function logFault(kind: string, detail: unknown): void {
+  try {
+    crashLog.append(kind, detail)
+  } catch {
+    /* the log is best-effort even about itself */
+  }
+}
+
 // Keep running on main-process faults where possible: Electron's default for
 // an uncaught exception is a blocking error dialog, and an unhandled
 // rejection kills the process under Node's throw default — both read as a
 // crash-close with nothing to go on.
 process.on('uncaughtException', (err) => {
-  crashLog.append('uncaughtException', err.stack ?? String(err))
+  logFault('uncaughtException', err instanceof Error ? (err.stack ?? err.message) : err)
 })
 process.on('unhandledRejection', (reason) => {
-  crashLog.append(
+  logFault(
     'unhandledRejection',
-    reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
+    reason instanceof Error ? (reason.stack ?? reason.message) : reason,
   )
 })
 app.on('child-process-gone', (_e, details) => {
-  crashLog.append(
+  logFault(
     'child-process-gone',
     `${details.type} ${details.reason} exitCode=${String(details.exitCode ?? '')}`,
   )
@@ -200,27 +211,33 @@ function createWindow(isMain: boolean): BrowserWindow {
     unreadByWindow.delete(wcId)
     applyUnread()
   })
-  // window.open: never a real window. Parsed http(s)/mailto URLs open in
-  // the OS browser; everything else is dropped. A target=_blank link was a
-  // dead click under the old deny-all, but window creation itself stays
-  // denied — den iframes render untrusted LAN content and must not get a
-  // window with this shell's chrome.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (isWebUrl(url) || isMailtoUrl(url)) void shell.openExternal(url)
+  // window.open: never a real window, and never a side effect for untrusted
+  // frames — den iframes render LAN content that must not be able to drive
+  // the OS browser (#555). Only an opener whose referrer parses to the app
+  // bundle origin gets http(s)/mailto forwarded to openExternal; the hub's
+  // primary external-link path stays rivetShell.openExternal (sender-fenced
+  // IPC), so a platform that strips custom-scheme referrers degrades to a
+  // denied click, not an open door.
+  win.webContents.setWindowOpenHandler(({ url, referrer }) => {
+    if (isBundledUrl(referrer.url) && (isWebUrl(url) || isMailtoUrl(url))) {
+      void shell.openExternal(url)
+    }
     return { action: 'deny' }
   })
-  // A dead renderer must not read as "the app closed": log and reload,
-  // unless it is dying repeatedly — then leave the trail in the log.
-  let lastRendererReload = 0
+  // A dead renderer must not read as "the app closed": log and reload — but
+  // only MAX_RENDERER_RELOADS times in a row. A renderer that dies without
+  // ever finishing a load again is a crash loop; reloading forever would
+  // just burn CPU behind an unusable window. did-finish-load re-arms.
+  const MAX_RENDERER_RELOADS = 3
+  let rendererReloads = 0
+  win.webContents.on('did-finish-load', () => {
+    rendererReloads = 0
+  })
   win.webContents.on('render-process-gone', (_e, details) => {
-    crashLog.append(
-      'render-process-gone',
-      `${details.reason} exitCode=${String(details.exitCode ?? '')}`,
-    )
+    logFault('render-process-gone', `${details.reason} exitCode=${String(details.exitCode ?? '')}`)
     if (details.reason === 'clean-exit' || win.isDestroyed()) return
-    const now = Date.now()
-    if (now - lastRendererReload < 10_000) return
-    lastRendererReload = now
+    if (rendererReloads >= MAX_RENDERER_RELOADS) return
+    rendererReloads += 1
     win.webContents.reload()
   })
   // Right-click menu: pure template (context-menu.ts), roles route edit
@@ -358,6 +375,12 @@ function spawnWindow(): void {
 }
 
 function setUnread(webContentsId: number, count: number): void {
+  // An in-flight report can land after `closed` already pruned the entry —
+  // accepting it would resurrect a dead window's count forever.
+  const alive = BrowserWindow.getAllWindows().some(
+    (w) => !w.isDestroyed() && w.webContents.id === webContentsId,
+  )
+  if (!alive) return
   unreadByWindow.set(webContentsId, count)
   applyUnread()
 }
@@ -457,14 +480,28 @@ if (!app.requestSingleInstanceLock()) {
     try {
       startup()
     } catch (err) {
-      // One bad step must not abort startup with no window and no trail.
-      crashLog.append('startup', err instanceof Error ? (err.stack ?? err.message) : String(err))
-      if (!mainWindow) mainWindow = createWindow(true)
+      // One bad step must not abort startup with no window and no trail —
+      // and the recovery steps must not be able to abort EACH OTHER.
+      logFault('startup', err instanceof Error ? (err.stack ?? err.message) : err)
+      try {
+        if (!mainWindow) mainWindow = createWindow(true)
+      } catch (err2) {
+        logFault('startup-recovery', err2 instanceof Error ? (err2.stack ?? err2.message) : err2)
+      }
+      // No window AND no tray = an unreachable background process; quit
+      // beats a phantom.
+      if (!mainWindow && !tray) app.quit()
     }
   })
 }
 
 function startup(): void {
+  // FIRST, before anything that can throw: with the menu left at Electron's
+  // default, every keydown round-trips the main-process accelerator matcher
+  // — the den-xterm typing lag fixed in #566. A startup fault later in this
+  // function must not resurrect it.
+  if (process.platform === 'win32') Menu.setApplicationMenu(null)
+
   serveDist(protocol, distDir())
   registerIpc({
     pipes,
@@ -499,10 +536,14 @@ function startup(): void {
   app.on('browser-window-blur', onAppBlur)
 
   // Trayless is survivable (close-to-tray and window-all-closed both check
-  // `tray`); a Tray constructor throw — empty icon image on Windows — must
-  // not take startup down with it.
+  // `tray`); a broken tray icon must not take startup down with it. An
+  // unreadable path yields an EMPTY image, not a throw — and new Tray(empty)
+  // can succeed on Linux, leaving a truthy `tray` behind an invisible icon
+  // that close-to-tray would hide the last window behind.
   try {
-    const icon = nativeImage.createFromPath(path.join(__dirname, '../icons/icon.png'))
+    const iconPath = path.join(__dirname, '../icons/icon.png')
+    const icon = nativeImage.createFromPath(iconPath)
+    if (icon.isEmpty()) throw new Error(`tray icon unreadable: ${iconPath}`)
     tray = new Tray(icon.resize({ width: 24, height: 24 }))
     tray.setToolTip(baseTip)
     tray.setContextMenu(
@@ -522,19 +563,24 @@ function startup(): void {
     // hosts click events never arrive — the menu is the fallback there.
     tray.on('click', toggleMain)
   } catch (err) {
-    tray = undefined
-    crashLog.append('tray', err instanceof Error ? (err.stack ?? err.message) : String(err))
+    // A half-constructed tray (icon set, menu throw) must not survive as a
+    // truthy ghost — destroy it, and unset even if destroy itself throws.
+    try {
+      tray?.destroy()
+    } catch {
+      /* already unusable */
+    } finally {
+      tray = undefined
+    }
+    logFault('tray', err instanceof Error ? (err.stack ?? err.message) : err)
   }
 
-  // Application menu. On Windows, Menu.setApplicationMenu() makes Chromium
-  // round-trip EVERY keydown through the main-process accelerator matcher —
-  // the den-xterm typing lag fixed in #566. Null the menu on win32; the tray
-  // keeps Show / New Window / Quit and the renderer forwards window chords
-  // over rivetShell (rivethub-web lib/shell-keys.ts). Linux and macOS keep
-  // the accelerator-bearing menu (bar stays hidden off darwin).
-  if (process.platform === 'win32') {
-    Menu.setApplicationMenu(null)
-  } else {
+  // Application menu — accelerators for Linux/macOS (bar hidden off darwin).
+  // win32 nulled the menu at the top of startup(): menu accelerators put
+  // per-keystroke work on the main-process input path (#566); the tray keeps
+  // Show / New Window / Quit and the renderer forwards window chords over
+  // rivetShell (rivethub-web lib/shell-keys.ts).
+  if (process.platform !== 'win32') {
     const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
       const { action, submenu, ...rest } = item
       const out = rest as MenuItemConstructorOptions

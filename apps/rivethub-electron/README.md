@@ -19,7 +19,9 @@ and forwarded over `window.rivetShell`. Linux/macOS keep an
 accelerator-bearing menu with the bar hidden off macOS.
 
 Main-process faults, renderer crashes, and startup errors are appended to
-`<userData>/logs/main.log`.
+`<userData>/logs/main.log`. If the tray cannot be created (unreadable icon,
+no SNI host), the shell runs trayless: close-to-tray is disabled — closing
+the last window quits instead of hiding behind nothing.
 
 ## Build
 
