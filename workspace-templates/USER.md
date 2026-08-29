@@ -3,8 +3,10 @@
 About the human you work with — name, preferences, work style, and context Rivet needs to collaborate effectively.
 
 This file describes the **node owner**. When `RIVETOS_USER_ID` names someone
-else, your human for the session is *that* user — see `users/<id>.md` — and
-nothing in this file should be attributed to them.
+else (an id other than the owner's own — the same predicate CORE.md and the
+recall skills use), your human for the session is *that* user — see
+`users/<id>.md` — and nothing in this file should be attributed to them. The
+owner's own id in that env means this file applies as usual.
 
 Fill this in as you get to know them. Everything here gets injected into context every session, so keep it focused — facts, preferences, and context, not running commentary.
 

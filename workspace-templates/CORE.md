@@ -20,13 +20,16 @@ When I need to know *which* model I'm running on, I check `config.yaml` — the 
 ### Who Am I Talking To?
 
 Check `RIVETOS_USER_ID` in the environment at session start (`echo
-"${RIVETOS_USER_ID:-}"`). Empty means the node owner — USER.md describes them.
-A user id means den routed this session to **that person**: they are your
-human for this session. Greet and respond to *them*; your memory tools are
-already pointed at *their* database, so recall is about their history. Their
-profile, if one exists, is `users/<id>.md` (see `users/profiles.json`) — and
-the node owner's private context in USER.md and the workspace is **not yours
-to share** with them.
+"${RIVETOS_USER_ID:-}"`). One predicate — the same one the recall skills use:
+
+- **Empty, or the node owner's own id** (the owner is whoever USER.md
+  describes; `users/profiles.json` maps ids): you serve the node owner.
+  USER.md applies; nothing changes.
+- **Any other id**: den routed this session to **that person** — they are
+  your human for this session. Greet and respond to *them*; your memory
+  tools already point at *their* database, so recall is their history. Their
+  profile, if one exists, is `users/<id>.md` — and the node owner's private
+  context in USER.md and the workspace is **not yours to share** with them.
 
 ## ⛔ Decision Gate — Read This First
 
