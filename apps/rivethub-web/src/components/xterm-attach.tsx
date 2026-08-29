@@ -139,10 +139,33 @@ export function XtermAttach(props: {
     // holder, not a bare let: the async body reads it AFTER awaits, and TS
     // narrows a closed-over let to its initializer across those boundaries.
     const life = { disposed: false }
-    let ws: WebSocket | undefined
-    let dataSub: { dispose(): void } | undefined
+    // Filled once the async dial lands. Input/resize subscribe SYNCHRONOUSLY
+    // against this ref — the home path used to subscribe before any await,
+    // and a remote dial must not open a keystroke-dropping window beyond the
+    // pre-open drop both paths always had (readyState !== 1 → ignored).
+    const sockRef: { current: WebSocket | undefined } = { current: undefined }
     let resizeTimer: ReturnType<typeof setTimeout> | undefined
-    let resizeObserver: ResizeObserver | undefined
+
+    const dataSub = term.onData((data) => {
+      const sock = sockRef.current
+      if (!sock || sock.readyState !== 1) return
+      // Belt-and-suspenders: if a color report still fires (live query path),
+      // do not forward it as PTY input — harnesses treat it as typed text.
+      if (isOscColorReport(data)) return
+      sock.send(new TextEncoder().encode(data))
+    })
+    const resizeObserver = new ResizeObserver(() => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (life.disposed) return
+        fit.fit()
+        const sock = sockRef.current
+        if (sock && sock.readyState === 1)
+          sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+      }, 150)
+    })
+    resizeObserver.observe(host)
+
     void (async () => {
       let gateway
       try {
@@ -153,7 +176,7 @@ export function XtermAttach(props: {
       }
       if (life.disposed) return
       const sock = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
-      ws = sock
+      sockRef.current = sock
       sock.binaryType = 'arraybuffer'
 
       sock.onopen = () => {
@@ -185,37 +208,24 @@ export function XtermAttach(props: {
         // OSC rgb: replies that leak into the harness as fake keystrokes.
         term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
       }
-
-      dataSub = term.onData((data) => {
-        if (sock.readyState !== 1) return
-        // Belt-and-suspenders: if a color report still fires (live query path),
-        // do not forward it as PTY input — harnesses treat it as typed text.
-        if (isOscColorReport(data)) return
-        sock.send(new TextEncoder().encode(data))
-      })
-      resizeObserver = new ResizeObserver(() => {
-        if (resizeTimer) clearTimeout(resizeTimer)
-        resizeTimer = setTimeout(() => {
-          if (life.disposed) return
-          fit.fit()
-          if (sock.readyState === 1)
-            sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-        }, 150)
-      })
-      resizeObserver.observe(host)
     })()
 
     return () => {
       life.disposed = true
       if (resizeTimer) clearTimeout(resizeTimer)
-      resizeObserver?.disconnect()
+      resizeObserver.disconnect()
       try {
-        dataSub?.dispose()
+        dataSub.dispose()
       } catch {
         // terminal may already be disposed when the PTY itself changed
       }
-      ws?.close()
+      sockRef.current?.close()
     }
+    // transportEpoch on the remote path too: the epoch tracks the shell's
+    // mTLS pipe lifecycle, and gatewayFor(base) resolves THROUGH that pipe —
+    // when it dies/reappears, remote sockets are as stranded as home ones.
+    // A home-only reconnect costs a remote pane one reset+replay; a missed
+    // pipe swap costs it the session. Rebind.
   }, [props.ptyId, transportEpoch, props.base])
 
   return (

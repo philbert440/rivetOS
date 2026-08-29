@@ -28,7 +28,11 @@ import {
   type SessionMessage,
 } from '@rivetos/types'
 import { rekeyAgentLastSessions } from '../lib/agent-session.js'
-import { rekeySessionNodeBinding, sessionNodeFor } from '../lib/session-node.js'
+import {
+  clearSessionNodeBinding,
+  rekeySessionNodeBinding,
+  sessionNodeFor,
+} from '../lib/session-node.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { urlLabel, useNodeName } from '../lib/node-name.js'
 import {
@@ -38,6 +42,7 @@ import {
   wasSystemPromptSent,
 } from '../lib/system-prompt-sent.js'
 import { uuidv4 } from '../lib/uuid.js'
+import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { useChat, type LiveToolEntry, type OutboundItem } from '../stores/chat.js'
@@ -83,7 +88,13 @@ import { Archive, ArchiveRestore, Pencil, Square, Trash2 } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { discardDraft } from '../lib/discard-session.js'
-import { getSessionMode, setSessionMode, type SessionViewMode } from '../lib/session-mode.js'
+import {
+  getSessionMode,
+  hasSessionMode,
+  moveSessionMode,
+  setSessionMode,
+  type SessionViewMode,
+} from '../lib/session-mode.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
  *  allocates a new [] every run when the key is missing, which zustand treats
@@ -197,19 +208,28 @@ function persisted<T>(
  * site. Both stores are cleared, not just the name: a half-migrated key would
  * resurrect stale settings through `persisted()`'s fallback.
  */
-function migrateSessionKey(baseUrl: string, from: string, to: string): void {
+function migrateSessionKey(
+  currentBase: string,
+  rosterUrls: readonly string[],
+  from: string,
+  to: string,
+): void {
+  // Per-thread state is keyed on the SESSION's node, which for a cross-node
+  // thread is not the caller's node — resolve it BEFORE the binding rekeys.
+  const node = sessionNodeFor(from, currentBase, rosterUrls)
   const names = useSessionNames.getState()
-  const name = names.byKey[storageKey(baseUrl, from)]
-  if (name !== undefined && names.byKey[storageKey(baseUrl, to)] === undefined) {
-    names.set(storageKey(baseUrl, to), name)
+  const name = names.byKey[storageKey(node, from)]
+  if (name !== undefined && names.byKey[storageKey(node, to)] === undefined) {
+    names.set(storageKey(node, to), name)
   }
-  names.set(storageKey(baseUrl, from), '') // empty clears the override
+  names.set(storageKey(node, from), '') // empty clears the override
   const settings = useChatSettings.getState()
-  const prior = settings.byKey[storageKey(baseUrl, from)]
-  if (prior !== undefined && settings.byKey[storageKey(baseUrl, to)] === undefined) {
-    settings.set(storageKey(baseUrl, to), prior)
+  const prior = settings.byKey[storageKey(node, from)]
+  if (prior !== undefined && settings.byKey[storageKey(node, to)] === undefined) {
+    settings.set(storageKey(node, to), prior)
   }
-  settings.clear(storageKey(baseUrl, from))
+  settings.clear(storageKey(node, from))
+  moveSessionMode(storageKey(node, from), storageKey(node, to))
   rekeyAgentLastSessions(from, to)
   rekeySessionNodeBinding(from, to)
   rekeySystemPromptSent(from, to)
@@ -217,6 +237,8 @@ function migrateSessionKey(baseUrl: string, from: string, to: string): void {
 
 export function ChatPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
+  const pageRoster = useConnection((s) => s.roster)
+  const pageRosterUrls = useMemo(() => pageRoster.map((r) => r.baseUrl), [pageRoster])
   // Desktop mTLS (#491): bumps when the gateway swaps onto the loopback
   // identity pipe with baseUrl unchanged — without it in the deps this
   // socket would stay on the pre-pipe gateway (which cannot authenticate)
@@ -305,7 +327,7 @@ export function ChatPage(): JSX.Element {
       // no drawer row renders.
       const previous = event.type === 'session-updated' ? event.previousSessionId : undefined
       for (const from of useChat.getState().adoptSessionKey(event.sessionId, previous)) {
-        migrateSessionKey(baseUrl, from, event.sessionId)
+        migrateSessionKey(baseUrl, pageRosterUrls, from, event.sessionId)
       }
       queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
         applyRegistryEventToPlaneSessions(prev, event),
@@ -377,8 +399,10 @@ export function ChatPage(): JSX.Element {
     if (active === undefined || activeKey === undefined || activeKey === active) return
     // Only migrate persisted state when the records actually moved — see
     // `migrateSessionKey`.
-    if (useChat.getState().rekey(active, activeKey)) migrateSessionKey(baseUrl, active, activeKey)
-  }, [active, activeKey, baseUrl])
+    if (useChat.getState().rekey(active, activeKey)) {
+      migrateSessionKey(baseUrl, pageRosterUrls, active, activeKey)
+    }
+  }, [active, activeKey, baseUrl, pageRosterUrls])
 
   // Resizable drawer: cut-off titles are the drawer's whole job, so the user
   // decides how much room they get. Persisted; double-click resets.
@@ -734,10 +758,21 @@ function ActiveSession(props: {
   // node falls back to the current one. Resolved per mount (the component is
   // keyed by session id) and re-checked when the global node changes under it.
   const rosterUrls = useMemo(() => roster.map((r) => r.baseUrl), [roster])
-  const sessionBase = useMemo(
-    () => sessionNodeFor(props.sessionId, baseUrl, rosterUrls),
-    [props.sessionId, baseUrl, rosterUrls],
-  )
+  // FROZEN per mount: every call site below must agree on home-vs-remote for
+  // the life of this view, so re-resolution may only move the base to a
+  // DIFFERENT roster-valid node (a pointer legitimately retargeted). A
+  // resolution that falls back to the current node — roster drop, binding
+  // eviction, a global node switch under an open thread — is rejected: the
+  // thread keeps the node it was opened against rather than silently
+  // retargeting attach/inject/uploads at whatever the app is pointed at.
+  const frozenBaseRef = useRef<string | undefined>(undefined)
+  const sessionBase = useMemo(() => {
+    const resolved = sessionNodeFor(props.sessionId, baseUrl, rosterUrls)
+    const prev = frozenBaseRef.current
+    const next = prev === undefined || (resolved !== prev && resolved !== baseUrl) ? resolved : prev
+    frozenBaseRef.current = next
+    return next
+  }, [props.sessionId, baseUrl, rosterUrls])
   const isRemote = sessionBase !== baseUrl
   const remoteNodeName = useNodeName(sessionBase)
   // The session's gateway: the shared global client on the home path (it
@@ -764,11 +799,20 @@ function ActiveSession(props: {
     retry: 1,
   })
   const remoteRegistry = useQuery({
-    queryKey: ['harnesses', sessionBase],
+    queryKey: ['harnesses', sessionBase, epochForNode],
     queryFn: async ({ signal }) => (await gatewayFor(sessionBase)).harnesses(signal),
     enabled: isRemote,
     staleTime: 300_000,
   })
+  // A definitive 404 means the thread's session is gone on its node: drop
+  // the binding so the NEXT open resolves home, keep THIS mount's base frozen
+  // (no mid-view client flip), and fail writes closed with a banner instead
+  // of letting inject/spawn dial a session that no longer exists.
+  const remoteDead =
+    isRemote && remoteSummary.error instanceof GatewayError && remoteSummary.error.status === 404
+  useEffect(() => {
+    if (remoteDead) clearSessionNodeBinding(props.sessionId)
+  }, [remoteDead, props.sessionId])
   const remoteItem = useMemo(
     () => (isRemote && remoteSummary.data ? chatItemFromSummary(remoteSummary.data) : undefined),
     [isRemote, remoteSummary.data],
@@ -799,6 +843,15 @@ function ActiveSession(props: {
     setModeState(m)
     setSessionMode(storageKey(sessionBase, props.sessionId), m)
   }
+  // A cross-node row's kind arrives with the remote summary — after mount.
+  // A TUI-only (legacy) row must still land in terminal, unless the user
+  // ever chose a view for this thread.
+  const itemKind = item?.kind
+  useEffect(() => {
+    if (itemKind !== 'legacy') return
+    if (hasSessionMode(storageKey(sessionBase, props.sessionId))) return
+    setModeState('terminal')
+  }, [itemKind, sessionBase, props.sessionId])
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
@@ -925,7 +978,7 @@ function ActiveSession(props: {
   // API agent / node without a harness file). seed() MERGES so live WS frames
   // that raced in are kept.
   const backfill = useQuery({
-    queryKey: ['session-messages', sessionBase, props.sessionId, wsEpoch],
+    queryKey: ['session-messages', sessionBase, props.sessionId, wsEpoch, epochForNode],
     queryFn: async ({ signal }) =>
       (await sessionGateway()).sessionMessages(props.sessionId, signal),
     enabled: storeEmpty,
@@ -941,7 +994,7 @@ function ActiveSession(props: {
   // memory conversation. Same enable gate as ring.
   const ringEmpty = backfill.isSuccess && backfill.data.messages.length === 0
   const coldBackfill = useQuery({
-    queryKey: ['conv-messages', sessionBase, props.sessionId, wsEpoch],
+    queryKey: ['conv-messages', sessionBase, props.sessionId, wsEpoch, epochForNode],
     queryFn: async ({ signal }) =>
       (await sessionGateway()).conversationMessages(props.sessionId, signal),
     enabled: storeEmpty && ringEmpty,
@@ -1028,7 +1081,7 @@ function ActiveSession(props: {
   const spawnGate = useRef<'idle' | 'inflight' | 'failed'>('idle')
   const [spawnNonce, setSpawnNonce] = useState(0)
   useEffect(() => {
-    if (mode !== 'terminal' || termPtyId) return
+    if (mode !== 'terminal' || termPtyId || remoteDead) return
     if (spawnGate.current !== 'idle') return
     spawnGate.current = 'inflight'
     setTermError(undefined) // a stale error must not mask this attempt
@@ -1108,6 +1161,9 @@ function ActiveSession(props: {
   }
 
   const injectOne = async (text: string, interrupt = false): Promise<void> => {
+    if (remoteDead) {
+      throw new Error(`this thread's session no longer exists on ${urlLabel(sessionBase)}`)
+    }
     const gw = await sessionGateway()
     const prompt = peekSystemPrompt()
     if (canonicalId) {
@@ -1357,6 +1413,12 @@ function ActiveSession(props: {
               send when Rivet finishes the current turn (or use inject on the bubble)
             </div>
           )}
+          {remoteDead && (
+            <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-red">
+              this conversation's session no longer exists on{' '}
+              {remoteNodeName ?? urlLabel(sessionBase)} — history stays readable; sends are disabled
+            </div>
+          )}
           {streamError && (
             <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-red">
               harness stream: {streamError}
@@ -1392,6 +1454,19 @@ function ActiveSession(props: {
             title="den"
             className="min-h-0 flex-1 border-0 bg-bg"
           />
+        ) : remoteDial.isError ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-1">
+            <span className="font-mono text-sm text-red">
+              can't reach {remoteNodeName ?? urlLabel(sessionBase)}:{' '}
+              {remoteDial.error instanceof Error ? remoteDial.error.message : 'transport error'}
+            </span>
+            <button
+              onClick={() => void remoteDial.refetch()}
+              className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
+            >
+              retry
+            </button>
+          </div>
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
             reaching {remoteNodeName ?? urlLabel(sessionBase)}…
