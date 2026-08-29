@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   aggregateAgentActivity,
+  pointersToPoll,
   sessionPointerMatches,
   uniqueRosterNodes,
 } from './agent-roster.js'
@@ -71,5 +72,44 @@ describe('aggregateAgentActivity', () => {
         { nodeBaseUrl: A, status: undefined },
       ]),
     ).toEqual({ level: 'none' })
+  })
+
+  it('prefers the current node when several sessions share the winning level', () => {
+    const both = [
+      { nodeBaseUrl: A, status: 'active' },
+      { nodeBaseUrl: B, status: 'active' },
+    ]
+    expect(aggregateAgentActivity(both, B)).toEqual({ level: 'active', nodeBaseUrl: B })
+    expect(aggregateAgentActivity(both, A)).toEqual({ level: 'active', nodeBaseUrl: A })
+    // No current node supplied (or not among matches): first entry wins.
+    expect(aggregateAgentActivity(both)).toEqual({ level: 'active', nodeBaseUrl: A })
+    expect(
+      aggregateAgentActivity(
+        [
+          { nodeBaseUrl: A, status: 'idle' },
+          { nodeBaseUrl: B, status: 'idle' },
+        ],
+        B,
+      ),
+    ).toEqual({ level: 'idle', nodeBaseUrl: B })
+  })
+})
+
+describe('pointersToPoll', () => {
+  const A = 'https://192.0.2.10:5174'
+  const B = 'https://192.0.2.11:5174'
+  const C = 'https://192.0.2.12:5174'
+  const p = (nodeBaseUrl: string): { nodeBaseUrl: string } => ({ nodeBaseUrl })
+
+  it('puts the current node first and caps the total', () => {
+    expect(pointersToPoll([p(B), p(C), p(A)], A, 2)).toEqual([p(A), p(B)])
+  })
+
+  it('keeps recency order when the current node holds no pointer', () => {
+    expect(pointersToPoll([p(B), p(C)], A, 2)).toEqual([p(B), p(C)])
+  })
+
+  it('always polls at least one pointer even with a degenerate limit', () => {
+    expect(pointersToPoll([p(B), p(A)], A, 0)).toEqual([p(A)])
   })
 })

@@ -35,15 +35,34 @@ export type AgentActivity = { level: 'active' | 'idle'; nodeBaseUrl: string } | 
 /**
  * Collapse per-node session statuses into one row indicator. Any `active`
  * session wins over `idle`; `ended`/`error`/unknown count as nothing
- * running. The winning node rides along so the pip can name where the
- * session lives — a non-current node is Phil's "remote session active" case.
+ * running. Among equals the CURRENT node wins the naming rights — a pip
+ * must not read "active on remote" while this node is active too. The
+ * winning node rides along so the tooltip can say where the session lives.
  */
 export function aggregateAgentActivity(
   statuses: Array<{ nodeBaseUrl: string; status?: string }>,
+  currentBaseUrl?: string,
 ): AgentActivity {
-  const active = statuses.find((s) => s.status === 'active')
-  if (active) return { level: 'active', nodeBaseUrl: active.nodeBaseUrl }
-  const idle = statuses.find((s) => s.status === 'idle')
-  if (idle) return { level: 'idle', nodeBaseUrl: idle.nodeBaseUrl }
-  return { level: 'none' }
+  const pick = (level: 'active' | 'idle'): AgentActivity | undefined => {
+    const matches = statuses.filter((s) => s.status === level)
+    if (matches.length === 0) return undefined
+    const current = currentBaseUrl && matches.find((s) => s.nodeBaseUrl === currentBaseUrl)
+    return { level, nodeBaseUrl: (current || matches[0]).nodeBaseUrl }
+  }
+  return pick('active') ?? pick('idle') ?? { level: 'none' }
+}
+
+/**
+ * Bound the status-poll fan-out: the current node's pointer always polls,
+ * the rest keep their recency order, capped at `limit` total. Zombie
+ * pointers past the cap age out entirely instead of polling forever.
+ */
+export function pointersToPoll<T extends { nodeBaseUrl: string }>(
+  pointers: T[],
+  currentBaseUrl: string,
+  limit: number,
+): T[] {
+  const current = pointers.filter((p) => p.nodeBaseUrl === currentBaseUrl)
+  const rest = pointers.filter((p) => p.nodeBaseUrl !== currentBaseUrl)
+  return [...current, ...rest].slice(0, Math.max(1, limit))
 }

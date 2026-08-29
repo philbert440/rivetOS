@@ -24,13 +24,16 @@ import { modelOptions } from '../lib/model-options.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { uuidv4 } from '../lib/uuid.js'
 import {
+  agentForSession,
   clearAgentLastSession,
+  clearAgentSessionPointer,
   getAgentLastSession,
   listAgentSessions,
   setAgentLastSession,
 } from '../lib/agent-session.js'
 import {
   aggregateAgentActivity,
+  pointersToPoll,
   sessionPointerMatches,
   uniqueRosterNodes,
   type NodeChoice,
@@ -42,6 +45,22 @@ import { useChatSettings } from '../stores/chat-settings.js'
 type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
 
 const lastGoodAgentsByNode = new Map<string, AgentPreset[]>()
+
+/** Nodes polled per row: the current node + the most recent others. */
+const POLL_POINTER_LIMIT = 4
+
+/** How long row invalidations coalesce after a burst of harness events. */
+const STATUS_INVALIDATE_DEBOUNCE_MS = 1_000
+
+/** A session the chat store still holds (draft/messages/transcript) — a
+ *  control-plane 404 for one of these is not definitive (an unclaimed
+ *  draft 404s until its first turn). */
+function knownToChatStore(sessionId: string): boolean {
+  const chat = useChat.getState()
+  if (chat.drafts.includes(sessionId)) return true
+  if ((chat.messages[sessionId] ?? []).length > 0) return true
+  return (chat.transcripts[sessionId]?.turns.length ?? 0) > 0
+}
 
 const EFFORT_OPTIONS: { value: ThinkingLevel; label: string }[] = [
   { value: 'off', label: 'Off' },
@@ -316,45 +335,65 @@ interface AgentRowProps {
 }
 
 function AgentRow({ agent, onOpen, onStartOver, onEdit, onDelete }: AgentRowProps): JSX.Element {
-  const nodeName = useNodeName(agent.nodeBaseUrl)
+  const baseUrl = useConnection((s) => s.baseUrl)
   const transportEpoch = useConnection((s) => s.transportEpoch)
-  // Session status for every node holding a pointer for this agent. Pointers
-  // are read inside the queryFn so a fresh open is picked up on invalidation.
+  // Session status for the nodes holding a pointer for this agent, bounded
+  // to the current node + most recent others. Pointers are read inside the
+  // queryFn so a fresh open is picked up on invalidation; a definitive 404
+  // prunes its pointer so zombies age out of the poll instead of riding the
+  // 60s interval forever.
   const { data: statuses } = useQuery({
     queryKey: ['agent-session-status', agent.id, transportEpoch],
     queryFn: async ({ signal }) => {
-      const pointers = listAgentSessions(agent.id)
-      return Promise.all(
+      const currentUrl = useConnection.getState().baseUrl
+      const pointers = pointersToPoll(listAgentSessions(agent.id), currentUrl, POLL_POINTER_LIMIT)
+      const rows = await Promise.all(
         pointers.map(async (p) => {
           try {
             const res = await (
               await gatewayFor(p.nodeBaseUrl)
             ).getHarnessSession(p.sessionId, signal)
             return { nodeBaseUrl: p.nodeBaseUrl, status: res.status }
-          } catch {
+          } catch (err) {
+            // An aborted poll must not commit "no session" into the cache.
+            if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+              throw err
+            }
+            // 404 is definitive — unless the chat store still holds the
+            // thread (an unclaimed draft 404s until its first turn).
+            if (err instanceof GatewayError && err.status === 404) {
+              if (!knownToChatStore(p.sessionId)) {
+                clearAgentSessionPointer(agent.id, p.nodeBaseUrl)
+                return null
+              }
+            }
             return { nodeBaseUrl: p.nodeBaseUrl, status: undefined }
           }
         }),
       )
+      return rows.filter((r) => r !== null)
     },
     staleTime: 30_000,
     refetchInterval: 60_000,
     retry: 0,
   })
-  const activity = aggregateAgentActivity(statuses ?? [])
+  const activity = aggregateAgentActivity(statuses ?? [], baseUrl)
   const activityNodeUrl = activity.level === 'none' ? '' : activity.nodeBaseUrl
   const activityNodeName = useNodeName(activityNodeUrl)
+  // A pip on a remote node must not imply click follows it there.
   const activityLabel =
     activity.level === 'none'
       ? undefined
-      : `${activity.level} on ${activityNodeName ?? urlLabel(activity.nodeBaseUrl)}`
+      : activity.nodeBaseUrl === baseUrl
+        ? `${activity.level} here`
+        : `${activity.level} on ${activityNodeName ?? urlLabel(activity.nodeBaseUrl)} — click opens here`
 
   return (
     <div className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2">
       <button
         onClick={onOpen}
         className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        title={`${agent.name} on ${nodeName ?? agent.nodeBaseUrl}`}
+        title={`${agent.name} — opens on this node`}
       >
         {agent.color && (
           <span
@@ -512,20 +551,47 @@ export function AgentsSection(): JSX.Element {
     resetUpdate()
   }, [resetUpdate])
 
-  // Live active↔idle transitions on the current node refresh the row pips
-  // between polls; remote nodes are covered by the polls alone. Only while
-  // the section is expanded — collapsed rows render nothing to update.
+  // Live transitions on the current node refresh row pips between polls;
+  // remote nodes are covered by the polls alone. Only sessions with a bind
+  // key (session → agent) matter; invalidations are per-agent and debounced
+  // so a chatty harness cannot refetch-storm the remote fan-out. The event
+  // union has no dedicated delete frame — ended/error arrive as
+  // session-updated transitions, and a vanished session 404-prunes on its
+  // next poll. Subscribed only while the section is expanded — collapsed
+  // rows render nothing to update.
   useEffect(() => {
     if (collapsed) return
-    const state: { disposed: boolean; sub?: { close(): void } } = { disposed: false }
+    const state: {
+      disposed: boolean
+      sub?: { close(): void }
+      pending: Set<string>
+      timer?: ReturnType<typeof setTimeout>
+    } = { disposed: false, pending: new Set() }
+    const scheduleInvalidate = (agentId: string): void => {
+      state.pending.add(agentId)
+      state.timer ??= setTimeout(() => {
+        state.timer = undefined
+        const ids = [...state.pending]
+        state.pending.clear()
+        for (const id of ids) {
+          void queryClient.invalidateQueries({ queryKey: ['agent-session-status', id] })
+        }
+      }, STATUS_INVALIDATE_DEBOUNCE_MS)
+    }
     void (async () => {
       try {
         const gw = await gatewayFor(baseUrl)
         if (state.disposed) return
         state.sub = gw.watchHarnesses((event) => {
-          if (event.type === 'session-created' || event.type === 'session-updated') {
-            void queryClient.invalidateQueries({ queryKey: ['agent-session-status'] })
-          }
+          if (event.type !== 'session-created' && event.type !== 'session-updated') return
+          // On native-id rotation the bind key may still sit under the
+          // previous id — check it before giving up.
+          const agentId =
+            agentForSession(event.sessionId) ??
+            (event.type === 'session-updated' && event.previousSessionId
+              ? agentForSession(event.previousSessionId)
+              : undefined)
+          if (agentId) scheduleInvalidate(agentId)
         })
       } catch {
         /* node unreachable — polls still cover status */
@@ -533,25 +599,29 @@ export function AgentsSection(): JSX.Element {
     })()
     return () => {
       state.disposed = true
+      if (state.timer) clearTimeout(state.timer)
       state.sub?.close()
     }
   }, [collapsed, baseUrl, transportEpoch, queryClient])
 
-  const applyAgentSettings = (sessionId: string, agent: AgentPreset): void => {
-    chatSettings.set(`${baseUrl}::${sessionId}`, {
+  const applyAgentSettings = (sessionId: string, agent: AgentPreset, nodeUrl: string): void => {
+    chatSettings.set(`${nodeUrl}::${sessionId}`, {
       agent: agent.model || '',
       effort: agent.effort,
       systemPrompt: agent.systemPrompt || '',
     })
-    setAgentLastSession(agent.id, sessionId, baseUrl)
+    setAgentLastSession(agent.id, sessionId, nodeUrl)
   }
 
   // Sessions always open on the node the user is connected to — opening an
   // agent must never repoint the whole app (the old ensureNode/switchTo flow
   // persisted a global node switch as a side effect of a sidebar click).
+  // baseUrl is read from the store at call time, not render time — a node
+  // switch mid-flight must not write settings under the old node's key.
   const openFresh = (agent: AgentPreset): void => {
+    const nodeUrl = useConnection.getState().baseUrl
     const sessionId = uuidv4()
-    applyAgentSettings(sessionId, agent)
+    applyAgentSettings(sessionId, agent, nodeUrl)
     addDraft(sessionId)
     setActive(sessionId)
     void navigate({ to: '/', search: { session: sessionId } })
@@ -568,12 +638,9 @@ export function AgentsSection(): JSX.Element {
   // only a definitive miss (control plane 404 AND absent from the on-disk
   // store scan) answers false; transient errors keep the pointer.
   const sessionLikelyExists = async (sessionId: string): Promise<boolean> => {
-    const chat = useChat.getState()
-    if (chat.drafts.includes(sessionId)) return true
-    if ((chat.messages[sessionId] ?? []).length > 0) return true
-    if ((chat.transcripts[sessionId]?.turns.length ?? 0) > 0) return true
+    if (knownToChatStore(sessionId)) return true
     try {
-      const gw = await gatewayFor(baseUrl)
+      const gw = await gatewayFor(useConnection.getState().baseUrl)
       try {
         await gw.getHarnessSession(sessionId)
         return true
@@ -587,12 +654,32 @@ export function AgentsSection(): JSX.Element {
     }
   }
 
+  // One generation per click/start-over: a stale completion (double-click,
+  // start-over racing a slow liveness probe, node switched mid-await) must
+  // not navigate or mint a second draft.
+  const openGen = useRef(0)
+
   const handleOpen = (agent: RosterAgent): void => {
+    const gen = ++openGen.current
     void (async () => {
-      const last = getAgentLastSession(agent.id, baseUrl)
-      if (last && (await sessionLikelyExists(last.sessionId))) openKept(last.sessionId)
+      const last = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
+      if (!last) {
+        openFresh(agent)
+        return
+      }
+      const alive = await sessionLikelyExists(last.sessionId)
+      if (gen !== openGen.current) return
+      // Re-read after the await — start-over or a node switch may have
+      // retargeted the pointer while the probe was in flight.
+      const fresh = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
+      if (fresh && (fresh.sessionId !== last.sessionId || alive)) openKept(fresh.sessionId)
       else openFresh(agent)
     })()
+  }
+
+  const handleStartOver = (agent: RosterAgent): void => {
+    openGen.current++
+    openFresh(agent)
   }
 
   return (
@@ -638,7 +725,7 @@ export function AgentsSection(): JSX.Element {
               key={agent.id}
               agent={agent}
               onOpen={() => handleOpen(agent)}
-              onStartOver={() => openFresh(agent)}
+              onStartOver={() => handleStartOver(agent)}
               onEdit={() => {
                 setCreating(false)
                 setEditing(agent)

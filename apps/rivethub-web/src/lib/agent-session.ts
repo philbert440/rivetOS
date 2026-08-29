@@ -2,10 +2,11 @@
  * Last-opened session per (agent preset, node) — powers keep-by-default
  * open on the current node and the cross-node activity indicator.
  *
- * Storage shape: `{ [agentId]: { [nodeBaseUrl]: { sessionId } } }` under
- * one key, plus a reverse bind key per session (`rivethub.agent.<sessionId>`
- * → agentId) for session→agent lookups. The pre-multi-node shape
- * (`{ [agentId]: { sessionId, nodeBaseUrl } }`) is normalized on read.
+ * Storage shape: `{ [agentId]: { [nodeBaseUrl]: { sessionId, updatedAt } } }`
+ * under one key, plus a reverse bind key per session
+ * (`rivethub.agent.<sessionId>` → agentId) for session→agent lookups.
+ * The pre-multi-node shape (`{ [agentId]: { sessionId, nodeBaseUrl } }`) is
+ * migrated on read and persisted immediately so the parse cost is paid once.
  * Stored separately from chat settings so a thread rekey (bare uuid →
  * canonical SessionId) can retarget pointers without walking the settings
  * map.
@@ -19,7 +20,8 @@ export interface AgentSessionPointer {
   nodeBaseUrl: string
 }
 
-type NodeMap = Record<string, { sessionId: string } | undefined>
+type NodeEntry = { sessionId: string; updatedAt?: number }
+type NodeMap = Record<string, NodeEntry | undefined>
 type LastMap = Record<string, NodeMap | undefined>
 
 /** The single-pointer row written before per-node keying. Its `sessionId` is
@@ -37,19 +39,31 @@ function readMap(): LastMap {
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
     const out: LastMap = {}
+    let migrated = false
     for (const [agentId, row] of Object.entries(parsed as Record<string, unknown>)) {
       if (isLegacyRow(row)) {
         if (row.sessionId) out[agentId] = { [row.nodeBaseUrl]: { sessionId: row.sessionId } }
+        migrated = true
         continue
       }
       if (!row || typeof row !== 'object' || Array.isArray(row)) continue
       const nodes: NodeMap = {}
       for (const [node, entry] of Object.entries(row as Record<string, unknown>)) {
-        const sid = (entry as { sessionId?: unknown } | null)?.sessionId
-        if (typeof sid === 'string' && sid !== '') nodes[node] = { sessionId: sid }
+        const e = entry as { sessionId?: unknown; updatedAt?: unknown } | null
+        if (typeof e?.sessionId === 'string' && e.sessionId !== '') {
+          nodes[node] = {
+            sessionId: e.sessionId,
+            ...(typeof e.updatedAt === 'number' ? { updatedAt: e.updatedAt } : {}),
+          }
+        }
       }
       if (Object.keys(nodes).length > 0) out[agentId] = nodes
     }
+    // Persist a fired migration right away (same key, new shape) so every
+    // later read parses the per-node shape directly. Tabs old enough to
+    // expect the legacy shape go blind on the first NEW write regardless,
+    // so rewriting here costs nothing extra.
+    if (migrated) writeMap(out)
     return out
   } catch {
     return {}
@@ -83,13 +97,25 @@ export function getAgentLastSession(
   return { sessionId: entry.sessionId, nodeBaseUrl }
 }
 
-/** Every node's pointer for one agent — feeds the activity indicator. */
+/** Every node's pointer for one agent, most recently written first — feeds
+ *  the activity indicator (callers bound the poll fan-out, see
+ *  `pointersToPoll`). */
 export function listAgentSessions(agentId: string): AgentSessionPointer[] {
   const nodes = readMap()[agentId]
   if (!nodes) return []
   return Object.entries(nodes)
-    .filter((pair): pair is [string, { sessionId: string }] => Boolean(pair[1]?.sessionId))
+    .filter((pair): pair is [string, NodeEntry] => Boolean(pair[1]?.sessionId))
+    .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
     .map(([nodeBaseUrl, entry]) => ({ sessionId: entry.sessionId, nodeBaseUrl }))
+}
+
+/** The agent bound to a session id, via the reverse bind key. */
+export function agentForSession(sessionId: string): string | undefined {
+  try {
+    return localStorage.getItem(`${BIND_PREFIX}${sessionId}`) ?? undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function setAgentLastSession(agentId: string, sessionId: string, nodeBaseUrl: string): void {
@@ -97,7 +123,7 @@ export function setAgentLastSession(agentId: string, sessionId: string, nodeBase
   const nodes: NodeMap = map[agentId] ?? {}
   const prev = nodes[nodeBaseUrl]
   if (prev?.sessionId && prev.sessionId !== sessionId) dropBind(prev.sessionId)
-  nodes[nodeBaseUrl] = { sessionId }
+  nodes[nodeBaseUrl] = { sessionId, updatedAt: Date.now() }
   map[agentId] = nodes
   writeMap(map)
   try {
@@ -105,6 +131,23 @@ export function setAgentLastSession(agentId: string, sessionId: string, nodeBase
   } catch {
     /* storage full / disabled */
   }
+}
+
+/** Drop ONE node's pointer (definitive 404 prune) with its bind key. */
+export function clearAgentSessionPointer(agentId: string, nodeBaseUrl: string): void {
+  const map = readMap()
+  const nodes = map[agentId]
+  const prev = nodes?.[nodeBaseUrl]
+  if (!nodes || !prev) return
+  const { [nodeBaseUrl]: _dropped, ...rest } = nodes
+  if (Object.keys(rest).length > 0) {
+    map[agentId] = rest
+    writeMap(map)
+  } else {
+    const { [agentId]: _gone, ...others } = map
+    writeMap(others)
+  }
+  dropBind(prev.sessionId)
 }
 
 /** Drop every node's pointer and bind key for one agent (agent delete). */
@@ -123,7 +166,7 @@ export function rekeyAgentLastSessions(fromSessionId: string, toSessionId: strin
   for (const nodes of Object.values(map)) {
     for (const [node, entry] of Object.entries(nodes ?? {})) {
       if (nodes && entry?.sessionId === fromSessionId) {
-        nodes[node] = { sessionId: toSessionId }
+        nodes[node] = { ...entry, sessionId: toSessionId }
         changed = true
       }
     }
