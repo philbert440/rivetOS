@@ -558,37 +558,41 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
 
 
   it('control plane: listing hides sessions owned by the other user', async () => {
-    // phil (loopback owner) and coco each start one; a legacy row predates
-    // ownership entirely
     const philStart = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
       ca: pki.ca,
-    }, { nativeSessionId: 'phil-cp' })
+    }, { nativeSessionId: 'list-phil' })
     expect(philStart.status).toBe(201)
     const cocoStart = await call('POST', `${remote}/api/harnesses/claude-code/sessions`, coco, {
-      nativeSessionId: 'coco-cp',
+      nativeSessionId: 'list-coco',
     })
     expect(cocoStart.status).toBe(201)
-    cpDriver.add('claude-code:legacy-cp' as SessionId)
+    cpDriver.add('claude-code:list-legacy' as SessionId)
 
     const cocoList = await call('GET', `${remote}/api/harnesses/claude-code/sessions`, coco)
     const cocoIds = (JSON.parse(cocoList.body) as { sessions: { sessionId: string }[] }).sessions
       .map((x) => x.sessionId)
-    expect(cocoIds).toContain('claude-code:coco-cp')
-    expect(cocoIds).not.toContain('claude-code:phil-cp')
+    expect(cocoIds).toContain('claude-code:list-coco')
+    expect(cocoIds).not.toContain('claude-code:list-phil')
+    // unowned rows are invisible to a routed user…
+    expect(cocoIds).not.toContain('claude-code:list-legacy')
 
     const philList = await call('GET', `${loopback}/api/harnesses/claude-code/sessions`, {
       ca: pki.ca,
     })
     const philIds = (JSON.parse(philList.body) as { sessions: { sessionId: string }[] }).sessions
       .map((x) => x.sessionId)
-    expect(philIds).toContain('claude-code:phil-cp')
-    expect(philIds).not.toContain('claude-code:coco-cp')
-    // unowned legacy falls to the node owner
-    expect(philIds).toContain('claude-code:legacy-cp')
+    expect(philIds).toContain('claude-code:list-phil')
+    expect(philIds).not.toContain('claude-code:list-coco')
+    // …and fall to the node owner
+    expect(philIds).toContain('claude-code:list-legacy')
   })
 
-  it("control plane: get/transcript/turns refuse another user's session", async () => {
-    const philEnc = encodeSessionIdSegment('claude-code:phil-cp')
+  it("control plane: get/transcript/turns/interrupt refuse another user's session", async () => {
+    const start = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
+      ca: pki.ca,
+    }, { nativeSessionId: 'fence-phil' })
+    expect(start.status).toBe(201)
+    const philEnc = encodeSessionIdSegment('claude-code:fence-phil')
     expect((await call('GET', `${remote}/api/harness-sessions/${philEnc}`, coco)).status).toBe(403)
     expect(
       (await call('GET', `${remote}/api/harness-sessions/${philEnc}/transcript`, coco)).status,
@@ -598,10 +602,27 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
         text: 'hi',
       })).status,
     ).toBe(403)
+    expect(
+      (await call('POST', `${remote}/api/harness-sessions/${philEnc}/interrupt`, coco)).status,
+    ).toBe(403)
+  })
+
+  it('control plane: starting over an existing foreign native id is refused', async () => {
+    const first = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
+      ca: pki.ca,
+    }, { nativeSessionId: 'start-steal' })
+    expect(first.status).toBe(201)
+    // the fake driver get-or-creates on native id: without the claim check
+    // this 201'd the owner's summary to coco
+    const steal = await call('POST', `${remote}/api/harnesses/claude-code/sessions`, coco, {
+      nativeSessionId: 'start-steal',
+    })
+    expect(steal.status).toBe(403)
   })
 
   it('control plane: resume claims an unowned session for the resumer, then fences it', async () => {
-    const legacyEnc = encodeSessionIdSegment('claude-code:legacy-cp')
+    cpDriver.add('claude-code:claim-legacy' as SessionId)
+    const legacyEnc = encodeSessionIdSegment('claude-code:claim-legacy')
     // coco resumes the pre-fence legacy row — allowed, and claims it
     expect(
       (await call('POST', `${remote}/api/harness-sessions/${legacyEnc}/resume`, coco)).status,
