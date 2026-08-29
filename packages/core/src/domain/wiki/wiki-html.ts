@@ -27,7 +27,7 @@ import type { ServerResponse } from 'node:http'
 import { HISTORY_MAX, parseWikiPage, SOURCES_MAX } from '@rivetos/wiki-core'
 import type { GatewayRoute } from '@rivetos/types'
 import { logger } from '../../logger.js'
-import type { WikiIndexLike } from './wiki-api.js'
+import { resolveWikiSurface, type WikiIndexLike } from './wiki-api.js'
 
 const log = logger('WikiHtml')
 
@@ -42,6 +42,10 @@ export interface WikiHtmlOptions {
   wikiDir?: string
   /** Shown in the sidebar footer, e.g. the node name. */
   nodeName?: string
+  /** Per-user wiki for a den-stamped `x-rivetos-user` — same trust model as
+   *  /api/wiki: null means unknown/tombstoned and the request is refused,
+   *  never served the owner's wiki. */
+  forUser?: (userId: string) => { index: WikiIndexLike; wikiDir: string } | null
 }
 
 const SLUG_RE = /^[a-z0-9-]{1,80}$/
@@ -50,18 +54,21 @@ type Topic = Awaited<ReturnType<WikiIndexLike['listTopics']>>['topics'][number]
 type Gaps = Awaited<ReturnType<WikiIndexLike['gaps']>>
 
 export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
-  const wikiDir = opts.wikiDir ?? '/rivet-shared/wiki'
+  const ownerDir = opts.wikiDir ?? '/rivet-shared/wiki'
 
   // Topic-set cache (#294): one listTopics per 30s window instead of per
   // request — redlink checks and the sidebar count tolerate 30s staleness
   // (the extractor writes minutes apart). 2000 covers wiki scale for years;
-  // the cap only affects redlink coloring, never article serving.
-  let cache: { topics: Topic[]; total: number; at: number } | undefined
-  const topicSet = async (): Promise<{ topics: Topic[]; total: number }> => {
-    if (cache && Date.now() - cache.at < 30_000) return cache
-    const { topics, total } = await opts.index.listTopics({ limit: 2000 })
-    cache = { topics, total, at: Date.now() }
-    return cache
+  // the cap only affects redlink coloring, never article serving. Keyed per
+  // index so routed users never see (or warm) the owner's topic set.
+  const caches = new WeakMap<WikiIndexLike, { topics: Topic[]; total: number; at: number }>()
+  const topicSet = async (index: WikiIndexLike): Promise<{ topics: Topic[]; total: number }> => {
+    const hit = caches.get(index)
+    if (hit && Date.now() - hit.at < 30_000) return hit
+    const { topics, total } = await index.listTopics({ limit: 2000 })
+    const entry = { topics, total, at: Date.now() }
+    caches.set(index, entry)
+    return entry
   }
 
   return {
@@ -69,9 +76,18 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return text(res, 405, 'method not allowed')
+        // Shared resolver with /api/wiki (#579 review: the duplicated blocks
+        // had already drifted); refusals are JSON on this surface too.
+        const surface = resolveWikiSurface(opts, ownerDir, req.headers)
+        if (!surface.ok) {
+          res.writeHead(503, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error: surface.error }))
+          return
+        }
+        const { index, wikiDir } = surface
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/wiki'.length).replace(/^\//, '')
-        const { topics, total } = await topicSet()
+        const { topics, total } = await topicSet(index)
         const ctx: RenderCtx = {
           slugs: new Set(topics.map((t) => t.slug)),
           nodeName: opts.nodeName,
@@ -82,10 +98,10 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
           const q = url.searchParams.get('q')
           if (q) {
             ctx.q = q
-            const hits = await opts.index.searchTopics(q, { limit: 20 })
+            const hits = await index.searchTopics(q, { limit: 20 })
             return page(res, ctx, `Search: ${q}`, renderSearch(q, hits))
           }
-          const gaps = await opts.index.gaps({ staleLimit: 5 })
+          const gaps = await index.gaps({ staleLimit: 5 })
           return page(res, ctx, 'Main Page', renderMain(topics, total, gaps, ctx))
         }
 
@@ -96,7 +112,7 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
         }
         if (rest === '_recent') return page(res, ctx, 'Recent changes', renderRecent(topics))
         if (rest === '_gaps') {
-          const gaps = await opts.index.gaps({ staleLimit: 20 })
+          const gaps = await index.gaps({ staleLimit: 20 })
           return page(res, ctx, 'Gaps', renderGaps(gaps, ctx))
         }
         if (rest === '_random') {
@@ -128,7 +144,7 @@ export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
         }
         try {
           const parsed = parseWikiPage(markdown)
-          const row = await opts.index.getTopic(rest).catch(() => undefined)
+          const row = await index.getTopic(rest).catch(() => undefined)
           return page(
             res,
             ctx,

@@ -173,9 +173,17 @@ export function createHarnessRoutes(opts: {
     req: IncomingMessage,
     sessions: Awaited<ReturnType<HarnessRegistry['listSessions']>>,
   ) => Awaited<ReturnType<HarnessRegistry['listSessions']>>
-  /** Tenancy gate for live streams: may this request see events for this
-   *  session? Absent = tenancy off. */
-  authorizeSession?: (req: IncomingMessage, sessionId: string) => boolean
+  /** Tenancy gate for live streams AND every per-session HTTP action
+   *  (get/transcript/resume/turns/interrupt/approvals — they all resolve
+   *  through one dispatch, and every one of them reads or drives the
+   *  session). Absent = tenancy off. `route` labels the audit line. */
+  authorizeSession?: (req: IncomingMessage, sessionId: string, route?: string) => boolean
+  /** Claim-or-verify ownership (term's spawn semantics): an UNOWNED session
+   *  is claimed for the bound user and allowed; one owned by the bound user
+   *  is allowed; one owned by someone else returns false. Used on create and
+   *  resume — without it, control-plane sessions have no owner row and fall
+   *  to the node owner in every listing. */
+  claimSession?: (req: IncomingMessage, sessionId: string) => boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -358,6 +366,12 @@ export function createHarnessRoutes(opts: {
           ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
           ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
         })
+        if (opts.claimSession && !opts.claimSession(req, summary.sessionId)) {
+          // a client-supplied nativeSessionId can resolve to an EXISTING
+          // session owned by someone else — leaking its summary on 201 is
+          // the same cross-user read this fence exists to stop
+          return json(res, 403, { error: 'session is owned by another user' })
+        }
         return json(res, 201, summary)
       } catch (err) {
         return fail(res, err)
@@ -382,6 +396,32 @@ export function createHarnessRoutes(opts: {
     const resolved = await resolve(res, segment)
     if (!resolved) return true
     const { driver, sessionId, requestedId } = resolved
+    // ONE fence for every per-session action: transcript is a full read,
+    // turns/interrupt/approvals drive the session, resume revives it — none
+    // may serve a session the bound user does not own (#565 fenced the den
+    // term surface; this surface leaked until it got the same gate). Resume
+    // uses claim semantics instead (term's spawn rule): an unowned session —
+    // every pre-fence control-plane session — is claimed by whoever resumes
+    // it, so routed users keep their own history across the cutover.
+    // DELIBERATE CUTOVER RULE (first-resumer-wins): listings hide unowned
+    // rows from routed users, so claiming one requires already knowing its
+    // id (a local pointer to your own pre-fence session). The node owner
+    // could lose an unowned row to a routed user who has its id — accepted:
+    // ids aren't guessable and the alternative strands routed users' history.
+    if (action === 'resume') {
+      if (opts.claimSession && !opts.claimSession(req, sessionId)) {
+        return json(res, 403, { error: 'session is owned by another user' })
+      }
+    } else if (
+      opts.authorizeSession &&
+      !opts.authorizeSession(
+        req,
+        sessionId,
+        `${req.method ?? 'GET'} /api/harness-sessions/${action ?? 'get'}`,
+      )
+    ) {
+      return json(res, 403, { error: 'session is owned by another user' })
+    }
     /** Superseded/legacy ids answer with the canonical they redirected to. */
     const redirect = requestedId ? { redirectedTo: sessionId } : {}
 

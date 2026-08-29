@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { resolveAdvertiseHost } from './agents.js'
+import { makeWikiFor, resolveAdvertiseHost } from './agents.js'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -23,5 +23,59 @@ describe('resolveAdvertiseHost', () => {
   it('ignores a blank advertise_host and falls back', () => {
     vi.stubEnv('RIVETOS_HOST', '192.0.2.51')
     expect(resolveAdvertiseHost({ advertise_host: '   ' })).toBe('192.0.2.51')
+  })
+})
+
+describe('makeWikiFor (#584 audit: refusal order is the pin)', () => {
+  const fakePool = {} as never
+  const UNSAFE = [
+    '..',
+    '../..',
+    'a/b',
+    'a\\b',
+    '/etc/passwd',
+    '.hidden',
+    'coco/../../..',
+    '%2e%2e',
+    'a\0b',
+  ]
+
+  it('refuses unsafe ids before the pool lookup or any path join', () => {
+    const gets: string[] = []
+    class SpyMap extends Map<string, never> {
+      override get(k: string): never | undefined {
+        gets.push(k)
+        return super.get(k)
+      }
+    }
+    const pools = new SpyMap([['..', fakePool]]) // even a poisoned pool entry must be unreachable
+    const buildIndex = vi.fn(() => ({}))
+    const wikiFor = makeWikiFor(pools, '/root', buildIndex)
+    for (const evil of UNSAFE) {
+      expect(wikiFor(evil)).toBeNull()
+    }
+    expect(gets).toHaveLength(0)
+    expect(buildIndex).not.toHaveBeenCalled()
+  })
+
+  it('safe unknown ids consult the pool map and refuse; known ids get a joined dir once', () => {
+    const gets: string[] = []
+    class SpyMap extends Map<string, never> {
+      override get(k: string): never | undefined {
+        gets.push(k)
+        return super.get(k)
+      }
+    }
+    const pools = new SpyMap([['coco', fakePool]])
+    const buildIndex = vi.fn(() => ({ tag: 'idx' }))
+    const wikiFor = makeWikiFor(pools, '/root', buildIndex)
+
+    expect(wikiFor('stranger')).toBeNull()
+    expect(gets).toContain('stranger')
+
+    const first = wikiFor('coco')
+    expect(first?.wikiDir).toBe('/root/users/coco')
+    expect(wikiFor('coco')).toBe(first) // cached
+    expect(buildIndex).toHaveBeenCalledTimes(1)
   })
 })

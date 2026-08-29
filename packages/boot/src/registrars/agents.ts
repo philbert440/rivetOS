@@ -636,9 +636,21 @@ export async function registerAgentTools(
   // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
   if (pool) {
     const wikiIndex = new WikiIndex(pool)
+    // WIKI_DIR matches the compaction-worker's writer env (same default), so
+    // a node whose extractor targets a custom root reads from it too. Routed
+    // users get their own index (their #571 pool) and their own file root
+    // under <root>/users/<userId> — point that user's extractor WIKI_DIR at
+    // the same directory. Unknown/tombstoned users are refused by the routes.
+    const wikiRoot = process.env.WIKI_DIR ?? '/rivet-shared/wiki'
+    const wikiFor = makeWikiFor(userPools, wikiRoot, (p) => new WikiIndex(p))
     gatewayRoutes.push(
-      createWikiApiRoute({ index: wikiIndex }),
-      createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
+      createWikiApiRoute({ index: wikiIndex, wikiDir: wikiRoot, forUser: wikiFor }),
+      createWikiHtmlRoute({
+        index: wikiIndex,
+        wikiDir: wikiRoot,
+        nodeName: config.mesh?.node_name,
+        forUser: wikiFor,
+      }),
       createMemoryApiRoute({
         pool,
         userPools,
@@ -991,6 +1003,31 @@ function getLocalHost(): string {
  * `mesh.advertise_host` wins (for nodes whose hostname isn't resolvable
  * mesh-wide); otherwise fall back to the auto-detected local host.
  */
+/** Per-user wiki surface factory (#579/#584). Unsafe ids — anything that
+ *  could influence a path join ('..', separators, absolute paths, leading
+ *  dots) — are refused BEFORE the pool lookup or any join: den + USER_DBS
+ *  gate real ids, but this seam must not depend on them. Extracted and
+ *  exported so the refusal order is pinned by tests.
+ */
+export function makeWikiFor<T>(
+  userPools: ReadonlyMap<string, pg.Pool | null> | undefined,
+  wikiRoot: string,
+  buildIndex: (pool: pg.Pool) => T,
+): (userId: string) => { index: T; wikiDir: string } | null {
+  const cache = new Map<string, { index: T; wikiDir: string }>()
+  return (userId) => {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(userId) || userId.includes('..')) return null
+    const userPool = userPools?.get(userId)
+    if (!userPool) return null
+    let entry = cache.get(userId)
+    if (!entry) {
+      entry = { index: buildIndex(userPool), wikiDir: join(wikiRoot, 'users', userId) }
+      cache.set(userId, entry)
+    }
+    return entry
+  }
+}
+
 export function resolveAdvertiseHost(mesh: { advertise_host?: string } | undefined): string {
   const advertised = mesh?.advertise_host?.trim()
   return advertised && advertised.length > 0 ? advertised : getLocalHost()
