@@ -14,6 +14,12 @@ import { openExternal } from '../lib/open-external.js'
  * term/ws.ts: hello JSON, scrollback replay, live bytes, exit frame. Detach
  * on unmount — never kill; the manager's TTL owns the PTY (reattach replays).
  *
+ * Two effects: the terminal instance lives per PTY; the socket lives per
+ * PTY × transportEpoch, so enrolling mid-run (identity pipe appears, epoch
+ * bumps) reattaches this pane onto the new transport instead of stranding it
+ * on a dead socket. Reattach resets the terminal first — the server replays
+ * scrollback, and appending a replay to the existing buffer doubles it.
+ *
  * Color-query filtering (osc-filter.ts): harnesses emit OSC 11? on startup;
  * xterm answers with rgb:0d0d/1111/1717 (#0d1117 theme bg) via onData → PTY
  * stdin → visible garbage `]11;rgb:…` in the TUI. Strip queries on write and
@@ -21,6 +27,14 @@ import { openExternal } from '../lib/open-external.js'
  */
 export function XtermAttach(props: { ptyId: string }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | undefined>(undefined)
+  const fitRef = useRef<FitAddon | undefined>(undefined)
+  // Shared with the socket effect: it silences copy-on-select around
+  // term.reset() (reset can fire onSelectionChange) and clears any pending
+  // debounce so a pre-rebind selection can't copy mid-rebind.
+  const selTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const selSuppressRef = useRef(false)
+  const transportEpoch = useConnection((s) => s.transportEpoch)
   const [status, setStatus] = useState<'connecting' | 'attached' | 'exited' | 'closed'>(
     'connecting',
   )
@@ -40,14 +54,26 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     const fit = new FitAddon()
     term.loadAddon(fit)
     // Clickable URLs in TUI output (PR links, dashboards) — openExternal
-    // routes through the Tauri opener IPC in the shell (window.open is a
-    // silent no-op there) and plain window.open in browsers.
+    // routes through shell IPC where window.open is denied, and plain
+    // window.open in browsers.
     term.loadAddon(new WebLinksAddon((_e, uri) => openExternal(uri)))
 
-    // Terminal-convention clipboard: Ctrl+Shift+C copies the selection,
-    // Ctrl+Shift+V pastes (Tauri IPC / Clipboard API — lib/clipboard.ts).
+    // Terminal-convention clipboard: select-to-copy (debounced — xterm keeps
+    // its own selection model, so the browser's copy gestures and the shell's
+    // context-menu Copy can't see terminal selections at all), Ctrl+Shift+C
+    // copies explicitly, Ctrl+Shift+V pastes (lib/clipboard.ts chain).
     // Plain Ctrl+C stays SIGINT and plain Ctrl+V stays a native paste event
     // into xterm's hidden textarea — neither is intercepted here.
+    let alive = true
+    const selSub = term.onSelectionChange(() => {
+      if (selSuppressRef.current) return
+      if (selTimerRef.current) clearTimeout(selTimerRef.current)
+      selTimerRef.current = setTimeout(() => {
+        if (!alive) return
+        const sel = term.getSelection()
+        if (sel) void copyTextToClipboard(sel).catch(() => undefined)
+      }, 150)
+    })
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown' || !e.ctrlKey || !e.shiftKey) return true
       if (e.code === 'KeyC') {
@@ -69,16 +95,49 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
 
     term.open(host)
     fit.fit()
+    termRef.current = term
+    fitRef.current = fit
+
+    return () => {
+      alive = false
+      if (selTimerRef.current) clearTimeout(selTimerRef.current)
+      selSub.dispose()
+      termRef.current = undefined
+      fitRef.current = undefined
+      term.dispose()
+    }
+  }, [props.ptyId])
+
+  useEffect(() => {
+    const host = hostRef.current
+    const term = termRef.current
+    const fit = fitRef.current
+    if (!host || !term || !fit) return
 
     // disposed guard: StrictMode dev runs mount→cleanup→mount; frames from
     // the first (closing) socket must never write into a disposed terminal.
     let disposed = false
+    setStatus('connecting')
+    // Reattach (epoch rebind) replays scrollback — clear the buffer so the
+    // replay doesn't append a second copy. First attach: no-op. Silence
+    // copy-on-select for the reset: it clears the selection, and a leftover
+    // non-empty selection must not be copied mid-rebind.
+    selSuppressRef.current = true
+    if (selTimerRef.current) clearTimeout(selTimerRef.current)
+    term.reset()
+    selSuppressRef.current = false
+
     const { gateway } = useConnection.getState()
     const ws = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
-      if (!disposed) setStatus('attached')
+      if (disposed) return
+      setStatus('attached')
+      // Always re-fit and declare our size on (re)attach — a rebind would
+      // otherwise keep whatever PTY size the previous socket negotiated.
+      fit.fit()
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
     }
     ws.onclose = () => {
       if (!disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
@@ -125,11 +184,14 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
       disposed = true
       if (resizeTimer) clearTimeout(resizeTimer)
       resizeObserver.disconnect()
-      dataSub.dispose()
+      try {
+        dataSub.dispose()
+      } catch {
+        // terminal may already be disposed when the PTY itself changed
+      }
       ws.close()
-      term.dispose()
     }
-  }, [props.ptyId])
+  }, [props.ptyId, transportEpoch])
 
   return (
     <div className="relative min-h-0 flex-1 p-2">

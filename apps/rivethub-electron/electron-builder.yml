@@ -1,7 +1,6 @@
-# RivetHub desktop packaging. Targets mirror the Tauri shell it replaces:
-# AppImage (Linux) + NSIS (Windows). The web UI is not bundled into the asar —
-# it ships as an extraResource so the main process serves it over app:// with
-# the same CSP the Tauri config enforced.
+# RivetHub desktop packaging: AppImage (Linux) + NSIS (Windows). The web UI
+# is not bundled into the asar — it ships as an extraResource so the main
+# process serves it over app:// with its CSP applied.
 appId: dev.rivetos.rivethub
 productName: RivetHub
 directories:

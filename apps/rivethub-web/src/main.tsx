@@ -12,12 +12,14 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routes.js'
 import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { installClipboardBridge } from './lib/clipboard.js'
+import { installShellKeys } from './lib/shell-keys.js'
 import { maybeRedirectToRemoteUi } from './lib/remote-ui.js'
 import { useConnection } from './stores/connection.js'
 
 // Selection copy (Ctrl/Cmd+C, context menu) must ride Tauri/Android IPC on
 // shells where the WebView's native clipboard is broken or absent.
 installClipboardBridge()
+installShellKeys()
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, retry: 1 } },

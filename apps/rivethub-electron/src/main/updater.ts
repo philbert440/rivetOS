@@ -149,62 +149,76 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     const digest = hash.digest('hex')
     if (digest !== entry.sha256) throw new Error('sha256 mismatch — refusing to run the artifact')
 
-    await chmod(dest, 0o755)
     if (process.platform === 'win32') {
+      // openPath (ShellExecute) is the right primitive here: the NSIS
+      // installer needs elevation, which ShellExecute prompts for while a
+      // Node spawn of the exe just fails with EACCES. The residual: openPath
+      // resolving '' means the launch STARTED, not that the user passed the
+      // UAC prompt — a cancel after this point loses the running hub for
+      // nothing. Acknowledged; the alternative (no quit) leaves two hubs
+      // fighting after a successful install.
       const openErr = await shell.openPath(dest)
       if (openErr) throw new Error(`could not launch installer: ${openErr}`)
-    } else {
-      // xdg-open on an AppImage is unreliable (exec bit vs handler); run it
-      // directly — but strip the RUNNING AppImage's runtime vars, or the new
-      // image's runtime resolves against the OLD mount (review, PR #562).
-      const env = { ...process.env }
-      delete env.APPIMAGE
-      delete env.APPDIR
-      delete env.ARGV0
-      // Release the single-instance lock BEFORE spawning: the new copy of
-      // this app would otherwise lose the lock to the still-running old
-      // process and exit immediately (review round 2). With the lock
-      // released, an exit INSIDE the 1s window is a true launch failure
-      // (missing FUSE, broken payload, failed inner exec — those are `exit`,
-      // not `error`; review round 3), so both signals are watched. A death
-      // after the window is the acknowledged residual.
+      // NSIS relaunches the app when the install finishes; if that copy
+      // starts inside our quit window while we still hold the singleton, it
+      // loses the lock and exits — the user sees the update "close the app".
       app.releaseSingleInstanceLock()
-      try {
-        const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            cleanup()
-            resolve()
-          }, 1000)
-          const cleanup = (): void => {
-            clearTimeout(timer)
-            child.removeAllListeners('error')
-            child.removeAllListeners('exit')
-            child.unref()
-          }
-          child.once('error', (err) => {
-            cleanup()
-            reject(new Error(`could not launch update: ${err.message}`))
-          })
-          child.once('exit', (code, signal) => {
-            cleanup()
-            reject(new Error(`update exited immediately (${String(code ?? signal)})`))
-          })
-        })
-      } catch (err) {
-        // The old hub keeps running on a failed launch — it must be the
-        // singleton again, or a second copy could start unnoticed. If the
-        // lock is already gone, something else took over: get out of its way.
-        if (!app.requestSingleInstanceLock()) {
-          setTimeout(() => {
-            app.quit()
-          }, 1500)
-          throw new Error(
-            `${err instanceof Error ? err.message : String(err)} — and another instance took the lock; quitting`,
-          )
+      setTimeout(() => {
+        app.quit()
+      }, 1500)
+      return
+    }
+    await chmod(dest, 0o755)
+    // xdg-open on an AppImage is unreliable (exec bit vs handler); run it
+    // directly — but strip the RUNNING AppImage's runtime vars, or the new
+    // image's runtime resolves against the OLD mount (review, PR #562).
+    const env = { ...process.env }
+    delete env.APPIMAGE
+    delete env.APPDIR
+    delete env.ARGV0
+    // Release the single-instance lock BEFORE spawning: the new copy of
+    // this app would otherwise lose the lock to the still-running old
+    // process and exit immediately (review round 2). With the lock
+    // released, an exit INSIDE the 1s window is a true launch failure
+    // (missing FUSE, broken payload, failed inner exec — those are `exit`,
+    // not `error`; review round 3), so both signals are watched. A death
+    // after the window is the acknowledged residual.
+    app.releaseSingleInstanceLock()
+    try {
+      const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup()
+          resolve()
+        }, 1000)
+        const cleanup = (): void => {
+          clearTimeout(timer)
+          child.removeAllListeners('error')
+          child.removeAllListeners('exit')
+          child.unref()
         }
-        throw err
+        child.once('error', (err) => {
+          cleanup()
+          reject(new Error(`could not launch update: ${err.message}`))
+        })
+        child.once('exit', (code, signal) => {
+          cleanup()
+          reject(new Error(`update exited immediately (${String(code ?? signal)})`))
+        })
+      })
+    } catch (err) {
+      // The old hub keeps running on a failed launch — it must be the
+      // singleton again, or a second copy could start unnoticed. If the
+      // lock is already gone, something else took over: get out of its way.
+      if (!app.requestSingleInstanceLock()) {
+        setTimeout(() => {
+          app.quit()
+        }, 1500)
+        throw new Error(
+          `${err instanceof Error ? err.message : String(err)} — and another instance took the lock; quitting`,
+        )
       }
+      throw err
     }
   } catch (err) {
     await rm(dir, { recursive: true, force: true })

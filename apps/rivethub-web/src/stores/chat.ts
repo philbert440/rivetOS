@@ -2,7 +2,7 @@
  * Live chat state. One WS subscription (all sessions) feeds this store, but
  * writes are gated to sessions the user has opened this visit — the socket
  * sees every session on the node, and hoarding transcripts for all of them
- * would grow unbounded (#299 review). HTTP backfill (sessionMessages) seeds
+ * would grow unbounded. HTTP backfill (sessionMessages) seeds
  * a session when it's opened; everything after arrives over the socket —
  * including the echo of our own sends (no optimistic append; the gateway
  * broadcasts the user frame the moment it records it, so the echo IS the
@@ -11,7 +11,7 @@
  * connect() carries the endpoint identity (baseUrl + token): when it
  * changes, all chat state is reset — session ids are only meaningful per
  * gateway, and merging node A's ring into node B's transcript would
- * fabricate conversations (#299 review).
+ * fabricate conversations.
  *
  * **Two owners, never both.** A session claimed by a registered HarnessDriver
  * is marked `harnessBound` and is driven entirely by the control plane
@@ -120,6 +120,8 @@ interface ChatState {
     opts?: { preserveOutbound?: boolean },
   ) => void
   addDraft: (sessionId: string) => void
+  /** Discard a local draft outright — drops its records and selection. */
+  removeDraft: (sessionId: string) => void
   /**
    * Move every record for a thread onto a new key, in place.
    *
@@ -251,8 +253,10 @@ function transcriptPatch(
   rev: number,
   offset: number,
 ): Partial<ChatState> {
-  const mapped = messagesFromHarnessTurns(sid, turns)
   const existing = s.messages[sid] ?? []
+  // Previous frame's list doubles as the identity cache: mapped rows sit at
+  // the same indexes, and trailing optim/ring rows fail the id check.
+  const mapped = messagesFromHarnessTurns(sid, turns, existing)
   const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
   const outbound = s.outbound[sid] ?? []
   const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
@@ -364,6 +368,12 @@ export const useChat = create<ChatState>((set, get) => ({
       }
       return {
         messages: { ...s.messages, [sessionId]: next },
+        // messages and the turn cache must clear together, or the next
+        // transcript frame reconciles fresh rows against stale turns
+        transcripts:
+          preserve || s.transcripts[sessionId] === undefined
+            ? s.transcripts
+            : { ...s.transcripts, [sessionId]: undefined },
         live: preserve ? s.live : { ...s.live, [sessionId]: undefined },
         outbound: preserve ? s.outbound : { ...s.outbound, [sessionId]: [] },
         // hard resync rebuilds from disk — a stale ask card must not survive it
@@ -376,6 +386,28 @@ export const useChat = create<ChatState>((set, get) => ({
       drafts: s.drafts.includes(sessionId) ? s.drafts : [sessionId, ...s.drafts],
       opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
     })),
+
+  removeDraft: (sessionId) => {
+    releaseWatch(sessionId)
+    set((s) => {
+      const drop = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
+        if (!(sessionId in m)) return m
+        const { [sessionId]: _gone, ...rest } = m
+        return rest
+      }
+      return {
+        drafts: s.drafts.filter((id) => id !== sessionId),
+        opened: s.opened.filter((id) => id !== sessionId),
+        active: s.active === sessionId ? undefined : s.active,
+        messages: drop(s.messages),
+        transcripts: drop(s.transcripts),
+        live: drop(s.live),
+        liveTs: drop(s.liveTs),
+        ask: drop(s.ask),
+        outbound: drop(s.outbound),
+      }
+    })
+  },
 
   rekey: (from, to) => {
     if (from === to) return false
@@ -757,7 +789,7 @@ export const useChat = create<ChatState>((set, get) => ({
             let list = s.messages[msg.sessionId] ?? []
             // the real user frame supersedes ONE optimistic bubble of the same
             // text — remove only the first match so two identical turns
-            // ("yes" then "yes") don't collapse to one (#316 review).
+            // ("yes" then "yes") don't collapse to one.
             let outbound = s.outbound[msg.sessionId]
             if (msg.role === 'user') {
               const i = list.findIndex((m) => m.id.startsWith('optim:') && m.text === msg.text)

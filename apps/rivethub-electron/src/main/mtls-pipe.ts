@@ -1,22 +1,21 @@
 /**
- * Loopback mTLS bridge — the Node port of the Tauri shell's proxy.rs (#491).
+ * Loopback mTLS bridge (#491).
  *
  * Chromium in Electron *can* present client certificates, but only from the
  * OS store (NSS on Linux), and importing the enrolled device identity there
  * programmatically is fragile across distros. Doing TLS in the main process
  * with Node's tls keeps the identity as plain PEM files — the exact material
- * rivet-ca.sh already issues — and keeps the web side's transport contract
- * identical to the Tauri shell it replaces: one 127.0.0.1 byte-pipe per https
- * gateway, wrapping every connection in TLS with the device identity and the
- * Rivet CA as the only trust root. Page loads, fetch, and WebSocket upgrades
- * all ride it unchanged because it forwards raw bytes.
+ * rivet-ca.sh already issues: one 127.0.0.1 byte-pipe per https gateway,
+ * wrapping every connection in TLS with the device identity and the Rivet CA
+ * as the only trust root. Page loads, fetch, and WebSocket upgrades all ride
+ * it unchanged because it forwards raw bytes.
  *
  * Device identity: device.crt, device.key (a rivet-ca.sh issue-client leaf)
  * and ca.pem in the identity dir. Missing material is a per-call soft error —
  * http nodes keep working — and is re-read on every call so enrolling mid-run
  * needs no relaunch.
  *
- * Known trade-offs, carried over on purpose (see proxy.rs history):
+ * Known trade-offs, on purpose:
  * - The pipe forwards bytes verbatim, so the gateway sees Host/Origin
  *   `127.0.0.1:<port>`. The den is Host-agnostic and mTLS means no cookies.
  * - The listener is an unauthenticated loopback socket: any same-user local
@@ -31,8 +30,8 @@
  * Interactive traffic (terminal keystrokes are 1-byte WebSocket frames)
  * requires TCP_NODELAY on BOTH legs of the splice. Node's default is Nagle
  * ON; combined with Windows delayed ACK that turns every typed character
- * into ~200ms of echo lag and makes the TUI unusable. The Tauri/tokio pipe
- * did not hit this the same way. See tuneInteractiveSocket.
+ * into ~200ms of echo lag and makes the TUI unusable. See
+ * tuneInteractiveSocket.
  */
 
 import * as fs from 'node:fs'
@@ -220,9 +219,9 @@ export class ListenerSet<T> {
     return this.entries.delete(key)
   }
 
-  /** Snapshot of live keys, insertion (LRU) order — read-only like values(). */
-  keys(): string[] {
-    return [...this.entries.keys()]
+  /** Drop every entry (dispose path). */
+  clear(): void {
+    this.entries.clear()
   }
 }
 
@@ -360,7 +359,7 @@ export class PipeState {
    *  the close side: the OS reclaims the sockets on exit either way. */
   dispose(): void {
     for (const entry of this.listeners.values()) entry.server.close()
-    for (const key of this.listeners.keys()) this.listeners.remove(key)
+    this.listeners.clear()
   }
 }
 

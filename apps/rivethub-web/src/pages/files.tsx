@@ -13,7 +13,15 @@ import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
-import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
+import { rivetShell } from '../lib/shell-bridge.js'
+import {
+  baseName,
+  downloadTooLargeError,
+  joinRel,
+  parentRel,
+  previewKind,
+  readBlobBounded,
+} from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { FileEditor } from '../components/file-editor.js'
@@ -28,6 +36,34 @@ function fmtSize(bytes: number): string {
 function fmtMtime(ms: number): string {
   const d = new Date(ms)
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
+/** The previous save's object URL. Kept alive until the NEXT save rather
+ *  than revoked on a timer — a timed revoke can race a still-writing
+ *  download, and one retained blob per session is bounded (≤64 MB). */
+let lastObjectUrl: string | undefined
+
+/** In-shell file save: the OS browser sits outside the shell's mTLS pipe and
+ *  cannot authenticate to the gateway, so pull the bytes over the app's own
+ *  transport and hand them to Chromium as a blob-anchor download. What the
+ *  shell does with that download (dialog vs default dir) is its policy, not
+ *  ours — callers surface their own "download started" notice. */
+async function saveViaGateway(url: string, name: string, sizeBytes?: number): Promise<void> {
+  const preErr = downloadTooLargeError(sizeBytes)
+  if (preErr) throw new Error(preErr)
+  const res = await fetch(url, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`download failed (HTTP ${String(res.status)})`)
+  // Bounded on the actual bytes read (header alone can lie or be absent).
+  const blob = await readBlobBounded(res)
+  if (lastObjectUrl) URL.revokeObjectURL(lastObjectUrl)
+  const objectUrl = URL.createObjectURL(blob)
+  lastObjectUrl = objectUrl
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
 }
 
 type SortKey = 'name' | 'mtime' | 'size'
@@ -531,12 +567,24 @@ export function FilesPage(): JSX.Element {
                             else setPreviewPath(child)
                           }}
                           onDoubleClick={() => {
-                            if (e.type === 'file') {
-                              window.open(
-                                gateway.fileDownloadUrl(child),
-                                '_blank',
-                                'noopener,noreferrer',
-                              )
+                            if (e.type !== 'file') return
+                            const url = gateway.fileDownloadUrl(child)
+                            if (rivetShell()) {
+                              // The OS browser sits OUTSIDE the shell's mTLS
+                              // pipe — handing it a same-gateway URL fails
+                              // auth. Previewable kinds open in-app; the rest
+                              // download over the authenticated transport.
+                              if (previewKind(e.name, e.size) !== 'none') setPreviewPath(child)
+                              else
+                                void saveViaGateway(url, e.name, e.size)
+                                  .then(() => {
+                                    showNotice({ kind: 'ok', text: `download started: ${e.name}` })
+                                  })
+                                  .catch((err: unknown) => {
+                                    showNotice({ kind: 'err', text: (err as Error).message })
+                                  })
+                            } else {
+                              window.open(url, '_blank', 'noopener,noreferrer')
                             }
                           }}
                           className="flex items-center gap-2 text-left"
@@ -569,6 +617,7 @@ export function FilesPage(): JSX.Element {
           <PreviewPane
             path={previewPath}
             onClose={() => setPreviewPath(undefined)}
+            onNotice={showNotice}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size
@@ -592,12 +641,14 @@ function PreviewPane(props: {
   path: string
   downloadUrl: string
   onClose: () => void
+  onNotice: (n: Notice) => void
   /** Optional size from the listing — drives previewKind / edit eligibility. */
   size?: number
 }): JSX.Element {
   const name = baseName(props.path)
   // Prefer known size; when unknown assume under text cap for extension classification.
   const kind = previewKind(name, props.size ?? 100_000)
+  const inShell = rivetShell() != null
 
   return (
     <aside className="flex w-[min(36rem,50%)] shrink-0 flex-col border-l border-line bg-panel/60">
@@ -607,9 +658,27 @@ function PreviewPane(props: {
           href={props.downloadUrl}
           target="_blank"
           rel="noopener noreferrer"
+          // In-shell only: target=_blank is denied and an OS browser cannot
+          // authenticate to the gateway anyway — download over the app's
+          // transport instead. Plain browsers keep real anchor semantics
+          // (modifier-click, popup blocker).
+          onClick={
+            inShell
+              ? (ev) => {
+                  ev.preventDefault()
+                  void saveViaGateway(props.downloadUrl, name, props.size)
+                    .then(() => {
+                      props.onNotice({ kind: 'ok', text: `download started: ${name}` })
+                    })
+                    .catch((err: unknown) => {
+                      props.onNotice({ kind: 'err', text: (err as Error).message })
+                    })
+                }
+              : undefined
+          }
           className="font-mono text-[11px] text-ink-dim hover:text-em"
         >
-          open
+          {inShell ? 'download' : 'open'}
         </a>
         <button type="button" onClick={props.onClose} className="text-ink-dim hover:text-ink">
           ✕
