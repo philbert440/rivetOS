@@ -27,6 +27,12 @@
  * - Live listeners are capped (MAX_LISTENERS, stalest evicted): a gateway
  *   dialed once must not hold an identity-serving loopback socket open for
  *   process lifetime just because the roster grew.
+ *
+ * Interactive traffic (terminal keystrokes are 1-byte WebSocket frames)
+ * requires TCP_NODELAY on BOTH legs of the splice. Node's default is Nagle
+ * ON; combined with Windows delayed ACK that turns every typed character
+ * into ~200ms of echo lag and makes the TUI unusable. The Tauri/tokio pipe
+ * did not hit this the same way. See tuneInteractiveSocket.
  */
 
 import * as fs from 'node:fs'
@@ -41,6 +47,25 @@ import * as tls from 'node:tls'
  * (see ListenerSet for why that is never the pipe in active use).
  */
 export const MAX_LISTENERS = 32
+
+/**
+ * net.Server option that disables Nagle on every accepted loopback socket.
+ * The LAN TLS socket is a separate outbound connect — it is NOT covered by
+ * this and must still go through tuneInteractiveSocket.
+ */
+export const INTERACTIVE_SERVER_OPTIONS = { noDelay: true } as const
+
+/**
+ * Disable Nagle on a socket. Safe to call before 'connect' / 'secureConnect':
+ * Node applies it to the underlying handle. TLSSocket inherits this.
+ *
+ * Windows delayed ACK waits up to 200ms to piggyback an ACK; Nagle then
+ * refuses to send the next tiny packet until that ACK arrives. Terminal
+ * echo is exactly that pattern (1-byte in, 1-byte out).
+ */
+export function tuneInteractiveSocket(socket: net.Socket): void {
+  socket.setNoDelay(true)
+}
 
 /**
  * Host allow-list: gateways live on the LAN or the mesh overlay — refuse to
@@ -280,7 +305,7 @@ export class PipeState {
 
     const resolve = (async (): Promise<number> => {
       const identity = this.loadIdentity()
-      const server = net.createServer((client) => {
+      const server = net.createServer({ ...INTERACTIVE_SERVER_OPTIONS }, (client) => {
         // LRU-touch on every connection: the pipe the UI is bound to is
         // always most-recent and unreachable by eviction; one-shot name
         // probes go stale and become the victims.
@@ -382,7 +407,11 @@ export function tlsConnectOptions(
 
 /** Wrap one accepted loopback connection in TLS to the gateway and splice. */
 function pipe(client: net.Socket, identity: Identity, host: string, port: number): void {
+  // Loopback accept (Chromium ↔ pipe) AND the LAN TLS connect (pipe ↔ den).
+  // Server noDelay only covers the former; the latter is a different socket.
+  tuneInteractiveSocket(client)
   const upstream = tls.connect(tlsConnectOptions(host, port, identity))
+  tuneInteractiveSocket(upstream)
   const tearDown = (err?: Error): void => {
     if (err) console.error(`RivetHub mtls-pipe: ${host}:${port}: ${err.message}`)
     client.destroy()

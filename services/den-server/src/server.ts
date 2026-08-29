@@ -1381,6 +1381,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // liveness. (Found live on the ct113 canary, 2026-08-10.)
         requestCert: config.tls.requireClientCert,
         rejectUnauthorized: false,
+        // Terminal keystrokes are 1-byte WS frames. Nagle + Windows delayed
+        // ACK (~200ms) makes the TUI unusable from the Electron shell.
+        noDelay: true,
       },
       requestHandler,
     )
@@ -1389,7 +1392,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         `cert=${config.tls.certPath}`,
     )
   } else {
-    server = createServer(requestHandler)
+    server = createServer({ noDelay: true }, requestHandler)
   }
 
   // noServer + manual upgrade so auth runs before the WS handshake completes

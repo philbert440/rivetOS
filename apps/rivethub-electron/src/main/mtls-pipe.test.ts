@@ -5,13 +5,16 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { Socket } from 'node:net'
 import {
   hostAllowed,
+  INTERACTIVE_SERVER_OPTIONS,
   ListenerSet,
   MAX_LISTENERS,
   parseTarget,
   PipeState,
   tlsConnectOptions,
+  tuneInteractiveSocket,
 } from './mtls-pipe.js'
 
 describe('hostAllowed', () => {
@@ -185,5 +188,22 @@ describe('ListenerSet', () => {
     expect(set.remove('https://10.0.0.1:5174')).toBe(true)
     expect(set.get('https://10.0.0.1:5174')).toBeUndefined()
     expect(set.remove('https://10.0.0.1:5174')).toBe(false) // idempotent
+  })
+})
+
+describe('interactive TCP (terminal echo)', () => {
+  it('disables Nagle on accepted loopback sockets', () => {
+    expect(INTERACTIVE_SERVER_OPTIONS.noDelay).toBe(true)
+  })
+
+  it('tuneInteractiveSocket calls setNoDelay(true)', () => {
+    const sock = new Socket()
+    const calls: boolean[] = []
+    sock.setNoDelay = ((enable?: boolean) => {
+      calls.push(enable !== false)
+      return sock
+    }) as typeof sock.setNoDelay
+    tuneInteractiveSocket(sock)
+    expect(calls).toEqual([true])
   })
 })
