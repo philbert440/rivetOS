@@ -82,4 +82,17 @@ describe('discardDraft', () => {
     expect(getAgentLastSession('agent-2', BASE)?.sessionId).toBe('newer-session')
     expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
   })
+
+  it('clears only the node slots targeting the draft — another node keeps its pointer', () => {
+    const OTHER = 'https://other.example'
+    setAgentLastSession('agent-3', SID, BASE)
+    setAgentLastSession('agent-3', 'other-session', OTHER)
+    useChat.getState().addDraft(SID)
+
+    discardDraft(BASE, SID)
+
+    expect(getAgentLastSession('agent-3', BASE)).toBeUndefined()
+    expect(getAgentLastSession('agent-3', OTHER)?.sessionId).toBe('other-session')
+    expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
+  })
 })
