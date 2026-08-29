@@ -105,7 +105,7 @@ describe('/api/memory', () => {
   it('search requires q and maps session_key', async () => {
     const base = await serve({
       pool: fakePool(),
-      search: async (q) => (q.includes('loopback') ? [HIT] : []),
+      search: async (_pool, q) => (q.includes('loopback') ? [HIT] : []),
     })
     expect((await fetch(`${base}/api/memory/search`)).status).toBe(400)
     const body = (await (await fetch(`${base}/api/memory/search?q=loopback`)).json()) as {
@@ -167,5 +167,109 @@ describe('/api/memory', () => {
     expect(res.status).toBe(200)
     const body = (await res.json()) as { conversations: number }
     expect(body.conversations).toBe(0)
+  })
+
+  describe('per-user routing (x-rivetos-user)', () => {
+    const routed = { headers: { 'x-rivetos-user': 'coco' } }
+
+    it('differentiates owner and routed pools on every endpoint', async () => {
+      const ownerPool = fakePool({ browse: [], counts: { n: '3' } })
+      const cocoPool = fakePool({ sessionKey: 'claude-code:coco-1', counts: { n: '7' } })
+      const base = await serve({
+        pool: ownerPool,
+        userPools: new Map([['coco', cocoPool]]),
+        search: async (pool) => (pool === cocoPool ? [HIT] : []),
+      })
+
+      const ownerSearch = (await (await fetch(`${base}/api/memory/search?q=x`)).json()) as {
+        results: unknown[]
+      }
+      expect(ownerSearch.results).toHaveLength(0)
+      const cocoSearch = (await (await fetch(`${base}/api/memory/search?q=x`, routed)).json()) as {
+        results: Array<{ sessionId: string }>
+      }
+      expect(cocoSearch.results).toHaveLength(1)
+      expect(cocoSearch.results[0].sessionId).toBe('claude-code:coco-1')
+
+      const ownerBrowse = (await (await fetch(`${base}/api/memory/browse`)).json()) as {
+        messages: unknown[]
+      }
+      expect(ownerBrowse.messages).toHaveLength(0)
+      const cocoBrowse = (await (await fetch(`${base}/api/memory/browse`, routed)).json()) as {
+        messages: Array<{ sessionId: string }>
+      }
+      expect(cocoBrowse.messages).toHaveLength(1)
+      expect(cocoBrowse.messages[0].sessionId).toBe('claude-code:coco-1')
+
+      const ownerStats = (await (await fetch(`${base}/api/memory/stats`)).json()) as {
+        conversations: number
+      }
+      expect(ownerStats.conversations).toBe(3)
+      const cocoStats = (await (await fetch(`${base}/api/memory/stats`, routed)).json()) as {
+        conversations: number
+        recentSessions: Array<{ sessionId: string }>
+      }
+      expect(cocoStats.conversations).toBe(7)
+      expect(cocoStats.recentSessions[0].sessionId).toBe('claude-code:coco-1')
+
+      const ownerHealth = (await (await fetch(`${base}/api/memory/health`)).json()) as {
+        embedQueueDepth: number
+      }
+      expect(ownerHealth.embedQueueDepth).toBe(3)
+      const cocoHealth = (await (await fetch(`${base}/api/memory/health`, routed)).json()) as {
+        embedQueueDepth: number
+      }
+      expect(cocoHealth.embedQueueDepth).toBe(7)
+    })
+
+    it('refuses a stamped user with no pool — never the owner fallback', async () => {
+      const empty = await serve({ pool: fakePool(), search: async () => [] })
+      expect((await fetch(`${empty}/api/memory/browse`, routed)).status).toBe(503)
+      // unknown id in a NON-empty map takes the same refusal path
+      const populated = await serve({
+        pool: fakePool(),
+        userPools: new Map([['someone-else', fakePool()]]),
+        search: async () => [],
+      })
+      expect((await fetch(`${populated}/api/memory/browse`, routed)).status).toBe(503)
+    })
+
+    it('refuses a tombstoned user (pool construction failed)', async () => {
+      const base = await serve({
+        pool: fakePool(),
+        userPools: new Map([['coco', null]]),
+        search: async () => [],
+      })
+      for (const ep of ['search?q=x', 'browse', 'stats', 'health']) {
+        expect((await fetch(`${base}/api/memory/${ep}`, routed)).status).toBe(503)
+      }
+    })
+
+    it('refuses a present-but-malformed header instead of defaulting to owner', async () => {
+      const base = await serve({ pool: fakePool(), search: async () => [] })
+      expect(
+        (await fetch(`${base}/api/memory/browse`, { headers: { 'x-rivetos-user': '' } })).status,
+      ).toBe(503)
+
+      // Duplicated header (array form) can't be produced through fetch —
+      // exercise the handler directly with a crafted request.
+      const api = createMemoryApiRoute({ pool: fakePool(), search: async () => [] })
+      let code = 0
+      const res = {
+        writeHead: (c: number) => {
+          code = c
+        },
+        end: () => undefined,
+      }
+      await api.handler(
+        {
+          method: 'GET',
+          url: '/api/memory/browse',
+          headers: { 'x-rivetos-user': ['coco', 'phil'] },
+        } as never,
+        res as never,
+      )
+      expect(code).toBe(503)
+    })
   })
 })

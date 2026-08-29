@@ -11,23 +11,32 @@
  */
 
 import type { ServerResponse } from 'node:http'
-import type {
-  GatewayRoute,
-  MemoryBrowseMessage,
-  MemoryBrowseResponse,
-  MemoryHealthResponse,
-  MemorySearchHit,
-  MemorySearchResponse,
-  MemoryStatsResponse,
+import {
+  routedUserResult,
+  type GatewayRoute,
+  type MemoryBrowseMessage,
+  type MemoryBrowseResponse,
+  type MemoryHealthResponse,
+  type MemorySearchHit,
+  type MemorySearchResponse,
+  type MemoryStatsResponse,
 } from '@rivetos/types'
 import type pg from 'pg'
 import { SearchEngine, type SearchHit, type SearchOptions } from '../search.js'
 import { applyWindowArgs } from '../tools/helpers.js'
 
-export type MemorySearchFn = (query: string, options?: SearchOptions) => Promise<SearchHit[]>
+export type MemorySearchFn = (
+  pool: pg.Pool,
+  query: string,
+  options?: SearchOptions,
+) => Promise<SearchHit[]>
 
 export interface MemoryApiOptions {
+  /** The node owner's database — used only for requests den left unstamped. */
   pool: pg.Pool
+  /** Per-user pools from RIVETOS_USER_DBS. `null` = configured but unusable
+   *  (tombstone): the user must get an error, never the owner's data. */
+  userPools?: ReadonlyMap<string, pg.Pool | null>
   embedEndpoint?: string
   embedModel?: string
   /** Test seam — production uses SearchEngine. */
@@ -90,28 +99,50 @@ async function sessionKeys(pool: pg.Pool, conversationIds: string[]): Promise<Ma
 }
 
 export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
+  const embedOk = Boolean(opts.embedEndpoint)
   const search: MemorySearchFn =
     opts.search ??
-    ((query, options) =>
-      new SearchEngine(opts.pool, {
+    ((pool, query, options) =>
+      new SearchEngine(pool, {
         embedEndpoint: opts.embedEndpoint,
         embedModel: opts.embedModel,
       }).search(query, options))
-  const embedOk = Boolean(opts.embedEndpoint)
 
   return {
     prefix: '/api/memory',
     handler: async (req, res) => {
       try {
         if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        // HARD INVARIANT: this route must only ever be dispatched by den-server
+        // AFTER its unconditional strip-and-stamp of x-rivetos-user (embedded
+        // gateway extraRoutes). den stamps only resolved non-owner identities,
+        // so absent = owner; a PRESENT-but-malformed value is refused, and a
+        // stamped user must resolve to their own pool — unknown or tombstoned
+        // entries are refused too. Falling through to the owner pool is exactly
+        // the cross-tenant leak this routing exists to close. Never mount this
+        // route on an unauthenticated port.
+        const routed = routedUserResult(req.headers)
+        if (routed.kind === 'invalid') {
+          return json(res, 503, { error: 'malformed routing identity' })
+        }
+        let pool: pg.Pool
+        if (routed.kind === 'owner') {
+          pool = opts.pool
+        } else {
+          const userPool = opts.userPools?.get(routed.id)
+          if (!userPool) {
+            return json(res, 503, { error: `memory is not available for user "${routed.id}"` })
+          }
+          pool = userPool
+        }
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/api/memory'.length).replace(/^\//, '')
         const [head] = rest.split('/')
 
-        if (head === 'search') return await handleSearch(url, res, search, opts.pool, embedOk)
-        if (head === 'browse') return await handleBrowse(url, res, opts.pool)
-        if (head === 'stats') return await handleStats(res, opts.pool)
-        if (head === 'health') return await handleHealth(res, opts.pool, embedOk)
+        if (head === 'search') return await handleSearch(url, res, search, pool, embedOk)
+        if (head === 'browse') return await handleBrowse(url, res, pool)
+        if (head === 'stats') return await handleStats(res, pool)
+        if (head === 'health') return await handleHealth(res, pool, embedOk)
         return json(res, 404, { error: 'unknown memory resource' })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -137,7 +168,7 @@ async function handleSearch(
   const scope =
     scopeRaw === 'messages' || scopeRaw === 'summaries' || scopeRaw === 'both' ? scopeRaw : 'both'
   const limit = Math.min(Math.max(intParam(url, 'limit', 20), 1), 50)
-  const hits = await search(q, { scope, limit })
+  const hits = await search(pool, q, { scope, limit })
   const keys = await sessionKeys(
     pool,
     hits.map((h) => h.conversationId).filter((id): id is string => Boolean(id)),
