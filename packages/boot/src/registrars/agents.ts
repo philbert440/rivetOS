@@ -636,9 +636,31 @@ export async function registerAgentTools(
   // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
   if (pool) {
     const wikiIndex = new WikiIndex(pool)
+    // WIKI_DIR matches the compaction-worker's writer env (same default), so
+    // a node whose extractor targets a custom root reads from it too. Routed
+    // users get their own index (their #571 pool) and their own file root
+    // under <root>/users/<userId> — point that user's extractor WIKI_DIR at
+    // the same directory. Unknown/tombstoned users are refused by the routes.
+    const wikiRoot = process.env.WIKI_DIR ?? '/rivet-shared/wiki'
+    const userWikis = new Map<string, { index: WikiIndex; wikiDir: string }>()
+    const wikiFor = (userId: string): { index: WikiIndex; wikiDir: string } | null => {
+      const userPool = userPools?.get(userId)
+      if (!userPool) return null
+      let entry = userWikis.get(userId)
+      if (!entry) {
+        entry = { index: new WikiIndex(userPool), wikiDir: join(wikiRoot, 'users', userId) }
+        userWikis.set(userId, entry)
+      }
+      return entry
+    }
     gatewayRoutes.push(
-      createWikiApiRoute({ index: wikiIndex }),
-      createWikiHtmlRoute({ index: wikiIndex, nodeName: config.mesh?.node_name }),
+      createWikiApiRoute({ index: wikiIndex, wikiDir: wikiRoot, forUser: wikiFor }),
+      createWikiHtmlRoute({
+        index: wikiIndex,
+        wikiDir: wikiRoot,
+        nodeName: config.mesh?.node_name,
+        forUser: wikiFor,
+      }),
       createMemoryApiRoute({
         pool,
         userPools,
