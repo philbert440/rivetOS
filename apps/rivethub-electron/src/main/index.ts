@@ -51,6 +51,14 @@ if (process.platform === 'win32') app.setAppUserModelId('dev.rivetos.rivethub')
 // entry name follows executableName (`rivethub`) from electron-builder.yml.
 if (process.platform === 'linux') app.setDesktopName('rivethub.desktop')
 
+// app:// registers secure:false DELIBERATELY (mixed-content must stay
+// allowed so the UI can talk to plain-http LAN gateways) — but an insecure
+// context has no navigator.mediaDevices, which kills voice dictation. This
+// switch restores secure-context APIs for the bundle origin only; mixed
+// content stays allowed because `app:` is not a cryptographic scheme, so
+// Chromium's mixed-content checker never engages for it.
+app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', 'app://bundle')
+
 /** Faults that would otherwise read as "the app just closed" get a trail. */
 const crashLog = new CrashLog(() => path.join(app.getPath('userData'), 'logs', 'main.log'))
 
@@ -516,16 +524,19 @@ function startup(): void {
     },
   })
 
-  // Deny every renderer permission request (camera/mic/geolocation/…).
-  // Electron's default handler GRANTS, and den iframes render LAN-served
-  // content. The app needs none of them: notifications ride the main
-  // process, clipboard rides IPC. BOTH gates: the check handler backs
-  // navigator.permissions.query, which would otherwise report 'granted'
-  // for permissions the request handler denies (review finding, PR #555).
-  session.defaultSession.setPermissionRequestHandler((_wc, _permission, cb) => {
-    cb(false)
+  // Deny every renderer permission request EXCEPT the mic for the bundled
+  // UI (voice dictation). Electron's default handler GRANTS, and den iframes
+  // render LAN-served content — they must never reach the mic or anything
+  // else. BOTH gates: the check handler backs navigator.permissions.query,
+  // which would otherwise report 'granted' for permissions the request
+  // handler denies (review finding, PR #555).
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => {
+    cb(permission === 'media' && isBundledUrl(details.requestingUrl))
   })
-  session.defaultSession.setPermissionCheckHandler(() => false)
+  session.defaultSession.setPermissionCheckHandler(
+    (_wc, permission, requestingOrigin) =>
+      permission === 'media' && isBundledUrl(requestingOrigin),
+  )
 
   // Summon follows focus (see registerSummon): global while every shell
   // window is blurred or hidden, released the moment one has focus so the
