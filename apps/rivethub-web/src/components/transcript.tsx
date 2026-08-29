@@ -207,11 +207,20 @@ function Row(props: {
   )
 }
 
-/** Hover copy for a whole message (fenced code blocks keep their own). */
+/** Hover/focus copy for a whole message (fenced code blocks keep their own). */
 function CopyMessage(props: { text: string }): JSX.Element {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const mountedRef = useRef(true)
+  useEffect(
+    () => () => {
+      mountedRef.current = false
+      if (timerRef.current !== undefined) clearTimeout(timerRef.current)
+    },
+    [],
+  )
   const flash = (next: 'copied' | 'failed'): void => {
+    if (!mountedRef.current) return
     setState(next)
     if (timerRef.current !== undefined) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => setState('idle'), 1500)
@@ -226,7 +235,7 @@ function CopyMessage(props: { text: string }): JSX.Element {
           .then(() => flash('copied'))
           .catch(() => flash('failed'))
       }}
-      className="invisible absolute top-0 right-1 rounded border border-line bg-panel/90 p-1 text-ink-dim group-hover/msg:visible hover:text-em"
+      className="invisible absolute top-0 right-1 rounded border border-line bg-panel/90 p-1 text-ink-dim group-hover/msg:visible focus-visible:visible [@media(pointer:coarse)]:visible hover:text-em"
     >
       {state === 'copied' ? (
         <Check className="size-3 text-em" />
@@ -240,6 +249,8 @@ function CopyMessage(props: { text: string }): JSX.Element {
 const Bubble = memo(function Bubble(props: {
   msg: SessionMessage
   accent?: string
+  /** Deep-history row: allowed to skip offscreen layout/paint. */
+  offscreenSkip?: boolean
   /** Outbound queue status for optimistic user turns. */
   outboundStatus?: 'queued' | 'sending'
   onInject?: (id: string) => void
@@ -259,7 +270,7 @@ const Bubble = memo(function Bubble(props: {
       ts={props.msg.ts}
       model={mine ? undefined : props.msg.model}
       accent={mine ? undefined : props.accent}
-      offscreenSkip
+      offscreenSkip={props.offscreenSkip}
     >
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
@@ -367,6 +378,12 @@ function LiveBubble(props: { turn: LiveTurn; accent?: string }): JSX.Element {
  *  one message up stays put. */
 const NEAR_BOTTOM_PX = 120
 
+/** Rows this close to the live edge always paint for real: the 96px
+ *  intrinsic-size guess on unpainted rows skews scrollHeight, and lying
+ *  about heights right where stick-to-bottom measures is how follow-scroll
+ *  breaks. Deep history can afford the estimate. */
+const CV_EDGE_ROWS = 12
+
 export function Transcript(props: {
   messages: SessionMessage[]
   live?: LiveTurn
@@ -388,8 +405,8 @@ export function Transcript(props: {
   const [pinned, setPinned] = useState(true)
   const pinnedRef = useRef(true)
   // Streaming deltas can land several per frame — coalesce the follow scroll
-  // to one rAF so layout isn't forced per token.
-  const scrollQueued = useRef(false)
+  // to one rAF (cancel-and-requeue) so layout isn't forced per token.
+  const rafRef = useRef<number | undefined>(undefined)
   const count = props.messages.length + (props.live ? 1 : 0)
   const liveLen = props.live?.text.length ?? 0
   const toolN = props.live?.tools.length ?? 0
@@ -411,23 +428,30 @@ export function Transcript(props: {
   }
 
   useEffect(() => {
-    if (!pinnedRef.current || scrollQueued.current) return
-    scrollQueued.current = true
-    requestAnimationFrame(() => {
-      scrollQueued.current = false
+    if (!pinnedRef.current) return
+    if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = undefined
       if (pinnedRef.current) endRef.current?.scrollIntoView({ block: 'end' })
     })
   }, [count, liveLen, toolN, reasonLen, outboundN])
+  useEffect(
+    () => () => {
+      if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
+    },
+    [],
+  )
 
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
-          {props.messages.map((m) => (
+          {props.messages.map((m, i) => (
             <Bubble
               accent={props.accent}
               key={m.id}
               msg={m}
+              offscreenSkip={i < props.messages.length - CV_EDGE_ROWS}
               outboundStatus={props.outbound?.[m.id]}
               onInject={props.outbound?.[m.id] ? props.onInjectOutbound : undefined}
               onCancel={props.outbound?.[m.id] ? props.onCancelOutbound : undefined}

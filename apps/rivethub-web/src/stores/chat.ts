@@ -254,12 +254,9 @@ function transcriptPatch(
   offset: number,
 ): Partial<ChatState> {
   const existing = s.messages[sid] ?? []
-  const prevTurns = s.transcripts[sid]?.turns
-  const mapped = messagesFromHarnessTurns(
-    sid,
-    turns,
-    prevTurns ? { turns: prevTurns, messages: existing } : undefined,
-  )
+  // Previous frame's list doubles as the identity cache: mapped rows sit at
+  // the same indexes, and trailing optim/ring rows fail the id check.
+  const mapped = messagesFromHarnessTurns(sid, turns, existing)
   const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
   const outbound = s.outbound[sid] ?? []
   const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
@@ -371,6 +368,12 @@ export const useChat = create<ChatState>((set, get) => ({
       }
       return {
         messages: { ...s.messages, [sessionId]: next },
+        // messages and the turn cache must clear together, or the next
+        // transcript frame reconciles fresh rows against stale turns
+        transcripts:
+          preserve || s.transcripts[sessionId] === undefined
+            ? s.transcripts
+            : { ...s.transcripts, [sessionId]: undefined },
         live: preserve ? s.live : { ...s.live, [sessionId]: undefined },
         outbound: preserve ? s.outbound : { ...s.outbound, [sessionId]: [] },
         // hard resync rebuilds from disk — a stale ask card must not survive it

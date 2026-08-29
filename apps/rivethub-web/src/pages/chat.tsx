@@ -37,14 +37,14 @@ import {
 import { uuidv4 } from '../lib/uuid.js'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
-import { useChat, type OutboundItem } from '../stores/chat.js'
+import { useChat, type LiveToolEntry, type OutboundItem } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer, type ComposerHandle } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
-import { questionsFromLiveTools } from '../lib/ask-user.js'
+import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
 import { harnessAccent } from '../lib/harness-colors.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
@@ -69,10 +69,16 @@ import {
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
-import { clampDrawerWidth, DRAWER_WIDTH_DEFAULT, SplitHandle } from '../components/split-handle.js'
+import {
+  clampDrawerWidth,
+  DRAWER_WIDTH_DEFAULT,
+  DRAWER_WIDTH_MIN,
+  SplitHandle,
+} from '../components/split-handle.js'
 import { Archive, ArchiveRestore, Pencil, Square, Trash2 } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
+import { discardDraft } from '../lib/discard-session.js'
 import { getSessionMode, setSessionMode, type SessionViewMode } from '../lib/session-mode.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
@@ -80,6 +86,7 @@ import { getSessionMode, setSessionMode, type SessionViewMode } from '../lib/ses
  *  as a state change → infinite re-render → minified React crash on open. */
 const EMPTY_OUTBOUND: OutboundItem[] = []
 const EMPTY_MESSAGES: SessionMessage[] = []
+const EMPTY_TOOLS: LiveToolEntry[] = []
 
 /** Pause between a control-plane interrupt and the turn that displaced it. */
 const INTERRUPT_SETTLE_MS = 400
@@ -378,14 +385,29 @@ export function ChatPage(): JSX.Element {
       return DRAWER_WIDTH_DEFAULT
     }
   })
+  // The handle clamps too, but the parent is the last writer: whatever lands
+  // in state/storage must be finite and in range regardless of caller.
+  const resizeDrawer = (w: number): void => setDrawerWidth(clampDrawerWidth(w))
   const commitDrawerWidth = (w: number): void => {
-    setDrawerWidth(w)
+    const clamped = clampDrawerWidth(w)
+    setDrawerWidth(clamped)
     try {
-      localStorage.setItem('rivethub.drawerWidth', String(w))
+      localStorage.setItem('rivethub.drawerWidth', String(clamped))
     } catch {
       /* storage disabled — width just won't persist */
     }
   }
+  // A shrinking window must not leave a 480px drawer squeezing the
+  // transcript below usability — cap at half the viewport, floor at min.
+  useEffect(() => {
+    const onResize = (): void => {
+      const cap = Math.max(DRAWER_WIDTH_MIN, Math.floor(window.innerWidth / 2))
+      setDrawerWidth((w) => Math.min(w, cap))
+    }
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   if (!connected) return <NotConnected />
 
@@ -399,7 +421,7 @@ export function ChatPage(): JSX.Element {
       />
       <SplitHandle
         width={drawerWidth}
-        onResize={setDrawerWidth}
+        onResize={resizeDrawer}
         onCommit={commitDrawerWidth}
         onReset={() => commitDrawerWidth(DRAWER_WIDTH_DEFAULT)}
       />
@@ -586,7 +608,6 @@ function SessionDrawer(props: {
 }): JSX.Element {
   const setActive = useChat((s) => s.setActive)
   const addDraft = useChat((s) => s.addDraft)
-  const removeDraft = useChat((s) => s.removeDraft)
   const wsStatus = useChat((s) => s.wsStatus)
   const baseUrl = useConnection((s) => s.baseUrl)
   const names = useSessionNames((s) => s.byKey)
@@ -661,11 +682,14 @@ function SessionDrawer(props: {
             onSelect={() => setActive(it.key)}
             onArchive={() => archive(storageKey(baseUrl, it.key))}
             onUnarchive={() => unarchive(storageKey(baseUrl, it.key))}
-            onDiscard={it.kind === 'draft' ? () => removeDraft(it.key) : undefined}
+            onDiscard={it.kind === 'draft' ? () => discardDraft(baseUrl, it.key) : undefined}
           />
         ))}
         {items.length === 0 && q && (
           <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
+        )}
+        {items.length === 0 && !q && archivedCount > 0 && (
+          <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
         )}
         {props.items.length === 0 && !props.error && (
           <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
@@ -694,12 +718,22 @@ function ActiveSession(props: {
   /** Canonical `<harness-id>:<native>` when the control plane owns this row. */
   const canonicalId = props.gate.bound ? props.item?.sessionId : undefined
   const baseUrl = useConnection((s) => s.baseUrl)
-  // Chat is the starting place; the last-used view is remembered per thread
-  // (terminal/den stick once chosen). Remounts per session, so the lazy
-  // initializer re-reads on every switch.
+  // Chat is the starting place for anything the composer can drive; a
+  // legacy TUI-only row (no registered driver) falls back to terminal so it
+  // doesn't open on an empty pane. The last-used view is remembered per
+  // thread. Remounts per session, so the lazy initializer re-reads on every
+  // switch; the effect below re-reads if baseUrl shifts under the mount
+  // (node switch with the same thread selected).
+  const fallbackMode: SessionViewMode = props.item?.kind === 'legacy' ? 'terminal' : 'chat'
   const [mode, setModeState] = useState<SessionViewMode>(() =>
-    getSessionMode(storageKey(baseUrl, props.sessionId)),
+    getSessionMode(storageKey(baseUrl, props.sessionId), fallbackMode),
   )
+  const modeBaseRef = useRef(baseUrl)
+  useEffect(() => {
+    if (modeBaseRef.current === baseUrl) return
+    modeBaseRef.current = baseUrl
+    setModeState(getSessionMode(storageKey(baseUrl, props.sessionId), fallbackMode))
+  }, [baseUrl, props.sessionId, fallbackMode])
   const setMode = (m: SessionViewMode): void => {
     setModeState(m)
     setSessionMode(storageKey(baseUrl, props.sessionId), m)
@@ -948,7 +982,6 @@ function ActiveSession(props: {
   // between renders AND between mounts).
   const enqueueOutbound = useChat((s) => s.enqueueOutbound)
   const clearLive = useChat((s) => s.clearLive)
-  const liveIsBusy = useChat((s) => s.liveIsBusy)
   const outbound = useChat((s) => s.outbound[props.sessionId] ?? EMPTY_OUTBOUND)
   const pendingAsk = useChat((s) => s.ask[props.sessionId])
   const dismissAsk = useChat((s) => s.dismissAsk)
@@ -961,13 +994,22 @@ function ActiveSession(props: {
   // cleared, but live.tools still carries the tool), so a local flag covers
   // it — reset whenever a different question shows up.
   const [askDismissed, setAskDismissed] = useState(false)
-  const liveAsk = questionsFromLiveTools(live?.tools ?? [])
+  // Mode-independent on purpose: `live` above is gated to chat mode, but a
+  // question that streams in while the user sits in terminal/den must still
+  // be harvested — flipping to chat has to show the card, and the
+  // dismiss-reset below has to see it arrive. Stable EMPTY_TOOLS keeps this
+  // from re-rendering terminal mode per tick when no ask tool is present.
+  const liveAskTools = useChat((s) => {
+    const tools = s.live[props.sessionId]?.tools
+    return tools && tools.some((t) => isAskUserTool(t.name)) ? tools : EMPTY_TOOLS
+  })
+  const liveAsk = questionsFromLiveTools(liveAskTools)
   const askQuestions = liveAsk.length > 0 ? liveAsk : (pendingAsk ?? [])
-  // Cheap identity for "a different question showed up" — stringifying the
-  // whole array every render scales with option payloads.
-  const askKey = `${String(askQuestions.length)}:${askQuestions[0]?.question ?? ''}:${String(
-    askQuestions[0]?.options.length ?? 0,
-  )}`
+  // Covers every question, not just the head — a same-count replacement set
+  // must also reset a dismissal.
+  const askKey = askQuestions
+    .map((q) => `${q.question ?? ''}#${String(q.options.length)}#${q.multiSelect ? 'm' : 's'}`)
+    .join('|')
   useEffect(() => setAskDismissed(false), [askKey])
   const onDismissAsk = (): void => {
     setAskDismissed(true)
@@ -1044,9 +1086,14 @@ function ActiveSession(props: {
     pumpEntry.pump.pump(opts)
 
   // When a live turn ends (or the queue grows while idle), inject the next.
+  // Pump and busy-check are read at call time (registry + store), never from
+  // a render closure — inject/cancel already are, and the two paths must not
+  // age differently.
   useEffect(() => {
-    if (liveIsBusy(props.sessionId)) return
-    void pumpOutbound().catch(() => undefined)
+    if (useChat.getState().liveIsBusy(props.sessionId)) return
+    void outboundPumpFor(props.sessionId)
+      .pump.pump()
+      .catch(() => undefined)
   }, [liveBusy, outbound.length, props.sessionId])
 
   // Stale-turn release: the watcher itself is lib/outbound-pump.ts. Armed
@@ -1110,6 +1157,9 @@ function ActiveSession(props: {
   // Memoized per-render derivations: ContextBar / Transcript re-render on
   // identity, and a fresh array each frame would defeat that on every
   // streaming tick.
+  // ContextBar's memo + its estimate cache both key on this array's IDENTITY
+  // — allocate it per `messages` change only, never per render, or the
+  // full-transcript token scan comes back on every streaming tick.
   const transcriptTexts = useMemo(() => messages.map((m) => m.text), [messages])
   const outboundStatus = useMemo(
     () => Object.fromEntries(outbound.map((o) => [o.id, o.status])),

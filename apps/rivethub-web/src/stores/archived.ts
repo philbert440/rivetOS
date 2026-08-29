@@ -2,6 +2,9 @@
  * Archived conversations, persisted per node+session key (same
  * `${baseUrl}::${key}` scheme as names/settings). Archiving only hides the
  * row — the on-disk harness store is untouched, so unarchive always restores.
+ * The list is recency-ordered (re-archive moves the key to the tail), so the
+ * cap evicts the longest-archived entry, silently unarchiving it. Drafts
+ * never get here: the drawer offers discard for drafts, archive for the rest.
  */
 
 import { create } from 'zustand'
@@ -24,11 +27,11 @@ export const useArchived = create<ArchivedState>()(
       isArchived: (key) => get().keys.includes(key),
       archive: (key) =>
         set((s) => {
-          if (s.keys.includes(key)) return s
-          const next = [...s.keys, key]
+          const next = [...s.keys.filter((k) => k !== key), key]
           return { keys: next.length > MAX ? next.slice(-MAX) : next }
         }),
-      unarchive: (key) => set((s) => ({ keys: s.keys.filter((k) => k !== key) })),
+      unarchive: (key) =>
+        set((s) => (s.keys.includes(key) ? { keys: s.keys.filter((k) => k !== key) } : s)),
     }),
     { name: KEY, partialize: (s) => ({ keys: s.keys }) },
   ),
