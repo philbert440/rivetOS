@@ -40,7 +40,7 @@ import type {
   MessageUsage,
 } from '@rivetos/types'
 import { HARNESS_IDS, SYSTEM_PROMPT_MAX_CHARS, splitHermesReasoning } from '@rivetos/types'
-import { routedUserFromHeaders } from './trusted-user.js'
+import { routedUserFromHeaders } from '@rivetos/types'
 import { logger } from '../logger.js'
 
 const log = logger('GatewayChannel')
