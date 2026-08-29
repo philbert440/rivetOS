@@ -27,9 +27,9 @@ import {
   agentForSession,
   clearAgentLastSession,
   clearAgentSessionPointer,
-  getAgentLastSession,
   listAgentSessions,
   setAgentLastSession,
+  type AgentSessionPointer,
 } from '../lib/agent-session.js'
 import {
   aggregateAgentActivity,
@@ -39,6 +39,7 @@ import {
   type NodeChoice,
 } from '../lib/agent-roster.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
+import { setSessionNodeBinding } from '../lib/session-node.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 
@@ -647,10 +648,11 @@ export function AgentsSection(): JSX.Element {
   // history still renders), a wrong "false" silently abandons a live one. So
   // only a definitive miss (control plane 404 AND absent from the on-disk
   // store scan) answers false; transient errors keep the pointer.
-  const sessionLikelyExists = async (sessionId: string): Promise<boolean> => {
-    if (knownToChatStore(sessionId)) return true
+  const sessionLikelyExists = async (sessionId: string, nodeBaseUrl: string): Promise<boolean> => {
+    const local = nodeBaseUrl === useConnection.getState().baseUrl
+    if (local && knownToChatStore(sessionId)) return true
     try {
-      const gw = await gatewayFor(useConnection.getState().baseUrl)
+      const gw = await gatewayFor(nodeBaseUrl)
       try {
         await gw.getHarnessSession(sessionId)
         return true
@@ -660,7 +662,10 @@ export function AgentsSection(): JSX.Element {
       const listed = await gw.harnessSessions()
       return listed.sessions.some((s) => sessionPointerMatches(sessionId, s.id, nativeIdOf))
     } catch {
-      return true
+      // The local node answering oddly still opens (history renders); an
+      // UNREACHABLE remote must not — skip to the next candidate instead of
+      // opening a thread nothing can load.
+      return local
     }
   }
 
@@ -679,19 +684,35 @@ export function AgentsSection(): JSX.Element {
   const handleOpen = (agent: RosterAgent): void => {
     const gen = bumpGen(agent.id)
     void (async () => {
-      const last = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
-      if (!last) {
+      // Most recent thread across EVERY node — current node first (a local
+      // thread never loses to a remote one), then recency. The first live
+      // candidate wins; a remote winner gets a session→node binding so the
+      // chat page drives it over its own node's gateway. The app's global
+      // connection is never repointed by a sidebar click.
+      const currentBase = useConnection.getState().baseUrl
+      const candidates = pointersToPoll(
+        listAgentSessions(agent.id),
+        currentBase,
+        POLL_POINTER_LIMIT,
+      )
+      let target: AgentSessionPointer | undefined
+      for (const p of candidates) {
+        if (await sessionLikelyExists(p.sessionId, p.nodeBaseUrl)) {
+          target = p
+          break
+        }
+      }
+      // Check the generation LAST, immediately before navigating — start-over
+      // or another click may have superseded this probe while it awaited.
+      if (gen !== openGen.current.get(agent.id)) return
+      if (!target) {
         openFresh(agent)
         return
       }
-      const alive = await sessionLikelyExists(last.sessionId)
-      // Re-read after the await — start-over or a node switch may have
-      // retargeted the pointer while the probe was in flight — then check
-      // the generation LAST, immediately before navigating.
-      const fresh = getAgentLastSession(agent.id, useConnection.getState().baseUrl)
-      if (gen !== openGen.current.get(agent.id)) return
-      if (fresh && (fresh.sessionId !== last.sessionId || alive)) openKept(fresh.sessionId)
-      else openFresh(agent)
+      if (target.nodeBaseUrl !== useConnection.getState().baseUrl) {
+        setSessionNodeBinding(target.sessionId, target.nodeBaseUrl)
+      }
+      openKept(target.sessionId)
     })()
   }
 

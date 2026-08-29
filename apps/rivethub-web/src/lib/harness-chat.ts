@@ -171,6 +171,27 @@ export function chatItems(input: {
 }
 
 /**
+ * A drawer-shaped row for ONE control-plane summary — the cross-node case,
+ * where the session's node is not the drawer's node so no local list carries
+ * it. No legacy merge: the remote on-disk scan was never fetched, and the
+ * summary alone is enough to gate capabilities and title the header.
+ */
+export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | undefined {
+  const native = nativeIdOf(summary.sessionId)
+  if (native === undefined) return undefined
+  return {
+    key: summary.sessionId,
+    kind: 'harness',
+    title: summary.title ?? native,
+    sessionId: summary.sessionId,
+    harnessId: summary.harnessId,
+    command: ROSTER_COMMAND[summary.harnessId],
+    status: summary.status,
+    updatedAt: Date.parse(summary.updatedAt) || 0,
+  }
+}
+
+/**
  * The row that owns a thread key, tolerating a key that has been canonicalized
  * underneath the selection.
  *
