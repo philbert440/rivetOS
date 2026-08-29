@@ -44,6 +44,9 @@ import type {
   WorkflowKillResponse,
   WorkflowValidateResponse,
   FilesUploadResponse,
+  StagedUploadResponse,
+  VoiceSpeakRequest,
+  VoiceTranscribeResponse,
   AgentsListResponse,
   AgentCreateRequest,
   AgentUpdateRequest,
@@ -804,6 +807,92 @@ export class RivetGateway {
       throw new GatewayError(res.status, message, parsed)
     }
     return parsed as FilesUploadResponse
+  }
+
+  /** Stage bytes for a harness turn attachment (POST /api/uploads). The
+   *  returned `uri` is node-resolvable — put it in
+   *  `UserTurn.attachments[].pathOrUri`, never a client filesystem path.
+   *  Bypasses request(): the body is binary, not JSON. */
+  async stageUpload(
+    name: string,
+    body: Blob | ArrayBuffer,
+    opts: { mime?: string; signal?: AbortSignal } = {},
+  ): Promise<StagedUploadResponse> {
+    const u = new URL(
+      '/api/uploads',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    u.searchParams.set('name', name)
+    if (opts.mime) u.searchParams.set('mime', opts.mime)
+    return (await this.rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
+      res.json(),
+    )) as StagedUploadResponse
+  }
+
+  /** Transcribe a mic clip via the node's voice proxy (POST
+   *  /api/voice/transcribe). 501 = voice not configured on this node. */
+  async voiceTranscribe(
+    audio: Blob | ArrayBuffer,
+    mime: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<VoiceTranscribeResponse> {
+    const u = new URL(
+      '/api/voice/transcribe',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    return (await this.rawBodyPost(u, audio, mime, opts.signal, (res) =>
+      res.json(),
+    )) as VoiceTranscribeResponse
+  }
+
+  /** Synthesize speech via the node's voice proxy (POST /api/voice/speak).
+   *  Resolves to the audio bytes (audio/wav in practice). */
+  async voiceSpeak(
+    req: VoiceSpeakRequest,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<ArrayBuffer> {
+    const u = new URL(
+      '/api/voice/speak',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    return (await this.rawBodyPost(u, JSON.stringify(req), 'application/json', opts.signal, (res) =>
+      res.arrayBuffer(),
+    )) as ArrayBuffer
+  }
+
+  /** Shared raw-body POST for the binary endpoints: same unreachable/error
+   *  mapping as filesUpload, parameterized success extraction. */
+  async rawBodyPost(
+    u: URL,
+    body: string | Blob | ArrayBuffer,
+    contentType: string,
+    signal: AbortSignal | undefined,
+    extract: (res: Response) => Promise<unknown>,
+  ): Promise<unknown> {
+    let res: Response
+    try {
+      res = await fetch(u.toString(), {
+        method: 'POST',
+        headers: { 'content-type': contentType },
+        body,
+        signal,
+      })
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
+    }
+    if (!res.ok) {
+      const parsed: unknown = await res.json().catch(() => undefined)
+      const message =
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        typeof (parsed as { error?: unknown }).error === 'string'
+          ? (parsed as { error: string }).error
+          : `gateway ${String(res.status)} on ${u.pathname}`
+      throw new GatewayError(res.status, message, parsed)
+    }
+    return extract(res)
   }
 
   /** Create an empty directory under `dir` named `name`. */

@@ -120,6 +120,22 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
         embedQueueDepth: 0,
       })
     }
+    if (path === '/api/uploads' && req.method === 'POST') {
+      return respond(201, {
+        uri: '/home/rivet/.rivetos/den/uploads/u1.png',
+        name: 'shot.png',
+        mime: 'image/png',
+        size: raw.length,
+        expiresAt: 1_751_900_000_000,
+      })
+    }
+    if (path === '/api/voice/transcribe' && req.method === 'POST') {
+      return respond(200, { text: 'hello from mic' })
+    }
+    if (path === '/api/voice/speak' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'audio/wav' })
+      return res.end('WAVBYTES')
+    }
     if (path === '/api/tasks/missing') return respond(404, { error: 'no task missing' })
     respond(500, { error: `unhandled ${req.method} ${path}` })
   })
@@ -174,6 +190,26 @@ describe('RivetGateway HTTP', () => {
     const sheet = await gw.catalog()
     expect(sheet.node).toBe('testnode')
     expect(sheet.agents).toHaveLength(2)
+  })
+
+  it('stages an upload with raw body and query metadata', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const staged = await gw.stageUpload('shot.png', new Blob(['PNGBYTES']), {
+      mime: 'image/png',
+    })
+    expect(staged.uri).toBe('/home/rivet/.rivetos/den/uploads/u1.png')
+    expect(captured.url).toBe('/api/uploads?name=shot.png&mime=image%2Fpng')
+    expect(captured.body).toBe('PNGBYTES')
+  })
+
+  it('transcribes audio and synthesizes speech via the voice proxy', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const out = await gw.voiceTranscribe(new Blob(['AUDIO']), 'audio/webm')
+    expect(out.text).toBe('hello from mic')
+    expect(captured.url).toBe('/api/voice/transcribe')
+    const wav = await gw.voiceSpeak({ input: 'hi', instructions: 'warm' })
+    expect(Buffer.from(wav).toString()).toBe('WAVBYTES')
+    expect(JSON.parse(captured.body ?? '{}')).toEqual({ input: 'hi', instructions: 'warm' })
   })
 
   it('fetches outcomes', async () => {
