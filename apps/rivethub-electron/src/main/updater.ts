@@ -149,11 +149,15 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     const digest = hash.digest('hex')
     if (digest !== entry.sha256) throw new Error('sha256 mismatch — refusing to run the artifact')
 
-    await chmod(dest, 0o755)
     if (process.platform === 'win32') {
       const openErr = await shell.openPath(dest)
       if (openErr) throw new Error(`could not launch installer: ${openErr}`)
+      // NSIS relaunches the app when the install finishes; if that copy
+      // starts inside our quit window while we still hold the singleton, it
+      // loses the lock and exits — the user sees the update "close the app".
+      app.releaseSingleInstanceLock()
     } else {
+      await chmod(dest, 0o755)
       // xdg-open on an AppImage is unreliable (exec bit vs handler); run it
       // directly — but strip the RUNNING AppImage's runtime vars, or the new
       // image's runtime resolves against the OLD mount (review, PR #562).

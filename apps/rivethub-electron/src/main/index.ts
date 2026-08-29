@@ -1,12 +1,10 @@
 /**
- * RivetHub desktop shell — Electron main. Feature-parity port of the Tauri
- * shell (apps/rivethub-desktop): webview over the bundled rivethub-web dist,
- * tray with show/hide + new-window + quit, a summon shortcut (Ctrl+Shift+R,
- * global only while unfocused), an accelerator-bearing application menu
- * (hidden bar on Linux/Windows), right-click context menus, clickable native
- * notifications, close-to-tray + bounds persistence for the main window,
- * single instance, and the loopback mTLS pipe (#491) — here implemented in
- * Node (mtls-pipe.ts) instead of Rust.
+ * RivetHub desktop shell — Electron main. Webview over the bundled
+ * rivethub-web dist, tray with show/hide + new-window + quit, a summon
+ * shortcut (Ctrl+Shift+R, global only while unfocused), right-click context
+ * menus, clickable native notifications, close-to-tray + bounds persistence
+ * for the main window, single instance, in-app updates from the mesh
+ * filestore, and the loopback mTLS pipe (#491).
  *
  * Renderer isolation: contextIsolation on, sandbox on, nodeIntegration off.
  * The preload's `window.rivetShell` is the entire shell surface.
@@ -28,19 +26,52 @@ import {
   Tray,
   type MenuItemConstructorOptions,
 } from 'electron'
+import { CrashLog } from './crash-log.js'
 import { PipeState } from './mtls-pipe.js'
 import { registerIpc } from './ipc.js'
 import { APP_ORIGIN, APP_SCHEME, serveDist } from './serve-dist.js'
-import { legacySqlitePath, prepareMigration } from './tauri-storage-migration.js'
 import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
 import { contextMenuTemplate } from './context-menu.js'
-import { loadWindowState, saveWindowState, type WindowState } from './window-state.js'
+import { totalUnread } from './unread.js'
+import { cascadePoint, loadWindowState, saveWindowState, type WindowState } from './window-state.js'
 
 // Unpackaged dev runs otherwise derive userData from the scoped package name
 // (~/.config/@rivetos/rivethub-electron), so a dev-time enrollment would land
 // where neither the packaged build nor the Tauri fallback ever looks (review
 // finding, PR #555). Must precede any getPath('userData') use.
 app.setName('RivetHub')
+
+// Windows drops toast notifications unless the running process's AUMID
+// matches the Start-Menu shortcut NSIS creates from electron-builder's appId
+// — Notification.isSupported() still reports true, so the failure is silent.
+if (process.platform === 'win32') app.setAppUserModelId('dev.rivetos.rivethub')
+// Plasma's system tray ranks an SNI item visible only when its id matches a
+// desktop entry; without this the icon lands in the hidden overflow. The
+// entry name follows executableName (`rivethub`) from electron-builder.yml.
+if (process.platform === 'linux') app.setDesktopName('rivethub.desktop')
+
+/** Faults that would otherwise read as "the app just closed" get a trail. */
+const crashLog = new CrashLog(() => path.join(app.getPath('userData'), 'logs', 'main.log'))
+
+// Keep running on main-process faults where possible: Electron's default for
+// an uncaught exception is a blocking error dialog, and an unhandled
+// rejection kills the process under Node's throw default — both read as a
+// crash-close with nothing to go on.
+process.on('uncaughtException', (err) => {
+  crashLog.append('uncaughtException', err.stack ?? String(err))
+})
+process.on('unhandledRejection', (reason) => {
+  crashLog.append(
+    'unhandledRejection',
+    reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
+  )
+})
+app.on('child-process-gone', (_e, details) => {
+  crashLog.append(
+    'child-process-gone',
+    `${details.type} ${details.reason} exitCode=${String(details.exitCode ?? '')}`,
+  )
+})
 
 // Must run before app ready: privileges are part of scheme registration.
 // `secure: false` is DELIBERATE: a secure origin would mixed-content-block
@@ -100,15 +131,23 @@ function isWebUrl(url: string): boolean {
   }
 }
 
+function isMailtoUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'mailto:'
+  } catch {
+    return false
+  }
+}
+
 let mainWindow: BrowserWindow | undefined
 let tray: Tray | undefined
 let quitting = false
-/** webContents ids of windows THIS shell created — the migration IPC's
- *  sender fence (frame URLs can still be empty at preload time). */
-const shellWindowIds = new Set<number>()
 /** Base tray tooltip — carries a shortcut-conflict warning for app lifetime
  *  so it survives unread-count rewrites. */
 let baseTip = 'RivetHub'
+/** Unread counts per window (webContents id) — the tray shows the SUM, not
+ *  whichever window reported last. */
+const unreadByWindow = new Map<number, number>()
 
 /** Main-window bounds file — see window-state.ts. */
 function windowStateFile(): string {
@@ -116,14 +155,23 @@ function windowStateFile(): string {
 }
 
 function createWindow(isMain: boolean): BrowserWindow {
-  // Only the MAIN window restores saved bounds; extra windows take the
-  // default so they don't stack pixel-exactly on top of the main one.
-  const state: WindowState = isMain
-    ? loadWindowState(
-        windowStateFile(),
-        screen.getAllDisplays().map((d) => d.workArea),
-      )
-    : { width: 1280, height: 820 }
+  // Only the MAIN window restores saved bounds. A positionless BrowserWindow
+  // is CENTERED, so extra windows would land pixel-exactly on top of each
+  // other — cascade them off the focused window instead.
+  let state: WindowState
+  if (isMain) {
+    state = loadWindowState(
+      windowStateFile(),
+      screen.getAllDisplays().map((d) => d.workArea),
+    )
+  } else {
+    state = { width: 1280, height: 820 }
+    const base = BrowserWindow.getFocusedWindow() ?? mainWindow
+    if (base && !base.isDestroyed()) {
+      const bounds = base.getBounds()
+      state = { ...state, ...cascadePoint(bounds, screen.getDisplayMatching(bounds).workArea) }
+    }
+  }
   const win = new BrowserWindow({
     title: 'RivetHub',
     width: state.width,
@@ -147,16 +195,34 @@ function createWindow(isMain: boolean): BrowserWindow {
       nodeIntegrationInSubFrames: false,
     },
   })
-  shellWindowIds.add(win.webContents.id)
-  win.on('closed', () => shellWindowIds.delete(win.webContents.id))
-  // window.open: DENY, full stop — no shell.openExternal side door. The
-  // handler cannot tell which frame asked, and den iframes render untrusted
-  // LAN content that must not be able to drive the OS browser (cookies, CSRF
-  // against local services — review finding, PR #555). The hub's own
-  // external links ride rivetShell.openExternal, which is sender-fenced in
-  // main; this matches the Tauri shell, where WebKitGTK dropped new-window
-  // requests outright.
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const wcId = win.webContents.id
+  win.on('closed', () => {
+    unreadByWindow.delete(wcId)
+    applyUnread()
+  })
+  // window.open: never a real window. Parsed http(s)/mailto URLs open in
+  // the OS browser; everything else is dropped. A target=_blank link was a
+  // dead click under the old deny-all, but window creation itself stays
+  // denied — den iframes render untrusted LAN content and must not get a
+  // window with this shell's chrome.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isWebUrl(url) || isMailtoUrl(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+  // A dead renderer must not read as "the app closed": log and reload,
+  // unless it is dying repeatedly — then leave the trail in the log.
+  let lastRendererReload = 0
+  win.webContents.on('render-process-gone', (_e, details) => {
+    crashLog.append(
+      'render-process-gone',
+      `${details.reason} exitCode=${String(details.exitCode ?? '')}`,
+    )
+    if (details.reason === 'clean-exit' || win.isDestroyed()) return
+    const now = Date.now()
+    if (now - lastRendererReload < 10_000) return
+    lastRendererReload = now
+    win.webContents.reload()
+  })
   // Right-click menu: pure template (context-menu.ts), roles route edit
   // actions to the FOCUSED frame (den iframes included) without the shell
   // reading their content; the only custom action is a validated-URL
@@ -177,10 +243,11 @@ function createWindow(isMain: boolean): BrowserWindow {
           return {
             label: item.label,
             click: () => {
-              void clipboard.writeText(url)
+              clipboard.writeText(url)
             },
           }
         }
+        if (item.newWindow) return { label: item.label, click: spawnWindow }
         return item
       }),
     ).popup({ window: win })
@@ -235,9 +302,10 @@ function createWindow(isMain: boolean): BrowserWindow {
   if (isMain) {
     // close-to-tray for the MAIN window only (Quit is a deliberate act via
     // the tray menu); additional windows close for real so they don't
-    // accumulate hidden.
+    // accumulate hidden. Checked at close time: with no live tray a hidden
+    // window has no discoverable road back, so X must really close.
     win.on('close', (e) => {
-      if (!quitting) {
+      if (!quitting && tray) {
         e.preventDefault()
         win.hide()
       }
@@ -270,16 +338,37 @@ function toggleMain(): void {
   else showMain()
 }
 
+/** Notification click-through: the window that sent it, else the main
+ *  window, else any live one — a toast must always lead somewhere. */
+function summonWindow(webContentsId?: number): void {
+  if (quitting) return
+  const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
+  const target =
+    (webContentsId !== undefined
+      ? wins.find((w) => w.webContents.id === webContentsId)
+      : undefined) ?? (mainWindow && !mainWindow.isDestroyed() ? mainWindow : wins[0])
+  if (!target) return
+  if (target.isMinimized()) target.restore()
+  target.show()
+  target.focus()
+}
+
 function spawnWindow(): void {
   createWindow(false)
 }
 
-function setUnread(count: number): void {
-  tray?.setToolTip(count === 0 ? baseTip : `${baseTip} — ${count} unread`)
+function setUnread(webContentsId: number, count: number): void {
+  unreadByWindow.set(webContentsId, count)
+  applyUnread()
+}
+
+function applyUnread(): void {
+  const total = totalUnread(unreadByWindow.values())
+  tray?.setToolTip(total === 0 ? baseTip : `${baseTip} — ${String(total)} unread`)
   // Dock/taskbar badge where the platform has one (macOS dock, Unity
   // launcher); returns false elsewhere — the tooltip stays the fallback.
   try {
-    app.setBadgeCount(Math.min(count, 999))
+    app.setBadgeCount(Math.min(total, 999))
   } catch {
     /* badge is best-effort */
   }
@@ -302,7 +391,7 @@ function setConflictTip(conflict: boolean): void {
   baseTip = conflict
     ? 'RivetHub — shortcut conflict: Ctrl+Shift+R (summon) not registered'
     : 'RivetHub'
-  tray?.setToolTip(baseTip)
+  applyUnread()
 }
 
 function registerSummon(): void {
@@ -365,49 +454,54 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', showMain)
 
   void app.whenReady().then(() => {
-    serveDist(protocol, distDir())
-    // The Tauri webview's localStorage lives under XDG DATA home
-    // (~/.local/share/dev.rivetos.rivethub/…) — NOT Electron's appData
-    // (~/.config). Do not "fix" this to app.getPath('appData'); that is
-    // where the mtls identity lives, a different tree (review finding,
-    // PR #556).
-    const migration = prepareMigration(
-      path.join(app.getPath('userData'), 'tauri-storage-migrated'),
-      legacySqlitePath(
-        process.env.XDG_DATA_HOME ?? path.join(app.getPath('home'), '.local', 'share'),
-      ),
-    )
-    registerIpc({
-      pipes,
-      setUnread,
-      isBundledUrl,
-      migration,
-      isShellWindow: (id) => shellWindowIds.has(id),
-      summon: showMain,
-    })
+    try {
+      startup()
+    } catch (err) {
+      // One bad step must not abort startup with no window and no trail.
+      crashLog.append('startup', err instanceof Error ? (err.stack ?? err.message) : String(err))
+      if (!mainWindow) mainWindow = createWindow(true)
+    }
+  })
+}
 
-    // Deny every renderer permission request (camera/mic/geolocation/…).
-    // Electron's default handler GRANTS, and den iframes render LAN-served
-    // content. The app needs none of them: notifications ride the main
-    // process, clipboard rides IPC. BOTH gates: the check handler backs
-    // navigator.permissions.query, which would otherwise report 'granted'
-    // for permissions the request handler denies (review finding, PR #555).
-    session.defaultSession.setPermissionRequestHandler((_wc, _permission, cb) => {
-      cb(false)
-    })
-    session.defaultSession.setPermissionCheckHandler(() => false)
+function startup(): void {
+  serveDist(protocol, distDir())
+  registerIpc({
+    pipes,
+    setUnread,
+    isBundledUrl,
+    summon: summonWindow,
+    newWindow: spawnWindow,
+    quit: () => {
+      quitting = true
+      app.quit()
+    },
+  })
 
-    // Summon follows focus (see registerSummon): global while every shell
-    // window is blurred or hidden, released the moment one has focus so the
-    // combo reaches the renderer. No startup register — the main window is
-    // created focused (registering with no window fails on some Linux WMs
-    // and would stick a false conflict in the tooltip); the first blur or
-    // hide arms it. New Window is a MENU accelerator now — the old global
-    // Ctrl+Shift+N stole Chrome's incognito combo system-wide for as long
-    // as the tray process lived.
-    app.on('browser-window-focus', releaseSummon)
-    app.on('browser-window-blur', onAppBlur)
+  // Deny every renderer permission request (camera/mic/geolocation/…).
+  // Electron's default handler GRANTS, and den iframes render LAN-served
+  // content. The app needs none of them: notifications ride the main
+  // process, clipboard rides IPC. BOTH gates: the check handler backs
+  // navigator.permissions.query, which would otherwise report 'granted'
+  // for permissions the request handler denies (review finding, PR #555).
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, cb) => {
+    cb(false)
+  })
+  session.defaultSession.setPermissionCheckHandler(() => false)
 
+  // Summon follows focus (see registerSummon): global while every shell
+  // window is blurred or hidden, released the moment one has focus so the
+  // combo reaches the renderer. No startup register — the main window is
+  // created focused (registering with no window fails on some Linux WMs
+  // and would stick a false conflict in the tooltip); the first blur or
+  // hide arms it.
+  app.on('browser-window-focus', releaseSummon)
+  app.on('browser-window-blur', onAppBlur)
+
+  // Trayless is survivable (close-to-tray and window-all-closed both check
+  // `tray`); a Tray constructor throw — empty icon image on Windows — must
+  // not take startup down with it.
+  try {
     const icon = nativeImage.createFromPath(path.join(__dirname, '../icons/icon.png'))
     tray = new Tray(icon.resize({ width: 24, height: 24 }))
     tray.setToolTip(baseTip)
@@ -427,51 +521,55 @@ if (!app.requestSingleInstanceLock()) {
     // Left click summons; right click opens the menu. On Linux appindicator
     // hosts click events never arrive — the menu is the fallback there.
     tray.on('click', toggleMain)
+  } catch (err) {
+    tray = undefined
+    crashLog.append('tray', err instanceof Error ? (err.stack ?? err.message) : String(err))
+  }
 
-    // Application menu. On Windows, Menu.setApplicationMenu() makes Chromium
-    // round-trip EVERY keydown through the main-process accelerator matcher.
-    // That is the den-xterm typing lag that landed with #560 — typing was
-    // fine on the Electron shell before that commit. Null the menu on win32;
-    // the tray still has Show / New Window / Quit. Linux and macOS keep the
-    // accelerator-bearing menu (bar stays hidden off darwin).
-    if (process.platform === 'win32') {
-      Menu.setApplicationMenu(null)
-    } else {
-      const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
-        const { action, submenu, ...rest } = item
-        const out = rest as MenuItemConstructorOptions
-        if (submenu) out.submenu = submenu.map(mapMenuItem)
-        if (action === 'new-window') out.click = spawnWindow
-        if (action === 'reload')
-          out.click = (_i, win) => {
-            if (win instanceof BrowserWindow) win.webContents.reload()
-          }
-        if (action === 'close-window') out.click = (_i, win) => win?.close()
-        if (action === 'quit')
-          out.click = () => {
-            quitting = true
-            app.quit()
-          }
-        return out
-      }
-      Menu.setApplicationMenu(
-        Menu.buildFromTemplate(appMenuTemplate(process.platform, app.isPackaged).map(mapMenuItem)),
-      )
+  // Application menu. On Windows, Menu.setApplicationMenu() makes Chromium
+  // round-trip EVERY keydown through the main-process accelerator matcher —
+  // the den-xterm typing lag fixed in #566. Null the menu on win32; the tray
+  // keeps Show / New Window / Quit and the renderer forwards window chords
+  // over rivetShell (rivethub-web lib/shell-keys.ts). Linux and macOS keep
+  // the accelerator-bearing menu (bar stays hidden off darwin).
+  if (process.platform === 'win32') {
+    Menu.setApplicationMenu(null)
+  } else {
+    const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
+      const { action, submenu, ...rest } = item
+      const out = rest as MenuItemConstructorOptions
+      if (submenu) out.submenu = submenu.map(mapMenuItem)
+      if (action === 'new-window') out.click = spawnWindow
+      if (action === 'reload')
+        out.click = (_i, win) => {
+          if (win instanceof BrowserWindow) win.webContents.reload()
+        }
+      if (action === 'close-window') out.click = (_i, win) => win?.close()
+      if (action === 'quit')
+        out.click = () => {
+          quitting = true
+          app.quit()
+        }
+      return out
     }
-    mainWindow = createWindow(true)
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate(appMenuTemplate(process.platform, app.isPackaged).map(mapMenuItem)),
+    )
+  }
+  mainWindow = createWindow(true)
 
-    // macOS: dock click / Cmd+Tab onto a hidden-to-tray app must restore
-    // the window — without this, close-to-tray left the dock icon a no-op.
-    // Registered inside the single-instance branch: the losing instance has
-    // no window to restore.
-    app.on('activate', showMain)
-  })
+  // macOS: dock click / Cmd+Tab onto a hidden-to-tray app must restore
+  // the window — without this, close-to-tray left the dock icon a no-op.
+  // Registered inside the single-instance branch: the losing instance has
+  // no window to restore.
+  app.on('activate', showMain)
 }
 
 // Tray app: closing every window must not exit (main hides to tray; extra
-// windows close for real). Quit is the tray's job on every platform.
+// windows close for real). Quit is the tray's job — except trayless, where
+// a windowless background process would be unreachable.
 app.on('window-all-closed', () => {
-  /* keep running */
+  if (!tray) app.quit()
 })
 
 app.on('before-quit', () => {

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  cascadePoint,
   clampToDisplays,
   DEFAULT_WINDOW_STATE,
   loadWindowState,
@@ -17,7 +18,9 @@ const DISPLAY = [{ x: 0, y: 0, width: 2560, height: 1400 }]
 
 describe('parseWindowState', () => {
   it('accepts a sane saved state and floors fractional values', () => {
-    expect(parseWindowState('{"x":10.7,"y":20,"width":1600.2,"height":900,"maximized":true}')).toEqual({
+    expect(
+      parseWindowState('{"x":10.7,"y":20,"width":1600.2,"height":900,"maximized":true}'),
+    ).toEqual({
       x: 10,
       y: 20,
       width: 1600,
@@ -118,5 +121,23 @@ describe('load/save round trip', () => {
     const file = join(dir, 'window-state.json')
     writeFileSync(file, JSON.stringify({ x: 99_999, y: 0, width: 1280, height: 820 }))
     expect(loadWindowState(file, DISPLAY)).toEqual({ width: 1280, height: 820 })
+  })
+})
+
+describe('cascadePoint', () => {
+  const WORK = { x: 0, y: 0, width: 2560, height: 1400 }
+
+  it('offsets down-right from the base window', () => {
+    expect(cascadePoint({ x: 100, y: 200 }, WORK)).toEqual({ x: 132, y: 232 })
+  })
+
+  it('wraps an axis back to the work-area origin at the edge', () => {
+    expect(cascadePoint({ x: 2540, y: 200 }, WORK)).toEqual({ x: 0, y: 232 })
+    expect(cascadePoint({ x: 100, y: 1390 }, WORK)).toEqual({ x: 132, y: 0 })
+  })
+
+  it('respects a work area that does not start at the origin', () => {
+    const work = { x: 2560, y: 0, width: 1920, height: 1080 }
+    expect(cascadePoint({ x: 4470, y: 100 }, work)).toEqual({ x: 2560, y: 132 })
   })
 })

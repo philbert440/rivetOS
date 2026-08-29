@@ -1,31 +1,16 @@
 /**
- * Application menu. `Menu.setApplicationMenu(null)` on Linux/Windows didn't
- * just drop the bar — it dropped every accelerator Chromium hangs off menu
- * roles: zoom (Ctrl+= / Ctrl+- / Ctrl+0), fullscreen, and any in-window
- * Quit, leaving the tray as the only exit (four-agent desktop review,
- * consolidated punch list #2/#7).
+ * Application menu — exists for its ACCELERATORS on Linux/macOS (the bar is
+ * hidden off darwin). NOT installed on Windows: menu accelerators make
+ * Chromium round-trip every keydown through main, the den-xterm typing lag
+ * (#566); the renderer forwards win32 chords over rivetShell instead.
  *
- * The menu exists for its ACCELERATORS on Linux and macOS. On Windows it
- * is NOT installed: Chromium round-trips every keydown through the
- * accelerator matcher, which is the den-xterm typing lag from #560. The
- * tray keeps Show / New Window / Quit there. Off Windows the bar itself is
- * never shown on Linux (setMenuBarVisibility(false) with auto-hide OFF —
- * an auto-hide bar answers the single Alt key, and Alt must stay a
- * terminal modifier), and on macOS it is the normal top bar. New Window
- * rides a menu accelerator now instead of a GLOBAL Ctrl+Shift+N, which
- * used to steal the combo system-wide (Chrome's incognito) even while
- * RivetHub was in the background.
- *
- * Deliberately accelerator-free or absent (grok review of this PR): Reload
- * has NO accelerator and forceReload does not exist — menu accelerators are
- * consumed in the main process before the focused frame sees the key, so
- * default Ctrl+R / Ctrl+Shift+R roles would starve den xterms of those
- * combos and collide with the summon shortcut — the exact bugs this PR
- * fixes. Close is likewise accelerator-free off macOS (Ctrl+W is
- * delete-word in a terminal; Cmd+W on macOS is a different key and stays).
- * DevTools ships only unpackaged: a devtools console on the privileged hub
- * is a self-XSS surface onto window.rivetShell. Fullscreen state is not
- * persisted by window-state — a choice, not an accident.
+ * Constraints, all load-bearing: no auto-hide bar (it answers the lone Alt
+ * key, a terminal modifier); no editMenu off darwin (Ctrl+C in a den xterm
+ * is SIGINT, not copy); Reload carries NO accelerator and forceReload does
+ * not exist (Ctrl+R / Ctrl+Shift+R must reach xterms, and the latter is the
+ * summon shortcut); Close is accelerator-free off macOS (Ctrl+W is
+ * delete-word in a terminal); DevTools ships only unpackaged (a devtools
+ * console on the privileged hub is a self-XSS surface onto rivetShell).
  *
  * Template is data (roles + handler tags), built pure for testability; the
  * caller maps tags to real handlers.

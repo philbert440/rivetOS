@@ -29,6 +29,12 @@ export interface RivetShell {
     available?: { version: string; sizeBytes?: number }
   }>
   installUpdate?(gatewayBase: string): Promise<void>
+  /** Open one more shell window. */
+  newWindow?(): Promise<void>
+  /** Zoom this window: 1 = in, -1 = out, 0 = reset. */
+  zoomAdjust?(delta: 1 | -1 | 0): Promise<void>
+  /** Quit the app for real (close-to-tray does not apply). */
+  quitApp?(): Promise<void>
 }
 
 const SHELL_METHODS = [

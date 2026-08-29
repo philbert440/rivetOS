@@ -1,6 +1,3 @@
-// Ported from the Tauri shell's proxy.rs tests — same cases, same semantics,
-// so the Node pipe cannot silently drift from the behavior the fleet already
-// trusts.
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -92,7 +89,10 @@ describe('PipeState identity validation', () => {
   it('rejects garbage PEM at resolve time, uncached', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mtls-test-'))
     for (const f of ['device.crt', 'device.key', 'ca.pem']) {
-      writeFileSync(join(dir, f), '-----BEGIN CERTIFICATE-----\ngarbage\n-----END CERTIFICATE-----\n')
+      writeFileSync(
+        join(dir, f),
+        '-----BEGIN CERTIFICATE-----\ngarbage\n-----END CERTIFICATE-----\n',
+      )
     }
     const state = new PipeState(() => dir)
     // Corrupt material must fail THIS resolve (never mint a dead port)…
@@ -114,8 +114,14 @@ describe('PipeState identity validation', () => {
 
   it('rejects a partial enroll (empty ca.pem) uncached — the completed enroll must recover', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'mtls-test-'))
-    writeFileSync(join(dir, 'device.crt'), '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n')
-    writeFileSync(join(dir, 'device.key'), '-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n')
+    writeFileSync(
+      join(dir, 'device.crt'),
+      '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n',
+    )
+    writeFileSync(
+      join(dir, 'device.key'),
+      '-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n',
+    )
     writeFileSync(join(dir, 'ca.pem'), '') // enroll wrote leaf+key first; CA not landed yet
     const state = new PipeState(() => dir)
     await expect(state.proxyPort('https://localhost:5174')).rejects.toThrow(/ca\.pem.*no PEM/)
