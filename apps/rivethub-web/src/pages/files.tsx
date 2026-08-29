@@ -13,7 +13,7 @@ import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
-import { openExternal } from '../lib/open-external.js'
+import { rivetShell } from '../lib/shell-bridge.js'
 import { baseName, joinRel, parentRel, previewKind } from '../lib/files-ui.js'
 import { useGateway } from '../lib/use-gateway.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -29,6 +29,26 @@ function fmtSize(bytes: number): string {
 function fmtMtime(ms: number): string {
   const d = new Date(ms)
   return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+}
+
+/** In-shell file save: the OS browser sits outside the shell's mTLS pipe and
+ *  cannot authenticate to the gateway, so pull the bytes over the app's own
+ *  transport and hand them to Chromium as a download (Electron's default
+ *  will-download handler shows the save dialog). */
+async function saveViaGateway(url: string, name: string): Promise<void> {
+  const res = await fetch(url, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`download failed (HTTP ${String(res.status)})`)
+  const blob = await res.blob()
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = name
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  // Chromium starts the download stream from the blob on click; revoke on a
+  // delay so a slow disc never races the revocation.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
 }
 
 type SortKey = 'name' | 'mtime' | 'size'
@@ -532,10 +552,21 @@ export function FilesPage(): JSX.Element {
                             else setPreviewPath(child)
                           }}
                           onDoubleClick={() => {
-                            // openExternal, not window.open — the desktop
-                            // shell denies window.open, making this a dead
-                            // click there.
-                            if (e.type === 'file') openExternal(gateway.fileDownloadUrl(child))
+                            if (e.type !== 'file') return
+                            const url = gateway.fileDownloadUrl(child)
+                            if (rivetShell()) {
+                              // The OS browser sits OUTSIDE the shell's mTLS
+                              // pipe — handing it a same-gateway URL fails
+                              // auth. Previewable kinds open in-app; the rest
+                              // download over the authenticated transport.
+                              if (previewKind(e.name, e.size) !== 'none') setPreviewPath(child)
+                              else
+                                void saveViaGateway(url, e.name).catch((err: unknown) => {
+                                  showNotice({ kind: 'err', text: (err as Error).message })
+                                })
+                            } else {
+                              window.open(url, '_blank', 'noopener,noreferrer')
+                            }
                           }}
                           className="flex items-center gap-2 text-left"
                         >
@@ -596,6 +627,7 @@ function PreviewPane(props: {
   const name = baseName(props.path)
   // Prefer known size; when unknown assume under text cap for extension classification.
   const kind = previewKind(name, props.size ?? 100_000)
+  const inShell = rivetShell() != null
 
   return (
     <aside className="flex w-[min(36rem,50%)] shrink-0 flex-col border-l border-line bg-panel/60">
@@ -605,15 +637,23 @@ function PreviewPane(props: {
           href={props.downloadUrl}
           target="_blank"
           rel="noopener noreferrer"
-          onClick={(ev) => {
-            // Shell denies target=_blank; browsers keep the anchor semantics
-            // via openExternal's window.open fallback.
-            ev.preventDefault()
-            openExternal(props.downloadUrl)
-          }}
+          // In-shell only: target=_blank is denied and an OS browser cannot
+          // authenticate to the gateway anyway — download over the app's
+          // transport instead. Plain browsers keep real anchor semantics
+          // (modifier-click, popup blocker).
+          onClick={
+            inShell
+              ? (ev) => {
+                  ev.preventDefault()
+                  void saveViaGateway(props.downloadUrl, name).catch((err: unknown) => {
+                    console.warn('[files] download failed', err)
+                  })
+                }
+              : undefined
+          }
           className="font-mono text-[11px] text-ink-dim hover:text-em"
         >
-          open
+          {inShell ? 'download' : 'open'}
         </a>
         <button type="button" onClick={props.onClose} className="text-ink-dim hover:text-ink">
           ✕

@@ -92,6 +92,69 @@ describe('shouldBridgeNativeCopy / claimNativeCopy', () => {
     expect(claimNativeCopy('', preventDefault, { hasShell: false, hasTauri: true })).toBe(false)
     expect(preventDefault).not.toHaveBeenCalled()
   })
+
+  it('does not claim in a plain browser (no host IPC at all)', () => {
+    const preventDefault = vi.fn()
+    expect(claimNativeCopy('selected-text', preventDefault, { hasShell: false, hasTauri: false })).toBe(
+      false,
+    )
+    expect(preventDefault).not.toHaveBeenCalled()
+  })
+})
+
+describe('write serialization', () => {
+  it('keeps issue order under a slow first write — clipboard ends on the newest copy', async () => {
+    const written: string[] = []
+    let releaseA: (() => void) | undefined
+    const writeText = vi.fn((t: string) => {
+      written.push(t)
+      if (t === 'A') return new Promise<void>((resolve) => (releaseA = resolve))
+      return Promise.resolve()
+    })
+    setTauri({ writeText, readText: vi.fn(async () => '') })
+
+    const a = copyTextToClipboard('A')
+    const b = copyTextToClipboard('B')
+    // B must not be issued while A is in flight.
+    expect(written).toEqual(['A'])
+    releaseA?.()
+    await a
+    await b
+    // A settled late, then B issued — final clipboard content is B.
+    expect(written).toEqual(['A', 'B'])
+  })
+
+  it('drops a queued write superseded before it was issued', async () => {
+    const written: string[] = []
+    let releaseA: (() => void) | undefined
+    const writeText = vi.fn((t: string) => {
+      written.push(t)
+      if (t === 'A') return new Promise<void>((resolve) => (releaseA = resolve))
+      return Promise.resolve()
+    })
+    setTauri({ writeText, readText: vi.fn(async () => '') })
+
+    const a = copyTextToClipboard('A')
+    const b = copyTextToClipboard('B') // queued
+    const c = copyTextToClipboard('C') // supersedes B before issue
+    releaseA?.()
+    await Promise.all([a, b, c])
+    // B was never handed to the host — exactly one effective queued write.
+    expect(written).toEqual(['A', 'C'])
+  })
+
+  it('propagates a write failure so bridge callers can log it', async () => {
+    setTauri({
+      writeText: vi.fn(async () => {
+        throw new Error('ipc denied')
+      }),
+      readText: vi.fn(async () => ''),
+    })
+    // No navigator.clipboard and no DOM in this environment — every
+    // fallback is exhausted and the caller must see the rejection.
+    vi.stubGlobal('navigator', {})
+    await expect(copyTextToClipboard('lost')).rejects.toThrow()
+  })
 })
 
 describe('copyTextToClipboard', () => {

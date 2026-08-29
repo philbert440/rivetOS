@@ -108,7 +108,7 @@ async function readViaTauri(): Promise<string | undefined> {
   return undefined
 }
 
-export function copyTextToClipboard(text: string): Promise<void> {
+function issueWrite(text: string): Promise<void> {
   return writeViaTauri(text)
     .then((used) => {
       if (used) return
@@ -126,6 +126,61 @@ export function copyTextToClipboard(text: string): Promise<void> {
       }
       return fallbackCopy(text)
     })
+}
+
+/**
+ * Write serialization. The IPC chain is async, so two rapid copies could
+ * otherwise complete out of order and copy N's late write would clobber
+ * copy N+1 — the user-facing "paste gives the previous thing" bug. Every
+ * request takes a monotonic generation; at most one write is in flight; a
+ * queued write that is no longer the newest generation is dropped before it
+ * is ever issued (clipboard state is last-write-wins — an intermediate
+ * write is noise). A superseded caller resolves successfully: the clipboard
+ * deliberately holds newer content.
+ */
+let writeGen = 0
+let inFlight = false
+let pendingWrite:
+  { text: string; gen: number; resolve: () => void; reject: (e: unknown) => void } | undefined
+
+function drainWrites(): void {
+  inFlight = false
+  const next = pendingWrite
+  pendingWrite = undefined
+  if (!next) return
+  inFlight = true
+  issueWrite(next.text).then(
+    () => {
+      next.resolve()
+      drainWrites()
+    },
+    (e: unknown) => {
+      next.reject(e)
+      drainWrites()
+    },
+  )
+}
+
+export function copyTextToClipboard(text: string): Promise<void> {
+  const gen = ++writeGen
+  if (inFlight) {
+    // Supersede any queued-but-unissued older write.
+    if (pendingWrite && pendingWrite.gen < gen) pendingWrite.resolve()
+    return new Promise<void>((resolve, reject) => {
+      pendingWrite = { text, gen, resolve, reject }
+    })
+  }
+  inFlight = true
+  const p = issueWrite(text)
+  p.then(
+    () => {
+      drainWrites()
+    },
+    () => {
+      drainWrites()
+    },
+  )
+  return p
 }
 
 /** Resolves undefined when no readable clipboard source exists. */
@@ -201,12 +256,29 @@ export function claimNativeCopy(
  */
 let bridgeInstalled = false
 
+/** The gesture's payload: DOM selection, falling back to the focused
+ *  textarea/input's selection range — WebKit often reports an empty
+ *  `window.getSelection()` inside form fields, and bailing there would hand
+ *  the composer back to the broken native path this bridge exists for. */
+export function bridgeSelectionText(doc: Document = document): string {
+  const sel = typeof window !== 'undefined' ? (window.getSelection()?.toString() ?? '') : ''
+  if (sel) return sel
+  const el = doc.activeElement
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
+    const { selectionStart, selectionEnd, value } = el
+    if (selectionStart != null && selectionEnd != null && selectionEnd > selectionStart) {
+      return value.slice(selectionStart, selectionEnd)
+    }
+  }
+  return ''
+}
+
 export function installClipboardBridge(): void {
   if (bridgeInstalled || typeof document === 'undefined') return
   bridgeInstalled = true
 
   document.addEventListener('copy', (e) => {
-    const sel = typeof window !== 'undefined' ? (window.getSelection()?.toString() ?? '') : ''
+    const sel = bridgeSelectionText()
     if (
       !claimNativeCopy(sel, () => {
         e.preventDefault()
@@ -214,6 +286,10 @@ export function installClipboardBridge(): void {
     ) {
       return
     }
-    void copyTextToClipboard(sel).catch(() => undefined)
+    // preventDefault already cancelled the UA write — a reject here means
+    // the copy was lost, which must at least be visible in the console.
+    void copyTextToClipboard(sel).catch((err: unknown) => {
+      console.warn('[clipboard] bridged copy failed after claiming the gesture', err)
+    })
   })
 }

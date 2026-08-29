@@ -29,6 +29,11 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | undefined>(undefined)
   const fitRef = useRef<FitAddon | undefined>(undefined)
+  // Shared with the socket effect: it silences copy-on-select around
+  // term.reset() (reset can fire onSelectionChange) and clears any pending
+  // debounce so a pre-rebind selection can't copy mid-rebind.
+  const selTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const selSuppressRef = useRef(false)
   const transportEpoch = useConnection((s) => s.transportEpoch)
   const [status, setStatus] = useState<'connecting' | 'attached' | 'exited' | 'closed'>(
     'connecting',
@@ -59,10 +64,12 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     // copies explicitly, Ctrl+Shift+V pastes (lib/clipboard.ts chain).
     // Plain Ctrl+C stays SIGINT and plain Ctrl+V stays a native paste event
     // into xterm's hidden textarea — neither is intercepted here.
-    let selTimer: ReturnType<typeof setTimeout> | undefined
+    let alive = true
     const selSub = term.onSelectionChange(() => {
-      if (selTimer) clearTimeout(selTimer)
-      selTimer = setTimeout(() => {
+      if (selSuppressRef.current) return
+      if (selTimerRef.current) clearTimeout(selTimerRef.current)
+      selTimerRef.current = setTimeout(() => {
+        if (!alive) return
         const sel = term.getSelection()
         if (sel) void copyTextToClipboard(sel).catch(() => undefined)
       }, 150)
@@ -92,7 +99,8 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     fitRef.current = fit
 
     return () => {
-      if (selTimer) clearTimeout(selTimer)
+      alive = false
+      if (selTimerRef.current) clearTimeout(selTimerRef.current)
       selSub.dispose()
       termRef.current = undefined
       fitRef.current = undefined
@@ -111,15 +119,25 @@ export function XtermAttach(props: { ptyId: string }): JSX.Element {
     let disposed = false
     setStatus('connecting')
     // Reattach (epoch rebind) replays scrollback — clear the buffer so the
-    // replay doesn't append a second copy. First attach: no-op.
+    // replay doesn't append a second copy. First attach: no-op. Silence
+    // copy-on-select for the reset: it clears the selection, and a leftover
+    // non-empty selection must not be copied mid-rebind.
+    selSuppressRef.current = true
+    if (selTimerRef.current) clearTimeout(selTimerRef.current)
     term.reset()
+    selSuppressRef.current = false
 
     const { gateway } = useConnection.getState()
     const ws = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
     ws.binaryType = 'arraybuffer'
 
     ws.onopen = () => {
-      if (!disposed) setStatus('attached')
+      if (disposed) return
+      setStatus('attached')
+      // Always re-fit and declare our size on (re)attach — a rebind would
+      // otherwise keep whatever PTY size the previous socket negotiated.
+      fit.fit()
+      ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
     }
     ws.onclose = () => {
       if (!disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
