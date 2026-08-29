@@ -73,6 +73,7 @@ interface Captured {
   url?: string
   auth?: string
   body?: string
+  contentType?: string
 }
 
 let server: Server
@@ -83,6 +84,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
   captured.method = req.method
   captured.url = req.url
   captured.auth = req.headers.authorization
+  captured.contentType = req.headers['content-type']
   let raw = ''
   req.on('data', (c: Buffer) => (raw += c.toString()))
   req.on('end', () => {
@@ -119,6 +121,24 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
         embeddings: { status: 'ok' },
         embedQueueDepth: 0,
       })
+    }
+    if (path === '/api/uploads' && req.method === 'POST') {
+      return respond(201, {
+        uri: '/home/rivet/.rivetos/den/uploads/u1.png',
+        name: 'shot.png',
+        mime: 'image/png',
+        size: raw.length,
+        expiresAt: 1_751_900_000_000,
+      })
+    }
+    if (path === '/api/voice/transcribe' && req.method === 'POST') {
+      if (raw === 'NOCONF')
+        return respond(501, { error: 'voice transcription is not configured on this node' })
+      return respond(200, { text: 'hello from mic' })
+    }
+    if (path === '/api/voice/speak' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'audio/wav' })
+      return res.end('WAVBYTES')
     }
     if (path === '/api/tasks/missing') return respond(404, { error: 'no task missing' })
     respond(500, { error: `unhandled ${req.method} ${path}` })
@@ -174,6 +194,39 @@ describe('RivetGateway HTTP', () => {
     const sheet = await gw.catalog()
     expect(sheet.node).toBe('testnode')
     expect(sheet.agents).toHaveLength(2)
+  })
+
+  it('stages an upload with raw body and query metadata', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const staged = await gw.stageUpload('shot.png', new Blob(['PNGBYTES']), {
+      mime: 'image/png',
+    })
+    expect(staged.uri).toBe('/home/rivet/.rivetos/den/uploads/u1.png')
+    expect(captured.url).toBe('/api/uploads?name=shot.png&mime=image%2Fpng')
+    expect(captured.body).toBe('PNGBYTES')
+  })
+
+  it('transcribes audio and synthesizes speech via the voice proxy', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    const out = await gw.voiceTranscribe(new Blob(['AUDIO']), 'audio/webm')
+    expect(out.text).toBe('hello from mic')
+    expect(captured.url).toBe('/api/voice/transcribe')
+    expect(captured.contentType).toBe('audio/webm')
+    const wav = await gw.voiceSpeak({ input: 'hi', instructions: 'warm' })
+    expect(Buffer.from(wav).toString()).toBe('WAVBYTES')
+    expect(captured.url).toBe('/api/voice/speak')
+    expect(captured.contentType).toBe('application/json')
+    expect(JSON.parse(captured.body ?? '{}')).toEqual({ input: 'hi', instructions: 'warm' })
+  })
+
+  it('maps voice-proxy errors like the other raw-body endpoints', async () => {
+    const gw = new RivetGateway({ baseUrl })
+    await expect(gw.voiceTranscribe(new Blob(['NOCONF']), 'audio/wav')).rejects.toMatchObject({
+      status: 501,
+      message: 'voice transcription is not configured on this node',
+    })
+    const dead = new RivetGateway({ baseUrl: 'http://127.0.0.1:1' })
+    await expect(dead.voiceSpeak({ input: 'hi' })).rejects.toMatchObject({ status: 0 })
   })
 
   it('fetches outcomes', async () => {

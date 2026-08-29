@@ -44,6 +44,9 @@ import type {
   WorkflowKillResponse,
   WorkflowValidateResponse,
   FilesUploadResponse,
+  StagedUploadResponse,
+  VoiceSpeakRequest,
+  VoiceTranscribeResponse,
   AgentsListResponse,
   AgentCreateRequest,
   AgentUpdateRequest,
@@ -779,31 +782,60 @@ export class RivetGateway {
     u.searchParams.set('dir', dir)
     u.searchParams.set('name', name)
     if (opts.overwrite) u.searchParams.set('overwrite', '1')
-    const headers: Record<string, string> = { 'content-type': 'application/octet-stream' }
-    let res: Response
-    try {
-      res = await fetch(u.toString(), {
-        method: 'POST',
-        headers,
-        body,
-        signal: opts.signal,
-      })
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === 'AbortError') throw err
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
-    }
-    const parsed: unknown = await res.json().catch(() => undefined)
-    if (!res.ok) {
-      const message =
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        typeof (parsed as { error?: unknown }).error === 'string'
-          ? (parsed as { error: string }).error
-          : `gateway ${res.status} on /api/files/upload`
-      throw new GatewayError(res.status, message, parsed)
-    }
-    return parsed as FilesUploadResponse
+    return (await rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
+      res.json(),
+    )) as FilesUploadResponse
+  }
+
+  /** Stage bytes for a harness turn attachment (POST /api/uploads). The
+   *  returned `uri` is node-resolvable — put it in
+   *  `UserTurn.attachments[].pathOrUri`, never a client filesystem path.
+   *  Bypasses request(): the body is binary, not JSON. */
+  async stageUpload(
+    name: string,
+    body: Blob | ArrayBuffer,
+    opts: { mime?: string; signal?: AbortSignal } = {},
+  ): Promise<StagedUploadResponse> {
+    const u = new URL(
+      '/api/uploads',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    u.searchParams.set('name', name)
+    if (opts.mime) u.searchParams.set('mime', opts.mime)
+    return (await rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
+      res.json(),
+    )) as StagedUploadResponse
+  }
+
+  /** Transcribe a mic clip via the node's voice proxy (POST
+   *  /api/voice/transcribe). 501 = voice not configured on this node. */
+  async voiceTranscribe(
+    audio: Blob | ArrayBuffer,
+    mime: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<VoiceTranscribeResponse> {
+    const u = new URL(
+      '/api/voice/transcribe',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    return (await rawBodyPost(u, audio, mime, opts.signal, (res) =>
+      res.json(),
+    )) as VoiceTranscribeResponse
+  }
+
+  /** Synthesize speech via the node's voice proxy (POST /api/voice/speak).
+   *  Resolves to the audio bytes (audio/wav in practice). */
+  async voiceSpeak(
+    req: VoiceSpeakRequest,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<ArrayBuffer> {
+    const u = new URL(
+      '/api/voice/speak',
+      this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
+    )
+    return (await rawBodyPost(u, JSON.stringify(req), 'application/json', opts.signal, (res) =>
+      res.arrayBuffer(),
+    )) as ArrayBuffer
   }
 
   /** Create an empty directory under `dir` named `name`. */
@@ -862,4 +894,40 @@ export class RivetGateway {
       return false
     }
   }
+}
+
+/** Raw-body POST shared by the binary endpoints (files upload, attachment
+ *  staging, voice): one unreachable/error mapping, parameterized success
+ *  extraction. Not exported — the class methods are the API. */
+async function rawBodyPost(
+  u: URL,
+  body: string | Blob | ArrayBuffer,
+  contentType: string,
+  signal: AbortSignal | undefined,
+  extract: (res: Response) => Promise<unknown>,
+): Promise<unknown> {
+  let res: Response
+  try {
+    res = await fetch(u.toString(), {
+      method: 'POST',
+      headers: { 'content-type': contentType },
+      body,
+      signal,
+    })
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'AbortError') throw err
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
+  }
+  if (!res.ok) {
+    const parsed: unknown = await res.json().catch(() => undefined)
+    const message =
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === 'string'
+        ? (parsed as { error: string }).error
+        : `gateway ${String(res.status)} on ${u.pathname}`
+    throw new GatewayError(res.status, message, parsed)
+  }
+  return extract(res)
 }

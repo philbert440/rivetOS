@@ -835,6 +835,29 @@ export interface FilesUploadResponse {
   bytes: number
 }
 
+/** POST /api/uploads — attachment staging for remote clients. The returned
+ *  `uri` is node-resolvable and belongs in `UserTurn.attachments[].pathOrUri`. */
+export interface StagedUploadResponse {
+  uri: string
+  name: string
+  mime: string
+  size: number
+  expiresAt: number
+}
+
+/** POST /api/voice/speak request body (den voice proxy). */
+export interface VoiceSpeakRequest {
+  input: string
+  /** Voice-design steering; the node's configured default applies when absent. */
+  instructions?: string
+  voice?: string
+}
+
+/** POST /api/voice/transcribe response (OpenAI transcription-compatible). */
+export interface VoiceTranscribeResponse {
+  text: string
+}
+
 /** mkdir / rename / delete success body */
 export interface FilesMutateResponse {
   ok: true

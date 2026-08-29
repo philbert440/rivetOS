@@ -130,6 +130,9 @@ export interface DenConfig {
   /** Harness attachment staging (POST /api/uploads). Optional for the same
    *  reason as `devices`. */
   uploads?: DenUploadsConfig
+  /** Voice STT/TTS proxy upstreams (POST /api/voice/*). Optional for the
+   *  same reason as `devices`. */
+  voice?: DenVoiceConfig
   /**
    * Shared memory DB (`RIVETOS_PG_URL`) — the same database capture writes to.
    * den-server reads it for exactly one thing today: the post-restart alias
@@ -203,6 +206,17 @@ function parseDeviceUsers(env: NodeJS.ProcessEnv): Record<string, string> | unde
 // memory plugin's stores, and the claude-cli spawn env must agree on what a
 // routable user is, or a device can be tagged with an id another layer
 // cannot route.
+
+/** Voice proxy upstreams (see voice-proxy.ts). Empty URL = that half 501s. */
+export interface DenVoiceConfig {
+  /** OpenAI /v1/audio/transcriptions-compatible endpoint (RIVETOS_DEN_VOICE_STT_URL). */
+  sttUrl: string
+  /** OpenAI /v1/audio/speech-compatible endpoint (RIVETOS_DEN_VOICE_TTS_URL). */
+  ttsUrl: string
+  /** Default voice-design `instructions` when a request carries none
+   *  (RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS) — our TTS model needs them. */
+  ttsInstructions: string
+}
 
 /** Staging area for remote-client harness attachments (see harness/uploads.ts). */
 export interface DenUploadsConfig {
@@ -338,6 +352,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       dir: env.RIVETOS_DEN_UPLOAD_DIR ?? '',
       maxBytes: intEnv(env, 'RIVETOS_DEN_UPLOAD_MAX_BYTES', DEFAULT_UPLOAD_MAX_BYTES),
       ttlMs: intEnv(env, 'RIVETOS_DEN_UPLOAD_TTL_MS', DEFAULT_UPLOAD_TTL_MS),
+    },
+    voice: {
+      sttUrl: env.RIVETOS_DEN_VOICE_STT_URL?.trim() ?? '',
+      ttsUrl: env.RIVETOS_DEN_VOICE_TTS_URL?.trim() ?? '',
+      ttsInstructions: env.RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS?.trim() ?? '',
     },
     // Same env var `devices.pgUrl` carries — one memory DB per node. Lifted to
     // the top level because it is no longer a devices-only concern: the alias
