@@ -13,7 +13,7 @@ import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { clearSessionMode } from './session-mode.js'
 import { clearSystemPromptSent } from './system-prompt-sent.js'
-import { clearAgentLastSession, getAgentLastSession } from './agent-session.js'
+import { clearAgentSessionPointer, listAgentSessions } from './agent-session.js'
 
 export function discardDraft(baseUrl: string, sessionId: string): void {
   const key = `${baseUrl}::${sessionId}`
@@ -24,14 +24,15 @@ export function discardDraft(baseUrl: string, sessionId: string): void {
   clearSessionMode(key)
   clearSystemPromptSent(sessionId)
   // Reverse bind (written by setAgentLastSession) names the owning agent;
-  // clear through the exported API only when the pointer really targets this
-  // draft — a stale bind must not nuke a pointer at a newer session.
+  // pointers are per-(agent, node) — compare-and-delete only the node slots
+  // that really target this draft, so a stale bind can never nuke a pointer
+  // at a newer session.
   try {
     const agentId = localStorage.getItem(`rivethub.agent.${sessionId}`)
-    if (agentId && getAgentLastSession(agentId)?.sessionId === sessionId) {
-      clearAgentLastSession(agentId)
-    } else if (agentId) {
-      localStorage.removeItem(`rivethub.agent.${sessionId}`)
+    if (agentId) {
+      const mine = listAgentSessions(agentId).filter((p) => p.sessionId === sessionId)
+      for (const p of mine) clearAgentSessionPointer(agentId, p.nodeBaseUrl, sessionId)
+      if (mine.length === 0) localStorage.removeItem(`rivethub.agent.${sessionId}`)
     }
   } catch {
     /* storage disabled */
