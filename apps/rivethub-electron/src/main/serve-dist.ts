@@ -41,19 +41,24 @@ export function allowMediaRequest(details: {
   mediaTypes?: readonly string[]
 }): boolean {
   if (!details.requestingUrl || !isBundledUrl(details.requestingUrl)) return false
-  if (details.isMainFrame === false) return false
+  if (details.isMainFrame !== true) return false
   const types = details.mediaTypes ?? []
   return types.length > 0 && types.every((t) => t === 'audio')
 }
 
 /** Check-handler twin of allowMediaRequest (permissions.query must agree
  *  with getUserMedia — the #555 split). The check API has no mediaTypes
- *  array, only a single mediaType; anything video answers false. */
+ *  array, only a single mediaType; anything video answers false. Electron
+ *  passes isMainFrame here too — a same-origin subframe keeps the parent
+ *  origin and omits embeddingOrigin, so the frame check is the only thing
+ *  keeping the twins in agreement for nested bundled frames. Both gates
+ *  fail closed when the boolean is missing. */
 export function allowMediaCheck(
   requestingOrigin: string,
-  details: { embeddingOrigin?: string; mediaType?: string },
+  details: { embeddingOrigin?: string; mediaType?: string; isMainFrame?: boolean },
 ): boolean {
   if (!isBundledUrl(requestingOrigin)) return false
+  if (details.isMainFrame !== true) return false
   if (details.embeddingOrigin && !isBundledUrl(details.embeddingOrigin)) return false
   return details.mediaType !== 'video'
 }

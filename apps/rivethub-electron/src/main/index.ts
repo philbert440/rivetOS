@@ -538,7 +538,10 @@ function startup(): void {
   session.defaultSession.setPermissionCheckHandler(
     (_wc, permission, requestingOrigin, details) =>
       permission === 'media' &&
-      allowMediaCheck(requestingOrigin, details as { embeddingOrigin?: string; mediaType?: string }),
+      allowMediaCheck(
+        requestingOrigin,
+        details as { embeddingOrigin?: string; mediaType?: string; isMainFrame?: boolean },
+      ),
   )
 
   // Summon follows focus (see registerSummon): global while every shell

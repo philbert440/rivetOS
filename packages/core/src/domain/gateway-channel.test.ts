@@ -515,10 +515,9 @@ describe('bridgeAgentEvent (seamless-modes bridge)', () => {
       const options = args.questions[0].options
       // array cap still applies to ask payloads
       expect(options).toHaveLength(20)
-      // 2001 chars → capped at the ASK budget, not the generic one
+      // 2001 chars → capped at exactly the ASK budget (2000 + ellipsis)
       expect(options[0].label.endsWith('…')).toBe(true)
-      expect(options[0].label.length).toBeLessThanOrEqual(2001)
-      expect(options[0].label.length).toBeGreaterThan(1000)
+      expect(options[0].label.length).toBe(2001)
       // value-pattern redaction runs inside the wider budget too
       expect(options[1].label).not.toContain('sk-abc1234567890live')
       expect(options[1].label.toLowerCase()).toContain('[redacted]')
