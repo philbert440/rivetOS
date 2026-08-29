@@ -6,6 +6,7 @@
 import type { IncomingMessage } from 'node:http'
 import {
   resolveUser,
+  TRUSTED_USER_HEADER,
   type ResolveUserResult,
   type UserContext,
   type UsersRegistry,
@@ -35,7 +36,7 @@ export function resolveRequestUser(
   return resolveUser(registry, dev.deviceId)
 }
 
-export const TRUSTED_USER_HEADER = 'x-rivetos-user'
+export { TRUSTED_USER_HEADER }
 
 /** Stamp the trusted header for a non-owner. Owner keeps today's no-header path
  *  so unmapped main-store traffic is unchanged. Always strip inbound first. */
