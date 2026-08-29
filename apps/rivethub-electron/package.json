@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/rivethub-electron",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "description": "RivetHub desktop \u2014 Electron shell over rivethub-web: tray, native notifications, multi-window, native mTLS device identity",
   "main": "dist-electron/main.cjs",
