@@ -229,14 +229,16 @@ function createWindow(isMain: boolean): BrowserWindow {
   // capped by RendererReloadPolicy — a finish-then-die cycle (post-load
   // script crash) must count against the cap, not re-arm it; only a load
   // that SURVIVES the healthy window resets the streak.
+  // performance.now() is monotonic — a forward NTP/sleep jump on the wall
+  // clock must not fake a healthy survival.
   const reloadPolicy = new RendererReloadPolicy()
   win.webContents.on('did-finish-load', () => {
-    reloadPolicy.finished(Date.now())
+    reloadPolicy.finished(performance.now())
   })
   win.webContents.on('render-process-gone', (_e, details) => {
     logFault('render-process-gone', `${details.reason} exitCode=${String(details.exitCode ?? '')}`)
     if (details.reason === 'clean-exit' || win.isDestroyed()) return
-    if (!reloadPolicy.shouldReload(Date.now())) return
+    if (!reloadPolicy.shouldReload(performance.now())) return
     win.webContents.reload()
   })
   // Right-click menu: pure template (context-menu.ts), roles route edit

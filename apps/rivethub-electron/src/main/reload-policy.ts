@@ -25,9 +25,16 @@ export class RendererReloadPolicy {
   }
 
   /** Decide for a dead renderer: true = reload it, false = crash loop —
-   *  stop until a load survives the healthy window. */
+   *  stop until a load survives the healthy window. `now` should come from
+   *  the same monotonic clock as finished() — wall clock can jump forward
+   *  and fake a healthy survival. */
   shouldReload(now: number): boolean {
-    if (this.lastFinishAt !== 0 && now - this.lastFinishAt >= this.healthyMs) {
+    const lastFinish = this.lastFinishAt
+    // A death ends the load that finish belonged to: consume the stamp, so
+    // one finish justifies at most one reset and a reload that never
+    // finishes can never inherit the previous load's "healthy" evidence.
+    this.lastFinishAt = 0
+    if (lastFinish !== 0 && now - lastFinish >= this.healthyMs) {
       // The previous load lived long enough to count as healthy — this
       // death starts a fresh streak instead of extending the old one.
       this.reloads = 0

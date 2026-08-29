@@ -40,6 +40,23 @@ describe('RendererReloadPolicy', () => {
     expect(p.shouldReload(now)).toBe(true)
   })
 
+  it('a reload that never finishes cannot inherit the previous finish (stale stamp)', () => {
+    // A death consumes the finish stamp: a second death ≥window later with
+    // NO new did-finish-load must count against the streak, never reset it
+    // off the stale finish.
+    const p1 = new RendererReloadPolicy(1, RELOAD_HEALTHY_MS)
+    p1.finished(T0)
+    expect(p1.shouldReload(T0 + 1_000)).toBe(true)
+    expect(p1.shouldReload(T0 + 1_000 + RELOAD_HEALTHY_MS)).toBe(false)
+    // Same shape under the default cap: the late death is streak slot #2.
+    const p = new RendererReloadPolicy()
+    p.finished(T0)
+    expect(p.shouldReload(T0 + 1_000)).toBe(true) // slot 1
+    expect(p.shouldReload(T0 + 1_000 + RELOAD_HEALTHY_MS)).toBe(true) // slot 2, NOT a reset
+    expect(p.shouldReload(T0 + 2_000 + RELOAD_HEALTHY_MS)).toBe(true) // slot 3
+    expect(p.shouldReload(T0 + 3_000 + RELOAD_HEALTHY_MS)).toBe(false) // capped — a reset would keep this true
+  })
+
   it('exactly the healthy window counts as survived', () => {
     const p = new RendererReloadPolicy(1, RELOAD_HEALTHY_MS)
     p.finished(T0)
