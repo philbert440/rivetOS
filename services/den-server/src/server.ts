@@ -622,11 +622,22 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (!ctx) return sessions
       return sessionOwners.filter(sessions, ctx, (s) => s.sessionId)
     },
-    authorizeSession: (req, sessionId) => {
+    authorizeSession: (req, sessionId, route) => {
       const ctx = boundRequestUser(req)
       if (!sessionForbidden(sessionOwners, ctx, sessionId)) return true
-      auditTenancyDeny('WS harness stream', sessionId, ctx as UserContext)
+      auditTenancyDeny(route ?? 'WS harness stream', sessionId, ctx as UserContext)
       return false
+    },
+    claimSession: (req, sessionId) => {
+      const ctx = boundRequestUser(req)
+      if (!ctx) return true // tenancy off — single-owner node
+      const owner = sessionOwners.get(sessionId)
+      if (owner && owner !== ctx.userId) {
+        auditTenancyDeny('harness claim', sessionId, ctx)
+        return false
+      }
+      sessionOwners.set(sessionId, ctx.userId)
+      return true
     },
   })
 
