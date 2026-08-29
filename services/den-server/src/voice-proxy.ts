@@ -359,7 +359,10 @@ export function createVoiceRoutes(opts: VoiceRoutesOptions): VoiceRoutes {
         typeof body.instructions === 'string' && body.instructions.trim() !== ''
           ? body.instructions
           : defaultInstructions
-      const payload: Record<string, string> = { input: body.input }
+      // Always request WAV explicitly: our qwentts upstream's DEFAULT response
+      // is raw PCM (no RIFF header) that neither browsers nor libsndfile can
+      // play — found live on the first fleet roundtrip.
+      const payload: Record<string, string> = { input: body.input, response_format: 'wav' }
       if (instructions) payload.instructions = instructions
       if (typeof body.voice === 'string' && body.voice.trim() !== '') payload.voice = body.voice
       let upstream: Response
