@@ -64,6 +64,9 @@ export interface PtyInfo {
   state: 'running' | 'exited'
   exitCode?: number | null
   lastOutputTs: number
+  /** Den-stamped routed identity (#561); absent for the node owner. Lets
+   *  list consumers show WHOSE terminal this is, not just where it ran. */
+  routedUser?: string
 }
 
 type DataSubscriber = (data: string | Buffer) => void
@@ -273,6 +276,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       cwd: r.cwd,
       pid: r.pid,
       remote: r.remote,
+      // `remote` proves the machine; only the den-stamped identity proves the
+      // user — without it the audit trail can't answer "whose session was
+      // this?" on a multi-user node.
+      ...(r.routedUser !== undefined ? { routedUser: r.routedUser } : {}),
       ...extra,
     }
     try {
@@ -410,6 +417,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       lastOutputTs: r.lastOutputTs,
     }
     if (r.state === 'exited') out.exitCode = r.exitCode
+    if (r.routedUser !== undefined) out.routedUser = r.routedUser
     return out
   }
 

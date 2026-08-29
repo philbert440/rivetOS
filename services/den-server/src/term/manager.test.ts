@@ -719,6 +719,31 @@ describe('term manager', () => {
       expect(typeof line.cwd).toBe('string')
     }
     expect(lines[2].exitCode).toBe(129)
+    // owner spawn: no routed identity, and the audit line must not carry one
+    for (const line of lines) expect(line.routedUser).toBeUndefined()
+  })
+
+  it('stamps the routed user into audit lines and PtyInfo; owner stays unstamped', () => {
+    const { manager, procs, stateDir } = makeManager()
+    const routed = manager.spawn('shell', 80, 24, '192.0.2.7', 'chat-r', undefined, undefined, 'coco')
+    expect(routed.routedUser).toBe('coco')
+    expect(manager.get(routed.id)?.routedUser).toBe('coco')
+    expect(manager.list().find((p) => p.id === routed.id)?.routedUser).toBe('coco')
+    const owner = manager.spawn('shell', 80, 24, '192.0.2.8')
+    expect(owner.routedUser).toBeUndefined()
+    expect('routedUser' in manager.get(owner.id)!).toBe(false)
+    manager.kill(routed.id)
+    procs[0].emitExit(129)
+    const lines = readFileSync(join(stateDir, 'term-audit.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    const routedLines = lines.filter((l) => l.id === routed.id)
+    expect(routedLines.map((l) => l.action)).toEqual(['spawn', 'kill', 'exit'])
+    for (const line of routedLines) expect(line.routedUser).toBe('coco')
+    const ownerSpawn = lines.find((l) => l.id === owner.id)
+    expect(ownerSpawn).toBeDefined()
+    expect('routedUser' in ownerSpawn!).toBe(false)
   })
 
   it('write/resize reach the pty while running, and are refused after exit', () => {
