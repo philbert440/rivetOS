@@ -2,6 +2,10 @@
 description: Show RivetOS memory system health — message/summary counts, embedding queue, compaction backlog, stuck graphile jobs, freshness
 ---
 
+Identity first: run the canonical contract — **CORE.md § "Who Am I Talking
+To?"** (workspace root) — and name whose memory you searched in the answer.
+
+
 Call `memory_stats` and present its output to the user.
 
 The tool returns a pre-formatted markdown payload. Alerts and queue/compaction

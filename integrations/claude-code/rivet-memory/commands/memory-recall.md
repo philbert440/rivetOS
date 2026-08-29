@@ -3,6 +3,10 @@ description: Recall past work from RivetOS memory using the full discipline (bro
 argument-hint: [query]
 ---
 
+Identity first: run the canonical contract — **CORE.md § "Who Am I Talking
+To?"** (workspace root) — and name whose memory you searched in the answer.
+
+
 Recall this from RivetOS memory: $ARGUMENTS
 
 Apply the `memory-recall` skill discipline. In order:

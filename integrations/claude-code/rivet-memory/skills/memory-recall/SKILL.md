@@ -6,7 +6,26 @@ version: 0.2.1
 
 # Memory Recall Discipline
 
-You have persistent memory of every past conversation with Phil, exposed via the
+## Step 0 — Whose memory is this? (identity check)
+
+Before recalling anything, run the canonical identity contract:
+**CORE.md § "Who Am I Talking To?"** at the workspace root. That block is the
+single executable copy — the two commands, both branches, and the fail-safe
+live there, once. Apply its outcome; do not restate or improvise the rule
+here.
+
+The store your tools hit is shared by every Rivet agent **serving this same
+user** — cross-agent recall stays first-class, per user, never across users.
+
+**Delegating to `memory-researcher`? Bind the phrase to the branch** — owner
+mode says exactly "node owner"; routed mode says exactly
+"routed user: <name> (<id>)". Never phrase the owner as a routed user. The
+researcher has no shell and cannot run this check; an unstated identity
+forces it into neutral framing.
+
+
+You have persistent memory of every past conversation with your human — the
+node owner, or the routed user when `RIVETOS_USER_ID` is set (Step 0) — via the
 `rivet-memory` MCP tools (`memory_search`, `memory_browse`, `memory_stats`). The
 tools are correct; what fails is **discipline** — reaching for `memory_search`
 (semantic-ranked, keyword-fragile) when the question is time-bounded and
