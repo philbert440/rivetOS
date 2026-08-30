@@ -78,7 +78,10 @@ function readMap(): LastMap {
     }
     if (migrated) {
       try {
-        writeMap(out)
+        // Silent: this persist runs inside render-phase reads (listAllAgentPins
+        // in ChatPage's useMemo) and the reader already holds the migrated
+        // view — bumping here would be a store update during render.
+        writeMap(out, { silent: true })
       } catch {
         /* keep the parsed result */
       }
@@ -89,13 +92,13 @@ function readMap(): LastMap {
   }
 }
 
-function writeMap(map: LastMap): void {
+function writeMap(map: LastMap, opts?: { silent?: boolean }): void {
   try {
     localStorage.setItem(LAST_KEY, JSON.stringify(map))
   } catch {
     /* storage full / disabled */
   }
-  bump()
+  if (!opts?.silent) bump()
 }
 
 function dropBind(sessionId: string | undefined): void {
@@ -150,8 +153,8 @@ export function listAllAgentPins(): Array<AgentSessionPointer & { agentId: strin
 export function getAgentPin(agentId: string): AgentSessionPointer | undefined {
   const nodes = readMap()[agentId]
   if (!nodes) return undefined
-  const entries = Object.entries(nodes).filter(
-    (pair): pair is [string, NodeEntry] => Boolean(pair[1]?.sessionId),
+  const entries = Object.entries(nodes).filter((pair): pair is [string, NodeEntry] =>
+    Boolean(pair[1]?.sessionId),
   )
   if (entries.length === 0) return undefined
   entries.sort((a, b) => (a[1].updatedAt ?? 0) - (b[1].updatedAt ?? 0))

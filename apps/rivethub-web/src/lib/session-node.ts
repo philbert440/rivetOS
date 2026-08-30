@@ -132,7 +132,11 @@ export function resolveSessionNode(opts: {
     if (!candidate) return undefined
     if (candidate === opts.currentBase) return candidate
     if (!opts.rosterUrls.includes(candidate)) {
-      console.warn(`session-node: ${candidate} is not in the roster — keeping the pointer (fail closed)`)
+      console.warn(
+        `session-node: ${candidate} is not in the roster — keeping the pointer (fail closed)`,
+      )
+      // Deliberately CANDIDATE, never currentBase: the roster check only
+      // drives the warning. Falling back here would spawn a hub doppelgänger.
       return candidate
     }
     return candidate

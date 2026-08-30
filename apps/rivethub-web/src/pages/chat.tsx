@@ -18,7 +18,15 @@
  * The split is per-session and automatic; there is no mode to pick.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type JSX,
+} from 'react'
 import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -28,11 +36,15 @@ import {
   type SessionMessage,
 } from '@rivetos/types'
 import {
+  agentForSession,
+  clearAgentSessionPointer,
+  listAgentSessions,
   listAllAgentPins,
   rekeyAgentLastSessions,
   subscribeAgentSessions,
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
+import { migrateSessionKey, storageKey } from '../lib/session-rekey.js'
 import { sessionPointerMatches } from '../lib/agent-roster.js'
 import {
   clearSessionNodeBinding,
@@ -45,7 +57,6 @@ import { urlLabel, useNodeName } from '../lib/node-name.js'
 import {
   clearSystemPromptSent,
   markSystemPromptSent,
-  rekeySystemPromptSent,
   wasSystemPromptSent,
 } from '../lib/system-prompt-sent.js'
 import { uuidv4 } from '../lib/uuid.js'
@@ -99,7 +110,6 @@ import { discardDraft } from '../lib/discard-session.js'
 import {
   getSessionMode,
   hasSessionMode,
-  moveSessionMode,
   setSessionMode,
   type SessionViewMode,
 } from '../lib/session-mode.js'
@@ -178,9 +188,6 @@ function newSessionId(): string {
   return uuidv4()
 }
 
-/** localStorage key for a thread's per-node persisted state. */
-const storageKey = (baseUrl: string, key: string): string => `${baseUrl}::${key}`
-
 /**
  * Read a thread's persisted value, falling back to the pre-canonical key.
  *
@@ -199,52 +206,6 @@ function persisted<T>(
   if (own !== undefined) return own
   const native = denRoomKey(key)
   return native === key ? undefined : byKey[storageKey(baseUrl, native)]
-}
-
-/**
- * Move a thread's persisted state onto a key it has just been rekeyed to.
- *
- * The read fallback above covers bare → canonical. This covers the case it
- * cannot: a driver ROTATING its native id, where old and new keys share
- * nothing. Lazy — only threads the client actually touches pay for it.
- *
- * ONLY call this when the thread's records really moved. On a destination
- * collision `rekey` deliberately leaves two live threads apart, and copying
- * the retired one's custom name onto the survivor (then clearing it from the
- * original) would swap two real conversations' metadata at exactly the moment
- * the code decided they must not merge — hence the `moved` gate at every call
- * site. Both stores are cleared, not just the name: a half-migrated key would
- * resurrect stale settings through `persisted()`'s fallback.
- */
-function migrateSessionKey(
-  currentBase: string,
-  rosterUrls: readonly string[],
-  from: string,
-  to: string,
-): void {
-  // Per-thread state is keyed on the SESSION's node, which for a cross-node
-  // thread is not the caller's node — resolve it BEFORE the binding rekeys.
-  const node = sessionNodeFor(from, currentBase, rosterUrls)
-  const names = useSessionNames.getState()
-  const name = names.byKey[storageKey(node, from)]
-  if (name !== undefined && names.byKey[storageKey(node, to)] === undefined) {
-    names.set(storageKey(node, to), name)
-  }
-  names.set(storageKey(node, from), '') // empty clears the override
-  const settings = useChatSettings.getState()
-  const prior = settings.byKey[storageKey(node, from)]
-  if (prior !== undefined && settings.byKey[storageKey(node, to)] === undefined) {
-    settings.set(storageKey(node, to), prior)
-  }
-  settings.clear(storageKey(node, from))
-  // Dest-non-clobber (names rule): an existing remembered view on the
-  // canonical key survives adoption. Deliberately the OPPOSITE of the node
-  // binding's last-write-wins below — a stale mode costs one click, a stale
-  // node binding retargets every request for the thread.
-  moveSessionMode(storageKey(node, from), storageKey(node, to))
-  rekeyAgentLastSessions(from, to)
-  rekeySessionNodeBinding(from, to)
-  rekeySystemPromptSent(from, to)
 }
 
 export function ChatPage(): JSX.Element {
@@ -354,6 +315,20 @@ export function ChatPage(): JSX.Element {
     // changes. transportEpoch rebinds it onto the mTLS pipe gateway.
   }, [connected, hasDrivers, baseUrl, transportEpoch, queryClient, descriptors?.length])
 
+  const active = useChat((s) => s.active)
+  // Pin enrichment below reads the house-agents cache by peek (getQueriesData
+  // is not a subscription), so track those queries explicitly — a freshly
+  // minted pin would otherwise show the raw agentId and no swatch until some
+  // other dep of the items memo happened to change.
+  const [houseTick, setHouseTick] = useState(0)
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        const key: unknown = (event.query.queryKey as readonly unknown[])[0]
+        if (key === 'agents-all-nodes') setHouseTick((t) => t + 1)
+      }),
+    [queryClient],
+  )
   const pinVersion = useSyncExternalStore(subscribeAgentSessions, getAgentSessionsVersion)
   const items = useMemo(() => {
     const base = chatItems({
@@ -385,9 +360,25 @@ export function ChatPage(): JSX.Element {
         accent: preset?.color || undefined,
       })
     }
-    return [...pinItems, ...withoutAgentDrafts]
-  }, [drafts, planeQuery.data, harnessQuery.data?.sessions, pinVersion, queryClient])
-  const active = useChat((s) => s.active)
+    const listed = [...pinItems, ...withoutAgentDrafts]
+    // Keep the open conversation listed even when no source carries its key —
+    // a pin rekeyed out from under the open thread (the sidebar probe adopting
+    // a claimed id, a rotation the registry stream delivered) must not drop
+    // the row under the user's feet. The rekey effect moves the selection
+    // onto the new key and this placeholder retires itself.
+    if (active !== undefined && !listed.some((it) => it.key === active)) {
+      listed.unshift({ key: active, kind: 'legacy', title: active, updatedAt: Date.now() })
+    }
+    return listed
+  }, [
+    drafts,
+    planeQuery.data,
+    harnessQuery.data?.sessions,
+    pinVersion,
+    houseTick,
+    active,
+    queryClient,
+  ])
   const setActive = useChat((s) => s.setActive)
   const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
@@ -879,12 +870,20 @@ function ActiveSession(props: {
         if (match && match.id !== props.sessionId) {
           setListedRemoteId(match.id)
           if (useChat.getState().rekey(props.sessionId, match.id)) {
+            // Records moved: migrate every persisted key and follow the
+            // thread onto its new id. `migrateSessionKey` also retargets the
+            // agent pin + node binding (lib/session-rekey.ts) — the poll owns
+            // those, so without them it would snap back to the dead id.
             migrateSessionKey(baseUrl, rosterUrls, props.sessionId, match.id)
+            useChat.getState().setActive(match.id)
           } else {
+            // Destination collision: two live threads stay apart, so only the
+            // pointers rekey — the selection must NOT land on a conversation
+            // whose store records were never migrated (and `rekey` has
+            // already retargeted `active` when it pointed at the old key).
             rekeyAgentLastSessions(props.sessionId, match.id)
             rekeySessionNodeBinding(props.sessionId, match.id)
           }
-          useChat.getState().setActive(match.id)
           return
         }
         setListedRemoteId(match ? match.id : null)
@@ -896,9 +895,21 @@ function ActiveSession(props: {
       cancelled = true
     }
   }, [remote404, isDraft, sessionBase, props.sessionId, baseUrl, rosterUrls])
-  const remoteDead = Boolean(remote404 && !isDraft && listedRemoteId === null)
+  const remoteDead = remote404 && !isDraft && listedRemoteId === null
   useEffect(() => {
-    if (remoteDead) clearSessionNodeBinding(props.sessionId)
+    if (!remoteDead) return
+    clearSessionNodeBinding(props.sessionId)
+    // The drawer pin comes from the agent pointer store, not the binding map —
+    // prune it on the same definitive miss (compare-and-delete, like the
+    // sidebar's dead path) or the dead thread stays clickable as a pin row
+    // that resolves "home" on the hub while carrying a remote pinNodeBaseUrl.
+    const agentId = agentForSession(props.sessionId)
+    if (!agentId) return
+    for (const p of listAgentSessions(agentId)) {
+      if (p.sessionId === props.sessionId) {
+        clearAgentSessionPointer(agentId, p.nodeBaseUrl, props.sessionId)
+      }
+    }
   }, [remoteDead, props.sessionId])
   const remoteItem = useMemo(
     () => (isRemote && remoteSummary.data ? chatItemFromSummary(remoteSummary.data) : undefined),

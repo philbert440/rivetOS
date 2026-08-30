@@ -67,7 +67,8 @@ describe('agent last-session pointer', () => {
   })
 
   it('collapse keeps the preferred node, else the oldest', () => {
-    // Seed two slots via replace then a raw map write (pre-collapse leftover).
+    // Seed two slots the way production leaves them pre-collapse: a raw map
+    // write AND the reverse binds every setAgentLastSession writes.
     setAgentLastSession('a1', 'sess-a', NODE_A)
     localStorage.setItem(
       'rivethub.agent.lastSession',
@@ -78,16 +79,72 @@ describe('agent last-session pointer', () => {
         },
       }),
     )
+    localStorage.setItem('rivethub.agent.sess-b', 'a1')
     expect(collapseAgentSlots('a1', NODE_A)?.sessionId).toBe('sess-a')
     expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-a', nodeBaseUrl: NODE_A }])
+    // The dropped slot's bind must go with it, or agentForSession('sess-b')
+    // keeps resolving a pruned pointer.
+    expect(localStorage.getItem('rivethub.agent.sess-b')).toBeNull()
   })
 
-  it('subscribe fires on writes', () => {
+  it('collapse keeps the preferred node even when it is the NEWER slot', () => {
+    localStorage.setItem(
+      'rivethub.agent.lastSession',
+      JSON.stringify({
+        a1: {
+          [NODE_A]: { sessionId: 'sess-a', updatedAt: 9 },
+          [NODE_B]: { sessionId: 'sess-b', updatedAt: 1 },
+        },
+      }),
+    )
+    localStorage.setItem('rivethub.agent.sess-a', 'a1')
+    localStorage.setItem('rivethub.agent.sess-b', 'a1')
+    expect(collapseAgentSlots('a1', NODE_A)?.sessionId).toBe('sess-a')
+    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-a', nodeBaseUrl: NODE_A }])
+    expect(localStorage.getItem('rivethub.agent.sess-b')).toBeNull()
+  })
+
+  it('collapse without the preferred node keeps the OLDEST leftover', () => {
+    localStorage.setItem(
+      'rivethub.agent.lastSession',
+      JSON.stringify({
+        a1: {
+          [NODE_A]: { sessionId: 'sess-a', updatedAt: 9 },
+          [NODE_B]: { sessionId: 'sess-b', updatedAt: 1 },
+        },
+      }),
+    )
+    localStorage.setItem('rivethub.agent.sess-a', 'a1')
+    localStorage.setItem('rivethub.agent.sess-b', 'a1')
+    expect(collapseAgentSlots('a1', 'https://node-c:5174')?.sessionId).toBe('sess-b')
+    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-b', nodeBaseUrl: NODE_B }])
+    expect(localStorage.getItem('rivethub.agent.sess-a')).toBeNull()
+  })
+
+  it('subscribe notifies only on mutating writes, and stops after unsubscribe', () => {
     const seen: number[] = []
     const unsub = subscribeAgentSessions(() => seen.push(getAgentSessionsVersion()))
+    // No notify-on-subscribe: a drawer row must not re-render just for listening.
+    expect(seen).toEqual([])
     setAgentLastSession('a1', 'sess-a', NODE_A)
-    expect(seen.length).toBeGreaterThan(0)
+    expect(seen.length).toBe(1)
+    // Set-once no-op (a poll refresh hitting an existing pin) must NOT
+    // notify — that is what keeps a poll no-op from re-rendering a row under
+    // an in-flight click.
+    setAgentLastSession('a1', 'sess-b', NODE_A)
+    expect(seen.length).toBe(1)
     unsub()
+    setAgentLastSession('a1', 'sess-c', NODE_A, { replace: true })
+    expect(seen.length).toBe(1)
+  })
+
+  it('set-once holds on the SAME node (a stale poll refresh cannot steal a replaced pin)', () => {
+    setAgentLastSession('a1', 'sess-old', NODE_A)
+    setAgentLastSession('a1', 'sess-new', NODE_A, { replace: true })
+    // A poll that still holds the pre-replace id writes without replace.
+    setAgentLastSession('a1', 'sess-old', NODE_A)
+    expect(getAgentLastSession('a1', NODE_A)?.sessionId).toBe('sess-new')
+    expect(agentForSession('sess-new')).toBe('a1')
   })
 
   it('lists the single pin', () => {
@@ -121,6 +178,26 @@ describe('agent last-session pointer', () => {
     getAgentLastSession('a1', NODE_A)
     const persisted: unknown = JSON.parse(localStorage.getItem('rivethub.agent.lastSession') ?? '')
     expect(persisted).toEqual({ a1: { [NODE_A]: { sessionId: 'legacy-1' } } })
+  })
+
+  it('migration persist does NOT bump — reads run in render phase', () => {
+    localStorage.setItem(
+      'rivethub.agent.lastSession',
+      JSON.stringify({ a1: { sessionId: 'legacy-1', nodeBaseUrl: NODE_A } }),
+    )
+    const seen: number[] = []
+    const unsub = subscribeAgentSessions(() => seen.push(getAgentSessionsVersion()))
+    const before = getAgentSessionsVersion()
+    // listAllAgentPins runs inside ChatPage's render-phase useMemo; firing the
+    // migration there must not update the store during render.
+    getAgentLastSession('a1', NODE_A)
+    expect(getAgentSessionsVersion()).toBe(before)
+    expect(seen).toEqual([])
+    // A real write still notifies afterwards (the silent path did not wedge
+    // the listener set).
+    setAgentLastSession('a2', 'sess-x', NODE_A)
+    expect(seen.length).toBe(1)
+    unsub()
   })
 
   it('reads a mixed blob — one agent legacy, another already per-node', () => {

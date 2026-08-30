@@ -29,7 +29,6 @@ import {
   listAgentSessions,
   rekeyAgentLastSessions,
   setAgentLastSession,
-  type AgentSessionPointer,
 } from '../lib/agent-session.js'
 import {
   aggregateAgentActivity,
@@ -764,6 +763,10 @@ export function AgentsSection(): JSX.Element {
   }
 
   const handleStartOver = (agent: RosterAgent): void => {
+    // Same fail-closed guard as handleOpen: never mint/pin off-roster. The
+    // spawn itself is already fail-closed at spawnPty; this keeps a ↺ click
+    // from minting a draft pinned to a node that cannot run it.
+    if (!uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)) return
     bumpGen(agent.id)
     openFresh(agent, { replace: true })
   }
