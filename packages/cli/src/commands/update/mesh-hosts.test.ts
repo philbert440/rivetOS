@@ -12,18 +12,25 @@ import {
   formatMeshHostsSkipDetail,
   healLocalMeshHosts,
   isProcessRoot,
-  DEFAULT_MESH_FILE,
-  REMOTE_MESH_HOSTS_SCRIPT,
 } from './mesh-hosts.js'
 
 const execSyncMock = vi.mocked(execSync)
 
+const ORIGINAL_INSTALL_ROOT = process.env.RIVETOS_INSTALL_ROOT
+const ORIGINAL_SHARED_DIR = process.env.RIVETOS_SHARED_DIR
+
 beforeEach(() => {
+  delete process.env.RIVETOS_INSTALL_ROOT
+  delete process.env.RIVETOS_SHARED_DIR
   vi.clearAllMocks()
   vi.spyOn(console, 'log').mockImplementation(() => undefined)
 })
 
 afterEach(() => {
+  if (ORIGINAL_INSTALL_ROOT === undefined) delete process.env.RIVETOS_INSTALL_ROOT
+  else process.env.RIVETOS_INSTALL_ROOT = ORIGINAL_INSTALL_ROOT
+  if (ORIGINAL_SHARED_DIR === undefined) delete process.env.RIVETOS_SHARED_DIR
+  else process.env.RIVETOS_SHARED_DIR = ORIGINAL_SHARED_DIR
   vi.restoreAllMocks()
 })
 
@@ -85,15 +92,22 @@ describe('formatMeshHostsSkipDetail', () => {
 })
 
 describe('buildRemoteMeshHostsCommand', () => {
-  it('omits sudo for root', () => {
+  it('omits sudo for root and pins the default install root', () => {
     expect(buildRemoteMeshHostsCommand('root')).toBe(
-      `${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`,
+      "'/opt/rivetos/infra/scripts/setup-mesh-hosts.sh' /rivet-shared/mesh.json --quiet",
     )
   })
 
   it('uses non-interactive sudo for non-root', () => {
     expect(buildRemoteMeshHostsCommand('rivet')).toBe(
-      `sudo -n ${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`,
+      "sudo -n '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh' /rivet-shared/mesh.json --quiet",
+    )
+  })
+
+  it('per-node root wins over RIVETOS_INSTALL_ROOT', () => {
+    process.env.RIVETOS_INSTALL_ROOT = '/env/rivetos'
+    expect(buildRemoteMeshHostsCommand('root', '/node/rivetos')).toBe(
+      "'/node/rivetos/infra/scripts/setup-mesh-hosts.sh' /rivet-shared/mesh.json --quiet",
     )
   })
 })
@@ -103,9 +117,9 @@ describe('buildLocalMeshHostsCommand', () => {
     const script = '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh'
     const cmd = buildLocalMeshHostsCommand(script)
     if (isProcessRoot()) {
-      expect(cmd).toBe(`${script} ${DEFAULT_MESH_FILE} --quiet`)
+      expect(cmd).toBe(`${script} /rivet-shared/mesh.json --quiet`)
     } else {
-      expect(cmd).toBe(`sudo -n ${script} ${DEFAULT_MESH_FILE} --quiet`)
+      expect(cmd).toBe(`sudo -n ${script} /rivet-shared/mesh.json --quiet`)
     }
   })
 })
@@ -122,7 +136,7 @@ describe('healLocalMeshHosts', () => {
     expect(execSyncMock).toHaveBeenCalledOnce()
     const [cmd] = execSyncMock.mock.calls[0]!
     expect(String(cmd)).toContain('/tmp/setup-mesh-hosts.sh')
-    expect(String(cmd)).toContain(DEFAULT_MESH_FILE)
+    expect(String(cmd)).toContain('/rivet-shared/mesh.json')
     expect(String(cmd)).toContain('--quiet')
   })
 

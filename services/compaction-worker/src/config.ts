@@ -2,6 +2,8 @@
  * Environment-driven configuration for the compaction worker.
  */
 
+import { sharedPath } from '@rivetos/types'
+
 function requireEnv(name: string): string {
   const value = process.env[name]
   if (!value) {
@@ -29,7 +31,8 @@ export const config = {
 
   // Wiki extraction (phase 3c) — dark by default; single writer per design.
   wikiExtraction: process.env.WIKI_EXTRACTION === '1',
-  wikiDir: process.env.WIKI_DIR ?? '/rivet-shared/wiki',
+  // wikiDir is snapshotted at module load: this worker's env is fixed at process start.
+  wikiDir: process.env.WIKI_DIR ?? sharedPath('wiki'),
   wikiBackfillBatch: intEnv('WIKI_BACKFILL_BATCH', 25),
 
   // Batch sizes (worker-local — library exports only absolute budgets)
