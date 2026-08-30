@@ -603,10 +603,31 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         // git pull for now (their workers — embedder, compactor — aren't yet
         // packaged for npm install). Migrate them in a follow-up.
         return isAgent
-          ? npmUpdateNodeAsync(node.host, node.name, localOpts, true, node.sshUser)
-          : gitUpdateNodeAsync(node.host, node.name, localOpts, false, node.sshUser)
+          ? npmUpdateNodeAsync(
+              node.host,
+              node.name,
+              localOpts,
+              true,
+              node.sshUser,
+              node.installRoot,
+            )
+          : gitUpdateNodeAsync(
+              node.host,
+              node.name,
+              localOpts,
+              false,
+              node.sshUser,
+              node.installRoot,
+            )
       }
-      return gitUpdateNodeAsync(node.host, node.name, localOpts, isAgent, node.sshUser)
+      return gitUpdateNodeAsync(
+        node.host,
+        node.name,
+        localOpts,
+        isAgent,
+        node.sshUser,
+        node.installRoot,
+      )
     }),
   )
 

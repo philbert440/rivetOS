@@ -32,6 +32,15 @@ export function isSafeArg(value: string): boolean {
 }
 
 /**
+ * Single-quote a value for interpolation into a remote shell command.
+ * sshUser is argv (spawn) or already gated by isSafeArg; install roots land
+ * inside `cd … &&` strings and may contain spaces in a future layout.
+ */
+export function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/**
  * Throw if `value` contains shell metacharacters. Use at the boundary where a
  * user-supplied value (--version, --channel, --ssh-user) first enters a command.
  */

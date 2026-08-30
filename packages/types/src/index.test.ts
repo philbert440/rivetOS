@@ -72,4 +72,10 @@ describe('@rivetos/types exports', () => {
     assert.equal(typeof types.sharedDir, 'function')
     assert.equal(typeof types.sharedPath, 'function')
   })
+
+  it('should export installRoot/installPath from the barrel', async () => {
+    const types = await import('./index.js')
+    assert.equal(typeof types.installRoot, 'function')
+    assert.equal(typeof types.installPath, 'function')
+  })
 })
