@@ -240,7 +240,7 @@ describeIfPg('memory write tools (Phase 1.A slice 3 — gated)', () => {
 })
 
 describeIfPg('ingestSession function (Phase 1.A slice 3)', () => {
-  let memory: { close: () => Promise<void> }
+  let memory: { close: () => Promise<void> } | undefined
 
   const TAG_KEYS = [
     'RIVETOS_MEMORY_SOURCE',
@@ -258,15 +258,15 @@ describeIfPg('ingestSession function (Phase 1.A slice 3)', () => {
 
   beforeAll(async () => {
     const { PostgresMemory } = await import('@rivetos/memory-postgres')
+    // Ingest does not use embeddings; omit ambient RIVETOS_EMBED_URL so a
+    // URL-without-model env cannot trip SearchEngine's required-model contract.
     memory = new PostgresMemory({
       connectionString: PG_URL,
-      embedEndpoint: process.env.RIVETOS_EMBED_URL,
-      embedModel: process.env.RIVETOS_EMBED_MODEL,
     })
   })
 
   afterAll(async () => {
-    await memory.close().catch(() => {
+    await memory?.close().catch(() => {
       /* swallow */
     })
   })
@@ -276,8 +276,6 @@ describeIfPg('ingestSession function (Phase 1.A slice 3)', () => {
     const { PostgresMemory } = await import('@rivetos/memory-postgres')
     const testMemory = new PostgresMemory({
       connectionString: PG_URL,
-      embedEndpoint: process.env.RIVETOS_EMBED_URL,
-      embedModel: process.env.RIVETOS_EMBED_MODEL,
     })
 
     const sessionId = `test-ingest-fn-${Date.now()}`
@@ -323,8 +321,6 @@ describeIfPg('ingestSession function (Phase 1.A slice 3)', () => {
     const { PostgresMemory } = await import('@rivetos/memory-postgres')
     const testMemory = new PostgresMemory({
       connectionString: PG_URL,
-      embedEndpoint: process.env.RIVETOS_EMBED_URL,
-      embedModel: process.env.RIVETOS_EMBED_MODEL,
     })
 
     process.env.RIVETOS_MEMORY_SOURCE = 'env-test-source'
