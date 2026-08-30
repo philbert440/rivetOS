@@ -2,10 +2,13 @@
  * rivetos mesh — multi-agent mesh management commands.
  *
  * Usage:
- *   rivetos mesh list              List all known mesh nodes
- *   rivetos mesh ping              Health-check all mesh peers
- *   rivetos mesh join <host>       Join an existing mesh
- *   rivetos mesh status            Show local node mesh status
+ *   rivetos mesh list                         List all known mesh nodes
+ *   rivetos mesh ping                         Health-check all mesh peers
+ *   rivetos mesh enroll <user@host> --name <node>
+ *   rivetos mesh sync <user@host>             Refresh local mesh.json
+ *   rivetos mesh renew <user@host> --name <node>
+ *   rivetos mesh join --manual <host>         Legacy seed-node join (prints YAML)
+ *   rivetos mesh status                       Show local node mesh status
  *
  * The mesh tracks all RivetOS instances on the network, enabling
  * cross-instance delegation and coordinated updates.
@@ -13,47 +16,276 @@
 
 import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
+import { dirname } from 'node:path'
+import { mkdir } from 'node:fs/promises'
 import { buildMeshFetchOptions } from '../lib/mtls.js'
 import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
-import { checkSshReachable, isSafeArg } from '../lib/ssh.js'
+import { checkSshReachable, isSafeArg, sshExecCapture } from '../lib/ssh.js'
+import {
+  MeshHubError,
+  atomicWriteFile,
+  configPath,
+  defaultAdvertiseHost,
+  hubRemoteCommand,
+  mergeConfigFile,
+  meshNodeCount,
+  parseEnrollArgs,
+  parseEnrollTarball,
+  parseRenewArgs,
+  parseSyncArgs,
+  readLocalMeshNodeCount,
+  sharedPath,
+  writeEnrollLayout,
+} from '../lib/mesh-enroll.js'
 
 const HELP = `
   rivetos mesh — Multi-agent mesh management
 
   Commands:
-    rivetos mesh list              List all known mesh nodes
-    rivetos mesh ping              Health-check all mesh peers
-    rivetos mesh join <host>       Join an existing mesh via seed node
-    rivetos mesh status            Show this node's mesh status
+    rivetos mesh list                         List all known mesh nodes
+    rivetos mesh ping                         Health-check all mesh peers
+    rivetos mesh enroll <user@host> --name <node>
+                                              Enroll this node via the datahub helper
+    rivetos mesh sync <user@host>             Refresh local mesh.json from the datahub
+    rivetos mesh renew <user@host> --name <node>
+                                              Re-issue this node's leaf certificate
+    rivetos mesh join --manual <host>         Legacy seed-node join (prints YAML)
+    rivetos mesh status                       Show this node's mesh status
 
   Options:
-    --json                         Output as JSON
-    --timeout <ms>                 Ping timeout per node (default: 5000)
-    --ssh-user <user>              SSH user for infrastructure checks (default: rivet)
-                                   Falls back to root automatically if rivet auth fails.
+    --name <node>                             Node name (enroll/renew)
+    --advertise <host|ip>                     Address other nodes use to reach this node
+    --hub-cmd <cmd>                           Remote hub helper (default: rivethub-hub)
+    --manual                                  Use legacy mesh join instead of enroll
+    --json                                    Output as JSON
+    --timeout <ms>                            Ping timeout per node (default: 5000)
+    --ssh-user <user>                         SSH user for infrastructure checks (default: rivet)
+                                              Falls back to root automatically if rivet auth fails.
 `
 
-export default async function mesh(): Promise<void> {
-  const args = process.argv.slice(3)
-  const subcommand = args[0]
-  const flags = parseFlags(args.slice(1))
+const HUB_SSH_TIMEOUT_MS = 60_000
+const HUB_PROBE_TIMEOUT_MS = 10_000
 
-  switch (subcommand) {
-    case 'list':
-      await meshList(flags)
-      break
-    case 'ping':
-      await meshPing(flags)
-      break
-    case 'join':
-      await meshJoin(args[1], flags)
-      break
-    case 'status':
-      await meshStatus(flags)
-      break
-    default:
-      console.log(HELP)
+const JOIN_POINTER = `
+  Use \`rivetos mesh enroll <user@host> --name <node>\` to join a RivetHub mesh.
+  For the legacy seed-node YAML flow, pass --manual:
+    rivetos mesh join --manual <host>
+`.trimEnd()
+
+export default async function mesh(argv: string[] = process.argv.slice(3)): Promise<void> {
+  const subcommand = argv[0]
+  const flags = parseFlags(argv.slice(1))
+
+  try {
+    switch (subcommand) {
+      case 'list':
+        await meshList(flags)
+        break
+      case 'ping':
+        await meshPing(flags)
+        break
+      case 'enroll':
+        await meshEnroll(argv.slice(1))
+        break
+      case 'sync':
+        await meshSync(argv.slice(1))
+        break
+      case 'renew':
+        await meshRenew(argv.slice(1))
+        break
+      case 'join':
+        await meshJoin(argv.slice(1), flags)
+        break
+      case 'status':
+        await meshStatus(flags)
+        break
+      default:
+        console.log(HELP)
+    }
+  } catch (err) {
+    if (err instanceof MeshHubError) {
+      console.error(`  ❌ ${err.message}`)
+      process.exit(1)
+    }
+    throw err
   }
+}
+
+// ---------------------------------------------------------------------------
+// SSH transport adapter (plan D8)
+// ---------------------------------------------------------------------------
+
+/**
+ * SSH transport adapter for the hub tarball/json contract (plan D8).
+ *
+ * This is the only SSH invocation for enroll/sync/renew. The core
+ * (decode, unpack, layout, config merge, expiry math) is transport-agnostic:
+ * an HTTPS+token transport can replace this function with the same contract —
+ * remote command in, stdout bytes out. Diagnostics stay on stderr and must
+ * not mix into the returned stdout.
+ */
+export async function sshHubStdout(
+  user: string,
+  host: string,
+  remoteCommand: string,
+  label: string,
+  timeoutMs = HUB_SSH_TIMEOUT_MS,
+): Promise<string> {
+  const { stdout } = await sshExecCapture(host, remoteCommand, label, timeoutMs, user)
+  return stdout
+}
+
+type CapturedExecError = Error & { stdout?: string; stderr?: string; status?: number | null }
+
+function asCaptured(err: unknown): CapturedExecError {
+  return err instanceof Error ? (err as CapturedExecError) : new Error(String(err))
+}
+
+function isAuthFailure(err: CapturedExecError): boolean {
+  const blob = `${err.message}\n${err.stderr ?? ''}\n${err.stdout ?? ''}`
+  return /permission denied|authentication failed|no more authentication methods/i.test(blob)
+}
+
+function isHelperMissing(err: CapturedExecError, hubCmd: string): boolean {
+  if (err.status === 127) return true
+  const blob = `${err.message}\n${err.stderr ?? ''}`
+  const cmd = hubCmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return (
+    new RegExp(`${cmd}:\\s*(command )?not found`, 'i').test(blob) ||
+    /command not found|No such file or directory/i.test(blob)
+  )
+}
+
+function sshAuthError(user: string, host: string): MeshHubError {
+  return new MeshHubError(
+    'ssh-auth',
+    `cannot ssh to ${user}@${host} with key-based auth (BatchMode). Install your key: ssh-copy-id ${user}@${host}`,
+  )
+}
+
+function mapHubExecError(err: unknown, user: string, host: string, hubCmd: string): MeshHubError {
+  const captured = asCaptured(err)
+  if (isAuthFailure(captured)) return sshAuthError(user, host)
+  if (isHelperMissing(captured, hubCmd)) {
+    return new MeshHubError(
+      'helper-missing',
+      `hub helper ${hubCmd} not found on ${user}@${host}. Is this the datahub? Install rivethub-hub on the target.`,
+    )
+  }
+  const detail = (captured.stderr || captured.message).trim()
+  return new MeshHubError(
+    'helper-missing',
+    `ssh ${user}@${host} ${hubCmd} failed${detail ? `: ${detail}` : ''}`,
+  )
+}
+
+/** BatchMode probe first (never a password prompt). Coach ssh-copy-id on auth failure. */
+export async function probeHubSsh(user: string, host: string): Promise<void> {
+  try {
+    await sshHubStdout(user, host, 'echo ok', 'ssh probe', HUB_PROBE_TIMEOUT_MS)
+  } catch (err) {
+    const captured = asCaptured(err)
+    if (isAuthFailure(captured)) throw sshAuthError(user, host)
+    const rc = captured.status != null ? `, rc=${String(captured.status)}` : ''
+    throw new MeshHubError(
+      'ssh-auth',
+      `cannot reach ${user}@${host} over ssh (BatchMode${rc}). Check the host is up. If this is the first login, ssh-copy-id ${user}@${host}`,
+    )
+  }
+}
+
+function printMergeResult(result: 'appended' | 'created' | 'unchanged'): void {
+  const path = configPath()
+  if (result === 'unchanged') {
+    console.log('     config: snippet already present (not duplicated)')
+  } else if (result === 'appended') {
+    console.log(`     config: appended snippet (backup ${path}.bak)`)
+  } else {
+    console.log(`     config: wrote ${path}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// mesh enroll
+// ---------------------------------------------------------------------------
+
+export async function meshEnroll(args: string[]): Promise<void> {
+  const parsed = parseEnrollArgs(args)
+  const advertise = parsed.advertise ?? defaultAdvertiseHost()
+  await probeHubSsh(parsed.user, parsed.host)
+  const remote = hubRemoteCommand(parsed.hubCmd, 'enroll', parsed.name, advertise)
+  let stdout: string
+  try {
+    stdout = await sshHubStdout(parsed.user, parsed.host, remote, 'mesh enroll')
+  } catch (err) {
+    throw mapHubExecError(err, parsed.user, parsed.host, parsed.hubCmd)
+  }
+  const unpacked = parseEnrollTarball(stdout, parsed.name)
+  await writeEnrollLayout(unpacked)
+  const merge = await mergeConfigFile(unpacked.snippet)
+  console.log(`  ✅ Enrolled ${parsed.name} (advertise ${advertise})`)
+  console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
+  console.log(`     mesh.json: ${sharedPath('mesh.json')}`)
+  printMergeResult(merge)
+}
+
+// ---------------------------------------------------------------------------
+// mesh sync
+// ---------------------------------------------------------------------------
+
+export async function meshSync(args: string[]): Promise<void> {
+  const parsed = parseSyncArgs(args)
+  await probeHubSsh(parsed.user, parsed.host)
+  const remote = hubRemoteCommand(parsed.hubCmd, 'mesh-export')
+  let stdout: string
+  try {
+    stdout = await sshHubStdout(parsed.user, parsed.host, remote, 'mesh sync')
+  } catch (err) {
+    throw mapHubExecError(err, parsed.user, parsed.host, parsed.hubCmd)
+  }
+  const trimmed = stdout.trim()
+  let afterCount: number
+  try {
+    afterCount = meshNodeCount(trimmed, 'mesh-export')
+  } catch {
+    throw new MeshHubError(
+      'malformed-mesh',
+      'mesh-export did not return a valid Record-format mesh.json',
+    )
+  }
+  const dest = sharedPath('mesh.json')
+  const beforeCount = await readLocalMeshNodeCount()
+  await mkdir(dirname(dest), { recursive: true })
+  const body = trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`
+  await atomicWriteFile(dest, body)
+  const delta = afterCount - beforeCount
+  const sign = delta > 0 ? '+' : ''
+  console.log(
+    `  mesh.json updated: ${String(beforeCount)} → ${String(afterCount)} nodes (${sign}${String(delta)})`,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// mesh renew
+// ---------------------------------------------------------------------------
+
+export async function meshRenew(args: string[]): Promise<void> {
+  const parsed = parseRenewArgs(args)
+  await probeHubSsh(parsed.user, parsed.host)
+  const remote = hubRemoteCommand(parsed.hubCmd, 'renew', parsed.name)
+  let stdout: string
+  try {
+    stdout = await sshHubStdout(parsed.user, parsed.host, remote, 'mesh renew')
+  } catch (err) {
+    throw mapHubExecError(err, parsed.user, parsed.host, parsed.hubCmd)
+  }
+  const unpacked = parseEnrollTarball(stdout, parsed.name)
+  await writeEnrollLayout(unpacked)
+  const merge = await mergeConfigFile(unpacked.snippet)
+  console.log(`  ✅ Renewed leaf cert for ${parsed.name}`)
+  console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
+  console.log(`     mesh.json: ${sharedPath('mesh.json')}`)
+  printMergeResult(merge)
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +296,7 @@ async function meshList(flags: Flags): Promise<void> {
   const meshFile = await loadMeshFile()
   if (!meshFile) {
     console.log('  No mesh.json found. This node is not part of a mesh.')
-    console.log('  Run "rivetos mesh join <host>" to join an existing mesh,')
+    console.log('  Run "rivetos mesh enroll <user@host> --name <node>" to join a RivetHub mesh,')
     console.log('  or enable mesh in rivet.config.yaml.')
     return
   }
@@ -226,12 +458,33 @@ async function meshPing(flags: Flags): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// mesh join — join an existing mesh via seed node
+// mesh join — demoted: pointer to enroll, unless --manual
 // ---------------------------------------------------------------------------
 
-async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
+function positionalArg(rest: string[]): string | undefined {
+  const takesValue = new Set(['--port', '--timeout', '--ssh-user', '--name', '--advertise', '--hub-cmd'])
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]
+    if (!a || a === '--manual' || a === '--json') continue
+    if (takesValue.has(a)) {
+      i++
+      continue
+    }
+    if (a.startsWith('--')) continue
+    return a
+  }
+  return undefined
+}
+
+async function meshJoin(rest: string[], flags: Flags): Promise<void> {
+  if (!flags.manual) {
+    console.log(JOIN_POINTER)
+    return
+  }
+
+  const host = positionalArg(rest)
   if (!host) {
-    console.error('  Usage: rivetos mesh join <host> [--port <port>]')
+    console.error('  Usage: rivetos mesh join --manual <host> [--port <port>]')
     process.exit(1)
   }
 
@@ -398,12 +651,14 @@ interface Flags {
   timeout?: number
   port?: number
   sshUser?: string
+  manual?: boolean
 }
 
 function parseFlags(args: string[]): Flags {
   const flags: Flags = {}
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') flags.json = true
+    if (args[i] === '--manual') flags.manual = true
     if (args[i] === '--timeout' && args[i + 1]) flags.timeout = Number(args[++i])
     if (args[i] === '--port' && args[i + 1]) flags.port = Number(args[++i])
     if (args[i] === '--ssh-user' && args[i + 1]) flags.sshUser = args[++i]
