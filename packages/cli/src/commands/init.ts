@@ -10,11 +10,14 @@
 
 import { runInitWizard } from './init/index.js'
 
-export default async function init(): Promise<void> {
-  const args = process.argv.slice(3)
+/** Flag parse for `rivetos init` / `rivetos config init`. Name-based, not positional. */
+export function parseInitArgs(args: string[]): { joinHost?: string } {
   const joinIndex = args.indexOf('--join')
   const joinHost = joinIndex >= 0 ? args[joinIndex + 1] : undefined
+  return { joinHost }
+}
 
+export default async function init(args: string[] = process.argv.slice(3)): Promise<void> {
   // If --join is specified, run the wizard with mesh join baked in
-  await runInitWizard({ joinHost })
+  await runInitWizard(parseInitArgs(args))
 }
