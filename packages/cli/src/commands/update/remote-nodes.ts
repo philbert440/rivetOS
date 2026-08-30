@@ -118,7 +118,11 @@ export function probeRemoteInstallWritable(
       sshUser,
     )
     if (writability === 'BLOCKED') {
-      const owner = sshExecQuiet(host, `stat -c %U:%G ${qFull} 2>/dev/null || echo unknown`, sshUser)
+      const owner = sshExecQuiet(
+        host,
+        `stat -c %U:%G ${qFull} 2>/dev/null || echo unknown`,
+        sshUser,
+      )
       blockers.push({ path: rel === '.' ? root : full, owner: owner || 'unknown' })
     }
   }
