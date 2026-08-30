@@ -6,9 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import { createMeshView, loadMeshFile, meshFilePaths, type MeshOverview } from './mesh.js'
 import type { DenConfig } from './config.js'
-import type {
-  MeshDenNode as MeshDenNodeWire,
-  MeshOverview as MeshOverviewWire,
+import {
+  sharedPath,
+  type MeshDenNode as MeshDenNodeWire,
+  type MeshOverview as MeshOverviewWire,
 } from '@rivetos/types'
 import type { MeshDenNode } from './mesh.js'
 
@@ -172,7 +173,7 @@ describe('mesh view', () => {
     expect(await loadMeshFile([join(dir, 'nope.json')])).toBeNull()
     // '' = canonical shared path, then the per-user fallback
     expect(meshFilePaths('')).toEqual([
-      '/rivet-shared/mesh.json',
+      sharedPath('mesh.json'),
       join(homedir(), '.rivetos', 'mesh.json'),
     ])
     expect(meshFilePaths('/x/mesh.json')).toEqual(['/x/mesh.json'])

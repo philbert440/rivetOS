@@ -16,8 +16,9 @@
 
 import { execSync } from 'node:child_process'
 import { inspect } from 'node:util'
+import { sharedPath } from '@rivetos/types'
 
-export const DEFAULT_MESH_FILE = '/rivet-shared/mesh.json'
+export const DEFAULT_MESH_FILE = sharedPath('mesh.json')
 export const REMOTE_MESH_HOSTS_SCRIPT = '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh'
 
 /** True when the process is uid 0 (no sudo needed for /etc/hosts). */

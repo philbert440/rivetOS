@@ -12,6 +12,7 @@
 import { readFile } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
+import { sharedPath } from '@rivetos/types'
 
 // Only the roster fields the den reads — everything else is ignored, and all
 // of these may be missing or malformed (mesh.json is shared and hand-edited).
@@ -73,7 +74,7 @@ export interface MeshView {
 }
 
 export const meshFilePaths = (meshFile: string): string[] =>
-  meshFile ? [meshFile] : ['/rivet-shared/mesh.json', join(homedir(), '.rivetos', 'mesh.json')]
+  meshFile ? [meshFile] : [sharedPath('mesh.json'), join(homedir(), '.rivetos', 'mesh.json')]
 
 /** First readable + parseable candidate wins; null when none is.
  *  Pre-capabilities flat-array format is no longer supported: den must not

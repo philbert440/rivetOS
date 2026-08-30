@@ -7,6 +7,7 @@ import {
   parseUserDbs,
   parseUsersRegistry,
   registryFromEnv,
+  sharedDir,
   type UserDbEntry,
   type UsersRegistry,
 } from '@rivetos/types'
@@ -26,6 +27,11 @@ function intEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number 
 function truthyEnv(raw: string | undefined): boolean {
   const v = (raw ?? '').trim().toLowerCase()
   return v === '1' || v === 'on'
+}
+
+/** RIVETOS_SHARED_DIR from the passed env, else {@link sharedDir} (process.env). */
+function denSharedDir(env: NodeJS.ProcessEnv): string {
+  return env.RIVETOS_SHARED_DIR?.trim() || sharedDir()
 }
 
 export interface DenTermConfig {
@@ -110,7 +116,8 @@ export interface DenConfig {
   /** How long an ended session's room lingers before eviction (ms). */
   evictTtlMs: number
   /** Mesh roster for GET /mesh.json. Empty = try the canonical
-   *  /rivet-shared/mesh.json, then ~/.rivetos/mesh.json. */
+   *  $RIVETOS_SHARED_DIR/mesh.json (default /rivet-shared/mesh.json), then
+   *  ~/.rivetos/mesh.json. */
   meshFile: string
   /** How long one /mesh.json overview (roster read + peer probes) is served
    *  from cache (ms). */
@@ -268,10 +275,14 @@ export interface DenDevicesConfig {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
+  // Per-site env overrides keep precedence; RIVETOS_SHARED_DIR only replaces
+  // the hardcoded fallback. Honor the passed env map first (embedded gateway
+  // builds a synthetic env) then process.env via sharedDir().
+  const sharedRoot = denSharedDir(env)
   const defaultCa =
     env.RIVETOS_DEN_TLS_CA?.trim() ||
     env.RIVET_CA_CHAIN?.trim() ||
-    '/rivet-shared/rivet-ca/intermediate/chain.pem'
+    join(sharedRoot, 'rivet-ca', 'intermediate', 'chain.pem')
   // Client cert required unless explicitly set to 0/off/false.
   const requireClientRaw = (env.RIVETOS_DEN_TLS_REQUIRE_CLIENT ?? '1').trim().toLowerCase()
   const requireClientCert = !(
@@ -325,7 +336,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       deviceName: env.RIVETOS_DEN_AUDIO_DEVICE ?? 'RivetHub Mic',
       sampleRate: intEnv(env, 'RIVETOS_DEN_AUDIO_RATE', 16_000),
     },
-    filesRoot: env.RIVETOS_DEN_FILES_ROOT ?? '/rivet-shared',
+    filesRoot: env.RIVETOS_DEN_FILES_ROOT ?? sharedRoot,
     filesOpen: truthyEnv(env.RIVETOS_DEN_FILES_OPEN),
     devices: {
       enabled: truthyEnv(env.RIVETOS_DEN_DEVICES),
@@ -338,7 +349,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       allowedIps: env.RIVETOS_DEN_DEVICES_ALLOWED_IPS ?? '',
       homeSubnet: env.RIVETOS_DEN_DEVICES_HOME_SUBNET ?? '',
       sharedHost: env.RIVETOS_DEN_DEVICES_SHARED_HOST ?? '',
-      sharedExport: env.RIVETOS_DEN_DEVICES_SHARED_EXPORT ?? '/rivet-shared',
+      sharedExport: env.RIVETOS_DEN_DEVICES_SHARED_EXPORT ?? sharedRoot,
       rosterPath: env.RIVETOS_DEN_DEVICES_ROSTER ?? '',
       pgUrl: env.RIVETOS_PG_URL ?? '',
       embedUrl: env.RIVETOS_EMBED_URL ?? '',
@@ -385,9 +396,10 @@ function loadUsersRegistry(
   userDbs: Record<string, UserDbEntry> | undefined,
 ): UsersRegistry | undefined {
   const explicit = env.RIVETOS_USERS_FILE?.trim()
+  const sharedRoot = denSharedDir(env)
   const fileReg = explicit
     ? readRegistryFile(explicit)
-    : (readRegistryFile('/rivet-shared/rivetos/users.json') ??
+    : (readRegistryFile(join(sharedRoot, 'rivetos', 'users.json')) ??
       readRegistryFile(join(homedir(), '.rivetos', 'users.json')))
   if (explicit && !fileReg) {
     // Fail CLOSED: an explicitly configured registry that cannot be read must

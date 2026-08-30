@@ -13,10 +13,10 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { parseUsersRegistry, type UsersRegistry } from '@rivetos/types'
+import { parseUsersRegistry, sharedPath, type UsersRegistry } from '@rivetos/types'
 
 function defaultFile(): string {
-  return process.env.RIVETOS_USERS_FILE?.trim() || '/rivet-shared/rivetos/users.json'
+  return process.env.RIVETOS_USERS_FILE?.trim() || sharedPath('rivetos', 'users.json')
 }
 
 function load(file: string): UsersRegistry {

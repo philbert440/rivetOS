@@ -11,6 +11,7 @@ vi.mock('../../lib/ssh.js', async (importOriginal) => {
   }
 })
 
+import { sharedPath } from '@rivetos/types'
 import { sshExec, sshExecQuiet } from '../../lib/ssh.js'
 import {
   parseDenSettings,
@@ -88,7 +89,7 @@ describe('parseDenSettings', () => {
       staticDir: '/srv/den/dist',
       packsDir: '/opt/rivetos/packages/den-packs/packs',
       tlsCert: '',
-      tlsCa: '/rivet-shared/rivet-ca/intermediate/chain.pem',
+      tlsCa: sharedPath('rivet-ca', 'intermediate', 'chain.pem'),
     })
   })
 
@@ -141,7 +142,7 @@ describe('denProbeCmd', () => {
       ROOT,
     )
     expect(denProbeCmd(s)).toBe(
-      'curl -fsS -m 3 --cacert /rivet-shared/rivet-ca/intermediate/chain.pem https://127.0.0.1:5174/healthz',
+      `curl -fsS -m 3 --cacert ${sharedPath('rivet-ca', 'intermediate', 'chain.pem')} https://127.0.0.1:5174/healthz`,
     )
   })
 })

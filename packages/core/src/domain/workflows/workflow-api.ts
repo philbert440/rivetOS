@@ -17,18 +17,20 @@ import { randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type {
-  GatewayRoute,
-  NotificationFrame,
-  WorkflowDefSummary,
-  WorkflowDiagnostic,
-  WorkflowKillResponse,
-  WorkflowRunDetail,
-  WorkflowRunSummary,
-  WorkflowRunsListResponse,
-  WorkflowStartRunResponse,
-  WorkflowValidateResponse,
-  WorkflowsListResponse,
+import {
+  sharedDir,
+  sharedPath,
+  type GatewayRoute,
+  type NotificationFrame,
+  type WorkflowDefSummary,
+  type WorkflowDiagnostic,
+  type WorkflowKillResponse,
+  type WorkflowRunDetail,
+  type WorkflowRunSummary,
+  type WorkflowRunsListResponse,
+  type WorkflowStartRunResponse,
+  type WorkflowValidateResponse,
+  type WorkflowsListResponse,
 } from '@rivetos/types'
 import {
   ContractValidationError,
@@ -57,10 +59,6 @@ import { logger } from '../../logger.js'
 const log = logger('WorkflowApi')
 
 const MAX_BODY_BYTES = 256 * 1024
-const DEFAULT_WORKFLOWS_ROOT = '/rivet-shared/workflows/defs'
-const DEFAULT_CASE_DIR_ROOT = '/rivet-shared/workflows/runs'
-/** Default files root matches den-server / product default. */
-const DEFAULT_FILES_ROOT = '/rivet-shared'
 
 export interface WorkflowApiOptions {
   engine: WorkflowEngine
@@ -183,10 +181,10 @@ function notifyGate(opts: WorkflowApiOptions, result: StartRunResult): void {
 export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoutes {
   const workflowsRoots = opts.workflowsRoots?.length
     ? opts.workflowsRoots
-    : [DEFAULT_WORKFLOWS_ROOT]
-  const caseDirRoot = opts.caseDirRoot ?? DEFAULT_CASE_DIR_ROOT
+    : [sharedPath('workflows', 'defs')]
+  const caseDirRoot = opts.caseDirRoot ?? sharedPath('workflows', 'runs')
   // undefined → product default; explicit '' disables editPath entirely.
-  const filesRoot = opts.filesRoot === undefined ? DEFAULT_FILES_ROOT : opts.filesRoot
+  const filesRoot = opts.filesRoot === undefined ? sharedDir() : opts.filesRoot
 
   const workflows: GatewayRoute = {
     prefix: '/api/workflows',

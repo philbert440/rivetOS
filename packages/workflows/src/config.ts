@@ -6,11 +6,12 @@
  * RivetOS backing store path; other deployments inject their own root.
  */
 
+import { sharedPath } from '@rivetos/types'
 import type { ExecutorRegistry } from './executors.js'
 import type { CallRegistry } from './registry.js'
 
 /** Default case-dir root for RivetOS host deployments (override in tests/config). */
-export const DEFAULT_CASE_DIR_ROOT = '/rivet-shared/workflows/runs'
+export const DEFAULT_CASE_DIR_ROOT = sharedPath('workflows', 'runs')
 
 /** Default per-step timeout (30 minutes) — generous; product says engine defaults day one. */
 export const DEFAULT_STEP_TIMEOUT_MS = 30 * 60 * 1000
@@ -55,7 +56,7 @@ export interface EngineConfig {
 }
 
 export function resolveCaseDirRoot(config: EngineConfig): string {
-  return config.caseDirRoot ?? DEFAULT_CASE_DIR_ROOT
+  return config.caseDirRoot ?? sharedPath('workflows', 'runs')
 }
 
 export function resolveStepTimeoutMs(config: EngineConfig): number {

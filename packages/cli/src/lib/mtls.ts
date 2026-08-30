@@ -7,9 +7,8 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { sharedPath } from '@rivetos/types'
 import { resolveLocalNodeName } from './node-identity.js'
-
-const CA_PATH = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
 
 /**
  * Build an undici Agent dispatcher with this node's mTLS client cert, or
@@ -21,14 +20,14 @@ export async function buildMeshDispatcher(): Promise<unknown> {
     const nodeName = resolveLocalNodeName()
     const certPath =
       process.env.RIVETOS_TLS_CERT ??
-      (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : null)
+      (nodeName ? sharedPath('rivet-ca', 'issued', `${nodeName}.crt`) : null)
     const keyPath =
       process.env.RIVETOS_TLS_KEY ??
-      (nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : null)
+      (nodeName ? sharedPath('rivet-ca', 'issued', `${nodeName}.key`) : null)
 
     if (!certPath || !keyPath) return undefined
 
-    const ca = readFileSync(CA_PATH)
+    const ca = readFileSync(sharedPath('rivet-ca', 'intermediate', 'ca-chain.pem'))
     const cert = readFileSync(certPath)
     const key = readFileSync(keyPath)
 

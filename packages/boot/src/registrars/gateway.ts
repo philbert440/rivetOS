@@ -20,7 +20,13 @@ import type { Duplex } from 'node:stream'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { logger, createGatewayChannel, createOpenAICompatRoute, type Runtime } from '@rivetos/core'
-import type { GatewayRoute, HarnessDriver, SessionWsFrame } from '@rivetos/types'
+import {
+  sharedDir,
+  sharedPath,
+  type GatewayRoute,
+  type HarnessDriver,
+  type SessionWsFrame,
+} from '@rivetos/types'
 
 /** WS upgrade handler shape den-server accepts (same as the channel's). */
 interface GatewayUpgrade {
@@ -60,7 +66,7 @@ function resolveSharedExport(
     return den.files_root.trim()
   }
   if (config.mesh?.storage_dir?.trim()) return config.mesh.storage_dir.trim()
-  if (config.mesh?.enabled === true) return '/rivet-shared'
+  if (config.mesh?.enabled === true) return sharedDir()
   return ''
 }
 
@@ -202,8 +208,8 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
 export function resolveDenTls(config: RivetConfig): { cert: string; key: string; ca: string } {
   const den = (config.den ?? {}) as { tls_cert?: string; tls_key?: string; tls_ca?: string }
   const nodeName = config.mesh?.node_name?.trim()
-  const defaultCert = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.crt` : ''
-  const defaultKey = nodeName ? `/rivet-shared/rivet-ca/issued/${nodeName}.key` : ''
+  const defaultCert = nodeName ? sharedPath('rivet-ca', 'issued', `${nodeName}.crt`) : ''
+  const defaultKey = nodeName ? sharedPath('rivet-ca', 'issued', `${nodeName}.key`) : ''
   const cert =
     den.tls_cert?.trim() ||
     process.env.RIVETOS_DEN_TLS_CERT?.trim() ||
@@ -215,7 +221,7 @@ export function resolveDenTls(config: RivetConfig): { cert: string; key: string;
   const ca =
     den.tls_ca?.trim() ||
     process.env.RIVETOS_DEN_TLS_CA?.trim() ||
-    '/rivet-shared/rivet-ca/intermediate/chain.pem'
+    sharedPath('rivet-ca', 'intermediate', 'chain.pem')
   return { cert, key, ca }
 }
 

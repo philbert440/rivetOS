@@ -1,14 +1,16 @@
 /**
  * Canonical mesh.json loading.
  *
- * The canonical file lives at `/rivet-shared/mesh.json` (the NFS mount from the
- * datahub). When `root` is provided (e.g. doctor/cwd), that directory's
- * mesh.json is also tried. The pre-capabilities flat-array format is rejected
- * with a clear error — Record-format only.
+ * The canonical file lives at `$RIVETOS_SHARED_DIR/mesh.json` (default
+ * `/rivet-shared/mesh.json`, the NFS mount from the datahub). When `root` is
+ * provided (e.g. doctor/cwd), that directory's mesh.json is also tried. The
+ * pre-capabilities flat-array format is rejected with a clear error —
+ * Record-format only.
  */
 
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { sharedPath } from '@rivetos/types'
 
 export interface MeshNode {
   id: string
@@ -52,7 +54,7 @@ export function assertRecordMeshFile(parsed: unknown, path: string): MeshFile {
     throw new Error(
       `mesh.json at ${path} uses the pre-capabilities flat-array format, ` +
         'which is no longer supported. Rewrite the file as Record-format ' +
-        '{ version, nodes: { [id]: node }, updatedAt } (see live /rivet-shared/mesh.json).',
+        `{ version, nodes: { [id]: node }, updatedAt } (see live ${sharedPath('mesh.json')}; override with RIVETOS_SHARED_DIR).`,
     )
   }
   return parsed as MeshFile
@@ -63,7 +65,7 @@ export function assertRecordMeshFile(parsed: unknown, path: string): MeshFile {
  * Returns null if none are readable. Throws on unsupported array format.
  */
 export async function loadMeshFile(root?: string): Promise<MeshFile | null> {
-  const paths = ['/rivet-shared/mesh.json']
+  const paths = [sharedPath('mesh.json')]
   if (root) paths.push(resolve(root, 'mesh.json'))
 
   for (const p of paths) {

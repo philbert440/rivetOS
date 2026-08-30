@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TLSSocket } from 'node:tls'
 import type { DelegationEngine } from '../domain/delegation.js'
-import type { MeshRegistry, MeshNode } from '@rivetos/types'
+import { sharedPath, type MeshRegistry, type MeshNode } from '@rivetos/types'
 import type { Router } from '../domain/router.js'
 import { logger } from '../logger.js'
 
@@ -106,9 +106,9 @@ export function loadTlsConfig(
   tls: boolean | { caPath?: string; certPath?: string; keyPath?: string },
   nodeName: string,
 ): AgentChannelTlsConfig {
-  const defaultCa = '/rivet-shared/rivet-ca/intermediate/ca-chain.pem'
-  const defaultCert = `/rivet-shared/rivet-ca/issued/${nodeName}.crt`
-  const defaultKey = `/rivet-shared/rivet-ca/issued/${nodeName}.key`
+  const defaultCa = sharedPath('rivet-ca', 'intermediate', 'ca-chain.pem')
+  const defaultCert = sharedPath('rivet-ca', 'issued', `${nodeName}.crt`)
+  const defaultKey = sharedPath('rivet-ca', 'issued', `${nodeName}.key`)
 
   const caPath = typeof tls === 'object' ? (tls.caPath ?? defaultCa) : defaultCa
   const certPath = typeof tls === 'object' ? (tls.certPath ?? defaultCert) : defaultCert
