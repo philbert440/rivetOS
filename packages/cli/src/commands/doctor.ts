@@ -538,9 +538,7 @@ async function checkSharedStorage(): Promise<CheckResult[]> {
     await unlink(testFile)
     results.push(check('shared', 'writable', 'pass', `Shared storage: ${dir}/ is writable`))
   } catch {
-    results.push(
-      check('shared', 'writable', 'fail', `Shared storage: ${dir}/ is not writable`),
-    )
+    results.push(check('shared', 'writable', 'fail', `Shared storage: ${dir}/ is not writable`))
   }
 
   // Check subdirectories
