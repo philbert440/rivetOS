@@ -13,44 +13,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Memory write surface (MCP sidecar): `memory_append` and `memory_ingest_session`, gated behind `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. Concurrency-safe idempotent ingest (shared per-session advisory lock, content-hash `event_id` dedupe with ordinal), per-message `created_at` preservation, 16k content/`tool_result` caps with `truncated` reported to the caller, tool-call fields on append. **Breaking: `memory_ingest_session` messages now require `role`; the silent `assistant` default is gone.** Shipped as the Grok Bot memory bridge (`integrations/grok-bot/rivet-memory/`) in #517 and follow-ups #520-#525.
-- Team-shared skills: `/rivet-shared/skills` is the standard shared skill directory across the mesh (runtime `skill_dirs` + sidecar `RIVETOS_SKILL_DIRS`); first shared skill is `unslop`.
-- Self-registering plugin manifest (`PluginManifest` + `register(ctx)`); single manifest-driven loader replaces the four per-kind registrars.
-- New plugin category `transport`. First transport: `@rivetos/mcp-server` (StreamableHTTP, exposes `memory_*`, `web_*`, `skill_*`, runtime tools).
-- Providers `@rivetos/provider-vllm` (full vLLM surface: sampling extensions, `mm_processor_kwargs`/`chat_template_kwargs`, video, native `reasoning_content`, `verify_model_on_init`) and `@rivetos/provider-llama-server` (lean llama.cpp client; `top_k`/`min_p` + `extra_body` escape hatch). Both do strict message ordering and `/v1/models` auto-discovery. These replace the earlier single `openai-compat` provider (split into two so each can carry backend-specific code); the boot validator hard-errors on `provider: openai-compat` with a migration hint pointing at `vllm`/`llama-server`.
-- Provider `@rivetos/provider-claude-cli` (drives local `claude` via stream-json with embedded MCP bridge).
-- Mesh mTLS: agent channel is HTTPS with `requestCert: true, rejectUnauthorized: true`. New `mesh.tls` config field, `loadTlsConfig` helper, `.mesh` DNS preference, peer CN logging, test-CA fixtures, `agent-channel.test.ts` (8 tests). **Breaking: all mesh nodes must upgrade together.**
-- `docs/mesh.md`, `docs/CONFIG-REFERENCE.md` `## mesh` section.
-- Workspace templates at repo-root `workspace-templates/` (canonical `CORE.md`, `USER.md`, `WORKSPACE.md`, `MEMORY.md`, `CAPABILITIES.md`, `HEARTBEAT.md`, `FILESYSTEM.md`).
-- `docs/FILESYSTEM.md`: canonical filesystem layout reference.
-- Memory v5 pipeline: three new compactor prompts (leaf/branch/root) with thinking mode, rich message formatting (ISO timestamps + agent attribution), tool-call content synthesis (`synthesizeToolCallContent`), async `ros_tool_synth_queue` + drain job, `rivetos memory backfill-tool-synth` and `queue-status` CLI subcommands, hardened undici client, 28 new unit tests.
+## [0.5.0] - 2026-08-30
 
-### Changed
-- Infra moved to top-level `infra/{containers,docker,scripts,templates}/`.
-- Memory schema relocated under the plugin (`plugins/memory/postgres/{schema,workers}/`).
-- Unified `rivetos` container image at `infra/containers/rivetos/Dockerfile` (`--role agent | datahub | mcp`). Canonical Compose stack: `infra/docker/rivetos/docker-compose.yml`.
-- Mode-aware plugin discovery: CLI-only modes no longer pull runtime-only plugins.
-- `rivetos init` reads templates from canonical `workspace-templates/` (inline fallback retained).
-- Doc default workspace path → `~/.rivetos/workspace` (was `./workspace`).
-- Memory v5 token budgets raised to 7k/14k/20k (leaf/branch/root); source-message truncation removed; compactor model tag → `rivet-refined-v5`.
-- `mesh.secret` deprecated for agent-channel auth (still honored by `update --mesh` orchestration).
+First stable release. Everything since the 0.4.0 public beta: gateway + RivetHub, den, harness control plane, memory wiki, device mTLS, and per-user tenancy. Workspace packages align at 0.5.0 (RivetHub Electron keeps its own 0.5.4 updater cadence).
 
-### Fixed
-- vLLM/llama-server streaming delta parser accepts both `reasoning_content` and the shorter `reasoning` field (vLLM `0.0.3.dev10+` rename).
+### Runtime / mesh
+- Self-registering plugin manifests (`PluginManifest` + `register(ctx)`); `transport` category; in-process `@rivetos/mcp-server`.
+- Providers: dedicated `@rivetos/provider-vllm` and `@rivetos/provider-llama-server` replace `openai-compat`; `@rivetos/provider-claude-cli` drives local `claude` with an embedded MCP bridge.
+- Agent loop on the AI SDK (`@rivetos/aisdk`); providers migrated to official AI SDK packages.
+- Mesh mTLS (shared CA, HTTPS agent channel, `mesh.tls`, `.mesh` DNS). **Breaking: all mesh nodes must upgrade together.** `mesh.secret` is ignored for agent-channel auth (warning on load); remove it from config.
+- Durable task engine (`ros_tasks`): chat-loop executor, heartbeats, subagents, mesh delegation over shared Postgres, evaluation/retry/escalation.
+- Gateway embedded in the rivetos process: `/api/tasks`, catalog, sessions, notifications WS, uploads, wiki, memory, workflows.
+- Workflows v1: journal-replay engine, step SDK, budget/`parallel`, gateway + RivetHub runs UI (#438, #441–#446).
+- MCP unification: core + sidecar split, era-negotiating stdio, MCP 2026-07-28 final / SDK 2.0 (#275, #276, #435, #451).
+- `RIVETOS_INSTALL_ROOT` and `RIVETOS_SHARED_DIR` replace hardcoded `/opt/rivetos` and `/rivet-shared` (#595, #590).
+- Identity contract in workspace templates — verify before assuming, maintain the user roster (#594).
+- Removed: Pulumi IaC, split container images, Telegram/Discord/voice-discord channels (Phase 5, #490), unused circuit-breaker/audit-rotation exports (#463), Rivet Team product (#530).
 
-### Removed
-- Pulumi-based IaC: `@rivetos/infra` package and `rivetos infra up/preview/destroy` subcommand. Provisioning is script-and-Compose driven.
-- Legacy split-image setup: `infra/containers/agent/Dockerfile` and root `docker-compose.yaml`.
-- `packages/cli/workspace-templates/` from git (regenerated by `npm run prepublishOnly`).
-- `docs/ROADMAP.md`.
-- Dead exports from `@rivetos/core` (**breaking** for direct importers, pre-1.0 beta): `rotateAuditLogs`
-  (+ `AuditRotationConfig`, `RotationResult`) and the whole `domain/circuit-breaker.ts` module
-  (`CircuitBreaker`, `getCircuitBreaker`, `getAllCircuitBreakerStats`, `resetAllCircuitBreakers`,
-  `CircuitState`, `CircuitBreakerConfig`, `CircuitBreakerStats`). Nothing ever constructed a breaker, so the
-  registry was permanently empty and the `/health` `providers[].circuitBreaker` field and the matching
-  `rivetos status` `(circuit: …)` suffix could never render; both are gone too. Audit logs are still written
-  to `<workspace>/.data/audit/<date>.jsonl`; they now grow without bound and operators prune them manually.
+### Memory / wiki
+- Memory v5 compaction (leaf/branch/root + tool-call synthesis) and hybrid search (FTS + trigram + vector/RRF).
+- Compaction and embedding moved onto graphile-worker (`services/{compaction,embedding}-worker`).
+- Memory wiki: page model, extract/consolidate/recompile, durable topics and Wikipedia-style articles, `/api/wiki` + hub UI, `wiki_search`/`wiki_read` (#285–#292, #414, #416).
+- `memory_get_full` disk-pointer recall; `window=` shortcuts; tool rows excluded from browse by default (#546); tool_result search/embed (#440, #482).
+- Per-user memory routing (device identity → per-user database) (#561); `/api/memory` routed by the den-stamped user (#571).
+- Compaction skips heartbeats (#518); deadlock retry + wiki enqueue after commit (#542); `rivetos memory retry-failed` (#508).
+
+### RivetHub client
+- `apps/rivethub-web`: chat-first hub over the gateway — transcript, composer, node switcher, terminal, files, memory Search/Browse/Stats, wiki, workflows/flows canvas (#295–#307, #428–#433, #502, #550).
+- Desktop shell migrated from Tauri to Electron (`apps/rivethub-electron`) (#555); in-app updates from the mesh filestore (#562). Electron stays on its own 0.5.x updater cadence (0.5.4 as of #587).
+- Composer attachments, interactive ask card, voice mode (#576); per-session node binding (#583); agents roster in the sidebar (#549).
+- Loopback mTLS pipe so the desktop client presents device certs to the gateway (#494).
+- `apps/rivet-bots-android`: Grok Bot-style client where every bot is a mesh agent node (#541, #544, #545).
+
+### Den
+- New stack: `@rivetos/den-protocol`, `@rivetos/den-packs`, `@rivetos/den-server`, `@rivetos/den-app` (pack-driven Pixi viewer, PTY terminals, multi-window grid, mesh overview).
+- Den embedded in the rivetos process; harness adapters (Claude Code, Grok Build, later Hermes/Kimi/DeepSeek); MicBridge host-mic input (#418); voice transcribe/speak proxy (#574).
+- Harness control-plane fencing per session owner (#580, #582); idle auto-close of unattached harness PTYs (#439, #514).
+- DeepSeek `dsh` TUI driver (#539).
+
+### Harness integrations
+- Harness control-plane contract + `SessionId` codec (#456); drivers for Claude Code (#458), Grok Build (#472), Hermes (#477), kimi-code (#480), DeepSeek (#539).
+- Rotation re-keying and superseded lifecycle (#470); reasoning-delta on the contract (#469); gateway attachment staging (#465).
+- Capture plugins: Grok Build, Hermes, Kimi Code, Grok Bot memory bridge (#517); kimi-code headless executor + wire.jsonl backfill (#474, #481).
+- RivetHub and Android chat bound to the harness control plane (#466, #479).
+
+### Tenancy / multi-user
+- Mesh device enrollment (QR pairing) and per-device datahub credentials (#357, #366).
+- Gateway Rivet CA device mTLS; bearer tokens removed (#491). **Breaking: clients must present a device cert.**
+- Resolve the user at the den edge and filter RivetHub by owner (#565); wiki/memory/harness surfaces honor the routed user (#571, #579, #580, #581).
+- Early per-user identity (profile `USER.md` + memory tag) generalized into the owner-user model.
+
+### Release / infra
+- Unified `rivetos` container image (`--role`); GHCR publish; `@rivetos/cli` installable via `npm install -g`.
+- Versioned SQL migrations as source of truth; Nx module-boundary enforcement; secret scanner (#363); commit authorship check (#552).
+- `docs/RELEASES.md` release policy; docs truth-sweep to Phase-5 reality (#589, #593).
+- Workspace versions normalized to 0.5.0 for the first stable tag (this release). Lockfile refresh (`npm install`) must land in the PR — CI runs `npm ci`.
 
 ## [0.4.0] - 2026-04-05
 

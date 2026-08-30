@@ -15,7 +15,7 @@ First stable release. Everything since the 0.4.0 public beta: gateway + RivetHub
 - Self-registering plugin manifests (`PluginManifest` + `register(ctx)`); `transport` category; in-process `@rivetos/mcp-server`.
 - Providers: dedicated `@rivetos/provider-vllm` and `@rivetos/provider-llama-server` replace `openai-compat`; `@rivetos/provider-claude-cli` drives local `claude` with an embedded MCP bridge.
 - Agent loop on the AI SDK (`@rivetos/aisdk`); providers migrated to official AI SDK packages.
-- Mesh mTLS (shared CA, HTTPS agent channel, `mesh.tls`, `.mesh` DNS). **Breaking: all mesh nodes must upgrade together.**
+- Mesh mTLS (shared CA, HTTPS agent channel, `mesh.tls`, `.mesh` DNS). **Breaking: all mesh nodes must upgrade together.** `mesh.secret` is ignored for agent-channel auth (warning on load); remove it from config.
 - Durable task engine (`ros_tasks`): chat-loop executor, heartbeats, subagents, mesh delegation over shared Postgres, evaluation/retry/escalation.
 - Gateway embedded in the rivetos process: `/api/tasks`, catalog, sessions, notifications WS, uploads, wiki, memory, workflows.
 - Workflows v1: journal-replay engine, step SDK, budget/`parallel`, gateway + RivetHub runs UI (#438, #441–#446).
@@ -61,7 +61,7 @@ First stable release. Everything since the 0.4.0 public beta: gateway + RivetHub
 - Unified `rivetos` container image (`--role`); GHCR publish; `@rivetos/cli` installable via `npm install -g`.
 - Versioned SQL migrations as source of truth; Nx module-boundary enforcement; secret scanner (#363); commit authorship check (#552).
 - `docs/RELEASES.md` release policy; docs truth-sweep to Phase-5 reality (#589, #593).
-- Workspace versions normalized to 0.5.0 for the first stable tag (this release). Integrator must run `npm install` to refresh the lockfile.
+- Workspace versions normalized to 0.5.0 for the first stable tag (this release). Lockfile refresh (`npm install`) must land in the PR — CI runs `npm ci`.
 
 ## [0.4.0] - 2026-04-05
 
