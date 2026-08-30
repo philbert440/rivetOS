@@ -18,8 +18,8 @@ function getConfigPath(): string {
   return resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
 }
 
-export default async function config(): Promise<void> {
-  const subcommand = process.argv[3]
+export default async function config(args: string[] = process.argv.slice(3)): Promise<void> {
+  const subcommand = args[0]
 
   if (!subcommand || subcommand === 'help') {
     console.log('Usage: rivetos config <subcommand>')
@@ -99,7 +99,7 @@ export default async function config(): Promise<void> {
     }
 
     case 'validate': {
-      const configPath = process.argv[4] ?? getConfigPath()
+      const configPath = args[1] ?? getConfigPath()
 
       let raw: string
       try {
@@ -162,7 +162,7 @@ export default async function config(): Promise<void> {
 
     case 'init': {
       const { default: runInit } = await import('./init.js')
-      await runInit()
+      await runInit(args.slice(1))
       break
     }
 

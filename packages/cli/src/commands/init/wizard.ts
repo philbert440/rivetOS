@@ -27,6 +27,9 @@ export interface InitOptions {
   joinHost?: string
 }
 
+/** Mesh listener default. `rivetos init --join` pings this port, not standalone plugin 3100. */
+export const INIT_MESH_JOIN_PORT = 3000
+
 export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   p.intro(options.joinHost ? '🔩 RivetOS Setup (joining mesh)' : '🔩 RivetOS Setup')
 
@@ -168,7 +171,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     s2.start(`Joining mesh via ${options.joinHost}...`)
 
     try {
-      const port = 3000
+      const port = INIT_MESH_JOIN_PORT
 
       // Ping seed first — try mTLS, fall back to plain HTTPS (certs may not exist yet at init time)
       let pingRes: Response

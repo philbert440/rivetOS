@@ -123,7 +123,7 @@ mesh:
 | `mesh.stale_threshold_ms` | number | `90000` | Age before a node is considered stale. |
 | `mesh.discovery.mode` | string | — | `seed` \| `static` \| `mdns`. |
 | `mesh.discovery.seed_host` | string | — | Seed node hostname. Use `<nodeName>.mesh`. |
-| `mesh.discovery.seed_port` | number | `3100` | Seed node port. |
+| `mesh.discovery.seed_port` | number | `3100` | Seed node port. Client-side fallback when `seed_port` omitted; set it to match the seed's listener. |
 | `mesh.secret` | string | — | **Deprecated** — no longer used for agent-channel auth. Retained for `update --mesh` orchestration. |
 
 ### `.mesh` DNS names

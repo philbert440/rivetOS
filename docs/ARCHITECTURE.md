@@ -64,7 +64,7 @@ Web / Desktop / Android
 │                         RivetOS Node                                     │
 │                                                                          │
 │  Clients: RivetHub web · RivetHub desktop · Android                      │
-│       │ gateway HTTP + WS  (bearer)                                      │
+│       │ gateway HTTP + WS  (device mTLS)                                 │
 │       ▼                                                                  │
 │  ┌────────────────────────────────────────────────────────────────────┐  │
 │  │  den-server gateway                                                │  │
@@ -833,6 +833,7 @@ is driven by Compose under `infra/docker/` and scripts under `infra/scripts/`.
 
 Den / gateway env (selection): `RIVETOS_DEN_HOST`, `RIVETOS_DEN_TOKEN`,
 `RIVETOS_DEN_STATIC_DIR` (hub-first when hub dist is built), upload caps/TTL.
+Bearer tokens removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 ---
 

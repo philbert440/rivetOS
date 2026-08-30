@@ -65,7 +65,7 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 │  │          │     │          │    │                        │  │
 │  │ Agent    │     │ message  │    │ hooks → media → loop   │  │
 │  │ (mesh)   │     │  → agent │    │  → stream → respond    │  │
-│  │ Hub/GW   │     │  → prov  │    │  → memory append       │  │
+│  │          │     │  → prov  │    │  → memory append       │  │
 │  │          │     │          │    │                        │  │
 │  └──────────┘     └──────────┘    └───────────┬────────────┘  │
 │       ▲                                       │               │

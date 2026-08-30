@@ -17,10 +17,13 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 ## Option A: interactive setup (recommended)
 
+The supported install path is a **stable tagged release** (pin a tag from [GitHub Releases](https://github.com/philbert440/rivetOS/releases)). Cloning default `main` is the development path.
+
 The `rivetos init` wizard walks you through deployment target, agent configuration, and API keys, then generates your config automatically. Human UX is RivetHub; the wizard no longer collects social-bot tokens.
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
+# production: git checkout <tag>
 cd rivetOS
 npm install
 npx rivetos init
@@ -30,8 +33,9 @@ The wizard will:
 1. **Detect your environment**: Docker available? Proxmox? How much memory?
 2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
 3. **Configure agents**: pick a provider, enter your API key, choose a model
-4. **Channels**: social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub. Optional agent mesh is configured by hand after setup.
-5. **Review and deploy**: summary of your choices, then one-click deploy
+4. **Review and deploy**: summary of your choices, then one-click deploy
+
+Social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub. Optional agent mesh is configured by hand after setup — not a wizard step.
 
 After the wizard completes, your agent is running.
 

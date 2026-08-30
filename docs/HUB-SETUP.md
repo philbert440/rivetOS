@@ -78,9 +78,10 @@ export RIVETOS_DEN_PACKS_DIR=packages/den-packs/packs
 
 # Bind (loopback by default; off-loopback requires TLS + device client cert)
 export RIVETOS_DEN_HOST=0.0.0.0
-# export RIVETOS_DEN_TLS_CERT=/rivet-shared/rivet-ca/issued/<node>.crt
-# export RIVETOS_DEN_TLS_KEY=/rivet-shared/rivet-ca/issued/<node>.key
-# RIVETOS_DEN_TLS_CA defaults to the Rivet intermediate chain; client certs required unless set to 0
+export RIVETOS_DEN_TLS_CERT=/rivet-shared/rivet-ca/issued/<node>.crt
+export RIVETOS_DEN_TLS_KEY=/rivet-shared/rivet-ca/issued/<node>.key
+# RIVETOS_DEN_TLS_CA is the CA-chain path (default: Rivet intermediate chain).
+# Client certs required off-loopback; set RIVETOS_DEN_TLS_REQUIRE_CLIENT=0 to allow encrypt-only (no device cert).
 
 # Then start via normal agent boot (embedded den) or:
 node services/den-server/dist/index.js
