@@ -13,7 +13,7 @@ vi.mock('../lib/ssh.js', async (importOriginal) => {
 })
 
 import { sshExecCapture } from '../lib/ssh.js'
-import { ENROLL_SNIPPET_MARKER, packTarGz } from '../lib/mesh-enroll.js'
+import { ENROLL_SNIPPET_MARKER, MeshHubError, packTarGz } from '../lib/mesh-enroll.js'
 import mesh, { meshEnroll, meshRenew, meshSync } from './mesh.js'
 
 const sshExecCaptureMock = vi.mocked(sshExecCapture)
@@ -105,15 +105,30 @@ afterEach(() => {
   if (ORIGINAL_HOME === undefined) delete process.env.HOME
   else process.env.HOME = ORIGINAL_HOME
   rmSync(tmp, { recursive: true, force: true })
+  vi.restoreAllMocks()
 })
 
 describe('mesh join demotion', () => {
-  it('prints a pointer to mesh enroll unless --manual is set', async () => {
+  it('prints a pointer to mesh enroll at exit 0 when invoked with no host', async () => {
     await mesh(['join'])
-    await mesh(['join', '192.0.2.1'])
     const text = vi.mocked(console.log).mock.calls.flat().join('\n')
     expect(text).toMatch(/rivetos mesh enroll <user@host> --name <node>/)
     expect(text).toMatch(/mesh join --manual/)
+    expect(sshExecCaptureMock).not.toHaveBeenCalled()
+  })
+
+  it('exits non-zero when a positional host is present without --manual', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`exit ${String(code)}`)
+    }) as never)
+    await expect(mesh(['join', '192.0.2.1'])).rejects.toThrow(/exit 1/)
+    expect(exit).toHaveBeenCalledWith(1)
+    const text = [
+      ...vi.mocked(console.log).mock.calls.flat(),
+      ...vi.mocked(console.error).mock.calls.flat(),
+    ].join('\n')
+    expect(text).toMatch(/rivetos mesh enroll/)
+    expect(text).toMatch(/no longer a join/)
     expect(sshExecCaptureMock).not.toHaveBeenCalled()
   })
 })
@@ -145,7 +160,6 @@ describe('mesh enroll (mocked ssh)', () => {
 
   it('refreshes certs on re-enroll without duplicating the config snippet', async () => {
     const b64 = enrollB64()
-    sshExecCaptureMock.mockResolvedValue({ stdout: b64, stderr: '' })
     sshExecCaptureMock.mockImplementation(async (_host, command) => {
       if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
       return { stdout: b64, stderr: '' }
@@ -192,6 +206,25 @@ describe('mesh enroll (mocked ssh)', () => {
       meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10']),
     ).rejects.toThrow(/tarball/)
   })
+
+  it('does not label a generic remote failure as helper-missing', async () => {
+    sshExecCaptureMock.mockImplementation(async (_host, command) => {
+      if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
+      throw failSsh('mesh enroll exited with code 1', {
+        stderr: 'No such file or directory: /var/lib/rivethub/mesh.json',
+        status: 1,
+      })
+    })
+    try {
+      await meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10'])
+      throw new Error('should throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(MeshHubError)
+      expect((err as MeshHubError).code).toBe('ssh-failed')
+      expect((err as Error).message).toMatch(/failed/)
+      expect((err as Error).message).not.toMatch(/hub helper rivethub-hub not found/)
+    }
+  })
 })
 
 describe('mesh sync / renew (mocked ssh)', () => {
@@ -207,6 +240,21 @@ describe('mesh sync / renew (mocked ssh)', () => {
     expect(JSON.parse(written).nodes.phildesk.name).toBe('phildesk')
     const text = vi.mocked(console.log).mock.calls.flat().join('\n')
     expect(text).toMatch(/1 → 2 nodes \(\+1\)/)
+  })
+
+  it('rejects a malformed mesh-export as malformed-mesh', async () => {
+    sshExecCaptureMock.mockImplementation(async (_host, command) => {
+      if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
+      if (command.includes('mesh-export')) return { stdout: '{not-a-mesh', stderr: '' }
+      throw new Error(`unexpected ssh command: ${command}`)
+    })
+    try {
+      await meshSync(['rivet@datahub'])
+      throw new Error('should throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(MeshHubError)
+      expect((err as MeshHubError).code).toBe('malformed-mesh')
+    }
   })
 
   it('renew uses hub renew and refreshes the leaf', async () => {

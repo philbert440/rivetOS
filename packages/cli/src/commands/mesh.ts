@@ -123,6 +123,10 @@ export default async function mesh(argv: string[] = process.argv.slice(3)): Prom
  * an HTTPS+token transport can replace this function with the same contract —
  * remote command in, stdout bytes out. Diagnostics stay on stderr and must
  * not mix into the returned stdout.
+ *
+ * `sshExecCapture` hands `remoteCommand` to `ssh` as a single argv element
+ * (not through a local shell). On failure the rejected Error always has string
+ * `stdout` / `stderr` (possibly empty) and `status: number | null`.
  */
 export async function sshHubStdout(
   user: string,
@@ -147,13 +151,12 @@ function isAuthFailure(err: CapturedExecError): boolean {
 }
 
 function isHelperMissing(err: CapturedExecError, hubCmd: string): boolean {
+  // Lean on exit 127 (command not found) and the helper *name*. A generic
+  // "No such file or directory" is often a missing config/data path, not the binary.
   if (err.status === 127) return true
   const blob = `${err.message}\n${err.stderr ?? ''}`
   const cmd = hubCmd.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return (
-    new RegExp(`${cmd}:\\s*(command )?not found`, 'i').test(blob) ||
-    /command not found|No such file or directory/i.test(blob)
-  )
+  return new RegExp(`${cmd}:\\s*(command )?not found`, 'i').test(blob)
 }
 
 function sshAuthError(user: string, host: string): MeshHubError {
@@ -174,7 +177,7 @@ function mapHubExecError(err: unknown, user: string, host: string, hubCmd: strin
   }
   const detail = (captured.stderr || captured.message).trim()
   return new MeshHubError(
-    'helper-missing',
+    'ssh-failed',
     `ssh ${user}@${host} ${hubCmd} failed${detail ? `: ${detail}` : ''}`,
   )
 }
@@ -194,7 +197,10 @@ export async function probeHubSsh(user: string, host: string): Promise<void> {
   }
 }
 
-function printMergeResult(result: 'appended' | 'created' | 'unchanged'): void {
+function printMergeResult(result: 'appended' | 'created' | 'unchanged', warning?: string): void {
+  if (warning) {
+    console.error(`     ⚠️  ${warning}`)
+  }
   const path = configPath()
   if (result === 'unchanged') {
     console.log('     config: snippet already present (not duplicated)')
@@ -226,7 +232,7 @@ export async function meshEnroll(args: string[]): Promise<void> {
   console.log(`  ✅ Enrolled ${parsed.name} (advertise ${advertise})`)
   console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
   console.log(`     mesh.json: ${sharedPath('mesh.json')}`)
-  printMergeResult(merge)
+  printMergeResult(merge.result, merge.warning)
 }
 
 // ---------------------------------------------------------------------------
@@ -254,7 +260,19 @@ export async function meshSync(args: string[]): Promise<void> {
     )
   }
   const dest = sharedPath('mesh.json')
-  const beforeCount = await readLocalMeshNodeCount()
+  let beforeCount = 0
+  try {
+    beforeCount = await readLocalMeshNodeCount()
+  } catch (err) {
+    if (err instanceof MeshHubError && err.code === 'malformed-mesh') {
+      // Surface corrupt local mesh.json instead of counting it as 0, but still
+      // allow sync to replace it (that's the recovery path).
+      console.error(`  ⚠️  ${err.message}; treating local node count as 0`)
+      beforeCount = 0
+    } else {
+      throw err
+    }
+  }
   await mkdir(dirname(dest), { recursive: true })
   const body = trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`
   await atomicWriteFile(dest, body)
@@ -285,7 +303,7 @@ export async function meshRenew(args: string[]): Promise<void> {
   console.log(`  ✅ Renewed leaf cert for ${parsed.name}`)
   console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
   console.log(`     mesh.json: ${sharedPath('mesh.json')}`)
-  printMergeResult(merge)
+  printMergeResult(merge.result, merge.warning)
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +504,15 @@ function positionalArg(rest: string[]): string | undefined {
 async function meshJoin(rest: string[], flags: Flags): Promise<void> {
   if (!flags.manual) {
     console.log(JOIN_POINTER)
+    const host = positionalArg(rest)
+    if (host) {
+      // Silent exit-0 used to make `mesh join $SEED && …` look like a successful
+      // join. Fail loudly when a positional host is present so automation notices.
+      throw new MeshHubError(
+        'usage',
+        'mesh join <host> is no longer a join (exiting non-zero so scripts do not assume success). Use `rivetos mesh enroll <user@host> --name <node>`, or `rivetos mesh join --manual <host>` for the legacy YAML flow.',
+      )
+    }
     return
   }
 

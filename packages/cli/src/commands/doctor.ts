@@ -37,7 +37,7 @@ import { resolveLocalNodeName } from '../lib/node-identity.js'
 // Types
 // ---------------------------------------------------------------------------
 
-interface CheckResult {
+export interface CheckResult {
   name: string
   category: string
   status: 'pass' | 'warn' | 'fail'
@@ -722,7 +722,10 @@ async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
 // Check: leaf cert expiry (90-day leaves; warn within 30 days)
 // ---------------------------------------------------------------------------
 
-async function checkLeafCert(rawConfig: string | null): Promise<CheckResult[]> {
+export async function checkLeafCert(
+  rawConfig: string | null,
+  now?: Date,
+): Promise<CheckResult[]> {
   const nodeName = resolveLocalNodeName()
   if (!nodeName) return []
 
@@ -751,7 +754,9 @@ async function checkLeafCert(rawConfig: string | null): Promise<CheckResult[]> {
     certPem: pem,
     nodeName,
     hubTarget: renewHubTargetFromSeed(seed),
+    now,
   })
+  // `check()` is 5 args: category, name, status, message, detail — printCheck renders detail.
   return [check('mesh', 'leaf-cert', result.status, result.message, result.detail)]
 }
 

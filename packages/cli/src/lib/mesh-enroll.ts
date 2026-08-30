@@ -9,7 +9,7 @@
 import { copyFile, mkdir, readFile, rename, writeFile, chmod } from 'node:fs/promises'
 import { hostname, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
-import { X509Certificate } from 'node:crypto'
+import { randomBytes, X509Certificate } from 'node:crypto'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { sharedPath } from '@rivetos/types'
 import { assertRecordMeshFile } from './mesh-file.js'
@@ -21,9 +21,23 @@ export const CERT_EXPIRY_WARN_DAYS = 30
 export const DAY_MS = 24 * 60 * 60 * 1000
 
 const TAR_BLOCK = 512
+/** Hard cap on gunzip output. A tiny gzip from a malicious hub must not OOM the CLI. */
+export const MAX_TAR_DECODED_BYTES = 32 * 1024 * 1024
+/** Per-member cap, checked from the header `size` before copying bytes. */
+export const MAX_TAR_MEMBER_BYTES = 8 * 1024 * 1024
+
+export interface TarLimits {
+  maxDecodedBytes?: number
+  maxMemberBytes?: number
+}
 
 export type MeshHubErrorCode =
-  'ssh-auth' | 'helper-missing' | 'malformed-tarball' | 'malformed-mesh' | 'usage'
+  | 'ssh-auth'
+  | 'ssh-failed'
+  | 'helper-missing'
+  | 'malformed-tarball'
+  | 'malformed-mesh'
+  | 'usage'
 
 export class MeshHubError extends Error {
   readonly code: MeshHubErrorCode
@@ -209,6 +223,11 @@ export function parseRenewArgs(args: string[]): RenewArgs {
 /**
  * Build the remote hub argv. PATH prefix matches node.sh: non-login ssh often
  * drops /usr/local/bin (where datahub.sh installs rivethub-hub).
+ *
+ * Injection defense is layered: `isSafeArg` rejects `; $ \` ' " whitespace` and
+ * allows `:` (IPv6) and `@` (see `ssh.test.ts`); `quoteShellArg` then
+ * single-quotes and POSIX-escapes embedded quotes. The ssh hop passes this
+ * string as one argv element, not through a local shell.
  */
 export function hubRemoteCommand(
   hubCmd: string,
@@ -226,15 +245,24 @@ export function hubRemoteCommand(
 /**
  * Address other nodes should use to reach this host when --advertise is omitted.
  * Prefer a non-localhost hostname; otherwise the first non-internal IPv4.
+ *
+ * `hostName` / `ifaces` are injectable so tests can cover every fallback without
+ * mocking `node:os` (named imports are not spyable under ESM).
  */
-export function defaultAdvertiseHost(): string {
-  const name = hostname()
-  if (name && name !== 'localhost' && name !== 'localhost.localdomain' && isSafeArg(name)) {
-    return name
+export function defaultAdvertiseHost(
+  hostName: string = hostname(),
+  ifaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): string {
+  if (
+    hostName &&
+    hostName !== 'localhost' &&
+    hostName !== 'localhost.localdomain' &&
+    isSafeArg(hostName)
+  ) {
+    return hostName
   }
-  const interfaces = networkInterfaces()
-  for (const ifaces of Object.values(interfaces)) {
-    for (const iface of ifaces ?? []) {
+  for (const list of Object.values(ifaces)) {
+    for (const iface of list ?? []) {
       if (iface.family === 'IPv4' && !iface.internal && isSafeArg(iface.address)) {
         return iface.address
       }
@@ -278,15 +306,42 @@ function safeMemberName(name: string): string {
   return n
 }
 
+/** POSIX/GNU unsigned checksum: treat chksum bytes (148–155) as spaces. */
+function tarUnsignedChecksum(header: Buffer): number {
+  let sum = 0
+  for (let i = 0; i < TAR_BLOCK; i++) {
+    sum += i >= 148 && i < 156 ? 0x20 : (header[i] ?? 0)
+  }
+  return sum
+}
+
+function isInflateTooLarge(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const code = (err as NodeJS.ErrnoException).code
+  return (
+    code === 'ERR_BUFFER_TOO_LARGE' ||
+    err.name === 'RangeError' ||
+    /too large|exceed/i.test(err.message)
+  )
+}
+
 /** Unpack a gzip-compressed ustar archive into basename → bytes. */
-export function extractTarGz(buf: Buffer): Map<string, Buffer> {
+export function extractTarGz(buf: Buffer, limits: TarLimits = {}): Map<string, Buffer> {
+  const maxDecoded = limits.maxDecodedBytes ?? MAX_TAR_DECODED_BYTES
+  const maxMember = limits.maxMemberBytes ?? MAX_TAR_MEMBER_BYTES
   if (buf.length < 2 || buf[0] !== 0x1f || buf[1] !== 0x8b) {
     throw new MeshHubError('malformed-tarball', 'enroll tarball is not gzip-compressed')
   }
   let tar: Buffer
   try {
-    tar = gunzipSync(buf)
-  } catch {
+    tar = gunzipSync(buf, { maxOutputLength: maxDecoded })
+  } catch (err) {
+    if (isInflateTooLarge(err)) {
+      throw new MeshHubError(
+        'malformed-tarball',
+        `enroll tarball exceeds ${String(maxDecoded)} bytes decompressed`,
+      )
+    }
     throw new MeshHubError('malformed-tarball', 'enroll tarball failed to decompress')
   }
   const files = new Map<string, Buffer>()
@@ -294,11 +349,27 @@ export function extractTarGz(buf: Buffer): Map<string, Buffer> {
   while (offset + TAR_BLOCK <= tar.length) {
     const header = tar.subarray(offset, offset + TAR_BLOCK)
     if (isZeroBlock(header)) break
+    const storedSum = parseOctal(header.subarray(148, 156))
+    if (storedSum !== tarUnsignedChecksum(header)) {
+      throw new MeshHubError(
+        'malformed-tarball',
+        'enroll tarball has a corrupt header (checksum mismatch)',
+      )
+    }
     const name = readTarString(header, 0, 100)
     const prefix = readTarString(header, 345, 155)
     const size = parseOctal(header.subarray(124, 136))
     const typeflag = String.fromCharCode(header[156] ?? 0)
     offset += TAR_BLOCK
+    if (size > maxMember) {
+      throw new MeshHubError(
+        'malformed-tarball',
+        `enroll tarball member exceeds ${String(maxMember)} bytes`,
+      )
+    }
+    if (offset + size > tar.length) {
+      throw new MeshHubError('malformed-tarball', 'enroll tarball is truncated')
+    }
     const padded = Math.ceil(size / TAR_BLOCK) * TAR_BLOCK
     const data = tar.subarray(offset, offset + size)
     offset += padded
@@ -354,12 +425,24 @@ export function packTarGz(files: Record<string, Buffer | string>): Buffer {
   return gzipSync(Buffer.concat(parts))
 }
 
+const CANONICAL_B64 = /^[A-Za-z0-9+/]+={0,2}$/
+
 export function decodeEnrollB64(stdout: string): Buffer {
   const cleaned = stdout.replace(/\s+/g, '')
   if (!cleaned) {
     throw new MeshHubError(
       'malformed-tarball',
       'enroll produced an empty tarball (remote diagnostics are on stderr)',
+    )
+  }
+  // Node's base64 decoder skips invalid chars, so `Buffer.from(s, 'base64').length === 0`
+  // almost never fires for nonempty garbage. Require a canonical alphabet so an rc
+  // echo / MOTD mixed into stdout is a clear "not valid base64", not "not gzip".
+  // A hub begin/end marker would be a wire-protocol change; charset is the local guard.
+  if (cleaned.length % 4 !== 0 || !CANONICAL_B64.test(cleaned)) {
+    throw new MeshHubError(
+      'malformed-tarball',
+      'enroll stdout is not valid base64 (unexpected output mixed with the tarball?)',
     )
   }
   const buf = Buffer.from(cleaned, 'base64')
@@ -398,9 +481,13 @@ export function parseEnrollTarball(b64Stdout: string, name: string): UnpackedEnr
   }
 }
 
-export async function atomicWriteFile(path: string, data: string | Buffer): Promise<void> {
-  const tmp = `${path}.tmp.${String(process.pid)}`
-  await writeFile(tmp, data)
+export async function atomicWriteFile(
+  path: string,
+  data: string | Buffer,
+  mode = 0o600,
+): Promise<void> {
+  const tmp = `${path}.tmp.${String(process.pid)}.${randomBytes(8).toString('hex')}`
+  await writeFile(tmp, data, { mode })
   await rename(tmp, path)
 }
 
@@ -413,13 +500,16 @@ export async function atomicWriteFile(path: string, data: string | Buffer): Prom
 export async function writeEnrollLayout(unpacked: UnpackedEnroll): Promise<void> {
   const issued = sharedPath('rivet-ca', 'issued')
   const intermediate = sharedPath('rivet-ca', 'intermediate')
-  await mkdir(issued, { recursive: true })
+  // Create issued/ at 0700 — do not mkdir 0755 then chmod; that window is
+  // visible on the group-shared/NFS tree. chmod after covers an already-existing dir.
+  await mkdir(issued, { recursive: true, mode: 0o700 })
   await mkdir(intermediate, { recursive: true })
   await chmod(issued, 0o700).catch(() => undefined)
   const certPath = join(issued, `${unpacked.name}.crt`)
   const keyPath = join(issued, `${unpacked.name}.key`)
   await writeFile(certPath, unpacked.cert)
-  await writeFile(keyPath, unpacked.key)
+  // mode on create; chmod after because writeFile's mode is ignored on re-enroll.
+  await writeFile(keyPath, unpacked.key, { mode: 0o600 })
   await chmod(keyPath, 0o600)
   await writeFile(join(intermediate, 'ca-chain.pem'), unpacked.caChain)
   await writeFile(join(intermediate, 'chain.pem'), unpacked.caChain)
@@ -430,13 +520,27 @@ export function configPath(): string {
   return join(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
 }
 
+function snippetNodeName(text: string): string | undefined {
+  const m = text.match(/^\s*node_name:\s*["']?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)["']?\s*$/m)
+  return m?.[1]
+}
+
 export function mergeConfigSnippet(
   existing: string | null,
   snippet: string,
-): { next: string; changed: boolean } {
+): { next: string; changed: boolean; warning?: string } {
   const body = snippet.endsWith('\n') ? snippet : `${snippet}\n`
+  // Marker-gated: once the enroll snippet is present we never rewrite it
+  // (re-enroll refreshes certs + mesh.json only). Content-blind no-op besides
+  // a node_name mismatch warning — edit or delete the marker block to re-merge.
   if (existing && existing.includes(ENROLL_SNIPPET_MARKER)) {
-    return { next: existing, changed: false }
+    const existingName = snippetNodeName(existing)
+    const incomingName = snippetNodeName(snippet)
+    const warning =
+      existingName && incomingName && existingName !== incomingName
+        ? `existing enroll snippet has node_name "${existingName}"; incoming "${incomingName}" was not applied (marker-gated no-op)`
+        : undefined
+    return { next: existing, changed: false, warning }
   }
   if (!existing) {
     return { next: body, changed: true }
@@ -445,25 +549,29 @@ export function mergeConfigSnippet(
   return { next: existing + sep + body, changed: true }
 }
 
+export type MergeConfigResult = 'appended' | 'created' | 'unchanged'
+
 export async function mergeConfigFile(
   snippet: string,
   path = configPath(),
-): Promise<'appended' | 'created' | 'unchanged'> {
+): Promise<{ result: MergeConfigResult; warning?: string }> {
   let existing: string | null
   try {
     existing = await readFile(path, 'utf-8')
   } catch {
     existing = null
   }
-  const { next, changed } = mergeConfigSnippet(existing, snippet)
-  if (!changed) return 'unchanged'
+  const { next, changed, warning } = mergeConfigSnippet(existing, snippet)
+  if (!changed) return { result: 'unchanged', warning }
   await mkdir(dirname(path), { recursive: true })
   if (existing !== null) {
     await copyFile(path, `${path}.bak`)
   }
-  await writeFile(path, next, { mode: 0o600 })
+  // 0o600 is intentional: config.yaml holds enroll material. Atomic temp+rename
+  // matches mesh.json so a crash mid-write cannot truncate the live file.
+  await atomicWriteFile(path, next, 0o600)
   await chmod(path, 0o600)
-  return existing === null ? 'created' : 'appended'
+  return { result: existing === null ? 'created' : 'appended', warning }
 }
 
 export function meshNodeCount(raw: string, path = 'mesh.json'): number {
@@ -472,12 +580,26 @@ export function meshNodeCount(raw: string, path = 'mesh.json'): number {
   return Object.keys(mesh.nodes).length
 }
 
+function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: string }).code === 'ENOENT'
+}
+
 export async function readLocalMeshNodeCount(): Promise<number> {
+  const path = sharedPath('mesh.json')
+  let raw: string
   try {
-    const raw = await readFile(sharedPath('mesh.json'), 'utf-8')
-    return meshNodeCount(raw, sharedPath('mesh.json'))
+    raw = await readFile(path, 'utf-8')
+  } catch (err) {
+    if (isEnoent(err)) return 0
+    throw err
+  }
+  try {
+    return meshNodeCount(raw, path)
   } catch {
-    return 0
+    throw new MeshHubError(
+      'malformed-mesh',
+      `local mesh.json at ${path} is not a valid Record-format mesh file`,
+    )
   }
 }
 
@@ -487,7 +609,14 @@ export async function readLocalMeshNodeCount(): Promise<number> {
 
 export function parseCertNotAfter(pem: string): Date {
   const cert = new X509Certificate(pem)
-  const parsed = new Date(cert.validTo)
+  // X509Certificate.validTo is OpenSSL's UTC string ("Mon DD HH:MM:SS YYYY GMT").
+  // A missing GMT/Z would be parsed as local time and shift the 30-day judgment
+  // by the TZ offset. Force UTC when the suffix is absent.
+  let raw = cert.validTo.trim()
+  if (!/(?:GMT|UTC|Z)$/i.test(raw)) {
+    raw = `${raw} GMT`
+  }
+  const parsed = new Date(raw)
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`cannot parse certificate notAfter "${cert.validTo}"`)
   }

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gzipSync, gunzipSync } from 'node:zlib'
 import {
   CERT_EXPIRY_WARN_DAYS,
   DAY_MS,
@@ -10,6 +11,7 @@ import {
   MeshHubError,
   classifyCertExpiry,
   decodeEnrollB64,
+  defaultAdvertiseHost,
   extractTarGz,
   hubRemoteCommand,
   leafCertExpiryCheck,
@@ -23,6 +25,7 @@ import {
   parseRenewArgs,
   parseSyncArgs,
   parseUserHost,
+  readLocalMeshNodeCount,
   renewCommand,
   renewHubTargetFromSeed,
   validateNodeName,
@@ -129,6 +132,11 @@ describe('arg parsing', () => {
     expect(() => parseEnrollArgs(['rivet@h', '--name', 'n', '--nope'])).toThrow(/Unknown option/)
     expect(() => parseUserHost('host-only')).toThrow(/user@host/)
     expect(() => parseUserHost('rivet@host;rm')).toThrow(/unsafe/)
+    expect(parseUserHost('rivet@2001:db8::1')).toEqual({
+      user: 'rivet',
+      host: '2001:db8::1',
+      target: 'rivet@2001:db8::1',
+    })
   })
 
   it('parses sync and renew', () => {
@@ -170,6 +178,7 @@ describe('tarball unpack', () => {
     expect(readFileSync(crt, 'utf-8')).toBe('CERT')
     expect(readFileSync(key, 'utf-8')).toBe('KEY')
     expect(statSync(key).mode & 0o777).toBe(0o600)
+    expect(statSync(join(shared, 'rivet-ca', 'issued')).mode & 0o777).toBe(0o700)
     expect(readFileSync(chain, 'utf-8')).toBe('CHAIN')
     expect(readFileSync(chainAlias, 'utf-8')).toBe('CHAIN')
     expect(JSON.parse(readFileSync(mesh, 'utf-8')).nodes.ct110.host).toBe('192.0.2.10')
@@ -184,6 +193,39 @@ describe('tarball unpack', () => {
     )
     const sneaky = packTarGz({ '../etc/passwd': 'nope' })
     expect(() => extractTarGz(sneaky)).toThrow(/unsafe path/)
+  })
+
+  it('rejects subdir members and `..` paths (flat-member contract)', () => {
+    expect(() => extractTarGz(packTarGz({ 'sub/ct110.crt': 'nope' }))).toThrow(/unsafe path/)
+    expect(() => extractTarGz(packTarGz({ 'a/b/../c': 'nope' }))).toThrow(/unsafe path/)
+  })
+
+  it('rejects a header whose checksum does not match', () => {
+    const tar = gunzipSync(packTarGz({ 'hello.txt': 'hi' }))
+    tar[0] ^= 0xff
+    expect(() => extractTarGz(gzipSync(tar))).toThrow(/checksum/)
+  })
+
+  it('rejects a decompressed payload over the cap', () => {
+    const gz = gzipSync(Buffer.alloc(1000, 1))
+    expect(() => extractTarGz(gz, { maxDecodedBytes: 100 })).toThrow(/exceeds \d+ bytes decompressed/)
+  })
+
+  it('rejects a member whose header size exceeds the per-member cap', () => {
+    expect(() => extractTarGz(packTarGz({ 'big.txt': 'hello world' }), { maxMemberBytes: 4 })).toThrow(
+      /member exceeds/,
+    )
+  })
+
+  it('rejects garbage-but-nonempty stdout as invalid base64, not "not gzip"', () => {
+    try {
+      decodeEnrollB64('Welcome to Ubuntu\nnot-valid-base64-$$$')
+      throw new Error('should throw')
+    } catch (err) {
+      expect(err).toBeInstanceOf(MeshHubError)
+      expect((err as Error).message).toMatch(/not valid base64/)
+      expect((err as Error).message).not.toMatch(/not gzip/)
+    }
   })
 
   it('accepts base64 with wrapping whitespace', () => {
@@ -204,18 +246,28 @@ describe('config-snippet merge', () => {
     expect(second.next.match(/node_name/g)?.length).toBe(1)
   })
 
+  it('warns when a later --name would change node_name under the marker no-op', () => {
+    const first = mergeConfigSnippet(null, SNIPPET)
+    const renamed = SNIPPET.replace('ct110', 'phildesk')
+    const second = mergeConfigSnippet(first.next, renamed)
+    expect(second.changed).toBe(false)
+    expect(second.warning).toMatch(/node_name "ct110".*incoming "phildesk"/)
+    expect(second.next).toBe(first.next)
+  })
+
   it('appends to existing config after a backup, then no-ops', async () => {
     const path = join(process.env.HOME!, '.rivetos', 'config.yaml')
     mkdirSync(join(process.env.HOME!, '.rivetos'), { recursive: true })
     writeFileSync(path, 'runtime:\n  default_agent: claude\n')
     chmodSync(path, 0o600)
-    expect(await mergeConfigFile(SNIPPET, path)).toBe('appended')
+    expect((await mergeConfigFile(SNIPPET, path)).result).toBe('appended')
     expect(readFileSync(`${path}.bak`, 'utf-8')).toContain('default_agent')
     const once = readFileSync(path, 'utf-8')
     expect(once).toContain('default_agent')
     expect(once).toContain(ENROLL_SNIPPET_MARKER)
-    expect(await mergeConfigFile(SNIPPET, path)).toBe('unchanged')
+    expect((await mergeConfigFile(SNIPPET, path)).result).toBe('unchanged')
     expect(readFileSync(path, 'utf-8')).toBe(once)
+    expect(statSync(path).mode & 0o777).toBe(0o600)
   })
 })
 
@@ -281,10 +333,66 @@ Qzs19HE9iP8ob0KohiNo1wyWKJNWgAv0olFoqGKOEg==
     expect(renewHubTargetFromSeed('192.0.2.1')).toBe('rivet@192.0.2.1')
     expect(renewHubTargetFromSeed(undefined)).toBe('user@datahub')
   })
+
+  it('classifies expiry against a hardcoded UTC now (not derived from parsed notAfter)', () => {
+    const pem = `-----BEGIN CERTIFICATE-----
+MIIDSzCCAjOgAwIBAgIUMY//jFXapWEg8fVopMlJ6olNaxcwDQYJKoZIhvcNAQEL
+BQAwMDEWMBQGA1UEAwwNUml2ZXQgVGVzdCBDQTEWMBQGA1UECgwNUml2ZXRPUyBU
+ZXN0czAeFw0yNjA0MjUxMjU0MjBaFw0zNjA0MjIxMjU0MjBaMCgxDjAMBgNVBAMM
+BWN0MTEwMRYwFAYDVQQKDA1SaXZldE9TIFRlc3RzMIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEAujSxgITi69+jFL4C4PA7KO25WWNaGpXJm/6OnTxx6vju
+OV35s3puciHdSl22IC8R5Z0xvwRJ5pG+sPKHZsUXni4Fm50W5WnIiNM11srB5pEG
+MHxvQYo0qX+CHUquPMDuwdW75QhOtGjzI77088nWffkLbqa7QRTYtyOyzraQmfm3
+HS2+0AK6/RI7Lh/wcNFeffmO2HMkfLcBKENboRC3Q8SGHT4LSPJsU3QyHCJM5x4D
+xisTo8NWKhPE7JxKVA6JCw4pK3XrcNV3XZBScJNrcOqtWcOg1hfVw1GxoMPjNOom
+Jq1RoNfwnnqMQN9Ktrct6OEmeU6RcVjmEIn4NpnklwIDAQABo2UwYzAhBgNVHREE
+GjAYggpjdDExMC5tZXNohwTAqApuhwR/AAABMB0GA1UdDgQWBBR3dlMVV/QnCzZ8
+jlRsy6BAbIi7PjAfBgNVHSMEGDAWgBTHUm4muhW3rsM2a0oBRQRMPct9wjANBgkq
+hkiG9w0BAQsFAAOCAQEAjWPaHbFnypGW+tOUn12zt8c+9ieOtdPzImQ91T054alv
+LU6WmmKiAHHHXHmPSf7/CnTvIAmi7Gek56w7GtsSngSaB+yJ0OCldcBUtlYNaY3n
+Hn50XRUighl7R2Ig9c5yvxr9CEP+91yNpNaqo2R9B3Q78MMxk48Dr5O6l/SUjH8Z
+p6hyWFBLXi0EOwu11zoqawaHG4aGDmZu1o0TI267c+qOsdlmRZIP6TK5a8ICeoWI
+v+x+WZjBjrxj+NYUU8zyS30Qx0w37eqq2gBMQmfFr2iBfgAzehsvd18AzSKD88qO
+Qzs19HE9iP8ob0KohiNo1wyWKJNWgAv0olFoqGKOEg==
+-----END CERTIFICATE-----
+`
+    const notAfter = parseCertNotAfter(pem)
+    expect(notAfter.toISOString().endsWith('Z')).toBe(true)
+    const now = new Date('2026-04-22T12:54:20.000Z')
+    expect(classifyCertExpiry(notAfter, now)).toBe('ok')
+    const warnNow = new Date('2036-04-01T00:00:00.000Z')
+    expect(classifyCertExpiry(notAfter, warnNow)).toBe('warn')
+  })
+})
+
+describe('defaultAdvertiseHost', () => {
+  it('prefers a non-localhost hostname that passes isSafeArg', () => {
+    expect(defaultAdvertiseHost('phildesk', {})).toBe('phildesk')
+  })
+
+  it('skips localhost and uses the first non-internal IPv4', () => {
+    expect(
+      defaultAdvertiseHost('localhost', {
+        eth0: [{ family: 'IPv4', internal: false, address: '192.0.2.10' }],
+      } as Parameters<typeof defaultAdvertiseHost>[1]),
+    ).toBe('192.0.2.10')
+  })
+
+  it('falls back to 127.0.0.1 when hostname is unsafe and no IPv4 is available', () => {
+    expect(defaultAdvertiseHost('localhost', {})).toBe('127.0.0.1')
+    expect(defaultAdvertiseHost('host;rm', {})).toBe('127.0.0.1')
+  })
 })
 
 describe('mesh node count', () => {
   it('counts Record-format nodes', () => {
     expect(meshNodeCount(MESH_ONE)).toBe(1)
+  })
+
+  it('treats a missing local mesh.json as 0 and surfaces a corrupt file', async () => {
+    expect(await readLocalMeshNodeCount()).toBe(0)
+    writeFileSync(join(process.env.RIVETOS_SHARED_DIR!, 'mesh.json'), '{not json')
+    await expect(readLocalMeshNodeCount()).rejects.toThrow(MeshHubError)
+    await expect(readLocalMeshNodeCount()).rejects.toThrow(/local mesh.json/)
   })
 })
