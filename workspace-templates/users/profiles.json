@@ -1,4 +1,4 @@
 {
   "_owner": "",
-  "_comment": "Reserved: _owner = the node owner's user id (the RIVETOS_USER_ID value that still means the owner). Other keys map user ids to profile names (users/<profile>.md)."
+  "_comment": "Shape: flat { string: string } map. Reserved keys start with _. _owner = the node owner's user id (the RIVETOS_USER_ID value that still means the owner). _comment is documentation, not a user. Other keys map user ids to profile basenames (users/<profile>.md). On first contact with a new routed id, add \"<id>\": \"<id>\" and create users/<id>.md from USER-TEMPLATE.md. Keep in sync as you learn names. A missing or empty map is fail-safe: never lock anyone out, never disclose owner context to a guest."
 }

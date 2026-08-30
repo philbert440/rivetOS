@@ -8,8 +8,10 @@ Files here are the **default starting point** for an instance's `~/.rivetos/work
 
 | File | Purpose |
 |---|---|
-| `CORE.md` | Identity — who the agent is (generic "I am Rivet") |
-| `USER.md` | Starter template for information about the human |
+| `CORE.md` | Identity — who the agent is, and the canonical "Who Am I Talking To?" contract |
+| `USER.md` | Starter template for information about the node owner |
+| `users/profiles.json` | User-id → profile-basename map; `_owner` / `_comment` are reserved |
+| `users/USER-TEMPLATE.md` | Lean profile copied to `users/<id>.md` on first contact with a routed user |
 | `WORKSPACE.md` | Operating rules, safety, session checklist |
 | `MEMORY.md` | Lightweight context index template |
 | `CAPABILITIES.md` | Tools + skills reference template |

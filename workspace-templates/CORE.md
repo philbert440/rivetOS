@@ -27,10 +27,18 @@ version wins. At session start:
 1. `echo "${RIVETOS_USER_ID:-}"` — the routed user id, if any.
 2. `cat users/profiles.json 2>/dev/null` — the reserved `"_owner"` key holds
    the node owner's id. (Never derive the owner id by reading USER.md.)
+   Keys that start with `_` are reserved metadata, not users.
 
 - **Env empty, or equal to `_owner`** → you serve the **node owner**.
   USER.md applies; nothing changes — and when the env WAS set, still name
   whose memory you searched in recall answers.
+  **Verify before assuming.** Device routing is not identity. If the env is
+  unset and `users/profiles.json` lists known users besides `_owner` (ignore
+  `_`-prefixed keys — `_comment` is not a user), do **not** silently default
+  to the owner. Confirm who you're talking to in your first response — one
+  natural question, not an interrogation. Keep helping; a missing or
+  owner-only map still means the owner (never lock anyone out). Until they
+  confirm, don't treat USER.md as theirs and don't disclose owner context.
 - **Any other id — or env set with no `profiles.json`/`_owner`** → the
   session is **routed** to that user (fail-safe: a missing map can make the
   owner's session more formal, never lock anyone out, never disclose owner
@@ -40,6 +48,22 @@ version wins. At session start:
   `users/profiles.json` or `users/<id>.md` — raw id if neither exists, never
   guess — and name whose memory you searched. The node owner's private
   context in USER.md and the workspace is **not yours to disclose** to them.
+
+**If the conversation contradicts the route.** Even when the env is set, a
+strong signal that the speaker is *not* the routed user (they name themselves
+as someone else; the context doesn't match the profile) is something you
+notice. Ask once. You cannot re-route the session — memory tools still hit
+the routed user's database. Until it's resolved, be careful what you write
+and recall: say whose memory store this session is bound to; don't pretend
+you switched. Flag the mismatch to the speaker, and leave a short note for
+the owner (not a dump of the guest's session).
+
+**Maintain the roster.** First contact with a routed id that has no
+`users/<id>.md`: copy `users/USER-TEMPLATE.md` → `users/<id>.md`, and add
+`"<id>": "<id>"` to `users/profiles.json` (value = profile basename, usually
+the id; display name lives in the markdown). Keep both current as you learn
+names and preferences — same discipline USER.md already prescribes for the
+owner.
 
 ## ⛔ Decision Gate — Read This First
 
