@@ -21,12 +21,14 @@ import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
-import type {
-  MeshNode,
-  MeshNodeRole,
-  MeshRegistry,
-  MeshConfig,
-  MeshNodeEvent,
+import {
+  sharedDir,
+  sharedPath,
+  type MeshNode,
+  type MeshNodeRole,
+  type MeshRegistry,
+  type MeshConfig,
+  type MeshNodeEvent,
 } from '@rivetos/types'
 import { logger } from '../logger.js'
 
@@ -39,7 +41,6 @@ const log = logger('Mesh')
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000
 const DEFAULT_STALE_THRESHOLD_MS = 90_000
 const MESH_FILE = 'mesh.json'
-const CANONICAL_SHARED_PATH = '/rivet-shared'
 
 // ---------------------------------------------------------------------------
 // File-based Mesh Registry
@@ -82,7 +83,7 @@ export class FileMeshRegistry implements MeshRegistry {
     // Use provided storageDir if given (e.g., tests), otherwise default to
     // the canonical /rivet-shared (the NFS mount from datahub) so all
     // production nodes read/write the same authoritative mesh.json.
-    const dir = config.storageDir || CANONICAL_SHARED_PATH
+    const dir = config.storageDir || sharedDir()
     this.filePath = join(dir, MESH_FILE)
   }
 
@@ -321,7 +322,7 @@ export class FileMeshRegistry implements MeshRegistry {
         const msg =
           `mesh.json at ${this.filePath} uses the pre-capabilities flat-array format, ` +
           'which is no longer supported. Rewrite the file as Record-format ' +
-          '{ version, nodes: { [id]: node }, updatedAt } (see live /rivet-shared/mesh.json).'
+          `{ version, nodes: { [id]: node }, updatedAt } (see live ${sharedPath('mesh.json')}).`
         log.error(msg)
         throw new Error(msg)
       }

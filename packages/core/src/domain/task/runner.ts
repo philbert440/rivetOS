@@ -30,7 +30,7 @@ import type {
   TaskStatus,
   TaskUsage,
 } from '@rivetos/types'
-import { buildLocalSessionContext } from '@rivetos/types'
+import { buildLocalSessionContext, sharedPath } from '@rivetos/types'
 import { canonicalizeExecutorTarget, harnessExecutorCoverage } from './harness-executors.js'
 import type { HarnessExecutorCoverage } from './harness-executors.js'
 import type { TaskRow, TaskStore } from './store.js'
@@ -179,7 +179,7 @@ async function resolveContext(task: TaskRow, opts: TaskHandlerOptions): Promise<
         task.contextRefs
           .filter((r) => r.kind === 'wiki')
           .map(async (r) => {
-            const page = await readWikiPage(opts.wikiDir ?? '/rivet-shared/wiki', r.ref)
+            const page = await readWikiPage(opts.wikiDir ?? sharedPath('wiki'), r.ref)
             return page
               ? `#### Wiki: ${page.meta.title} (${page.meta.slug})\n${page.currentState}`
               : `#### Wiki: ${r.ref}\n(no such page — a red link)`

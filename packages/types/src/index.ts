@@ -204,6 +204,8 @@ export type {
   MeshDelegationRoute,
 } from './mesh.js'
 export { hasImages, getToolResultText, getToolResultImages, toolResultHasImages } from './utils.js'
+export { sharedDir, sharedPath } from './shared-dir.js'
+export { installRoot, installPath } from './install-root.js'
 export { splitHermesReasoning, stripAnsi } from './hermes-reasoning.js'
 export type { HermesSplit } from './hermes-reasoning.js'
 export { MODEL_DEFAULTS } from './defaults.js'

@@ -9,8 +9,16 @@
  */
 
 import { execSync } from 'node:child_process'
+import { installRoot } from '@rivetos/types'
 import { buildMeshDispatcher } from '../../lib/mtls.js'
-import { sshExec, sshExecCapture, sshExecQuiet, resolveSshUser, isSafeArg } from '../../lib/ssh.js'
+import {
+  sshExec,
+  sshExecCapture,
+  sshExecQuiet,
+  resolveSshUser,
+  isSafeArg,
+  quoteShellArg,
+} from '../../lib/ssh.js'
 import { retireDenUnitRemote, verifyGatewayRemote } from './den-deploy.js'
 import { buildRemoteMeshHostsCommand, formatMeshHostsSkipDetail } from './mesh-hosts.js'
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
@@ -24,8 +32,29 @@ import type { UpdateOptions, NodeUpdateResult } from './types.js'
  */
 const RESTART_TIMEOUT_MS = 90_000
 
-/** Default source-tree install path on mesh peers (git update path). */
-export const REMOTE_INSTALL_ROOT = '/opt/rivetos'
+/** Default source-tree install path on mesh peers (git update path). Call-time. */
+export function remoteInstallRoot(): string {
+  return installRoot()
+}
+
+/** Per-node mesh.json `installRoot` wins; empty/whitespace falls through to env. */
+function resolvedInstallRoot(nodeInstallRoot?: string): string {
+  const raw = nodeInstallRoot?.trim()
+  return raw ? raw : installRoot()
+}
+
+/** `cd <quoted-root> && <cmd>` for remote SSH command strings. */
+function remoteCd(root: string, cmd: string): string {
+  return `cd ${quoteShellArg(root)} && ${cmd}`
+}
+
+/**
+ * Refuse roots that would break sshExecQuiet's local double-quoted wrapper
+ * even after single-quoting. Spaces are allowed (quoted).
+ */
+function isUnsafeInstallRoot(root: string): boolean {
+  return root.length === 0 || /['"`$\\;\n\r]/.test(root)
+}
 
 /**
  * Relative path labels checked for writability on a remote source install.
@@ -63,14 +92,16 @@ export type RemoteOwnershipProbe =
 export function probeRemoteInstallWritable(
   host: string,
   sshUser: string,
-  root: string = REMOTE_INSTALL_ROOT,
+  root: string = remoteInstallRoot(),
 ): RemoteOwnershipProbe {
-  // Refuse shell metacharacters in root (defense in depth for future callers).
-  if (root.includes('"') || root.includes("'") || root.includes(' ') || root.includes(';')) {
+  // Refuse chars that break sshExecQuiet's local double-quoted wrapper even
+  // after single-quoting the path. Spaces are allowed (quoted at the call site).
+  if (isUnsafeInstallRoot(root)) {
     return { ok: false, reason: 'missing', root }
   }
 
-  const exists = sshExecQuiet(host, `test -d ${root} && echo yes || echo no`, sshUser)
+  const qRoot = quoteShellArg(root)
+  const exists = sshExecQuiet(host, `test -d ${qRoot} && echo yes || echo no`, sshUser)
   if (exists !== 'yes') {
     return { ok: false, reason: 'missing', root }
   }
@@ -78,15 +109,20 @@ export function probeRemoteInstallWritable(
   const blockers: { path: string; owner: string }[] = []
   for (const rel of REMOTE_OWNERSHIP_PATHS) {
     const full = rel === '.' ? root : `${root}/${rel}`
+    const qFull = quoteShellArg(full)
     // SKIP = path does not exist yet (ok — npm will create node_modules).
     // OK = exists and writable. BLOCKED = exists but not writable.
     const writability = sshExecQuiet(
       host,
-      `if test -e ${full}; then if test -w ${full}; then echo OK; else echo BLOCKED; fi; else echo SKIP; fi`,
+      `if test -e ${qFull}; then if test -w ${qFull}; then echo OK; else echo BLOCKED; fi; else echo SKIP; fi`,
       sshUser,
     )
     if (writability === 'BLOCKED') {
-      const owner = sshExecQuiet(host, `stat -c %U:%G ${full} 2>/dev/null || echo unknown`, sshUser)
+      const owner = sshExecQuiet(
+        host,
+        `stat -c %U:%G ${qFull} 2>/dev/null || echo unknown`,
+        sshUser,
+      )
       blockers.push({ path: rel === '.' ? root : full, owner: owner || 'unknown' })
     }
   }
@@ -165,9 +201,11 @@ export async function gitUpdateNodeAsync(
   opts: UpdateOptions,
   isAgent: boolean = true,
   nodeSshUser?: string,
+  nodeInstallRoot?: string,
 ): Promise<NodeUpdateResult> {
   const tag = `[${nodeName}]`
   const start = Date.now()
+  const root = resolvedInstallRoot(nodeInstallRoot)
 
   // Step 1: SSH connectivity check — the node's own sshUser (mesh.json)
   // first, then the global default, then root
@@ -183,7 +221,7 @@ export async function gitUpdateNodeAsync(
   // Step 1.5: install-tree writability — fail before git/npm burn minutes.
   // Local preflight is open as #423; remotes still only discovered foreign-owned
   // /opt/rivetos mid-npm with EACCES. Same class of footgun over SSH.
-  const ownership = probeRemoteInstallWritable(host, sshUser, REMOTE_INSTALL_ROOT)
+  const ownership = probeRemoteInstallWritable(host, sshUser, root)
   if (!ownership.ok) {
     return remoteOwnershipFailure(tag, nodeName, sshUser, ownership, start)
   }
@@ -192,8 +230,8 @@ export async function gitUpdateNodeAsync(
   try {
     console.log(`    ${tag} Pulling latest code...`)
     const gitCmd = opts.version
-      ? `cd /opt/rivetos && git fetch --tags && git checkout ${opts.version}`
-      : 'cd /opt/rivetos && git fetch origin && git checkout main && git reset --hard origin/main'
+      ? remoteCd(root, `git fetch --tags && git checkout ${opts.version}`)
+      : remoteCd(root, 'git fetch origin && git checkout main && git reset --hard origin/main')
     await sshExec(host, gitCmd, `${tag} git pull`, 30_000, sshUser)
   } catch (err: unknown) {
     console.error(`    ${tag} ❌ git pull failed: ${(err as Error).message}`)
@@ -208,7 +246,7 @@ export async function gitUpdateNodeAsync(
       console.log(`    ${tag} Installing dependencies...`)
       await sshExec(
         host,
-        'cd /opt/rivetos && npm install --no-audit --no-fund',
+        remoteCd(root, 'npm install --no-audit --no-fund'),
         `${tag} npm install`,
         120_000,
         sshUser,
@@ -218,14 +256,14 @@ export async function gitUpdateNodeAsync(
       return { success: false, failedStep: 'npm', elapsedMs: Date.now() - start }
     }
 
-    const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
+    const commit = sshExecQuiet(host, remoteCd(root, 'git rev-parse --short HEAD'), sshUser)
 
     // Heal /etc/hosts mesh block on infra nodes too (non-fatal).
     // Capture stderr — inherit-stdio left only "exited with code N".
     try {
       await sshExecCapture(
         host,
-        buildRemoteMeshHostsCommand(sshUser),
+        buildRemoteMeshHostsCommand(sshUser, root),
         `${tag} mesh-hosts`,
         15_000,
         sshUser,
@@ -249,8 +287,11 @@ export async function gitUpdateNodeAsync(
         console.log(`    ${tag} Building workers...`)
         await sshExec(
           host,
-          'cd /opt/rivetos && npx nx reset && npx nx run-many -t build ' +
-            '-p @rivetos/embedding-worker,@rivetos/compaction-worker',
+          remoteCd(
+            root,
+            'npx nx reset && npx nx run-many -t build ' +
+              '-p @rivetos/embedding-worker,@rivetos/compaction-worker',
+          ),
           `${tag} build`,
           180_000,
           sshUser,
@@ -329,7 +370,7 @@ export async function gitUpdateNodeAsync(
     console.log(`    ${tag} Installing dependencies...`)
     await sshExec(
       host,
-      'cd /opt/rivetos && npm install --no-audit --no-fund',
+      remoteCd(root, 'npm install --no-audit --no-fund'),
       `${tag} npm install`,
       120_000,
       sshUser,
@@ -344,7 +385,7 @@ export async function gitUpdateNodeAsync(
     console.log(`    ${tag} Building...`)
     await sshExec(
       host,
-      'cd /opt/rivetos && npx nx reset && npx nx run-many -t build --exclude container-rivetos,site',
+      remoteCd(root, 'npx nx reset && npx nx run-many -t build --exclude container-rivetos,site'),
       `${tag} build`,
       180_000,
       sshUser,
@@ -360,7 +401,7 @@ export async function gitUpdateNodeAsync(
   try {
     await sshExecCapture(
       host,
-      buildRemoteMeshHostsCommand(sshUser),
+      buildRemoteMeshHostsCommand(sshUser, root),
       `${tag} mesh-hosts`,
       15_000,
       sshUser,
@@ -388,7 +429,7 @@ export async function gitUpdateNodeAsync(
   }
 
   // Get final commit SHA
-  const commit = sshExecQuiet(host, 'cd /opt/rivetos && git rev-parse --short HEAD', sshUser)
+  const commit = sshExecQuiet(host, remoteCd(root, 'git rev-parse --short HEAD'), sshUser)
 
   // Step 6: validate the node's config against the code we just deployed.
   // An update that invalidates config (renamed provider, removed key) makes
@@ -398,7 +439,7 @@ export async function gitUpdateNodeAsync(
   if (isAgent) {
     const validateOut = sshExecQuiet(
       host,
-      'cd /opt/rivetos && node packages/cli/dist/index.js config validate 2>&1 | tail -2',
+      remoteCd(root, 'node packages/cli/dist/index.js config validate 2>&1 | tail -2'),
       sshUser,
     )
     if (validateOut && !validateOut.includes('Config is valid')) {
@@ -415,14 +456,14 @@ export async function gitUpdateNodeAsync(
   // gateway now; probe /healthz on den-enabled nodes after the restart.
   // Auxiliary: a failed probe never fails the node update, but it is
   // surfaced in the result and the summary table.
-  const den = opts.restart ? await verifyGatewayRemote(host, nodeName, sshUser) : 'skipped'
+  const den = opts.restart ? await verifyGatewayRemote(host, nodeName, sshUser, root) : 'skipped'
 
   // Refresh per-user TUI plugin installs from the updated source (hooks,
   // MCP wiring). Non-fatal: nodes without any TUI installs just no-op.
   try {
     await sshExec(
       host,
-      'cd /opt/rivetos && npx tsx packages/cli/src/index.ts plugins sync',
+      remoteCd(root, 'npx tsx packages/cli/src/index.ts plugins sync'),
       `${tag} plugins sync`,
       60_000,
       sshUser,
@@ -460,6 +501,7 @@ export async function npmUpdateNodeAsync(
   opts: UpdateOptions,
   isAgent: boolean = true,
   nodeSshUser?: string,
+  nodeInstallRoot?: string,
 ): Promise<NodeUpdateResult> {
   const tag = `[${nodeName}]`
   const start = Date.now()
@@ -540,7 +582,7 @@ export async function npmUpdateNodeAsync(
   // Step 5: gateway health — G0 closes the old npm-mode gap: the gateway is
   // embedded in rivetos, so den-enabled npm nodes get it with the package.
   if (isAgent && opts.restart) {
-    await verifyGatewayRemote(host, nodeName, sshUser)
+    await verifyGatewayRemote(host, nodeName, sshUser, resolvedInstallRoot(nodeInstallRoot))
   }
 
   // Step 6: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")

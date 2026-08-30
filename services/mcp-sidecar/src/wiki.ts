@@ -15,6 +15,7 @@ import { WikiIndex } from '@rivetos/memory-postgres'
 import { z } from 'zod'
 
 import type { ToolRegistration } from '@rivetos/mcp'
+import { sharedPath } from '@rivetos/types'
 import {
   formatWikiRead,
   WIKI_READ_SECTIONS,
@@ -43,7 +44,7 @@ const SLUG_RE = /^[a-z0-9-]{1,80}$/
 export function createWikiTools(options: WikiToolsOptions): WikiToolsHandle {
   if (!options.pgUrl) throw new Error('createWikiTools: pgUrl is required')
   const prefix = options.prefix ?? ''
-  const wikiDir = options.wikiDir ?? '/rivet-shared/wiki'
+  const wikiDir = options.wikiDir ?? sharedPath('wiki')
   const pool = new pg.Pool({ connectionString: options.pgUrl, max: 3 })
   const index = new WikiIndex(pool, {
     embedEndpoint: options.embedEndpoint,

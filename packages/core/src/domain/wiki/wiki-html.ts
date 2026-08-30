@@ -25,7 +25,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { ServerResponse } from 'node:http'
 import { HISTORY_MAX, parseWikiPage, SOURCES_MAX } from '@rivetos/wiki-core'
-import type { GatewayRoute } from '@rivetos/types'
+import { sharedPath, type GatewayRoute } from '@rivetos/types'
 import { logger } from '../../logger.js'
 import { resolveWikiSurface, type WikiIndexLike } from './wiki-api.js'
 
@@ -54,7 +54,7 @@ type Topic = Awaited<ReturnType<WikiIndexLike['listTopics']>>['topics'][number]
 type Gaps = Awaited<ReturnType<WikiIndexLike['gaps']>>
 
 export function createWikiHtmlRoute(opts: WikiHtmlOptions): GatewayRoute {
-  const ownerDir = opts.wikiDir ?? '/rivet-shared/wiki'
+  const ownerDir = opts.wikiDir ?? sharedPath('wiki')
 
   // Topic-set cache (#294): one listTopics per 30s window instead of per
   // request — redlink checks and the sidebar count tolerate 30s staleness

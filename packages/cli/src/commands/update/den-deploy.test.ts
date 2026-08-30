@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock the SSH layer — these tests exercise the den deploy stage's control
 // flow, not real SSH (mirrors remote-nodes.test.ts).
@@ -24,6 +24,7 @@ const sshExecMock = vi.mocked(sshExec)
 const sshExecQuietMock = vi.mocked(sshExecQuiet)
 
 const ROOT = '/opt/rivetos'
+const ORIGINAL_SHARED_DIR = process.env.RIVETOS_SHARED_DIR
 
 const DEN_YAML = `
 runtime:
@@ -40,10 +41,16 @@ den:
 `
 
 beforeEach(() => {
+  delete process.env.RIVETOS_SHARED_DIR
   vi.clearAllMocks()
   vi.spyOn(console, 'log').mockImplementation(() => undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => undefined)
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
+})
+
+afterEach(() => {
+  if (ORIGINAL_SHARED_DIR === undefined) delete process.env.RIVETOS_SHARED_DIR
+  else process.env.RIVETOS_SHARED_DIR = ORIGINAL_SHARED_DIR
 })
 
 // ---------------------------------------------------------------------------
