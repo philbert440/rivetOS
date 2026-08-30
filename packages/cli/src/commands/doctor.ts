@@ -86,7 +86,7 @@ function parseArgs(): DoctorOptions {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const VERSION = '0.2.0'
+const VERSION = '0.5.0'
 
 function check(
   category: string,

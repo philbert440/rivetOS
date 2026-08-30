@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/den-app",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "rivet-den viewer — pack-driven PixiJS diorama of live agent sessions",
@@ -13,8 +13,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@rivetos/den-packs": "0.1.0",
-    "@rivetos/den-protocol": "0.1.0",
+    "@rivetos/den-packs": "0.5.0",
+    "@rivetos/den-protocol": "0.5.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "pixi.js": "^8.19.0"
