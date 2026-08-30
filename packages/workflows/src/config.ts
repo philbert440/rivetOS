@@ -10,8 +10,21 @@ import { sharedPath } from '@rivetos/types'
 import type { ExecutorRegistry } from './executors.js'
 import type { CallRegistry } from './registry.js'
 
-/** Default case-dir root for RivetOS host deployments (override in tests/config). */
-export const DEFAULT_CASE_DIR_ROOT = sharedPath('workflows', 'runs')
+/** Default case-dir root — resolved at call time (honors RIVETOS_SHARED_DIR). */
+export function defaultCaseDirRoot(): string {
+  return sharedPath('workflows', 'runs')
+}
+
+/** Default defs root — resolved at call time (honors RIVETOS_SHARED_DIR). */
+export function defaultWorkflowsDefsRoot(): string {
+  return sharedPath('workflows', 'defs')
+}
+
+/**
+ * Module-load snapshot of {@link defaultCaseDirRoot}. Prefer defaultCaseDirRoot()
+ * / resolveCaseDirRoot at call time so an env set after import is honored.
+ */
+export const DEFAULT_CASE_DIR_ROOT = defaultCaseDirRoot()
 
 /** Default per-step timeout (30 minutes) — generous; product says engine defaults day one. */
 export const DEFAULT_STEP_TIMEOUT_MS = 30 * 60 * 1000
@@ -55,8 +68,8 @@ export interface EngineConfig {
   workflowDirs?: Record<string, string>
 }
 
-export function resolveCaseDirRoot(config: EngineConfig): string {
-  return config.caseDirRoot ?? sharedPath('workflows', 'runs')
+export function resolveCaseDirRoot(config: Pick<EngineConfig, 'caseDirRoot'>): string {
+  return config.caseDirRoot ?? defaultCaseDirRoot()
 }
 
 export function resolveStepTimeoutMs(config: EngineConfig): number {

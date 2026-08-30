@@ -29,7 +29,11 @@ function truthyEnv(raw: string | undefined): boolean {
   return v === '1' || v === 'on'
 }
 
-/** RIVETOS_SHARED_DIR from the passed env, else {@link sharedDir} (process.env). */
+/**
+ * RIVETOS_SHARED_DIR from the passed env, else {@link sharedDir} (process.env).
+ * Intentional process.env fallthrough: a synthetic env that omits the key
+ * inherits the ambient value rather than suppressing it.
+ */
 function denSharedDir(env: NodeJS.ProcessEnv): string {
   return env.RIVETOS_SHARED_DIR?.trim() || sharedDir()
 }
@@ -119,6 +123,12 @@ export interface DenConfig {
    *  $RIVETOS_SHARED_DIR/mesh.json (default /rivet-shared/mesh.json), then
    *  ~/.rivetos/mesh.json. */
   meshFile: string
+  /**
+   * Shared-storage root resolved from the env passed to {@link loadConfig}.
+   * Threaded into meshFilePaths so the empty-meshFile fallback does not
+   * re-read process.env.
+   */
+  sharedRoot?: string
   /** How long one /mesh.json overview (roster read + peer probes) is served
    *  from cache (ms). */
   meshCacheMs: number
@@ -313,6 +323,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
     packsDir: env.RIVETOS_DEN_PACKS_DIR ?? '',
     evictTtlMs: intEnv(env, 'RIVETOS_DEN_EVICT_TTL_MS', 24 * 60 * 60 * 1000),
     meshFile: env.RIVETOS_DEN_MESH_FILE ?? '',
+    sharedRoot,
     meshCacheMs: intEnv(env, 'RIVETOS_DEN_MESH_CACHE_MS', 10_000),
     term: {
       enabled: truthyEnv(env.RIVETOS_DEN_TERM),

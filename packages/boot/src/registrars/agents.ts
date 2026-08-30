@@ -54,7 +54,7 @@ import {
   createWorkflowApiRouteList,
   createWorkflowTools,
 } from '@rivetos/core'
-import { WorkflowEngine } from '@rivetos/workflows'
+import { WorkflowEngine, resolveCaseDirRoot, defaultWorkflowsDefsRoot } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import {
@@ -676,7 +676,9 @@ export async function registerAgentTools(
   // task-backed agent when the durable engine is available.
   const workflowsEnabled = config.workflows?.enabled !== false
   if (workflowsEnabled) {
-    const caseDirRoot = config.workflows?.runs_dir?.trim() || sharedPath('workflows', 'runs')
+    const caseDirRoot = resolveCaseDirRoot({
+      caseDirRoot: config.workflows?.runs_dir?.trim() || undefined,
+    })
     const configuredRoots = config.workflows?.defs_roots?.filter(
       (r) => typeof r === 'string' && r.trim(),
     )
@@ -687,7 +689,7 @@ export async function registerAgentTools(
       configuredRoots && configuredRoots.length > 0
         ? configuredRoots
         : [
-            sharedPath('workflows', 'defs'),
+            defaultWorkflowsDefsRoot(),
             ...(installRoot ? [join(installRoot, 'workflows')] : []),
           ]
     const defaultAgentId =

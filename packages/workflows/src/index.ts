@@ -58,6 +58,8 @@ export {
 // Config
 export {
   DEFAULT_CASE_DIR_ROOT,
+  defaultCaseDirRoot,
+  defaultWorkflowsDefsRoot,
   DEFAULT_STEP_TIMEOUT_MS,
   DEFAULT_MAX_RUN_RUNTIME_MS,
   resolveCaseDirRoot,

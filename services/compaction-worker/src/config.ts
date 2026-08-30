@@ -31,6 +31,7 @@ export const config = {
 
   // Wiki extraction (phase 3c) — dark by default; single writer per design.
   wikiExtraction: process.env.WIKI_EXTRACTION === '1',
+  // wikiDir is snapshotted at module load: this worker's env is fixed at process start.
   wikiDir: process.env.WIKI_DIR ?? sharedPath('wiki'),
   wikiBackfillBatch: intEnv('WIKI_BACKFILL_BATCH', 25),
 

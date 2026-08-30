@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock the SSH layer — these tests exercise the den deploy stage's control
 // flow, not real SSH (mirrors remote-nodes.test.ts).
@@ -11,7 +11,6 @@ vi.mock('../../lib/ssh.js', async (importOriginal) => {
   }
 })
 
-import { sharedPath } from '@rivetos/types'
 import { sshExec, sshExecQuiet } from '../../lib/ssh.js'
 import {
   parseDenSettings,
@@ -25,6 +24,7 @@ const sshExecMock = vi.mocked(sshExec)
 const sshExecQuietMock = vi.mocked(sshExecQuiet)
 
 const ROOT = '/opt/rivetos'
+const ORIGINAL_SHARED_DIR = process.env.RIVETOS_SHARED_DIR
 
 const DEN_YAML = `
 runtime:
@@ -41,10 +41,16 @@ den:
 `
 
 beforeEach(() => {
+  delete process.env.RIVETOS_SHARED_DIR
   vi.clearAllMocks()
   vi.spyOn(console, 'log').mockImplementation(() => undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => undefined)
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
+})
+
+afterEach(() => {
+  if (ORIGINAL_SHARED_DIR === undefined) delete process.env.RIVETOS_SHARED_DIR
+  else process.env.RIVETOS_SHARED_DIR = ORIGINAL_SHARED_DIR
 })
 
 // ---------------------------------------------------------------------------
@@ -89,7 +95,7 @@ describe('parseDenSettings', () => {
       staticDir: '/srv/den/dist',
       packsDir: '/opt/rivetos/packages/den-packs/packs',
       tlsCert: '',
-      tlsCa: sharedPath('rivet-ca', 'intermediate', 'chain.pem'),
+      tlsCa: '/rivet-shared/rivet-ca/intermediate/chain.pem',
     })
   })
 
@@ -142,7 +148,7 @@ describe('denProbeCmd', () => {
       ROOT,
     )
     expect(denProbeCmd(s)).toBe(
-      `curl -fsS -m 3 --cacert ${sharedPath('rivet-ca', 'intermediate', 'chain.pem')} https://127.0.0.1:5174/healthz`,
+      'curl -fsS -m 3 --cacert /rivet-shared/rivet-ca/intermediate/chain.pem https://127.0.0.1:5174/healthz',
     )
   })
 })

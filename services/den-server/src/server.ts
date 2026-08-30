@@ -437,6 +437,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   const meshView = createMeshView({
     meshFile: config.meshFile,
+    sharedRoot: config.sharedRoot,
     cacheMs: config.meshCacheMs,
     // Trust the Rivet CA for https peers (#491) — peers' node leaves don't
     // chain to system roots, so without this every TLS peer shows offline.

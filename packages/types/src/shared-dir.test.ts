@@ -58,4 +58,10 @@ describe('sharedPath', () => {
     delete process.env.RIVETOS_SHARED_DIR
     expect(sharedPath()).toBe('/rivet-shared')
   })
+
+  it('collapses a trailing slash on the root via join', () => {
+    process.env.RIVETOS_SHARED_DIR = '/mnt/shared/'
+    expect(sharedDir()).toBe('/mnt/shared/')
+    expect(sharedPath('mesh.json')).toBe('/mnt/shared/mesh.json')
+  })
 })
