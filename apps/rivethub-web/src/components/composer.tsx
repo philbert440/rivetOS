@@ -142,9 +142,13 @@ export function Composer(props: {
   }, [autoSpeak, hydrated, lastAssistant, props.sessionId])
 
   // Model dropdown (Claude Code / grok Build / local + mesh) from the catalog.
+  const catalogBase = props.gatewayBase ?? baseUrl
   const catalog = useQuery({
-    queryKey: ['catalog-agents', baseUrl],
-    queryFn: ({ signal }) => useConnection.getState().gateway.catalogAgents(signal),
+    queryKey: ['catalog-agents', catalogBase],
+    queryFn: async ({ signal }) =>
+      props.gatewayBase
+        ? (await gatewayFor(props.gatewayBase)).catalogAgents(signal)
+        : useConnection.getState().gateway.catalogAgents(signal),
     staleTime: 300_000,
   })
   const models = modelOptions(catalog.data?.agents ?? [])

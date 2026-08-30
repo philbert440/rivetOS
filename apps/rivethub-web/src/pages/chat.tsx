@@ -18,7 +18,7 @@
  * The split is per-session and automatic; there is no mode to pick.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react'
 import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -27,7 +27,13 @@ import {
   type HarnessSessionSummary,
   type SessionMessage,
 } from '@rivetos/types'
-import { rekeyAgentLastSessions } from '../lib/agent-session.js'
+import {
+  listAllAgentPins,
+  rekeyAgentLastSessions,
+  subscribeAgentSessions,
+  getAgentSessionsVersion,
+} from '../lib/agent-session.js'
+import { sessionPointerMatches } from '../lib/agent-roster.js'
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
@@ -72,6 +78,7 @@ import {
   findChatItem,
   harnessGate,
   isTurnInFlight,
+  nativeIdOf,
   shortNativeId,
   type ChatItem,
   type HarnessGate,
@@ -347,15 +354,39 @@ export function ChatPage(): JSX.Element {
     // changes. transportEpoch rebinds it onto the mTLS pipe gateway.
   }, [connected, hasDrivers, baseUrl, transportEpoch, queryClient, descriptors?.length])
 
-  const items = useMemo(
-    () =>
-      chatItems({
-        drafts,
-        harnessSessions: planeQuery.data ?? [],
-        legacySessions: harnessQuery.data?.sessions ?? [],
-      }),
-    [drafts, planeQuery.data, harnessQuery.data?.sessions],
-  )
+  const pinVersion = useSyncExternalStore(subscribeAgentSessions, getAgentSessionsVersion)
+  const items = useMemo(() => {
+    const base = chatItems({
+      drafts,
+      harnessSessions: planeQuery.data ?? [],
+      legacySessions: harnessQuery.data?.sessions ?? [],
+    })
+    const pins = listAllAgentPins()
+    const pinIds = new Set(pins.map((p) => p.sessionId))
+    const withoutAgentDrafts = base.filter((it) => !(it.kind === 'draft' && pinIds.has(it.key)))
+    const existing = new Set(withoutAgentDrafts.map((it) => it.key))
+    const house = queryClient
+      .getQueriesData<{ id: string; name: string; color: string }[]>({
+        queryKey: ['agents-all-nodes'],
+      })
+      .flatMap(([, data]) => data ?? [])
+    const byId = new Map(house.map((a) => [a.id, a]))
+    const pinItems: ChatItem[] = []
+    for (const pin of pins) {
+      if (existing.has(pin.sessionId)) continue
+      const preset = byId.get(pin.agentId)
+      pinItems.push({
+        key: pin.sessionId,
+        kind: drafts.includes(pin.sessionId) ? 'draft' : 'legacy',
+        title: preset?.name ?? pin.agentId,
+        updatedAt: Date.now(),
+        pin: true,
+        pinNodeBaseUrl: pin.nodeBaseUrl,
+        accent: preset?.color || undefined,
+      })
+    }
+    return [...pinItems, ...withoutAgentDrafts]
+  }, [drafts, planeQuery.data, harnessQuery.data?.sessions, pinVersion, queryClient])
   const active = useChat((s) => s.active)
   const setActive = useChat((s) => s.setActive)
   const navigate = useNavigate()
@@ -497,9 +528,10 @@ function DrawerItem(props: {
   /** Drafts only — a draft is local, so discarding it is a real delete. */
   onDiscard?: () => void
 }): JSX.Element {
-  const baseUrl = useConnection((s) => s.baseUrl)
-  const key = storageKey(baseUrl, props.item.key)
-  const customName = useSessionNames((s) => persisted(s.byKey, baseUrl, props.item.key))
+  const hubBase = useConnection((s) => s.baseUrl)
+  const storeBase = props.item.pinNodeBaseUrl ?? hubBase
+  const key = storageKey(storeBase, props.item.key)
+  const customName = useSessionNames((s) => persisted(s.byKey, storeBase, props.item.key))
   const setName = useSessionNames((s) => s.set)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -562,7 +594,10 @@ function DrawerItem(props: {
         {/* harness accent: claude clay / grok grey / local emerald */}
         <span
           className="size-1.5 shrink-0 rounded-full"
-          style={{ background: harnessAccent(props.item.harnessId ?? props.item.command) }}
+          style={{
+            background:
+              props.item.accent || harnessAccent(props.item.harnessId ?? props.item.command),
+          }}
           aria-hidden
         />
         <span className="min-w-0 truncate">{customName ?? props.item.title}</span>
@@ -651,8 +686,10 @@ function SessionDrawer(props: {
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
 
-  const isArchived = (key: string): boolean => archivedKeys.includes(storageKey(baseUrl, key))
-  const archivedCount = props.items.reduce((n, it) => n + (isArchived(it.key) ? 1 : 0), 0)
+  const itemBase = (it: ChatItem): string => it.pinNodeBaseUrl ?? baseUrl
+  const isArchived = (it: ChatItem): boolean =>
+    archivedKeys.includes(storageKey(itemBase(it), it.key))
+  const archivedCount = props.items.reduce((n, it) => n + (isArchived(it) ? 1 : 0), 0)
 
   // Filter on what the user actually SEES: custom name first, then the
   // derived title, then the raw id (so pasting a session uuid works too).
@@ -660,9 +697,9 @@ function SessionDrawer(props: {
   const items = props.items.filter((it) => {
     // The active thread always stays listed — hiding the row under the
     // user's feet would strand the open conversation.
-    if (!showArchived && isArchived(it.key) && it.key !== props.active) return false
+    if (!showArchived && isArchived(it) && it.key !== props.active) return false
     if (!q) return true
-    const custom = persisted(names, baseUrl, it.key) ?? ''
+    const custom = persisted(names, itemBase(it), it.key) ?? ''
     return (
       custom.toLowerCase().includes(q) ||
       it.title.toLowerCase().includes(q) ||
@@ -712,11 +749,13 @@ function SessionDrawer(props: {
             key={it.key}
             item={it}
             active={it.key === props.active}
-            archived={isArchived(it.key)}
+            archived={isArchived(it)}
             onSelect={() => setActive(it.key)}
-            onArchive={() => archive(storageKey(baseUrl, it.key))}
-            onUnarchive={() => unarchive(storageKey(baseUrl, it.key))}
-            onDiscard={it.kind === 'draft' ? () => discardDraft(baseUrl, it.key) : undefined}
+            onArchive={() => archive(storageKey(itemBase(it), it.key))}
+            onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
+            onDiscard={
+              it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined
+            }
           />
         ))}
         {items.length === 0 && q && (
@@ -814,12 +853,50 @@ function ActiveSession(props: {
     enabled: isRemote,
     staleTime: 300_000,
   })
-  // A definitive 404 means the thread's session is gone on its node: drop
-  // the binding so the NEXT open resolves home, keep THIS mount's base frozen
-  // (no mid-view client flip), and fail writes closed with a banner instead
-  // of letting inject/spawn dial a session that no longer exists.
-  const remoteDead =
+  // A definitive 404 means the thread's session is gone on its node — except
+  // an unclaimed draft (still in useChat.drafts) 404s until first turn, and
+  // a bare-id GET may 404 a live claimed session. Drafts stay exempt; other
+  // 404s list-scan before declaring death.
+  const isDraft = useChat((s) => s.drafts.includes(props.sessionId))
+  const remote404 =
     isRemote && remoteSummary.error instanceof GatewayError && remoteSummary.error.status === 404
+  // undefined = not scanned, null = miss, string = listed id (maybe canonical).
+  const [listedRemoteId, setListedRemoteId] = useState<string | null | undefined>(undefined)
+  useEffect(() => {
+    if (!remote404 || isDraft) {
+      setListedRemoteId(undefined)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const gw = await gatewayFor(sessionBase)
+        const listed = await gw.harnessSessions()
+        const match = listed.sessions.find((se) =>
+          sessionPointerMatches(props.sessionId, se.id, nativeIdOf),
+        )
+        if (cancelled) return
+        if (match && match.id !== props.sessionId) {
+          setListedRemoteId(match.id)
+          if (useChat.getState().rekey(props.sessionId, match.id)) {
+            migrateSessionKey(baseUrl, rosterUrls, props.sessionId, match.id)
+          } else {
+            rekeyAgentLastSessions(props.sessionId, match.id)
+            rekeySessionNodeBinding(props.sessionId, match.id)
+          }
+          useChat.getState().setActive(match.id)
+          return
+        }
+        setListedRemoteId(match ? match.id : null)
+      } catch {
+        if (!cancelled) setListedRemoteId(undefined)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [remote404, isDraft, sessionBase, props.sessionId, baseUrl, rosterUrls])
+  const remoteDead = Boolean(remote404 && !isDraft && listedRemoteId === null)
   useEffect(() => {
     if (remoteDead) clearSessionNodeBinding(props.sessionId)
   }, [remoteDead, props.sessionId])
@@ -1054,6 +1131,9 @@ function ActiveSession(props: {
   // dropdown changes the command between renders).
   const spawnPty = async (): Promise<string> => {
     if (termPtyRef.current) return termPtyRef.current
+    if (sessionBase !== baseUrl && !rosterUrls.includes(sessionBase)) {
+      throw new Error(`can't reach ${urlLabel(sessionBase)}`)
+    }
     const gw = await sessionGateway()
     // A harness session (already in the store) resumes; a fresh conversation
     // pins its id (--session-id, via the join key) so its store file lines up.
