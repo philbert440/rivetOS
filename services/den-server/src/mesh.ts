@@ -12,6 +12,7 @@
 import { readFile } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
+import { sharedDir } from '@rivetos/types'
 
 // Only the roster fields the den reads — everything else is ignored, and all
 // of these may be missing or malformed (mesh.json is shared and hand-edited).
@@ -53,6 +54,12 @@ export interface MeshOverview {
 export interface MeshViewOptions {
   /** Explicit mesh.json path; '' = the meshFilePaths() default chain. */
   meshFile: string
+  /**
+   * Shared-storage root for the empty-meshFile fallback. Pass the value
+   * loadConfig resolved from the same env (not process.env) so an embedded
+   * gateway's synthetic RIVETOS_SHARED_DIR wins.
+   */
+  sharedRoot?: string
   /** How long one assembled overview (roster + probes) is served from cache. */
   cacheMs: number
   /** Per-peer /healthz probe budget (ms). */
@@ -72,8 +79,16 @@ export interface MeshView {
   overview(): Promise<MeshOverview | null>
 }
 
-export const meshFilePaths = (meshFile: string): string[] =>
-  meshFile ? [meshFile] : ['/rivet-shared/mesh.json', join(homedir(), '.rivetos', 'mesh.json')]
+/**
+ * Candidate mesh.json paths. A non-empty `meshFile` is the only candidate
+ * (`RIVETOS_DEN_MESH_FILE`). Empty uses `<sharedRoot>/mesh.json` then
+ * `~/.rivetos/mesh.json`. `sharedRoot` must come from loadConfig's passed env;
+ * omitting it falls back to {@link sharedDir} (process.env) for direct callers.
+ */
+export const meshFilePaths = (meshFile: string, sharedRoot?: string): string[] =>
+  meshFile
+    ? [meshFile]
+    : [join(sharedRoot ?? sharedDir(), 'mesh.json'), join(homedir(), '.rivetos', 'mesh.json')]
 
 /** First readable + parseable candidate wins; null when none is.
  *  Pre-capabilities flat-array format is no longer supported: den must not
@@ -187,7 +202,7 @@ async function probe(
 export function createMeshView(opts: MeshViewOptions): MeshView {
   const probeTimeoutMs = opts.probeTimeoutMs ?? 1500
   const localNodeId = opts.localNodeId ?? process.env.RIVETOS_DEN_NODE_ID ?? hostname()
-  const paths = meshFilePaths(opts.meshFile)
+  const paths = meshFilePaths(opts.meshFile, opts.sharedRoot)
   // CA is read once per process — cert rotation on /rivet-shared is picked up
   // by the service restart that a rotation already requires. Only a SUCCESSFUL
   // read is memoized: a transient NFS hiccup must not pin every https peer

@@ -40,6 +40,8 @@ The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple
 sessions, one server; the picker chooses which room drives the den.
 
+Bearer tokens removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
+
 ## The moving parts
 
 | Doc | What it covers |

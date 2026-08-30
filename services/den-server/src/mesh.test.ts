@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import { createMeshView, loadMeshFile, meshFilePaths, type MeshOverview } from './mesh.js'
-import type { DenConfig } from './config.js'
+import { loadConfig, type DenConfig } from './config.js'
 import type {
   MeshDenNode as MeshDenNodeWire,
   MeshOverview as MeshOverviewWire,
@@ -170,12 +170,6 @@ describe('mesh view', () => {
     writeMesh(a, {}, 11)
     expect((await loadMeshFile([a, b]))?.updatedAt).toBe(11) // a wins once present
     expect(await loadMeshFile([join(dir, 'nope.json')])).toBeNull()
-    // '' = canonical shared path, then the per-user fallback
-    expect(meshFilePaths('')).toEqual([
-      '/rivet-shared/mesh.json',
-      join(homedir(), '.rivetos', 'mesh.json'),
-    ])
-    expect(meshFilePaths('/x/mesh.json')).toEqual(['/x/mesh.json'])
   })
 
   it('ignores metadata.denUrl entries that are not http(s)', async () => {
@@ -224,5 +218,36 @@ describe('mesh view', () => {
     )
     const data = await loadMeshFile([file])
     expect(data).toEqual({ updatedAt: 99, nodes: {} })
+  })
+})
+
+describe('meshFilePaths', () => {
+  const ORIGINAL = process.env.RIVETOS_SHARED_DIR
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.RIVETOS_SHARED_DIR
+    else process.env.RIVETOS_SHARED_DIR = ORIGINAL
+  })
+
+  it('pins the literal default under a cleared env', () => {
+    delete process.env.RIVETOS_SHARED_DIR
+    expect(meshFilePaths('')).toEqual([
+      '/rivet-shared/mesh.json',
+      join(homedir(), '.rivetos', 'mesh.json'),
+    ])
+    expect(meshFilePaths('/x/mesh.json')).toEqual(['/x/mesh.json'])
+  })
+
+  it('honors loadConfig passed env, not process.env', () => {
+    process.env.RIVETOS_SHARED_DIR = '/process/shared'
+    const cfg = loadConfig({ RIVETOS_SHARED_DIR: '/gateway/shared' } as NodeJS.ProcessEnv)
+    expect(meshFilePaths(cfg.meshFile, cfg.sharedRoot)).toEqual([
+      '/gateway/shared/mesh.json',
+      join(homedir(), '.rivetos', 'mesh.json'),
+    ])
+    const overridden = loadConfig({
+      RIVETOS_SHARED_DIR: '/gateway/shared',
+      RIVETOS_DEN_MESH_FILE: '/x/mesh.json',
+    } as NodeJS.ProcessEnv)
+    expect(meshFilePaths(overridden.meshFile, overridden.sharedRoot)).toEqual(['/x/mesh.json'])
   })
 })

@@ -15,10 +15,21 @@
  */
 
 import { execSync } from 'node:child_process'
+import { join } from 'node:path'
 import { inspect } from 'node:util'
+import { installRoot, sharedPath } from '@rivetos/types'
+import { quoteShellArg } from '../../lib/ssh.js'
 
-export const DEFAULT_MESH_FILE = '/rivet-shared/mesh.json'
-export const REMOTE_MESH_HOSTS_SCRIPT = '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh'
+/** Canonical mesh.json path — resolved at call time (honors RIVETOS_SHARED_DIR). */
+export function defaultMeshFile(): string {
+  return sharedPath('mesh.json')
+}
+
+/** Remote setup-mesh-hosts.sh — resolved at call time (honors RIVETOS_INSTALL_ROOT). */
+export function remoteMeshHostsScript(root?: string): string {
+  const raw = root?.trim()
+  return join(raw ? raw : installRoot(), 'infra', 'scripts', 'setup-mesh-hosts.sh')
+}
 
 /** True when the process is uid 0 (no sudo needed for /etc/hosts). */
 export function isProcessRoot(): boolean {
@@ -83,7 +94,7 @@ export function formatMeshHostsSkipDetail(err: unknown): string {
  */
 export function buildLocalMeshHostsCommand(
   scriptPath: string,
-  meshFile: string = DEFAULT_MESH_FILE,
+  meshFile: string = defaultMeshFile(),
 ): string {
   const prefix = isProcessRoot() ? '' : 'sudo -n '
   return `${prefix}${scriptPath} ${meshFile} --quiet`
@@ -94,11 +105,13 @@ export function buildLocalMeshHostsCommand(
  * `sudo -n` when the SSH user is not root — passwordless sudo is expected
  * on mesh nodes; if missing, the warning names the real problem.
  */
-export function buildRemoteMeshHostsCommand(sshUser: string): string {
+export function buildRemoteMeshHostsCommand(sshUser: string, root?: string): string {
+  const meshFile = defaultMeshFile()
+  const script = quoteShellArg(remoteMeshHostsScript(root))
   if (sshUser === 'root') {
-    return `${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`
+    return `${script} ${meshFile} --quiet`
   }
-  return `sudo -n ${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`
+  return `sudo -n ${script} ${meshFile} --quiet`
 }
 
 export type HealLocalResult = { ok: true } | { ok: false; detail: string }
@@ -115,7 +128,7 @@ export function healLocalMeshHosts(opts: {
   tag?: string
   timeoutMs?: number
 }): HealLocalResult {
-  const meshFile = opts.meshFile ?? DEFAULT_MESH_FILE
+  const meshFile = opts.meshFile ?? defaultMeshFile()
   const tag = opts.tag ?? ''
   const cmd = buildLocalMeshHostsCommand(opts.scriptPath, meshFile)
 
