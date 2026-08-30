@@ -16,8 +16,13 @@
 
 import { execSync } from 'node:child_process'
 import { inspect } from 'node:util'
+import { sharedPath } from '@rivetos/types'
 
-export const DEFAULT_MESH_FILE = '/rivet-shared/mesh.json'
+/** Canonical mesh.json path — resolved at call time (honors RIVETOS_SHARED_DIR). */
+export function defaultMeshFile(): string {
+  return sharedPath('mesh.json')
+}
+
 export const REMOTE_MESH_HOSTS_SCRIPT = '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh'
 
 /** True when the process is uid 0 (no sudo needed for /etc/hosts). */
@@ -83,7 +88,7 @@ export function formatMeshHostsSkipDetail(err: unknown): string {
  */
 export function buildLocalMeshHostsCommand(
   scriptPath: string,
-  meshFile: string = DEFAULT_MESH_FILE,
+  meshFile: string = defaultMeshFile(),
 ): string {
   const prefix = isProcessRoot() ? '' : 'sudo -n '
   return `${prefix}${scriptPath} ${meshFile} --quiet`
@@ -95,10 +100,11 @@ export function buildLocalMeshHostsCommand(
  * on mesh nodes; if missing, the warning names the real problem.
  */
 export function buildRemoteMeshHostsCommand(sshUser: string): string {
+  const meshFile = defaultMeshFile()
   if (sshUser === 'root') {
-    return `${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`
+    return `${REMOTE_MESH_HOSTS_SCRIPT} ${meshFile} --quiet`
   }
-  return `sudo -n ${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`
+  return `sudo -n ${REMOTE_MESH_HOSTS_SCRIPT} ${meshFile} --quiet`
 }
 
 export type HealLocalResult = { ok: true } | { ok: false; detail: string }
@@ -115,7 +121,7 @@ export function healLocalMeshHosts(opts: {
   tag?: string
   timeoutMs?: number
 }): HealLocalResult {
-  const meshFile = opts.meshFile ?? DEFAULT_MESH_FILE
+  const meshFile = opts.meshFile ?? defaultMeshFile()
   const tag = opts.tag ?? ''
   const cmd = buildLocalMeshHostsCommand(opts.scriptPath, meshFile)
 

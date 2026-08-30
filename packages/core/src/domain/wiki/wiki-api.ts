@@ -27,6 +27,7 @@ import {
 } from '@rivetos/wiki-core'
 import {
   routedUserResult,
+  sharedPath,
   type GatewayRoute,
   type WikiGapsResponse,
   type WikiIndexResponse,
@@ -124,7 +125,7 @@ export function resolveWikiSurface(
 }
 
 export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
-  const ownerDir = opts.wikiDir ?? '/rivet-shared/wiki'
+  const ownerDir = opts.wikiDir ?? sharedPath('wiki')
 
   return {
     prefix: '/api/wiki',

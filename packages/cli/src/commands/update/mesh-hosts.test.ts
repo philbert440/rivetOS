@@ -12,7 +12,7 @@ import {
   formatMeshHostsSkipDetail,
   healLocalMeshHosts,
   isProcessRoot,
-  DEFAULT_MESH_FILE,
+  defaultMeshFile,
   REMOTE_MESH_HOSTS_SCRIPT,
 } from './mesh-hosts.js'
 
@@ -87,13 +87,13 @@ describe('formatMeshHostsSkipDetail', () => {
 describe('buildRemoteMeshHostsCommand', () => {
   it('omits sudo for root', () => {
     expect(buildRemoteMeshHostsCommand('root')).toBe(
-      `${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`,
+      `${REMOTE_MESH_HOSTS_SCRIPT} ${defaultMeshFile()} --quiet`,
     )
   })
 
   it('uses non-interactive sudo for non-root', () => {
     expect(buildRemoteMeshHostsCommand('rivet')).toBe(
-      `sudo -n ${REMOTE_MESH_HOSTS_SCRIPT} ${DEFAULT_MESH_FILE} --quiet`,
+      `sudo -n ${REMOTE_MESH_HOSTS_SCRIPT} ${defaultMeshFile()} --quiet`,
     )
   })
 })
@@ -103,9 +103,9 @@ describe('buildLocalMeshHostsCommand', () => {
     const script = '/opt/rivetos/infra/scripts/setup-mesh-hosts.sh'
     const cmd = buildLocalMeshHostsCommand(script)
     if (isProcessRoot()) {
-      expect(cmd).toBe(`${script} ${DEFAULT_MESH_FILE} --quiet`)
+      expect(cmd).toBe(`${script} ${defaultMeshFile()} --quiet`)
     } else {
-      expect(cmd).toBe(`sudo -n ${script} ${DEFAULT_MESH_FILE} --quiet`)
+      expect(cmd).toBe(`sudo -n ${script} ${defaultMeshFile()} --quiet`)
     }
   })
 })
@@ -122,7 +122,7 @@ describe('healLocalMeshHosts', () => {
     expect(execSyncMock).toHaveBeenCalledOnce()
     const [cmd] = execSyncMock.mock.calls[0]!
     expect(String(cmd)).toContain('/tmp/setup-mesh-hosts.sh')
-    expect(String(cmd)).toContain(DEFAULT_MESH_FILE)
+    expect(String(cmd)).toContain(defaultMeshFile())
     expect(String(cmd)).toContain('--quiet')
   })
 

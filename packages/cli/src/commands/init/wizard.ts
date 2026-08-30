@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto'
 import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import * as p from '@clack/prompts'
+import { sharedPath } from '@rivetos/types'
 import { detectEnvironment } from './detect.js'
 import { configureDeployment } from './deployment.js'
 import { configureAgents } from './agents.js'
@@ -176,9 +177,9 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
         const { readFileSync: rfs } = await import('node:fs')
         const { Agent: UndiciAgent } = await import('undici')
         const nodeName = options.joinHost.split('.')[0]
-        const ca = rfs('/rivet-shared/rivet-ca/intermediate/ca-chain.pem')
-        const cert = rfs(`/rivet-shared/rivet-ca/issued/${nodeName}.crt`)
-        const key = rfs(`/rivet-shared/rivet-ca/issued/${nodeName}.key`)
+        const ca = rfs(sharedPath('rivet-ca', 'intermediate', 'ca-chain.pem'))
+        const cert = rfs(sharedPath('rivet-ca', 'issued', `${nodeName}.crt`))
+        const key = rfs(sharedPath('rivet-ca', 'issued', `${nodeName}.key`))
         const dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
         pingRes = await fetch(`https://${options.joinHost}:${String(port)}/api/mesh/ping`, {
           // @ts-expect-error — undici dispatcher not in Node fetch types
