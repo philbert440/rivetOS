@@ -688,10 +688,7 @@ export async function registerAgentTools(
     const workflowsRoots =
       configuredRoots && configuredRoots.length > 0
         ? configuredRoots
-        : [
-            defaultWorkflowsDefsRoot(),
-            ...(installRoot ? [join(installRoot, 'workflows')] : []),
-          ]
+        : [defaultWorkflowsDefsRoot(), ...(installRoot ? [join(installRoot, 'workflows')] : [])]
     const defaultAgentId =
       Object.keys(config.agents ?? {})[0] ?? runtime.getRouter().getAgents()[0]?.id ?? 'rivet'
     // Prefer durable task store; fall back to in-memory subagent store so
