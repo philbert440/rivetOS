@@ -23,11 +23,7 @@ export const DAY_MS = 24 * 60 * 60 * 1000
 const TAR_BLOCK = 512
 
 export type MeshHubErrorCode =
-  | 'ssh-auth'
-  | 'helper-missing'
-  | 'malformed-tarball'
-  | 'malformed-mesh'
-  | 'usage'
+  'ssh-auth' | 'helper-missing' | 'malformed-tarball' | 'malformed-mesh' | 'usage'
 
 export class MeshHubError extends Error {
   readonly code: MeshHubErrorCode
@@ -254,7 +250,10 @@ export function defaultAdvertiseHost(): string {
 function readTarString(block: Buffer, offset: number, length: number): string {
   const slice = block.subarray(offset, offset + length)
   const end = slice.indexOf(0)
-  return slice.subarray(0, end === -1 ? length : end).toString('utf-8').trim()
+  return slice
+    .subarray(0, end === -1 ? length : end)
+    .toString('utf-8')
+    .trim()
 }
 
 function parseOctal(buf: Buffer): number {
@@ -343,7 +342,7 @@ export function packTarGz(files: Record<string, Buffer | string>): Buffer {
     header.write('ustar\0', 257, 'ascii')
     header.write('00', 263, 'ascii')
     let sum = 0
-    for (let i = 0; i < TAR_BLOCK; i++) sum += header[i]!
+    for (let i = 0; i < TAR_BLOCK; i++) sum += header[i]
     const chk = sum.toString(8).padStart(6, '0')
     header.write(`${chk}\0 `, 148, 'ascii')
     parts.push(header)

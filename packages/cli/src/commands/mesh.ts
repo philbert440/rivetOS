@@ -138,7 +138,7 @@ export async function sshHubStdout(
 type CapturedExecError = Error & { stdout?: string; stderr?: string; status?: number | null }
 
 function asCaptured(err: unknown): CapturedExecError {
-  return err instanceof Error ? (err as CapturedExecError) : new Error(String(err))
+  return err instanceof Error ? err : new Error(String(err))
 }
 
 function isAuthFailure(err: CapturedExecError): boolean {
@@ -462,7 +462,14 @@ async function meshPing(flags: Flags): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function positionalArg(rest: string[]): string | undefined {
-  const takesValue = new Set(['--port', '--timeout', '--ssh-user', '--name', '--advertise', '--hub-cmd'])
+  const takesValue = new Set([
+    '--port',
+    '--timeout',
+    '--ssh-user',
+    '--name',
+    '--advertise',
+    '--hub-cmd',
+  ])
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]
     if (!a || a === '--manual' || a === '--json') continue
