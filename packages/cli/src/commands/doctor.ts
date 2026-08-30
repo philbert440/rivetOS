@@ -722,10 +722,7 @@ async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
 // Check: leaf cert expiry (90-day leaves; warn within 30 days)
 // ---------------------------------------------------------------------------
 
-export async function checkLeafCert(
-  rawConfig: string | null,
-  now?: Date,
-): Promise<CheckResult[]> {
+export async function checkLeafCert(rawConfig: string | null, now?: Date): Promise<CheckResult[]> {
   const nodeName = resolveLocalNodeName()
   if (!nodeName) return []
 

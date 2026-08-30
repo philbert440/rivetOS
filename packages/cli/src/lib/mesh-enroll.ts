@@ -32,12 +32,7 @@ export interface TarLimits {
 }
 
 export type MeshHubErrorCode =
-  | 'ssh-auth'
-  | 'ssh-failed'
-  | 'helper-missing'
-  | 'malformed-tarball'
-  | 'malformed-mesh'
-  | 'usage'
+  'ssh-auth' | 'ssh-failed' | 'helper-missing' | 'malformed-tarball' | 'malformed-mesh' | 'usage'
 
 export class MeshHubError extends Error {
   readonly code: MeshHubErrorCode

@@ -260,7 +260,7 @@ export async function meshSync(args: string[]): Promise<void> {
     )
   }
   const dest = sharedPath('mesh.json')
-  let beforeCount = 0
+  let beforeCount: number
   try {
     beforeCount = await readLocalMeshNodeCount()
   } catch (err) {
