@@ -2,7 +2,7 @@
 
 How RivetOS is versioned and what “stable” means for RivetHub.
 
-Stable is an annotated git tag `vX.Y.Z` cut from green `main`. The RivetHub distro repo pins those tags. There is no LTS track and no backport promise: a fix ships in the next tag.
+Stable is an annotated git tag `vX.Y.Z` cut from green `main`. The RivetHub distro repo pins those tags. There is no LTS track and no backport promise: a fix ships in the next tag. This document supersedes leftover LTS / `lts/X.Y` language in README.md and ARCHITECTURE.md pending #589.
 
 ---
 
@@ -13,8 +13,10 @@ Each stable release produces:
 | Artifact | What it is |
 |---|---|
 | Git tag `vX.Y.Z` | Annotated tag on the green `main` commit. Checkout and run from source (`npx tsx` / the systemd unit) — the proven path. |
-| `ghcr.io/philbert440/rivetos:X.Y.Z` | Container image from that tag. `docker/metadata-action` `type=semver,pattern={{version}}` strips the leading `v`. |
-| `ghcr.io/philbert440/rivetos:latest` | Same image. `latest` is written only when a `v*` tag is pushed, not on every `main` merge. |
+| `ghcr.io/philbert440/rivetos:X.Y.Z` | Container image from that tag. `docker/metadata-action` `type=semver,pattern={{version}}` strips the leading `v`. Pin this. |
+| `ghcr.io/philbert440/rivetos:X.Y` | Same image, `type=semver,pattern={{major}}.{{minor}}`. **Floating** — moves on each patch of that minor (not a pin; there is no backport track). |
+| `ghcr.io/philbert440/rivetos:<short-sha>` | Same image, `type=sha,format=short`. Emitted on every containers push (main and tags). |
+| `ghcr.io/philbert440/rivetos:latest` | Same image. `latest` is written only when a stable `vX.Y.Z` tag is pushed (not pre-release `v*` tags, not every `main` merge). |
 
 `main` is the nightly channel. Every push to `main` (after CI) publishes `ghcr.io/philbert440/rivetos:main`. Nightly is unsupported for production.
 
@@ -29,6 +31,7 @@ Each stable release produces:
 rivetos update --version vX.Y.Z
 
 # Track origin/main (nightly). No --version → fetch, checkout main, reset --hard origin/main.
+# git reset --hard discards uncommitted local changes in the checkout.
 rivetos update
 ```
 
