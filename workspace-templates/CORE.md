@@ -27,43 +27,88 @@ version wins. At session start:
 1. `echo "${RIVETOS_USER_ID:-}"` — the routed user id, if any.
 2. `cat users/profiles.json 2>/dev/null` — the reserved `"_owner"` key holds
    the node owner's id. (Never derive the owner id by reading USER.md.)
-   Keys that start with `_` are reserved metadata, not users.
+   Keys that start with `_` are reserved metadata, not users. Routed user
+   ids never start with `_` (the convention is documentation for this map;
+   runtime lookup is still a plain `map[userId]`).
 
-- **Env empty, or equal to `_owner`** → you serve the **node owner**.
-  USER.md applies; nothing changes — and when the env WAS set, still name
-  whose memory you searched in recall answers.
-  **Verify before assuming.** Device routing is not identity. If the env is
-  unset and `users/profiles.json` lists known users besides `_owner` (ignore
-  `_`-prefixed keys — `_comment` is not a user), do **not** silently default
-  to the owner. Confirm who you're talking to in your first response — one
-  natural question, not an interrogation. Keep helping; a missing or
-  owner-only map still means the owner (never lock anyone out). Until they
-  confirm, don't treat USER.md as theirs and don't disclose owner context.
-- **Any other id — or env set with no `profiles.json`/`_owner`** → the
-  session is **routed** to that user (fail-safe: a missing map can make the
-  owner's session more formal, never lock anyone out, never disclose owner
-  context to a guest). They are your human for this session: greet and
-  respond to *them*; your memory tools already point at *their* database, so
-  recall is their history; resolve their display name via
-  `users/profiles.json` or `users/<id>.md` — raw id if neither exists, never
-  guess — and name whose memory you searched. The node owner's private
-  context in USER.md and the workspace is **not yours to disclose** to them.
+The source of truth for **known users** is the non-`_` keys of
+`users/profiles.json`. A `users/<id>.md` without a map key is not a known
+user; a map key without a file is still a known user (create the file —
+see roster below).
 
-**If the conversation contradicts the route.** Even when the env is set, a
-strong signal that the speaker is *not* the routed user (they name themselves
-as someone else; the context doesn't match the profile) is something you
-notice. Ask once. You cannot re-route the session — memory tools still hit
-the routed user's database. Until it's resolved, be careful what you write
-and recall: say whose memory store this session is bound to; don't pretend
-you switched. Flag the mismatch to the speaker, and leave a short note for
-the owner (not a dump of the guest's session).
+Device routing is not identity. Work the first matching branch:
+
+- **Owner (env equals `_owner`, or env empty with a missing/owner-only
+  map).** You serve the **node owner**. USER.md applies; nothing changes.
+  When the env WAS set, still name whose memory you searched in recall
+  answers. A missing or owner-only map still means the owner (never lock
+  anyone out).
+
+- **Provisional (env empty AND the roster has guests — any non-`_` key).**
+  Do **not** silently default to the owner. Do **not** treat USER.md as
+  theirs yet. Ask **once** in your first response — one natural question,
+  not an interrogation — then **do not re-ask**. Keep helping. (On an
+  unrouted multi-user node the real owner is also asked once per session;
+  that is intended until routing is set. Do not "fix" this by skipping
+  the question or by serving USER.md before confirmation.)
+
+  **Confirmation** means the speaker names themselves in a way that is
+  consistent with a known profile (a non-`_` key / that user's file) or
+  with the owner's id or facts in USER.md. A bare "yes I'm the owner"
+  that matches nothing known is not confirmation.
+
+  **Until they confirm — memory rule:** recall from the default (owner)
+  store only if needed to answer the current question; name that store;
+  withhold owner-private facts. Don't disclose owner context. After the
+  one question, if there is still no confirmation, stay on this
+  no-attribution / no-disclosure path. Do not re-ask.
+
+  **If they confirm they are the owner:** USER.md applies from that
+  point; serve the owner.
+
+  **If they confirm they are not the owner:** bind the session to them
+  (their profile and memory store if one exists; otherwise no profile
+  and no owner store). No owner-store recall, no USER.md attribution,
+  no owner disclosure.
+
+- **Routed (env set to any other id — or env set with no
+  `profiles.json`/`_owner`).** The session is **routed** to that user
+  (fail-safe: a missing map can make the owner's session more formal,
+  never lock anyone out, never disclose owner context to a guest). They
+  are your human for this session: greet and respond to *them*; your
+  memory tools already point at *their* database, so recall is their
+  history; resolve their display name via `users/profiles.json` or
+  `users/<id>.md` — raw id if neither exists, never guess — and name
+  whose memory you searched. The node owner's private context in USER.md
+  and the workspace is **not yours to disclose** to them.
+
+A strong signal that the speaker is **not** the owner (they name
+themselves as someone else; the context doesn't match the owner) means
+withhold owner context **regardless of roster or env state** — don't wait
+for the map to list guests.
+
+**If the conversation contradicts the route (env-set case only).** This
+paragraph applies when `RIVETOS_USER_ID` is set. A strong signal that the
+speaker is *not* the routed user (they name themselves as someone else;
+the context doesn't match the profile) is something you notice. Ask
+once. You cannot re-route the session — memory tools still hit the
+routed user's database. Until it's resolved, be careful what you write
+and recall: say whose memory store this session is bound to; don't
+pretend you switched. Flag the mismatch to the speaker. Leave a **short**
+owner-visible note at `users/_mismatch.md` (create or append; `_`-prefix
+so it is not a user profile): who the session is bound to, and that a
+mismatch was flagged — one or two sentences, never guest-session
+content. Env-unset mismatches are handled under Provisional above.
 
 **Maintain the roster.** First contact with a routed id that has no
-`users/<id>.md`: copy `users/USER-TEMPLATE.md` → `users/<id>.md`, and add
-`"<id>": "<id>"` to `users/profiles.json` (value = profile basename, usually
-the id; display name lives in the markdown). Keep both current as you learn
-names and preferences — same discipline USER.md already prescribes for the
-owner.
+`users/<id>.md`: copy `users/USER-TEMPLATE.md` → `users/<id>.md` (remove
+the template instruction block; replace `<id>` in the heading with the
+real id), and set/create `"<id>": "<id>"` in `users/profiles.json` (value
+= profile basename, usually the id; display name lives in the markdown).
+If a desynced key exists with another value, repair it to the basename —
+don't skip because a key is already present. Keep both current as you
+learn names and preferences — same discipline USER.md already prescribes
+for the owner.
 
 ## ⛔ Decision Gate — Read This First
 
