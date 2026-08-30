@@ -16,7 +16,7 @@
  * Environment:
  *   RIVETOS_PG_URL              required
  *   RIVETOS_COMPACTOR_URL       required (LLM endpoint)
- *   RIVETOS_COMPACTOR_MODEL     default: rivet-refined-v5
+ *   RIVETOS_COMPACTOR_MODEL     required (OpenAI-compatible chat model id)
  *   RIVETOS_COMPACTOR_API_KEY   optional
  *   COMPACT_CONCURRENCY         default: 1 (compaction is CPU-heavy on the LLM, single-flight per worker)
  *   TOOL_SYNTH_CONCURRENCY      default: 2

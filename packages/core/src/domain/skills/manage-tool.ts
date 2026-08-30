@@ -40,6 +40,8 @@ export interface SkillManageToolOptions {
   pendingDir?: string
   /** Embedding endpoint for dedup checks (optional — degrades gracefully) */
   embedEndpoint?: string
+  /** Embedding model id; required for dedup when embedEndpoint is set */
+  embedModel?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,7 @@ export function createSkillManageTool(manager: SkillManager, opts: SkillManageTo
             tags,
             force,
             opts.embedEndpoint,
+            opts.embedModel,
           )
         case 'edit':
           return handleEdit(manager, name, content, reason)

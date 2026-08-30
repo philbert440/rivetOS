@@ -4,10 +4,10 @@
 
 import { sharedPath } from '@rivetos/types'
 
-function requireEnv(name: string): string {
+function requireEnv(name: string, detail?: string): string {
   const value = process.env[name]
   if (!value) {
-    console.error(`[CompactWorker] ${name} is required`)
+    console.error(`[CompactWorker] ${name} is required${detail ? `. ${detail}` : ''}`)
     process.exit(1)
   }
   return value
@@ -20,10 +20,16 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+const llmUrl = requireEnv('RIVETOS_COMPACTOR_URL')
+const llmModel = requireEnv(
+  'RIVETOS_COMPACTOR_MODEL',
+  'OpenAI-compatible chat model id for compaction (example: gpt-4o-mini)',
+)
+
 export const config = {
   pgUrl: requireEnv('RIVETOS_PG_URL'),
-  llmUrl: requireEnv('RIVETOS_COMPACTOR_URL'),
-  llmModel: process.env.RIVETOS_COMPACTOR_MODEL ?? 'rivet-refined-v5',
+  llmUrl,
+  llmModel,
   llmApiKey: process.env.RIVETOS_COMPACTOR_API_KEY ?? '',
 
   // Worker-local concurrency
@@ -55,8 +61,7 @@ export const config = {
   staleMinutes: intEnv('COMPACT_STALE_MINUTES', 4 * 24 * 60),
   staleMinBatch: intEnv('COMPACT_STALE_MIN_BATCH', 2),
 
-  // Tool-synth
-  toolSynthEndpoint: process.env.TOOL_SYNTH_ENDPOINT ?? requireEnv('RIVETOS_COMPACTOR_URL'),
-  toolSynthModel:
-    process.env.TOOL_SYNTH_MODEL ?? process.env.RIVETOS_COMPACTOR_MODEL ?? 'rivet-refined-v5',
+  // Tool-synth — optional overrides; otherwise the required compactor URL/model.
+  toolSynthEndpoint: process.env.TOOL_SYNTH_ENDPOINT ?? llmUrl,
+  toolSynthModel: process.env.TOOL_SYNTH_MODEL ?? llmModel,
 } as const

@@ -80,7 +80,7 @@ interface Candidate extends SearchHit {
 export interface SearchEngineConfig {
   /** Embedding service URL for query-time embedding (e.g., http://192.0.2.1:9401) */
   embedEndpoint?: string
-  /** Model name for embedding (default: 'nemotron') */
+  /** Model name for embedding (required when embedEndpoint is set) */
   embedModel?: string
 }
 
@@ -233,7 +233,12 @@ export class SearchEngine {
   constructor(pool: pg.Pool, config?: SearchEngineConfig) {
     this.pool = pool
     this.embedEndpoint = config?.embedEndpoint ?? null
-    this.embedModel = config?.embedModel ?? 'nemotron'
+    if (this.embedEndpoint && !config?.embedModel) {
+      throw new Error(
+        'RIVETOS_EMBED_MODEL is required when an embedding URL is set. OpenAI-compatible embedding model id (example: text-embedding-3-small)',
+      )
+    }
+    this.embedModel = config?.embedModel ?? ''
   }
 
   /**

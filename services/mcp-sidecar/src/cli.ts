@@ -37,7 +37,7 @@
  *                             `memory_search`, `memory_browse`,
  *                             `memory_stats`, and `memory_get_full`.
  *   RIVETOS_EMBED_URL       — optional embedding endpoint for hybrid search
- *   RIVETOS_EMBED_MODEL     — optional embedding model (default: nemotron)
+ *   RIVETOS_EMBED_MODEL     — required when RIVETOS_EMBED_URL is set
  *   GOOGLE_CSE_API_KEY      — optional, enables Google search backend for
  *                             `internet_search` (DuckDuckGo fallback
  *                             always available)
@@ -100,6 +100,12 @@ async function main(): Promise<void> {
 
   // --- Memory tools (require Postgres) -------------------------------------
   const pgUrl = process.env.RIVETOS_PG_URL
+  if (process.env.RIVETOS_EMBED_URL && !process.env.RIVETOS_EMBED_MODEL) {
+    console.error(
+      '[rivetos-mcp-server] RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL is set. OpenAI-compatible embedding model id (example: text-embedding-3-small)',
+    )
+    process.exit(1)
+  }
   if (pgUrl) {
     try {
       const handle: MemoryToolsHandle = createMemoryTools({
