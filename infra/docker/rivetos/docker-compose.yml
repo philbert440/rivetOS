@@ -21,14 +21,17 @@
 # node processes shipped in the same image — there is no `--role worker`.
 #
 # Both workers sit behind the `workers` profile, so a plain `up` skips them.
-# Each needs an inference endpoint this file cannot guess (RIVETOS_EMBED_URL /
-# RIVETOS_COMPACTOR_URL) and exits on boot without one. Point them at your
-# hosts, then:
+# Each needs an inference endpoint *and* a model id this file cannot guess
+# (RIVETOS_EMBED_URL + RIVETOS_EMBED_MODEL / RIVETOS_COMPACTOR_URL +
+# RIVETOS_COMPACTOR_MODEL) and exits on boot without either. There is no
+# silent model default. Point them at your hosts, then:
 #   docker compose -f infra/docker/rivetos/docker-compose.yml \
 #     --profile workers up
 #
 # The `agent` service expects ~/.rivetos to exist on the host with config.yaml
-# and .env. Run `rivetos init` first to generate them.
+# and .env. Run `rivetos init` first to generate them. Agent memory/embed
+# config comes from that mounted .env (templates set both URL and model);
+# this compose file does not inject embed vars into the agent service.
 #
 # Tear down (preserve DB):
 #   docker compose -f infra/docker/rivetos/docker-compose.yml down
@@ -75,7 +78,8 @@ services:
     restart: 'no'
 
   # services/embedding-worker — standalone graphile-worker process, not a CLI
-  # role. Requires RIVETOS_EMBED_URL; exits on boot without it.
+  # role. Requires RIVETOS_EMBED_URL and RIVETOS_EMBED_MODEL; exits on boot
+  # without either. No silent model default.
   embedding-worker:
     profiles: ['workers']
     build:
@@ -85,11 +89,12 @@ services:
     command: ['node', 'services/embedding-worker/dist/index.js']
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
-      # e.g. RIVETOS_EMBED_URL=http://gpu-host:9401 in the shell or a .env file
+      # e.g. RIVETOS_EMBED_URL=http://gpu-host:9401 and
+      # RIVETOS_EMBED_MODEL=text-embedding-3-small in the shell or a .env file
       # next to this compose file. Left empty the worker logs
-      # "[EmbedWorker] RIVETOS_EMBED_URL is required" and exits 1.
+      # "[EmbedWorker] RIVETOS_EMBED_URL is required" (or MODEL) and exits 1.
       RIVETOS_EMBED_URL: ${RIVETOS_EMBED_URL:-}
-      RIVETOS_EMBED_MODEL: ${RIVETOS_EMBED_MODEL:-nemotron}
+      RIVETOS_EMBED_MODEL: ${RIVETOS_EMBED_MODEL:-}
     # The image healthcheck probes the agent's HTTP port, which this process
     # does not open.
     healthcheck:
@@ -102,7 +107,8 @@ services:
     restart: unless-stopped
 
   # services/compaction-worker — standalone graphile-worker process, not a CLI
-  # role. Requires RIVETOS_COMPACTOR_URL; exits on boot without it.
+  # role. Requires RIVETOS_COMPACTOR_URL and RIVETOS_COMPACTOR_MODEL; exits
+  # on boot without either. No silent model default.
   compaction-worker:
     profiles: ['workers']
     build:
@@ -113,11 +119,12 @@ services:
     environment:
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
       # OpenAI-compatible base URL — the worker appends /chat/completions.
-      # e.g. RIVETOS_COMPACTOR_URL=http://llm-host:8003/v1. Left empty the
-      # worker logs "[CompactWorker] RIVETOS_COMPACTOR_URL is required" and
+      # e.g. RIVETOS_COMPACTOR_URL=http://llm-host:8003/v1 and
+      # RIVETOS_COMPACTOR_MODEL=gpt-4o-mini. Left empty the worker logs
+      # "[CompactWorker] RIVETOS_COMPACTOR_URL is required" (or MODEL) and
       # exits 1.
       RIVETOS_COMPACTOR_URL: ${RIVETOS_COMPACTOR_URL:-}
-      RIVETOS_COMPACTOR_MODEL: ${RIVETOS_COMPACTOR_MODEL:-rivet-refined-v5}
+      RIVETOS_COMPACTOR_MODEL: ${RIVETOS_COMPACTOR_MODEL:-}
     healthcheck:
       disable: true
     depends_on:

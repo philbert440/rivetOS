@@ -76,7 +76,7 @@ describe('SearchEngine embed config', () => {
 
   it('throws when embedEndpoint is set without embedModel', () => {
     expect(() => new SearchEngine(pool, { embedEndpoint: 'http://127.0.0.1:9401' })).toThrow(
-      /RIVETOS_EMBED_MODEL/,
+      /embedModel is required when embedEndpoint is set \(env: RIVETOS_EMBED_MODEL\)/,
     )
   })
 

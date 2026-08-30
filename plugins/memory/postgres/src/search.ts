@@ -235,7 +235,7 @@ export class SearchEngine {
     this.embedEndpoint = config?.embedEndpoint ?? null
     if (this.embedEndpoint && !config?.embedModel) {
       throw new Error(
-        'RIVETOS_EMBED_MODEL is required when an embedding URL is set. OpenAI-compatible embedding model id (example: text-embedding-3-small)',
+        'embedModel is required when embedEndpoint is set (env: RIVETOS_EMBED_MODEL). OpenAI-compatible embedding model id (example: text-embedding-3-small)',
       )
     }
     this.embedModel = config?.embedModel ?? ''
