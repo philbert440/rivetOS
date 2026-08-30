@@ -13,6 +13,13 @@ receives delegated tasks and routes them to the local `DelegationEngine`. When
 one node needs an agent it doesn't host locally, it looks up the target node in
 the shared `mesh.json` registry and sends the task over mTLS.
 
+The mesh listener is `AgentChannelServer` in `@rivetos/core`, started by boot
+when `mesh.enabled` and `mesh.tls` are set. It binds **port 3000** by default
+(`mesh.agent_channel_port`, or `RIVETOS_AGENT_PORT`). That is a different
+server from the standalone `@rivetos/channel-agent` plugin, whose bind default
+is **3100** (`channels.agent.port`). `rivetos mesh join` defaults to 3000 to
+match the mesh listener.
+
 ```
 ┌─────────────────────────────────┐     HTTPS/mTLS      ┌─────────────────────────────────┐
 │  ct110 — opus                   │  ──────────────────▶ │  ct111 — grok                   │

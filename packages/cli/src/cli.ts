@@ -116,6 +116,7 @@ export function helpText(): string {
     rivetos config validate             Validate config schema
     rivetos config edit                 Open config in $EDITOR
     rivetos config path                 Print config file path
+    rivetos config init                 Run the setup wizard (same as rivetos init)
 
   Agents:
     rivetos agent list                  List configured agents

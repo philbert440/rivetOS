@@ -102,12 +102,12 @@ memory:
 #   enabled: true
 #   host: 0.0.0.0            # default 127.0.0.1 (loopback fail-safe)
 #   port: 5174               # default
-#   token: change-me         # REQUIRED when terminal.enabled and host isn't loopback
+#   # Off-loopback requires Rivet CA TLS + a device client cert (docs/GATEWAY-MTLS.md).
+#   # den.token / RIVETOS_DEN_TOKEN are ignored — bearer auth is removed.
+#   # tls_cert: /rivet-shared/rivet-ca/issued/<node>.crt
+#   # tls_key:  /rivet-shared/rivet-ca/issued/<node>.key
 #   terminal:
 #     enabled: false         # local PTY terminals — a deliberate opt-in
-#     open: false            # true = explicitly allow tokenless terminals on a
-#                            # trusted private network (anything that can reach
-#                            # the port can spawn a shell as the service user)
 #     idle_ttl_ms: 1800000   # auto-close harness PTYs after this many ms idle
 #                            # (no output/inject/write) with no viewer attached;
 #                            # 0 disables (default 30m)

@@ -5,6 +5,7 @@
  * config validate   — validate config schema without starting
  * config edit       — open config in $EDITOR
  * config path       — print config file path only
+ * config init       — run the setup wizard (same as rivetos init)
  */
 
 import { readFile, access } from 'node:fs/promises'
@@ -28,6 +29,7 @@ export default async function config(): Promise<void> {
     console.log('  validate   Validate config schema (dry run)')
     console.log('  edit       Open config in $EDITOR')
     console.log('  path       Print config file path')
+    console.log('  init       Run the setup wizard (same as rivetos init)')
     console.log('')
     console.log('To create a new config: rivetos init')
     return
@@ -155,6 +157,12 @@ export default async function config(): Promise<void> {
         console.log('No config found. Run: rivetos init')
         process.exit(1)
       }
+      break
+    }
+
+    case 'init': {
+      const { default: runInit } = await import('./init.js')
+      await runInit()
       break
     }
 

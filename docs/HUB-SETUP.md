@@ -76,9 +76,11 @@ export RIVETOS_DEN_STATIC_DIR=apps/rivethub-web/dist
 # Den sprite packs
 export RIVETOS_DEN_PACKS_DIR=packages/den-packs/packs
 
-# Bind (loopback by default; open host only with a token)
+# Bind (loopback by default; off-loopback requires TLS + device client cert)
 export RIVETOS_DEN_HOST=0.0.0.0
-export RIVETOS_DEN_TOKEN=generate-a-long-random-token
+# export RIVETOS_DEN_TLS_CERT=/rivet-shared/rivet-ca/issued/<node>.crt
+# export RIVETOS_DEN_TLS_KEY=/rivet-shared/rivet-ca/issued/<node>.key
+# RIVETOS_DEN_TLS_CA defaults to the Rivet intermediate chain; client certs required unless set to 0
 
 # Then start via normal agent boot (embedded den) or:
 node services/den-server/dist/index.js
@@ -87,13 +89,14 @@ node services/den-server/dist/index.js
 Open the node URL in a browser (default den port is commonly `5174` when run
 standalone; use whatever your config/`den.port` advertises).
 
-Authenticate with the bearer token configured on the node (Settings → node, or
-`?token=` on first load where supported).
+Authenticate with an enrolled **device client certificate** (`rivet-ca.sh
+issue-client`). Bearer tokens (`den.token`, `RIVETOS_DEN_TOKEN`, `?token=`,
+`Authorization: Bearer`) are not accepted. See [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 ### Dev mode (Vite)
 
 ```bash
-# Terminal A: node / den-server with CORS + token
+# Terminal A: node / den-server (loopback HTTP, or TLS + device cert off-loopback)
 # Terminal B:
 npx nx dev @rivetos/rivethub-web
 ```
@@ -109,8 +112,8 @@ Hub supports seamless node switch: repoint the gateway client at another node's
 origin; local dist stays put (never navigate to a peer's served UI for code).
 
 - Sidebar **Node** switcher / composer node picker
-- Android deep-link pattern: `http://127.0.0.1:5174/?node=<denUrl>` (preserves
-  per-node token when `?token=` absent)
+- Android deep-link pattern: `http://127.0.0.1:5174/?node=<denUrl>` (loopback
+  may skip client certs; `?token=` is not application auth)
 - Mesh dens: roster entries with `capabilities: ["den"]` and `metadata.denPort`
   or `metadata.denUrl` appear via `GET /mesh.json`
 
@@ -160,7 +163,7 @@ drivers disabled or older nodes.
 | `/files` | Browse node files root (`den.files_root` / `/rivet-shared` default) |
 | `/tasks` | List / create / steer / kill tasks |
 | `/workflows` | Local workflow IR editor (no runner yet) |
-| Settings | Gateway URL, token, wiki/datahub origin |
+| Settings | Gateway URL, wiki/datahub origin (auth is a device client cert) |
 
 ---
 
@@ -209,13 +212,14 @@ npx rivetos doctor
 npx rivetos status
 
 # 3. Harnesses visible on the node
-curl -sS -H "Authorization: Bearer $RIVETOS_DEN_TOKEN" \
+curl -sS --cert /path/to/device.crt --key /path/to/device.key \
+  --cacert /rivet-shared/rivet-ca/intermediate/chain.pem \
   "$GATEWAY/api/harnesses" | jq .
 
 # Expect four ids when all drivers registered:
 # claude-code, grok-build, hermes, kimi-code
 
-# 4. Open Hub, set gateway origin + token, confirm drawer lists sessions
+# 4. Open Hub, set gateway origin, present a device client cert, confirm drawer lists sessions
 # 5. Open a claude-code or grok-build session — Stop visible if terminals on
 # 6. Send a turn; live tool/thinking frames; hard-resync after refresh
 # 7. Dens page shows a live room when hooks fire
@@ -231,7 +235,7 @@ npx nx test @rivetos/rivethub-web
 
 ## Gotchas
 
-- **Token-gated nodes:** without bearer, harness and most APIs 401. Configure token on both den and Hub.
+- **Device-cert-gated nodes:** without an enrolled device client cert, harness and most APIs 401. Loopback HTTP is allowed for local node processes. `/healthz` is always open.
 - **Double-fold:** bound sessions must not also fold the all-sessions socket (Hub mutex on `harnessBound`).
 - **turn_in_flight:** server rejects overlapping turns; Hub client-queues with bounded backoff.
 - **Secrets in tool args:** bridge summarizers redact patterns; do not log raw tool input in issues.
@@ -243,6 +247,7 @@ npx nx test @rivetos/rivethub-web
 ## Related
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): harness-first node OS
+- [GATEWAY-MTLS.md](GATEWAY-MTLS.md): device client certificates (bearer tokens removed)
 - [DEN.md](DEN.md): den viewer and protocol
 - [GETTING-STARTED.md](GETTING-STARTED.md): install RivetOS
 - [DEPLOYMENT.md](DEPLOYMENT.md): Docker / Proxmox / mesh

@@ -168,7 +168,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     s2.start(`Joining mesh via ${options.joinHost}...`)
 
     try {
-      const port = 3100
+      const port = 3000
 
       // Ping seed first — try mTLS, fall back to plain HTTPS (certs may not exist yet at init time)
       let pingRes: Response
