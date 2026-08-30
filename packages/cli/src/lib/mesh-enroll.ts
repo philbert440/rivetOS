@@ -449,7 +449,7 @@ export async function mergeConfigFile(
   snippet: string,
   path = configPath(),
 ): Promise<'appended' | 'created' | 'unchanged'> {
-  let existing: string | null = null
+  let existing: string | null
   try {
     existing = await readFile(path, 'utf-8')
   } catch {
