@@ -662,12 +662,12 @@ export class WikiIndex {
   }
 
   private async embedQuery(text: string): Promise<number[] | null> {
-    if (!this.config.embedEndpoint) return null
+    if (!this.config.embedEndpoint || !this.config.embedModel) return null
     try {
       const res = await fetch(`${this.config.embedEndpoint}/v1/embeddings`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.config.embedModel ?? 'nemotron', input: text }),
+        body: JSON.stringify({ model: this.config.embedModel, input: text }),
       })
       if (!res.ok) return null
       const body = (await res.json()) as { data?: Array<{ embedding?: number[] }> }
