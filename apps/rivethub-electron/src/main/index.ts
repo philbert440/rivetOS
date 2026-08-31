@@ -581,6 +581,11 @@ function startup(): void {
   // the icon silently never appears on KDE/GNOME. Verified per-version
   // against a live Plasma 6 Wayland session (Properties.GetAll + watcher
   // registration) before any bump: 43.4.0 works, 44.0.0 does not.
+  // `npm run check:sni` (scripts/check-sni.mjs) automates exactly that
+  // verification — fake StatusNotifierWatcher + D-Bus introspection of the
+  // item — and runs from `npm run dist` before electron-builder, so a bump
+  // to a broken Electron fails the release flow instead of shipping a dead
+  // tray (RIVET_SKIP_SNI_CHECK=1 is the no-dbus escape hatch).
   try {
     const iconPath = path.join(__dirname, '../icons/icon.png')
     const icon = nativeImage.createFromPath(iconPath)
