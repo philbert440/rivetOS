@@ -15,10 +15,9 @@
 // Blocked: Cursor, Cursor Agent, cursoragent@cursor.com, Claude, Anthropic,
 //          Dependabot, or any other product name / third-party account.
 //
-// Exception: GitHub web-flow <noreply@github.com> as committer ONLY on a merge
-//            commit (two parents) whose author is already a house identity
-//            (Philip hitting the GitHub merge button). NOT allowed as author on
-//            normal work commits.
+// Exception: GitHub web-flow <noreply@github.com> as committer when the author
+//            is already a house identity (squash-merge or merge button). NOT
+//            allowed as author.
 
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -33,7 +32,7 @@ const HOUSE = [
   { name: 'philbert440', email: 'philbert440@users.noreply.github.com' },
 ]
 
-// GitHub web-flow committer (allowed ONLY as committer on merge commits)
+// GitHub web-flow committer (allowed as committer when author is house)
 const GITHUB_WEBFLOW = { name: 'GitHub', email: 'noreply@github.com' }
 
 // Blocked patterns (case-insensitive substrings in name or email)
@@ -124,13 +123,13 @@ export function checkCommit(commit) {
   }
 
   // Check committer
-  const isMergeCommit = commit.parentCount >= 2
   const authorIsHouse = isHouseIdentity(commit.author)
 
   if (!isHouseIdentity(commit.committer)) {
-    // Exception: GitHub web-flow as committer on merge commit with house author
-    if (isMergeCommit && authorIsHouse && isGitHubWebFlow(commit.committer)) {
-      // Allowed: Philip hitting the GitHub merge button
+    // Exception: GitHub web-flow as committer when author is already house
+    // (squash-merge and merge-button both commit as GitHub, any parent count)
+    if (authorIsHouse && isGitHubWebFlow(commit.committer)) {
+      // Allowed
     } else if (hasBlockedPattern(commit.committer)) {
       issues.push({
         field: 'committer',
@@ -289,7 +288,7 @@ function main() {
       '\n  - Philip <philbert440@gmail.com>' +
       '\n  - Philip <philbert440@users.noreply.github.com>' +
       '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, and any Co-authored-by trailers.' +
-      '\n\nException: GitHub <noreply@github.com> as committer on merge commits (hitting merge button).\n',
+      '\n\nException: GitHub <noreply@github.com> as committer when the author is a house identity (GitHub merge/squash).\n',
   )
 
   process.exit(1)
