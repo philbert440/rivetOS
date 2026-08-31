@@ -19,7 +19,7 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { sharedPath } from '@rivetos/types'
+import { installRoot, sharedPath } from '@rivetos/types'
 import { sshExec, sshExecQuiet, isSafeArg } from '../../lib/ssh.js'
 
 /** Matches remote-nodes.ts — systemctl restart blocks until the unit is up. */
@@ -231,7 +231,7 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
   const tag = '[local]'
   const rivetHome = existsSync('/home/rivet') ? '/home/rivet' : (process.env.HOME ?? '/root')
   const rawConfig = await readLocalConfig([rivetHome, process.env.HOME ?? '/root'])
-  const den = parseDenSettings(rawConfig, '/opt/rivetos')
+  const den = parseDenSettings(rawConfig, installRoot())
   if (!den.enabled) return 'skipped'
   if (den.tlsCert && !isSafeArg(den.tlsCa)) {
     console.error(`    ${tag} ❌ den.tls_ca "${den.tlsCa}" contains shell-unsafe characters`)
@@ -313,6 +313,7 @@ export async function verifyGatewayRemote(
   host: string,
   nodeName: string,
   sshUser: string,
+  nodeInstallRoot?: string,
 ): Promise<DenDeployOutcome> {
   const tag = `[${nodeName}]`
   const rawConfig = sshExecQuiet(
@@ -320,7 +321,8 @@ export async function verifyGatewayRemote(
     'cat /home/rivet/.rivetos/config.yaml 2>/dev/null || cat \\$HOME/.rivetos/config.yaml 2>/dev/null',
     sshUser,
   )
-  const den = parseDenSettings(rawConfig || null, '/opt/rivetos')
+  const rawRoot = nodeInstallRoot?.trim()
+  const den = parseDenSettings(rawConfig || null, rawRoot ? rawRoot : installRoot())
   if (!den.enabled) return 'skipped'
   if (!isSafeArg(den.host)) {
     console.error(`    ${tag} ❌ den.host "${den.host}" contains shell-unsafe characters`)

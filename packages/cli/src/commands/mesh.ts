@@ -235,7 +235,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
     process.exit(1)
   }
 
-  const port = flags.port ?? 3100
+  const port = flags.port ?? 3000
 
   console.log('')
   console.log(`  Joining mesh via seed node ${host}:${String(port)}...`)
@@ -271,7 +271,7 @@ async function meshJoin(host: string | undefined, flags: Flags): Promise<void> {
     name: hostname(),
     agents: [], // Will be populated on start
     host: getLocalIp(),
-    port: 3100,
+    port: 3000,
     providers: [],
     models: [],
     capabilities: [],

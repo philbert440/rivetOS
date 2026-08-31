@@ -21,6 +21,8 @@ export interface MeshNode {
   port: number
   /** SSH login for update/deploy tooling when it isn't `rivet` (e.g. phildesk → `philip`). */
   sshUser?: string
+  /** Source-tree path when it isn't `$RIVETOS_INSTALL_ROOT` (default `/opt/rivetos`). */
+  installRoot?: string
   /** Host platform. Default 'linux'. Non-linux nodes (e.g. rivet-phone →
    *  'android') are full mesh members but have no automated update path yet:
    *  `update --mesh` probes and reports them without attempting git/systemd. */

@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/den-server",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "rivet-den per-node service \u2014 protocol event ingest, WS fanout, replay snapshots, layout store, pack/viewer static serving",
@@ -14,7 +14,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@rivetos/den-protocol": "0.1.0",
+    "@rivetos/den-protocol": "0.5.0",
     "@rivetos/types": "*",
     "pg": "^8.22.0",
     "ws": "^8.21.2"

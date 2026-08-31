@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/harness-deepseek",
-  "version": "0.4.0-beta.6",
+  "version": "0.5.0",
   "description": "deepseek-harness spawn surface — interactive `dsh --profile tui [--resume]`. Capture is out-of-band (Cordis plugin); this package does not register a headless HarnessExecutor.",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.6"
+    "@rivetos/types": "0.5.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

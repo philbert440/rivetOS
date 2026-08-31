@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/boot",
-  "version": "0.4.0-beta.6",
+  "version": "0.5.0",
   "description": "RivetOS composition root \u2014 config loading, plugin wiring, lifecycle",
   "license": "Apache-2.0",
   "main": "dist/index.js",
@@ -14,16 +14,16 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/types": "0.4.0-beta.6",
-    "@rivetos/core": "0.4.0-beta.6",
-    "@rivetos/workflows": "0.4.0-beta.6",
-    "@rivetos/provider-claude-cli": "0.4.0-beta.6",
-    "@rivetos/harness-kimi-code": "0.4.0-beta.6",
+    "@rivetos/types": "0.5.0",
+    "@rivetos/core": "0.5.0",
+    "@rivetos/workflows": "0.5.0",
+    "@rivetos/provider-claude-cli": "0.5.0",
+    "@rivetos/harness-kimi-code": "0.5.0",
     "pg": "^8.22.0",
     "undici": "^8.10.0",
     "yaml": "^2.9.0",
-    "@rivetos/den-server": "0.4.0",
-    "@rivetos/memory-postgres": "0.4.0-beta.6"
+    "@rivetos/den-server": "0.5.0",
+    "@rivetos/memory-postgres": "0.5.0"
   },
   "devDependencies": {
     "@types/pg": "^8.20.3"

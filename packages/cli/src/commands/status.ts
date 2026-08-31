@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const PID_FILE = resolve(process.env.HOME ?? '.', '.rivetos', 'rivetos.pid')
-const VERSION = '0.1.0'
+const VERSION = '0.5.0'
 const HEALTH_PORT = parseInt(process.env.RIVETOS_HEALTH_PORT ?? '3100', 10)
 
 interface HealthResponse {

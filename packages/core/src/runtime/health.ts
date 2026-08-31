@@ -146,7 +146,7 @@ export class HealthServer {
 
     return {
       status,
-      version: this.config.version ?? '0.1.0',
+      version: this.config.version ?? '0.5.0',
       uptime: metrics.getSnapshot().uptime,
       startedAt: metrics.getSnapshot().startedAt,
       agents: this.config.getAgents(),

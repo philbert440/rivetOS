@@ -258,7 +258,7 @@ export class CommandHandler {
   private async startCmd(channel: Channel, message: InboundMessage): Promise<void> {
     await channel.send({
       channelId: message.channelId,
-      text: '👋 RivetOS v0.1.0 — ready.',
+      text: '👋 RivetOS v0.5.0 — ready.',
     })
   }
 

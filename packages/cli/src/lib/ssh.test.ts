@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { isSafeArg, assertSafeArg, discoverLocalRivetWorkers } from './ssh.js'
+import { isSafeArg, assertSafeArg, quoteShellArg, discoverLocalRivetWorkers } from './ssh.js'
 import { execSync } from 'node:child_process'
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -47,6 +47,20 @@ describe('isSafeArg', () => {
     ]) {
       expect(isSafeArg(bad), JSON.stringify(bad)).toBe(false)
     }
+  })
+})
+
+describe('quoteShellArg', () => {
+  it('wraps a simple path in single quotes', () => {
+    expect(quoteShellArg('/opt/rivetos')).toBe("'/opt/rivetos'")
+  })
+
+  it('preserves spaces inside the quotes', () => {
+    expect(quoteShellArg('/opt/rivet os')).toBe("'/opt/rivet os'")
+  })
+
+  it("escapes embedded single quotes with the POSIX '\\'' sequence", () => {
+    expect(quoteShellArg("/opt/rivet's")).toBe("'/opt/rivet'\\''s'")
   })
 })
 

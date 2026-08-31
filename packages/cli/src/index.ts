@@ -14,7 +14,7 @@
  *   rivetos status                   — show runtime status
  *   rivetos update                   — pull latest, rebuild, re-symlink
  *   rivetos doctor                   — check config, providers, connectivity
- *   rivetos config init              — generate default config.yaml
+ *   rivetos config init              — run setup wizard (alias of rivetos init)
  *   rivetos model                    — show providers + current models
  *   rivetos model <provider>         — show current model for a provider
  *   rivetos model <provider> <model> — switch default model (persistent)
