@@ -145,15 +145,13 @@ test('blocks GitHub web-flow as author even on merge commit', () => {
   assert.ok(issues.some((i) => i.field === 'author'))
 })
 
-test('blocks GitHub web-flow as committer on non-merge commit', () => {
+test('allows GitHub web-flow as committer on single-parent commit with house author', () => {
   const commit = makeCommit({
     author: philip,
     committer: githubWebFlow,
     isMerge: false,
   })
-  const issues = checkCommit(commit)
-  assert.equal(issues.length, 1)
-  assert.equal(issues[0].field, 'committer')
+  assert.deepEqual(checkCommit(commit), [])
 })
 
 test('blocks GitHub web-flow as committer on merge with non-house author', () => {
@@ -166,6 +164,18 @@ test('blocks GitHub web-flow as committer on merge with non-house author', () =>
   assert.ok(issues.length >= 1)
   // Both author and committer should be blocked
   assert.ok(issues.some((i) => i.field === 'author'))
+})
+
+test('blocks GitHub web-flow as committer on single-parent commit with non-house author', () => {
+  const commit = makeCommit({
+    author: randomUser,
+    committer: githubWebFlow,
+    isMerge: false,
+  })
+  const issues = checkCommit(commit)
+  assert.ok(issues.length >= 2)
+  assert.ok(issues.some((i) => i.field === 'author'))
+  assert.ok(issues.some((i) => i.field === 'committer'))
 })
 
 test('extractCoAuthors finds Co-authored-by trailers', () => {
