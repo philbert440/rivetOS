@@ -10,7 +10,8 @@
     "test": "vitest run",
     "dev": "npm run bundle && electron .",
     "build": "npm run typecheck && npm run bundle",
-    "dist": "npm run build && node scripts/check-webdist.mjs && electron-builder --config electron-builder.yml",
+    "dist": "npm run build && node scripts/check-webdist.mjs && npm run check:sni && electron-builder --config electron-builder.yml",
+    "check:sni": "node scripts/check-sni.mjs",
     "clean": "rm -rf dist-electron release",
     "publish-mesh": "node scripts/publish-mesh.mjs"
   },
