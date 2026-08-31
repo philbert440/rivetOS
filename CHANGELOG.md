@@ -16,6 +16,7 @@ First stable release. Everything since the 0.4.0 public beta: gateway + RivetHub
 - Providers: dedicated `@rivetos/provider-vllm` and `@rivetos/provider-llama-server` replace `openai-compat`; `@rivetos/provider-claude-cli` drives local `claude` with an embedded MCP bridge.
 - Agent loop on the AI SDK (`@rivetos/aisdk`); providers migrated to official AI SDK packages.
 - Mesh mTLS (shared CA, HTTPS agent channel, `mesh.tls`, `.mesh` DNS). **Breaking: all mesh nodes must upgrade together.** `mesh.secret` is ignored for agent-channel auth (warning on load); remove it from config.
+- `rivetos mesh enroll` / `mesh sync` / `mesh renew` (SSH hub helper, unpack issued certs + `mesh.json`); doctor warns when the leaf expires within 30 days. **Breaking:** `mesh join <host>` without `--manual` exits non-zero — use `mesh enroll` or `mesh join --manual` (#599).
 - Durable task engine (`ros_tasks`): chat-loop executor, heartbeats, subagents, mesh delegation over shared Postgres, evaluation/retry/escalation.
 - Gateway embedded in the rivetos process: `/api/tasks`, catalog, sessions, notifications WS, uploads, wiki, memory, workflows.
 - Workflows v1: journal-replay engine, step SDK, budget/`parallel`, gateway + RivetHub runs UI (#438, #441–#446).

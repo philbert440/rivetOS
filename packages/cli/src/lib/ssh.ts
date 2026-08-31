@@ -23,7 +23,8 @@ const SSH_BASE_OPTS = [
 /**
  * Allowlist for values interpolated into shell commands (version tags, channels,
  * ssh users, unit names). Permits letters, digits, and `.`, `_`, `-`, `/`, `@`,
- * `:` — everything a real ref/user needs and nothing a shell treats specially.
+ * `:` (IPv6 hosts) — everything a real ref/user needs. Rejects shell
+ * metacharacters including `; $ \` ' " whitespace`.
  */
 const SAFE_ARG = /^[\w.\-/@:]+$/
 
@@ -94,6 +95,11 @@ export function sshExec(
  * Use this for short, non-fatal remote steps (e.g. mesh hosts heal) where
  * inherit-stdio + "exited with code N" hides the real sudo/script error.
  * Failure Errors carry `stderr`, `stdout`, and `status` for formatExecFailure.
+ *
+ * `command` is a single `spawn('ssh', [opts, user@host, command])` argv
+ * element — not interpolated into a local shell. On both success and failure,
+ * `stdout` and `stderr` are strings (possibly empty); failure `status` is the
+ * exit code or `null` (timeout / spawn error).
  */
 export function sshExecCapture(
   host: string,

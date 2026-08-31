@@ -15,6 +15,7 @@
  *   9. Provider connectivity — API endpoint reachability
  *  10. DNS — can resolve provider hostnames
  *  11. Peer reachability — health check other agents in mesh
+ *  12. Leaf cert expiry — warn if this node's mTLS leaf expires within 30 days
  *
  * Usage:
  *   rivetos doctor               Run all checks
@@ -27,14 +28,16 @@ import { resolve } from 'node:path'
 import { execSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
 import { validateConfig } from '@rivetos/boot'
-import { sharedDir } from '@rivetos/types'
+import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
+import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
+import { resolveLocalNodeName } from '../lib/node-identity.js'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface CheckResult {
+export interface CheckResult {
   name: string
   category: string
   status: 'pass' | 'warn' | 'fail'
@@ -716,6 +719,45 @@ async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Check: leaf cert expiry (90-day leaves; warn within 30 days)
+// ---------------------------------------------------------------------------
+
+export async function checkLeafCert(rawConfig: string | null, now?: Date): Promise<CheckResult[]> {
+  const nodeName = resolveLocalNodeName()
+  if (!nodeName) return []
+
+  const certPath = sharedPath('rivet-ca', 'issued', `${nodeName}.crt`)
+  let pem: string
+  try {
+    pem = await readFile(certPath, 'utf-8')
+  } catch {
+    // Not enrolled — skip. Missing cert is not a doctor failure on a lone node.
+    return []
+  }
+
+  let seed: string | undefined
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as {
+        mesh?: { discovery?: { seed_host?: string; seedHost?: string } }
+      }
+      seed = parsed.mesh?.discovery?.seed_host ?? parsed.mesh?.discovery?.seedHost
+    } catch {
+      seed = undefined
+    }
+  }
+
+  const result = leafCertExpiryCheck({
+    certPem: pem,
+    nodeName,
+    hubTarget: renewHubTargetFromSeed(seed),
+    now,
+  })
+  // `check()` is 5 args: category, name, status, message, detail — printCheck renders detail.
+  return [check('mesh', 'leaf-cert', result.status, result.message, result.detail)]
+}
+
+// ---------------------------------------------------------------------------
 // Provider Connectivity (kept from original)
 // ---------------------------------------------------------------------------
 
@@ -803,7 +845,7 @@ Options:
 
 Checks: system, config, workspace, env vars, secrets, containers,
         memory backend, shared storage, DNS, provider connectivity,
-        peer reachability, service user
+        peer reachability, service user, leaf cert expiry
 `)
 }
 
@@ -855,6 +897,9 @@ export default async function doctor(): Promise<void> {
 
   const peerResults = await checkPeers(opts.sshUser)
   allResults.push(...peerResults)
+
+  const leafCertResults = await checkLeafCert(rawConfig)
+  allResults.push(...leafCertResults)
 
   // Summary
   const summary = {

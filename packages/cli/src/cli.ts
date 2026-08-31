@@ -138,7 +138,10 @@ export function helpText(): string {
   Mesh:
     rivetos mesh list                   List all known mesh nodes
     rivetos mesh ping                   Health-check all mesh peers
-    rivetos mesh join <host>            Join an existing mesh
+    rivetos mesh enroll <user@host>     Enroll this node with a datahub
+    rivetos mesh sync <user@host>       Refresh local mesh.json
+    rivetos mesh renew <user@host>      Re-issue this node's leaf cert
+    rivetos mesh join --manual <host>   Legacy seed-node join (prints YAML)
     rivetos mesh status                 Show local mesh status
 
   Gateway:
