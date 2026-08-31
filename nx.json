@@ -16,7 +16,8 @@
     ],
     "sharedGlobals": [
       "{workspaceRoot}/tsconfig.base.json",
-      "{workspaceRoot}/eslint.config.mjs"
+      "{workspaceRoot}/eslint.config.mjs",
+      "{workspaceRoot}/vitest.config.ts"
     ]
   },
   "targetDefaults": {
@@ -30,6 +31,7 @@
       "cache": true
     },
     "test": {
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"],
       "cache": true
     },
