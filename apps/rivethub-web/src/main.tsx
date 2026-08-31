@@ -10,6 +10,9 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { routeTree } from './routes.js'
+// Applies data-theme (and persists the Settings toggle) — import for the
+// side effect before first render.
+import './stores/theme.js'
 import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { installClipboardBridge } from './lib/clipboard.js'
 import { installShellKeys } from './lib/shell-keys.js'

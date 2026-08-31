@@ -5,6 +5,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
+import { useResolvedTheme } from '../stores/theme.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, readTextFromClipboard } from '../lib/clipboard.js'
@@ -22,10 +23,16 @@ import { openExternal } from '../lib/open-external.js'
  * scrollback, and appending a replay to the existing buffer doubles it.
  *
  * Color-query filtering (osc-filter.ts): harnesses emit OSC 11? on startup;
- * xterm answers with rgb:0d0d/1111/1717 (#0d1117 theme bg) via onData → PTY
+ * xterm answers with rgb:… (the live theme bg) via onData → PTY
  * stdin → visible garbage `]11;rgb:…` in the TUI. Strip queries on write and
  * drop report replies on onData.
  */
+/** Terminal colors track theme.css tokens exactly (light and dark). */
+function xtermTheme(): { background: string; foreground: string; cursor: string } {
+  const css = getComputedStyle(document.documentElement)
+  const v = (name: string): string => css.getPropertyValue(name).trim()
+  return { background: v('--color-bg'), foreground: v('--color-ink'), cursor: v('--color-em') }
+}
 export function XtermAttach(props: {
   ptyId: string
   /** Node the PTY lives on when it is not the globally connected one —
@@ -41,6 +48,7 @@ export function XtermAttach(props: {
   const selTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const selSuppressRef = useRef(false)
   const transportEpoch = useConnection((s) => s.transportEpoch)
+  const resolvedTheme = useResolvedTheme()
   const [status, setStatus] = useState<'connecting' | 'attached' | 'exited' | 'closed'>(
     'connecting',
   )
@@ -55,7 +63,7 @@ export function XtermAttach(props: {
       // Harness output is chatty — the 1000-line default loses the top of a
       // single long tool run. 5k lines is still trivial memory-wise.
       scrollback: 5000,
-      theme: { background: '#0d1117', foreground: '#e6edf3', cursor: '#34d399' },
+      theme: xtermTheme(),
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -113,6 +121,13 @@ export function XtermAttach(props: {
       term.dispose()
     }
   }, [props.ptyId])
+
+  // Retheme the live terminal on theme flips (Settings toggle / OS change);
+  // creation above reads the same tokens for the initial paint.
+  useEffect(() => {
+    const term = termRef.current
+    if (term) term.options.theme = xtermTheme()
+  }, [resolvedTheme])
 
   useEffect(() => {
     const host = hostRef.current

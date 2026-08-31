@@ -22,6 +22,34 @@
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
 
+/* Light theme — applied when stores/theme.ts (or the index.html boot script)
+   sets html[data-theme='light']. Paper/off-white surfaces with dark ink, not
+   a naive invert. Emerald keeps its hue but shifts one step darker: #34d399
+   is illegible as text/border on paper. Unlayered rules beat the @layer theme
+   :root block Tailwind emits from @theme above. */
+html[data-theme='light'] {
+  --color-em: #059669;
+  --color-em-dim: #10b981;
+  --color-bg: #f6f4ee;
+  --color-panel: #fdfcf8;
+  --color-panel-2: #eae7dd;
+  --color-line: #d6d1c2;
+  --color-ink: #20293a;
+  --color-ink-dim: #5b6879;
+  --color-red: #dc2626;
+  --color-warn: #b45309;
+  --color-link: #0969da;
+  --color-code-bg: #efede5;
+  /* blueprint grid stays, just a lighter emerald wash */
+  --grid-line: rgba(5, 150, 105, 0.07);
+  /* TenPAL memory-surface aliases (see :root below) */
+  --assistant: #3c4756;
+  --tool: #5b6879;
+  --system: #7c8794;
+  --banner-warn-ink: #047857;
+  --banner-bad-ink: #b91c1c;
+}
+
 html,
 body,
 #root {
@@ -34,8 +62,8 @@ body {
   font-family: var(--font-sans);
   /* blueprint grid */
   background-image:
-    linear-gradient(rgba(52, 211, 153, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(52, 211, 153, 0.045) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
   background-size: 32px 32px;
 }
 
@@ -54,6 +82,11 @@ html {
   color-scheme: dark;
   scrollbar-color: var(--color-line) transparent;
   scrollbar-width: thin;
+}
+
+/* Native widgets (scrollbars first) follow the resolved theme. */
+html[data-theme='light'] {
+  color-scheme: light;
 }
 
 /* Keyboard focus: a fallback ring for focusables that never opted into a
@@ -93,7 +126,9 @@ html {
   outline: none;
 }
 
-/* TenPAL memory surfaces use short tokens; alias onto Rivet brand. */
+/* TenPAL memory surfaces use short tokens; alias onto Rivet brand.
+   Dark defaults here; the html[data-theme='light'] block above overrides
+   --assistant/--tool/--system/--banner-* and --grid-line. */
 :root {
   --bg: var(--color-bg);
   --panel: var(--color-panel);
@@ -108,6 +143,9 @@ html {
   --assistant: #d0d0d0;
   --tool: #8b98a9;
   --system: #6a7380;
+  --grid-line: rgba(52, 211, 153, 0.045);
+  --banner-warn-ink: #b7f7d8;
+  --banner-bad-ink: #fecaca;
   --mono: var(--font-mono);
 }
 
@@ -221,11 +259,11 @@ html {
 }
 .rivet-memory-surfaces .banner.warn {
   border-color: var(--color-em);
-  color: #b7f7d8;
+  color: var(--banner-warn-ink);
 }
 .rivet-memory-surfaces .banner.bad {
   border-color: var(--color-red);
-  color: #fecaca;
+  color: var(--banner-bad-ink);
 }
 .rivet-memory-surfaces .muted {
   color: var(--color-ink-dim);

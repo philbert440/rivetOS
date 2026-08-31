@@ -6,6 +6,21 @@
     <meta name="theme-color" content="#0d1117" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>RivetHub</title>
+    <script>
+      // Pre-paint theme boot — mirrors src/lib/theme.ts (rivethub.theme =
+      // light | dark | system, default system) so the first frame already has
+      // the right token set; stores/theme.ts re-applies and tracks changes.
+      ;(function () {
+        var pref = localStorage.getItem('rivethub.theme')
+        var dark =
+          pref === 'dark' ||
+          (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+        document
+          .querySelector('meta[name="theme-color"]')
+          .setAttribute('content', dark ? '#0d1117' : '#f6f4ee')
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

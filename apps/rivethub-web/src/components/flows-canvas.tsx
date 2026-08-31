@@ -25,11 +25,12 @@ import {
   type FlowAuthorNode,
 } from '../lib/workflow-runs/flow-graph.js'
 import {
-  CANVAS_STATUS_EDGE,
-  CANVAS_STATUS_STROKE,
+  canvasSceneColors,
   isLiveNodeStatus,
   overlayEdgeKind,
+  type CanvasSceneColors,
 } from '../lib/workflow-runs/flow-overlay.js'
+import { useResolvedTheme } from '../stores/theme.js'
 import { GRAPH_NODE_STATUS_LABELS, type GraphNodeStatus } from '../lib/workflow-runs/status.js'
 
 const FAMILY_FILL: Record<FlowNodeFamily, string> = {
@@ -183,6 +184,7 @@ function drawScene(
   selectedEdgeId: string | undefined,
   cssW: number,
   cssH: number,
+  colors: CanvasSceneColors,
 ): void {
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -190,9 +192,9 @@ function drawScene(
   const dpr = ctx.canvas.width / cssW || 1
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-  ctx.fillStyle = '#0d1117'
+  ctx.fillStyle = colors.bg
   ctx.fillRect(0, 0, cssW, cssH)
-  ctx.fillStyle = 'rgba(52, 211, 153, 0.22)'
+  ctx.fillStyle = colors.gridDot
   const grid = 25
   const ox = pan.x % grid
   const oy = pan.y % grid
@@ -214,7 +216,7 @@ function drawScene(
     const s = outPort(from)
     const t = inPort(to)
     const kind = statusById ? overlayEdgeKind(statusById[from.id], statusById[to.id]) : 'pending'
-    const color = e.id === selectedEdgeId ? '#e6edf3' : CANVAS_STATUS_EDGE[kind]
+    const color = e.id === selectedEdgeId ? colors.selection : colors.statusEdge[kind]
     drawBezier(ctx, s.x, s.y, t.x, t.y, color, e.id === selectedEdgeId ? 4 : 2)
   }
 
@@ -222,7 +224,7 @@ function drawScene(
     const from = byId.get(connecting.fromId)
     if (from) {
       const s = outPort(from)
-      drawBezier(ctx, s.x, s.y, connecting.x, connecting.y, '#34d399')
+      drawBezier(ctx, s.x, s.y, connecting.x, connecting.y, colors.connect)
     }
   }
 
@@ -236,7 +238,7 @@ function drawScene(
     ctx.fill()
     if (status === 'failed') {
       ctx.globalAlpha = 0.35
-      ctx.fillStyle = '#f87171'
+      ctx.fillStyle = colors.failed
       roundRect(ctx, n.x, n.y, FLOW_NODE_SIZE, FLOW_NODE_SIZE, nodeRadii(n.kind))
       ctx.fill()
     }
@@ -246,7 +248,7 @@ function drawScene(
       ctx.save()
       ctx.globalAlpha = 0.25 + pulse * 0.45
       ctx.lineWidth = 8
-      ctx.strokeStyle = CANVAS_STATUS_STROKE[status]
+      ctx.strokeStyle = colors.statusStroke[status]
       roundRect(ctx, n.x - 3, n.y - 3, FLOW_NODE_SIZE + 6, FLOW_NODE_SIZE + 6, nodeRadii(n.kind))
       ctx.stroke()
       ctx.restore()
@@ -255,25 +257,25 @@ function drawScene(
     ctx.lineWidth = n.id === selectedId ? 3 : 2
     ctx.strokeStyle =
       n.id === selectedId
-        ? '#e6edf3'
+        ? colors.selection
         : status
-          ? CANVAS_STATUS_STROKE[status]
-          : 'rgba(255,255,255,0.35)'
+          ? colors.statusStroke[status]
+          : colors.dimStroke
     roundRect(ctx, n.x, n.y, FLOW_NODE_SIZE, FLOW_NODE_SIZE, nodeRadii(n.kind))
     ctx.stroke()
 
     const portY = n.y + FLOW_NODE_SIZE / 2
-    ctx.strokeStyle = '#ffffff'
+    ctx.strokeStyle = colors.portRing
     ctx.lineWidth = 2
     if (n.kind !== 'start') {
-      ctx.fillStyle = hover?.id === n.id && hover.side === 'in' ? '#ffffff' : fill
+      ctx.fillStyle = hover?.id === n.id && hover.side === 'in' ? colors.selection : fill
       ctx.beginPath()
       ctx.arc(n.x, portY, hover?.id === n.id && hover.side === 'in' ? 8 : PORT_R, 0, Math.PI * 2)
       ctx.fill()
       ctx.stroke()
     }
     if (n.kind !== 'done') {
-      ctx.fillStyle = hover?.id === n.id && hover.side === 'out' ? '#ffffff' : fill
+      ctx.fillStyle = hover?.id === n.id && hover.side === 'out' ? colors.selection : fill
       ctx.beginPath()
       ctx.arc(
         n.x + FLOW_NODE_SIZE,
@@ -286,7 +288,7 @@ function drawScene(
       ctx.stroke()
     }
 
-    ctx.fillStyle = '#ffffff'
+    ctx.fillStyle = colors.label
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
     ctx.font = '13px "DM Sans", system-ui, sans-serif'
@@ -299,7 +301,7 @@ function drawScene(
     }
     ctx.fillText(label, n.x + FLOW_NODE_SIZE / 2, n.y + FLOW_NODE_SIZE / 2)
     ctx.font = '11px "JetBrains Mono", ui-monospace, monospace'
-    ctx.fillStyle = 'rgba(255,255,255,0.7)'
+    ctx.fillStyle = colors.sublabel
     const sub = status ? GRAPH_NODE_STATUS_LABELS[status] : n.kind === 'run' ? 'script' : n.kind
     ctx.fillText(sub, n.x + FLOW_NODE_SIZE / 2, n.y + FLOW_NODE_SIZE / 2 + 16)
   }
@@ -336,6 +338,7 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     nodeId?: string
   } | null>(null)
   const [pulse, setPulse] = useState(0)
+  const resolvedTheme = useResolvedTheme()
   const liveOverlay = Boolean(
     statusById && Object.values(statusById).some((s) => isLiveNodeStatus(s)),
   )
@@ -367,8 +370,9 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
       selectedEdgeId ?? undefined,
       cssW,
       cssH,
+      canvasSceneColors(resolvedTheme),
     )
-  }, [graph, pan, selectedId, hover, connecting, statusById, pulse, selectedEdgeId])
+  }, [graph, pan, selectedId, hover, connecting, statusById, pulse, selectedEdgeId, resolvedTheme])
 
   useEffect(() => {
     paint()

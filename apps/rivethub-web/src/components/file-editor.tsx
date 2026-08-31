@@ -8,12 +8,13 @@ import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } fr
 import { basicSetup } from 'codemirror'
 import { EditorView, keymap, placeholder as cmPlaceholder } from '@codemirror/view'
 import { EditorState, Compartment } from '@codemirror/state'
-import { oneDark } from '@codemirror/theme-one-dark'
 import { yaml } from '@codemirror/lang-yaml'
 import { javascript } from '@codemirror/lang-javascript'
 import { markdown } from '@codemirror/lang-markdown'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { useResolvedTheme } from '../stores/theme.js'
+import { editorThemeFor } from '../lib/editor-theme.js'
 import { languageForPath, type EditorLanguage } from '../lib/editor-lang.js'
 import { baseName, previewKind } from '../lib/files-ui.js'
 
@@ -81,6 +82,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
   const savedTextRef = useRef('')
   const skipNextDocPush = useRef(false)
   const seededControlled = useRef(false)
+  const resolvedTheme = useResolvedTheme()
 
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | undefined>()
@@ -138,7 +140,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
         basicSetup,
         saveKey,
         langComp.current.of(langExtension(languageForPath(path))),
-        themeComp.current.of(oneDark),
+        themeComp.current.of(editorThemeFor(resolvedTheme)),
         editableComp.current.of(EditorView.editable.of(!readOnly)),
         EditorView.theme({
           '&': { height: '100%', fontSize: '12px' },
@@ -169,6 +171,13 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
       ],
     })
   }, [path, readOnly])
+
+  // Theme compartment — flip oneDark ↔ light chrome on theme changes.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({ effects: themeComp.current.reconfigure(editorThemeFor(resolvedTheme)) })
+  }, [resolvedTheme])
 
   // Load file when path changes (uncontrolled mode)
   useEffect(() => {
