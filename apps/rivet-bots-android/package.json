@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/rivet-bots-android",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Rivet Bots Android — Grok Bot-style client where every bot is a mesh agent node. Jetpack Compose, Apache-2.0.",
   "license": "Apache-2.0",

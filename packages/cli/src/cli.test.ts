@@ -58,6 +58,14 @@ describe('parseArgv', () => {
     })
   })
 
+  it('hands `config init --join` to the config handler as remaining args', () => {
+    expect(parseArgv(['config', 'init', '--join', 'ct110.mesh'])).toEqual({
+      command: 'config',
+      args: ['init', '--join', 'ct110.mesh'],
+      wantsHelp: false,
+    })
+  })
+
   it('keeps a --help that comes after a command as an argument for that command', () => {
     // `rivetos logs --help` must reach the logs command, not the global help.
     const parsed = parseArgv(['logs', '--help'])

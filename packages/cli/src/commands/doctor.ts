@@ -11,7 +11,7 @@
  *   5. Secrets — .env permissions, no secrets in config YAML
  *   6. Containers — Docker health (if applicable)
  *   7. Memory backend — Postgres connectivity
- *   8. Shared storage — /rivet-shared/ mount writable
+ *   8. Shared storage — RIVETOS_SHARED_DIR (default /rivet-shared) mount writable
  *   9. Provider connectivity — API endpoint reachability
  *  10. DNS — can resolve provider hostnames
  *  11. Peer reachability — health check other agents in mesh
@@ -27,6 +27,7 @@ import { resolve } from 'node:path'
 import { execSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
 import { validateConfig } from '@rivetos/boot'
+import { sharedDir } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 
 // ---------------------------------------------------------------------------
@@ -85,7 +86,7 @@ function parseArgs(): DoctorOptions {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const VERSION = '0.2.0'
+const VERSION = '0.5.0'
 
 function check(
   category: string,
@@ -521,34 +522,32 @@ async function checkMemoryBackend(): Promise<CheckResult[]> {
 
 async function checkSharedStorage(): Promise<CheckResult[]> {
   const results: CheckResult[] = []
-  const sharedDir = '/rivet-shared'
+  const dir = sharedDir()
 
   try {
-    await access(sharedDir)
+    await access(dir)
   } catch {
-    // /rivet-shared doesn't exist — might not be a multi-agent setup
+    // shared dir doesn't exist — might not be a multi-agent setup
     return results
   }
 
   // Check writable
-  const testFile = resolve(sharedDir, '.doctor-test')
+  const testFile = resolve(dir, '.doctor-test')
   try {
     await writeFile(testFile, 'doctor')
     await unlink(testFile)
-    results.push(check('shared', 'writable', 'pass', 'Shared storage: /rivet-shared/ is writable'))
+    results.push(check('shared', 'writable', 'pass', `Shared storage: ${dir}/ is writable`))
   } catch {
-    results.push(
-      check('shared', 'writable', 'fail', 'Shared storage: /rivet-shared/ is not writable'),
-    )
+    results.push(check('shared', 'writable', 'fail', `Shared storage: ${dir}/ is not writable`))
   }
 
   // Check subdirectories
   const expectedDirs = ['plans', 'docs', 'status', 'whiteboard']
-  for (const dir of expectedDirs) {
+  for (const sub of expectedDirs) {
     try {
-      await access(resolve(sharedDir, dir))
+      await access(resolve(dir, sub))
     } catch {
-      results.push(check('shared', dir, 'warn', `Shared storage: /rivet-shared/${dir}/ missing`))
+      results.push(check('shared', sub, 'warn', `Shared storage: ${dir}/${sub}/ missing`))
     }
   }
 

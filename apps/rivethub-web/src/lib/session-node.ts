@@ -115,18 +115,34 @@ export function resolveSessionNode(opts: {
   binding?: string
   onInvalidBinding?: () => void
 }): string {
-  const valid = (candidate: string | undefined, isBinding: boolean): string | undefined => {
+  const validBinding = (candidate: string | undefined): string | undefined => {
     if (!candidate) return undefined
     if (candidate === opts.currentBase) return candidate
     if (!opts.rosterUrls.includes(candidate)) {
       console.warn(`session-node: ${candidate} is not in the roster — using the current node`)
-      if (isBinding) opts.onInvalidBinding?.()
+      opts.onInvalidBinding?.()
       return undefined
     }
     return candidate
   }
-  const pointer = valid(opts.pointerNode, false)
-  const binding = valid(opts.binding, true) // always evaluated: clears rot on pointer-win too
+  // Agent-pinned off-roster must NOT fall back to current — that spawn a
+  // hub doppelgänger wearing the agent session id. Keep the pointer so
+  // ActiveSession treats it as remote-unreachable (banner, no spawn).
+  const validPointer = (candidate: string | undefined): string | undefined => {
+    if (!candidate) return undefined
+    if (candidate === opts.currentBase) return candidate
+    if (!opts.rosterUrls.includes(candidate)) {
+      console.warn(
+        `session-node: ${candidate} is not in the roster — keeping the pointer (fail closed)`,
+      )
+      // Deliberately CANDIDATE, never currentBase: the roster check only
+      // drives the warning. Falling back here would spawn a hub doppelgänger.
+      return candidate
+    }
+    return candidate
+  }
+  const pointer = validPointer(opts.pointerNode)
+  const binding = validBinding(opts.binding) // always evaluated: clears rot on pointer-win too
   return pointer ?? binding ?? opts.currentBase
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/compaction-worker",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Compaction worker \u2014 graphile-worker tasks for bottom-up summarization (leaf/branch/root) and tool-call content synthesis",
@@ -13,11 +13,12 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@rivetos/memory-postgres": "0.4.0-beta.6",
+    "@rivetos/types": "0.5.0",
+    "@rivetos/memory-postgres": "0.5.0",
     "graphile-worker": "^0.17.3",
     "pg": "^8.22.0",
     "undici": "^8.10.0",
-    "@rivetos/wiki-core": "0.4.0-beta.6"
+    "@rivetos/wiki-core": "0.5.0"
   },
   "devDependencies": {
     "@types/pg": "^8.20.3"

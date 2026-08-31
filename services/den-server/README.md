@@ -25,6 +25,8 @@ single snapshot instead of replayed events.
 
 ## Configuration (env)
 
+Bearer tokens removed; see [GATEWAY-MTLS.md](../../docs/GATEWAY-MTLS.md).
+
 On RivetOS-managed nodes these come from `~/.rivetos/den.env`, which
 `rivetos update` GENERATES from the `den:` section of `~/.rivetos/config.yaml`
 — edit the config, not the env file (see Deploy below).

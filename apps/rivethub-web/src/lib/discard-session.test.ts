@@ -72,7 +72,7 @@ describe('discardDraft', () => {
 
   it('leaves an agent pointer alone when it moved on to a newer session', () => {
     setAgentLastSession('agent-2', SID, BASE)
-    setAgentLastSession('agent-2', 'newer-session', BASE)
+    setAgentLastSession('agent-2', 'newer-session', BASE, { replace: true })
     // stale bind key left behind on purpose for the test
     store.setItem(`rivethub.agent.${SID}`, 'agent-2')
     useChat.getState().addDraft(SID)
@@ -83,16 +83,13 @@ describe('discardDraft', () => {
     expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
   })
 
-  it('clears only the node slots targeting the draft — another node keeps its pointer', () => {
-    const OTHER = 'https://other.example'
+  it('clears the pin only when it still targets the discarded draft', () => {
     setAgentLastSession('agent-3', SID, BASE)
-    setAgentLastSession('agent-3', 'other-session', OTHER)
     useChat.getState().addDraft(SID)
 
     discardDraft(BASE, SID)
 
     expect(getAgentLastSession('agent-3', BASE)).toBeUndefined()
-    expect(getAgentLastSession('agent-3', OTHER)?.sessionId).toBe('other-session')
     expect(store.getItem(`rivethub.agent.${SID}`)).toBeNull()
   })
 })

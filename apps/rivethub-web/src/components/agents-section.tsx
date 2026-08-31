@@ -1,10 +1,8 @@
 /**
  * Agents section — collapsible named agent presets roster for the sidebar.
- * Each agent carries model, effort, system prompt, and color. Click opens
- * the agent's most recent conversation on the CURRENT node — no prompt and
- * no node switch; the row's start-over action mints a fresh thread. A pip
- * on the row shows a live session (active pulses, idle steady), naming the
- * node it lives on — including a remote one.
+ * Each agent carries model, effort, system prompt, color, and a target node.
+ * Click opens that agent's sticky session on agent.nodeBaseUrl without
+ * switchTo; ↺ replaces the pin. Hub connection, Memory, Files stay put.
  *
  * All node calls go through gatewayFor (desktop mTLS pipe, #491) — a raw
  * RivetGateway on an https base cannot authenticate from the desktop shell.
@@ -13,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
 import type { AgentPreset, ThinkingLevel } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
@@ -27,9 +25,10 @@ import {
   agentForSession,
   clearAgentLastSession,
   clearAgentSessionPointer,
+  collapseAgentSlots,
   listAgentSessions,
+  rekeyAgentLastSessions,
   setAgentLastSession,
-  type AgentSessionPointer,
 } from '../lib/agent-session.js'
 import {
   aggregateAgentActivity,
@@ -39,7 +38,11 @@ import {
   type NodeChoice,
 } from '../lib/agent-roster.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
-import { clearSessionNodeBinding, setSessionNodeBinding } from '../lib/session-node.js'
+import {
+  clearSessionNodeBinding,
+  rekeySessionNodeBinding,
+  setSessionNodeBinding,
+} from '../lib/session-node.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 
@@ -334,13 +337,21 @@ function AgentEditor({
 
 interface AgentRowProps {
   agent: RosterAgent
+  nodeKnown: boolean
   onOpen: () => void
   onStartOver: () => void
   onEdit: () => void
   onDelete: () => void
 }
 
-function AgentRow({ agent, onOpen, onStartOver, onEdit, onDelete }: AgentRowProps): JSX.Element {
+function AgentRow({
+  agent,
+  nodeKnown,
+  onOpen,
+  onStartOver,
+  onEdit,
+  onDelete,
+}: AgentRowProps): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const transportEpoch = useConnection((s) => s.transportEpoch)
   // Session status for the nodes holding a pointer for this agent, bounded
@@ -369,9 +380,34 @@ function AgentRow({ agent, onOpen, onStartOver, onEdit, onDelete }: AgentRowProp
             // the prune names the 404'd id, so a stale in-flight poll can
             // never wipe a just-minted pointer on the same node.
             if (err instanceof GatewayError && err.status === 404) {
-              if (!isUnclaimedDraft(p.sessionId)) {
+              if (isUnclaimedDraft(p.sessionId)) {
+                return { nodeBaseUrl: p.nodeBaseUrl, status: undefined }
+              }
+              // Bare-id GET may 404 a live claimed session. List-scan
+              // before prune so a reload (drafts empty) cannot steal the pin.
+              try {
+                const gw = await gatewayFor(p.nodeBaseUrl)
+                const listed = await gw.harnessSessions(signal)
+                const match = listed.sessions.find((se) =>
+                  sessionPointerMatches(p.sessionId, se.id, nativeIdOf),
+                )
+                if (match) {
+                  if (match.id !== p.sessionId) {
+                    rekeyAgentLastSessions(p.sessionId, match.id)
+                    rekeySessionNodeBinding(p.sessionId, match.id)
+                  }
+                  return { nodeBaseUrl: p.nodeBaseUrl, status: 'idle' }
+                }
                 clearAgentSessionPointer(agent.id, p.nodeBaseUrl, p.sessionId)
                 return null
+              } catch (scanErr) {
+                if (
+                  signal.aborted ||
+                  (scanErr instanceof DOMException && scanErr.name === 'AbortError')
+                ) {
+                  throw scanErr
+                }
+                return { nodeBaseUrl: p.nodeBaseUrl, status: undefined }
               }
             }
             return { nodeBaseUrl: p.nodeBaseUrl, status: undefined }
@@ -393,14 +429,15 @@ function AgentRow({ agent, onOpen, onStartOver, onEdit, onDelete }: AgentRowProp
       ? undefined
       : activity.nodeBaseUrl === baseUrl
         ? `${activity.level} here`
-        : `${activity.level} on ${activityNodeName ?? urlLabel(activity.nodeBaseUrl)} — click opens here`
+        : `${activity.level} on ${activityNodeName ?? urlLabel(activity.nodeBaseUrl)}`
 
   return (
     <div className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2">
       <button
         onClick={onOpen}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        title={`${agent.name} — opens on this node`}
+        disabled={!nodeKnown}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
+        title={nodeKnown ? agent.name : 'node unknown'}
       >
         {agent.color && (
           <span
@@ -615,24 +652,27 @@ export function AgentsSection(): JSX.Element {
     }
   }, [collapsed, baseUrl, transportEpoch, queryClient])
 
-  const applyAgentSettings = (sessionId: string, agent: AgentPreset, nodeUrl: string): void => {
+  const applyAgentSettings = (
+    sessionId: string,
+    agent: AgentPreset,
+    nodeUrl: string,
+    opts?: { replace?: boolean },
+  ): void => {
     chatSettings.set(`${nodeUrl}::${sessionId}`, {
       agent: agent.model || '',
       effort: agent.effort,
       systemPrompt: agent.systemPrompt || '',
     })
-    setAgentLastSession(agent.id, sessionId, nodeUrl)
+    setAgentLastSession(agent.id, sessionId, nodeUrl, opts)
   }
 
-  // Sessions always open on the node the user is connected to — opening an
-  // agent must never repoint the whole app (the old ensureNode/switchTo flow
-  // persisted a global node switch as a side effect of a sidebar click).
-  // baseUrl is read from the store at call time, not render time — a node
-  // switch mid-flight must not write settings under the old node's key.
-  const openFresh = (agent: AgentPreset): void => {
-    const nodeUrl = useConnection.getState().baseUrl
+  // Hub connection stays put. The session lives on agent.nodeBaseUrl.
+  const openFresh = (agent: AgentPreset, opts?: { replace?: boolean }): void => {
+    const nodeUrl = agent.nodeBaseUrl
+    const currentBase = useConnection.getState().baseUrl
     const sessionId = uuidv4()
-    applyAgentSettings(sessionId, agent, nodeUrl)
+    applyAgentSettings(sessionId, agent, nodeUrl, opts)
+    setSessionNodeBinding(sessionId, nodeUrl, currentBase)
     addDraft(sessionId)
     setActive(sessionId)
     void navigate({ to: '/', search: { session: sessionId } })
@@ -656,8 +696,7 @@ export function AgentsSection(): JSX.Element {
     sessionId: string,
     nodeBaseUrl: string,
   ): Promise<'alive' | 'dead' | 'unreachable'> => {
-    const local = nodeBaseUrl === useConnection.getState().baseUrl
-    if (local && knownToChatStore(sessionId)) return 'alive'
+    if (isUnclaimedDraft(sessionId) || knownToChatStore(sessionId)) return 'alive'
     let gw
     try {
       gw = await gatewayFor(nodeBaseUrl)
@@ -672,9 +711,15 @@ export function AgentsSection(): JSX.Element {
     }
     try {
       const listed = await gw.harnessSessions()
-      return listed.sessions.some((se) => sessionPointerMatches(sessionId, se.id, nativeIdOf))
-        ? 'alive'
-        : 'dead'
+      const match = listed.sessions.find((se) =>
+        sessionPointerMatches(sessionId, se.id, nativeIdOf),
+      )
+      if (!match) return 'dead'
+      if (match.id !== sessionId) {
+        rekeyAgentLastSessions(sessionId, match.id)
+        rekeySessionNodeBinding(sessionId, match.id)
+      }
+      return 'alive'
     } catch {
       return 'unreachable'
     }
@@ -693,59 +738,37 @@ export function AgentsSection(): JSX.Element {
   }
 
   const handleOpen = (agent: RosterAgent): void => {
+    if (!uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)) return
     const gen = bumpGen(agent.id)
     void (async () => {
-      // Most recent thread across EVERY node — current node first (a local
-      // thread never loses to a remote one), then recency. The walk opens
-      // the first candidate that is alive OR unreachable (a blinking node
-      // must not hand the click to an older thread); a DEFINITIVE miss
-      // prunes that pointer and its binding and moves on. Bounded re-walk:
-      // the pointer map is re-read before navigating, and if it changed
-      // under the probe the walk runs once more on the fresh map.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const currentBase = useConnection.getState().baseUrl
-        const candidates = pointersToPoll(
-          listAgentSessions(agent.id),
-          currentBase,
-          POLL_POINTER_LIMIT,
-        )
-        let target: AgentSessionPointer | undefined
-        for (const p of candidates) {
-          const verdict = await probeSession(p.sessionId, p.nodeBaseUrl)
-          // Another click / start-over may have superseded us mid-probe.
-          if (gen !== openGen.current.get(agent.id)) return
-          if (verdict === 'dead') {
-            clearAgentSessionPointer(agent.id, p.nodeBaseUrl, p.sessionId)
-            clearSessionNodeBinding(p.sessionId)
-            continue
-          }
-          target = p
-          break
-        }
-        if (!target) {
-          openFresh(agent)
-          return
-        }
-        // Re-validate against the live map right before navigating — a
-        // background adopt/rekey in another tab may have retargeted it.
-        const base = useConnection.getState().baseUrl
-        const fresh = pointersToPoll(listAgentSessions(agent.id), base, POLL_POINTER_LIMIT)
-        const still = fresh.find(
-          (p) => p.nodeBaseUrl === target.nodeBaseUrl && p.sessionId === target.sessionId,
-        )
-        if (!still) continue // map moved under us — one re-walk
-        setSessionNodeBinding(target.sessionId, target.nodeBaseUrl, base)
-        openKept(target.sessionId)
+      collapseAgentSlots(agent.id, agent.nodeBaseUrl)
+      const pin = listAgentSessions(agent.id)[0]
+      if (!pin) {
+        openFresh(agent)
         return
       }
-      // Two walks raced two map changes — mint a fresh thread over looping.
-      if (gen === openGen.current.get(agent.id)) openFresh(agent)
+      const verdict = await probeSession(pin.sessionId, pin.nodeBaseUrl)
+      if (gen !== openGen.current.get(agent.id)) return
+      if (verdict === 'dead') {
+        clearAgentSessionPointer(agent.id, pin.nodeBaseUrl, pin.sessionId)
+        clearSessionNodeBinding(pin.sessionId)
+        openFresh(agent, { replace: true })
+        return
+      }
+      const base = useConnection.getState().baseUrl
+      const fresh = listAgentSessions(agent.id)[0] ?? pin
+      setSessionNodeBinding(fresh.sessionId, fresh.nodeBaseUrl, base)
+      openKept(fresh.sessionId)
     })()
   }
 
   const handleStartOver = (agent: RosterAgent): void => {
+    // Same fail-closed guard as handleOpen: never mint/pin off-roster. The
+    // spawn itself is already fail-closed at spawnPty; this keeps a ↺ click
+    // from minting a draft pinned to a node that cannot run it.
+    if (!uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)) return
     bumpGen(agent.id)
-    openFresh(agent)
+    openFresh(agent, { replace: true })
   }
 
   return (
@@ -755,13 +778,14 @@ export function AgentsSection(): JSX.Element {
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="flex min-w-0 flex-1 items-center gap-1 text-left hover:bg-panel-2"
+          className="flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink"
         >
-          <span className="font-mono text-xs text-ink-dim">agents</span>
+          <Bot className="mr-2 size-4 shrink-0" aria-hidden />
+          <span>Agents</span>
           {collapsed ? (
-            <ChevronRight className="size-3 text-ink-dim" />
+            <ChevronRight className="ml-1 size-3 text-ink-dim" />
           ) : (
-            <ChevronDown className="size-3 text-ink-dim" />
+            <ChevronDown className="ml-1 size-3 text-ink-dim" />
           )}
         </button>
         {!collapsed && (
@@ -790,6 +814,7 @@ export function AgentsSection(): JSX.Element {
             <AgentRow
               key={agent.id}
               agent={agent}
+              nodeKnown={uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)}
               onOpen={() => handleOpen(agent)}
               onStartOver={() => handleStartOver(agent)}
               onEdit={() => {

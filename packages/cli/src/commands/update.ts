@@ -145,7 +145,7 @@ function showHelp(): void {
     rivetos update --mesh                       # git mode, current default
     rivetos update --mesh --npm                 # npm mode, latest beta
     rivetos update --mesh --channel latest      # npm mode, stable tag
-    rivetos update --mesh --channel 0.4.0-beta.2  # pin a specific version
+    rivetos update --mesh --channel 0.5.0         # pin a specific version
 
   SSH notes:
     Default SSH user is 'rivet'. Falls back to 'root' automatically if rivet
@@ -603,10 +603,31 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         // git pull for now (their workers — embedder, compactor — aren't yet
         // packaged for npm install). Migrate them in a follow-up.
         return isAgent
-          ? npmUpdateNodeAsync(node.host, node.name, localOpts, true, node.sshUser)
-          : gitUpdateNodeAsync(node.host, node.name, localOpts, false, node.sshUser)
+          ? npmUpdateNodeAsync(
+              node.host,
+              node.name,
+              localOpts,
+              true,
+              node.sshUser,
+              node.installRoot,
+            )
+          : gitUpdateNodeAsync(
+              node.host,
+              node.name,
+              localOpts,
+              false,
+              node.sshUser,
+              node.installRoot,
+            )
       }
-      return gitUpdateNodeAsync(node.host, node.name, localOpts, isAgent, node.sshUser)
+      return gitUpdateNodeAsync(
+        node.host,
+        node.name,
+        localOpts,
+        isAgent,
+        node.sshUser,
+        node.installRoot,
+      )
     }),
   )
 

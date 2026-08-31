@@ -8,12 +8,22 @@ describe('mesh-file', () => {
         version: 1,
         updatedAt: 42,
         nodes: {
-          a: { id: 'a', name: 'a', host: '192.0.2.1', port: 3100, status: 'online' },
+          a: {
+            id: 'a',
+            name: 'a',
+            host: '192.0.2.1',
+            port: 3100,
+            status: 'online',
+            sshUser: 'philip',
+            installRoot: '/srv/rivetos',
+          },
         },
       },
       '/tmp/test-mesh.json',
     )
     expect(mesh.nodes.a.name).toBe('a')
+    expect(mesh.nodes.a.sshUser).toBe('philip')
+    expect(mesh.nodes.a.installRoot).toBe('/srv/rivetos')
     expect(mesh.updatedAt).toBe(42)
   })
 

@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/workflows",
-  "version": "0.4.0-beta.6",
+  "version": "0.5.0",
   "description": "Workflows v1 engine — document model, step SDK, journal-replay, start API",
   "license": "Apache-2.0",
   "main": "dist/index.js",
@@ -14,6 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@rivetos/types": "0.5.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

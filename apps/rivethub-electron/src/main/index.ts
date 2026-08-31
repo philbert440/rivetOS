@@ -474,12 +474,23 @@ function onAppBlur(): void {
   }, 150)
 }
 
-// Single instance: launching again must summon the existing window, not
-// spawn a second tray + a shortcut-registration fight.
+// Single instance: a relaunch must not spawn a second tray + a
+// shortcut-registration fight. What the relaunch MEANS depends on state:
+// Plasma/GNOME's taskbar "Open New Window" re-runs Exec with no
+// distinguishing argv, so it lands here exactly like a plain launcher
+// click. With a window already on screen the user asked for another
+// window; with everything hidden-to-tray they asked for the app back.
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
-  app.on('second-instance', showMain)
+  app.on('second-instance', () => {
+    if (quitting) return
+    const anyVisible = BrowserWindow.getAllWindows().some(
+      (w) => !w.isDestroyed() && w.isVisible(),
+    )
+    if (anyVisible) spawnWindow()
+    else showMain()
+  })
 
   void app.whenReady().then(() => {
     try {
@@ -558,6 +569,14 @@ function startup(): void {
   // unreadable path yields an EMPTY image, not a throw — and new Tray(empty)
   // can succeed on Linux, leaving a truthy `tray` behind an invisible icon
   // that close-to-tray would hide the last window behind.
+  //
+  // ⚠️ Electron is PINNED to exactly 43.4.0 for this tray. 43.3.0 and
+  // 43.4.1/44.0.0 both ship SNI regressions (electron#52674, #53024): the
+  // StatusNotifierItem D-Bus object exports no interfaces and never
+  // registers with the StatusNotifierWatcher — new Tray() "succeeds" and
+  // the icon silently never appears on KDE/GNOME. Verified per-version
+  // against a live Plasma 6 Wayland session (Properties.GetAll + watcher
+  // registration) before any bump: 43.4.0 works, 44.0.0 does not.
   try {
     const iconPath = path.join(__dirname, '../icons/icon.png')
     const icon = nativeImage.createFromPath(iconPath)

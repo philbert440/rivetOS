@@ -1,23 +1,25 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // Mock the SSH layer — these tests exercise gitUpdateNodeAsync's control flow,
-// not real SSH.
-vi.mock('../../lib/ssh.js', () => ({
-  resolveSshUser: vi.fn(() => 'rivet'),
-  isSafeArg: vi.fn(() => true),
-  sshExec: vi.fn(),
-  sshExecCapture: vi.fn(),
-  sshExecQuiet: vi.fn(),
-}))
+// not real SSH. Keep quoteShellArg real so command-string assertions match
+// production quoting.
+vi.mock('../../lib/ssh.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../lib/ssh.js')>()
+  return {
+    ...real,
+    resolveSshUser: vi.fn(() => 'rivet'),
+    sshExec: vi.fn(),
+    sshExecCapture: vi.fn(),
+    sshExecQuiet: vi.fn(),
+  }
+})
 vi.mock('../../lib/mtls.js', () => ({ buildMeshDispatcher: vi.fn() }))
 
 import { sshExec, sshExecCapture, sshExecQuiet } from '../../lib/ssh.js'
-import {
-  gitUpdateNodeAsync,
-  probeRemoteInstallWritable,
-  REMOTE_INSTALL_ROOT,
-} from './remote-nodes.js'
+import { gitUpdateNodeAsync, probeRemoteInstallWritable } from './remote-nodes.js'
 import type { UpdateOptions } from './types.js'
+
+const ORIGINAL_INSTALL_ROOT = process.env.RIVETOS_INSTALL_ROOT
 
 const sshExecMock = vi.mocked(sshExec)
 const sshExecCaptureMock = vi.mocked(sshExecCapture)
@@ -52,7 +54,7 @@ function stubQuiet(
       return unit ? activeStates[unit] : 'active'
     }
     // Ownership preflight probes (test -d / test -e / test -w / stat).
-    if (command.includes('test -d') && command.includes(REMOTE_INSTALL_ROOT)) {
+    if (command.includes('test -d')) {
       return ownership === 'missing' ? 'no' : 'yes'
     }
     if (command.includes('test -e') && command.includes('test -w')) {
@@ -68,11 +70,17 @@ function stubQuiet(
 }
 
 beforeEach(() => {
+  delete process.env.RIVETOS_INSTALL_ROOT
   vi.clearAllMocks()
   sshExecCaptureMock.mockResolvedValue({ stdout: '', stderr: '' })
   vi.spyOn(console, 'log').mockImplementation(() => undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => undefined)
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
+})
+
+afterEach(() => {
+  if (ORIGINAL_INSTALL_ROOT === undefined) delete process.env.RIVETOS_INSTALL_ROOT
+  else process.env.RIVETOS_INSTALL_ROOT = ORIGINAL_INSTALL_ROOT
 })
 
 describe('probeRemoteInstallWritable', () => {
@@ -86,7 +94,7 @@ describe('probeRemoteInstallWritable', () => {
     expect(probeRemoteInstallWritable('192.0.2.110', 'rivet')).toEqual({
       ok: false,
       reason: 'missing',
-      root: REMOTE_INSTALL_ROOT,
+      root: '/opt/rivetos',
     })
   })
 
@@ -100,7 +108,7 @@ describe('probeRemoteInstallWritable', () => {
     expect(res.blockers.length).toBeGreaterThan(0)
     expect(res.blockers.every((b) => b.owner === 'root:root')).toBe(true)
     // Root label is the absolute install path; nested paths are absolute too.
-    expect(res.blockers.some((b) => b.path === REMOTE_INSTALL_ROOT)).toBe(true)
+    expect(res.blockers.some((b) => b.path === '/opt/rivetos')).toBe(true)
     // Electron + Gradle trees are part of the same preflight (when present remotely).
     expect(res.blockers.some((b) => b.path.endsWith('apps/rivethub-electron/release'))).toBe(true)
     expect(res.blockers.some((b) => b.path.endsWith('apps/rivet-android/.gradle'))).toBe(true)
@@ -115,6 +123,16 @@ describe('probeRemoteInstallWritable', () => {
       root: '/opt/rivetos; rm -rf /',
     })
     expect(sshExecQuietMock).not.toHaveBeenCalled()
+  })
+
+  it('quotes a root that contains a space and still probes', () => {
+    stubQuiet({}, 'writable')
+    expect(probeRemoteInstallWritable('192.0.2.110', 'rivet', '/opt/rivet os')).toEqual({
+      ok: true,
+    })
+    expect(
+      sshExecQuietMock.mock.calls.some((c) => String(c[1]).includes("test -d '/opt/rivet os'")),
+    ).toBe(true)
   })
 })
 
@@ -287,5 +305,67 @@ describe('gitUpdateNodeAsync — remote mesh-hosts stderr', () => {
     expect(console.log).not.toHaveBeenCalledWith(
       expect.stringMatching(/\/etc\/hosts mesh block update skipped/),
     )
+  })
+})
+
+describe('gitUpdateNodeAsync — install root resolution', () => {
+  it('quotes the default /opt/rivetos in remote commands when env is unset', async () => {
+    sshExecMock.mockResolvedValue(undefined)
+    stubQuiet(
+      { 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' },
+      'writable',
+    )
+
+    await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
+
+    const commands = sshExecMock.mock.calls.map((c) => c[1])
+    expect(commands.some((cmd) => cmd.startsWith("cd '/opt/rivetos' && git fetch"))).toBe(true)
+    expect(commands.every((cmd) => !cmd.includes('cd /opt/rivetos &&'))).toBe(true)
+  })
+
+  it('uses RIVETOS_INSTALL_ROOT when set and no per-node override', async () => {
+    process.env.RIVETOS_INSTALL_ROOT = '/srv/rivetos'
+    sshExecMock.mockResolvedValue(undefined)
+    stubQuiet(
+      { 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' },
+      'writable',
+    )
+
+    await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false)
+
+    const commands = sshExecMock.mock.calls.map((c) => c[1])
+    expect(commands.some((cmd) => cmd.startsWith("cd '/srv/rivetos' && git fetch"))).toBe(true)
+    expect(sshExecCaptureMock.mock.calls[0]![1]).toContain(
+      "'/srv/rivetos/infra/scripts/setup-mesh-hosts.sh'",
+    )
+  })
+
+  it('per-node installRoot wins over RIVETOS_INSTALL_ROOT', async () => {
+    process.env.RIVETOS_INSTALL_ROOT = '/env/rivetos'
+    sshExecMock.mockResolvedValue(undefined)
+    stubQuiet(
+      { 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' },
+      'writable',
+    )
+
+    await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false, 'rivet', '/node/rivetos')
+
+    const commands = sshExecMock.mock.calls.map((c) => c[1])
+    expect(commands.some((cmd) => cmd.startsWith("cd '/node/rivetos' && git fetch"))).toBe(true)
+    expect(commands.every((cmd) => !cmd.includes('/env/rivetos'))).toBe(true)
+  })
+
+  it('empty/whitespace per-node installRoot falls through to the env resolver', async () => {
+    process.env.RIVETOS_INSTALL_ROOT = '/env/rivetos'
+    sshExecMock.mockResolvedValue(undefined)
+    stubQuiet(
+      { 'rivet-compactor.service': 'active', 'rivet-embedder.service': 'active' },
+      'writable',
+    )
+
+    await gitUpdateNodeAsync('192.0.2.110', 'datahub', OPTS, false, 'rivet', '  ')
+
+    const commands = sshExecMock.mock.calls.map((c) => c[1])
+    expect(commands.some((cmd) => cmd.startsWith("cd '/env/rivetos' && git fetch"))).toBe(true)
   })
 })

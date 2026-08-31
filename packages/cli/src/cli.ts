@@ -50,13 +50,13 @@ async function runSubRoute(route: SubRoute): Promise<void> {
 }
 
 export const COMMANDS: Partial<Record<string, CommandHandler>> = {
-  init: () => import('./commands/init.js').then((m) => m.default()),
+  init: (args) => import('./commands/init.js').then((m) => m.default(args)),
   start: () => import('./commands/start.js').then((m) => m.default()),
   stop: () => import('./commands/stop.js').then((m) => m.default()),
   status: () => import('./commands/status.js').then((m) => m.default()),
   update: () => import('./commands/update.js').then((m) => m.default()),
   doctor: () => import('./commands/doctor.js').then((m) => m.default()),
-  config: () => import('./commands/config.js').then((m) => m.default()),
+  config: (args) => import('./commands/config.js').then((m) => m.default(args)),
   agent: () => import('./commands/agent.js').then((m) => m.default()),
   build: () => import('./commands/build.js').then((m) => m.default()),
   version: () => import('./commands/version.js').then((m) => m.default()),
@@ -116,6 +116,7 @@ export function helpText(): string {
     rivetos config validate             Validate config schema
     rivetos config edit                 Open config in $EDITOR
     rivetos config path                 Print config file path
+    rivetos config init                 Run the setup wizard (same as rivetos init)
 
   Agents:
     rivetos agent list                  List configured agents

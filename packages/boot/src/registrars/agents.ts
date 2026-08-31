@@ -54,11 +54,13 @@ import {
   createWorkflowApiRouteList,
   createWorkflowTools,
 } from '@rivetos/core'
-import { WorkflowEngine, DEFAULT_CASE_DIR_ROOT } from '@rivetos/workflows'
+import { WorkflowEngine, resolveCaseDirRoot, defaultWorkflowsDefsRoot } from '@rivetos/workflows'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import {
   parseUserDbs,
+  sharedDir,
+  sharedPath,
   type GatewayRoute,
   type HarnessId,
   type MeshConfig,
@@ -211,7 +213,7 @@ export async function registerAgentTools(
     // Mesh mode — MeshDelegationEngine + AgentChannel + FileMeshRegistry
     // ------------------------------------------------------------------
 
-    const storageDir = meshConfig.storage_dir ?? '/rivet-shared'
+    const storageDir = meshConfig.storage_dir ?? sharedDir()
     const agentChannelPort = meshConfig.agent_channel_port ?? 3000
     const localAgents = Object.keys(config.agents)
     const nodeName = meshConfig.node_name ?? 'unknown'
@@ -641,7 +643,7 @@ export async function registerAgentTools(
     // users get their own index (their #571 pool) and their own file root
     // under <root>/users/<userId> — point that user's extractor WIKI_DIR at
     // the same directory. Unknown/tombstoned users are refused by the routes.
-    const wikiRoot = process.env.WIKI_DIR ?? '/rivet-shared/wiki'
+    const wikiRoot = process.env.WIKI_DIR ?? sharedPath('wiki')
     const wikiFor = makeWikiFor(userPools, wikiRoot, (p) => new WikiIndex(p))
     gatewayRoutes.push(
       createWikiApiRoute({ index: wikiIndex, wikiDir: wikiRoot, forUser: wikiFor }),
@@ -674,7 +676,9 @@ export async function registerAgentTools(
   // task-backed agent when the durable engine is available.
   const workflowsEnabled = config.workflows?.enabled !== false
   if (workflowsEnabled) {
-    const caseDirRoot = config.workflows?.runs_dir?.trim() || DEFAULT_CASE_DIR_ROOT
+    const caseDirRoot = resolveCaseDirRoot({
+      caseDirRoot: config.workflows?.runs_dir?.trim() || undefined,
+    })
     const configuredRoots = config.workflows?.defs_roots?.filter(
       (r) => typeof r === 'string' && r.trim(),
     )
@@ -684,7 +688,7 @@ export async function registerAgentTools(
     const workflowsRoots =
       configuredRoots && configuredRoots.length > 0
         ? configuredRoots
-        : ['/rivet-shared/workflows/defs', ...(installRoot ? [join(installRoot, 'workflows')] : [])]
+        : [defaultWorkflowsDefsRoot(), ...(installRoot ? [join(installRoot, 'workflows')] : [])]
     const defaultAgentId =
       Object.keys(config.agents ?? {})[0] ?? runtime.getRouter().getAgents()[0]?.id ?? 'rivet'
     // Prefer durable task store; fall back to in-memory subagent store so
@@ -714,7 +718,7 @@ export async function registerAgentTools(
     // filesRoot for editPath: den.files_root when set, else product default
     // (/rivet-shared). Empty string in config disables editPath.
     const filesRoot =
-      typeof config.den?.files_root === 'string' ? config.den.files_root.trim() : '/rivet-shared'
+      typeof config.den?.files_root === 'string' ? config.den.files_root.trim() : sharedDir()
     gatewayRoutes.push(
       ...createWorkflowApiRouteList({
         engine: workflowEngine,

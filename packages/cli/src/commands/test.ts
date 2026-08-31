@@ -22,6 +22,7 @@ import { readFile, access, writeFile, unlink } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { validateConfig } from '@rivetos/boot'
+import { sharedDir } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -270,14 +271,14 @@ async function testHealthEndpoint(): Promise<{ pass: boolean; message: string; d
 }
 
 async function testSharedStorage(): Promise<{ pass: boolean; message: string; detail?: string }> {
-  const sharedDir = '/rivet-shared'
+  const dir = sharedDir()
   try {
-    await access(sharedDir)
+    await access(dir)
   } catch {
-    return { pass: true, message: 'Shared storage: /rivet-shared/ not mounted (single-agent mode)' }
+    return { pass: true, message: `Shared storage: ${dir}/ not mounted (single-agent mode)` }
   }
 
-  const testFile = resolve(sharedDir, '.smoke-test')
+  const testFile = resolve(dir, '.smoke-test')
   await writeFile(testFile, `smoke-test-${Date.now()}`)
   const content = await readFile(testFile, 'utf-8')
   await unlink(testFile)

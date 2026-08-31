@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/aisdk",
-  "version": "0.4.0-beta.6",
+  "version": "0.5.0",
   "description": "AI SDK \u2194 RivetOS adapter helpers \u2014 message conversion, fullStream-part translation, the provider bridge contract",
   "license": "Apache-2.0",
   "main": "dist/index.js",
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.10",
-    "@rivetos/types": "0.4.0-beta.6",
+    "@rivetos/types": "0.5.0",
     "ai": "^6.0.177"
   },
   "exports": {

@@ -98,12 +98,11 @@ describe('resolveSessionNode', () => {
     warn.mockRestore()
   })
 
-  it('an off-roster POINTER falls back without touching the binding hook', () => {
+  it('an off-roster POINTER is kept (fail closed) without touching the binding hook', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const onInvalidBinding = vi.fn()
-    expect(
-      resolveSessionNode({ ...base, pointerNode: 'https://192.0.2.99:5174', onInvalidBinding }),
-    ).toBe(NODE_A)
+    const off = 'https://192.0.2.99:5174'
+    expect(resolveSessionNode({ ...base, pointerNode: off, onInvalidBinding })).toBe(off)
     expect(onInvalidBinding).not.toHaveBeenCalled()
     warn.mockRestore()
   })

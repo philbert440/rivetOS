@@ -18,7 +18,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Tiny core, fat plugins**: The runtime kernel is a small, stable surface: a loop, a router, a queue, a hook pipeline. Everything else is swappable.
 - **Streaming-first**: `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
 - **7 LLM providers**: Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
-- **4 channel plugins**: Discord, Telegram, Agent (HTTP inter-agent), Voice (xAI Realtime).
+- **1 channel plugin**: Agent (HTTP inter-agent / mesh). Human UX is RivetHub via the node gateway. Social bots (Discord, Telegram, Voice) were removed in Phase 5.
 - **MCP transport plugin**: Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
 - **20+ built-in tools**: Shell, file I/O, search, web, memory, skills, interaction, MCP client, delegation, sub-agents.
 - **Multi-agent mesh**: Delegate tasks across agents. Local or remote. Transparent routing.
@@ -31,7 +31,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Persistent memory**: PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
 - **rivet-den**: a live pixel-art diorama of your agent at work. [Watch the demo](docs/DEN.md).
 - **Structured observability**: JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
-- **LTS releases**: Pin a version. It won't break for 12 months.
+- **Stable tagged releases**: the supported install path. Pin a tag from GitHub Releases.
 - **Apache 2.0**: no CLA, no dual-licensing, no surprises. Patent grant included.
 
 ## Quick start
@@ -63,10 +63,10 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 │  │ Channels │───> │  Router  │───>│     Turn Handler       │  │
 │  │ (plugin) │     │ (domain) │    │     (application)      │  │
 │  │          │     │          │    │                        │  │
-│  │ Discord  │     │ message  │    │ hooks → media → loop   │  │
-│  │ Telegram │     │  → agent │    │  → stream → respond    │  │
-│  │ Agent    │     │  → prov  │    │  → memory append       │  │
-│  │ Voice    │     │          │    │                        │  │
+│  │ Agent    │     │ message  │    │ hooks → media → loop   │  │
+│  │ (mesh)   │     │  → agent │    │  → stream → respond    │  │
+│  │          │     │  → prov  │    │  → memory append       │  │
+│  │          │     │          │    │                        │  │
 │  └──────────┘     └──────────┘    └───────────┬────────────┘  │
 │       ▲                                       │               │
 │       │              ┌────────────────────────┘               │
@@ -229,7 +229,7 @@ Runtime:
   rivetos logs [options]          Tail logs (--follow, --level, --since)
 
 Configuration:
-  rivetos config show|validate|edit|path   View or validate config
+  rivetos config show|validate|edit|path|init   View, validate, or create config
   rivetos agent add|remove|list   Manage agents
   rivetos model [provider] [mod]  Show or switch models
   rivetos keys rotate|list        Rotate / list mesh SSH keys
