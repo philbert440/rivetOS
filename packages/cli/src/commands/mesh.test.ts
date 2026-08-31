@@ -156,6 +156,27 @@ describe('mesh enroll (mocked ssh)', () => {
     expect(readFileSync(join(shared, 'mesh.json'), 'utf-8')).toContain('ct110')
     const config = readFileSync(join(process.env.HOME!, '.rivetos', 'config.yaml'), 'utf-8')
     expect(config).toContain(ENROLL_SNIPPET_MARKER)
+    expect(config).toMatch(/tls:\s*true/)
+    expect(config).toMatch(/advertise_host:\s*"?192\.0\.2\.10"?/)
+  })
+
+  it('fills tls without pinning advertise_host when --advertise is omitted', async () => {
+    const b64 = enrollB64()
+    sshExecCaptureMock.mockImplementation(async (_host, command) => {
+      if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
+      if (command.includes('enroll')) {
+        return { stdout: b64, stderr: '' }
+      }
+      throw new Error(`unexpected ssh command: ${command}`)
+    })
+
+    await meshEnroll(['rivet@192.0.2.1', '--name', 'ct110'])
+
+    const config = readFileSync(join(process.env.HOME!, '.rivetos', 'config.yaml'), 'utf-8')
+    expect(config).toContain(ENROLL_SNIPPET_MARKER)
+    expect(config).toMatch(/tls:\s*true/)
+    expect(config).toMatch(/node_name:\s*"?ct110"?/)
+    expect(config).not.toMatch(/advertise_host:/)
   })
 
   it('refreshes certs on re-enroll without duplicating the config snippet', async () => {

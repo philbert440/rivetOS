@@ -177,6 +177,32 @@ describe('Config Validation', () => {
       assertValid(result)
     })
 
+    it('accepts runtime.experimental boolean', () => {
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).experimental = true
+      assertValid(validateConfig(cfg))
+      ;(cfg.runtime as Record<string, unknown>).experimental = false
+      assertValid(validateConfig(cfg))
+    })
+
+    it('rejects non-boolean runtime.experimental', () => {
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).experimental = 'yes'
+      const result = validateConfig(cfg)
+      assertError(result, 'runtime.experimental', 'must be a boolean')
+    })
+
+    it('does not warn on runtime.experimental as an unknown key', () => {
+      const cfg = validConfig()
+      ;(cfg.runtime as Record<string, unknown>).experimental = true
+      const result = validateConfig(cfg)
+      assertValid(result)
+      assert.equal(
+        result.warnings.some((w) => w.path === 'runtime.experimental'),
+        false,
+      )
+    })
+
     it('warns on unknown runtime keys', () => {
       const cfg = validConfig()
       ;(cfg.runtime as Record<string, unknown>).mystery_key = 'value'

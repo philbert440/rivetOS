@@ -9,7 +9,7 @@ import { homedir } from 'node:os'
 import * as p from '@clack/prompts'
 import type { EnvDetection } from './types.js'
 
-export async function detectEnvironment(): Promise<EnvDetection> {
+export async function detectEnvironment(opts: { quiet?: boolean } = {}): Promise<EnvDetection> {
   const rivetDir = resolve(homedir(), '.rivetos')
   const configPath = resolve(rivetDir, 'config.yaml')
 
@@ -55,17 +55,21 @@ export async function detectEnvironment(): Promise<EnvDetection> {
     rivetDir,
   }
 
-  // Display results
-  const lines = [
-    `${env.nodeOk ? '✓' : '✗'} Node.js ${env.nodeVersion}${env.nodeOk ? '' : ' (requires >= 24)'}`,
-    `${env.dockerAvailable ? '✓' : '✗'} Docker${env.dockerVersion ? ` ${env.dockerVersion}` : ' not found'}`,
-    `${env.configExists ? '●' : '○'} Existing config${env.configExists ? ` at ${env.configPath}` : ''}`,
-  ]
-
-  p.note(lines.join('\n'), 'Environment')
+  if (!opts.quiet) {
+    const lines = [
+      `${env.nodeOk ? '✓' : '✗'} Node.js ${env.nodeVersion}${env.nodeOk ? '' : ' (requires >= 24)'}`,
+      `${env.dockerAvailable ? '✓' : '✗'} Docker${env.dockerVersion ? ` ${env.dockerVersion}` : ' not found'}`,
+      `${env.configExists ? '●' : '○'} Existing config${env.configExists ? ` at ${env.configPath}` : ''}`,
+    ]
+    p.note(lines.join('\n'), 'Environment')
+  }
 
   if (!env.nodeOk) {
-    p.cancel('Node.js 24+ is required. Please upgrade and try again.')
+    if (opts.quiet) {
+      console.error('Node.js 24+ is required. Please upgrade and try again.')
+    } else {
+      p.cancel('Node.js 24+ is required. Please upgrade and try again.')
+    }
     process.exit(1)
   }
 

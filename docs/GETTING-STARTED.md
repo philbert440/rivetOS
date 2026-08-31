@@ -33,9 +33,63 @@ The wizard will:
 1. **Detect your environment**: Docker available? Proxmox? How much memory?
 2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
 3. **Configure agents**: pick a provider, enter your API key, choose a model
-4. **Review and deploy**: summary of your choices, then one-click deploy
+4. **Join a RivetHub mesh** (optional): datahub SSH target, node name, optional advertise host — enrolls via the same path as `rivetos mesh enroll`
+5. **Owner user id** for a single-owner `users.json` seed at `$RIVETOS_SHARED_DIR/rivetos/users.json` (default `owner`; existing file is left in place). First init on an install that has no `users.json` writes `unmappedIsOwner: false` (fail closed) — a missing file used to be treated as permissive (unmapped devices resolve as the owner).
+6. **Review and deploy**: summary of your choices, then one-click deploy
 
-Social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub. Optional agent mesh is configured by hand after setup — not a wizard step.
+Social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub.
+
+For non-interactive / distro installs, pass a JSON answers file:
+
+```bash
+npx rivetos init --answers-file /path/to/answers.json
+```
+
+Every prompt that would fire on this run must be present as a key. A missing key is a hard error that names the key (no silent defaults). A value of `{ "default": true }` opts into that prompt's interactive default.
+
+```json
+{
+  "deployment": "manual",
+  "agents": [
+    {
+      "name": { "default": true },
+      "provider": "xai",
+      "apiKey": "xai-...",
+      "model": { "default": true },
+      "thinking": { "default": true }
+    }
+  ],
+  "postgresUrl": "postgres://rivetos:...@datahub:5432/rivetos",
+  "joinMesh": true,
+  "meshHub": "rivet@192.0.2.10",
+  "meshName": "node-a",
+  "meshAdvertise": "192.0.2.11",
+  "ownerId": { "default": true },
+  "confirm": true
+}
+```
+
+| Key | Required when | Notes |
+|-----|----------------|-------|
+| `existingConfig` | A config already exists | `deploy` \| `reconfigure` \| `validate` \| `overwrite` \| `cancel` |
+| `overwriteConfirm` | `existingConfig` is `overwrite` | boolean (`{ "default": true }` → `false`) |
+| `deployment` | wizard runs | `docker` \| `proxmox` \| `manual` (no default) |
+| `dockerContinue` | `deployment` is `docker` and Docker was not detected | boolean |
+| `agents` | wizard runs | non-empty array; each entry is one agent (no add-another loop) |
+| `agents[].name` | each agent | `{ "default": true }` → `rivet` on the first agent |
+| `agents[].provider` | each agent | no default |
+| `agents[].apiKey` | providers that need a key | `{ "default": true }` uses `$ANTHROPIC_API_KEY` / `$XAI_API_KEY` / `$GOOGLE_API_KEY` when set. Optional for `vllm` / `llama-server` (omit or empty = unauthenticated server; ignored when blank). Not collected for `claude-cli`. |
+| `agents[].baseUrl` | `ollama` / `vllm` / `llama-server` | interactive URL defaults |
+| `agents[].model` | each agent, including `claude-cli` | provider default model |
+| `agents[].thinking` | each agent | `{ "default": true }` → `medium` |
+| `postgresUrl` | `deployment` is `manual` | `postgres://…` |
+| `joinMesh` | wizard runs | boolean (`{ "default": true }` → `false`) |
+| `meshHub` | `joinMesh` is `true` | `user@host` |
+| `meshName` | `joinMesh` is `true` | DNS-label node name. `{ "default": true }` is rejected — the interactive hostname-derived default is not a silent answers default |
+| `meshAdvertise` | optional when joining | omit or `{ "default": true }` to auto-detect |
+| `ownerId` | wizard runs | `{ "default": true }` → `owner` |
+| `confirm` | wizard runs | `{ "default": true }` → `true` |
+| `deployNow` | `deployment` is `docker`, **or** `existingConfig` is `deploy` | `{ "default": true }` → `true` |
 
 After the wizard completes, your agent is running.
 
@@ -295,6 +349,7 @@ In any channel, you can use slash commands:
 ```bash
 # Setup
 rivetos init                          # Interactive setup wizard
+rivetos init --answers-file FILE      # Non-interactive (JSON answers)
 rivetos update                        # Pull latest, rebuild, re-symlink (add --mesh or --bare-metal)
 rivetos doctor                        # Health check (config, providers, connectivity)
 
