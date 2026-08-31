@@ -6,22 +6,83 @@
 import type { GraphNode } from './graph-project.js'
 import { FLOW_START_ID, type FlowAuthorGraph } from './flow-graph.js'
 import type { GraphNodeStatus } from './status.js'
+import type { ResolvedTheme } from '../theme.js'
 
-/** Canvas 2d cannot use CSS vars — keep in lockstep with theme.css. */
-export const CANVAS_STATUS_STROKE: Record<GraphNodeStatus, string> = {
-  pending: '#253041',
-  running: '#34d399',
-  done: '#10b981',
-  failed: '#f87171',
-  'gate-open': '#34d399',
-  'gate-resolved': '#10b981',
+/** Every literal the flows canvas paints with, for one resolved theme. */
+export interface CanvasSceneColors {
+  bg: string
+  gridDot: string
+  /** Selected node/edge stroke; also the hovered port fill. */
+  selection: string
+  /** In-progress wire while dragging a connection. */
+  connect: string
+  /** Failed-status wash over a node. */
+  failed: string
+  /** Node stroke when there is no status overlay at all. */
+  dimStroke: string
+  portRing: string
+  label: string
+  sublabel: string
+  statusStroke: Record<GraphNodeStatus, string>
+  statusEdge: Record<'active' | 'done' | 'failed' | 'pending', string>
 }
 
-export const CANVAS_STATUS_EDGE: Record<'active' | 'done' | 'failed' | 'pending', string> = {
-  active: '#34d399',
-  done: 'rgba(16, 185, 129, 0.85)',
-  failed: 'rgba(248, 113, 113, 0.9)',
-  pending: 'rgba(139, 152, 169, 0.35)',
+/** Canvas 2d cannot use CSS vars — keep in lockstep with theme.css. */
+const CANVAS_SCENE_DARK: CanvasSceneColors = {
+  bg: '#0d1117',
+  gridDot: 'rgba(52, 211, 153, 0.22)',
+  selection: '#e6edf3',
+  connect: '#34d399',
+  failed: '#f87171',
+  dimStroke: 'rgba(255,255,255,0.35)',
+  portRing: '#ffffff',
+  label: '#ffffff',
+  sublabel: 'rgba(255,255,255,0.7)',
+  statusStroke: {
+    pending: '#253041',
+    running: '#34d399',
+    done: '#10b981',
+    failed: '#f87171',
+    'gate-open': '#34d399',
+    'gate-resolved': '#10b981',
+  },
+  statusEdge: {
+    active: '#34d399',
+    done: 'rgba(16, 185, 129, 0.85)',
+    failed: 'rgba(248, 113, 113, 0.9)',
+    pending: 'rgba(139, 152, 169, 0.35)',
+  },
+}
+
+/** Paper surfaces, dark ink, emerald one step darker (theme.css light set). */
+const CANVAS_SCENE_LIGHT: CanvasSceneColors = {
+  bg: '#f6f4ee',
+  gridDot: 'rgba(5, 150, 105, 0.25)',
+  selection: '#20293a',
+  connect: '#059669',
+  failed: '#dc2626',
+  dimStroke: 'rgba(32, 41, 58, 0.35)',
+  portRing: '#ffffff',
+  label: '#ffffff',
+  sublabel: 'rgba(255,255,255,0.75)',
+  statusStroke: {
+    pending: '#d6d1c2',
+    running: '#059669',
+    done: '#10b981',
+    failed: '#dc2626',
+    'gate-open': '#059669',
+    'gate-resolved': '#10b981',
+  },
+  statusEdge: {
+    active: '#059669',
+    done: 'rgba(16, 185, 129, 0.9)',
+    failed: 'rgba(220, 38, 38, 0.9)',
+    pending: 'rgba(91, 104, 121, 0.45)',
+  },
+}
+
+export function canvasSceneColors(theme: ResolvedTheme): CanvasSceneColors {
+  return theme === 'light' ? CANVAS_SCENE_LIGHT : CANVAS_SCENE_DARK
 }
 
 export function statusByIdFromProjection(nodes: GraphNode[]): Record<string, GraphNodeStatus> {

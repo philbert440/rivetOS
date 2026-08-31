@@ -19,6 +19,7 @@ import {
   globalShortcut,
   Menu,
   nativeImage,
+  nativeTheme,
   protocol,
   screen,
   session,
@@ -195,7 +196,10 @@ function createWindow(isMain: boolean): BrowserWindow {
     ...(state.x !== undefined && state.y !== undefined ? { x: state.x, y: state.y } : {}),
     minWidth: 720,
     minHeight: 480,
-    backgroundColor: '#0d1117',
+    // Pre-paint fill only — the renderer's own theme (rivethub.theme,
+    // data-theme tokens) paints over this on load. Follow the OS so a
+    // light-mode system doesn't flash a dark window frame first.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d1117' : '#f6f4ee',
     // NO autoHideMenuBar: an auto-hide bar answers the single Alt key
     // (Electron docs), and Alt is a terminal modifier in den xterms. The
     // bar is fully hidden off macOS via setMenuBarVisibility(false) below;

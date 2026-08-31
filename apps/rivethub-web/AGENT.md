@@ -111,6 +111,21 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
 - Wired in sidebar `NodeSwitcher` + composer `NodePicker`
 - Den embed at Chat | Terminal | Den and `/den/` preserved
 
+### Theming — light mode
+
+- Preference `rivethub.theme` = `light | dark | system` (default system) in
+  localStorage; pure helpers in `src/lib/theme.ts`, zustand binding + DOM
+  application (`data-theme` on `<html>`, meta theme-color) in
+  `src/stores/theme.ts`. Inline boot script in `index.html` mirrors the
+  resolve logic so the first frame is already themed — keep them in sync.
+- Token sets live in `src/theme.css`: dark stays the `@theme` default; the
+  `html[data-theme='light']` block overrides (unlayered beats `@layer theme`).
+  Light is paper/ink, emerald shifted to #059669 for contrast.
+- Non-CSS surfaces track the resolved theme: xterm reads live tokens
+  (`xterm-attach.tsx`), CodeMirror via `lib/editor-theme.ts` + a Compartment,
+  flows canvas via `canvasSceneColors(theme)` in `lib/workflow-runs/flow-overlay.ts`.
+  Settings has the Light / Dark / System toggle.
+
 ## How to run / build
 
 ```sh

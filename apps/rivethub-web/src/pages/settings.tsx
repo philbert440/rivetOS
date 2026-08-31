@@ -1,6 +1,8 @@
 import { useEffect, useState, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
+import { useTheme } from '../stores/theme.js'
+import type { ThemePreference } from '../lib/theme.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { isValidWikiBase } from '../lib/wiki-base.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
@@ -120,6 +122,8 @@ function SavedNodesSection(): JSX.Element {
 
 export function SettingsPage(): JSX.Element {
   const { baseUrl, setConnection } = useConnection()
+  const themePreference = useTheme((s) => s.preference)
+  const setThemePreference = useTheme((s) => s.setPreference)
   const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
   // The Saved Nodes editor below can repoint baseUrl from within this page —
@@ -210,6 +214,34 @@ export function SettingsPage(): JSX.Element {
         )}
         {probe.kind === 'fail' && <span className="text-red">✗ {probe.message}</span>}
       </div>
+
+      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+        Appearance
+      </h2>
+      <div className="flex gap-2" role="group" aria-label="Theme">
+        {(
+          [
+            ['light', 'Light'],
+            ['dark', 'Dark'],
+            ['system', 'System'],
+          ] as [ThemePreference, string][]
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={themePreference === value}
+            onClick={() => setThemePreference(value)}
+            className={
+              themePreference === value
+                ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
+                : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-xs text-ink-dim">System follows the OS light/dark setting.</p>
 
       <SavedNodesSection />
 
