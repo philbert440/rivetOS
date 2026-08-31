@@ -415,6 +415,20 @@ export default async function update(): Promise<void> {
   console.log(`\n✅ RivetOS v${newPkg.version} (${newCommit})`)
 }
 
+const PERSISTENT_WORKSPACE_ITEMS = new Set([
+  'AGENT.md',
+  'MEMORY.md',
+  'CLAUDE.md',
+  'memory',
+  'skills',
+  'users',
+])
+
+/** Workspace entries that must survive `rivetos update`. */
+export function filterPersistentWorkspaceItems(names: string[]): string[] {
+  return names.filter((f) => PERSISTENT_WORKSPACE_ITEMS.has(f))
+}
+
 /**
  * Verify that user data (workspace, config, database) is stored outside the
  * container via bind mounts or named volumes.  If we detect the workspace is
@@ -462,12 +476,7 @@ async function verifyDataPersistence(): Promise<void> {
   // Check for workspace files that would indicate an active install
   try {
     const files = await import('node:fs/promises').then((fs) => fs.readdir(workspacePath))
-    const important = files.filter(
-      (f) =>
-        ['AGENT.md', 'MEMORY.md', 'CLAUDE.md'].includes(f) ||
-        f === 'memory' ||
-        f === 'skills',
-    )
+    const important = filterPersistentWorkspaceItems(files)
     if (important.length > 0) {
       console.log(`  ✅ Found ${important.length} workspace items (will be preserved)`)
     }

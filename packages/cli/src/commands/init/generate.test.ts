@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile, access, readdir } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, access, readdir, writeFile, mkdir, utimes } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
@@ -127,5 +127,37 @@ describe('generateConfig workspace templates', () => {
     ]) {
       expect(names).not.toContain(retired)
     }
+  })
+
+  it('does not overwrite pre-existing AGENT.md, MEMORY.md, users/, or CLAUDE.md', async () => {
+    const ws = join(rivetDir, 'workspace')
+    await mkdir(join(ws, 'users'), { recursive: true })
+    await writeFile(join(ws, 'AGENT.md'), 'custom agent')
+    await writeFile(join(ws, 'MEMORY.md'), 'custom memory')
+    await writeFile(join(ws, 'CLAUDE.md'), 'custom claude')
+    await writeFile(join(ws, 'users', 'profiles.json'), '{"_owner":"me"}')
+
+    await generateConfig(baseState(), rivetDir)
+
+    expect(await readFile(join(ws, 'AGENT.md'), 'utf-8')).toBe('custom agent')
+    expect(await readFile(join(ws, 'MEMORY.md'), 'utf-8')).toBe('custom memory')
+    expect(await readFile(join(ws, 'CLAUDE.md'), 'utf-8')).toBe('custom claude')
+    expect(await readFile(join(ws, 'users', 'profiles.json'), 'utf-8')).toBe('{"_owner":"me"}')
+  })
+
+  it('regenerates CLAUDE.md when AGENT.md is newer', async () => {
+    const ws = join(rivetDir, 'workspace')
+    await mkdir(ws, { recursive: true })
+    await writeFile(join(ws, 'AGENT.md'), 'updated agent')
+    await writeFile(join(ws, 'CLAUDE.md'), 'stale claude')
+    const past = new Date(Date.now() - 60_000)
+    await utimes(join(ws, 'CLAUDE.md'), past, past)
+
+    await generateConfig(baseState(), rivetDir)
+
+    const claude = await readFile(join(ws, 'CLAUDE.md'), 'utf-8')
+    expect(claude.startsWith(banner)).toBe(true)
+    expect(claude).toContain('updated agent')
+    expect(claude).not.toContain('stale claude')
   })
 })

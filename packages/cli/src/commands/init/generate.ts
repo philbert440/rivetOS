@@ -5,7 +5,7 @@
  * The YAML config references them via environment variable names.
  */
 
-import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
+import { writeFile, mkdir, access, readFile, readdir, stat } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { stringify as toYaml } from 'yaml'
 import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
@@ -381,15 +381,26 @@ async function seedUsersDir(templatesDir: string | null, workspacePath: string):
 
 async function writeClaudeMdFromAgent(workspacePath: string): Promise<void> {
   const claudePath = resolve(workspacePath, 'CLAUDE.md')
+  const agentPath = resolve(workspacePath, 'AGENT.md')
+
+  let agentMtime: number
   try {
-    await access(claudePath)
-    return
+    agentMtime = (await stat(agentPath)).mtimeMs
   } catch {
-    // missing — generate
+    return
   }
+
+  try {
+    const claudeMtime = (await stat(claudePath)).mtimeMs
+    // User-edited CLAUDE.md (same age or newer than AGENT.md) — never overwrite.
+    if (claudeMtime >= agentMtime) return
+  } catch {
+    // CLAUDE.md missing — generate
+  }
+
   let agentContent: string
   try {
-    agentContent = await readFile(resolve(workspacePath, 'AGENT.md'), 'utf-8')
+    agentContent = await readFile(agentPath, 'utf-8')
   } catch {
     return
   }

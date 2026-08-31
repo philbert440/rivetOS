@@ -6,7 +6,7 @@
  * Checks:
  *   1. System — Node.js version, memory, disk space
  *   2. Config — file exists, schema validates
- *   3. Workspace — required/optional files present
+ *   3. Workspace — required files present
  *   4. Environment — API keys, tokens, secrets
  *   5. Secrets — .env permissions, no secrets in config YAML
  *   6. Containers — Docker health (if applicable)
@@ -278,28 +278,35 @@ function checkServiceUser(): CheckResult[] {
 // Check: Workspace
 // ---------------------------------------------------------------------------
 
-async function checkWorkspace(): Promise<CheckResult[]> {
+const LEGACY_WORKSPACE_FILES = ['USER.md', 'CORE.md', 'WORKSPACE.md'] as const
+
+export async function checkWorkspace(): Promise<CheckResult[]> {
   const results: CheckResult[] = []
   const workspacePath = resolve(process.env.HOME ?? '.', '.rivetos', 'workspace')
 
   const requiredFiles = ['AGENT.md', 'MEMORY.md']
-  const optionalFiles = ['HEARTBEAT.md']
 
   for (const file of requiredFiles) {
     try {
       await access(resolve(workspacePath, file))
       results.push(check('workspace', file, 'pass', `Workspace: ${file}`))
     } catch {
-      results.push(check('workspace', file, 'fail', `Workspace: ${file} missing (required)`))
-    }
-  }
-
-  for (const file of optionalFiles) {
-    try {
-      await access(resolve(workspacePath, file))
-      results.push(check('workspace', file, 'pass', `Workspace: ${file}`))
-    } catch {
-      results.push(check('workspace', file, 'warn', `Workspace: ${file} missing (optional)`))
+      let message = `Workspace: ${file} missing (required)`
+      if (file === 'AGENT.md') {
+        const present: string[] = []
+        for (const name of LEGACY_WORKSPACE_FILES) {
+          try {
+            await access(resolve(workspacePath, name))
+            present.push(name)
+          } catch {
+            // absent
+          }
+        }
+        if (present.length > 0) {
+          message = `Workspace: AGENT.md missing (required). Migrate content from ${present.join(', ')} into AGENT.md.`
+        }
+      }
+      results.push(check('workspace', file, 'fail', message))
     }
   }
 

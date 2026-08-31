@@ -241,7 +241,7 @@ export class WorkspaceLoader implements Workspace {
    */
   async buildHeartbeatPrompt(agentId?: string): Promise<string> {
     const base = await this.buildSystemPrompt(agentId)
-    const heartbeat = (await this.read('HEARTBEAT.md')) ?? DEFAULT_HEARTBEAT
+    const heartbeat = (await this.read('HEARTBEAT.md')) || DEFAULT_HEARTBEAT
     return base + `\n\n## HEARTBEAT.md\n${heartbeat}`
   }
 

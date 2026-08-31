@@ -179,6 +179,17 @@ describe('WorkspaceLoader', () => {
       const prompt = await loader.buildSystemPrompt('opus')
       assert.ok(!prompt.includes('## USER.md'))
     })
+
+    it('appends nothing when profiles.json is malformed', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'agent identity')
+      await mkdir(join(tempDir, 'users'), { recursive: true })
+      await writeFile(join(tempDir, 'users/profiles.json'), '{not json')
+      await writeFile(join(tempDir, 'users/alice.md'), 'Alice is a guest')
+
+      const prompt = await loader.buildSystemPrompt('opus', 'alice')
+      assert.ok(!prompt.includes('## USER.md'))
+      assert.ok(!prompt.includes('Alice is a guest'))
+    })
   })
 
   describe('buildHeartbeatPrompt()', () => {
@@ -197,6 +208,15 @@ describe('WorkspaceLoader', () => {
 
       const heartbeat = await loader.buildHeartbeatPrompt('opus')
       assert.ok(heartbeat.includes('## HEARTBEAT.md'))
+      assert.ok(heartbeat.includes('HEARTBEAT_OK'))
+      assert.ok(heartbeat.includes('Background Task Checklist'))
+    })
+
+    it('uses DEFAULT_HEARTBEAT when HEARTBEAT.md is empty', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'core')
+      await writeFile(join(tempDir, 'HEARTBEAT.md'), '')
+
+      const heartbeat = await loader.buildHeartbeatPrompt('opus')
       assert.ok(heartbeat.includes('HEARTBEAT_OK'))
       assert.ok(heartbeat.includes('Background Task Checklist'))
     })

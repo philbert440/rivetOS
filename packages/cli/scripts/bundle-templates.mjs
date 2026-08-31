@@ -33,8 +33,17 @@ const KEEP = ['AGENT.md', 'MEMORY.md', 'users']
 
 await rm(DEST, { recursive: true, force: true })
 await mkdir(DEST, { recursive: true })
+const copied = []
 for (const name of KEEP) {
-  await cp(resolve(SRC, name), resolve(DEST, name), { recursive: true })
+  const from = resolve(SRC, name)
+  try {
+    await access(from)
+  } catch {
+    console.warn(`⚠ Skipping missing template: ${name}`)
+    continue
+  }
+  await cp(from, resolve(DEST, name), { recursive: true })
+  copied.push(name)
 }
 
-console.log(`✓ Bundled workspace-templates (${KEEP.join(', ')}) → ${DEST}`)
+console.log(`✓ Bundled workspace-templates (${copied.join(', ')}) → ${DEST}`)
