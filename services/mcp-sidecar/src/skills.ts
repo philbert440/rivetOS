@@ -31,6 +31,8 @@ export interface SkillToolsOptions {
   skillDirs?: string[]
   /** Optional embedding endpoint for dedup checks during `create`. */
   embedEndpoint?: string
+  /** Embedding model id; required for dedup when embedEndpoint is set. */
+  embedModel?: string
   /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
 }
@@ -62,6 +64,7 @@ export async function createSkillTools(options: SkillToolsOptions = {}): Promise
   const manageTool = createSkillManageTool(manager, {
     skillDirs,
     embedEndpoint: options.embedEndpoint,
+    embedModel: options.embedModel,
   })
 
   // Wrap manage tool to trigger rediscovery on writes — without this,

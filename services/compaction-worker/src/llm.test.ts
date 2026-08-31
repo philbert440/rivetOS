@@ -114,7 +114,7 @@ describe('callLlm', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('throws on finish_reason=length as truncated', async () => {
+  it('throws on finish_reason=length as truncated without retrying the same prompt', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         choices: [{ finish_reason: 'length', message: { content: '' } }],
@@ -124,6 +124,9 @@ describe('callLlm', () => {
       name: 'LlmCallError',
       message: expect.stringContaining('truncated at max_tokens=32000'),
     })
+    // Same prompt + same max_tokens will truncate again — compactLeaf
+    // shrinks the batch instead of burning LLM_RETRIES here.
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('accepts 2-char [] when minChars is 2 (wiki no-op answer)', async () => {

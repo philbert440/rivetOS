@@ -71,6 +71,12 @@ export interface ChatItem {
   status?: HarnessSessionSummary['status']
   /** epoch ms, for ordering */
   updatedAt: number
+  /** Agent-pin rows: color pip override (preset swatch, not harness accent). */
+  accent?: string
+  /** Agent-pin rows: the session's node, for name/archive keys. */
+  pinNodeBaseUrl?: string
+  /** Agent-pin rows: hide discard; ↺ on the rail is the replace. */
+  pin?: boolean
 }
 
 /**

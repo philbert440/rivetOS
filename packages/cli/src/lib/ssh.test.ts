@@ -26,6 +26,7 @@ describe('isSafeArg', () => {
       'feat/some-branch',
       'user@host',
       'host:22',
+      '2001:db8::1',
     ]) {
       expect(isSafeArg(ok), ok).toBe(true)
     }
@@ -38,12 +39,14 @@ describe('isSafeArg', () => {
       'main && reboot',
       '$(whoami)',
       '`id`',
+      'foo$bar',
       'a|b',
       'a b',
       'a>b',
       "a'b",
       'a"b',
       'a\nb',
+      'host;rm',
     ]) {
       expect(isSafeArg(bad), JSON.stringify(bad)).toBe(false)
     }

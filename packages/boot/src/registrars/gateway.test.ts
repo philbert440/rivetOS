@@ -198,6 +198,31 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_USERS_FILE).toBe('/rivet-shared/rivetos/users.json')
   })
 
+  it('sets RIVETOS_EXPERIMENTAL=1 when runtime.experimental is true', () => {
+    // registerGateway calls loadDenConfig({ ...buildGatewayEnv(...) }) —
+    // den inherits this map wholesale. The key is not RIVETOS_DEN_* passthrough.
+    const env = buildGatewayEnv(
+      {
+        ...base({}),
+        runtime: { workspace: '~/.rivetos/workspace', default_agent: 'a', experimental: true },
+      } as RivetConfig,
+      '/opt/rivetos',
+    )
+    expect(env.RIVETOS_EXPERIMENTAL).toBe('1')
+  })
+
+  it('omits RIVETOS_EXPERIMENTAL when runtime.experimental is absent or false', () => {
+    expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_EXPERIMENTAL).toBeUndefined()
+    const env = buildGatewayEnv(
+      {
+        ...base({}),
+        runtime: { workspace: '~/.rivetos/workspace', default_agent: 'a', experimental: false },
+      } as RivetConfig,
+      '/opt/rivetos',
+    )
+    expect(env.RIVETOS_EXPERIMENTAL).toBeUndefined()
+  })
+
   it('omits PG admin env when devices is on but admin URL is unset', () => {
     const env = buildGatewayEnv(
       base({ devices: { enabled: true, pool: '192.0.2.10-192.0.2.20' } }),

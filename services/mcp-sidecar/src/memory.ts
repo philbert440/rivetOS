@@ -27,7 +27,7 @@ export interface MemoryToolsOptions {
   pgUrl: string
   /** Optional embedding service URL — enables hybrid (FTS + semantic) ranking. */
   embedEndpoint?: string
-  /** Embedding model name. Default `nemotron`. */
+  /** Embedding model name. Required when `embedEndpoint` is set. */
   embedModel?: string
   /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string

@@ -159,19 +159,22 @@ export async function callLlm(
       // finish_reason 'length' means the model never got to a stop token: with
       // thinking ON it hits the cap mid-reasoning and content comes back EMPTY,
       // and even when there is content it is truncated mid-JSON. Either way the
-      // answer is unusable, and it is a distinct failure from a short answer —
-      // log it as its own thing so the next one of these is diagnosable.
-      const truncated = choice?.finish_reason === 'length'
-      if (truncated || !content || content.trim().length < minChars) {
+      // answer is unusable. The same prompt + same max_tokens will truncate
+      // again — do not burn LLM_RETRIES on it. compactLeaf shrinks the batch.
+      if (choice?.finish_reason === 'length') {
+        throw new LlmCallError(
+          `LLM response truncated at max_tokens=${String(maxTokens)}`,
+          attempt + 1,
+        )
+      }
+      if (!content || content.trim().length < minChars) {
         lastError = new Error(
-          truncated
-            ? `LLM response truncated at max_tokens=${String(maxTokens)}`
-            : `Empty or too-short LLM response (minChars=${String(minChars)}, got ${content ? content.trim().length : 0})`,
+          `Empty or too-short LLM response (minChars=${String(minChars)}, got ${content ? content.trim().length : 0})`,
         )
         if (attempt < LLM_RETRIES) {
           const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
           console.error(
-            `[CompactWorker] ${truncated ? `LLM truncated at max_tokens=${String(maxTokens)}` : 'LLM empty/short'}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
+            `[CompactWorker] LLM empty/short, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
           )
           await sleep(delay)
           continue

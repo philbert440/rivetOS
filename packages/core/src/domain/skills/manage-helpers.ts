@@ -152,12 +152,17 @@ export function bumpVersionInContent(content: string, newVersion: number, reason
 // ---------------------------------------------------------------------------
 
 /** Embed a single text via the embedding endpoint. Returns null on failure. */
-export async function embedText(endpoint: string, text: string): Promise<number[] | null> {
+export async function embedText(
+  endpoint: string,
+  text: string,
+  model: string,
+): Promise<number[] | null> {
+  if (!model) return null
   try {
     const response = await fetch(`${endpoint}/v1/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text.slice(0, 8000), model: 'nemotron' }),
+      body: JSON.stringify({ input: text.slice(0, 8000), model }),
       signal: AbortSignal.timeout(10_000),
     })
 
@@ -203,14 +208,16 @@ export async function checkDedup(
   endpoint: string,
   newDescription: string,
   existingSkills: Array<{ name: string; description: string }>,
+  model: string,
 ): Promise<{ name: string; similarity: number } | null> {
-  const newVec = await embedText(endpoint, newDescription)
+  if (!model) return null
+  const newVec = await embedText(endpoint, newDescription, model)
   if (!newVec) return null
 
   let bestMatch: { name: string; similarity: number } | null = null
 
   for (const skill of existingSkills) {
-    const existingVec = await embedText(endpoint, skill.description)
+    const existingVec = await embedText(endpoint, skill.description, model)
     if (!existingVec) continue
 
     const sim = cosineSimilarity(newVec, existingVec)

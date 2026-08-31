@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/provider-llama-server",
-  "version": "0.4.0-beta.6",
+  "version": "0.5.0",
   "description": "llama.cpp llama-server provider \u2014 lean OpenAI-compatible client with top_k/min_p and an extra_body escape hatch",
   "license": "MIT",
   "main": "dist/index.js",
@@ -15,8 +15,8 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^2.0.47",
-    "@rivetos/aisdk": "0.4.0-beta.6",
-    "@rivetos/types": "0.4.0-beta.6",
+    "@rivetos/aisdk": "0.5.0",
+    "@rivetos/types": "0.5.0",
     "ai": "^6.0.177",
     "@ai-sdk/provider": "3.0.10"
   },

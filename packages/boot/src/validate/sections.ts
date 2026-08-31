@@ -89,6 +89,16 @@ export function validateRuntime(runtime: Record<string, unknown>, issues: Valida
     }
   }
 
+  if (runtime.experimental !== undefined) {
+    if (typeof runtime.experimental !== 'boolean') {
+      issues.push({
+        severity: 'error',
+        path: 'runtime.experimental',
+        message: '"runtime.experimental" must be a boolean',
+      })
+    }
+  }
+
   if (runtime.skill_dirs !== undefined) {
     if (!Array.isArray(runtime.skill_dirs)) {
       issues.push({

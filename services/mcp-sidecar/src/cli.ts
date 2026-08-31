@@ -37,7 +37,9 @@
  *                             `memory_search`, `memory_browse`,
  *                             `memory_stats`, and `memory_get_full`.
  *   RIVETOS_EMBED_URL       — optional embedding endpoint for hybrid search
- *   RIVETOS_EMBED_MODEL     — optional embedding model (default: nemotron)
+ *   RIVETOS_EMBED_MODEL     — required when memory is on (RIVETOS_PG_URL set)
+ *                             and RIVETOS_EMBED_URL is set. Ignored if memory
+ *                             is disabled.
  *   GOOGLE_CSE_API_KEY      — optional, enables Google search backend for
  *                             `internet_search` (DuckDuckGo fallback
  *                             always available)
@@ -67,6 +69,7 @@
 
 import { defaultEchoTool, type ToolRegistration } from '@rivetos/mcp'
 import { createV2McpServer, createV2StdioMcpServer } from '@rivetos/mcp-v2'
+import { memoryEmbedGuardError } from './embed-guard.js'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
 import { createWikiTools, type WikiToolsHandle } from './wiki.js'
@@ -101,6 +104,15 @@ async function main(): Promise<void> {
   // --- Memory tools (require Postgres) -------------------------------------
   const pgUrl = process.env.RIVETOS_PG_URL
   if (pgUrl) {
+    const embedErr = memoryEmbedGuardError(
+      pgUrl,
+      process.env.RIVETOS_EMBED_URL,
+      process.env.RIVETOS_EMBED_MODEL,
+    )
+    if (embedErr) {
+      console.error(`[rivetos-mcp-server] ${embedErr}`)
+      process.exit(1)
+    }
     try {
       const handle: MemoryToolsHandle = createMemoryTools({
         pgUrl,
@@ -147,6 +159,7 @@ async function main(): Promise<void> {
   try {
     const handle: SkillToolsHandle = await createSkillTools({
       embedEndpoint: process.env.RIVETOS_EMBED_URL,
+      embedModel: process.env.RIVETOS_EMBED_MODEL,
     })
     tools.push(...handle.tools)
     cleanups.push(() => handle.close())

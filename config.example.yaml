@@ -6,6 +6,7 @@ runtime:
   workspace: ~/.rivetos/workspace
   default_agent: opus
   turn_timeout: 900
+  # experimental: true   # nightly/experimental switch — omit on stable installs
 
 agents:
   opus:
