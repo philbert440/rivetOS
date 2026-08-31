@@ -11,8 +11,8 @@
  *
  * Environment:
  *   RIVETOS_PG_URL              required
- *   RIVETOS_EMBED_URL           required (Nemotron endpoint)
- *   RIVETOS_EMBED_MODEL         default: nemotron
+ *   RIVETOS_EMBED_URL           required (OpenAI-compatible embedding endpoint)
+ *   RIVETOS_EMBED_MODEL         required (OpenAI-compatible embedding model id)
  *   EMBED_CONCURRENCY           default: 4
  *   EMBED_TRUNCATE_DIMS         default: 4000
  *   EMBED_CHARS_PER_CHUNK       default: 6000   (must be <= endpoint per-request capacity)

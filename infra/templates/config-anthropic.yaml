@@ -43,6 +43,7 @@ memory:
   postgres:
     connection_string: ${RIVETOS_PG_URL}
     embed_endpoint: ${RIVETOS_EMBED_URL}
+    embed_model: ${RIVETOS_EMBED_MODEL}
     compactor_endpoint: https://api.x.ai/v1
     compactor_model: grok-4-1-fast-reasoning
     compactor_api_key: ${XAI_API_KEY}
