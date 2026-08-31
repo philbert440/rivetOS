@@ -1,6 +1,6 @@
 {
   "name": "@rivetos/mcp-sidecar",
-  "version": "0.4.0-beta.6",
+  "version": "0.5.0",
   "type": "module",
   "main": "dist/cli.js",
   "scripts": {
@@ -12,17 +12,17 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@rivetos/mcp": "0.4.0-beta.6",
-    "@rivetos/mcp-v2": "0.4.0-beta.6",
-    "@rivetos/memory-postgres": "0.4.0-beta.6",
-    "@rivetos/types": "0.4.0-beta.6",
-    "@rivetos/tool-file": "0.4.0-beta.6",
-    "@rivetos/tool-search": "0.4.0-beta.6",
-    "@rivetos/tool-shell": "0.4.0-beta.6",
-    "@rivetos/tool-web-search": "0.4.0-beta.6",
+    "@rivetos/mcp": "0.5.0",
+    "@rivetos/mcp-v2": "0.5.0",
+    "@rivetos/memory-postgres": "0.5.0",
+    "@rivetos/types": "0.5.0",
+    "@rivetos/tool-file": "0.5.0",
+    "@rivetos/tool-search": "0.5.0",
+    "@rivetos/tool-shell": "0.5.0",
+    "@rivetos/tool-web-search": "0.5.0",
     "zod": "^4.4.3",
-    "@rivetos/core": "0.4.0-beta.6",
-    "@rivetos/wiki-core": "0.4.0-beta.6",
+    "@rivetos/core": "0.5.0",
+    "@rivetos/wiki-core": "0.5.0",
     "pg": "^8.22.0"
   },
   "devDependencies": {
