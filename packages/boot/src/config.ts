@@ -342,7 +342,8 @@ export interface RuntimeSection {
   auto_actions?: AutoActionsSection
   /**
    * Nightly / experimental switch (plan D6). Default false — omit on stable
-   * installs. When true, boot forwards `RIVETOS_EXPERIMENTAL=1` to gateway/den.
+   * installs. When true, boot sets `RIVETOS_EXPERIMENTAL=1` on the env map
+   * passed wholesale to den-server `loadConfig`.
    */
   experimental?: boolean
 }

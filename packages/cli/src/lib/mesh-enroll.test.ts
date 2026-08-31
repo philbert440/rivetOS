@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gzipSync, gunzipSync } from 'node:zlib'
+import { parse as parseYaml } from 'yaml'
 import {
   CERT_EXPIRY_WARN_DAYS,
   DAY_MS,
@@ -13,11 +14,13 @@ import {
   decodeEnrollB64,
   defaultAdvertiseHost,
   extractTarGz,
+  formatEnrollSnippet,
   hubRemoteCommand,
   leafCertExpiryCheck,
   mergeConfigFile,
   mergeConfigSnippet,
   meshNodeCount,
+  meshSectionFromEnroll,
   packTarGz,
   parseCertNotAfter,
   parseEnrollArgs,
@@ -268,6 +271,32 @@ describe('config-snippet merge', () => {
     expect((await mergeConfigFile(SNIPPET, path)).result).toBe('unchanged')
     expect(readFileSync(path, 'utf-8')).toBe(once)
     expect(statSync(path).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('meshSectionFromEnroll / formatEnrollSnippet', () => {
+  const unpacked = { name: 'ct110', snippet: SNIPPET }
+
+  it('fills tls when the hub snippet omits it', () => {
+    const section = meshSectionFromEnroll(unpacked)
+    expect(section).toEqual({
+      enabled: true,
+      node_name: 'ct110',
+      tls: true,
+    })
+    expect(section.advertise_host).toBeUndefined()
+  })
+
+  it('writes advertise_host only when the caller passes one', () => {
+    expect(meshSectionFromEnroll(unpacked, '192.0.2.11').advertise_host).toBe('192.0.2.11')
+    expect(meshSectionFromEnroll(unpacked).advertise_host).toBeUndefined()
+  })
+
+  it('serializes the same mapping the wizard builder produces', () => {
+    const section = meshSectionFromEnroll(unpacked, '192.0.2.11')
+    const text = formatEnrollSnippet(unpacked, '192.0.2.11')
+    expect(text).toContain(ENROLL_SNIPPET_MARKER)
+    expect(parseYaml(text)).toEqual({ mesh: section })
   })
 })
 

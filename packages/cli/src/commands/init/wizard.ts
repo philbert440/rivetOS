@@ -7,14 +7,14 @@ import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import * as p from '@clack/prompts'
 import { sharedPath } from '@rivetos/types'
-import { parseUserHost } from '../../lib/mesh-enroll.js'
+import { meshSectionFromEnroll, parseUserHost } from '../../lib/mesh-enroll.js'
 import { detectEnvironment } from './detect.js'
 import { configureDeployment } from './deployment.js'
 import { configureAgents } from './agents.js'
 import { configureChannels } from './channels.js'
 import { configurePostgres } from './postgres.js'
 import { reviewConfig } from './review.js'
-import { generateConfig, meshSectionFromEnroll } from './generate.js'
+import { generateConfig } from './generate.js'
 import { configureMeshJoin } from './mesh.js'
 import { seedUsersJson } from './users.js'
 import {
@@ -326,7 +326,10 @@ async function enrollMeshIfRequested(
       name: state.meshJoin.name,
       advertise: state.meshJoin.advertise,
     })
-    state.meshSection = meshSectionFromEnroll(unpacked, advertise)
+    // Pass only the operator-supplied advertise (not the auto-detected
+    // enroll host). Pinning the detected IP in config.yaml would go stale
+    // and can write a host the review screen never showed; boot re-detects.
+    state.meshSection = meshSectionFromEnroll(unpacked, state.meshJoin.advertise)
     spinner?.stop(`Enrolled ${state.meshJoin.name} (advertise ${advertise}).`)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -340,7 +343,7 @@ async function enrollMeshIfRequested(
   }
 }
 
-async function runInitFromAnswersFile(options: InitOptions): Promise<void> {
+export async function runInitFromAnswersFile(options: InitOptions): Promise<void> {
   const answersPath = options.answersFile
   if (!answersPath) return
 

@@ -7,10 +7,12 @@
 
 import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { parse as parseYaml, stringify as toYaml } from 'yaml'
-import type { UnpackedEnroll } from '../../lib/mesh-enroll.js'
+import { stringify as toYaml } from 'yaml'
+import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
 import type { WizardState, WizardAgent } from './types.js'
 import { PROVIDER_ENV_KEYS } from './agents.js'
+
+export { meshSectionFromEnroll } from '../../lib/mesh-enroll.js'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -51,41 +53,6 @@ export async function generateConfig(
 // ──────────────────────────────────────────────────────────────────────────────
 // Config YAML builder
 // ──────────────────────────────────────────────────────────────────────────────
-
-/**
- * Build the `mesh:` section written into generated config.yaml from a
- * successful enroll. Prefers keys from the hub snippet, then fills the
- * fields validation requires (`enabled`, `node_name`, `tls`).
- */
-export function meshSectionFromEnroll(
-  unpacked: Pick<UnpackedEnroll, 'name' | 'snippet'>,
-  advertise?: string,
-): Record<string, unknown> {
-  let fromSnippet: Record<string, unknown> = {}
-  try {
-    const parsed: unknown = parseYaml(unpacked.snippet)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const mesh = (parsed as Record<string, unknown>).mesh
-      if (mesh && typeof mesh === 'object' && !Array.isArray(mesh)) {
-        fromSnippet = { ...(mesh as Record<string, unknown>) }
-      }
-    }
-  } catch {
-    // Snippet is advisory; identity below is enough for a valid mesh section.
-  }
-  const section: Record<string, unknown> = {
-    ...fromSnippet,
-    enabled: true,
-    node_name: unpacked.name,
-    tls: fromSnippet.tls ?? true,
-  }
-  if (advertise) {
-    section.advertise_host = advertise
-  } else if (typeof fromSnippet.advertise_host === 'string' && fromSnippet.advertise_host.trim()) {
-    section.advertise_host = fromSnippet.advertise_host
-  }
-  return section
-}
 
 export function buildConfigYaml(state: WizardState): string {
   const config: Record<string, unknown> = {}
@@ -145,14 +112,21 @@ export function buildConfigYaml(state: WizardState): string {
     '',
   ].join('\n')
 
-  return (
-    header +
-    toYaml(config, {
-      lineWidth: 120,
-      defaultKeyType: 'PLAIN',
-      defaultStringType: 'PLAIN',
-    })
-  )
+  let body = toYaml(config, {
+    lineWidth: 120,
+    defaultKeyType: 'PLAIN',
+    defaultStringType: 'PLAIN',
+  })
+  // Same marker the CLI merge path keys on, so a later `mesh enroll`/`renew`
+  // is a no-op instead of appending a second `mesh:` block.
+  if (state.meshSection) {
+    body = body.replace(
+      /^mesh:/m,
+      `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.\nmesh:`,
+    )
+  }
+
+  return header + body
 }
 
 function buildProviderConfig(agent: WizardAgent): Record<string, unknown> {

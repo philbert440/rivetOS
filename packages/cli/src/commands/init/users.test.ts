@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseUsersRegistry } from '@rivetos/types'
 import { buildOwnerRegistry, seedUsersJson, usersJsonPath } from './users.js'
 
 const ORIGINAL = process.env.RIVETOS_SHARED_DIR
@@ -24,6 +25,15 @@ describe('buildOwnerRegistry', () => {
       ownerUserId: 'owner',
       unmappedIsOwner: false,
       users: { owner: { devices: [] } },
+    })
+  })
+
+  it('seeded { devices: [] } is accepted by parseUsersRegistry with no extra fields', () => {
+    const parsed = parseUsersRegistry(JSON.stringify(buildOwnerRegistry('owner')))
+    expect(parsed).toMatchObject({
+      ownerUserId: 'owner',
+      unmappedIsOwner: false,
+      users: { owner: { id: 'owner', devices: [] } },
     })
   })
 })

@@ -199,6 +199,8 @@ describe('buildGatewayEnv — device enrollment', () => {
   })
 
   it('sets RIVETOS_EXPERIMENTAL=1 when runtime.experimental is true', () => {
+    // registerGateway calls loadDenConfig({ ...buildGatewayEnv(...) }) —
+    // den inherits this map wholesale. The key is not RIVETOS_DEN_* passthrough.
     const env = buildGatewayEnv(
       {
         ...base({}),

@@ -34,7 +34,7 @@ The wizard will:
 2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
 3. **Configure agents**: pick a provider, enter your API key, choose a model
 4. **Join a RivetHub mesh** (optional): datahub SSH target, node name, optional advertise host — enrolls via the same path as `rivetos mesh enroll`
-5. **Owner user id** for a single-owner `users.json` seed at `$RIVETOS_SHARED_DIR/rivetos/users.json` (default `owner`; existing file is left in place)
+5. **Owner user id** for a single-owner `users.json` seed at `$RIVETOS_SHARED_DIR/rivetos/users.json` (default `owner`; existing file is left in place). First init on an install that has no `users.json` writes `unmappedIsOwner: false` (fail closed) — a missing file used to be treated as permissive (unmapped devices resolve as the owner).
 6. **Review and deploy**: summary of your choices, then one-click deploy
 
 Social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub.
@@ -78,18 +78,18 @@ Every prompt that would fire on this run must be present as a key. A missing key
 | `agents` | wizard runs | non-empty array; each entry is one agent (no add-another loop) |
 | `agents[].name` | each agent | `{ "default": true }` → `rivet` on the first agent |
 | `agents[].provider` | each agent | no default |
-| `agents[].apiKey` | providers that need a key | `{ "default": true }` uses `$ANTHROPIC_API_KEY` / `$XAI_API_KEY` / `$GOOGLE_API_KEY` when set |
+| `agents[].apiKey` | providers that need a key | `{ "default": true }` uses `$ANTHROPIC_API_KEY` / `$XAI_API_KEY` / `$GOOGLE_API_KEY` when set. Optional for `vllm` / `llama-server` (omit or empty = unauthenticated server; ignored when blank). Not collected for `claude-cli`. |
 | `agents[].baseUrl` | `ollama` / `vllm` / `llama-server` | interactive URL defaults |
-| `agents[].model` | each agent | provider default model |
+| `agents[].model` | each agent, including `claude-cli` | provider default model |
 | `agents[].thinking` | each agent | `{ "default": true }` → `medium` |
 | `postgresUrl` | `deployment` is `manual` | `postgres://…` |
 | `joinMesh` | wizard runs | boolean (`{ "default": true }` → `false`) |
 | `meshHub` | `joinMesh` is `true` | `user@host` |
-| `meshName` | `joinMesh` is `true` | DNS-label node name |
+| `meshName` | `joinMesh` is `true` | DNS-label node name. `{ "default": true }` is rejected — the interactive hostname-derived default is not a silent answers default |
 | `meshAdvertise` | optional when joining | omit or `{ "default": true }` to auto-detect |
 | `ownerId` | wizard runs | `{ "default": true }` → `owner` |
 | `confirm` | wizard runs | `{ "default": true }` → `true` |
-| `deployNow` | `deployment` is `docker` | `{ "default": true }` → `true` |
+| `deployNow` | `deployment` is `docker`, **or** `existingConfig` is `deploy` | `{ "default": true }` → `true` |
 
 After the wizard completes, your agent is running.
 

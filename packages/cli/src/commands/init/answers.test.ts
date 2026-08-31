@@ -163,4 +163,40 @@ describe('interpretAnswers', () => {
       interpretAnswers(happy({ deployment: { default: true } }), ENV),
     ).toThrow(/requested default but this prompt has no default/)
   })
+
+  it('overwriteConfirm { default: true } is false (interactive initialValue)', () => {
+    const result = interpretAnswers(
+      { existingConfig: 'overwrite', overwriteConfirm: { default: true } },
+      { configExists: true, dockerAvailable: true },
+    )
+    expect(result.overwriteConfirm).toBe(false)
+    expect(result.confirm).toBe(false)
+  })
+
+  it('rejects { default: true } on meshName (interactive hostname default is not silent)', () => {
+    expect(() =>
+      interpretAnswers(
+        happy({ joinMesh: true, meshHub: 'rivet@192.0.2.10', meshName: { default: true } }),
+        ENV,
+      ),
+    ).toThrow(/requested default but this prompt has no default/)
+  })
+
+  it('claude-cli still requires model (default marker → opus)', () => {
+    const result = interpretAnswers(
+      happy({
+        agents: [
+          {
+            name: 'rivet',
+            provider: 'claude-cli',
+            model: { default: true },
+            thinking: { default: true },
+          },
+        ],
+      }),
+      ENV,
+    )
+    expect(result.agents[0]?.provider).toBe('claude-cli')
+    expect(result.agents[0]?.model).toBe('opus')
+  })
 })

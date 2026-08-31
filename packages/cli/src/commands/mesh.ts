@@ -27,6 +27,7 @@ import {
   atomicWriteFile,
   configPath,
   defaultAdvertiseHost,
+  formatEnrollSnippet,
   hubRemoteCommand,
   mergeConfigFile,
   meshNodeCount,
@@ -219,9 +220,9 @@ function printMergeResult(result: 'appended' | 'created' | 'unchanged', warning?
 
 /**
  * Programmatic enroll used by `rivetos mesh enroll` and `rivetos init`.
- * Writes certs + mesh.json; does **not** merge the hub snippet into
- * config.yaml — callers that generate config (the wizard) write the mesh
- * section themselves. The CLI wrapper still calls `mergeConfigFile`.
+ * Writes certs + mesh.json; does **not** merge config.yaml. Both the CLI
+ * wrapper and the init wizard build the `mesh:` block through
+ * `meshSectionFromEnroll` (CLI via `formatEnrollSnippet` → `mergeConfigFile`).
  */
 export async function runMeshEnroll(opts: {
   user: string
@@ -254,7 +255,7 @@ export async function meshEnroll(args: string[]): Promise<void> {
     advertise: parsed.advertise,
     hubCmd: parsed.hubCmd,
   })
-  const merge = await mergeConfigFile(unpacked.snippet)
+  const merge = await mergeConfigFile(formatEnrollSnippet(unpacked, parsed.advertise))
   console.log(`  ✅ Enrolled ${parsed.name} (advertise ${advertise})`)
   console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
   console.log(`     mesh.json: ${sharedPath('mesh.json')}`)
@@ -325,7 +326,7 @@ export async function meshRenew(args: string[]): Promise<void> {
   }
   const unpacked = parseEnrollTarball(stdout, parsed.name)
   await writeEnrollLayout(unpacked)
-  const merge = await mergeConfigFile(unpacked.snippet)
+  const merge = await mergeConfigFile(formatEnrollSnippet(unpacked))
   console.log(`  ✅ Renewed leaf cert for ${parsed.name}`)
   console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
   console.log(`     mesh.json: ${sharedPath('mesh.json')}`)

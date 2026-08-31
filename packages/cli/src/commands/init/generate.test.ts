@@ -64,10 +64,19 @@ describe('buildConfigYaml mesh branch', () => {
       '192.0.2.11',
     )
     const yaml = buildConfigYaml({ ...baseState(), meshSection })
+    expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
     expect(yaml).toMatch(/^mesh:/m)
     expect(yaml).toMatch(/enabled:\s*true/)
     expect(yaml).toMatch(/node_name:\s*"?ct110"?/)
     expect(yaml).toMatch(/tls:\s*true/)
     expect(yaml).toMatch(/advertise_host:\s*"?192\.0\.2\.11"?/)
+  })
+
+  it('omits advertise_host when enroll did not pass an explicit one', () => {
+    const meshSection = meshSectionFromEnroll({ name: 'ct110', snippet: SNIPPET })
+    const yaml = buildConfigYaml({ ...baseState(), meshSection })
+    expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
+    expect(yaml).toMatch(/tls:\s*true/)
+    expect(yaml).not.toMatch(/advertise_host:/)
   })
 })

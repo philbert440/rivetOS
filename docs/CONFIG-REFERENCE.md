@@ -67,7 +67,7 @@ Top-level runtime configuration.
 | `context` | object | — | Context-management tuning. `context.soft_nudge_pct` (number[]) and `context.hard_nudge_pct` (number) control when the agent is nudged to compact as the window fills. |
 | `skill_dirs` | string[] | `[~/.rivetos/workspace/skills]` | Directories to scan for skills. |
 | `plugin_dirs` | string[] | `[]` | Additional directories to scan for plugins beyond the default `plugins/`. |
-| `experimental` | boolean | `false` (omit) | Nightly / experimental switch. When `true`, boot forwards `RIVETOS_EXPERIMENTAL=1` to gateway/den. Stable installs omit it. |
+| `experimental` | boolean | `false` (omit) | Nightly / experimental switch. When `true`, boot sets `RIVETOS_EXPERIMENTAL=1` on the env map passed wholesale to den-server `loadConfig` (same map the in-process gateway builds). Not process-env prefix passthrough (`RIVETOS_DEN_*` / `RIVETOS_USER*`). den-server currently has no dedicated field for the key; it is present on the env object den is constructed from. Stable installs omit it. |
 
 ### `runtime.heartbeats`
 
