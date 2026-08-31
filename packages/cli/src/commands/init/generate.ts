@@ -8,8 +8,11 @@
 import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { stringify as toYaml } from 'yaml'
+import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
 import type { WizardState, WizardAgent } from './types.js'
 import { PROVIDER_ENV_KEYS } from './agents.js'
+
+export { meshSectionFromEnroll } from '../../lib/mesh-enroll.js'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Public API
@@ -51,7 +54,7 @@ export async function generateConfig(
 // Config YAML builder
 // ──────────────────────────────────────────────────────────────────────────────
 
-function buildConfigYaml(state: WizardState): string {
+export function buildConfigYaml(state: WizardState): string {
   const config: Record<string, unknown> = {}
 
   // Runtime
@@ -85,7 +88,9 @@ function buildConfigYaml(state: WizardState): string {
   config.providers = providers
 
   // Channels: social bots removed in Phase 5. Human UX is RivetHub.
-  // Optional agent mesh can be added manually under channels.agent.
+  if (state.meshSection) {
+    config.mesh = state.meshSection
+  }
 
   // Memory
   config.memory = {
@@ -107,14 +112,21 @@ function buildConfigYaml(state: WizardState): string {
     '',
   ].join('\n')
 
-  return (
-    header +
-    toYaml(config, {
-      lineWidth: 120,
-      defaultKeyType: 'PLAIN',
-      defaultStringType: 'PLAIN',
-    })
-  )
+  let body = toYaml(config, {
+    lineWidth: 120,
+    defaultKeyType: 'PLAIN',
+    defaultStringType: 'PLAIN',
+  })
+  // Same marker the CLI merge path keys on, so a later `mesh enroll`/`renew`
+  // is a no-op instead of appending a second `mesh:` block.
+  if (state.meshSection) {
+    body = body.replace(
+      /^mesh:/m,
+      `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.\nmesh:`,
+    )
+  }
+
+  return header + body
 }
 
 function buildProviderConfig(agent: WizardAgent): Record<string, unknown> {

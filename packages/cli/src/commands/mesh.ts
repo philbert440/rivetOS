@@ -22,10 +22,12 @@ import { buildMeshFetchOptions } from '../lib/mtls.js'
 import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
 import { checkSshReachable, isSafeArg, sshExecCapture } from '../lib/ssh.js'
 import {
+  DEFAULT_HUB_CMD,
   MeshHubError,
   atomicWriteFile,
   configPath,
   defaultAdvertiseHost,
+  formatEnrollSnippet,
   hubRemoteCommand,
   mergeConfigFile,
   meshNodeCount,
@@ -36,6 +38,7 @@ import {
   readLocalMeshNodeCount,
   sharedPath,
   writeEnrollLayout,
+  type UnpackedEnroll,
 } from '../lib/mesh-enroll.js'
 
 const HELP = `
@@ -215,20 +218,44 @@ function printMergeResult(result: 'appended' | 'created' | 'unchanged', warning?
 // mesh enroll
 // ---------------------------------------------------------------------------
 
-export async function meshEnroll(args: string[]): Promise<void> {
-  const parsed = parseEnrollArgs(args)
-  const advertise = parsed.advertise ?? defaultAdvertiseHost()
-  await probeHubSsh(parsed.user, parsed.host)
-  const remote = hubRemoteCommand(parsed.hubCmd, 'enroll', parsed.name, advertise)
+/**
+ * Programmatic enroll used by `rivetos mesh enroll` and `rivetos init`.
+ * Writes certs + mesh.json; does **not** merge config.yaml. Both the CLI
+ * wrapper and the init wizard build the `mesh:` block through
+ * `meshSectionFromEnroll` (CLI via `formatEnrollSnippet` → `mergeConfigFile`).
+ */
+export async function runMeshEnroll(opts: {
+  user: string
+  host: string
+  name: string
+  advertise?: string
+  hubCmd?: string
+}): Promise<{ unpacked: UnpackedEnroll; advertise: string }> {
+  const advertise = opts.advertise ?? defaultAdvertiseHost()
+  const hubCmd = opts.hubCmd ?? DEFAULT_HUB_CMD
+  await probeHubSsh(opts.user, opts.host)
+  const remote = hubRemoteCommand(hubCmd, 'enroll', opts.name, advertise)
   let stdout: string
   try {
-    stdout = await sshHubStdout(parsed.user, parsed.host, remote, 'mesh enroll')
+    stdout = await sshHubStdout(opts.user, opts.host, remote, 'mesh enroll')
   } catch (err) {
-    throw mapHubExecError(err, parsed.user, parsed.host, parsed.hubCmd)
+    throw mapHubExecError(err, opts.user, opts.host, hubCmd)
   }
-  const unpacked = parseEnrollTarball(stdout, parsed.name)
+  const unpacked = parseEnrollTarball(stdout, opts.name)
   await writeEnrollLayout(unpacked)
-  const merge = await mergeConfigFile(unpacked.snippet)
+  return { unpacked, advertise }
+}
+
+export async function meshEnroll(args: string[]): Promise<void> {
+  const parsed = parseEnrollArgs(args)
+  const { unpacked, advertise } = await runMeshEnroll({
+    user: parsed.user,
+    host: parsed.host,
+    name: parsed.name,
+    advertise: parsed.advertise,
+    hubCmd: parsed.hubCmd,
+  })
+  const merge = await mergeConfigFile(formatEnrollSnippet(unpacked, parsed.advertise))
   console.log(`  ✅ Enrolled ${parsed.name} (advertise ${advertise})`)
   console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
   console.log(`     mesh.json: ${sharedPath('mesh.json')}`)
@@ -299,7 +326,7 @@ export async function meshRenew(args: string[]): Promise<void> {
   }
   const unpacked = parseEnrollTarball(stdout, parsed.name)
   await writeEnrollLayout(unpacked)
-  const merge = await mergeConfigFile(unpacked.snippet)
+  const merge = await mergeConfigFile(formatEnrollSnippet(unpacked))
   console.log(`  ✅ Renewed leaf cert for ${parsed.name}`)
   console.log(`     certs: ${sharedPath('rivet-ca', 'issued')}`)
   console.log(`     mesh.json: ${sharedPath('mesh.json')}`)

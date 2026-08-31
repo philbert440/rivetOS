@@ -31,6 +31,19 @@ export async function reviewConfig(state: WizardState): Promise<boolean> {
   lines.push('')
   lines.push('Channels:  RivetHub / gateway (social bots removed Phase 5)')
 
+  if (state.meshJoin) {
+    lines.push('')
+    lines.push('RivetHub mesh:')
+    lines.push(`  Hub        → ${state.meshJoin.hub}`)
+    lines.push(`  Node       → ${state.meshJoin.name}`)
+    if (state.meshJoin.advertise) {
+      lines.push(`  Advertise  → ${state.meshJoin.advertise}`)
+    }
+  }
+
+  lines.push('')
+  lines.push(`Owner id:   ${state.ownerId}`)
+
   // Infrastructure
   lines.push('')
   if (state.deployment === 'docker') {

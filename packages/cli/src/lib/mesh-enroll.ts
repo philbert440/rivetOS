@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path'
 import { randomBytes, X509Certificate } from 'node:crypto'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { sharedPath } from '@rivetos/types'
+import { parse as parseYaml, stringify as toYaml } from 'yaml'
 import { assertRecordMeshFile } from './mesh-file.js'
 import { assertSafeArg, isSafeArg, quoteShellArg } from './ssh.js'
 
@@ -513,6 +514,60 @@ export async function writeEnrollLayout(unpacked: UnpackedEnroll): Promise<void>
 
 export function configPath(): string {
   return join(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+}
+
+/**
+ * Canonical `mesh:` mapping for both `rivetos mesh enroll` (via
+ * {@link formatEnrollSnippet} → {@link mergeConfigFile}) and `rivetos init`
+ * (`generateConfig`). Hub snippet keys are kept; `enabled`, `node_name`, and
+ * `tls` are filled so the boot validator accepts the result even when the
+ * snippet omits them. `advertise_host` is written only when the caller passes
+ * an explicit advertise (or the snippet already has one) — auto-detected
+ * enroll hosts are not pinned, so boot can re-detect via
+ * `resolveAdvertiseHost`.
+ */
+export function meshSectionFromEnroll(
+  unpacked: Pick<UnpackedEnroll, 'name' | 'snippet'>,
+  advertise?: string,
+): Record<string, unknown> {
+  let fromSnippet: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = parseYaml(unpacked.snippet)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const mesh = (parsed as Record<string, unknown>).mesh
+      if (mesh && typeof mesh === 'object' && !Array.isArray(mesh)) {
+        fromSnippet = { ...(mesh as Record<string, unknown>) }
+      }
+    }
+  } catch {
+    // Snippet is advisory; identity below is enough for a valid mesh section.
+  }
+  const section: Record<string, unknown> = {
+    ...fromSnippet,
+    enabled: true,
+    node_name: unpacked.name,
+    tls: fromSnippet.tls ?? true,
+  }
+  if (advertise) {
+    section.advertise_host = advertise
+  } else if (typeof fromSnippet.advertise_host === 'string' && fromSnippet.advertise_host.trim()) {
+    section.advertise_host = fromSnippet.advertise_host
+  }
+  return section
+}
+
+/** Marker-prefixed YAML document {@link mergeConfigFile} appends. */
+export function formatEnrollSnippet(
+  unpacked: Pick<UnpackedEnroll, 'name' | 'snippet'>,
+  advertise?: string,
+): string {
+  const section = meshSectionFromEnroll(unpacked, advertise)
+  const body = toYaml(
+    { mesh: section },
+    { lineWidth: 120, defaultKeyType: 'PLAIN', defaultStringType: 'PLAIN' },
+  )
+  const yaml = body.endsWith('\n') ? body : `${body}\n`
+  return `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.\n${yaml}`
 }
 
 function snippetNodeName(text: string): string | undefined {

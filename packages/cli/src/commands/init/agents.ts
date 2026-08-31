@@ -13,7 +13,7 @@ function bail<T>(v: T | symbol): asserts v is T {
 }
 
 /** Default models per provider */
-const DEFAULT_MODELS: Record<string, string> = {
+export const DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-opus-4-7',
   'claude-cli': 'opus',
   xai: 'grok-4-1-fast-reasoning',
