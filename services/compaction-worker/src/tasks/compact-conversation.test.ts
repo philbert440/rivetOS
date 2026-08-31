@@ -43,6 +43,8 @@ import {
   compactConversationTask,
   DEADLOCK_RETRIES,
   PG_DEADLOCK_CODE,
+  isLlmTruncationError,
+  shrinkLeafBatch,
 } from './compact-conversation.js'
 import { MIN_BATCH_SIZE, BRANCH_SYSTEM_PROMPT } from '@rivetos/memory-postgres'
 import { shouldSkip, breakerThreshold, resetBreaker, recordSuccess } from '../circuit-breaker.js'
@@ -73,6 +75,31 @@ describe('compact-conversation', () => {
     it('honors a custom staleMinBatch', () => {
       expect(leafFloorFor('session_stale', 1)).toBe(1)
       expect(leafFloorFor('session_stale', 3)).toBe(3)
+    })
+  })
+
+  describe('shrinkLeafBatch', () => {
+    it('halves a default leaf batch down to the floor', () => {
+      expect(shrinkLeafBatch(10, MIN_BATCH_SIZE)).toBe(5)
+    })
+
+    it('returns null at the floor so the caller can fail the job', () => {
+      expect(shrinkLeafBatch(MIN_BATCH_SIZE, MIN_BATCH_SIZE)).toBeNull()
+      expect(shrinkLeafBatch(3, MIN_BATCH_SIZE)).toBeNull()
+    })
+
+    it('does not shrink below minBatch', () => {
+      expect(shrinkLeafBatch(7, MIN_BATCH_SIZE)).toBe(MIN_BATCH_SIZE)
+    })
+  })
+
+  describe('isLlmTruncationError', () => {
+    it('matches callLlm truncation messages', () => {
+      expect(
+        isLlmTruncationError(new LlmCallError('LLM response truncated at max_tokens=7000', 1)),
+      ).toBe(true)
+      expect(isLlmTruncationError(new Error('LLM unreachable'))).toBe(false)
+      expect(isLlmTruncationError('truncated at max_tokens=14000')).toBe(true)
     })
   })
 
@@ -661,7 +688,10 @@ describe('compact-conversation', () => {
       }))
     }
 
-    function mockClient(opts: { messages: ReturnType<typeof makeMessages>; leaves?: ReturnType<typeof makeLeaves> }) {
+    function mockClient(opts: {
+      messages: ReturnType<typeof makeMessages>
+      leaves?: ReturnType<typeof makeLeaves>
+    }) {
       let messageQueries = 0
       return {
         query: vi.fn(async (sql: string, params?: unknown[]) => {
@@ -740,6 +770,46 @@ describe('compact-conversation', () => {
       ).rejects.toThrow(err)
     })
 
+    it('shrinks a truncated leaf batch and writes only the prefix', async () => {
+      const trunc = new LlmCallError('LLM response truncated at max_tokens=7000', 1)
+      vi.mocked(callLlm)
+        .mockRejectedValueOnce(trunc)
+        .mockResolvedValueOnce('ok summary text that is long enough')
+      const client = mockClient({ messages: makeMessages(10) })
+      const helpers = mockHelpers(client, { attempts: 1, max_attempts: 3 })
+
+      await compactConversationTask(
+        { conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+        helpers as never,
+      )
+
+      expect(vi.mocked(callLlm)).toHaveBeenCalledTimes(2)
+      const insert = client.query.mock.calls.find((c) =>
+        String(c[0]).includes('INSERT INTO ros_summaries'),
+      )
+      expect(insert?.[1]?.[4]).toBe(5)
+      const sources = client.query.mock.calls.find((c) =>
+        String(c[0]).includes('INSERT INTO ros_summary_sources'),
+      )
+      // 5 rows × 3 params
+      expect((sources?.[1] as unknown[] | undefined)?.length).toBe(15)
+    })
+
+    it('still fails when truncation cannot shrink below the floor', async () => {
+      const trunc = new LlmCallError('LLM response truncated at max_tokens=7000', 1)
+      vi.mocked(callLlm).mockRejectedValue(trunc)
+      const client = mockClient({ messages: makeMessages(MIN_BATCH_SIZE) })
+      const helpers = mockHelpers(client, { attempts: 1, max_attempts: 3 })
+
+      await expect(
+        compactConversationTask(
+          { conversationId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+          helpers as never,
+        ),
+      ).rejects.toThrow(trunc)
+      expect(vi.mocked(callLlm)).toHaveBeenCalledTimes(1)
+    })
+
     it('leaf succeeds, branch fails ×3 → shouldSkip true for branch only', async () => {
       const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
       const branchErr = new LlmCallError('branch LLM down', 4)
@@ -763,15 +833,9 @@ describe('compact-conversation', () => {
     it('emits circuit_breaker_skip JSON when a level is already open', async () => {
       const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
       const err = new Error('LLM timed out')
-      expect(() =>
-        propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true }),
-      ).toThrow(err)
-      expect(() =>
-        propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true }),
-      ).toThrow(err)
-      expect(() =>
-        propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true }),
-      ).toThrow(err)
+      expect(() => propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true })).toThrow(err)
+      expect(() => propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true })).toThrow(err)
+      expect(() => propagateLlmFailure(id, err, 'leaf', { isFinalAttempt: true })).toThrow(err)
       expect(shouldSkip(id, 'leaf')).toBe(true)
 
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -783,9 +847,9 @@ describe('compact-conversation', () => {
         compactConversationTask({ conversationId: id }, helpers as never),
       ).resolves.toBeUndefined()
 
-      const skipLines = warn.mock.calls.map((c) => String(c[0])).filter((l) =>
-        l.includes('circuit_breaker_skip'),
-      )
+      const skipLines = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes('circuit_breaker_skip'))
       expect(skipLines.length).toBeGreaterThan(0)
       expect(skipLines[0]).toContain('"kind":"leaf"')
       expect(vi.mocked(callLlm)).not.toHaveBeenCalled()

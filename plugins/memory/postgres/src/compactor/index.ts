@@ -14,6 +14,7 @@ export {
   LEAF_MAX_TOKENS,
   BRANCH_MAX_TOKENS,
   ROOT_MAX_TOKENS,
+  LEAF_MESSAGE_CHAR_CAP,
   PIPELINE_VERSION,
   LLM_TIMEOUT_MS,
   LLM_TEMPERATURE,
@@ -27,4 +28,9 @@ export {
 } from './types.js'
 
 // Formatters for worker reuse (exact match to v5 spec)
-export { formatLeafPrompt, formatBranchPrompt, formatRootPrompt } from './compactor.js'
+export {
+  formatLeafPrompt,
+  formatBranchPrompt,
+  formatRootPrompt,
+  capLeafMessageContent,
+} from './compactor.js'

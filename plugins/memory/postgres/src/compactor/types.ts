@@ -189,6 +189,15 @@ export const BRANCH_MAX_TOKENS = 14000
 export const ROOT_MAX_TOKENS = 20000
 
 /**
+ * Per-message char cap in the leaf prompt (and the tool_args fallback).
+ * Unbounded capture blobs (task-notifications, shell dumps) otherwise
+ * dominate the 7k leaf output budget and the LLM dies with
+ * finish_reason=length — live: 122 dead compact-conversation jobs since
+ * 2026-08-28 vs 7 leftover deadlocks.
+ */
+export const LEAF_MESSAGE_CHAR_CAP = 2000
+
+/**
  * Pipeline version — stamped on every summary row written by this build.
  * Readers (e.g. summary-refine backfill) use this to target rows still on
  * older prompts/budgets: `WHERE pipeline_version < 5`.
