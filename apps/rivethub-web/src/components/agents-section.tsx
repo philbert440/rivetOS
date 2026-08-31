@@ -774,7 +774,7 @@ export function AgentsSection(): JSX.Element {
   return (
     <div className="border-t border-line px-2 py-2">
       {dialog.element}
-      <div className="flex w-full items-center justify-between px-1 py-1">
+      <div className="flex w-full items-center justify-between">
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
