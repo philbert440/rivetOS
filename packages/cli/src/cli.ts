@@ -95,7 +95,7 @@ export function helpText(): string {
   rivetos — Lightweight, stable agent runtime
 
   Setup:
-    rivetos init                        Interactive setup wizard
+    rivetos init [--answers-file PATH]  Interactive setup wizard (JSON for non-interactive)
     rivetos update                      Pull latest, rebuild containers
     rivetos doctor                      Check config and connectivity
     rivetos version                     Show CLI version and commit

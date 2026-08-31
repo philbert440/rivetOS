@@ -100,6 +100,9 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     RIVETOS_DEN_PACKS_DIR:
       den.packs_dir?.trim() || join(installRoot, 'packages', 'den-packs', 'packs'),
   }
+  // Nightly/experimental switch (plan D6). Prefix passthrough below is
+  // RIVETOS_DEN_* / RIVETOS_USER* only — this key is config-derived.
+  if (config.runtime?.experimental === true) env.RIVETOS_EXPERIMENTAL = '1'
   if (den.root_redirect?.trim()) env.RIVETOS_DEN_ROOT_REDIRECT = den.root_redirect.trim()
   if (den.files_root !== undefined) env.RIVETOS_DEN_FILES_ROOT = den.files_root.trim()
   // files_open defaults to the terminal posture: a node the operator already

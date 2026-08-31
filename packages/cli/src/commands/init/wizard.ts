@@ -7,13 +7,22 @@ import { resolve } from 'node:path'
 import { homedir } from 'node:os'
 import * as p from '@clack/prompts'
 import { sharedPath } from '@rivetos/types'
+import { parseUserHost } from '../../lib/mesh-enroll.js'
 import { detectEnvironment } from './detect.js'
 import { configureDeployment } from './deployment.js'
 import { configureAgents } from './agents.js'
 import { configureChannels } from './channels.js'
 import { configurePostgres } from './postgres.js'
 import { reviewConfig } from './review.js'
-import { generateConfig } from './generate.js'
+import { generateConfig, meshSectionFromEnroll } from './generate.js'
+import { configureMeshJoin } from './mesh.js'
+import { seedUsersJson } from './users.js'
+import {
+  interpretAnswers,
+  loadAnswersFile,
+  MissingAnswerError,
+  type AnsweredInit,
+} from './answers.js'
 import type { WizardState } from './types.js'
 
 function bail(v: unknown): asserts v is Exclude<typeof v, symbol> {
@@ -26,12 +35,19 @@ function bail(v: unknown): asserts v is Exclude<typeof v, symbol> {
 export interface InitOptions {
   /** Host to join an existing mesh (from --join flag) */
   joinHost?: string
+  /** JSON file supplying every prompt answer (`rivetos init --answers-file`) */
+  answersFile?: string
 }
 
 /** Mesh listener default. `rivetos init --join` pings this port, not standalone plugin 3100. */
 export const INIT_MESH_JOIN_PORT = 3000
 
 export async function runInitWizard(options: InitOptions = {}): Promise<void> {
+  if (options.answersFile) {
+    await runInitFromAnswersFile(options)
+    return
+  }
+
   p.intro(options.joinHost ? '🔩 RivetOS Setup (joining mesh)' : '🔩 RivetOS Setup')
 
   // Phase 1: Environment detection
@@ -115,6 +131,9 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   p.log.step('Agent Configuration')
   const agents = await configureAgents()
 
+  // Phase 3b: Join a RivetHub mesh (after provider setup)
+  const meshJoin = await configureMeshJoin()
+
   // Phase 4: Channel configuration
   p.log.step('Channel Configuration')
   const channels = await configureChannels()
@@ -129,6 +148,8 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     postgresUrl = await configurePostgres()
   }
 
+  const ownerId = await promptOwnerId()
+
   // Build full state
   const state: WizardState = {
     deployment: target,
@@ -136,6 +157,8 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     channels,
     postgresPassword,
     postgresUrl,
+    ownerId,
+    meshJoin,
   }
 
   // Phase 5: Review
@@ -145,17 +168,25 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     process.exit(0)
   }
 
-  // Phase 6: Generate files
+  // Phase 6: Enroll (if joining a RivetHub mesh) then generate files
+  await enrollMeshIfRequested(state, { interactive: true })
+
   const s = p.spinner()
   s.start('Generating configuration...')
 
   const result = await generateConfig(state, rivetDir)
+  const users = await seedUsersJson(state.ownerId)
 
   s.stop('Configuration generated.')
 
   p.log.success(`Config:     ${result.configPath}`)
   p.log.success(`Secrets:    ${result.envPath}`)
   p.log.success(`Workspace:  ${result.workspacePath}`)
+  if (users.written) {
+    p.log.success(`Users:      ${users.path}`)
+  } else {
+    p.log.info(`Users:      ${users.path} (already exists, left in place)`)
+  }
 
   // Phase 7: Deploy (optional, for containerized targets)
   let deploySuccess = false
@@ -250,7 +281,7 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
     'npx rivetos status                Check runtime status',
   )
 
-  if (options.joinHost) {
+  if (options.joinHost || state.meshJoin) {
     nextSteps.push('npx rivetos mesh list              View mesh nodes')
   }
 
@@ -265,12 +296,211 @@ export async function runInitWizard(options: InitOptions = {}): Promise<void> {
   }
 }
 
-async function offerDockerDeploy(envPath: string): Promise<boolean> {
-  const deploy = await p.confirm({
-    message: 'Deploy now with Docker Compose?',
-    initialValue: true,
+async function promptOwnerId(): Promise<string> {
+  const ownerResult = await p.text({
+    message: 'Owner user id',
+    placeholder: 'owner',
+    defaultValue: 'owner',
+    validate: (val) => {
+      if (!val || !val.trim()) return 'Owner id is required'
+      return undefined
+    },
   })
-  bail(deploy)
+  bail(ownerResult)
+  return ownerResult.trim()
+}
+
+async function enrollMeshIfRequested(
+  state: WizardState,
+  opts: { interactive: boolean },
+): Promise<void> {
+  if (!state.meshJoin) return
+  const uh = parseUserHost(state.meshJoin.hub)
+  const spinner = opts.interactive ? p.spinner() : undefined
+  spinner?.start(`Enrolling ${state.meshJoin.name} via ${state.meshJoin.hub}...`)
+  try {
+    const { runMeshEnroll } = await import('../mesh.js')
+    const { unpacked, advertise } = await runMeshEnroll({
+      user: uh.user,
+      host: uh.host,
+      name: state.meshJoin.name,
+      advertise: state.meshJoin.advertise,
+    })
+    state.meshSection = meshSectionFromEnroll(unpacked, advertise)
+    spinner?.stop(`Enrolled ${state.meshJoin.name} (advertise ${advertise}).`)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    spinner?.stop('Mesh enroll failed.')
+    if (opts.interactive) {
+      p.log.error(message)
+    } else {
+      console.error(`mesh enroll failed: ${message}`)
+    }
+    process.exit(1)
+  }
+}
+
+async function runInitFromAnswersFile(options: InitOptions): Promise<void> {
+  const answersPath = options.answersFile
+  if (!answersPath) return
+
+  let answers: Record<string, unknown>
+  try {
+    answers = await loadAnswersFile(answersPath)
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+    return
+  }
+
+  const env = await detectEnvironment({ quiet: true })
+
+  let interpreted: AnsweredInit
+  try {
+    interpreted = interpretAnswers(answers, env)
+  } catch (err) {
+    const message =
+      err instanceof MissingAnswerError || err instanceof Error ? err.message : String(err)
+    console.error(message)
+    process.exit(1)
+    return
+  }
+
+  if (env.configExists) {
+    const action = interpreted.existingAction
+    if (action === 'cancel') {
+      console.error('Setup cancelled.')
+      process.exit(0)
+    }
+    if (action === 'validate') {
+      try {
+        const doctor = await import('../doctor.js')
+        await doctor.default()
+      } catch {
+        console.error('Run: npx rivetos doctor')
+      }
+      process.exit(0)
+    }
+    if (action === 'deploy') {
+      const rivetDir = resolve(homedir(), '.rivetos')
+      const envPath = resolve(rivetDir, '.env')
+      const deploySuccess = await offerDockerDeploy(envPath, interpreted.deployNow ?? true)
+      if (deploySuccess) {
+        console.log('RivetOS is running.')
+      } else {
+        console.log('Deploy skipped or failed.')
+      }
+      process.exit(0)
+    }
+    if (action === 'overwrite' && !interpreted.overwriteConfirm) {
+      console.error('Setup cancelled (overwriteConfirm is false).')
+      process.exit(0)
+    }
+  }
+
+  if (!interpreted.confirm) {
+    console.error('Setup cancelled.')
+    process.exit(0)
+  }
+
+  const rivetDir = resolve(homedir(), '.rivetos')
+  const postgresPassword = randomBytes(16).toString('hex')
+  const state: WizardState = {
+    deployment: interpreted.deployment,
+    agents: interpreted.agents,
+    channels: [],
+    postgresPassword,
+    postgresUrl: interpreted.postgresUrl,
+    ownerId: interpreted.ownerId,
+    meshJoin: interpreted.meshJoin,
+  }
+
+  await enrollMeshIfRequested(state, { interactive: false })
+
+  const result = await generateConfig(state, rivetDir)
+  const users = await seedUsersJson(state.ownerId)
+
+  console.log(`Config:     ${result.configPath}`)
+  console.log(`Secrets:    ${result.envPath}`)
+  console.log(`Workspace:  ${result.workspacePath}`)
+  console.log(`Users:      ${users.path}${users.written ? '' : ' (already exists, left in place)'}`)
+
+  let deploySuccess = false
+  if (interpreted.deployment === 'docker') {
+    deploySuccess = await offerDockerDeploy(result.envPath, interpreted.deployNow)
+  } else if (interpreted.deployment === 'proxmox') {
+    console.log('To provision a Proxmox container, run infra/scripts/provision-ct.sh')
+  }
+
+  if (options.joinHost) {
+    await legacyMeshJoinPing(options.joinHost, { interactive: false })
+  }
+
+  if (interpreted.deployment === 'docker' && deploySuccess) {
+    console.log('RivetOS is running.')
+  } else {
+    console.log('RivetOS is ready.')
+  }
+}
+
+async function legacyMeshJoinPing(
+  joinHost: string,
+  opts: { interactive: boolean },
+): Promise<void> {
+  const port = INIT_MESH_JOIN_PORT
+  const log = (msg: string) => {
+    if (opts.interactive) p.log.info(msg)
+    else console.log(msg)
+  }
+  const warn = (msg: string) => {
+    if (opts.interactive) p.log.warn(msg)
+    else console.error(msg)
+  }
+  try {
+    let pingRes: Response
+    try {
+      const { readFileSync: rfs } = await import('node:fs')
+      const { Agent: UndiciAgent } = await import('undici')
+      const nodeName = joinHost.split('.')[0]
+      const ca = rfs(sharedPath('rivet-ca', 'intermediate', 'ca-chain.pem'))
+      const cert = rfs(sharedPath('rivet-ca', 'issued', `${nodeName}.crt`))
+      const key = rfs(sharedPath('rivet-ca', 'issued', `${nodeName}.key`))
+      const dispatcher = new UndiciAgent({ connect: { ca, cert, key, rejectUnauthorized: true } })
+      pingRes = await fetch(`https://${joinHost}:${String(port)}/api/mesh/ping`, {
+        // @ts-expect-error — undici dispatcher not in Node fetch types
+        dispatcher,
+        signal: AbortSignal.timeout(5000),
+      })
+    } catch {
+      pingRes = await fetch(`https://${joinHost}:${String(port)}/api/mesh/ping`, {
+        signal: AbortSignal.timeout(5000),
+      })
+    }
+    if (!pingRes.ok) {
+      warn(
+        `Seed node responded with HTTP ${String(pingRes.status)}. You can join later with: npx rivetos mesh join ${joinHost}`,
+      )
+    } else {
+      log(`Mesh: connected to ${joinHost}`)
+    }
+  } catch (err: unknown) {
+    warn(`Could not reach seed node: ${(err as Error).message}`)
+    log(`You can join later with: npx rivetos mesh join ${joinHost}`)
+  }
+}
+
+async function offerDockerDeploy(envPath: string, preanswered?: boolean): Promise<boolean> {
+  let deploy: boolean
+  if (preanswered === undefined) {
+    const asked = await p.confirm({
+      message: 'Deploy now with Docker Compose?',
+      initialValue: true,
+    })
+    bail(asked)
+    deploy = asked
+  } else {
+    deploy = preanswered
+  }
 
   const composeFlags = '-f infra/docker/rivetos/docker-compose.yml'
 

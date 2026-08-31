@@ -340,6 +340,11 @@ export interface RuntimeSection {
   heartbeats?: HeartbeatSection[]
   safety?: SafetySection
   auto_actions?: AutoActionsSection
+  /**
+   * Nightly / experimental switch (plan D6). Default false — omit on stable
+   * installs. When true, boot forwards `RIVETOS_EXPERIMENTAL=1` to gateway/den.
+   */
+  experimental?: boolean
 }
 
 export interface AgentSection {

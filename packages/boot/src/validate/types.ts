@@ -123,6 +123,7 @@ export const KNOWN_RUNTIME_KEYS = new Set([
   'heartbeats',
   'safety',
   'auto_actions',
+  'experimental',
 ])
 
 export const KNOWN_AGENT_KEYS = new Set(['provider', 'model', 'default_thinking', 'local', 'tools'])

@@ -7,7 +7,8 @@
 
 import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { stringify as toYaml } from 'yaml'
+import { parse as parseYaml, stringify as toYaml } from 'yaml'
+import type { UnpackedEnroll } from '../../lib/mesh-enroll.js'
 import type { WizardState, WizardAgent } from './types.js'
 import { PROVIDER_ENV_KEYS } from './agents.js'
 
@@ -51,7 +52,42 @@ export async function generateConfig(
 // Config YAML builder
 // ──────────────────────────────────────────────────────────────────────────────
 
-function buildConfigYaml(state: WizardState): string {
+/**
+ * Build the `mesh:` section written into generated config.yaml from a
+ * successful enroll. Prefers keys from the hub snippet, then fills the
+ * fields validation requires (`enabled`, `node_name`, `tls`).
+ */
+export function meshSectionFromEnroll(
+  unpacked: Pick<UnpackedEnroll, 'name' | 'snippet'>,
+  advertise?: string,
+): Record<string, unknown> {
+  let fromSnippet: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = parseYaml(unpacked.snippet)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const mesh = (parsed as Record<string, unknown>).mesh
+      if (mesh && typeof mesh === 'object' && !Array.isArray(mesh)) {
+        fromSnippet = { ...(mesh as Record<string, unknown>) }
+      }
+    }
+  } catch {
+    // Snippet is advisory; identity below is enough for a valid mesh section.
+  }
+  const section: Record<string, unknown> = {
+    ...fromSnippet,
+    enabled: true,
+    node_name: unpacked.name,
+    tls: fromSnippet.tls ?? true,
+  }
+  if (advertise) {
+    section.advertise_host = advertise
+  } else if (typeof fromSnippet.advertise_host === 'string' && fromSnippet.advertise_host.trim()) {
+    section.advertise_host = fromSnippet.advertise_host
+  }
+  return section
+}
+
+export function buildConfigYaml(state: WizardState): string {
   const config: Record<string, unknown> = {}
 
   // Runtime
@@ -85,7 +121,9 @@ function buildConfigYaml(state: WizardState): string {
   config.providers = providers
 
   // Channels: social bots removed in Phase 5. Human UX is RivetHub.
-  // Optional agent mesh can be added manually under channels.agent.
+  if (state.meshSection) {
+    config.mesh = state.meshSection
+  }
 
   // Memory
   config.memory = {
