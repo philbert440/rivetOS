@@ -36,6 +36,7 @@ export async function handleCreate(
   tags: string | undefined,
   force: boolean,
   embedEndpoint: string | undefined,
+  embedModel: string | undefined,
 ): Promise<string> {
   if (!VALID_NAME_RE.test(name)) {
     return `Invalid skill name: "${name}". Must be lowercase letters, digits, hyphens only (1-64 chars, start with letter or digit).`
@@ -46,13 +47,14 @@ export async function handleCreate(
     return `Skill "${name}" already exists at ${existing.location}`
   }
 
-  // Embedding-based dedup check
-  if (embedEndpoint && !force) {
+  // Embedding-based dedup check — skip unless both endpoint and model are set
+  // (no homelab model-name fallback).
+  if (embedEndpoint && embedModel && !force) {
     const desc = description ?? content?.slice(0, 500) ?? name
     const existingSkills = manager.list().map((s) => ({ name: s.name, description: s.description }))
 
     if (existingSkills.length > 0) {
-      const dupMatch = await checkDedup(embedEndpoint, desc, existingSkills)
+      const dupMatch = await checkDedup(embedEndpoint, desc, existingSkills, embedModel)
       if (dupMatch) {
         return (
           `Possible duplicate: "${dupMatch.name}" (similarity: ${dupMatch.similarity.toFixed(2)}). ` +

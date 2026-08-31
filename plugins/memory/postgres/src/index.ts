@@ -103,8 +103,12 @@ export const manifest: PluginManifest = {
 
     const embedEndpoint =
       (cfg.embed_endpoint as string | undefined) ?? ctx.env.RIVETOS_EMBED_URL ?? ''
-    const embedModel =
-      (cfg.embed_model as string | undefined) ?? ctx.env.RIVETOS_EMBED_MODEL ?? 'nemotron'
+    const embedModel = (cfg.embed_model as string | undefined) ?? ctx.env.RIVETOS_EMBED_MODEL
+    if (embedEndpoint && !embedModel) {
+      throw new Error(
+        'RIVETOS_EMBED_MODEL (or memory.postgres.embed_model) is required when an embedding URL is set. OpenAI-compatible embedding model id (example: text-embedding-3-small)',
+      )
+    }
 
     const memory = new PostgresMemory({
       connectionString,

@@ -2,10 +2,10 @@
  * Environment-driven configuration for the embedding worker.
  */
 
-function requireEnv(name: string): string {
+function requireEnv(name: string, detail?: string): string {
   const value = process.env[name]
   if (!value) {
-    console.error(`[EmbedWorker] ${name} is required`)
+    console.error(`[EmbedWorker] ${name} is required${detail ? `. ${detail}` : ''}`)
     process.exit(1)
   }
   return value
@@ -21,7 +21,10 @@ function intEnv(name: string, fallback: number): number {
 export const config = {
   pgUrl: requireEnv('RIVETOS_PG_URL'),
   embedUrl: requireEnv('RIVETOS_EMBED_URL'),
-  embedModel: process.env.RIVETOS_EMBED_MODEL ?? 'nemotron',
+  embedModel: requireEnv(
+    'RIVETOS_EMBED_MODEL',
+    'OpenAI-compatible embedding model id (example: text-embedding-3-small)',
+  ),
 
   concurrency: intEnv('EMBED_CONCURRENCY', 4),
 

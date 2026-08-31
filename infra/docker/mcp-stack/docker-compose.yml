@@ -61,9 +61,10 @@ services:
       MCP_HOST: '0.0.0.0'
       MCP_PORT: '5700'
       RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
-      # Optional: point at a real embedding endpoint to enable hybrid search
+      # Optional: point at a real embedding endpoint to enable hybrid search.
+      # Both must be set together — URL without MODEL exits 1 when PG is set.
       # RIVETOS_EMBED_URL: http://gpu-host:9401
-      # RIVETOS_EMBED_MODEL: nemotron
+      # RIVETOS_EMBED_MODEL: text-embedding-3-small
       # Optional: Google Custom Search (DuckDuckGo fallback otherwise)
       # GOOGLE_CSE_API_KEY: your-key
       # GOOGLE_CSE_ID: your-cse-id

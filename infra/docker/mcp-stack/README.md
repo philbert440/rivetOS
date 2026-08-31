@@ -70,7 +70,7 @@ docker compose -f infra/docker/mcp-stack/docker-compose.yml down -v
 | Env var | Default | Effect |
 |---|---|---|
 | `RIVETOS_EMBED_URL` | _(unset)_ | Hybrid (vector + FTS) memory search instead of FTS-only. |
-| `RIVETOS_EMBED_MODEL` | `nemotron` | Embedding model name. |
+| `RIVETOS_EMBED_MODEL` | _(required when URL is set)_ | Embedding model id. No default — set alongside `RIVETOS_EMBED_URL`. |
 | `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_ID` | _(unset)_ | Switches `rivetos.internet_search` from DuckDuckGo fallback to Google Custom Search. |
 | `RIVETOS_USER_AGENT` | `RivetOS/<ver> (+https://github.com/philbert440/rivetOS)` | Override for `rivetos.web_fetch`. |
 

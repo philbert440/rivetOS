@@ -562,13 +562,15 @@ export async function registerAgentTools(
   await skillManager.discover(skillDirs)
   runtime.registerTool(createSkillListTool(skillManager))
 
-  // Pass embed endpoint for dedup checks — uses environment variable
+  // Pass embed endpoint + model for dedup checks — uses environment variables
   // (embedding service runs on Datahub/GERTY, not configured per-agent)
   const embedEndpoint = process.env.RIVETOS_EMBED_URL ?? ''
+  const embedModel = process.env.RIVETOS_EMBED_MODEL ?? ''
   runtime.registerTool(
     createSkillManageTool(skillManager, {
       skillDirs,
       embedEndpoint: embedEndpoint || undefined,
+      embedModel: embedModel || undefined,
     }),
   )
 
@@ -657,6 +659,7 @@ export async function registerAgentTools(
         pool,
         userPools,
         embedEndpoint: embedEndpoint || undefined,
+        embedModel: embedModel || undefined,
       }),
     )
   }
