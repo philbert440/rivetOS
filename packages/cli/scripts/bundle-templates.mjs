@@ -28,8 +28,13 @@ try {
   process.exit(1)
 }
 
+// Two-file workspace: only AGENT.md, MEMORY.md, and users/ still ship.
+const KEEP = ['AGENT.md', 'MEMORY.md', 'users']
+
 await rm(DEST, { recursive: true, force: true })
 await mkdir(DEST, { recursive: true })
-await cp(SRC, DEST, { recursive: true })
+for (const name of KEEP) {
+  await cp(resolve(SRC, name), resolve(DEST, name), { recursive: true })
+}
 
-console.log(`✓ Bundled workspace-templates → ${DEST}`)
+console.log(`✓ Bundled workspace-templates (${KEEP.join(', ')}) → ${DEST}`)

@@ -464,7 +464,7 @@ async function verifyDataPersistence(): Promise<void> {
     const files = await import('node:fs/promises').then((fs) => fs.readdir(workspacePath))
     const important = files.filter(
       (f) =>
-        ['CORE.md', 'USER.md', 'MEMORY.md', 'WORKSPACE.md'].includes(f) ||
+        ['AGENT.md', 'MEMORY.md', 'CLAUDE.md'].includes(f) ||
         f === 'memory' ||
         f === 'skills',
     )

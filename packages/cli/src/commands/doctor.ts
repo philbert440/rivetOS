@@ -282,8 +282,8 @@ async function checkWorkspace(): Promise<CheckResult[]> {
   const results: CheckResult[] = []
   const workspacePath = resolve(process.env.HOME ?? '.', '.rivetos', 'workspace')
 
-  const requiredFiles = ['CORE.md', 'WORKSPACE.md']
-  const optionalFiles = ['USER.md', 'MEMORY.md', 'CAPABILITIES.md', 'HEARTBEAT.md']
+  const requiredFiles = ['AGENT.md', 'MEMORY.md']
+  const optionalFiles = ['HEARTBEAT.md']
 
   for (const file of requiredFiles) {
     try {

@@ -24,27 +24,23 @@ describe('WorkspaceLoader', () => {
 
   describe('load()', () => {
     it('returns core files when they exist', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), '# Core')
-      await writeFile(join(tempDir, 'USER.md'), '# User')
-      await writeFile(join(tempDir, 'WORKSPACE.md'), '# Workspace')
+      await writeFile(join(tempDir, 'AGENT.md'), '# Agent')
       await writeFile(join(tempDir, 'MEMORY.md'), '# Memory')
 
       const files = await loader.load()
-      assert.equal(files.length, 4)
+      assert.equal(files.length, 2)
       const names = files.map((f) => f.name)
-      assert.ok(names.includes('CORE.md'))
-      assert.ok(names.includes('USER.md'))
-      assert.ok(names.includes('WORKSPACE.md'))
+      assert.ok(names.includes('AGENT.md'))
       assert.ok(names.includes('MEMORY.md'))
     })
 
     it('skips missing files gracefully', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), '# Core')
-      // Intentionally skip USER, WORKSPACE, MEMORY
+      await writeFile(join(tempDir, 'AGENT.md'), '# Agent')
+      // Intentionally skip MEMORY
 
       const files = await loader.load()
       assert.equal(files.length, 1)
-      assert.equal(files[0].name, 'CORE.md')
+      assert.equal(files[0].name, 'AGENT.md')
     })
 
     it('returns empty array when no files exist', async () => {
@@ -52,17 +48,17 @@ describe('WorkspaceLoader', () => {
       assert.equal(files.length, 0)
     })
 
-    it('returns extended files when extended = true', async () => {
+    it('does not load retired files even when they exist on disk', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), '# Agent')
+      await writeFile(join(tempDir, 'MEMORY.md'), '# Memory')
       await writeFile(join(tempDir, 'CORE.md'), '# Core')
       await writeFile(join(tempDir, 'USER.md'), '# User')
       await writeFile(join(tempDir, 'WORKSPACE.md'), '# Workspace')
-      await writeFile(join(tempDir, 'MEMORY.md'), '# Memory')
       await writeFile(join(tempDir, 'CAPABILITIES.md'), '# Capabilities')
 
-      const files = await loader.load(true)
+      const files = await loader.load()
       const names = files.map((f) => f.name)
-      assert.ok(names.includes('CAPABILITIES.md'))
-      assert.ok(files.length >= 5) // 5 core+extended + any recent memory files
+      assert.deepEqual(names, ['AGENT.md', 'MEMORY.md'])
     })
   })
 
@@ -113,14 +109,14 @@ describe('WorkspaceLoader', () => {
 
   describe('buildSystemPrompt()', () => {
     it('includes core file contents with headers', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), 'Be helpful')
-      await writeFile(join(tempDir, 'USER.md'), 'Phil is the user')
+      await writeFile(join(tempDir, 'AGENT.md'), 'Be helpful')
+      await writeFile(join(tempDir, 'MEMORY.md'), 'Query memory first')
 
       const prompt = await loader.buildSystemPrompt()
-      assert.ok(prompt.includes('## CORE.md'))
+      assert.ok(prompt.includes('## AGENT.md'))
       assert.ok(prompt.includes('Be helpful'))
-      assert.ok(prompt.includes('## USER.md'))
-      assert.ok(prompt.includes('Phil is the user'))
+      assert.ok(prompt.includes('## MEMORY.md'))
+      assert.ok(prompt.includes('Query memory first'))
     })
 
     it('includes Runtime section with agent ID', async () => {
@@ -133,25 +129,76 @@ describe('WorkspaceLoader', () => {
       const prompt = await loader.buildSystemPrompt()
       assert.ok(!prompt.includes('## Runtime'))
     })
+
+    it('appends USER.md (profile) after core files when a profile matches', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'agent identity')
+      await writeFile(join(tempDir, 'MEMORY.md'), 'memory index')
+      await mkdir(join(tempDir, 'users'), { recursive: true })
+      await writeFile(
+        join(tempDir, 'users/profiles.json'),
+        JSON.stringify({ alice: 'alice' }),
+      )
+      await writeFile(join(tempDir, 'users/alice.md'), 'Alice is a guest')
+
+      const prompt = await loader.buildSystemPrompt('opus', 'alice')
+      assert.ok(prompt.includes('## USER.md (alice)'))
+      assert.ok(prompt.includes('Alice is a guest'))
+
+      const agentIdx = prompt.indexOf('## AGENT.md')
+      const memoryIdx = prompt.indexOf('## MEMORY.md')
+      const userIdx = prompt.indexOf('## USER.md (alice)')
+      const runtimeIdx = prompt.indexOf('## Runtime')
+      assert.ok(agentIdx >= 0 && memoryIdx > agentIdx)
+      assert.ok(userIdx > memoryIdx, 'profile section should follow core files')
+      assert.ok(runtimeIdx > userIdx, 'Runtime should come after profile section')
+    })
+
+    it('appends nothing when no profile matches', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'agent identity')
+      await mkdir(join(tempDir, 'users'), { recursive: true })
+      await writeFile(
+        join(tempDir, 'users/profiles.json'),
+        JSON.stringify({ alice: 'alice' }),
+      )
+      await writeFile(join(tempDir, 'users/alice.md'), 'Alice is a guest')
+
+      const prompt = await loader.buildSystemPrompt('opus', 'unknown-user')
+      assert.ok(!prompt.includes('## USER.md'))
+      assert.ok(!prompt.includes('Alice is a guest'))
+    })
+
+    it('appends nothing when userId is omitted', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'agent identity')
+      await mkdir(join(tempDir, 'users'), { recursive: true })
+      await writeFile(
+        join(tempDir, 'users/profiles.json'),
+        JSON.stringify({ alice: 'alice' }),
+      )
+      await writeFile(join(tempDir, 'users/alice.md'), 'Alice is a guest')
+
+      const prompt = await loader.buildSystemPrompt('opus')
+      assert.ok(!prompt.includes('## USER.md'))
+    })
   })
 
   describe('buildHeartbeatPrompt()', () => {
-    it('includes HEARTBEAT.md when it exists', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), 'core')
+    it('includes workspace HEARTBEAT.md when it exists (override)', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'core')
       await writeFile(join(tempDir, 'HEARTBEAT.md'), 'Check email and calendar')
 
       const prompt = await loader.buildHeartbeatPrompt('opus')
       assert.ok(prompt.includes('## HEARTBEAT.md'))
       assert.ok(prompt.includes('Check email and calendar'))
+      assert.ok(!prompt.includes('HEARTBEAT_OK'))
     })
 
-    it('returns base prompt when HEARTBEAT.md is missing', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), 'core')
+    it('uses DEFAULT_HEARTBEAT when HEARTBEAT.md is missing', async () => {
+      await writeFile(join(tempDir, 'AGENT.md'), 'core')
 
-      const base = await loader.buildSystemPrompt('opus')
       const heartbeat = await loader.buildHeartbeatPrompt('opus')
-      // Clear cache between calls to avoid stale state
-      assert.ok(!heartbeat.includes('HEARTBEAT.md'))
+      assert.ok(heartbeat.includes('## HEARTBEAT.md'))
+      assert.ok(heartbeat.includes('HEARTBEAT_OK'))
+      assert.ok(heartbeat.includes('Background Task Checklist'))
     })
   })
 
@@ -281,7 +328,7 @@ describe('WorkspaceLoader', () => {
 
   describe('pinned files in system prompt', () => {
     it('includes pinned files after workspace files', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), '# Core')
+      await writeFile(join(tempDir, 'AGENT.md'), '# Agent')
       await mkdir(join(tempDir, 'src'), { recursive: true })
       await writeFile(join(tempDir, 'src/index.ts'), 'export default {}')
       await loader.pinFile('src/index.ts')
@@ -291,15 +338,15 @@ describe('WorkspaceLoader', () => {
       assert.ok(prompt.includes('export default {}'))
 
       // Order: workspace files → pinned → runtime
-      const coreIdx = prompt.indexOf('## CORE.md')
+      const agentIdx = prompt.indexOf('## AGENT.md')
       const pinnedIdx = prompt.indexOf('## Pinned:')
       const runtimeIdx = prompt.indexOf('## Runtime')
-      assert.ok(pinnedIdx > coreIdx, 'Pinned should come after workspace files')
+      assert.ok(pinnedIdx > agentIdx, 'Pinned should come after workspace files')
       assert.ok(runtimeIdx > pinnedIdx, 'Runtime should come after pinned files')
     })
 
     it('does not include pinned section when nothing is pinned', async () => {
-      await writeFile(join(tempDir, 'CORE.md'), '# Core')
+      await writeFile(join(tempDir, 'AGENT.md'), '# Agent')
       const prompt = await loader.buildSystemPrompt('opus')
       assert.ok(!prompt.includes('## Pinned:'))
     })

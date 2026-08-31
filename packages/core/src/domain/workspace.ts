@@ -2,16 +2,14 @@
  * Workspace Loader — reads workspace files and builds the system prompt.
  *
  * System prompt files (loaded on /new, cached for the session):
- *   CORE.md         — identity + personality + operating values
- *   USER.md         — who the owner is
- *   WORKSPACE.md    — operating rules + infrastructure context
+ *   AGENT.md        — identity + operating contract + owner/routed-user gate
  *   MEMORY.md       — lightweight context index (tiny, query-based)
  *
- * Extended (local models where tokens are free, adds):
- *   CAPABILITIES.md — tools, skills, infrastructure reference
+ * Per-user identity (appended after core files when a profile matches):
+ *   users/<profile>.md — injected as ## USER.md (<profile>)
  *
- * NOT in system prompt (agent uses tools to access these):
- *   HEARTBEAT.md    — only injected during heartbeat turns
+ * NOT in the always-on system prompt:
+ *   HEARTBEAT.md    — workspace override; else DEFAULT_HEARTBEAT (heartbeat turns only)
  *   memory/*.md     — search via memory_search
  */
 
@@ -22,16 +20,48 @@ import { logger } from '../logger.js'
 
 const log = logger('Workspace')
 
-/** Core files — always in system prompt (minimal, for paid APIs) */
-const CORE_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md']
-
-/** Extended files — included for local models where tokens are free */
-const EXTENDED_FILES = ['CORE.md', 'USER.md', 'WORKSPACE.md', 'MEMORY.md', 'CAPABILITIES.md']
+/** Core files — always in system prompt */
+const CORE_FILES = ['AGENT.md', 'MEMORY.md']
 
 /** Max size for a single pinned file (50KB) */
 const MAX_PIN_SIZE = 50 * 1024
 /** Max total size of all pinned files (200KB) */
 const MAX_TOTAL_PIN_SIZE = 200 * 1024
+
+/** Default heartbeat checklist. A workspace HEARTBEAT.md overrides this. */
+const DEFAULT_HEARTBEAT = `# HEARTBEAT.md — Background Task Checklist
+
+Instructions injected **only on heartbeat turns** (when the runtime polls you to do background work). Keep this small to limit token burn.
+
+## Rules
+
+- If nothing needs attention, reply \`HEARTBEAT_OK\`.
+- Do not infer or repeat old tasks from prior chats.
+- Stay within the checklist below — freelancing wastes tokens.
+- Respect quiet hours (late night) unless something is urgent.
+
+## Checklist
+
+Rotate through these across heartbeats, not all in one turn:
+
+- [ ] Check recent \`memory/YYYY-MM-DD.md\` for anything you committed to do
+- [ ] Check \`AGENT.md\` in any active project directory for pending work
+- [ ] Brief memory maintenance (consolidate / index)
+- [ ] _(add human-specific reminders as they come up)_
+
+## State
+
+Track what you checked and when in \`memory/heartbeat-state.json\`:
+
+\`\`\`json
+{
+  "lastChecks": {
+    "memory_review": null,
+    "agent_md": null
+  }
+}
+\`\`\`
+`
 
 export class WorkspaceLoader implements Workspace {
   private baseDir: string
@@ -48,39 +78,13 @@ export class WorkspaceLoader implements Workspace {
   /**
    * Load workspace files for system prompt injection.
    * Called once on session init (/new), not every turn.
-   *
-   * @param extended — true for local models where tokens are free (includes CAPABILITIES.md)
    */
-  async load(extended = false): Promise<WorkspaceFile[]> {
-    const fileList = extended ? EXTENDED_FILES : CORE_FILES
+  async load(): Promise<WorkspaceFile[]> {
     const files: WorkspaceFile[] = []
-    for (const name of fileList) {
+    for (const name of CORE_FILES) {
       const content = await this.read(name)
       if (content) {
         files.push({ name, path: join(this.baseDir, name), content })
-      }
-    }
-
-    // For extended mode, also load recent daily notes
-    if (extended) {
-      const memoryFiles = await this.loadRecentMemory(2)
-      files.push(...memoryFiles)
-    }
-
-    return files
-  }
-
-  private async loadRecentMemory(daysBack: number): Promise<WorkspaceFile[]> {
-    const files: WorkspaceFile[] = []
-    const now = new Date()
-    for (let i = 0; i <= daysBack; i++) {
-      const date = new Date(now)
-      date.setDate(date.getDate() - i)
-      const dateStr = date.toISOString().split('T')[0]
-      const filename = `memory/${dateStr}.md`
-      const content = await this.read(filename)
-      if (content) {
-        files.push({ name: filename, path: join(this.baseDir, filename), content })
       }
     }
     return files
@@ -172,14 +176,10 @@ export class WorkspaceLoader implements Workspace {
   // ---------------------------------------------------------------------------
 
   /**
-   * Build the system prompt from core files + pinned files.
-   * This is injected ONCE on session init, not every turn.
-   */
-  /**
    * Resolve a per-user profile name from `users/profiles.json` (a
    * `{ "<userId>": "<profile>" }` map). Returns null when there's no map or no
-   * entry — i.e. the default owner identity (USER.md) applies. Used to give
-   * non-owner speakers their own USER.md and to tag their memory.
+   * entry. Matching profiles append `users/<profile>.md` as a USER.md section;
+   * the owner identity lives in AGENT.md.
    */
   async resolveProfile(userId?: string): Promise<string | null> {
     if (!userId) return null
@@ -198,25 +198,25 @@ export class WorkspaceLoader implements Workspace {
     this.skillCatalog = text.trim()
   }
 
-  async buildSystemPrompt(agentId?: string, extended = false, userId?: string): Promise<string> {
-    const files = await this.load(extended)
+  async buildSystemPrompt(agentId?: string, userId?: string): Promise<string> {
+    const files = await this.load()
     if (files.length === 0) {
       log.warn(
         `No workspace files loaded from ${this.baseDir} — agent will boot without personality files`,
       )
     }
-    // Per-user identity: if the speaker maps to a profile, swap USER.md for
-    // their `users/<profile>.md`. Everyone else gets the default USER.md.
+    // Per-user identity: if the speaker maps to a profile, append their
+    // `users/<profile>.md` after the core files. No match → nothing extra
+    // (AGENT.md carries the owner identity contract).
     const profile = await this.resolveProfile(userId)
     const profileMd = profile ? await this.read(`users/${profile}.md`) : null
 
     let prompt = ''
     for (const file of files) {
-      if (profileMd && file.name === 'USER.md') {
-        prompt += `\n\n## USER.md (${profile})\n${profileMd}`
-      } else {
-        prompt += `\n\n## ${file.name}\n${file.content}`
-      }
+      prompt += `\n\n## ${file.name}\n${file.content}`
+    }
+    if (profile && profileMd) {
+      prompt += `\n\n## USER.md (${profile})\n${profileMd}`
     }
 
     // Pinned files — after workspace files, before runtime section
@@ -236,15 +236,13 @@ export class WorkspaceLoader implements Workspace {
   }
 
   /**
-   * Build system prompt for heartbeat turns — includes HEARTBEAT.md.
+   * Build system prompt for heartbeat turns — includes HEARTBEAT.md
+   * (workspace override) or DEFAULT_HEARTBEAT.
    */
   async buildHeartbeatPrompt(agentId?: string): Promise<string> {
     const base = await this.buildSystemPrompt(agentId)
-    const heartbeat = await this.read('HEARTBEAT.md')
-    if (heartbeat) {
-      return base + `\n\n## HEARTBEAT.md\n${heartbeat}`
-    }
-    return base
+    const heartbeat = (await this.read('HEARTBEAT.md')) ?? DEFAULT_HEARTBEAT
+    return base + `\n\n## HEARTBEAT.md\n${heartbeat}`
   }
 
   /** Clear cache and pinned files — forces re-read on next load (used by /new). */
