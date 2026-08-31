@@ -25,7 +25,7 @@ import {
 } from './answers.js'
 import type { WizardState } from './types.js'
 
-function bail(v: unknown): asserts v is Exclude<typeof v, symbol> {
+function bail<T>(v: T | symbol): asserts v is T {
   if (p.isCancel(v)) {
     p.cancel('Setup cancelled.')
     process.exit(0)
@@ -443,10 +443,7 @@ async function runInitFromAnswersFile(options: InitOptions): Promise<void> {
   }
 }
 
-async function legacyMeshJoinPing(
-  joinHost: string,
-  opts: { interactive: boolean },
-): Promise<void> {
+async function legacyMeshJoinPing(joinHost: string, opts: { interactive: boolean }): Promise<void> {
   const port = INIT_MESH_JOIN_PORT
   const log = (msg: string) => {
     if (opts.interactive) p.log.info(msg)

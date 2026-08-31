@@ -27,9 +27,7 @@ export function buildOwnerRegistry(ownerId: string): {
   }
 }
 
-export async function seedUsersJson(
-  ownerId: string,
-): Promise<{ path: string; written: boolean }> {
+export async function seedUsersJson(ownerId: string): Promise<{ path: string; written: boolean }> {
   const path = usersJsonPath()
   try {
     await access(path)

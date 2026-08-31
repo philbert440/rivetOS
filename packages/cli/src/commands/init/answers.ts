@@ -31,7 +31,7 @@ export function isDefaultMarker(value: unknown): value is { default: true } {
     typeof value === 'object' &&
     !Array.isArray(value) &&
     (value as { default?: unknown }).default === true &&
-    Object.keys(value as object).length === 1
+    Object.keys(value).length === 1
   )
 }
 
@@ -41,7 +41,7 @@ export function parseAnswersJson(raw: string): Record<string, unknown> {
     parsed = JSON.parse(raw)
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    throw new Error(`answers-file is not valid JSON: ${detail}`)
+    throw new Error(`answers-file is not valid JSON: ${detail}`, { cause: err })
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('answers-file must be a JSON object')
@@ -226,13 +226,14 @@ function interpretMeshJoin(answers: Record<string, unknown>): WizardMeshJoin | u
   try {
     parseUserHost(hub)
   } catch (err) {
-    throw new Error(`answers-file key "meshHub" is not a valid user@host: ${(err as Error).message}`)
+    throw new Error(
+      `answers-file key "meshHub" is not a valid user@host: ${(err as Error).message}`,
+      { cause: err },
+    )
   }
   const name = readString(answers, 'meshName', 'meshName')
   if (!validateNodeName(name)) {
-    throw new Error(
-      'answers-file key "meshName" must match [a-z0-9]([a-z0-9-]*[a-z0-9])? (max 63)',
-    )
+    throw new Error('answers-file key "meshName" must match [a-z0-9]([a-z0-9-]*[a-z0-9])? (max 63)')
   }
   const advertise = readOptionalString(answers, 'meshAdvertise', 'meshAdvertise')
   return { hub, name, advertise }
