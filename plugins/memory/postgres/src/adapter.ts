@@ -71,6 +71,12 @@ export interface PostgresMemoryConfig {
   embedEndpoint?: string
   /** Embedding model name (required when embedEndpoint is set) */
   embedModel?: string
+  /** Search-time query instruction prefix. Empty string disables. */
+  embedQueryInstruction?: string
+  /** Query-embed fetch timeout in ms (default 8000, floor 500, cap 60000). */
+  embedTimeoutMs?: number | string
+  /** Per-query hnsw.ef_search (default 100, clamp 10..1000). */
+  hnswEfSearch?: number | string
 }
 
 // ---------------------------------------------------------------------------
@@ -116,14 +122,18 @@ export class PostgresMemory implements Memory {
     })
 
     // Build search engine config — pass embedding endpoint for hybrid search
-    const searchConfig: SearchEngineConfig | undefined = config.embedEndpoint
-      ? { embedEndpoint: config.embedEndpoint, embedModel: config.embedModel }
-      : undefined
+    const searchConfig: SearchEngineConfig = {
+      embedEndpoint: config.embedEndpoint,
+      embedModel: config.embedModel,
+      embedQueryInstruction: config.embedQueryInstruction,
+      embedTimeoutMs: config.embedTimeoutMs,
+      hnswEfSearch: config.hnswEfSearch,
+    }
 
     this.searchEngine = new SearchEngine(this.pool, searchConfig)
     this.wikiIndex = new WikiIndex(this.pool, {
-      embedEndpoint: searchConfig?.embedEndpoint ?? undefined,
-      embedModel: searchConfig?.embedModel,
+      embedEndpoint: searchConfig.embedEndpoint,
+      embedModel: searchConfig.embedModel,
     })
     this.expander = new Expander(this.pool)
   }

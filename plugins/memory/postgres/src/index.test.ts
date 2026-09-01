@@ -3,8 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('./adapter.js', () => ({
-  PostgresMemory: class {
+vi.mock('./adapter.js', () => {
+  class PostgresMemory {
+    static configs: unknown[] = []
+    constructor(config: unknown) {
+      PostgresMemory.configs.push(config)
+    }
     getSearchEngine() {
       return {}
     }
@@ -14,13 +18,17 @@ vi.mock('./adapter.js', () => ({
     getPool() {
       return {}
     }
-  },
-}))
+  }
+  return { PostgresMemory }
+})
 vi.mock('./embedder.js', () => ({ ensureEmbedderSchema: vi.fn(async () => undefined) }))
 vi.mock('./tools/index.js', () => ({ createMemoryTools: () => [] }))
 
+import { PostgresMemory } from './adapter.js'
 import { manifest } from './index.js'
 import { SearchEngine } from './search.js'
+
+type CtorMemory = typeof PostgresMemory & { configs: unknown[] }
 
 function fakeCtx(pluginConfig: Record<string, unknown>, env: Record<string, string> = {}) {
   return {
@@ -42,6 +50,7 @@ function fakeCtx(pluginConfig: Record<string, unknown>, env: Record<string, stri
 const tmpDirs: string[] = []
 afterEach(() => {
   tmpDirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
+  ;(PostgresMemory as CtorMemory).configs.length = 0
 })
 
 describe('memory-postgres manifest', () => {
@@ -121,6 +130,57 @@ describe('memory-postgres manifest', () => {
   })
 })
 
+describe('M1 env / config plumbing', () => {
+  it('passes plugin config first, then env, matching embed_endpoint', async () => {
+    const ctx = fakeCtx(
+      {
+        embed_endpoint: 'http://127.0.0.1:9401',
+        embed_model: 'Qwen3-Embedding-0.6B',
+        embed_query_instruction: 'Instruct: from-config\nQuery: ',
+        embed_timeout_ms: '900',
+        hnsw_ef_search: '40.7',
+      },
+      {
+        RIVETOS_EMBED_QUERY_INSTRUCTION: 'Instruct: from-env\nQuery: ',
+        RIVETOS_EMBED_TIMEOUT_MS: '800000',
+        RIVETOS_HNSW_EF_SEARCH: '9999',
+      },
+    )
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as {
+      embedQueryInstruction: string
+      embedTimeoutMs: string
+      hnswEfSearch: string
+    }
+    expect(cfg.embedQueryInstruction).toBe('Instruct: from-config\nQuery: ')
+    expect(cfg.embedTimeoutMs).toBe('900')
+    expect(cfg.hnswEfSearch).toBe('40.7')
+  })
+
+  it('falls back to env when plugin config omits the new keys', async () => {
+    const ctx = fakeCtx(
+      {
+        embed_endpoint: 'http://127.0.0.1:9401',
+        embed_model: 'Qwen3-Embedding-0.6B',
+      },
+      {
+        RIVETOS_EMBED_QUERY_INSTRUCTION: '',
+        RIVETOS_EMBED_TIMEOUT_MS: '100',
+        RIVETOS_HNSW_EF_SEARCH: '40.7',
+      },
+    )
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as {
+      embedQueryInstruction: string
+      embedTimeoutMs: string
+      hnswEfSearch: string
+    }
+    expect(cfg.embedQueryInstruction).toBe('')
+    expect(cfg.embedTimeoutMs).toBe('100')
+    expect(cfg.hnswEfSearch).toBe('40.7')
+  })
+})
+
 describe('SearchEngine embed config', () => {
   const pool = {} as never
 
@@ -142,6 +202,20 @@ describe('SearchEngine embed config', () => {
 
   it('constructs with neither endpoint nor model (FTS-only)', () => {
     expect(() => new SearchEngine(pool)).not.toThrow()
+  })
+
+  it('clamps string env-like values on the engine', () => {
+    const eng = new SearchEngine(pool, {
+      embedEndpoint: 'http://127.0.0.1:9401',
+      embedModel: 'Qwen3-Embedding-0.6B',
+      embedQueryInstruction: '',
+      embedTimeoutMs: '100',
+      hnswEfSearch: '40.7',
+    })
+    // Public surface: runtime stats exist; clamps are covered in search.test.ts.
+    // Instruction '' disables prefix (engine constructs).
+    expect(eng.getRuntimeStats().queryEmbedCacheHits).toBe(0)
+    expect(eng.getRuntimeStats().queryEmbedCacheMisses).toBe(0)
   })
 })
 

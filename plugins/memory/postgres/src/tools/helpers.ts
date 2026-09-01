@@ -494,6 +494,20 @@ export function applyWindowArgs(args: { window?: unknown; since?: unknown; befor
   return { since: undefined, before: undefined }
 }
 
+/** Agent-facing banner when the vector arm was dropped. Always the first line. */
+export function formatVectorArmUnavailable(
+  reason: string,
+  mode?: 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector',
+  hitCount = 0,
+): string {
+  if (mode === 'trigram' || mode === 'regex') return ''
+  if (mode === 'vector') {
+    const suffix = hitCount > 0 ? 'showing fts fallback results' : 'no results'
+    return `⚠ vector arm unavailable (${reason}) — ${suffix}`
+  }
+  return `⚠ vector arm unavailable (${reason}) — results are fts/trigram only`
+}
+
 /**
  * Hermes-parity empty-result guidance for `memory_search`.
  *
