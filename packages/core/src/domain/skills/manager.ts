@@ -121,7 +121,10 @@ export class SkillManagerImpl implements SkillManager {
     try {
       const entries = await readdir(dir, { withFileTypes: true })
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue
+        // Symlinked skill dirs are how curated shared sets are wired (e.g.
+        // /rivet-shared/skills/pstack-active/* → ../pstack/...); the stat()
+        // below follows the link and drops anything without a SKILL.md.
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
         // Skip hidden/internal dirs
         if (entry.name.startsWith('.')) continue
 
