@@ -63,9 +63,7 @@ function postJson(url, headers, body, timeoutMs) {
       // System trust only: a private-CA den will refuse the handshake and the
       // post is silently dropped — warn once so vanished events are traceable.
       denCa = null
-      console.error(
-        `rivet-den hook: CA chain unreadable at ${DEN_CA_PATH} — posts to https dens may fail`,
-      )
+      console.error(`rivet-den hook: CA chain unreadable at ${DEN_CA_PATH} — posts to https dens may fail`)
     }
   }
   return new Promise((resolve, reject) => {
@@ -207,10 +205,7 @@ const STATE_DIR = path.join(os.homedir(), '.cache', 'rivet-den')
  * older in-process engine could send an empty one).
  */
 const fallbackFile = (cwd) =>
-  path.join(
-    STATE_DIR,
-    `fallback-${crypto.createHash('sha1').update(cwd, 'utf8').digest('hex').slice(0, 16)}.id`,
-  )
+  path.join(STATE_DIR, `fallback-${crypto.createHash('sha1').update(cwd, 'utf8').digest('hex').slice(0, 16)}.id`)
 
 /**
  * Session id for a payload that carries none.
@@ -314,11 +309,7 @@ async function main() {
 
   const termLine = (text) => {
     if (TERM_OFF) return
-    const t = redact(
-      String(text)
-        .replace(/[\r\t]/g, ' ')
-        .trimEnd(),
-    ).slice(0, 80)
+    const t = redact(String(text).replace(/[\r\t]/g, ' ').trimEnd()).slice(0, 80)
     if (t.trim()) emit({ type: 'term.line', text: t })
   }
 
@@ -366,12 +357,9 @@ async function main() {
   /** kimi TodoList items are `{ title, status }` with status done|in_progress|pending. */
   const handleTodos = (todos) => {
     if (!Array.isArray(todos) || !todos.length) return
-    const labels = todos.map((t) =>
-      String(t?.title ?? t?.content ?? t?.activeForm ?? '').slice(0, 60),
-    )
+    const labels = todos.map((t) => String(t?.title ?? t?.content ?? t?.activeForm ?? '').slice(0, 60))
     const done = todos.map((t) => t?.status === 'done' || t?.status === 'completed')
-    const sameList =
-      labels.length === st.labels.length && labels.every((l, i) => l === st.labels[i])
+    const sameList = labels.length === st.labels.length && labels.every((l, i) => l === st.labels[i])
     if (!sameList) {
       emit({ type: 'task.plan', tasks: labels })
       done.forEach((d, i) => d && emit({ type: 'task.check', index: i }))
@@ -409,10 +397,9 @@ async function main() {
       // Harness-injected wrappers (reminders, command echoes) are not
       // something the user typed and must never reach the chat as a user
       // bubble (mirrors the den-server transcript parser's filter).
-      const isWrapper =
-        /^(<command-|<local-command|<system-reminder|<task-notification|<user_info|Caveat:)/.test(
-          text,
-        )
+      const isWrapper = /^(<command-|<local-command|<system-reminder|<task-notification|<user_info|Caveat:)/.test(
+        text,
+      )
       const h = text ? hash(text) : ''
       if (text && !isWrapper && h !== st.lastUserHash) {
         st.lastUserHash = h
@@ -473,7 +460,7 @@ async function main() {
           // no `name`, so `message` (always present) is read first
           const err = pick(p, 'error')
           const msg =
-            typeof err === 'string' ? err : (pickString(err, 'message', 'name', 'code') ?? 'failed')
+            typeof err === 'string' ? err : pickString(err, 'message', 'name', 'code') ?? 'failed'
           termLine(`✗ ${toolName || 'tool'}: ${msg}`)
         }
         emit({ type: 'tool.end', tool: toolName || undefined })

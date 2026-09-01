@@ -3,13 +3,13 @@
  * Sync canonical docs/ (and CHANGELOG.md) into Starlight content.
  * Preserves existing frontmatter; rewrites internal doc links to site paths.
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
-const REPO_ROOT = join(__dirname, '../../..')
-const CONTENT_ROOT = join(__dirname, '../src/content/docs')
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = join(__dirname, '../../..');
+const CONTENT_ROOT = join(__dirname, '../src/content/docs');
 
 const LINK_MAP = {
   'CONFIG-REFERENCE.md': '/reference/config/',
@@ -43,7 +43,7 @@ const LINK_MAP = {
   'DEN.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md',
   'CODEBASE-REFERENCE.md':
     'https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md',
-}
+};
 
 const MAPPINGS = [
   {
@@ -73,7 +73,8 @@ const MAPPINGS = [
       sidebar: { order: 3 },
       description: 'Deploy RivetOS with Docker, Proxmox, or bare-metal',
     },
-    bodyTransform: (body) => body.replace(/^# Deployment Guide/, '# Deployment'),
+    bodyTransform: (body) =>
+      body.replace(/^# Deployment Guide/, '# Deployment'),
   },
   {
     src: 'docs/PLUGINS.md',
@@ -174,34 +175,34 @@ const MAPPINGS = [
       description: 'Version history and release notes',
     },
   },
-]
+];
 
 function parseFrontmatter(content) {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n/)
-  if (!match) return { frontmatter: null, body: content }
-  return { frontmatter: match[1], body: content.slice(match[0].length) }
+  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+  if (!match) return { frontmatter: null, body: content };
+  return { frontmatter: match[1], body: content.slice(match[0].length) };
 }
 
 function serializeFrontmatter(data) {
-  const lines = ['---']
+  const lines = ['---'];
   for (const [key, value] of Object.entries(data)) {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
-      lines.push(`${key}:`)
+      lines.push(`${key}:`);
       for (const [subKey, subValue] of Object.entries(value)) {
-        lines.push(`  ${subKey}: ${subValue}`)
+        lines.push(`  ${subKey}: ${subValue}`);
       }
     } else {
-      lines.push(`${key}: ${value}`)
+      lines.push(`${key}: ${value}`);
     }
   }
-  lines.push('---', '')
-  return lines.join('\n')
+  lines.push('---', '');
+  return lines.join('\n');
 }
 
 function rewriteLinks(body) {
-  let out = body
+  let out = body;
   for (const [from, to] of Object.entries(LINK_MAP)) {
-    out = out.replaceAll(`](${from})`, `](${to})`)
+    out = out.replaceAll(`](${from})`, `](${to})`);
   }
   // Site-friendly next-steps block for getting started
   out = out.replace(
@@ -219,65 +220,61 @@ function rewriteLinks(body) {
 - **[Troubleshooting](/reference/troubleshooting/)** — Common issues and fixes
 
 ---`,
-  )
-  return out
+  );
+  return out;
 }
 
 function syncOne({ src, dest, frontmatter, bodyTransform = (b) => b }) {
-  const srcPath = join(REPO_ROOT, src)
-  const destPath = join(CONTENT_ROOT, dest)
+  const srcPath = join(REPO_ROOT, src);
+  const destPath = join(CONTENT_ROOT, dest);
 
   if (!existsSync(srcPath)) {
-    console.error(`skip (missing source): ${src}`)
-    return
+    console.error(`skip (missing source): ${src}`);
+    return;
   }
 
-  let body = readFileSync(srcPath, 'utf8')
+  let body = readFileSync(srcPath, 'utf8');
   if (src !== 'CHANGELOG.md') {
-    body = body.replace(/^#[^\n]+\n+/, '')
+    body = body.replace(/^#[^\n]+\n+/, '');
   }
-  body = bodyTransform(body)
-  body = rewriteLinks(body)
+  body = bodyTransform(body);
+  body = rewriteLinks(body);
 
-  const existing = existsSync(destPath) ? readFileSync(destPath, 'utf8') : ''
-  const parsed = parseFrontmatter(existing)
-  const fm = parsed.frontmatter ? parseYamlFrontmatter(parsed.frontmatter) : frontmatter
-  const merged = {
-    ...frontmatter,
-    ...fm,
-    sidebar: { ...frontmatter.sidebar, ...(fm.sidebar || {}) },
-  }
+  const existing = existsSync(destPath) ? readFileSync(destPath, 'utf8') : '';
+  const parsed = parseFrontmatter(existing);
+  const fm = parsed.frontmatter ? parseYamlFrontmatter(parsed.frontmatter) : frontmatter;
+  const merged = { ...frontmatter, ...fm, sidebar: { ...frontmatter.sidebar, ...(fm.sidebar || {}) } };
 
-  const output = serializeFrontmatter(merged) + body.trimStart()
-  writeFileSync(destPath, output.endsWith('\n') ? output : output + '\n')
-  console.log(`synced ${src} → ${dest}`)
+  const output = serializeFrontmatter(merged) + body.trimStart();
+  writeFileSync(destPath, output.endsWith('\n') ? output : output + '\n');
+  console.log(`synced ${src} → ${dest}`);
 }
 
 function parseYamlFrontmatter(text) {
-  const result = {}
-  let current = null
+  const result = {};
+  let current = null;
   for (const line of text.split('\n')) {
     if (line.startsWith('  ') && current) {
-      const m = line.trim().match(/^(\w+):\s*(.*)$/)
-      if (m) result[current][m[1]] = m[2]
-      continue
+      const m = line.trim().match(/^(\w+):\s*(.*)$/);
+      if (m) result[current][m[1]] = m[2];
+      continue;
     }
-    const m = line.match(/^(\w+):\s*(.*)$/)
-    if (!m) continue
-    const [, key, value] = m
+    const m = line.match(/^(\w+):\s*(.*)$/);
+    if (!m) continue;
+    const [, key, value] = m;
     if (value === '') {
-      result[key] = {}
-      current = key
+      result[key] = {};
+      current = key;
     } else {
-      result[key] = value
-      current = null
+      result[key] = value;
+      current = null;
     }
   }
-  return result
+  return result;
 }
 
 for (const mapping of MAPPINGS) {
-  syncOne(mapping)
+  syncOne(mapping);
 }
 
-console.log('done')
+console.log('done');
