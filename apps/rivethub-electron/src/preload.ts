@@ -72,6 +72,18 @@ const api = {
    *  renderer supplies only the gateway base, never a URL or digest. */
   installUpdate: (gatewayBase: string): Promise<void> =>
     ipcRenderer.invoke('update:install', gatewayBase) as Promise<void>,
+  /** Read all settings from the main process's settings.json file. */
+  settingsGetAll: (): Promise<Record<string, unknown>> =>
+    ipcRenderer.invoke('settings:getAll') as Promise<Record<string, unknown>>,
+  /** Write a single setting to the main process's settings.json file. */
+  settingsSet: (key: string, value: unknown): Promise<void> =>
+    ipcRenderer.invoke('settings:set', key, value) as Promise<void>,
+  /** Write multiple settings to the main process's settings.json file. */
+  settingsSetAll: (updates: Record<string, unknown>): Promise<void> =>
+    ipcRenderer.invoke('settings:setAll', updates) as Promise<void>,
+  /** Remove a single setting from the main process's settings.json file. */
+  settingsRemove: (key: string): Promise<void> =>
+    ipcRenderer.invoke('settings:remove', key) as Promise<void>,
 }
 
 export type RivetShellApi = typeof api

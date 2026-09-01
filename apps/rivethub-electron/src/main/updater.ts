@@ -14,9 +14,11 @@
  */
 
 import { createHash } from 'node:crypto'
+import * as fs from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { chmod, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import * as path from 'node:path'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -169,9 +171,23 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
       return
     }
     await chmod(dest, 0o755)
-    // xdg-open on an AppImage is unreliable (exec bit vs handler); run it
-    // directly — but strip the RUNNING AppImage's runtime vars, or the new
-    // image's runtime resolves against the OLD mount (review, PR #562).
+
+    // Install the AppImage to the path the running AppImage came from, so
+    // the desktop entry's Exec= line stays valid and the app doesn't run
+    // from /tmp/rivethub-update-* as the long-lived binary. APPIMAGE is
+    // the running image's path; ~/.local/bin/rivethub is the fallback when
+    // APPIMAGE is unset (dev runs, non-AppImage Linux builds).
+    const installTo = process.env.APPIMAGE ?? path.join(app.getPath('home'), '.local', 'bin', 'rivethub')
+    const installDir = path.dirname(installTo)
+    if (!fs.existsSync(installDir)) {
+      await fs.promises.mkdir(installDir, { recursive: true })
+    }
+    await fs.promises.copyFile(dest, installTo)
+    await chmod(installTo, 0o755)
+
+    // Run the INSTALLED AppImage, not the temp download. Strip the RUNNING
+    // AppImage's runtime vars, or the new image's runtime resolves against
+    // the OLD mount (review, PR #562).
     const env = { ...process.env }
     delete env.APPIMAGE
     delete env.APPDIR
@@ -185,7 +201,7 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     // after the window is the acknowledged residual.
     app.releaseSingleInstanceLock()
     try {
-      const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
+      const child = spawn(installTo, [], { detached: true, stdio: 'ignore', env })
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           cleanup()
