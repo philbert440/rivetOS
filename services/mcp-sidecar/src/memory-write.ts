@@ -20,6 +20,7 @@ export interface IngestMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   createdAt?: Date | string
+  toolCalls?: Array<{ id?: string; name: string; input?: Record<string, unknown> }>
 }
 
 export interface IngestSessionInput {
@@ -172,8 +173,6 @@ export const memoryAppendInputSchema = {
   channel: z.string().optional(),
 } satisfies z.ZodRawShape
 
-// TODO: memory_ingest_session messages still can't carry tool fields
-// (tool_name/tool_args/tool_result) — memory_append has them; extend for parity.
 export const memoryIngestSessionInputSchema = {
   session_id: z.string().min(1),
   messages: z
@@ -182,13 +181,22 @@ export const memoryIngestSessionInputSchema = {
         role: roleSchema,
         content: z
           .string()
-          .min(1)
           .describe(
-            'Message text. Content longer than 16,000 chars is truncated; the elided tail is unrecoverable.',
+            'Message text (may be empty for tool-call messages). Content longer than 16,000 chars is truncated; the elided tail is unrecoverable.',
           ),
         // Wire schema: ISO string only — Date objects cannot cross JSON-RPC and
         // z.date() is not representable in JSON Schema (breaks tools/list).
         created_at: z.iso.datetime({ offset: true }).optional(),
+        tool_calls: z
+          .array(
+            z.object({
+              id: z.string().optional(),
+              name: z.string(),
+              input: z.record(z.string(), z.unknown()).optional(),
+            }),
+          )
+          .optional()
+          .describe('Tool calls for assistant messages'),
       }),
     )
     .min(1),
@@ -275,19 +283,24 @@ export async function ingestSession(
     for (const [i, item] of input.messages.entries()) {
       const role = item.role
       const content = item.content
-      if (!content) {
+      const toolCalls = item.toolCalls
+
+      // Allow empty content if tool calls are present
+      if (!content && (!toolCalls || toolCalls.length === 0)) {
         skipped += 1
         continue
       }
 
       // Ingest-domain event_id includes ordinal (prevents data loss on repeated text)
       // Hash the PRE-truncation content so retry of oversized payload dedupes correctly
+      // For tool-only messages, use first tool name in hash
       const eventId = ingestEventId({
         sessionId: input.sessionId,
         agent: tags.agent,
         role,
-        content, // pre-truncation
+        content, // pre-truncation (may be empty)
         ordinal: i,
+        toolName: toolCalls?.[0]?.name,
       })
 
       // C2/H2: Check event_id FIRST, then ordinal. Allows session extension with
@@ -338,6 +351,16 @@ export async function ingestSession(
         createdAt = candidate
       }
 
+      // Extract first tool for primary storage (multi-tool collapsed to metadata)
+      const primaryTool = toolCalls?.[0]
+      const toolName = primaryTool?.name
+      const toolArgs = primaryTool?.input
+
+      // Store all tool calls in metadata for full fidelity
+      if (toolCalls && toolCalls.length > 0) {
+        metadata.tool_calls = toolCalls
+      }
+
       // Append using the locked client (avoids self-deadlock, makes ROLLBACK real)
       const id = await memory.append(
         {
@@ -346,6 +369,8 @@ export async function ingestSession(
           channel: tags.channel,
           role,
           content: truncatedContent,
+          toolName,
+          toolArgs,
           metadata,
           createdAt,
         },
@@ -553,6 +578,24 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
         }
         if (rec.created_at) {
           msg.createdAt = rec.created_at as Date | string
+        }
+        if (Array.isArray(rec.tool_calls)) {
+          msg.toolCalls = rec.tool_calls.map((tc) => {
+            if (tc && typeof tc === 'object') {
+              const tcObj = tc as Record<string, unknown>
+              return {
+                id: typeof tcObj.id === 'string' ? tcObj.id : undefined,
+                name: typeof tcObj.name === 'string' ? tcObj.name : '',
+                input:
+                  tcObj.input != null &&
+                  typeof tcObj.input === 'object' &&
+                  !Array.isArray(tcObj.input)
+                    ? (tcObj.input as Record<string, unknown>)
+                    : undefined,
+              }
+            }
+            return { name: '' }
+          })
         }
         messages.push(msg)
       }

@@ -1085,3 +1085,261 @@ describeIfPg('memory write idempotency', () => {
     expect(parsed1.event_id).not.toBe(parsed2.event_id)
   })
 })
+
+describeIfPg('ingestSession tool-only turns and camelCase fields (grokbot capture)', () => {
+  let memory: PostgresMemory
+  const TEST_AGENT = `test-grokbot-capture-${Date.now()}`
+
+  beforeAll(async () => {
+    memory = new PostgresMemory({ connectionString: PG_URL })
+    expect(await memory.isHealthy()).toBe(true)
+  })
+
+  afterAll(async () => {
+    const pool = memory.getPool()
+    await pool.query(`DELETE FROM ros_messages WHERE agent = $1`, [TEST_AGENT])
+    await pool.query(`DELETE FROM ros_conversations WHERE agent = $1`, [TEST_AGENT])
+    await memory.close()
+  })
+
+  it('accepts and stores tool-only turns (empty content + toolCalls)', async () => {
+    const sessionId = `test-tool-only-${Date.now()}`
+
+    // Tool-only assistant message (empty content, toolCalls present)
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            { id: 'call_1', name: 'search', input: { query: 'test query' } },
+            { id: 'call_2', name: 'fetch', input: { url: 'https://example.com' } },
+          ],
+        },
+      ],
+      agent: TEST_AGENT,
+      source: 'grokbot',
+      channel: 'grokbot',
+    }
+
+    const result = await ingestSession(memory, input)
+
+    // Tool-only turn should be ingested, not skipped
+    expect(result.ingested).toBe(1)
+    expect(result.skipped).toBe(0)
+    expect(result.ids.length).toBe(1)
+
+    // Verify tool fields were stored
+    const pool = memory.getPool()
+    const rows = await pool.query<{
+      content: string
+      role: string
+      tool_name: string | null
+      tool_args: Record<string, unknown> | null
+      metadata: any
+    }>(
+      `SELECT m.content, m.role, m.tool_name, m.tool_args, m.metadata
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(rows.rows.length).toBe(1)
+    const row = rows.rows[0]
+    expect(row.content).toBe('') // Empty content
+    expect(row.role).toBe('assistant')
+    // First tool stored in primary columns
+    expect(row.tool_name).toBe('search')
+    expect(row.tool_args).toEqual({ query: 'test query' })
+    // All tools preserved in metadata
+    expect(row.metadata.tool_calls).toEqual([
+      { id: 'call_1', name: 'search', input: { query: 'test query' } },
+      { id: 'call_2', name: 'fetch', input: { url: 'https://example.com' } },
+    ])
+  })
+
+  it('accepts mixed text+tool turns with camelCase toolCalls', async () => {
+    const sessionId = `test-text-plus-tool-${Date.now()}`
+
+    // Message with both text and tool calls
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        {
+          role: 'assistant',
+          content: 'Let me search for that information.',
+          toolCalls: [{ name: 'web_search', input: { query: 'rivetos' } }],
+        },
+      ],
+      agent: TEST_AGENT,
+      source: 'grokbot',
+      channel: 'grokbot',
+    }
+
+    const result = await ingestSession(memory, input)
+    expect(result.ingested).toBe(1)
+    expect(result.skipped).toBe(0)
+
+    const pool = memory.getPool()
+    const rows = await pool.query<{
+      content: string
+      tool_name: string | null
+      tool_args: Record<string, unknown> | null
+    }>(
+      `SELECT m.content, m.tool_name, m.tool_args
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(rows.rows.length).toBe(1)
+    // Both text and tool preserved
+    expect(rows.rows[0].content).toBe('Let me search for that information.')
+    expect(rows.rows[0].tool_name).toBe('web_search')
+    expect(rows.rows[0].tool_args).toEqual({ query: 'rivetos' })
+  })
+
+  it('accepts camelCase createdAt timestamps from converter', async () => {
+    const sessionId = `test-camelcase-ts-${Date.now()}`
+    const explicitTime = new Date('2024-06-15T10:30:00Z')
+
+    // Converter emits createdAt (camelCase), not created_at (snake_case)
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        {
+          role: 'user',
+          content: 'Message with camelCase timestamp',
+          createdAt: explicitTime,
+        },
+      ],
+      agent: TEST_AGENT,
+      source: 'grokbot',
+      channel: 'grokbot',
+    }
+
+    const result = await ingestSession(memory, input)
+    expect(result.ingested).toBe(1)
+
+    const pool = memory.getPool()
+    const rows = await pool.query<{
+      created_at: Date
+    }>(
+      `SELECT m.created_at
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(rows.rows.length).toBe(1)
+    // Timestamp preserved (within 1 second tolerance)
+    expect(Math.abs(rows.rows[0].created_at.getTime() - explicitTime.getTime())).toBeLessThan(1000)
+  })
+
+  it('full grokbot capture fixture: tool-only + text+tool + timestamps', async () => {
+    const sessionId = `test-grokbot-fixture-${Date.now()}`
+    const baseTime = new Date('2024-06-15T12:00:00Z')
+
+    // Claude-shaped fixture matching converter output
+    const input: IngestSessionInput = {
+      sessionId,
+      messages: [
+        {
+          role: 'user',
+          content: 'What is the weather in San Francisco?',
+          createdAt: new Date(baseTime.getTime()),
+        },
+        {
+          // Tool-only turn (empty content, toolCalls only)
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            {
+              id: 'toolu_01234',
+              name: 'get_weather',
+              input: { location: 'San Francisco, CA' },
+            },
+          ],
+          createdAt: new Date(baseTime.getTime() + 1000),
+        },
+        {
+          role: 'tool',
+          content: '[tool_result] {"temp": 68, "conditions": "sunny"}',
+          createdAt: new Date(baseTime.getTime() + 2000),
+        },
+        {
+          // Mixed turn (text + tool for follow-up)
+          role: 'assistant',
+          content: 'The weather in San Francisco is 68°F and sunny. Would you like more details?',
+          toolCalls: [
+            {
+              name: 'get_forecast',
+              input: { location: 'San Francisco, CA', days: 3 },
+            },
+          ],
+          createdAt: new Date(baseTime.getTime() + 3000),
+        },
+      ],
+      agent: TEST_AGENT,
+      source: 'grokbot',
+      channel: 'grokbot',
+    }
+
+    const result = await ingestSession(memory, input)
+
+    // All four messages should be stored
+    expect(result.ingested).toBe(4)
+    expect(result.skipped).toBe(0)
+    expect(result.ids.length).toBe(4)
+
+    // Verify full round-trip
+    const pool = memory.getPool()
+    const rows = await pool.query<{
+      content: string
+      role: string
+      tool_name: string | null
+      metadata: any
+      created_at: Date
+    }>(
+      `SELECT m.content, m.role, m.tool_name, m.metadata, m.created_at
+       FROM ros_messages m
+       JOIN ros_conversations c ON c.id = m.conversation_id
+       WHERE c.session_key = $1 AND c.agent = $2
+       ORDER BY m.metadata->>'ordinal' ASC`,
+      [sessionId, TEST_AGENT],
+    )
+
+    expect(rows.rows.length).toBe(4)
+
+    // Message 0: user
+    expect(rows.rows[0].role).toBe('user')
+    expect(rows.rows[0].content).toContain('weather')
+    expect(rows.rows[0].tool_name).toBeNull()
+
+    // Message 1: tool-only assistant (critical test case)
+    expect(rows.rows[1].role).toBe('assistant')
+    expect(rows.rows[1].content).toBe('') // Empty content
+    expect(rows.rows[1].tool_name).toBe('get_weather')
+    expect(rows.rows[1].metadata.tool_calls).toBeDefined()
+    expect(rows.rows[1].metadata.tool_calls[0].name).toBe('get_weather')
+
+    // Message 2: tool result
+    expect(rows.rows[2].role).toBe('tool')
+    expect(rows.rows[2].content).toContain('tool_result')
+
+    // Message 3: mixed text+tool
+    expect(rows.rows[3].role).toBe('assistant')
+    expect(rows.rows[3].content).toContain('68°F and sunny')
+    expect(rows.rows[3].tool_name).toBe('get_forecast')
+
+    // All timestamps preserved
+    for (let i = 0; i < 4; i++) {
+      const expectedTime = baseTime.getTime() + i * 1000
+      expect(Math.abs(rows.rows[i].created_at.getTime() - expectedTime)).toBeLessThan(1000)
+    }
+  })
+})
