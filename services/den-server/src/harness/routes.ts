@@ -73,6 +73,7 @@ import {
   HarnessError,
   SYSTEM_PROMPT_MAX_CHARS,
   decodeSessionIdSegment,
+  parseSessionId,
   type ApprovalDecision,
   type HarnessEvent,
   type HarnessTranscriptTurn,
@@ -86,6 +87,16 @@ import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './regis
 /** Drivers that can serve the hard-resync transcript (feature-detected). */
 export interface HarnessTranscriptSource {
   transcript(sessionId: SessionId): Promise<{ turns: HarnessTranscriptTurn[] }>
+}
+
+/**
+ * Drivers that can destroy a session they created (feature-detected). The
+ * `HarnessDriver` contract has no delete; the control plane needs one exactly
+ * once — when a driver ignored a client-minted pin and the session it
+ * actually created must not be left live behind the 501.
+ */
+export interface HarnessSessionDestroyer {
+  destroySession(sessionId: SessionId): Promise<void>
 }
 
 /** HarnessErrorCode → HTTP, per packages/types/src/errors.ts. */
@@ -334,13 +345,15 @@ export function createHarnessRoutes(opts: {
     if (req.method === 'POST') {
       const body = await parseJsonBody(req, res)
       if (!body) return true
-      const { cwd, model, nativeSessionId, metadata } = body
+      const { cwd, model, nativeSessionId, sessionId, metadata } = body
       if (cwd !== undefined && typeof cwd !== 'string')
         return json(res, 400, { error: 'cwd must be a string' })
       if (model !== undefined && typeof model !== 'string')
         return json(res, 400, { error: 'model must be a string' })
       if (nativeSessionId !== undefined && typeof nativeSessionId !== 'string')
         return json(res, 400, { error: 'nativeSessionId must be a string' })
+      if (sessionId !== undefined && typeof sessionId !== 'string')
+        return json(res, 400, { error: 'sessionId must be a string' })
       if (
         metadata !== undefined &&
         (typeof metadata !== 'object' ||
@@ -349,23 +362,97 @@ export function createHarnessRoutes(opts: {
       ) {
         return json(res, 400, { error: 'metadata must be a string map' })
       }
-      // Alias chains occupy the namespace: a pinned id anywhere in one is a
-      // collision even if the harness store itself has forgotten it. The rule
-      // is control-plane-owned, so the registry enforces it.
-      if (typeof nativeSessionId === 'string') {
+      // Client-minted canonical id (immutable session ids, plan W1 stage 1):
+      // the control plane ACCEPTS it verbatim — no adoption event, no alias
+      // entry. The driver contract still pins native ids, so the id is
+      // translated to its native half for dispatch and passed through whole
+      // alongside, for drivers that learn the canonical form.
+      let minted: { sessionId: SessionId; native: string } | undefined
+      if (typeof sessionId === 'string') {
         try {
-          registry.assertPinnable(harnessId, nativeSessionId)
+          const parsed = parseSessionId(sessionId)
+          if (parsed.harnessId !== harnessId) {
+            throw new HarnessError(
+              'invalid_session_id',
+              `sessionId harness ${parsed.harnessId} does not match route harness ${harnessId}`,
+              { harnessId, sessionId },
+            )
+          }
+          minted = { sessionId: sessionId as SessionId, native: parsed.nativeSessionId }
+        } catch (err) {
+          return fail(res, err)
+        }
+        if (nativeSessionId !== undefined && nativeSessionId !== minted.native) {
+          // One 400 shape for the whole create path: every rejection goes
+          // through the same HarnessError fail() path, so malformed,
+          // cross-harness and disagreeing ids answer alike.
+          return fail(
+            res,
+            new HarnessError('invalid_session_id', 'sessionId and nativeSessionId disagree', {
+              harnessId,
+              sessionId,
+            }),
+          )
+        }
+      }
+      const pinnedNative = minted?.native ?? nativeSessionId
+      // Alias chains, supersedes lineage AND the live harness store all occupy
+      // the namespace: a pinned id matching any of them is a collision (a live
+      // id is takeover, not creation). The rule is control-plane-owned, so the
+      // registry enforces it — before the driver is ever dispatched to.
+      if (pinnedNative !== undefined) {
+        try {
+          await registry.assertPinnable(harnessId, pinnedNative)
         } catch (err) {
           return fail(res, err)
         }
       }
       try {
-        const summary = await driver.startSession({
-          ...(cwd !== undefined ? { cwd } : {}),
-          ...(model !== undefined ? { model } : {}),
-          ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
-          ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
-        })
+        // When no client-minted id is present the call below is LITERALLY the
+        // pre-W1 expression — same keys, same values — so the legacy assign
+        // path is byte-identical by construction, not by inspection.
+        const summary = await driver.startSession(
+          minted === undefined
+            ? {
+                ...(cwd !== undefined ? { cwd } : {}),
+                ...(model !== undefined ? { model } : {}),
+                ...(nativeSessionId !== undefined ? { nativeSessionId } : {}),
+                ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
+              }
+            : {
+                ...(cwd !== undefined ? { cwd } : {}),
+                ...(model !== undefined ? { model } : {}),
+                nativeSessionId: minted.native,
+                sessionId: minted.sessionId,
+                ...(metadata !== undefined ? { metadata: metadata as Record<string, string> } : {}),
+              },
+        )
+        if (minted && summary.sessionId !== minted.sessionId) {
+          // A client-minted id honored is the whole point of the path: a
+          // driver that answered with any other id cannot serve it.
+          // startSession already RAN, though — the session the driver
+          // actually created is a live orphan (a buggy or hostile driver
+          // would leak a real backend session on every rejected mint), so
+          // destroy it before failing. Feature-detected: a driver without
+          // the surface still gets the 501, and the leak is its contract bug.
+          const destroyer = driver as unknown as Partial<HarnessSessionDestroyer>
+          if (typeof destroyer.destroySession === 'function') {
+            await destroyer.destroySession(summary.sessionId).catch(() => undefined)
+          }
+          return fail(
+            res,
+            new HarnessError(
+              'capability_unsupported',
+              `${harnessId} did not honor the client-minted sessionId ${minted.sessionId}`,
+              { harnessId, sessionId: minted.sessionId },
+            ),
+          )
+        }
+        if (minted) {
+          // THE id is immutable from here on: a later legacy
+          // `previousSessionId` rotation naming it is refused, not aliased.
+          registry.noteMinted(minted.sessionId)
+        }
         if (opts.claimSession && !opts.claimSession(req, summary.sessionId)) {
           // a client-supplied nativeSessionId can resolve to an EXISTING
           // session owned by someone else — leaking its summary on 201 is

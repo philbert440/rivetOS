@@ -555,7 +555,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // `hermes`, `kimi-code` and `deepseek-harness` cannot pin a new session's id,
   // so they refuse `startSession`, adopt sessions (den stream and/or store),
   // and report a room whose session changed as a rotation.
-  const harnesses = createHarnessRegistry()
+  const harnesses = createHarnessRegistry({ log: console.error })
   const denEventTap = (sink: (ev: DenAgentEventLike) => void): (() => void) => {
     denEventSinks.add(sink)
     return () => denEventSinks.delete(sink)

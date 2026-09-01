@@ -108,6 +108,15 @@ export type HarnessEvent =
       type: 'session-created'
       sessionId: SessionId
       summary: SessionSummary
+      /**
+       * Adoption edge (immutable session ids, plan W1): set when the session
+       * enters the control plane as the continuation of an earlier id — e.g. a
+       * fork declaring its lineage at birth. Append-only lineage, recorded on
+       * the session record as a field; never an alias, so `supersedes` does not
+       * occupy the alias namespace and resolves to nothing. Both ids MUST share
+       * the same harness id.
+       */
+      supersedes?: SessionId
     }
   | {
       type: 'turn-complete'
@@ -130,6 +139,21 @@ export type HarnessEvent =
        *  control plane stores `previousSessionId → sessionId` as an alias;
        *  both ids MUST share the same harness id. */
       previousSessionId?: SessionId
+      /**
+       * New-style rotation edge (immutable session ids, plan W1): the harness
+       * replaced the native id UNDER this session (resume/fork/crash recovery)
+       * and the canonical id does NOT change — `sessionId` stays THE id.
+       * `supersedes` names the previous native id (as a full SessionId); both
+       * ids MUST share the same harness id, and a self-edge is legal (the
+       * first rotation off a client-minted id supersedes the canonical id
+       * itself, whose native half was the original native id).
+       *
+       * The control plane records the edge on the session record as a field —
+       * append-only lineage — and does NOT alias, re-key subscriptions, or
+       * retire anything. `previousSessionId` remains for legacy drivers;
+       * stage 3 deletes it once no driver emits it.
+       */
+      supersedes?: SessionId
       status: 'active' | 'idle' | 'ended' | 'error'
     }
 
@@ -147,11 +171,30 @@ export type SessionSummary = {
   createdAt: string // ISO
   updatedAt: string
   status: 'active' | 'idle' | 'ended' | 'error'
+  /**
+   * Lineage field (immutable session ids, plan W1): the most recent
+   * `supersedes` edge recorded for this session — the native id (as a full
+   * SessionId) that the session's current native incarnation replaced. A
+   * field on the record, not an alias-chain rebuild; the append-only lineage
+   * is the sequence of these edges over time. On `listSessions` the control
+   * plane stamps the latest edge IT recorded onto every row, so the record
+   * and the list agree even when a driver failed to update its own row.
+   */
+  supersedes?: SessionId
 }
 
 export type StartSessionOpts = {
   cwd?: string
   model?: string
+  /**
+   * Client-minted canonical SessionId (immutable session ids, plan W1
+   * stage 1). When the client supplies one, the control plane ACCEPTS it
+   * verbatim — no adoption event, no alias entry — and passes it through
+   * alongside `nativeSessionId` (its native half), so a driver that only
+   * knows the pin honors it unchanged. Present only when the client minted
+   * the id; when both are present they must agree.
+   */
+  sessionId?: SessionId
   /**
    * Pin a pre-minted native id for a BRAND-NEW session (e.g. task executors
    * that mint the id before spawning). Never attaches to an existing session:
