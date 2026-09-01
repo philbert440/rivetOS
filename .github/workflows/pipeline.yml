@@ -191,7 +191,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          registry-url: 'https://registry.npmjs.org'
+          # NO registry-url here: it writes an .npmrc auth line fed by
+          # setup-node's placeholder NODE_AUTH_TOKEN, and current npm sends
+          # that placeholder instead of doing the OIDC exchange → E404 on
+          # every publish. These packages use npm Trusted Publishing
+          # (id-token: write + --provenance); tokenless is the correct config.
           cache: npm
 
       - name: Restore Nx cache
@@ -233,7 +237,6 @@ jobs:
             plugins/tools/search
             plugins/tools/shell
             plugins/tools/web-search
-            plugins/transports/mcp-server
             packages/cli
             packages/nx-plugin
           )
