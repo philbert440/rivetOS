@@ -52,7 +52,7 @@ describe('terminal settings store', () => {
     expect(s.scrollback).toBe(5000)
     expect(s.renderer).toBe('webgl')
     expect(s.bell).toBe('none')
-    expect(s.copyOnSelect).toBe(false)
+    expect(s.copyOnSelect).toBe(true)
     expect(s.themeSource).toBe('app')
     expect(typeof s.rightClickPaste).toBe('boolean')
   })
@@ -71,6 +71,49 @@ describe('terminal settings store', () => {
     expect(useTerminalSettings.getState().scrollback).toBe(TERMINAL_LIMITS.scrollback.min)
     s.update({ scrollback: 1e9 })
     expect(useTerminalSettings.getState().scrollback).toBe(TERMINAL_LIMITS.scrollback.max)
+  })
+
+  it('lineHeight never admits values xterm rejects (< 1)', () => {
+    // xterm 6's option validator throws for lineHeight < 1 — the clamp must
+    // keep the stored value inside what the emulator accepts.
+    expect(TERMINAL_LIMITS.lineHeight.min).toBeGreaterThanOrEqual(1)
+    useTerminalSettings.getState().update({ lineHeight: 0.8 })
+    expect(useTerminalSettings.getState().lineHeight).toBe(1)
+  })
+
+  it('clamps and rounds letterSpacing, rounds fontSize', () => {
+    const s = useTerminalSettings.getState()
+    s.update({ letterSpacing: 99 })
+    expect(useTerminalSettings.getState().letterSpacing).toBe(TERMINAL_LIMITS.letterSpacing.max)
+    s.update({ letterSpacing: -99 })
+    expect(useTerminalSettings.getState().letterSpacing).toBe(TERMINAL_LIMITS.letterSpacing.min)
+    s.update({ letterSpacing: 1.7 })
+    expect(useTerminalSettings.getState().letterSpacing).toBe(2)
+    s.update({ fontSize: 13.6 })
+    expect(useTerminalSettings.getState().fontSize).toBe(14)
+  })
+
+  it('accepts numeric strings from hand-edited storage', () => {
+    expect(normalizeSettings({ fontSize: '17' as never }).fontSize).toBe(17)
+    expect(normalizeSettings({ letterSpacing: '2' as never }).letterSpacing).toBe(2)
+    expect(normalizeSettings({ fontSize: 'lots' as never }).fontSize).toBe(
+      TERMINAL_DEFAULTS.fontSize,
+    )
+  })
+
+  it('trims stored font families and allowlists the scheme id', () => {
+    expect(normalizeSettings({ fontFamily: '  mono  ' }).fontFamily).toBe('mono')
+    expect(normalizeSettings({ scheme: ' nord ' }).scheme).toBe('nord')
+    expect(normalizeSettings({ scheme: 'no-such-scheme' }).scheme).toBe(TERMINAL_DEFAULTS.scheme)
+    expect(normalizeSettings({ scheme: '' }).scheme).toBe(TERMINAL_DEFAULTS.scheme)
+  })
+
+  it('themeSource imported without a palette falls back to app', () => {
+    expect(normalizeSettings({ themeSource: 'imported' }).themeSource).toBe('app')
+    const dracula = getTerminalScheme('dracula')!
+    expect(
+      normalizeSettings({ themeSource: 'imported', imported: dracula.palette }).themeSource,
+    ).toBe('imported')
   })
 
   it('rejects invalid enum values and blank font families', () => {
@@ -135,12 +178,73 @@ describe('terminal settings store', () => {
 
   it('setRendererActual flips only on change and is not persisted', () => {
     const s = useTerminalSettings.getState()
+    // Same value is a no-op: no state emission at all (the guard exists
+    // because xterm-attach calls this from its settings effect — an
+    // unguarded set would re-render the subscriber and loop).
+    const spy = vi.fn()
+    const unsub = useTerminalSettings.subscribe(spy)
+    s.setRendererActual(useTerminalSettings.getState().rendererActual)
+    expect(spy).not.toHaveBeenCalled()
     s.setRendererActual('canvas')
+    expect(spy).toHaveBeenCalledTimes(1)
+    unsub()
     expect(useTerminalSettings.getState().rendererActual).toBe('canvas')
     const stored = JSON.parse(localStorage.getItem(TERMINAL_STORAGE_KEY) ?? '{}') as {
       state?: Record<string, unknown>
     }
     expect(stored.state?.rendererActual).toBeUndefined()
+  })
+
+  it('a renderer patch resets rendererActual with the new preference', () => {
+    const s = useTerminalSettings.getState()
+    s.setRendererActual('canvas') // a past WebGL failure
+    s.update({ fontSize: 15 }) // unrelated patch: flag untouched
+    expect(useTerminalSettings.getState().rendererActual).toBe('canvas')
+    s.update({ renderer: 'webgl' }) // fresh choice: flag follows the preference
+    expect(useTerminalSettings.getState().rendererActual).toBe('webgl')
+    s.setRendererActual('canvas')
+    s.update({ renderer: 'canvas' })
+    expect(useTerminalSettings.getState().rendererActual).toBe('canvas')
+  })
+
+  it('resetToDefaults also restores rendererActual', () => {
+    const s = useTerminalSettings.getState()
+    s.setRendererActual('canvas')
+    s.resetToDefaults()
+    expect(useTerminalSettings.getState().rendererActual).toBe(TERMINAL_DEFAULTS.renderer)
+  })
+
+  it('a cleared imported palette persists as null and rehydrates as undefined', async () => {
+    const dracula = getTerminalScheme('dracula')!
+    const s = useTerminalSettings.getState()
+    s.update({ themeSource: 'imported', imported: dracula.palette })
+    expect(useTerminalSettings.getState().themeSource).toBe('imported')
+    // Clear it: JSON.stringify would drop an undefined key and a stale
+    // rehydrate could resurrect the palette — null must hit storage.
+    s.update({ imported: undefined })
+    expect(useTerminalSettings.getState().imported).toBeUndefined()
+    expect(useTerminalSettings.getState().themeSource).toBe('app')
+    const raw = localStorage.getItem(TERMINAL_STORAGE_KEY)!
+    const stored = JSON.parse(raw) as { state: Record<string, unknown> }
+    expect(stored.state.imported).toBeNull()
+    await useTerminalSettings.persist.rehydrate()
+    const after = useTerminalSettings.getState()
+    expect(after.imported).toBeUndefined()
+    expect(after.themeSource).toBe('app')
+  })
+
+  it('a persisted null imported normalizes back to undefined on rehydrate', async () => {
+    localStorage.setItem(
+      TERMINAL_STORAGE_KEY,
+      JSON.stringify({
+        state: { themeSource: 'imported', imported: null },
+        version: 0,
+      }),
+    )
+    await useTerminalSettings.persist.rehydrate()
+    const s = useTerminalSettings.getState()
+    expect(s.imported).toBeUndefined()
+    expect(s.themeSource).toBe('app')
   })
 
   it('resetToDefaults restores defaults but keeps an imported palette', () => {

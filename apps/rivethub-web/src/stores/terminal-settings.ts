@@ -52,7 +52,10 @@ export interface TerminalSettings {
 
 export const TERMINAL_LIMITS = {
   fontSize: { min: 8, max: 32 },
-  lineHeight: { min: 0.8, max: 2.0 },
+  // xterm's own option validator throws for lineHeight < 1 — the UI clamp
+  // must not admit values the emulator rejects.
+  lineHeight: { min: 1, max: 2.0 },
+  letterSpacing: { min: -5, max: 20 },
   scrollback: { min: 500, max: 100_000 },
 } as const
 
@@ -74,7 +77,7 @@ export const TERMINAL_DEFAULTS: TerminalSettings = {
   scrollback: 5000,
   renderer: 'webgl',
   bell: 'none',
-  copyOnSelect: false,
+  copyOnSelect: true,
   rightClickPaste: defaultRightClickPaste(),
   themeSource: 'app',
   scheme: 'catppuccin-mocha',
@@ -82,25 +85,42 @@ export const TERMINAL_DEFAULTS: TerminalSettings = {
 }
 
 const clamp = (v: number, min: number, max: number): number => Math.min(max, Math.max(min, v))
-const num = (v: unknown, fallback: number): number =>
-  typeof v === 'number' && Number.isFinite(v) ? v : fallback
+/** Accepts numbers and numeric strings — a hand-edited localStorage blob may
+ *  carry `"14"` where the UI always writes `14`. */
+const num = (v: unknown, fallback: number): number => {
+  if (typeof v === 'number' && Number.isFinite(v)) return v
+  if (typeof v === 'string' && v.trim()) {
+    const n = Number(v)
+    if (Number.isFinite(n)) return n
+  }
+  return fallback
+}
 
 export function normalizeSettings(s: Partial<TerminalSettings>): TerminalSettings {
   const d = TERMINAL_DEFAULTS
+  const imported = isTerminalPalette(s.imported) ? s.imported : undefined
   return {
     fontFamily:
-      typeof s.fontFamily === 'string' && s.fontFamily.trim() ? s.fontFamily : d.fontFamily,
-    fontSize: clamp(
-      num(s.fontSize, d.fontSize),
-      TERMINAL_LIMITS.fontSize.min,
-      TERMINAL_LIMITS.fontSize.max,
+      typeof s.fontFamily === 'string' && s.fontFamily.trim() ? s.fontFamily.trim() : d.fontFamily,
+    fontSize: Math.round(
+      clamp(
+        num(s.fontSize, d.fontSize),
+        TERMINAL_LIMITS.fontSize.min,
+        TERMINAL_LIMITS.fontSize.max,
+      ),
     ),
     lineHeight: clamp(
       num(s.lineHeight, d.lineHeight),
       TERMINAL_LIMITS.lineHeight.min,
       TERMINAL_LIMITS.lineHeight.max,
     ),
-    letterSpacing: num(s.letterSpacing, d.letterSpacing),
+    letterSpacing: Math.round(
+      clamp(
+        num(s.letterSpacing, d.letterSpacing),
+        TERMINAL_LIMITS.letterSpacing.min,
+        TERMINAL_LIMITS.letterSpacing.max,
+      ),
+    ),
     ligatures: s.ligatures === true,
     cursorStyle:
       s.cursorStyle === 'underline' || s.cursorStyle === 'bar' ? s.cursorStyle : d.cursorStyle,
@@ -114,11 +134,23 @@ export function normalizeSettings(s: Partial<TerminalSettings>): TerminalSetting
     ),
     renderer: s.renderer === 'canvas' ? 'canvas' : 'webgl',
     bell: s.bell === 'visual' ? 'visual' : 'none',
-    copyOnSelect: s.copyOnSelect === true,
+    copyOnSelect: s.copyOnSelect !== false,
     rightClickPaste: typeof s.rightClickPaste === 'boolean' ? s.rightClickPaste : d.rightClickPaste,
-    themeSource: s.themeSource === 'scheme' || s.themeSource === 'imported' ? s.themeSource : 'app',
-    scheme: typeof s.scheme === 'string' && s.scheme ? s.scheme : d.scheme,
-    imported: isTerminalPalette(s.imported) ? s.imported : undefined,
+    // `imported` with no palette falls back to `app` — a resolved themeSource
+    // must never promise a payload resolveXtermTheme would have to invent.
+    themeSource:
+      s.themeSource === 'scheme'
+        ? 'scheme'
+        : s.themeSource === 'imported' && imported
+          ? 'imported'
+          : 'app',
+    // Allowlist against the built-in schemes: an unknown id would render in
+    // the Select while resolve silently fell back to the app theme.
+    scheme:
+      typeof s.scheme === 'string' && getTerminalScheme(s.scheme.trim())
+        ? s.scheme.trim()
+        : d.scheme,
+    imported,
   }
 }
 
@@ -158,7 +190,11 @@ export const useTerminalSettings = create<TerminalSettingsState>()(
       ...TERMINAL_DEFAULTS,
       rendererActual: TERMINAL_DEFAULTS.renderer,
       update(patch: Partial<TerminalSettings>): void {
-        set(normalizeSettings({ ...pickSettings(get()), ...patch }))
+        const next = normalizeSettings({ ...pickSettings(get()), ...patch })
+        // A fresh renderer choice clears the runtime flag with it — a past
+        // WebGL failure must not linger against a preference the user just
+        // re-made (and the latch in xterm-attach retries on the same cue).
+        set(patch.renderer !== undefined ? { ...next, rendererActual: next.renderer } : next)
       },
       setRendererActual(r: 'webgl' | 'canvas'): void {
         // Guard: xterm-attach calls this from its settings effect — an
@@ -167,7 +203,11 @@ export const useTerminalSettings = create<TerminalSettingsState>()(
       },
       resetToDefaults(): void {
         // Reset keeps a T4-imported palette: it is data, not a preference.
-        set({ ...TERMINAL_DEFAULTS, imported: get().imported })
+        set({
+          ...TERMINAL_DEFAULTS,
+          imported: get().imported,
+          rendererActual: TERMINAL_DEFAULTS.renderer,
+        })
       },
     }),
     {
@@ -176,7 +216,11 @@ export const useTerminalSettings = create<TerminalSettingsState>()(
       // the default leaves persistence disabled outright under non-window
       // hosts (vitest's node environment), which also hides the .persist API.
       storage: createJSONStorage(() => localStorage),
-      partialize: pickSettings,
+      // `imported` persists as null when absent: JSON.stringify drops
+      // undefined keys, so a rehydrate from an older blob could otherwise
+      // resurrect a palette the user cleared. merge re-normalizes null back
+      // to undefined via normalizeSettings.
+      partialize: (s) => ({ ...pickSettings(s), imported: s.imported ?? null }),
       merge: (persisted, current) => ({
         ...current,
         ...normalizeSettings({

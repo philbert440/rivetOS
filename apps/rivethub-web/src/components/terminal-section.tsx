@@ -6,7 +6,7 @@
  * one.
  */
 
-import { useEffect, useState, type JSX } from 'react'
+import { useEffect, useState, type JSX, type ReactNode } from 'react'
 import { Select } from './select.js'
 import { useResolvedTheme } from '../stores/theme.js'
 import {
@@ -17,10 +17,19 @@ import {
 } from '../stores/terminal-settings.js'
 import { TERMINAL_SCHEMES, XTERM_DEFAULT_ANSI, type XtermTheme } from '../lib/terminal-schemes.js'
 
-function Row(props: { label: string; children: React.ReactNode }): JSX.Element {
+/** Labelled settings row. `controlId` ties the label to the control
+ *  (`htmlFor`) so clicking the label activates it and assistive tech gets
+ *  the association — the range hints live in the label text. */
+function Row(props: { label: string; controlId?: string; children: ReactNode }): JSX.Element {
   return (
     <div className="mb-2 flex items-center justify-between gap-3">
-      <span className="text-xs text-ink-dim">{props.label}</span>
+      {props.controlId ? (
+        <label htmlFor={props.controlId} className="text-xs text-ink-dim">
+          {props.label}
+        </label>
+      ) : (
+        <span className="text-xs text-ink-dim">{props.label}</span>
+      )}
       {props.children}
     </div>
   )
@@ -33,18 +42,22 @@ function Toggle(props: {
   label: string
   value: boolean
   onChange: (v: boolean) => void
+  id?: string
+  disabled?: boolean
 }): JSX.Element {
   return (
     <button
       type="button"
       role="switch"
+      id={props.id}
       aria-checked={props.value}
       aria-label={props.label}
+      disabled={props.disabled}
       onClick={() => props.onChange(!props.value)}
       className={
         props.value
-          ? 'rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg'
-          : 'rounded border border-line bg-panel-2 px-3 py-1 text-xs hover:border-em'
+          ? 'rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg disabled:cursor-not-allowed disabled:opacity-40'
+          : 'rounded border border-line bg-panel-2 px-3 py-1 text-xs hover:border-em disabled:cursor-not-allowed disabled:opacity-40'
       }
     >
       {props.value ? 'On' : 'Off'}
@@ -53,21 +66,26 @@ function Toggle(props: {
 }
 
 /** Draft-commit number input: the store clamps on commit, but typing an
- *  intermediate value ("1." of "1.2") must not get normalized mid-keystroke. */
+ *  intermediate value ("1." of "1.2") must not get normalized mid-keystroke.
+ *  Blank or non-finite drafts revert to the stored value — Number("") is 0,
+ *  which would otherwise slam the field to the clamp min on an accidental
+ *  clear. */
 function NumberField(props: {
   ariaLabel: string
   value: number
   onCommit: (v: number) => void
+  id?: string
 }): JSX.Element {
   const [draft, setDraft] = useState(String(props.value))
   useEffect(() => setDraft(String(props.value)), [props.value])
   const commit = (): void => {
     const n = Number(draft)
-    if (Number.isFinite(n)) props.onCommit(n)
+    if (draft.trim() && Number.isFinite(n)) props.onCommit(n)
     else setDraft(String(props.value))
   }
   return (
     <input
+      id={props.id}
       value={draft}
       inputMode="decimal"
       aria-label={props.ariaLabel}
@@ -80,6 +98,41 @@ function NumberField(props: {
         }
       }}
       className="w-20 rounded border border-line bg-panel-2 px-2 py-1 text-right font-mono text-xs outline-none focus:border-em"
+    />
+  )
+}
+
+/** Draft-commit text input, same contract as NumberField: a half-typed font
+ *  stack must never hit the live terminal mid-keystroke; blank reverts. */
+function TextField(props: {
+  ariaLabel: string
+  value: string
+  onCommit: (v: string) => void
+  id?: string
+  placeholder?: string
+  className?: string
+}): JSX.Element {
+  const [draft, setDraft] = useState(props.value)
+  useEffect(() => setDraft(props.value), [props.value])
+  const commit = (): void => {
+    if (draft.trim()) props.onCommit(draft)
+    else setDraft(props.value)
+  }
+  return (
+    <input
+      id={props.id}
+      value={draft}
+      aria-label={props.ariaLabel}
+      placeholder={props.placeholder}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          commit()
+          e.currentTarget.blur()
+        }
+      }}
+      className={props.className}
     />
   )
 }
@@ -105,18 +158,19 @@ const ANSI_SWATCH_KEYS = [
 
 /** Static font/palette sample — no xterm instance needed. The `app` source
  *  leaves the ANSI ramp at the emulator defaults, so swatches fall back to
- *  those when the resolved theme doesn't name a color. */
+ *  those when the resolved theme doesn't name a color. A div, not a pre:
+ *  pre is phrasing-content-only and collapses the swatch rows' JSX
+ *  whitespace into stray flex items. */
 function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme }): JSX.Element {
   const { settings, theme } = props
   return (
-    <pre
-      className="mt-2 overflow-x-auto rounded border border-line p-3"
+    <div
+      className="mt-2 overflow-x-auto rounded border border-line p-3 font-mono whitespace-pre"
       style={{
         fontFamily: settings.fontFamily,
         fontSize: settings.fontSize,
         lineHeight: settings.lineHeight,
         letterSpacing: settings.letterSpacing,
-        fontFeatureSettings: settings.ligatures ? '"liga" 1, "calt" 1' : undefined,
         backgroundColor: theme.background,
         color: theme.foreground,
       }}
@@ -143,7 +197,7 @@ function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme 
           />
         ))}
       </div>
-    </pre>
+    </div>
   )
 }
 
@@ -213,17 +267,25 @@ export function TerminalSection(): JSX.Element {
       )}
 
       <div className="mt-4">
-        <label className="mb-1 block text-xs text-ink-dim">Font family</label>
-        <input
+        <label htmlFor="terminal-font-family" className="mb-1 block text-xs text-ink-dim">
+          Font family
+        </label>
+        <TextField
+          id="terminal-font-family"
+          ariaLabel="Terminal font family"
           value={settings.fontFamily}
-          onChange={(e) => update({ fontFamily: e.target.value })}
+          onCommit={(v) => update({ fontFamily: v })}
           placeholder="'JetBrains Mono', monospace"
           className="mb-2 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
         />
       </div>
 
-      <Row label={`Font size (${TERMINAL_LIMITS.fontSize.min}–${TERMINAL_LIMITS.fontSize.max})`}>
+      <Row
+        label={`Font size (${TERMINAL_LIMITS.fontSize.min}–${TERMINAL_LIMITS.fontSize.max})`}
+        controlId="terminal-font-size"
+      >
         <NumberField
+          id="terminal-font-size"
           ariaLabel="Terminal font size"
           value={settings.fontSize}
           onCommit={(v) => update({ fontSize: v })}
@@ -231,34 +293,44 @@ export function TerminalSection(): JSX.Element {
       </Row>
       <Row
         label={`Line height (${TERMINAL_LIMITS.lineHeight.min}–${TERMINAL_LIMITS.lineHeight.max})`}
+        controlId="terminal-line-height"
       >
         <NumberField
+          id="terminal-line-height"
           ariaLabel="Terminal line height"
           value={settings.lineHeight}
           onCommit={(v) => update({ lineHeight: v })}
         />
       </Row>
-      <Row label="Letter spacing (px)">
+      <Row
+        label={`Letter spacing (${TERMINAL_LIMITS.letterSpacing.min}–${TERMINAL_LIMITS.letterSpacing.max} px)`}
+        controlId="terminal-letter-spacing"
+      >
         <NumberField
+          id="terminal-letter-spacing"
           ariaLabel="Terminal letter spacing"
           value={settings.letterSpacing}
           onCommit={(v) => update({ letterSpacing: v })}
         />
       </Row>
-      <Row label="Ligatures">
+      <Row label="Ligatures" controlId="terminal-ligatures">
         <Toggle
+          id="terminal-ligatures"
           label="Terminal ligatures"
           value={settings.ligatures}
           onChange={(v) => update({ ligatures: v })}
+          disabled
         />
       </Row>
       <p className="mb-2 text-xs text-ink-dim">
-        Best-effort: xterm renders glyphs itself, so CSS ligatures only apply with the DOM renderer
-        (not WebGL) and only for fonts that ship liga/calt tables.
+        Ligatures need the DOM renderer, which isn&apos;t currently selectable (WebGL and Canvas
+        shape glyphs themselves) — the toggle is disabled so it can&apos;t promise an effect it
+        can&apos;t deliver.
       </p>
 
-      <Row label="Cursor style">
+      <Row label="Cursor style" controlId="terminal-cursor-style">
         <Select
+          id="terminal-cursor-style"
           value={settings.cursorStyle}
           options={[
             { value: 'block', label: 'Block' },
@@ -269,8 +341,9 @@ export function TerminalSection(): JSX.Element {
           title="Cursor style"
         />
       </Row>
-      <Row label="Cursor blink">
+      <Row label="Cursor blink" controlId="terminal-cursor-blink">
         <Toggle
+          id="terminal-cursor-blink"
           label="Terminal cursor blink"
           value={settings.cursorBlink}
           onChange={(v) => update({ cursorBlink: v })}
@@ -278,16 +351,19 @@ export function TerminalSection(): JSX.Element {
       </Row>
       <Row
         label={`Scrollback lines (${TERMINAL_LIMITS.scrollback.min}–${TERMINAL_LIMITS.scrollback.max})`}
+        controlId="terminal-scrollback"
       >
         <NumberField
+          id="terminal-scrollback"
           ariaLabel="Terminal scrollback"
           value={settings.scrollback}
           onCommit={(v) => update({ scrollback: v })}
         />
       </Row>
 
-      <Row label="Renderer">
+      <Row label="Renderer" controlId="terminal-renderer">
         <Select
+          id="terminal-renderer"
           value={settings.renderer}
           options={[
             { value: 'webgl', label: 'WebGL' },
@@ -301,8 +377,9 @@ export function TerminalSection(): JSX.Element {
         <p className="mb-2 text-xs text-ink-dim">WebGL unavailable, using canvas.</p>
       )}
 
-      <Row label="Bell">
+      <Row label="Bell" controlId="terminal-bell">
         <Select
+          id="terminal-bell"
           value={settings.bell}
           options={[
             { value: 'none', label: 'None' },
@@ -312,15 +389,17 @@ export function TerminalSection(): JSX.Element {
           title="Terminal bell"
         />
       </Row>
-      <Row label="Copy on select">
+      <Row label="Copy on select" controlId="terminal-copy-on-select">
         <Toggle
+          id="terminal-copy-on-select"
           label="Terminal copy on select"
           value={settings.copyOnSelect}
           onChange={(v) => update({ copyOnSelect: v })}
         />
       </Row>
-      <Row label="Right-click paste">
+      <Row label="Right-click paste" controlId="terminal-right-click-paste">
         <Toggle
+          id="terminal-right-click-paste"
           label="Terminal right-click paste"
           value={settings.rightClickPaste}
           onChange={(v) => update({ rightClickPaste: v })}

@@ -23,6 +23,8 @@ export function Select(props: {
   options: SelectOption[]
   onChange: (value: string) => void
   title?: string
+  /** Trigger element id — lets a <label htmlFor> point at the control. */
+  id?: string
   /** Optional label shown above the list inside the popover. */
   label?: string
   disabled?: boolean
@@ -64,6 +66,7 @@ export function Select(props: {
         <Button
           variant="outline"
           size="sm"
+          id={props.id}
           disabled={props.disabled}
           title={props.title}
           className={cn(

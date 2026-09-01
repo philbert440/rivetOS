@@ -97,15 +97,32 @@ export function paletteToXtermTheme(p: TerminalPalette): XtermTheme {
   return theme
 }
 
+/** Palette colors must be full #rrggbb hex — anything looser would reach
+ *  xterm's theme parser, which treats unknown formats as undefined. */
+const HEX_COLOR = /^#[0-9a-f]{6}$/i
+
 export function isTerminalPalette(v: unknown): v is TerminalPalette {
   if (typeof v !== 'object' || v === null) return false
-  const p = v as { foreground?: unknown; background?: unknown; ansi?: unknown }
+  const p = v as {
+    foreground?: unknown
+    background?: unknown
+    cursor?: unknown
+    selectionBackground?: unknown
+    ansi?: unknown
+  }
+  if (typeof p.foreground !== 'string' || !HEX_COLOR.test(p.foreground)) return false
+  if (typeof p.background !== 'string' || !HEX_COLOR.test(p.background)) return false
+  if (p.cursor !== undefined && (typeof p.cursor !== 'string' || !HEX_COLOR.test(p.cursor)))
+    return false
+  if (
+    p.selectionBackground !== undefined &&
+    (typeof p.selectionBackground !== 'string' || !HEX_COLOR.test(p.selectionBackground))
+  )
+    return false
   return (
-    typeof p.foreground === 'string' &&
-    typeof p.background === 'string' &&
     Array.isArray(p.ansi) &&
     p.ansi.length === 16 &&
-    p.ansi.every((c) => typeof c === 'string')
+    p.ansi.every((c) => typeof c === 'string' && HEX_COLOR.test(c))
   )
 }
 
@@ -136,27 +153,28 @@ export function appXtermTheme(resolved: ResolvedTheme): XtermTheme {
 }
 
 /**
- * xterm.js's built-in ANSI defaults — the `app` source deliberately leaves
- * the ramp alone (today's behavior), so the settings preview merges these in
- * to have something to show for the 16 swatches.
+ * xterm.js's built-in ANSI defaults — xterm 6 seeds any omitted ANSI color
+ * from its Tango-derived DEFAULT_ANSI_COLORS, so the live `app` terminal
+ * shows exactly these for the ramp. The settings preview merges them in to
+ * have something to show for the 16 swatches.
  */
 export const XTERM_DEFAULT_ANSI: TerminalPalette['ansi'] = [
-  '#000000',
-  '#cd3131',
-  '#00bc00',
-  '#949800',
-  '#0451a5',
-  '#bc05bc',
-  '#0598bc',
-  '#555555',
-  '#666666',
-  '#f14c4c',
-  '#23d18b',
-  '#f5f543',
-  '#3b8eea',
-  '#d670d6',
-  '#29b8db',
-  '#e5e5e5',
+  '#2e3436',
+  '#cc0000',
+  '#4e9a06',
+  '#c4a000',
+  '#3465a4',
+  '#75507b',
+  '#06989a',
+  '#d3d7cf',
+  '#555753',
+  '#ef2929',
+  '#8ae234',
+  '#fce94f',
+  '#729fcf',
+  '#ad7fa8',
+  '#34e2e2',
+  '#eeeeec',
 ]
 
 export interface TerminalScheme {
