@@ -18,6 +18,15 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function boolEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return fallback
+  const n = raw.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(n)) return true
+  if (['0', 'false', 'no', 'off'].includes(n)) return false
+  return fallback
+}
+
 export const config = {
   pgUrl: requireEnv('RIVETOS_PG_URL'),
   embedUrl: requireEnv('RIVETOS_EMBED_URL'),
@@ -28,7 +37,8 @@ export const config = {
 
   concurrency: intEnv('EMBED_CONCURRENCY', 4),
 
-  truncateDims: intEnv('EMBED_TRUNCATE_DIMS', 4000),
+  // Schema is hard halfvec(1024); doctor checkEmbeddingWidth expects 1024.
+  truncateDims: intEnv('EMBED_TRUNCATE_DIMS', 1024),
   // Single-shot content (<= this) is embedded in one call; larger content is
   // split into <=charsPerChunk pieces and mean-pooled. This MUST stay at or
   // below the embed endpoint's per-request capacity — if it exceeds it, an
@@ -47,4 +57,9 @@ export const config = {
   // forever (no periodic re-enqueue, unlike compaction's enqueue-idle).
   sweepLimit: intEnv('EMBED_SWEEP_LIMIT', 200),
   sweepMaxAttempts: intEnv('EMBED_SWEEP_MAX_ATTEMPTS', 5),
+
+  // Per-chunk rows for long messages (ros_message_chunks). Default on; the
+  // parent mean-pooled vector is still written. Backfill sweep is bounded.
+  embedChunksEnabled: boolEnv('EMBED_CHUNKS_ENABLED', true),
+  chunkBackfillLimit: intEnv('CHUNK_BACKFILL_LIMIT', 200),
 } as const

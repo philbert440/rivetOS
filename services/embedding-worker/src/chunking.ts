@@ -2,24 +2,46 @@
  * Chunking + mean-pooling helpers for oversized embedding content.
  *
  * The worker splits oversized content into chunks, embeds each chunk,
- * and mean-pools the vectors into a single vector per row.
+ * and mean-pools the vectors into a single vector per row. Long messages
+ * also persist the chunks (with offsets) on ros_message_chunks.
+ *
+ * Offsets (charStart / charEnd) index the composed embed text, not
+ * ros_messages.content.
  */
 
-export function splitIntoChunks(text: string, maxChars: number): string[] {
-  if (text.length <= maxChars) return [text]
+export interface TextChunk {
+  text: string
+  charStart: number
+  charEnd: number
+}
 
-  const chunks: string[] = []
+export function splitIntoChunksWithOffsets(text: string, maxChars: number): TextChunk[] {
+  if (text.length <= maxChars) return [{ text, charStart: 0, charEnd: text.length }]
+
+  const chunks: TextChunk[] = []
   let cursor = 0
 
   while (cursor < text.length) {
     const remaining = text.length - cursor
     if (remaining <= maxChars) {
-      chunks.push(text.slice(cursor))
+      chunks.push({ text: text.slice(cursor), charStart: cursor, charEnd: text.length })
       break
     }
 
     const windowStart = cursor + Math.floor(maxChars * 0.85)
-    const hardEnd = cursor + maxChars
+    // Surrogate-safe hard end (same back-off as safe-slice.ts) without copying
+    // the tail each iteration. A persisted chunk that ends mid-pair is a
+    // permanently dead embed job.
+    let hardEnd = cursor + maxChars
+    const cut = text.charCodeAt(hardEnd - 1)
+    if (cut >= 0xd800 && cut <= 0xdbff) {
+      hardEnd -= 1
+    }
+    if (hardEnd <= cursor) {
+      const first = text.charCodeAt(cursor)
+      const pair = first >= 0xd800 && first <= 0xdbff ? 2 : 1
+      hardEnd = Math.min(cursor + pair, text.length)
+    }
 
     const candidates = [
       text.lastIndexOf('\n\n', hardEnd),
@@ -36,7 +58,7 @@ export function splitIntoChunks(text: string, maxChars: number): string[] {
     }
 
     const end = breakAt === -1 ? hardEnd : breakAt
-    chunks.push(text.slice(cursor, end))
+    chunks.push({ text: text.slice(cursor, end), charStart: cursor, charEnd: end })
     cursor = end
   }
 

@@ -8,11 +8,13 @@ vi.mock('../config.js', () => ({
   config: {
     sweepLimit: 200,
     sweepMaxAttempts: 5,
+    embedChunksEnabled: true,
   },
 }))
 
 import { enqueueUnembeddedTask, healFailedNullSql } from './enqueue-unembedded.js'
 import { NULL_EMBED_ERROR, PERMANENT_NULL_EMBED_ERROR } from './embed-target.js'
+import { config } from '../config.js'
 
 interface MockHelpers {
   withPgClient: (
@@ -25,11 +27,13 @@ interface MockHelpers {
 /** Build helpers whose pg client returns `byTable[table]` rows for each table. */
 function makeHelpers(byTable: Record<string, Array<{ id: string }>>): MockHelpers {
   const query = vi.fn(async (sql: string, params?: unknown[]) => {
-    const table = sql.includes('ros_messages')
-      ? 'ros_messages'
+    const table = sql.includes('ros_message_chunks')
+      ? 'ros_message_chunks'
       : sql.includes('ros_wiki_topics')
         ? 'ros_wiki_topics'
-        : 'ros_summaries'
+        : sql.includes('ros_messages')
+          ? 'ros_messages'
+          : 'ros_summaries'
     if (/^\s*UPDATE/i.test(sql)) {
       expect(params).toEqual([NULL_EMBED_ERROR])
       return { rows: [], rowCount: 0 }
@@ -204,5 +208,76 @@ describe('enqueue-unembedded', () => {
       { targetTable: 'ros_summaries', targetId: 's9' },
       expect.objectContaining({ jobKey: 'embed-ros_summaries-s9' }),
     )
+  })
+
+  it('chunk sweep SQL excludes terminal embed_status', async () => {
+    const sqls: string[] = []
+    const query = vi.fn(async (sql: string) => {
+      sqls.push(sql)
+      if (/^\s*UPDATE/i.test(sql)) return { rows: [], rowCount: 0 }
+      return { rows: [], rowCount: 0 }
+    })
+    const helpers = {
+      withPgClient: async (fn: (c: { query: typeof query }) => Promise<void>) => fn({ query }),
+      addJob: vi.fn(async () => undefined),
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }
+
+    await enqueueUnembeddedTask({} as any, helpers as any)
+
+    const chunkSelect = sqls.find((s) => s.includes('ros_message_chunks') && /SELECT/i.test(s))
+    expect(chunkSelect).toBeDefined()
+    expect(chunkSelect).toMatch(/embed_status IS NULL/)
+    expect(chunkSelect).toMatch(/embedding IS NULL/)
+  })
+
+  it('sweeps ros_message_chunks with the trigger job_key (dedupes live trigger jobs)', async () => {
+    const helpers = makeHelpers({ ros_message_chunks: [{ id: 'c1' }] })
+
+    await enqueueUnembeddedTask({} as any, helpers as any)
+
+    expect(helpers.addJob).toHaveBeenCalledOnce()
+    expect(helpers.addJob).toHaveBeenCalledWith(
+      'embed-target',
+      { targetTable: 'ros_message_chunks', targetId: 'c1' },
+      {
+        jobKey: 'embed-ros_message_chunks-c1',
+        jobKeyMode: 'preserve_run_at',
+        maxAttempts: 5,
+      },
+    )
+  })
+
+  it('skips the chunk backstop when EMBED_CHUNKS_ENABLED=false', async () => {
+    const cfg = config as { embedChunksEnabled: boolean }
+    const prev = cfg.embedChunksEnabled
+    cfg.embedChunksEnabled = false
+    try {
+      const helpers = makeHelpers({ ros_message_chunks: [{ id: 'c1' }] })
+      await enqueueUnembeddedTask({} as any, helpers as any)
+      expect(helpers.addJob).not.toHaveBeenCalled()
+    } finally {
+      cfg.embedChunksEnabled = prev
+    }
+  })
+
+  it('logs a warning and continues when the chunk table is missing', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('ros_message_chunks')) throw new Error('relation does not exist')
+      if (/^\s*UPDATE/i.test(sql)) return { rows: [], rowCount: 0 }
+      return { rows: [], rowCount: 0 }
+    })
+    const helpers = {
+      withPgClient: async (fn: (c: { query: typeof query }) => Promise<void>) => fn({ query }),
+      addJob: vi.fn(async () => undefined),
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }
+
+    await enqueueUnembeddedTask({} as any, helpers as any)
+
+    expect(helpers.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('ros_message_chunks sweep failed'),
+    )
+    expect(helpers.addJob).not.toHaveBeenCalled()
   })
 })

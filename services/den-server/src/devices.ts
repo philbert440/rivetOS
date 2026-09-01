@@ -170,6 +170,7 @@ export interface RelayDriver {
 //   - SELECT ros_messages, ros_summaries (FTS / trigram / vector)
 //   - SELECT ros_summary_sources (expand joins)
 //   - SELECT ros_conversations (browse/stats joins)
+//   - SELECT ros_message_chunks (chunk-level vector arm, after 0014_chunks)
 //
 // access_count / last_accessed_at bumps on ros_messages and ros_summaries are
 // maintained SERVER-SIDE by RivetOS workers (see integrations/hermes/rivet-
@@ -185,7 +186,7 @@ export interface RelayDriver {
 // succeed — confirm on non-prod before enabling on the live datahub.
 //
 // Tables (public schema): ros_conversations, ros_messages, ros_summaries,
-// ros_summary_sources.
+// ros_summary_sources, ros_message_chunks.
 
 /** Ops bootstrap SQL for the `rivet_device` group (run once as table owner). */
 export const DEVICE_GROUP_GRANTS_SQL = `
@@ -203,7 +204,8 @@ GRANT SELECT, INSERT ON
   TO rivet_device;
 GRANT SELECT ON
   ros_summaries,
-  ros_summary_sources
+  ros_summary_sources,
+  ros_message_chunks
   TO rivet_device;
 
 -- Sole on-device UPDATE: grok-memory-capture.ts touch/finalize on ros_conversations.
