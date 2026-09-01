@@ -135,7 +135,7 @@ describe('Workspace Fence Hook', () => {
   })
 
   it('allows files inside workspace', async () => {
-    const ctx = makeToolBeforeCtx('file_read', { path: '/home/philbot/workspace/CORE.md' })
+    const ctx = makeToolBeforeCtx('file_read', { path: '/home/philbot/workspace/AGENT.md' })
     await pipeline.run(ctx)
     expect(ctx.blocked).toBeUndefined()
   })

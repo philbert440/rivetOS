@@ -46,7 +46,7 @@ export function stampUserHeader(req: IncomingMessage, ctx: UserContext | undefin
   if (ctx && !ctx.isOwner) req.headers[TRUSTED_USER_HEADER] = ctx.userId
 }
 
-/** Spawn env for capture (strangler). Secrets (USER_DBS, admin URLs) stay out. */
+/** Spawn env for capture. The full users map and admin URLs stay out. */
 export function captureEnvFor(ctx: UserContext | undefined): Record<string, string> | undefined {
   if (!ctx || ctx.isOwner) return undefined
   const env: Record<string, string> = { RIVETOS_USER_ID: ctx.userId }

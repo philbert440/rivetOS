@@ -549,7 +549,9 @@ These are typically set in `.env`:
 | `ANTHROPIC_API_KEY` | provider-anthropic | Anthropic API key |
 | `XAI_API_KEY` | provider-xai | xAI API key |
 | `GOOGLE_API_KEY` | provider-google | Google AI API key |
-| `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string |
+| `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string (node owner database) |
+| `RIVETOS_USERS_FILE` | den, memory-postgres, claude-cli | Optional explicit path to the tenancy registry (`users.json`). When unset, RivetOS loads `$RIVETOS_SHARED_DIR/rivetos/users.json`, then `~/.rivetos/users.json`. Per-user memory routing comes only from this file — a user is routable iff their record has a usable `pgUrl`. A present-but-invalid shared-dir file fails closed (does not fall through to the home file). |
+| `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `phil` (fleet compatibility); deployments override this env var. Forwarded to the embedded den. |
 | `RIVETOS_AGENT_SECRET` | channel-agent | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS). |
 | `RIVETOS_LOG_LEVEL` | core | Log level: `error`, `warn`, `info`, `debug` |
 | `RIVETOS_LOG_FORMAT` | core | Log format: `pretty` (default) or `json` |
