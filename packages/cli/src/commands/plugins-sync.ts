@@ -135,11 +135,14 @@ function runRsync(ctx: Ctx, args: string[], label: string, singleFile: boolean, 
   } catch (err) {
     const e = err as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string }
     if (e.code === 'ENOENT') {
-      throw new Error('rsync not found on PATH — install rsync (expected on every fleet node)')
+      throw new Error('rsync not found on PATH — install rsync (expected on every fleet node)', {
+        cause: err,
+      })
     }
     const stderr = e.stderr ? String(e.stderr).trim() : ''
     throw new Error(
       `rsync failed for ${label} (exit ${e.status ?? 'unknown'})${stderr ? `: ${stderr}` : ''}`,
+      { cause: err },
     )
   }
   let written = 0
