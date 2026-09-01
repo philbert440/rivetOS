@@ -1,9 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileMeshRegistry, buildLocalNode } from './mesh.js'
 import type { MeshNode, MeshNodeEvent } from '@rivetos/types'
+
+// node:fs/promises is an ESM builtin namespace — spyOn cannot redefine its
+// exports; spy-mode automock wraps writeFile so mockRejectedValueOnce works.
+vi.mock('node:fs/promises', { spy: true })
 
 describe('FileMeshRegistry', () => {
   let tmpDir: string
@@ -345,7 +349,6 @@ describe('FileMeshRegistry', () => {
   })
 
   it('fails loud on pre-capabilities flat-array mesh.json', async () => {
-    const { writeFile } = await import('node:fs/promises')
     await writeFile(
       join(tmpDir, 'mesh.json'),
       JSON.stringify({
@@ -356,5 +359,154 @@ describe('FileMeshRegistry', () => {
     )
 
     await expect(registry.getNodes()).rejects.toThrow(/pre-capabilities flat-array/)
+  })
+
+  it('round-trips unknown node and root fields through heartbeat', async () => {
+    await writeFile(
+      join(tmpDir, 'mesh.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          updatedAt: 1,
+          extraRoot: { future: true },
+          nodes: {
+            n1: {
+              id: 'n1',
+              name: 'n1',
+              host: '192.0.2.1',
+              port: 3100,
+              agents: [],
+              providers: [],
+              models: [],
+              capabilities: [],
+              status: 'online',
+              lastSeen: 1,
+              registeredAt: 1,
+              version: '1',
+              unknownNodeField: 'keep-me',
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    )
+
+    await registry.heartbeat('n1', 'online')
+
+    const saved = JSON.parse(await readFile(join(tmpDir, 'mesh.json'), 'utf-8')) as {
+      extraRoot?: unknown
+      nodes: Record<string, { unknownNodeField?: unknown; lastSeen: number }>
+    }
+    expect(saved.extraRoot).toEqual({ future: true })
+    expect(saved.nodes.n1.unknownNodeField).toBe('keep-me')
+    expect(saved.nodes.n1.lastSeen).toBeGreaterThan(1)
+  })
+
+  it('skips a malformed node instead of failing the registry load', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await writeFile(
+        join(tmpDir, 'mesh.json'),
+        JSON.stringify({
+          version: 1,
+          updatedAt: 1,
+          nodes: {
+            good: {
+              id: 'good',
+              name: 'good',
+              host: '192.0.2.1',
+              port: 3100,
+              agents: [],
+              providers: [],
+              models: [],
+              capabilities: [],
+              status: 'online',
+              lastSeen: 1,
+              registeredAt: 1,
+              version: '1',
+            },
+            bad: { host: 'h', port: '3100' },
+          },
+        }),
+        'utf-8',
+      )
+
+      const nodes = await registry.getNodes()
+      expect(nodes.map((n) => n.id)).toEqual(['good'])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/"bad"/)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('save leaves the original mesh.json intact when writeFile fails', async () => {
+    const node = buildLocalNode({
+      name: 'kept-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+    await registry.register(node)
+
+    const meshPath = join(tmpDir, 'mesh.json')
+    const before = await readFile(meshPath, 'utf-8')
+
+    vi.mocked(writeFile).mockRejectedValueOnce(
+      Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }),
+    )
+
+    const other = buildLocalNode({
+      name: 'other-node',
+      agents: ['grok'],
+      host: '192.168.1.102',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+    await expect(registry.register(other)).rejects.toThrow(/ENOSPC/)
+
+    const after = await readFile(meshPath, 'utf-8')
+    expect(after).toBe(before)
+    const retrieved = await registry.getNode(node.id)
+    expect(retrieved?.name).toBe('kept-node')
+  })
+
+  it('heartbeat on an empty roster re-registers instead of no-op', async () => {
+    const node = buildLocalNode({
+      name: 'self-heal-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: ['anthropic'],
+      models: ['claude-sonnet-4-20250514'],
+      version: '0.7.0',
+    })
+    await registry.start(node)
+
+    await writeFile(
+      join(tmpDir, 'mesh.json'),
+      JSON.stringify({ version: 1, nodes: {}, updatedAt: 0 }),
+      'utf-8',
+    )
+
+    expect(await registry.getNode(node.id)).toBeUndefined()
+
+    await registry.heartbeat(node.id, 'online')
+
+    const restored = await registry.getNode(node.id)
+    expect(restored).toBeDefined()
+    expect(restored!.id).toBe(node.id)
+    expect(restored!.name).toBe('self-heal-node')
+    expect(restored!.agents).toEqual(['opus'])
+    expect(restored!.host).toBe('192.168.1.101')
+    expect(restored!.status).toBe('online')
+    expect(restored!.lastSeen).toBeGreaterThan(node.lastSeen)
   })
 })

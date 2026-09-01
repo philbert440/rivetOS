@@ -2,8 +2,8 @@
 // the den-enabled nodes, probe each one's den /healthz in parallel, and cache
 // the assembled result for a short TTL.
 //
-// The loader deliberately mirrors packages/cli/src/lib/mesh-file.ts instead of
-// importing it — den-server stays dependency-free (node:http + ws only).
+// mesh.json parsing lives in @rivetos/types (`parseMeshFile`). den-server
+// rule: no third-party runtime deps; workspace types/pure-lib imports allowed.
 //
 // A roster entry's top-level `port` is the agent-channel port, NOT the den
 // port; the den address always comes from metadata.denUrl / metadata.denPort
@@ -12,44 +12,18 @@
 import { readFile } from 'node:fs/promises'
 import { homedir, hostname } from 'node:os'
 import { join } from 'node:path'
-import { sharedDir } from '@rivetos/types'
+import {
+  isMeshFlatArrayError,
+  MeshParseError,
+  parseMeshFile,
+  sharedDir,
+  type MeshDenNode,
+  type MeshFile,
+  type MeshNode,
+  type MeshOverview,
+} from '@rivetos/types'
 
-// Only the roster fields the den reads — everything else is ignored, and all
-// of these may be missing or malformed (mesh.json is shared and hand-edited).
-interface MeshFileNode {
-  id?: string
-  name?: string
-  host?: string
-  capabilities?: string[]
-  metadata?: Record<string, unknown>
-}
-
-interface MeshFileData {
-  updatedAt: number
-  nodes: Record<string, MeshFileNode | undefined>
-}
-
-// These two are the /api/mesh (/mesh.json) wire shapes. Their canonical
-// client-facing mirror is MeshDenNode/MeshOverview in @rivetos/types
-// gateway-api.ts; den-server stays dependency-free at runtime, so the two
-// definitions are locked against each other by a compile-time assertion in
-// mesh.test.ts (types is a devDependency only).
-export interface MeshDenNode {
-  id: string
-  name: string
-  denUrl: string
-  online: boolean
-  /** From the peer's /healthz; null when the probe failed. */
-  sessions: number | null
-  /** Most recent room served by THIS process — present only on the entry
-   *  matching localNodeId (see docs/DEN.md). */
-  latest?: { activity: string; title: string } | null
-}
-
-export interface MeshOverview {
-  updatedAt: number
-  nodes: MeshDenNode[]
-}
+export type { MeshDenNode, MeshOverview } from '@rivetos/types'
 
 export interface MeshViewOptions {
   /** Explicit mesh.json path; '' = the meshFilePaths() default chain. */
@@ -91,38 +65,30 @@ export const meshFilePaths = (meshFile: string, sharedRoot?: string): string[] =
     : [join(sharedRoot ?? sharedDir(), 'mesh.json'), join(homedir(), '.rivetos', 'mesh.json')]
 
 /** First readable + parseable candidate wins; null when none is.
- *  Pre-capabilities flat-array format is no longer supported: den must not
- *  crash the node, but silence is worse — log a clear warning and treat as
- *  an empty roster. */
-export async function loadMeshFile(paths: string[]): Promise<MeshFileData | null> {
+ *  Pre-capabilities flat-array and root-shape errors throw (same as CLI).
+ *  A single invalid node is skipped with a warning. Invalid JSON /
+ *  unreadable files fall through to the next candidate. */
+export async function loadMeshFile(paths: string[]): Promise<MeshFile | null> {
   for (const p of paths) {
+    let raw: string
     try {
-      const parsed = JSON.parse(await readFile(p, 'utf8')) as {
-        updatedAt?: unknown
-        nodes?: unknown
-      }
-      if (Array.isArray(parsed.nodes)) {
-        console.warn(
-          `[den-server] mesh.json at ${p} uses the pre-capabilities flat-array format, ` +
-            'which is no longer supported. Treating as empty roster. Rewrite as ' +
-            'Record-format { version, nodes: { [id]: node }, updatedAt }.',
-        )
-        return { updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0, nodes: {} }
-      }
-      const nodes =
-        parsed.nodes && typeof parsed.nodes === 'object'
-          ? (parsed.nodes as MeshFileData['nodes'])
-          : {}
-      return { updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0, nodes }
+      raw = await readFile(p, 'utf8')
     } catch {
-      // unreadable or invalid JSON — try the next candidate
+      continue
+    }
+    try {
+      return parseMeshFile(raw, p, { onInvalidNode: 'skip' })
+    } catch (err) {
+      if (isMeshFlatArrayError(err)) throw err
+      if (err instanceof MeshParseError && err.code !== 'MESH_JSON_INVALID') throw err
+      // invalid JSON — try the next candidate
     }
   }
   return null
 }
 
 /** null = not den-enabled, or a denUrl we refuse to touch → excluded. */
-function denUrlFor(id: string, node: MeshFileNode): string | null {
+function denUrlFor(id: string, node: MeshNode): string | null {
   const meta = node.metadata ?? {}
   const rawUrl = meta.denUrl
   if (typeof rawUrl === 'string' && rawUrl) {

@@ -19,11 +19,14 @@
 
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import {
   sharedDir,
-  sharedPath,
+  parseMeshFile,
+  isMeshFlatArrayError,
+  MeshParseError,
+  type MeshFile,
   type MeshNode,
   type MeshNodeRole,
   type MeshRegistry,
@@ -65,17 +68,13 @@ export interface MeshRegistryConfig {
   tls?: import('../runtime/agent-channel.js').AgentChannelTlsConfig
 }
 
-interface MeshFile {
-  version: 1
-  nodes: Record<string, MeshNode | undefined>
-  updatedAt: number
-}
-
 export class FileMeshRegistry implements MeshRegistry {
   private config: MeshRegistryConfig
   private filePath: string
   private heartbeatTimer?: ReturnType<typeof setInterval>
   private localNodeId?: string
+  /** Snapshot of the node passed to start() — used to re-register if the roster is wiped. */
+  private localNode?: MeshNode
 
   constructor(config: MeshRegistryConfig) {
     this.config = config
@@ -125,7 +124,19 @@ export class FileMeshRegistry implements MeshRegistry {
   async heartbeat(nodeId: string, status?: MeshNode['status']): Promise<void> {
     const data = await this.load()
     const node = data.nodes[nodeId]
-    if (!node) return
+    if (!node) {
+      // Empty/reset roster (e.g. truncated mesh.json): re-register from the
+      // start() snapshot instead of no-op'ing and leaving the fleet blind.
+      if (this.localNode && this.localNode.id === nodeId) {
+        log.warn(`Local node ${nodeId} missing from mesh roster — re-registering`)
+        await this.register({
+          ...this.localNode,
+          lastSeen: Date.now(),
+          ...(status ? { status } : {}),
+        })
+      }
+      return
+    }
 
     node.lastSeen = Date.now()
     if (status) node.status = status
@@ -212,6 +223,7 @@ export class FileMeshRegistry implements MeshRegistry {
    */
   async start(localNode: MeshNode): Promise<void> {
     this.localNodeId = localNode.id
+    this.localNode = { ...localNode }
     await this.register(localNode)
 
     const interval = this.config.mesh.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
@@ -315,33 +327,29 @@ export class FileMeshRegistry implements MeshRegistry {
   private async load(): Promise<MeshFile> {
     try {
       const raw = await readFile(this.filePath, 'utf-8')
-      const parsed = JSON.parse(raw) as MeshFile
-
-      // Pre-capabilities flat-array format is no longer supported — fail loud.
-      if (Array.isArray((parsed as { nodes?: unknown }).nodes)) {
-        const msg =
-          `mesh.json at ${this.filePath} uses the pre-capabilities flat-array format, ` +
-          'which is no longer supported. Rewrite the file as Record-format ' +
-          `{ version, nodes: { [id]: node }, updatedAt } (see live ${sharedPath('mesh.json')}).`
-        log.error(msg)
-        throw new Error(msg)
-      }
-
-      return parsed
+      // Skip a single bad node (warn inside the parser) so a hand-edit typo
+      // cannot brick every fleet heartbeat. Flat-array / root-shape still throw.
+      return parseMeshFile(raw, this.filePath, { onInvalidNode: 'skip' })
     } catch (err) {
-      // Re-throw unsupported-format errors so callers fail loud instead of
-      // treating a legacy array file as an empty registry.
-      if (err instanceof Error && err.message.includes('pre-capabilities flat-array')) {
+      // Re-throw unsupported-format / root-shape errors so callers fail loud
+      // instead of treating a legacy or malformed file as an empty registry.
+      const hardParse =
+        isMeshFlatArrayError(err) ||
+        (err instanceof MeshParseError && err.code !== 'MESH_JSON_INVALID')
+      if (hardParse) {
+        if (err instanceof Error) log.error(err.message)
         throw err
       }
-      // File doesn't exist yet / unreadable — return empty registry
+      // File doesn't exist yet / unreadable / invalid JSON — empty registry
       return { version: 1, nodes: {}, updatedAt: Date.now() }
     }
   }
 
   private async save(data: MeshFile): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(data, null, 2), 'utf-8')
+    const tmpPath = `${this.filePath}.tmp-${process.pid}`
+    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
+    await rename(tmpPath, this.filePath)
   }
 
   // -----------------------------------------------------------------------

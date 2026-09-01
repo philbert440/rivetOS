@@ -206,12 +206,21 @@ export type {
 export type {
   MeshNode,
   MeshNodeRole,
+  MeshFile,
   MeshRegistry,
   MeshConfig,
   MeshDiscoveryConfig,
   MeshPeerConfig,
   MeshNodeEvent,
   MeshDelegationRoute,
+  MeshParseErrorCode,
+  MeshParseOptions,
+} from './mesh.js'
+export {
+  parseMeshFile,
+  assertRecordMeshFile,
+  isMeshFlatArrayError,
+  MeshParseError,
 } from './mesh.js'
 export { hasImages, getToolResultText, getToolResultImages, toolResultHasImages } from './utils.js'
 export { sharedDir, sharedPath } from './shared-dir.js'
