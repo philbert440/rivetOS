@@ -24,37 +24,61 @@ const SETTINGS_KEYS = [
  * empty. Ignores the "already migrated" flag — the file is the source of
  * truth, and an empty localStorage after a wipe should restore from the file
  * even if a prior migration succeeded.
+ *
+ * Also seeds settings.json from localStorage if the file is empty but
+ * localStorage has keys (manual restore, first run with existing data). This
+ * ensures the next wipe doesn't lose everything.
  */
 export async function hydrateSettingsIfEmpty(): Promise<void> {
   const rivetShell = getRivetShell()
   if (!isElectronShell(rivetShell) || !rivetShell.settingsGetAll) return
 
   try {
-    // Check if localStorage is empty (no rivethub.* keys)
-    const hasAnySettings = SETTINGS_KEYS.some((key) => {
+    // Collect current localStorage keys
+    const localStorageData: Record<string, string> = {}
+    let hasLocalStorage = false
+    for (const key of SETTINGS_KEYS) {
       try {
-        return localStorage.getItem(key) !== null
+        const value = localStorage.getItem(key)
+        if (value !== null) {
+          localStorageData[key] = value
+          hasLocalStorage = true
+        }
       } catch {
-        return false
+        /* storage disabled */
       }
-    })
-
-    if (hasAnySettings) return // localStorage is not empty, don't hydrate
+    }
 
     // Read all settings from the shell's JSON file
     const settings = await rivetShell.settingsGetAll()
+    const hasFileSettings = SETTINGS_KEYS.some((key) => settings[key] !== undefined)
 
-    // Hydrate localStorage from the file
-    for (const key of SETTINGS_KEYS) {
-      const value = settings[key]
-      if (value !== undefined) {
-        try {
-          localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value))
-        } catch {
-          /* storage full / disabled */
+    // Case 1: localStorage has keys but file is empty/missing keys — seed the file
+    if (hasLocalStorage && !hasFileSettings) {
+      const updates: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(localStorageData)) {
+        updates[key] = tryParseJson(value)
+      }
+      await rivetShell.settingsSetAll?.(updates)
+      return
+    }
+
+    // Case 2: localStorage is empty, file has keys — hydrate from file
+    if (!hasLocalStorage && hasFileSettings) {
+      for (const key of SETTINGS_KEYS) {
+        const value = settings[key]
+        if (value !== undefined) {
+          try {
+            localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value))
+          } catch {
+            /* storage full / disabled */
+          }
         }
       }
+      return
     }
+
+    // Case 3: both empty or both have keys — no-op
   } catch {
     /* shell API unavailable or failed — graceful fallback to empty localStorage */
   }

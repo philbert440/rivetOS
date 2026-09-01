@@ -76,7 +76,7 @@ describe('hydrateSettingsIfEmpty', () => {
     expect(localStorage.getItem('rivethub.theme')).toBe('dark')
   })
 
-  it('does not hydrate when localStorage already has settings', async () => {
+  it('does not hydrate when both localStorage and file have settings', async () => {
     localStorage.setItem('rivethub.baseUrl', 'https://existing.com')
 
     mockShell.settingsGetAll = vi.fn(async () => ({
@@ -85,10 +85,10 @@ describe('hydrateSettingsIfEmpty', () => {
 
     await hydrateSettingsIfEmpty()
 
-    // Existing value is preserved
+    // Existing value is preserved (not overwritten)
     expect(localStorage.getItem('rivethub.baseUrl')).toBe('https://existing.com')
-    // Shell was never called
-    expect(mockShell.settingsGetAll).not.toHaveBeenCalled()
+    // Shell was called to check if file has keys
+    expect(mockShell.settingsGetAll).toHaveBeenCalled()
   })
 
   it('hydrates even if a migrated flag is set in the shell', async () => {
@@ -122,6 +122,63 @@ describe('hydrateSettingsIfEmpty', () => {
 
     // No crash, localStorage stays empty
     expect(localStorage.getItem('rivethub.baseUrl')).toBeNull()
+  })
+
+  it('seeds settings.json from localStorage when file is empty but localStorage has keys', async () => {
+    // User has localStorage keys (manual restore or first run with existing data)
+    localStorage.setItem('rivethub.baseUrl', 'https://existing.com')
+    localStorage.setItem('rivethub.theme', 'dark')
+
+    mockShell.settingsGetAll = vi.fn(async () => ({})) // File is empty
+    mockShell.settingsSetAll = vi.fn(async () => {})
+
+    await hydrateSettingsIfEmpty()
+
+    // File was seeded from localStorage
+    expect(mockShell.settingsSetAll).toHaveBeenCalledWith({
+      'rivethub.baseUrl': 'https://existing.com',
+      'rivethub.theme': 'dark',
+    })
+    // localStorage was NOT changed
+    expect(localStorage.getItem('rivethub.baseUrl')).toBe('https://existing.com')
+  })
+
+  it('hydrates from file when localStorage is empty but file has keys', async () => {
+    mockShell.settingsGetAll = vi.fn(async () => ({
+      'rivethub.baseUrl': 'https://fromfile.com',
+      'rivethub.theme': 'light',
+    }))
+
+    await hydrateSettingsIfEmpty()
+
+    // localStorage was hydrated from file
+    expect(localStorage.getItem('rivethub.baseUrl')).toBe('https://fromfile.com')
+    expect(localStorage.getItem('rivethub.theme')).toBe('light')
+  })
+
+  it('no-ops when both localStorage and file have keys', async () => {
+    localStorage.setItem('rivethub.baseUrl', 'https://local.com')
+    mockShell.settingsGetAll = vi.fn(async () => ({
+      'rivethub.baseUrl': 'https://file.com',
+    }))
+    mockShell.settingsSetAll = vi.fn(async () => {})
+
+    await hydrateSettingsIfEmpty()
+
+    // Neither was changed
+    expect(localStorage.getItem('rivethub.baseUrl')).toBe('https://local.com')
+    expect(mockShell.settingsSetAll).not.toHaveBeenCalled()
+  })
+
+  it('no-ops when both localStorage and file are empty', async () => {
+    mockShell.settingsGetAll = vi.fn(async () => ({}))
+    mockShell.settingsSetAll = vi.fn(async () => {})
+
+    await hydrateSettingsIfEmpty()
+
+    // Nothing happened
+    expect(localStorage.getItem('rivethub.baseUrl')).toBeNull()
+    expect(mockShell.settingsSetAll).not.toHaveBeenCalled()
   })
 })
 

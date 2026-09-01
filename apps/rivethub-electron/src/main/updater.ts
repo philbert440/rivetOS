@@ -40,6 +40,24 @@ export interface UpdateCheckResult {
   available?: { version: string; sizeBytes?: number }
 }
 
+/**
+ * Resolve the install path for an AppImage update. APPIMAGE is the running
+ * image's path, but if we're already running from a temp updater path (the
+ * bug this fix addresses), APPIMAGE is a temp path - using it would
+ * perpetuate the problem. Treat APPIMAGE as usable only if it is a
+ * persistent path (not under tmpdir, not matching rivethub-update-).
+ */
+export function resolveInstallPath(
+  appImageEnv: string | undefined,
+  homeDir: string,
+  tmp: string,
+): string {
+  const fallback = path.join(homeDir, '.local', 'bin', 'rivethub')
+  if (!appImageEnv) return fallback
+  const isTemp = appImageEnv.startsWith(tmp) || appImageEnv.includes('rivethub-update-')
+  return isTemp ? fallback : appImageEnv
+}
+
 const MANIFEST_TIMEOUT_MS = 15_000
 const MANIFEST_MAX_BYTES = 1024 * 1024
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
@@ -172,12 +190,8 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     }
     await chmod(dest, 0o755)
 
-    // Install the AppImage to the path the running AppImage came from, so
-    // the desktop entry's Exec= line stays valid and the app doesn't run
-    // from /tmp/rivethub-update-* as the long-lived binary. APPIMAGE is
-    // the running image's path; ~/.local/bin/rivethub is the fallback when
-    // APPIMAGE is unset (dev runs, non-AppImage Linux builds).
-    const installTo = process.env.APPIMAGE ?? path.join(app.getPath('home'), '.local', 'bin', 'rivethub')
+    // Install the AppImage to a persistent path, not the temp updater path.
+    const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
     const installDir = path.dirname(installTo)
     if (!fs.existsSync(installDir)) {
       await fs.promises.mkdir(installDir, { recursive: true })
