@@ -4,7 +4,7 @@
 
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { SearchHit } from '../search.js'
 import { createMemoryApiRoute } from './memory-api.js'
@@ -80,12 +80,12 @@ function fakePool(opts?: {
 
 const cleanups: Array<() => Promise<void> | void> = []
 afterEach(async () => {
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   for (const fn of cleanups.splice(0)) await fn()
 })
 
-async function serve(
-  opts: Parameters<typeof createMemoryApiRoute>[0],
-): Promise<string> {
+async function serve(opts: Parameters<typeof createMemoryApiRoute>[0]): Promise<string> {
   const api = createMemoryApiRoute(opts)
   const server: Server = createServer((req, res) => {
     void api.handler(req, res)
@@ -100,6 +100,55 @@ describe('/api/memory', () => {
     const base = await serve({ pool: fakePool(), search: async () => [] })
     expect((await fetch(`${base}/api/memory/search`, { method: 'POST' })).status).toBe(405)
     expect((await fetch(`${base}/api/memory/nope`)).status).toBe(404)
+  })
+
+  it('reuses one SearchEngine per pool so the privilege probe runs once across requests', async () => {
+    const clientQueries: string[] = []
+    const run = (sql: string): { rows: unknown[] } => {
+      const text = sql.replace(/\s+/g, ' ').trim()
+      if (
+        text.includes('has_table_privilege') ||
+        text.includes("to_regclass('ros_message_chunks')")
+      ) {
+        return { rows: [{ present: true, granted: true }] }
+      }
+      if (text.includes('FROM ros_conversations WHERE id = ANY')) return { rows: [] }
+      if (text.startsWith('UPDATE')) return { rows: [] }
+      return { rows: [] }
+    }
+    const pool = {
+      query: (sql: string) => Promise.resolve(run(sql)),
+      connect: () =>
+        Promise.resolve({
+          query: (sql: string) => {
+            clientQueries.push(sql.replace(/\s+/g, ' ').trim())
+            return Promise.resolve(run(sql))
+          },
+          release: () => undefined,
+        }),
+    } as unknown as pg.Pool
+
+    const realFetch = globalThis.fetch
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/v1/embeddings')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), {
+            status: 200,
+          }),
+        )
+      }
+      return realFetch(input, init)
+    })
+
+    const base = await serve({
+      pool,
+      embedEndpoint: 'http://127.0.0.1:9401',
+      embedModel: 'Qwen3-Embedding-0.6B',
+    })
+    expect((await fetch(`${base}/api/memory/search?q=loopback`)).status).toBe(200)
+    expect((await fetch(`${base}/api/memory/search?q=loopback`)).status).toBe(200)
+    expect(clientQueries.filter((q) => q.includes('has_table_privilege'))).toHaveLength(1)
   })
 
   it('search requires q and maps session_key', async () => {

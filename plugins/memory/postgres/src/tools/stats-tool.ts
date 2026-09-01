@@ -68,7 +68,10 @@ export function formatSearchRuntimeStats(stats: SearchRuntimeStats): string {
     `\n  vectorArmDropped: ${String(stats.vectorArmDropped)}` +
     `\n  vectorArmDroppedLastHour: ${String(stats.vectorArmDroppedLastHour)}` +
     `\n  queryEmbedCacheHits: ${String(stats.queryEmbedCacheHits)}` +
-    `\n  queryEmbedCacheMisses: ${String(stats.queryEmbedCacheMisses)}`
+    `\n  queryEmbedCacheMisses: ${String(stats.queryEmbedCacheMisses)}` +
+    `\n  chunkArmHits: ${String(stats.chunkArmHits)}` +
+    `\n  parentArmHits: ${String(stats.parentArmHits)}` +
+    `\n  chunkArmUnavailable: ${String(stats.chunkArmUnavailable)}`
   )
 }
 

@@ -22,8 +22,26 @@ import {
   type MemoryStatsResponse,
 } from '@rivetos/types'
 import type pg from 'pg'
-import { SearchEngine, type SearchOptions, type SearchResults } from '../search.js'
+import {
+  SearchEngine,
+  type SearchEngineConfig,
+  type SearchOptions,
+  type SearchResults,
+} from '../search.js'
 import { applyWindowArgs } from '../tools/helpers.js'
+
+/** One engine per pool so the chunk-arm privilege probe and the M1 query-embed
+ *  cache survive across HTTP requests. Keyed by pool identity (owner vs each
+ *  routed user). First config for a given pool wins. */
+const enginesByPool = new WeakMap<pg.Pool, SearchEngine>()
+
+function engineForPool(pool: pg.Pool, config: SearchEngineConfig): SearchEngine {
+  const cached = enginesByPool.get(pool)
+  if (cached) return cached
+  const created = new SearchEngine(pool, config)
+  enginesByPool.set(pool, created)
+  return created
+}
 
 export type MemorySearchFn = (
   pool: pg.Pool,
@@ -103,16 +121,16 @@ async function sessionKeys(pool: pg.Pool, conversationIds: string[]): Promise<Ma
 
 export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
   const embedOk = Boolean(opts.embedEndpoint)
+  const engineConfig: SearchEngineConfig = {
+    embedEndpoint: opts.embedEndpoint,
+    embedModel: opts.embedModel,
+    embedQueryInstruction: opts.embedQueryInstruction,
+    embedTimeoutMs: opts.embedTimeoutMs,
+    hnswEfSearch: opts.hnswEfSearch,
+  }
   const search: MemorySearchFn =
     opts.search ??
-    ((pool, query, options) =>
-      new SearchEngine(pool, {
-        embedEndpoint: opts.embedEndpoint,
-        embedModel: opts.embedModel,
-        embedQueryInstruction: opts.embedQueryInstruction,
-        embedTimeoutMs: opts.embedTimeoutMs,
-        hnswEfSearch: opts.hnswEfSearch,
-      }).search(query, options))
+    ((pool, query, options) => engineForPool(pool, engineConfig).search(query, options))
 
   return {
     prefix: '/api/memory',

@@ -29,12 +29,18 @@ describe('formatSearchRuntimeStats', () => {
       vectorArmDroppedLastHour: 1,
       queryEmbedCacheHits: 12,
       queryEmbedCacheMisses: 4,
+      chunkArmHits: 7,
+      parentArmHits: 5,
+      chunkArmUnavailable: 0,
     })
     expect(block).toContain('**Search runtime:**')
     expect(block).toContain('vectorArmDropped: 3')
     expect(block).toContain('vectorArmDroppedLastHour: 1')
     expect(block).toContain('queryEmbedCacheHits: 12')
     expect(block).toContain('queryEmbedCacheMisses: 4')
+    expect(block).toContain('chunkArmHits: 7')
+    expect(block).toContain('parentArmHits: 5')
+    expect(block).toContain('chunkArmUnavailable: 0')
   })
 })
 
@@ -47,6 +53,9 @@ describe('assembleStatsReport search runtime', () => {
           vectorArmDroppedLastHour: 0,
           queryEmbedCacheHits: 4,
           queryEmbedCacheMisses: 1,
+          chunkArmHits: 0,
+          parentArmHits: 0,
+          chunkArmUnavailable: 0,
         }),
       }),
     )
@@ -110,6 +119,9 @@ describe('createStatsTool searchRuntime integration', () => {
         vectorArmDroppedLastHour: 1,
         queryEmbedCacheHits: 9,
         queryEmbedCacheMisses: 3,
+        chunkArmHits: 4,
+        parentArmHits: 11,
+        chunkArmUnavailable: 1,
       }),
     })
     const out = await tool.execute({})
@@ -117,5 +129,8 @@ describe('createStatsTool searchRuntime integration', () => {
     expect(out).toContain('vectorArmDroppedLastHour: 1')
     expect(out).toContain('queryEmbedCacheHits: 9')
     expect(out).toContain('queryEmbedCacheMisses: 3')
+    expect(out).toContain('chunkArmHits: 4')
+    expect(out).toContain('parentArmHits: 11')
+    expect(out).toContain('chunkArmUnavailable: 1')
   })
 })

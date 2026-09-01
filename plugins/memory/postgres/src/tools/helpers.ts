@@ -3,7 +3,7 @@
  */
 
 import pg from 'pg'
-import type { SearchHit } from '../search.js'
+import type { SearchHit, SearchSnippet } from '../search.js'
 import type { SummaryNode } from '../expand.js'
 
 // ---------------------------------------------------------------------------
@@ -103,6 +103,12 @@ export function formatBrowseMessageBody(
 /** Display caps for memory_search message snippets (slightly tighter than browse). */
 export const SEARCH_CONTENT_LIMIT = 400
 export const SEARCH_TOOL_RESULT_LIMIT = 500
+/**
+ * Display cap for a matched chunk. Real chunks are `EMBED_CHARS_PER_CHUNK`
+ * (6000); slicing them to {@link SEARCH_CONTENT_LIMIT} (400) drops ~93% of the
+ * window — usually including the sentence that matched.
+ */
+export const SEARCH_SNIPPET_LIMIT = 1500
 
 /**
  * Format one memory_search message hit for agent-facing output.
@@ -120,9 +126,16 @@ export function formatSearchMessageBody(
     toolResult?: string | null
     truncated?: boolean
     fullLength?: number
+    snippet?: SearchSnippet
   },
   opts?: { contentLimit?: number; toolResultLimit?: number },
 ): string {
+  // A chunk hit: the matched excerpt is the answer, the message head usually is
+  // not. Render the chunk instead of content + tool_result — the composed embed
+  // text the chunk came from already spans both.
+  if (hit.snippet) {
+    return formatSnippetBody(hit.id, hit.snippet, opts?.contentLimit ?? SEARCH_SNIPPET_LIMIT)
+  }
   const meta =
     hit.truncated === true
       ? {
@@ -144,6 +157,31 @@ export function formatSearchMessageBody(
       toolResultLimit: opts?.toolResultLimit ?? SEARCH_TOOL_RESULT_LIMIT,
     },
   )
+}
+
+/**
+ * Render one chunk hit: a `…[chunk 3/7]…` marker so the agent knows it is
+ * looking at an excerpt of a long message, then the chunk text.
+ *
+ * The text is `ros_message_chunks.content` verbatim. `charStart`/`charEnd` are
+ * offsets into the *composed embed text* (content + tool_result), so they are
+ * shown as provenance only and never used to re-slice `ros_messages.content`.
+ */
+export function formatSnippetBody(
+  id: string,
+  snippet: SearchSnippet,
+  contentLimit: number = SEARCH_SNIPPET_LIMIT,
+): string {
+  const position =
+    snippet.chunkCount && snippet.chunkCount > 0
+      ? `${String(snippet.chunkIdx + 1)}/${String(snippet.chunkCount)}`
+      : String(snippet.chunkIdx + 1)
+  const marker =
+    `…[chunk ${position} · chars ${String(snippet.charStart)}-${String(snippet.charEnd)}` +
+    ` → memory_get_full id=${id}]…`
+  const text =
+    snippet.text.length > contentLimit ? snippet.text.slice(0, contentLimit) + '…' : snippet.text
+  return `${marker}\n${text}`
 }
 
 export interface CountRow {
@@ -521,6 +559,11 @@ export function formatVectorArmUnavailable(
     return `⚠ vector arm unavailable (${reason}) — ${suffix}`
   }
   return `⚠ vector arm unavailable (${reason}) — results are fts/trigram only`
+}
+
+/** Agent-facing banner when the chunk arm was skipped; parents were still searched. */
+export function formatChunkArmUnavailable(reason: string): string {
+  return `⚠ chunk arm unavailable (${reason}) — searching parent embeddings only`
 }
 
 /**

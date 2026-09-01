@@ -49,6 +49,15 @@ function fakePool(opts?: {
     if (override) return override
     const text = sql.replace(/\s+/g, ' ')
     if (text.includes('UPDATE')) return { rows: [] }
+    // M3b probe — grant the fake table so existing M1 tests do not trip the
+    // chunk-arm degrade path (empty rows ≠ missing privilege).
+    if (
+      text.includes('has_table_privilege') ||
+      text.includes("to_regclass('ros_message_chunks')")
+    ) {
+      return { rows: [{ present: true, granted: true }] }
+    }
+    if (text.includes('ros_message_chunks')) return { rows: [] }
     if (text.includes('ros_summaries')) return { rows: [] }
     if (text.includes('similarity(')) return { rows: [HIT_ROW] }
     if (text.includes('plainto_tsquery')) return { rows: [] }
@@ -79,15 +88,12 @@ function fakePool(opts?: {
 }
 
 function stubEmbedOk(log?: string[]): void {
-  vi.stubGlobal(
-    'fetch',
-    async () => {
-      log?.push('fetch')
-      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), {
-        status: 200,
-      })
-    },
-  )
+  vi.stubGlobal('fetch', async () => {
+    log?.push('fetch')
+    return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), {
+      status: 200,
+    })
+  })
 }
 
 function engine(pool: pg.Pool, extra?: ConstructorParameters<typeof SearchEngine>[1]) {
@@ -175,15 +181,12 @@ describe('query instruction prefix', () => {
 
   it('sends the prefix in the embed request body', async () => {
     const bodies: unknown[] = []
-    vi.stubGlobal(
-      'fetch',
-      async (_url: string, init?: RequestInit) => {
-        bodies.push(JSON.parse(String(init?.body)))
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), {
-          status: 200,
-        })
-      },
-    )
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }), {
+        status: 200,
+      })
+    })
     const clientQueries: string[] = []
     const eng = engine(fakePool({ clientQueries }), {
       embedEndpoint: 'http://127.0.0.1:9401',
@@ -198,13 +201,10 @@ describe('query instruction prefix', () => {
 
   it('omits the prefix when embedQueryInstruction is empty', async () => {
     const bodies: unknown[] = []
-    vi.stubGlobal(
-      'fetch',
-      async (_url: string, init?: RequestInit) => {
-        bodies.push(JSON.parse(String(init?.body)))
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1] }] }), { status: 200 })
-      },
-    )
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1] }] }), { status: 200 })
+    })
     const eng = engine(fakePool({ clientQueries: [] }), {
       embedEndpoint: 'http://127.0.0.1:9401',
       embedModel: 'Qwen3-Embedding-0.6B',
@@ -324,10 +324,7 @@ describe('trigram fallback', () => {
 
 describe('degraded-mode signal', () => {
   it('sets degraded, increments counters, and rate-limits the warn log', async () => {
-    vi.stubGlobal(
-      'fetch',
-      async () => new Response('nope', { status: 503 }),
-    )
+    vi.stubGlobal('fetch', async () => new Response('nope', { status: 503 }))
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const eng = engine(fakePool(), {
       embedEndpoint: 'http://127.0.0.1:9401',
@@ -363,13 +360,10 @@ describe('degraded-mode signal', () => {
 describe('query-embedding LRU cache', () => {
   it('skips the embed call on a cache hit and counts it', async () => {
     let fetches = 0
-    vi.stubGlobal(
-      'fetch',
-      async () => {
-        fetches += 1
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
-      },
-    )
+    vi.stubGlobal('fetch', async () => {
+      fetches += 1
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
+    })
     const eng = engine(fakePool({ clientQueries: [] }), {
       embedEndpoint: 'http://127.0.0.1:9401',
       embedModel: 'Qwen3-Embedding-0.6B',
@@ -382,13 +376,10 @@ describe('query-embedding LRU cache', () => {
 
   it('does not cache failed embeds', async () => {
     let fetches = 0
-    vi.stubGlobal(
-      'fetch',
-      async () => {
-        fetches += 1
-        return new Response('nope', { status: 500 })
-      },
-    )
+    vi.stubGlobal('fetch', async () => {
+      fetches += 1
+      return new Response('nope', { status: 500 })
+    })
     const eng = engine(fakePool(), {
       embedEndpoint: 'http://127.0.0.1:9401',
       embedModel: 'Qwen3-Embedding-0.6B',
@@ -570,13 +561,10 @@ describe('degraded-mode extras', () => {
 describe('query-embedding LRU extras', () => {
   it('embeds the normalized text so equal keys produce equal vectors', async () => {
     const bodies: unknown[] = []
-    vi.stubGlobal(
-      'fetch',
-      async (_url: string, init?: RequestInit) => {
-        bodies.push(JSON.parse(String(init?.body)))
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1] }] }), { status: 200 })
-      },
-    )
+    vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1] }] }), { status: 200 })
+    })
     const eng = engine(fakePool({ clientQueries: [] }), {
       embedEndpoint: 'http://127.0.0.1:9401',
       embedModel: 'Qwen3-Embedding-0.6B',
@@ -591,13 +579,10 @@ describe('query-embedding LRU extras', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-01T12:00:00.000Z'))
     let fetches = 0
-    vi.stubGlobal(
-      'fetch',
-      async () => {
-        fetches += 1
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
-      },
-    )
+    vi.stubGlobal('fetch', async () => {
+      fetches += 1
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
+    })
     const eng = engine(fakePool({ clientQueries: [] }), {
       embedEndpoint: 'http://127.0.0.1:9401',
       embedModel: 'Qwen3-Embedding-0.6B',
@@ -612,13 +597,10 @@ describe('query-embedding LRU extras', () => {
 
   it('evicts the oldest key once 257 entries are stored; a hit still runs SELECT', async () => {
     let fetches = 0
-    vi.stubGlobal(
-      'fetch',
-      async () => {
-        fetches += 1
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
-      },
-    )
+    vi.stubGlobal('fetch', async () => {
+      fetches += 1
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
+    })
     const clientQueries: string[] = []
     const eng = engine(fakePool({ clientQueries }), {
       embedEndpoint: 'http://127.0.0.1:9401',
@@ -686,13 +668,10 @@ describe('withHnswEfSearch release', () => {
 describe('pool.connect vs embed fetch order', () => {
   it('acquires the pooled client only after the query embed resolves', async () => {
     const callLog: string[] = []
-    vi.stubGlobal(
-      'fetch',
-      async () => {
-        callLog.push('fetch')
-        return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
-      },
-    )
+    vi.stubGlobal('fetch', async () => {
+      callLog.push('fetch')
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 })
+    })
     const eng = engine(fakePool({ callLog }), {
       embedEndpoint: 'http://127.0.0.1:9401',
       embedModel: 'Qwen3-Embedding-0.6B',
