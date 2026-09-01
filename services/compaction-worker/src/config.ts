@@ -64,4 +64,15 @@ export const config = {
   // Tool-synth — optional overrides; otherwise the required compactor URL/model.
   toolSynthEndpoint: process.env.TOOL_SYNTH_ENDPOINT ?? llmUrl,
   toolSynthModel: process.env.TOOL_SYNTH_MODEL ?? llmModel,
+
+  // Backstop sweeps (enqueue-stale-wiki / enqueue-stale-compaction).
+  // graphile 0.17 add_jobs already releases the key on a dead conflict, so
+  // these ticks mostly re-add *missing* jobs (compaction) and revive the rare
+  // still-keyed dead wiki row. Default 20 / 15 min — not 200 / 30 min — so
+  // a pile cannot 20× enqueue-idle's 10/5 min rate against the local LLM.
+  wikiSweepLimit: intEnv('WIKI_SWEEP_LIMIT', 20),
+  compactionSweepLimit: intEnv('COMPACTION_SWEEP_LIMIT', 20),
+  // Keyless dead corpses (add_jobs set key=null) older than 7 days. DELETE is
+  // cheap; 200/hour drains the 510-row pile without touching keyed identities.
+  reapDeadLimit: intEnv('REAP_DEAD_LIMIT', 200),
 } as const

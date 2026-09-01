@@ -6,6 +6,32 @@
  *
  * Ported from plugins/memory/postgres/workers/compaction/index.js compactConversation +
  * compactLeafConversation + compactBranchConversation + compactRootConversation.
+ *
+ * LOCK ORDER (deadlock contract — every writer in this worker must follow it;
+ * withTransaction requires lockConversationId so a third writer cannot omit it):
+ *
+ *   1. ros_conversations row: SELECT … FOR UPDATE (never SKIP LOCKED), first
+ *      statement inside the write transaction. Missing conversation → throw.
+ *      Capture INSERTs into ros_messages already take a KEY SHARE on this row
+ *      via the FK, so grabbing it first puts compaction and capture on the
+ *      same conversation → messages → graphile order.
+ *   2. ros_messages / ros_summaries rows in id-ascending order. Leaf: lock
+ *      source messages FOR UPDATE SKIP LOCKED before insertSummary; abort the
+ *      round if any id is missing (do not subset-commit). Then re-check
+ *      ros_summary_sources for the batch ids and abort if already claimed.
+ *      Parent: lock children FOR UPDATE SKIP LOCKED in id order — abort
+ *      (return 0) unless every child in the pre-LLM set is locked. Do not
+ *      write a parent whose prose covers children that stay parent_id IS NULL.
+ *   3. graphile_worker job-table writes AFTER COMMIT. SET LOCAL
+ *      rivet.defer_embed_enqueue = on (migration 0016) stops the
+ *      notify_embedding_queue trigger from add_job'ing inside the INSERT
+ *      txn; enqueueEmbedTarget / enqueueExtractWiki run after COMMIT.
+ *
+ * The 40P01 retry in withTransaction (DEADLOCK_RETRIES extra attempts after
+ * the first, jittered — DEADLOCK_RETRIES+1 runs total) is belt-and-braces for
+ * any pair this ordering does not cover (e.g. compaction vs. embed-target's
+ * own UPDATE on ros_messages/ros_summaries, which lives in the embedding
+ * worker and cannot take the conversation lock).
  */
 
 import type { Task } from 'graphile-worker'
@@ -86,7 +112,7 @@ export function isHeartbeatConversation(meta: { session_key?: string | null }): 
 /** Postgres deadlock SQLSTATE. node-pg puts this on `err.code`. */
 export const PG_DEADLOCK_CODE = '40P01'
 
-/** How many times to re-run a summary write after 40P01. */
+/** Extra 40P01 retries after the first attempt (total runs = DEADLOCK_RETRIES + 1). */
 export const DEADLOCK_RETRIES = 3
 
 export function isPgDeadlockError(err: unknown): boolean {
@@ -102,8 +128,12 @@ export function isPgDeadlockError(err: unknown): boolean {
   return /deadlock detected/i.test(msg)
 }
 
-function deadlockBackoffMs(attempt: number): number {
-  return 25 * (attempt + 1) * (attempt + 1)
+/** Jittered delay for 40P01 retry. Exported so tests can pin Math.random. */
+export function deadlockBackoffMs(attempt: number): number {
+  const base = 25 * (attempt + 1) * (attempt + 1)
+  // Up to +100% jitter so the two sides of a deadlock do not retry in
+  // lockstep and immediately re-collide. Range is [base, 2*base).
+  return base + Math.floor(Math.random() * base)
 }
 
 /**
@@ -209,18 +239,38 @@ export function propagateLlmFailure(
 /**
  * Run `fn` inside a BEGIN/COMMIT, rolling back (best-effort) on any throw.
  *
- * `40P01 deadlock detected` is retried with short backoff. Leaf inserts fire
- * the embed-target trigger (`graphile_worker.add_job`) while they also write
- * `ros_summary_sources`; concurrent ingest/embed jobs take the same job-table
- * locks in a different order and abort the whole compact job. graphile then
- * burns max_attempts and the conversation sits in memory_stats as a stuck
- * compact-conversation row — live: 5 dead since 2026-08-22.
+ * `40P01 deadlock detected` is retried (DEADLOCK_RETRIES extra attempts after
+ * the first — DEADLOCK_RETRIES+1 runs total) with jittered backoff. The
+ * historical 510-job pile was compact vs embed-target taking graphile job
+ * locks inside the summary INSERT trigger while holding message/summary
+ * locks. Migration 0016 + SET LOCAL rivet.defer_embed_enqueue moves that
+ * add_job out of the txn; this retry is the residual safety net.
+ *
+ * `opts.lockConversationId` is required: `SELECT … FOR UPDATE` on the
+ * ros_conversations row is the first statement after BEGIN (never SKIP
+ * LOCKED). A missing row throws so the job fails closed. SET LOCAL then
+ * suppresses the embed trigger for the rest of the txn.
  */
-export async function withTransaction<T>(client: PgClient, fn: () => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  client: PgClient,
+  fn: () => Promise<T>,
+  opts: { lockConversationId: string },
+): Promise<T> {
+  if (!opts.lockConversationId) {
+    throw new Error('withTransaction requires lockConversationId')
+  }
   let lastErr: unknown
   for (let attempt = 0; attempt <= DEADLOCK_RETRIES; attempt++) {
     await client.query('BEGIN')
     try {
+      const locked = await client.query(
+        `SELECT id FROM ros_conversations WHERE id = $1 FOR UPDATE`,
+        [opts.lockConversationId],
+      )
+      if (locked.rows.length !== 1) {
+        throw new Error(`Conversation not found: ${opts.lockConversationId}`)
+      }
+      await client.query(`SET LOCAL rivet.defer_embed_enqueue = on`)
       const result = await fn()
       await client.query('COMMIT')
       return result
@@ -254,11 +304,10 @@ interface SummaryInsert {
  * Enqueue wiki extraction for a committed leaf. Best-effort: extract-wiki is
  * idempotent on summary_id and enqueue-wiki-backfill will pick up a miss.
  *
- * Must NOT run inside the summary INSERT transaction. That INSERT already
- * fires `notify_embedding_queue` → `add_job('embed-target')`. A second
- * `add_job('extract-wiki')` in the same TX holds graphile job-table locks
- * together with ros_summaries / ros_summary_sources, which deadlocks against
- * concurrent ingest/embed workers.
+ * Must NOT run inside the summary INSERT transaction. SET LOCAL
+ * rivet.defer_embed_enqueue already suppressed the embed trigger; a second
+ * add_job in the same TX would still take graphile job-table locks together
+ * with ros_summaries / ros_summary_sources.
  */
 export async function enqueueExtractWiki(
   client: PgClient,
@@ -275,6 +324,34 @@ export async function enqueueExtractWiki(
     const msg = err instanceof Error ? err.message : String(err)
     console.warn(
       `[CompactWorker] extract-wiki enqueue failed for ${summaryId.slice(0, 8)} (backfill will retry): ${msg}`,
+    )
+  }
+}
+
+/**
+ * Enqueue embed-target for a committed summary. The INSERT trigger is
+ * suppressed by SET LOCAL rivet.defer_embed_enqueue (migration 0016); this
+ * call after COMMIT is what actually queues the embedding. Best-effort:
+ * enqueue-unembedded will pick up a miss.
+ */
+export async function enqueueEmbedTarget(
+  client: PgClient,
+  targetTable: 'ros_summaries' | 'ros_messages',
+  targetId: string,
+): Promise<void> {
+  try {
+    await client.query(
+      `SELECT graphile_worker.add_job('embed-target', $1::json,
+              job_key := $2, max_attempts := 5)`,
+      [
+        JSON.stringify({ targetTable, targetId }),
+        `embed-${targetTable}-${targetId}`,
+      ],
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(
+      `[CompactWorker] embed-target enqueue failed for ${targetId.slice(0, 8)} (unembedded sweep will retry): ${msg}`,
     )
   }
 }
@@ -351,39 +428,75 @@ async function compactLeaf(
     }
   }
 
+  const summaryId = await withTransaction(
+    client,
+    async () => {
+      const batchIds = batch.map((m) => m.id)
+      // Lock order §2: take source message locks in id order BEFORE insertSummary
+      // (the FK KEY SHARE would otherwise invert the order vs embed-target).
+      // SKIP LOCKED + full-set check: a held source defers the whole leaf.
+      const msgLocks = await client.query<{ id: string }>(
+        `SELECT id FROM ros_messages WHERE id = ANY($1::uuid[]) ORDER BY id ASC FOR UPDATE SKIP LOCKED`,
+        [batchIds],
+      )
+      if (msgLocks.rows.length !== batch.length) {
+        console.warn(
+          `[CompactWorker] Leaf: only ${String(msgLocks.rows.length)}/${String(batch.length)} messages lockable for ${conversationId.slice(0, 8)} — skipping this round`,
+        )
+        return null
+      }
+
+      const claimed = await client.query<{ message_id: string }>(
+        `SELECT message_id FROM ros_summary_sources WHERE message_id = ANY($1::uuid[]) LIMIT 1`,
+        [batchIds],
+      )
+      if (claimed.rows.length > 0) {
+        console.warn(
+          `[CompactWorker] Leaf: batch already claimed for ${conversationId.slice(0, 8)} — skipping`,
+        )
+        return null
+      }
+
+      const id = await insertSummary(client, {
+        conversationId,
+        depth: 0,
+        kind: 'leaf',
+        content: summaryText,
+        messageCount: batch.length,
+        earliestAt: batch[0].created_at,
+        latestAt: batch[batch.length - 1].created_at,
+      })
+
+      // Lock order (file header §2): insert sources in message-id-ascending order.
+      // `ordinal` still follows the chronological batch order.
+      const idOrder = batch
+        .map((m, ordinal) => ({ m, ordinal }))
+        .sort((a, b) => (a.m.id < b.m.id ? -1 : a.m.id > b.m.id ? 1 : 0))
+      const valueClauses: string[] = []
+      const params: unknown[] = []
+      let paramIdx = 1
+      for (const { m, ordinal } of idOrder) {
+        valueClauses.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2})`)
+        params.push(id, m.id, ordinal)
+        paramIdx += 3
+      }
+      await client.query(
+        `INSERT INTO ros_summary_sources (summary_id, message_id, ordinal) VALUES ${valueClauses.join(', ')}`,
+        params,
+      )
+
+      console.log(
+        `[CompactWorker] Leaf ${id} (${String(batch.length)} msgs, conv ${conversationId.slice(0, 8)})`,
+      )
+      return id
+    },
+    { lockConversationId: conversationId },
+  )
+
+  if (!summaryId) return 0
   recordSuccess(conversationId, 'leaf')
-
-  const summaryId = await withTransaction(client, async () => {
-    const id = await insertSummary(client, {
-      conversationId,
-      depth: 0,
-      kind: 'leaf',
-      content: summaryText,
-      messageCount: batch.length,
-      earliestAt: batch[0].created_at,
-      latestAt: batch[batch.length - 1].created_at,
-    })
-
-    const valueClauses: string[] = []
-    const params: unknown[] = []
-    let paramIdx = 1
-    for (let i = 0; i < batch.length; i++) {
-      valueClauses.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2})`)
-      params.push(id, batch[i].id, i)
-      paramIdx += 3
-    }
-    await client.query(
-      `INSERT INTO ros_summary_sources (summary_id, message_id, ordinal) VALUES ${valueClauses.join(', ')}`,
-      params,
-    )
-
-    console.log(
-      `[CompactWorker] Leaf ${id} (${String(batch.length)} msgs, conv ${conversationId.slice(0, 8)})`,
-    )
-    return id
-  })
-
-  // After COMMIT — extract-wiki is flag-gated + idempotent; backfill covers a miss.
+  // After COMMIT — embed-target was deferred by SET LOCAL; wiki is idempotent.
+  await enqueueEmbedTarget(client, 'ros_summaries', summaryId)
   await enqueueExtractWiki(client, summaryId, conversationId)
   return 1
 }
@@ -443,35 +556,83 @@ async function compactParentLevel(
     propagateLlmFailure(conversationId, err, cfg.kind, { isFinalAttempt })
   }
 
+  const parentId = await withTransaction(
+    client,
+    async () => {
+      // Lock order (file header §2): child summaries in id-ascending order,
+      // FOR UPDATE SKIP LOCKED. Abort unless the locked set equals the
+      // pre-LLM set — never subset-commit a summary whose prose covers
+      // children that stay parent_id IS NULL.
+      const childIds = children.rows.map((r) => r.id)
+      const locked = await client.query<{ id: string }>(
+        `SELECT id FROM ros_summaries
+          WHERE id = ANY($1::uuid[]) AND parent_id IS NULL
+          ORDER BY id ASC
+          FOR UPDATE SKIP LOCKED`,
+        [childIds],
+      )
+      if (locked.rows.length !== children.rows.length) {
+        console.warn(
+          `[CompactWorker] ${cfg.label}: only ${String(locked.rows.length)}/${String(children.rows.length)} ${cfg.childKind}s lockable for ${conversationId.slice(0, 8)} — skipping this round`,
+        )
+        return null
+      }
+      const lockedIds = new Set(locked.rows.map((r) => r.id))
+      const usable = children.rows.filter((r) => lockedIds.has(r.id))
+
+      const totalMessages = usable.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
+      let earliestAt: unknown = usable[0].earliest_at ?? usable[0].created_at
+      let latestAt: unknown = usable[0].latest_at ?? usable[0].created_at
+      let earliestMs = timestampMs(earliestAt)
+      let latestMs = timestampMs(latestAt)
+      for (const r of usable) {
+        const e = r.earliest_at ?? r.created_at
+        const l = r.latest_at ?? r.created_at
+        const em = timestampMs(e)
+        const lm = timestampMs(l)
+        if (em < earliestMs) {
+          earliestMs = em
+          earliestAt = e
+        }
+        if (lm > latestMs) {
+          latestMs = lm
+          latestAt = l
+        }
+      }
+
+      const id = await insertSummary(client, {
+        conversationId,
+        depth: cfg.depth,
+        kind: cfg.kind,
+        content: summaryText,
+        messageCount: totalMessages,
+        earliestAt,
+        latestAt,
+      })
+
+      await client.query(`UPDATE ros_summaries SET parent_id = $1 WHERE id = ANY($2::uuid[])`, [
+        id,
+        locked.rows.map((r) => r.id),
+      ])
+
+      console.log(
+        `[CompactWorker] ${cfg.kind} ${id} (${usable.length} ${cfg.childKind}s, ${totalMessages} msgs, conv ${conversationId.slice(0, 8)})`,
+      )
+      return id
+    },
+    { lockConversationId: conversationId },
+  )
+
+  if (!parentId) return 0
   recordSuccess(conversationId, cfg.kind)
+  await enqueueEmbedTarget(client, 'ros_summaries', parentId)
+  return 1
+}
 
-  const totalMessages = children.rows.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
-  const earliestAt = children.rows[0].earliest_at ?? children.rows[0].created_at
-  const lastChild = children.rows[children.rows.length - 1]
-  const latestAt = lastChild.latest_at ?? lastChild.created_at
-
-  return withTransaction(client, async () => {
-    const parentId = await insertSummary(client, {
-      conversationId,
-      depth: cfg.depth,
-      kind: cfg.kind,
-      content: summaryText,
-      messageCount: totalMessages,
-      earliestAt,
-      latestAt,
-    })
-
-    const childIds = children.rows.map((r) => r.id)
-    await client.query(`UPDATE ros_summaries SET parent_id = $1 WHERE id = ANY($2::uuid[])`, [
-      parentId,
-      childIds,
-    ])
-
-    console.log(
-      `[CompactWorker] ${cfg.kind} ${parentId} (${children.rows.length} ${cfg.childKind}s, ${totalMessages} msgs, conv ${conversationId.slice(0, 8)})`,
-    )
-    return 1
-  })
+function timestampMs(value: unknown): number {
+  if (value instanceof Date) return value.getTime()
+  const n = Date.parse(String(value))
+  return Number.isFinite(n) ? n : 0
 }
 
 export const compactConversationTask: Task = async (payload, helpers) => {

@@ -19,6 +19,39 @@ import type { Task } from 'graphile-worker'
 import { WIKI_PIPELINE_VERSION, sqlNotHeartbeatConversation } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 
+/** Shared with enqueue-stale-wiki so payload/key/attempts cannot drift. */
+export const WIKI_JOB_MAX_ATTEMPTS = 2
+export const WIKI_JOB_PRIORITY = 10
+export const WIKI_JOB_KEY_MODE = 'preserve_run_at' as const
+
+export function wikiExtractJobKey(summaryId: string): string {
+  return `wiki-ext-${summaryId}`
+}
+
+export function wikiExtractJobPayload(
+  summaryId: string,
+  conversationId: string | null | undefined,
+): { summaryId: string; conversationId: string | undefined } {
+  return { summaryId, conversationId: conversationId ?? undefined }
+}
+
+export function wikiExtractJobOptions(
+  summaryId: string,
+  extra?: { priority?: number },
+): {
+  jobKey: string
+  jobKeyMode: 'preserve_run_at'
+  maxAttempts: number
+  priority: number
+} {
+  return {
+    jobKey: wikiExtractJobKey(summaryId),
+    jobKeyMode: WIKI_JOB_KEY_MODE,
+    maxAttempts: WIKI_JOB_MAX_ATTEMPTS,
+    priority: extra?.priority ?? WIKI_JOB_PRIORITY,
+  }
+}
+
 /**
  * SQL eligibility for wiki extract backfill.
  *
@@ -66,13 +99,8 @@ export const enqueueWikiBackfillTask: Task = async (_payload, helpers) => {
     for (const row of rows) {
       await helpers.addJob(
         'extract-wiki',
-        { summaryId: row.id, conversationId: row.conversation_id ?? undefined },
-        {
-          jobKey: `wiki-ext-${row.id}`,
-          jobKeyMode: 'preserve_run_at',
-          maxAttempts: 2,
-          priority: 10, // below live extraction (5), far below compaction
-        },
+        wikiExtractJobPayload(row.id, row.conversation_id),
+        wikiExtractJobOptions(row.id),
       )
     }
     if (rows.length > 0) {
