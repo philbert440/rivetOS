@@ -23,13 +23,34 @@ if [[ ! -f "${INGEST_BIN}" ]]; then
     exit 1
 fi
 
+# Check jq and python3 available
+if ! command -v jq &>/dev/null; then
+    echo "ERROR: jq not found in PATH" >&2
+    exit 1
+fi
+
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 not found in PATH" >&2
+    exit 1
+fi
+
+# Fail-closed check: memory-postgres and sidecar dist must exist
+SKIP_INGEST=0
 if [[ ! -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]]; then
-    echo "WARN: RivetOS packages not built or missing, skipping ingest (fail closed)" >&2
+    echo "WARN: RivetOS memory-postgres package not built or missing, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
 
-if [[ -z "${RIVETOS_PG_URL:-}" ]]; then
-    echo "WARN: RIVETOS_PG_URL not set, skipping ingest (fail closed)" >&2
+if [[ ! -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]; then
+    echo "WARN: RivetOS sidecar dist not built, skipping ingest (fail closed)" >&2
+    SKIP_INGEST=1
+fi
+
+# Align .env check: ingest-session.mjs loads ~/.rivetos/.env itself, so check there
+# rather than requiring RIVETOS_PG_URL in process env
+RIVETOS_ENV_FILE="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
+if [[ ! -f "${RIVETOS_ENV_FILE}" ]] && [[ -z "${RIVETOS_PG_URL:-}" ]]; then
+    echo "WARN: No .env at ${RIVETOS_ENV_FILE} and RIVETOS_PG_URL not set, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
 
@@ -43,6 +64,8 @@ fi
 
 models=$(jq -r '.models[] | @json' "${MODELS_JSON}")
 transcript_rel=$(jq -r '.transcriptRel' "${MODELS_JSON}")
+
+any_model_failed=0
 
 # Process each model
 while IFS= read -r model_json; do
@@ -71,17 +94,31 @@ while IFS= read -r model_json; do
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"
     echo "  Converting: ${transcript_path} -> ${spool_path}"
     
-    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}"; then
+    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" 2>&1; then
         echo "  ERROR: Conversion failed for ${model_name}" >&2
+        any_model_failed=1
         continue
     fi
     
     # Ingest (if PG available)
-    if [[ -z "${SKIP_INGEST:-}" ]]; then
+    if [[ "${SKIP_INGEST}" -eq 0 ]]; then
         echo "  Ingesting: ${spool_path} (session=${session_id}, agent=${agent_id})"
         
-        if ! node "${INGEST_BIN}" --session-id="${session_id}" --agent="${agent_id}" "${spool_path}" 2>&1 | grep -v 'RIVETOS_PG_URL\|RIVETOS_EMBED'; then
-            echo "  WARN: Ingest failed for ${model_name}, continuing" >&2
+        # Capture node exit code separately to avoid grep exit-code confusion
+        ingest_output=$(mktemp)
+        if node "${INGEST_BIN}" --session-id="${session_id}" --agent="${agent_id}" "${spool_path}" >"${ingest_output}" 2>&1; then
+            ingest_rc=0
+        else
+            ingest_rc=$?
+        fi
+        
+        # Show output (no filtering of secrets — they're redacted by the system)
+        cat "${ingest_output}"
+        rm -f "${ingest_output}"
+        
+        if [[ ${ingest_rc} -ne 0 ]]; then
+            echo "  ERROR: Ingest failed for ${model_name} (exit ${ingest_rc})" >&2
+            any_model_failed=1
         fi
     else
         echo "  SKIP: Ingest (fail closed, see warnings above)"
@@ -91,4 +128,4 @@ while IFS= read -r model_json; do
 done <<< "${models}"
 
 echo "Capture run complete"
-exit 0
+exit ${any_model_failed}
