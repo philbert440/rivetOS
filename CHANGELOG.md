@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- Per-user memory routing reads only the users.json registry (`RIVETOS_USERS_FILE`, else `$RIVETOS_SHARED_DIR/rivetos/users.json`, else `~/.rivetos/users.json`). The `RIVETOS_USER_DBS` and `RIVETOS_DEN_DEVICE_USERS` env maps are removed — leftover values do not route.
+
 ## [0.5.0] - 2026-08-30
 
 First stable release. Everything since the 0.4.0 public beta: gateway + RivetHub, den, harness control plane, memory wiki, device mTLS, and per-user tenancy. Workspace packages align at 0.5.0 (RivetHub Electron keeps its own 0.5.4 updater cadence).

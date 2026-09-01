@@ -60,6 +60,8 @@ describe('@rivetos/types exports', () => {
     assert.ok(mod !== null)
     assert.equal(typeof mod.resolveUser, 'function')
     assert.equal(typeof mod.parseUsersRegistry, 'function')
+    assert.equal(typeof mod.loadUsersRegistry, 'function')
+    assert.equal(typeof mod.userDbsFromRegistry, 'function')
   })
 
   it('should export from events.ts', async () => {

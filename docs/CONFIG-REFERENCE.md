@@ -549,7 +549,8 @@ These are typically set in `.env`:
 | `ANTHROPIC_API_KEY` | provider-anthropic | Anthropic API key |
 | `XAI_API_KEY` | provider-xai | xAI API key |
 | `GOOGLE_API_KEY` | provider-google | Google AI API key |
-| `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string |
+| `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string (node owner database) |
+| `RIVETOS_USERS_FILE` | den, memory-postgres, claude-cli | Optional explicit path to the tenancy registry (`users.json`). When unset, RivetOS loads `$RIVETOS_SHARED_DIR/rivetos/users.json`, then `~/.rivetos/users.json`. Per-user memory routing comes only from this file — a user is routable iff their record has a usable `pgUrl`. |
 | `RIVETOS_AGENT_SECRET` | channel-agent | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS). |
 | `RIVETOS_LOG_LEVEL` | core | Log level: `error`, `warn`, `info`, `debug` |
 | `RIVETOS_LOG_FORMAT` | core | Log format: `pretty` (default) or `json` |

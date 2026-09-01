@@ -184,6 +184,8 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   // that are set; config-derived values above stand when env is silent.
   for (const [key, raw] of Object.entries(process.env)) {
     if (!key.startsWith('RIVETOS_DEN_') && !key.startsWith('RIVETOS_USER')) continue
+    // Deleted #561 env maps — leftover fleet values must not reach den.
+    if (key === 'RIVETOS_DEN_DEVICE_USERS' || key === 'RIVETOS_USER_DBS') continue
     const value = raw?.trim()
     if (value) env[key] = value
   }

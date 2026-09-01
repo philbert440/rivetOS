@@ -6,8 +6,8 @@
  *   rivetos user add <id> --device <deviceId> [--persona <name>] [--url <pg>] [--file <path>]
  *
  * Identity is written to the registry file (no fleet restart). `--url` stores
- * the user's Postgres URL on that record so den can route without
- * RIVETOS_USER_DBS. CREATE DATABASE / role / migrate is printed when
+ * the user's Postgres URL on that record so den can route from users.json.
+ * CREATE DATABASE / role / migrate is printed when
  * RIVETOS_TEAM_PG_ADMIN_URL is unset.
  */
 
@@ -108,7 +108,7 @@ function add(id: string, args: string[]): void {
   console.log(`[user] wrote ${id} device=${bare} → ${file}`)
   if (!url && !existing.db) {
     console.log(
-      `[user] no --url given. After CREATE DATABASE, re-run with --url or set RIVETOS_USER_DBS.`,
+      `[user] no --url given. After CREATE DATABASE, re-run with --url so the registry has a database handle.`,
     )
   }
   if (!process.env.RIVETOS_TEAM_PG_ADMIN_URL) {
