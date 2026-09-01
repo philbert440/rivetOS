@@ -31,9 +31,9 @@
  * See docs/plans/harness-control-plane.md.
  */
 
-import { formatSessionId, type HarnessSessionSummary, type SessionId } from '@rivetos/types'
+import { formatSessionId, type SessionId } from '@rivetos/types'
+import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
 import {
-  PtyHarnessDriver,
   type DenAgentEventLike,
   type HarnessPtyHost,
   type HarnessStoreHost,
@@ -55,30 +55,27 @@ export type DeepseekDriverDeps = PtyHarnessDriverDeps<DeepseekStoreHost>
 
 const DSH_NATIVE_RE = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function announcedNative(ev: DenAgentEventLike): string | undefined {
-  const raw = ev.harnessSession
-  if (typeof raw !== 'string') return undefined
-  const trimmed = raw.trim()
-  if (!trimmed || !DSH_NATIVE_RE.test(trimmed)) return undefined
-  return trimmed
-}
-
-export class DeepseekHarnessDriver extends PtyHarnessDriver<DeepseekStoreHost> {
-  /**
-   * den room key → the dsh session currently running in it.
-   *
-   * Copy THREE of the hermes/kimi room map. Extraction of an adopting-driver
-   * base is a follow-up, not this PR — keep the new harness shipping.
-   */
-  private readonly roomNative = new Map<string, string>()
-  private readonly nativeRoom = new Map<string, string>()
-
+/**
+ * The adopting shape (room ↔ native map, adopt-vs-rotate in `bindRoom`,
+ * refused `startSession`) is the shared `AdoptingPtyHarnessDriver` — dsh is
+ * the THIRD adopting driver, the trigger the EXTRACTION POINT notes on the
+ * hermes and kimi copies waited for. What stays here is dsh's own: the
+ * `session-<uuid>` id shape (hyphen, not kimi's underscore) behind both
+ * hooks.
+ */
+export class DeepseekHarnessDriver extends AdoptingPtyHarnessDriver<DeepseekStoreHost> {
   constructor(deps: DeepseekDriverDeps) {
     super(
       {
         harnessId: DEEPSEEK_HARNESS_ID,
         rosterCommand: DEEPSEEK_ROSTER_COMMAND,
         productName: 'DeepSeek Harness',
+        // The verbatim refusal — see "no pinning" in the file header.
+        noPinReason:
+          'deepseek-harness: starting a session through the control plane is not supported — dsh has ' +
+          'no flag to pin a new session id (`--resume` references existing sessions only), so the ' +
+          'control plane cannot name the session it would be creating. Spawn dsh from the den ' +
+          'roster; the driver adopts the CLI-minted id.',
       },
       deps,
     )
@@ -89,84 +86,31 @@ export class DeepseekHarnessDriver extends PtyHarnessDriver<DeepseekStoreHost> {
     return formatSessionId(DEEPSEEK_HARNESS_ID, nativeId)
   }
 
+  // -- divergent hooks ---------------------------------------------------------
+
   /**
-   * Refused, deliberately — dsh has no flag to pin a new session id. A caller
-   * that wants a fresh dsh starts one from the den roster; this driver adopts
-   * it if/when something announces the id dsh picked (disk, or a future
-   * harnessSession stamp). Resume of an existing store id is the supported
-   * control-plane create-a-PTY path.
+   * dsh's OWN session id off a den event (if a future plugin stamps
+   * `harnessSession`), or undefined. Only the exact `session-<uuid>` shape is
+   * accepted — kimi's underscore variant and the translator's fallbacks are
+   * not store ids.
    */
-  startSession(): Promise<HarnessSessionSummary> {
-    return Promise.reject(
-      this.unsupported(
-        'deepseek-harness: starting a session through the control plane is not supported — dsh has ' +
-          'no flag to pin a new session id (`--resume` references existing sessions only), so the ' +
-          'control plane cannot name the session it would be creating. Spawn dsh from the den ' +
-          'roster; the driver adopts the CLI-minted id.',
-      ),
-    )
-  }
-
-  async resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
-    const summary = await super.resumeSession(sessionId)
-    const native = this.native(sessionId)
-    if (!this.nativeRoom.has(native)) this.bindRoom(native, native)
-    return summary
-  }
-
-  protected override room(native: string): string {
-    return this.nativeRoom.get(native) ?? native
+  protected override announcedNative(ev: DenAgentEventLike): string | undefined {
+    const raw = ev.harnessSession
+    if (typeof raw !== 'string') return undefined
+    const trimmed = raw.trim()
+    if (!trimmed || !DSH_NATIVE_RE.test(trimmed)) return undefined
+    return trimmed
   }
 
   /**
-   * dsh native ids are `session-<uuid>`, not bare uuids, so the base's uuid
-   * gate would drop every event. Identity comes from `harnessSession` (if a
-   * future plugin stamps one) or from a room we already bound (resume).
+   * A dsh running outside den would post under its canonical id as the room
+   * key (`deepseek-harness:session-<uuid>`). Recover the native id from that
+   * shape — and only that shape, so a junk colon room is not mistaken for one.
    */
-  protected override nativeFor(ev: DenAgentEventLike): string | undefined {
-    const room = ev.session
-    if (!room) return undefined
-    const announced = announcedNative(ev) ?? canonicalRoomNative(room)
-    if (announced !== undefined) {
-      if (!this.isDshRoom(room, ev)) return undefined
-      this.bindRoom(room, announced)
-      return announced
-    }
-    return this.roomNative.get(room)
+  protected override canonicalRoomNative(room: string): string | undefined {
+    const prefix = `${DEEPSEEK_HARNESS_ID}:`
+    if (!room.startsWith(prefix)) return undefined
+    const native = room.slice(prefix.length)
+    return DSH_NATIVE_RE.test(native) ? native : undefined
   }
-
-  protected override ownsEvent(): boolean {
-    return true
-  }
-
-  private isDshRoom(room: string, ev: DenAgentEventLike): boolean {
-    if (this.roomNative.has(room)) return true
-    if (ev.harness === DEEPSEEK_HARNESS_ID) return true
-    return (
-      ev.harness === 'rivetos' &&
-      typeof ev.name === 'string' &&
-      ev.name.endsWith(`:${DEEPSEEK_ROSTER_COMMAND}`)
-    )
-  }
-
-  private bindRoom(room: string, native: string): void {
-    const previous = this.roomNative.get(room)
-    if (previous === native) return
-    this.roomNative.set(room, native)
-    this.nativeRoom.set(native, room)
-    if (previous === undefined) {
-      this.ensureLive(native)
-      this.announceIfNew(native)
-      return
-    }
-    this.nativeRoom.delete(previous)
-    this.rotate(previous, native)
-  }
-}
-
-function canonicalRoomNative(room: string): string | undefined {
-  const prefix = `${DEEPSEEK_HARNESS_ID}:`
-  if (!room.startsWith(prefix)) return undefined
-  const native = room.slice(prefix.length)
-  return DSH_NATIVE_RE.test(native) ? native : undefined
 }
