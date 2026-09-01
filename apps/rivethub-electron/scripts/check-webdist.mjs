@@ -16,6 +16,23 @@ try {
   )
   process.exit(1)
 }
+
+// Verify that the den/ subdirectory exists (copy-den.mjs output).
+// Without it, the Den tab links to /den/ but gets a 404, and the AppImage
+// ships with an incomplete UI (0.5.5 regression, fixed in this PR).
+let denIndexStat
+try {
+  denIndexStat = statSync(resolve(dist, 'den/index.html'))
+} catch {
+  console.error(
+    `check-webdist: ${dist}/den/index.html not found — ` +
+      'copy-den.mjs did not run or failed.\n' +
+      'The rivethub-web build script chains copy-den after vite build:\n' +
+      '  npm run build --workspace=@rivetos/rivethub-web',
+  )
+  process.exit(1)
+}
+
 const ageHours = (Date.now() - indexStat.mtimeMs) / 3_600_000
 if (ageHours > 24) {
   console.warn(
@@ -23,4 +40,7 @@ if (ageHours > 24) {
       'rebuild @rivetos/rivethub-web if that is not what you mean to ship.',
   )
 }
-console.log(`check-webdist: ok (dist built ${indexStat.mtime.toISOString()})`)
+console.log(
+  `check-webdist: ok (dist built ${indexStat.mtime.toISOString()}, ` +
+    `den/ built ${denIndexStat.mtime.toISOString()})`,
+)
