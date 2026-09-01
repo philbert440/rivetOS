@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn as childSpawn } from 'node:child_process'
@@ -8,6 +8,17 @@ import type { DenConfig, DenTermConfig } from '../config.js'
 import { createTermManager, TermSpawnError, type TermManager } from './manager.js'
 import { loadRealPtySpawn, type PtyProc, type PtySpawn, type PtySpawnOpts } from './pty.js'
 import { createRosterProvider, defaultRoster, parseRoster, type TermRoster } from './roster.js'
+import {
+  createRealTmuxCtl,
+  decodeTmuxName,
+  encodeTmuxName,
+  TmuxUnavailableError,
+  tmuxConfContent,
+  tmuxSocketName,
+  type TmuxCtl,
+  type TmuxExec,
+  type TmuxSessionInfo,
+} from './tmux.js'
 
 class FakeProc extends EventEmitter implements PtyProc {
   writes: string[] = []
@@ -71,6 +82,8 @@ function makeManager(
     roomOpen?: (s: string) => boolean
     spawn?: PtySpawn
     sessionExists?: (command: string, id: string) => boolean
+    tmuxCtl?: TmuxCtl
+    writeEnvFile?: (path: string, body: string) => void
   } = {},
 ): Harness {
   const stateDir = tmp()
@@ -94,6 +107,9 @@ function makeManager(
       detachedTtlMs: 1_800_000,
       idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
+      // Pinned: the pre-T1 tests below assert the direct-spawn path
+      // byte-for-byte; tmux behavior has its own describe block.
+      mux: 'none',
       ...term,
     },
     audio: {
@@ -121,6 +137,8 @@ function makeManager(
     ingest: (ev) => ingested.push(ev),
     roomOpen: extra.roomOpen,
     sessionExists: extra.sessionExists,
+    tmuxCtl: extra.tmuxCtl,
+    writeEnvFile: extra.writeEnvFile,
     log: (m) => logs.push(m),
   })
   managers.push(manager)
@@ -145,8 +163,9 @@ describe('term manager', () => {
     expect(env.RIVET_DEN_NAME).toBe(`${hostname()}:claude`)
     expect(env.TERM).toBe('xterm-256color')
     expect(env.COLORTERM).toBe('truecolor')
-    // linkage map
+    // linkage map — get() resolves the den-session alias too (same as kill)
     expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
+    expect(manager.get(pty.denSession)?.id).toBe(pty.id)
   })
 
   it('session join key: denSession IS the session, RIVETOS_SESSION_KEY set, spawn-or-get', () => {
@@ -756,6 +775,940 @@ describe('term manager', () => {
     procs[0].emitExit(0)
     expect(manager.write(pty.id, 'x')).toBe(false)
     expect(manager.resize(pty.id, 80, 24)).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// tmux mux (T1): fake TmuxCtl — unit tests never spawn a real tmux.
+// ---------------------------------------------------------------------------
+
+class FakeTmuxCtl implements TmuxCtl {
+  sessions = new Map<string, TmuxSessionInfo>()
+  kills: string[] = []
+  /** When set, every method throws — simulates a wedged/missing tmux. */
+  failWith?: Error
+  hasSession(name: string): boolean {
+    if (this.failWith) throw this.failWith
+    return this.sessions.has(name)
+  }
+  killSession(name: string): void {
+    if (this.failWith) throw this.failWith
+    this.kills.push(name)
+    this.sessions.delete(name)
+  }
+  listSessions(): TmuxSessionInfo[] {
+    if (this.failWith) throw this.failWith
+    return [...this.sessions.values()]
+  }
+  refresh(): void {}
+  /** Simulate the tmux server creating a session for a fresh new-session.
+   *  Defaults carry den's tags: untagged sessions are foreign and must be
+   *  refused/ignored — tests pass '' explicitly to model that. */
+  serverCreated(
+    name: string,
+    command = 'claude',
+    user = 'owner',
+    activity = 1_800_000_000,
+  ): void {
+    this.sessions.set(name, { name, activity, created: activity - 100, pid: 4321, command, user })
+  }
+}
+
+const ENV_WRAP_SCRIPT = 'set -a; . "$0"; set +a; rm -f "$0"; exec "$@"'
+
+/** Split a tmux-form create argv into its parts for assertions. The harness
+ *  argv sits between `--` and the `;` command chain (tags). CREATE wraps the
+ *  harness in `/bin/sh -c` + env file; `harness` is the inner command. */
+function parseTmuxArgv(argv: string[]): {
+  envPairs: Record<string, string>
+  harness: string[]
+  chain: string[]
+  wrapper?: { script: string; envFile: string }
+} {
+  const sep = argv.indexOf('--')
+  const chainIdx = argv.indexOf(';', sep)
+  const end = chainIdx === -1 ? argv.length : chainIdx
+  const envPairs: Record<string, string> = {}
+  for (let i = 0; i < sep; i++) {
+    if (argv[i] === '-e') {
+      const kv = argv[i + 1]
+      const eq = kv.indexOf('=')
+      envPairs[kv.slice(0, eq)] = kv.slice(eq + 1)
+      i++
+    }
+  }
+  let harness = argv.slice(sep + 1, end)
+  let wrapper: { script: string; envFile: string } | undefined
+  if (harness[0] === '/bin/sh' && harness[1] === '-c' && harness[3] !== undefined) {
+    wrapper = { script: harness[2]!, envFile: harness[3]! }
+    harness = harness.slice(4)
+  }
+  return { envPairs, harness, chain: argv.slice(end + 1), wrapper }
+}
+
+describe('term manager (tmux mux)', () => {
+  const uuid = '11111111-1111-1111-1111-111111111111'
+
+  it('tmux name encoding is reversible and tmux-safe', () => {
+    expect(encodeTmuxName('claude:11111111-1111-1111-1111-111111111111')).toBe(
+      'claude_c11111111-1111-1111-1111-111111111111',
+    )
+    // `_` must escape FIRST — the naive `:`→`__` mapping collides with
+    // literal underscores in the key
+    expect(encodeTmuxName('a__b')).toBe('a____b')
+    expect(encodeTmuxName('chat-2026.07_x:y')).toBe('chat-2026_d07__x_cy')
+    for (const key of ['claude:abc', 'chat-2026.07_x:y', 'a__b', 'plain', '_', ':', '.', '__cc']) {
+      const enc = encodeTmuxName(key)
+      expect(enc).not.toMatch(/[.:]/)
+      expect(decodeTmuxName(enc)).toBe(key)
+    }
+    // chars outside the den session alphabet → base64url fallback
+    const weird = encodeTmuxName('has space/and+more')
+    expect(weird).not.toMatch(/[.:]/)
+    expect(decodeTmuxName(weird)).toBe('has space/and+more')
+  })
+
+  it('encoding: left-to-right tokenizer, fallback marker, leading - rejected, length capped', () => {
+    // `____cc` must tokenize as `__`+`__`+`cc` → `__cc` (a replaceAll-based
+    // decoder would mis-parse this — the tokenizer is left-to-right)
+    expect(decodeTmuxName('____cc')).toBe('__cc')
+    expect(encodeTmuxName('__cc')).toBe('____cc')
+    // fallback marker: `~` + base64url, `~` itself illegal in den keys
+    expect(encodeTmuxName('has space')).toMatch(/^~/)
+    // a leading '-' would be eaten by tmux's option parser at create — reject
+    expect(() => encodeTmuxName('-leading')).toThrow(/must not start with '-'/)
+    // the manager rejects them at the session-id door too, plus the 120 cap
+    const { manager } = makeManager({})
+    expect(() => manager.spawn('shell', 80, 24, '', '-bad')).toThrowError(/invalid session/)
+    manager.spawn('shell', 80, 24, '', 'a'.repeat(120))
+    expect(() => manager.spawn('shell', 80, 24, '', 'a'.repeat(121))).toThrowError(
+      /invalid session/,
+    )
+  })
+
+  it('socket name is per-den (stateDir+port), stable across restarts of one den (#15)', () => {
+    expect(tmuxSocketName('/state/a', 5174)).toMatch(/^rivet-[0-9a-f]{8}$/)
+    expect(tmuxSocketName('/state/a', 5174)).toBe(tmuxSocketName('/state/a', 5174))
+    expect(tmuxSocketName('/state/a', 5174)).not.toBe(tmuxSocketName('/state/a', 5175))
+    expect(tmuxSocketName('/state/a', 5174)).not.toBe(tmuxSocketName('/state/b', 5174))
+  })
+
+  it('tmux.conf sources the user conf FIRST, then re-asserts persistence (#13)', () => {
+    const conf = tmuxConfContent(true)
+    const src = conf.indexOf('source-file -q ~/.tmux.conf')
+    expect(src).toBeGreaterThanOrEqual(0)
+    // a user conf that flips destroy-unattached on must not void persistence
+    for (const line of [
+      'set -g default-terminal "tmux-256color"',
+      'set -g destroy-unattached off',
+      'set -g exit-empty off',
+      'set -g remain-on-exit off',
+    ]) {
+      expect(conf.indexOf(line)).toBeGreaterThan(src)
+    }
+    expect(tmuxConfContent(false)).not.toContain('source-file')
+  })
+
+  it('spawns the tmux new-session form (no -A) with geometry, -e pairs and chained tags', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, spawns, stateDir } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    const argv = spawns[0].argv
+    const sep = argv.indexOf('--')
+    expect(sep).toBeGreaterThan(0)
+    expect(argv.slice(0, 8)).toEqual([
+      'tmux',
+      '-L',
+      tmuxSocketName(stateDir, 5199),
+      '-f',
+      join(stateDir, 'den', 'tmux.conf'),
+      'new-session',
+      '-s',
+      encodeTmuxName(uuid),
+    ])
+    // NEVER -A: a stale/raced existence check must fail the create loudly,
+    // not silently mint a second harness with no resume flags
+    expect(argv).not.toContain('-A')
+    // cwd + geometry flags
+    const head = argv.slice(0, sep)
+    expect(head[head.indexOf('-x') + 1]).toBe('120')
+    expect(head[head.indexOf('-y') + 1]).toBe('40')
+    expect(head[head.indexOf('-c') + 1]).toBe(spawns[0].opts.cwd)
+    // harness argv follows `--` (inside the sh wrapper) up to the `;` chain,
+    // fresh-session pin intact
+    const { envPairs, harness, chain, wrapper } = parseTmuxArgv(argv)
+    expect(wrapper).toEqual({
+      script: ENV_WRAP_SCRIPT,
+      envFile: join(stateDir, 'den', 'env', `${encodeTmuxName(uuid)}.env`),
+    })
+    expect(harness).toEqual(['claude', '--session-id', uuid])
+    // the tags are CHAINED onto the create invocation — atomic with it (#8)
+    expect(chain).toEqual([
+      'set-option',
+      '-t',
+      `=${encodeTmuxName(uuid)}`,
+      '@rivet_command',
+      'claude',
+      ';',
+      'set-option',
+      '-t',
+      `=${encodeTmuxName(uuid)}`,
+      '@rivet_user',
+      'owner',
+    ])
+    // -e carries every manager-set/overridden var for an EXISTING server…
+    expect(envPairs.RIVET_DEN_SESSION).toBe(uuid)
+    expect(envPairs.RIVETOS_SESSION_KEY).toBe(uuid)
+    expect(envPairs.COLORTERM).toBe('truecolor')
+    expect(envPairs.RIVET_DEN_URL).toBe('http://127.0.0.1:5199')
+    expect(envPairs.RIVET_DEN_NAME).toBe(`${hostname()}:claude`)
+    // …but NEVER TERM: -e TERM would override the conf's tmux-256color
+    // inside panes on a running server and break TUI terminfo (#11)
+    expect('TERM' in envPairs).toBe(false)
+    // …while the outer PTY still gets the full computed env for a NEW server
+    expect(spawns[0].opts.env.RIVET_DEN_SESSION).toBe(uuid)
+    expect(spawns[0].opts.env.TERM).toBe('xterm-256color')
+    expect(pty.mux).toBe('tmux')
+    expect(pty.reattached).toBeUndefined()
+    expect(pty.persisted).toBeUndefined()
+    // get() resolves the den-session alias the same way kill() does
+    expect(manager.get(uuid)?.id).toBe(pty.id)
+  })
+
+  it('-e pairs include roster env, entry env; credential override keys go in the env file', () => {
+    const ctl = new FakeTmuxCtl()
+    const roster: TermRoster = {
+      default: 'x',
+      cwd: '/tmp',
+      env: { LAYER_A: 'roster' },
+      commands: {
+        x: { label: 'X', cmd: ['x'], room: false, env: { LAYER_B: 'entry' } },
+      },
+    }
+    const envFiles: { path: string; body: string }[] = []
+    const { manager, spawns } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        roster,
+        writeEnvFile: (path, body) => envFiles.push({ path, body }),
+      },
+    )
+    manager.spawn('x', 80, 24, '', undefined, undefined, { RIVETOS_PG_URL: 'postgres://u@db/u' })
+    const { envPairs } = parseTmuxArgv(spawns[0].argv)
+    expect(envPairs.LAYER_A).toBe('roster')
+    expect(envPairs.LAYER_B).toBe('entry')
+    expect(envPairs.RIVETOS_PG_URL).toBeUndefined()
+    expect(envFiles[0]?.body).toContain("RIVETOS_PG_URL='postgres://u@db/u'")
+  })
+
+  it('-e: credential keys never appear; deletions unset via env file + set-environment -u; odd values stay one token', () => {
+    const prevPg = process.env.RIVETOS_PG_URL
+    const prevUid = process.env.RIVETOS_USER_ID
+    process.env.RIVETOS_PG_URL = 'postgres://owner@db/owner'
+    process.env.RIVETOS_USER_ID = 'owner'
+    try {
+      const ctl = new FakeTmuxCtl()
+      const roster: TermRoster = {
+        default: 'x',
+        cwd: '/tmp',
+        env: { WEIRD: 'a=b\nc', RIVETOS_USER_DBS: '{"nope":true}' },
+        commands: { x: { label: 'X', cmd: ['x'], room: false } },
+      }
+      const envFiles: { path: string; body: string }[] = []
+      const { manager, spawns, stateDir } = makeManager(
+        { mux: 'tmux' },
+        {
+          token: 'sekrit',
+          tmuxCtl: ctl,
+          roster,
+          writeEnvFile: (path, body) => envFiles.push({ path, body }),
+        },
+      )
+      // envFile-only override: the owner's RIVETOS_PG_URL / RIVETOS_USER_ID
+      // are DELETED for this user's session
+      manager.spawn('x', 80, 24, '', 'chat-e', undefined, { RIVETOS_ENV_FILE: '/home/coco/.env' }, 'coco')
+      const argv = spawns[0].argv
+      const { envPairs, wrapper, chain } = parseTmuxArgv(argv)
+      expect(envPairs.RIVETOS_ENV_FILE).toBeUndefined()
+      expect(envPairs.RIVETOS_PG_URL).toBeUndefined()
+      expect(envPairs.RIVETOS_USER_ID).toBeUndefined()
+      expect(envPairs.RIVET_DEN_TOKEN).toBeUndefined()
+      // wrapper argv shape: /bin/sh -c SCRIPT envFile ...harness
+      expect(wrapper).toEqual({
+        script: ENV_WRAP_SCRIPT,
+        envFile: join(stateDir, 'den', 'env', `${encodeTmuxName('chat-e')}.env`),
+      })
+      expect(argv.slice(argv.indexOf('--'), argv.indexOf('--') + 5)).toEqual([
+        '--',
+        '/bin/sh',
+        '-c',
+        ENV_WRAP_SCRIPT,
+        wrapper!.envFile,
+      ])
+      const body = envFiles[0]?.body ?? ''
+      expect(body).toContain("RIVET_DEN_TOKEN='sekrit'")
+      expect(body).toContain("RIVETOS_ENV_FILE='/home/coco/.env'")
+      expect(body).toContain('unset RIVETOS_PG_URL')
+      expect(body).toContain('unset RIVETOS_USER_ID')
+      expect(body).not.toContain('RIVETOS_USER_DBS')
+      const name = encodeTmuxName('chat-e')
+      expect(chain).toEqual([
+        'set-option',
+        '-t',
+        `=${name}`,
+        '@rivet_command',
+        'x',
+        ';',
+        'set-option',
+        '-t',
+        `=${name}`,
+        '@rivet_user',
+        'coco',
+        ';',
+        'set-environment',
+        '-t',
+        `=${name}`,
+        '-u',
+        'RIVETOS_PG_URL',
+        ';',
+        'set-environment',
+        '-t',
+        `=${name}`,
+        '-u',
+        'RIVETOS_USER_ID',
+      ])
+      // and they left the PTY env entirely
+      expect(spawns[0].opts.env.RIVETOS_PG_URL).toBeUndefined()
+      expect(spawns[0].opts.env.RIVETOS_USER_ID).toBeUndefined()
+      // denied keys (RIVETOS_USER_DBS-class) never ride -e
+      expect(envPairs.RIVETOS_USER_DBS).toBeUndefined()
+      // a value with `=` and a newline stays ONE argv token
+      const token = argv.find((t) => t.startsWith('WEIRD='))
+      expect(token).toBe('WEIRD=a=b\nc')
+    } finally {
+      if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+      else process.env.RIVETOS_PG_URL = prevPg
+      if (prevUid === undefined) delete process.env.RIVETOS_USER_ID
+      else process.env.RIVETOS_USER_ID = prevUid
+    }
+  })
+
+  it('writeEnvFile throw releases spawnInflight so a retry is not refused with cap', () => {
+    const ctl = new FakeTmuxCtl()
+    let calls = 0
+    const { manager } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        writeEnvFile: () => {
+          calls += 1
+          if (calls === 1) throw new Error('ENOSPC')
+        },
+      },
+    )
+    expect(() => manager.spawn('claude', 80, 24, '', uuid)).toThrow(/ENOSPC/)
+    // same denSession: a leaked inflight flag would throw TermSpawnError('cap')
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.command).toBe('claude')
+    expect(calls).toBe(2)
+  })
+
+  it('default writeEnvFile modes are 0600 file and 0700 dir', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, stateDir } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl, token: 'sekrit' })
+    manager.spawn('claude', 80, 24, '', uuid)
+    const envDir = join(stateDir, 'den', 'env')
+    const envFile = join(envDir, `${encodeTmuxName(uuid)}.env`)
+    expect(statSync(envDir).mode & 0o777).toBe(0o700)
+    expect(statSync(envFile).mode & 0o777).toBe(0o600)
+  })
+
+  it('flag matrix: live session → attach-session (no argv/flags); store hit without live → new-session --resume', () => {
+    // live session + explicit resume hint + store hit → STILL attach: the
+    // harness is already running, nothing reaches it (#1)
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName(uuid), 'claude', 'owner')
+    const attached = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl, sessionExists: () => true })
+    const pty = attached.manager.spawn('claude', 80, 24, '', uuid, uuid)
+    const sock = tmuxSocketName(attached.stateDir, 5199)
+    expect(attached.spawns[0].argv).toEqual([
+      'tmux',
+      '-L',
+      sock,
+      '-f',
+      join(attached.stateDir, 'den', 'tmux.conf'),
+      'attach-session',
+      '-t',
+      `=${encodeTmuxName(uuid)}`,
+    ])
+    expect(pty.reattached).toBe(true)
+    expect(pty.persisted).toBeUndefined()
+    // store-miss + live → attach as well (store state is irrelevant here)
+    const ctl2 = new FakeTmuxCtl()
+    ctl2.serverCreated(encodeTmuxName(uuid), 'claude', 'owner')
+    const miss = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl2, sessionExists: () => false })
+    miss.manager.spawn('claude', 80, 24, '', uuid)
+    expect(miss.spawns[0].argv).toContain('attach-session')
+    // no live session + store hit → new-session (no -A) WITH --resume
+    const ctl3 = new FakeTmuxCtl()
+    const fresh = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl3, sessionExists: () => true })
+    fresh.manager.spawn('claude', 80, 24, '', uuid)
+    expect(fresh.spawns[0].argv).toContain('new-session')
+    expect(fresh.spawns[0].argv).not.toContain('-A')
+    expect(parseTmuxArgv(fresh.spawns[0].argv).harness).toEqual(['claude', '--resume', uuid])
+  })
+
+  it('has-session live → attach form: immediately ready, no -e, no tags', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName(uuid), 'claude', 'owner')
+    const { manager, spawns, procs, stateDir } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, sessionExists: () => true },
+    )
+    // even with an explicit resume hint AND a store hit, a live tmux session
+    // means the harness is already running — no flags reach it
+    const pty = manager.spawn('claude', 80, 24, '', uuid, uuid)
+    const argv = spawns[0].argv
+    expect(argv[0]).toBe('tmux')
+    expect(argv).toEqual([
+      'tmux',
+      '-L',
+      tmuxSocketName(stateDir, 5199),
+      '-f',
+      join(stateDir, 'den', 'tmux.conf'),
+      'attach-session',
+      '-t',
+      `=${encodeTmuxName(uuid)}`,
+    ])
+    expect(argv).not.toContain('--resume')
+    expect(argv).not.toContain('-e')
+    expect(pty.reattached).toBe(true)
+    // attach is immediately ready: injects are not buffered behind the
+    // first-output settle (tmux's attach redraw would fire it too early)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
+  it('create under tmux still buffers injects until the first output settles', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs } = makeManager({ mux: 'tmux', injectReadyMs: 300 }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-buf')
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([])
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(300)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
+  it('refuses to attach a persisted session owned by another user (#7)', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName('chat-x'), 'claude', 'phil')
+    const { manager } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    expect(() =>
+      manager.spawn('claude', 80, 24, '', 'chat-x', undefined, undefined, 'coco'),
+    ).toThrowError(/owned by another user/)
+    // an owner-stamped session attaches for the owner identity
+    const ctl2 = new FakeTmuxCtl()
+    ctl2.serverCreated(encodeTmuxName('chat-y'), 'claude', 'owner')
+    const owner = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl2 })
+    expect(owner.manager.spawn('claude', 80, 24, '', 'chat-y').reattached).toBe(true)
+    // and a matching routed user attaches their own session
+    const ctl3 = new FakeTmuxCtl()
+    ctl3.serverCreated(encodeTmuxName('chat-z'), 'claude', 'coco')
+    const mine = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl3 })
+    expect(
+      mine.manager.spawn('claude', 80, 24, '', 'chat-z', undefined, undefined, 'coco').reattached,
+    ).toBe(true)
+  })
+
+  it('refuses to attach a session without den tags — a name is never proof (#7)', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName('chat-f'), '', '') // foreign, no @rivet_command
+    const { manager } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    expect(() => manager.spawn('claude', 80, 24, '', 'chat-f')).toThrowError(/foreign/)
+  })
+
+  it('detached-ttl under tmux DETACHES: audit `detach`, session untouched, client SIGHUPd', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, stateDir } = makeManager(
+      { mux: 'tmux', detachedTtlMs: 1000, idleTtlMs: 0 },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-det')
+    ctl.serverCreated(encodeTmuxName('chat-det')) // server-side reality after create
+    vi.advanceTimersByTime(1000)
+    expect(procs[0].kills).toEqual(['SIGHUP']) // den's client only
+    expect(ctl.kills).toEqual([]) // tmux session survives
+    const lines = readFileSync(join(stateDir, 'term-audit.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines.map((l) => l.action)).toEqual(['spawn', 'detach'])
+    expect(lines[1]).toMatchObject({ reason: 'detached-ttl', id: pty.id })
+    // a STUCK client is SIGKILLed after ~1s — the backstop only ever hits
+    // the client process, never the session (#10)
+    vi.advanceTimersByTime(1000)
+    expect(procs[0].kills).toEqual(['SIGHUP', 'SIGKILL'])
+    // the detached client exiting is NOT a harness exit: no synthetic
+    // session.end while the tmux session exists — and the record is reaped
+    // IMMEDIATELY (nothing to linger for; the replay belongs to tmux)
+    procs[0].emitExit(null)
+    expect(manager.get(pty.id)).toBeUndefined()
+    expect(manager.ptyForSession('chat-det')).toBeUndefined()
+  })
+
+  it('idle-ttl under tmux detaches the same way', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, stateDir } = makeManager(
+      { mux: 'tmux', idleTtlMs: 1000, detachedTtlMs: 60_000 },
+      { tmuxCtl: ctl },
+    )
+    manager.spawn('shell', 80, 24, '')
+    ctl.serverCreated(encodeTmuxName(manager.list()[0].denSession))
+    vi.advanceTimersByTime(1000)
+    expect(procs[0].kills).toEqual(['SIGHUP'])
+    expect(ctl.kills).toEqual([])
+    const lines = readFileSync(join(stateDir, 'term-audit.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines.at(-1)).toMatchObject({ action: 'detach', reason: 'idle-ttl' })
+  })
+
+  it('a detached client exit does NOT ingest session.end; a killed session does', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, ingested } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    // detached path: client exits, tmux session alive → room stays open
+    manager.spawn('claude', 80, 24, '', 'chat-a')
+    ctl.serverCreated(encodeTmuxName('chat-a'))
+    procs[0].emitExit(null)
+    expect(ingested.filter((e) => e.type === 'session.end')).toEqual([])
+
+    // kill path: kill-session first, then the client exit sees the session
+    // gone and the synthetic session.end fires as under mux:none
+    const b = manager.spawn('claude', 80, 24, '', 'chat-b')
+    ctl.serverCreated(encodeTmuxName('chat-b'))
+    expect(manager.kill(b.id)).toBe(true)
+    expect(ctl.kills).toEqual([encodeTmuxName('chat-b')])
+    procs[1].emitExit(129)
+    const ends = ingested.filter((e) => e.type === 'session.end')
+    expect(ends).toHaveLength(1)
+    expect(ends[0].session).toBe('chat-b')
+  })
+
+  it('harness exit while detached → exactly one session.end from the sweep (#5)', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, ingested } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    manager.spawn('claude', 80, 24, '', 'chat-gone')
+    ctl.serverCreated(encodeTmuxName('chat-gone'))
+    // den's client detaches while the harness lives on — no end…
+    procs[0].emitExit(null)
+    expect(ingested.filter((e) => e.type === 'session.end')).toEqual([])
+    // …then the harness exits inside tmux: the session disappears with NO
+    // den client to notice — the sweep must close the room, once
+    ctl.sessions.delete(encodeTmuxName('chat-gone'))
+    vi.advanceTimersByTime(60_000) // sweep interval with gcMs 0
+    const ends = ingested.filter((e) => e.type === 'session.end')
+    expect(ends).toHaveLength(1)
+    expect(ends[0]).toMatchObject({ session: 'chat-gone', type: 'session.end' })
+    vi.advanceTimersByTime(180_000) // never twice
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+  })
+
+  it('kill() with the tmux session already gone still ends the room exactly once', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, ingested } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-k2')
+    ctl.serverCreated(encodeTmuxName('chat-k2'))
+    ctl.sessions.delete(encodeTmuxName('chat-k2')) // died on its own
+    expect(manager.kill(pty.id)).toBe(true)
+    procs[0].emitExit(129)
+    const ends = ingested.filter((e) => e.type === 'session.end' && e.session === 'chat-k2')
+    expect(ends).toHaveLength(1)
+  })
+
+  it('detach: list() has exactly ONE row (persisted, running, attached:0); re-spawn attaches (#10)', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, spawns } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    manager.spawn('claude', 80, 24, '', 'chat-d2')
+    ctl.serverCreated(encodeTmuxName('chat-d2'))
+    procs[0].emitExit(null) // client detaches; the harness lives on
+    const mine = manager.list().filter((r) => r.denSession === 'chat-d2')
+    expect(mine).toHaveLength(1)
+    expect(mine[0]).toMatchObject({
+      id: `tmux-${encodeTmuxName('chat-d2')}`,
+      persisted: true,
+      state: 'running',
+      attached: 0,
+      pid: 4321,
+    })
+    // unknown geometry is omitted, never a fake 0
+    expect('cols' in mine[0]).toBe(false)
+    expect('rows' in mine[0]).toBe(false)
+    // re-spawn takes the attach form and claims the session back: still ONE row
+    const again = manager.spawn('claude', 80, 24, '', 'chat-d2')
+    expect(again.reattached).toBe(true)
+    expect(spawns[1].argv).toContain('attach-session')
+    expect(spawns[1].argv).not.toContain('-A')
+    const after = manager.list().filter((r) => r.denSession === 'chat-d2')
+    expect(after).toHaveLength(1)
+    expect(after[0]).toMatchObject({ id: again.id, state: 'running', reattached: true })
+    expect(after[0].persisted).toBeUndefined()
+  })
+
+  it('kill() resolves tmux-<name> ids and den session keys for client-less sessions (#4)', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, ingested, stateDir } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    manager.spawn('claude', 80, 24, '', 'chat-p1', undefined, undefined, 'coco')
+    ctl.serverCreated(encodeTmuxName('chat-p1'), 'claude', 'coco')
+    procs[0].emitExit(null) // detached — no den client anymore
+    const row = manager.list().find((r) => r.denSession === 'chat-p1')!
+    expect(row.id).toBe(`tmux-${encodeTmuxName('chat-p1')}`)
+    expect(row.routedUser).toBe('coco')
+    // get() resolves the tmux- id too — DELETE routes tenancy through it
+    expect(manager.get(row.id)).toMatchObject({
+      denSession: 'chat-p1',
+      persisted: true,
+      routedUser: 'coco',
+    })
+    expect(manager.get('chat-p1')).toMatchObject({
+      denSession: 'chat-p1',
+      persisted: true,
+      routedUser: 'coco',
+    })
+    expect(manager.kill(row.id)).toBe(true)
+    expect(ctl.kills).toEqual([encodeTmuxName('chat-p1')])
+    expect(manager.list().filter((r) => r.denSession === 'chat-p1')).toEqual([])
+    // killing a detached session is a harness exit: the room ends once
+    expect(ingested.filter((e) => e.type === 'session.end' && e.session === 'chat-p1')).toHaveLength(
+      1,
+    )
+    const lines = readFileSync(join(stateDir, 'term-audit.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines.at(-1)).toMatchObject({
+      action: 'kill',
+      reason: 'request',
+      id: row.id,
+      routedUser: 'coco',
+    })
+    // a bare den session key resolves the same way; unknown ids are false
+    manager.spawn('shell', 80, 24, '', 'chat-p2')
+    ctl.serverCreated(encodeTmuxName('chat-p2'), 'shell')
+    procs[1].emitExit(null)
+    expect(manager.kill('chat-p2')).toBe(true)
+    expect(ctl.kills).toEqual([encodeTmuxName('chat-p1'), encodeTmuxName('chat-p2')])
+    expect(manager.kill('chat-nope')).toBe(false)
+    // a foreign (untagged) session is NEVER killable through den
+    ctl.serverCreated('foreign', '', '')
+    expect(manager.kill('tmux-foreign')).toBe(false)
+  })
+
+  it('kill() under tmux kills the tmux session, then SIGHUPs the client', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, stateDir } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-kill')
+    ctl.serverCreated(encodeTmuxName('chat-kill'))
+    manager.kill(pty.id)
+    expect(ctl.kills).toEqual([encodeTmuxName('chat-kill')])
+    expect(procs[0].kills).toEqual(['SIGHUP'])
+    const lines = readFileSync(join(stateDir, 'term-audit.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines.at(-1)).toMatchObject({ action: 'kill', reason: 'request' })
+  })
+
+  it('list() merges client-less tmux sessions as persisted rows, without duplicates', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const live = manager.spawn('claude', 80, 24, '', 'chat-live')
+    // the live client's tmux session exists server-side…
+    ctl.serverCreated(encodeTmuxName('chat-live'), 'claude')
+    // …plus one orphaned session with no den client (owned by a routed user)
+    ctl.serverCreated(encodeTmuxName('chat-orphan'), 'kimi', 'coco')
+    // …and one foreign session that must NEVER be listed
+    ctl.serverCreated('foreign', '', '')
+    const rows = manager.list()
+    expect(rows).toHaveLength(2) // no duplicate for chat-live, no foreign row
+    const liveRow = rows.find((r) => r.id === live.id)!
+    expect(liveRow.mux).toBe('tmux')
+    expect(liveRow.persisted).toBeUndefined()
+    const orphan = rows.find((r) => r.denSession === 'chat-orphan')!
+    expect(orphan).toMatchObject({
+      id: `tmux-${encodeTmuxName('chat-orphan')}`,
+      command: 'kimi', // read back from @rivet_command
+      state: 'running',
+      mux: 'tmux',
+      persisted: true,
+      attached: 0,
+      pid: 4321,
+      routedUser: 'coco', // read back from @rivet_user
+    })
+  })
+
+  it('session GC: den clock only — kills detached-past-gcMs tagged sessions, spares the rest (#12)', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeTmuxCtl()
+    const gcMs = 60_000
+    const { manager, procs, stateDir, ingested } = makeManager(
+      { mux: 'tmux', sessionGcMs: gcMs },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    // a LIVE den client whose tmux activity is ancient must NOT be killed —
+    // tmux's activity clock is not an idleness signal (a quiet prompt looks idle)
+    manager.spawn('claude', 80, 24, '', 'chat-live')
+    ctl.serverCreated(encodeTmuxName('chat-live'), 'claude', 'owner', 1)
+    // a session that detaches now becomes eligible at detach+gcMs
+    manager.spawn('claude', 80, 24, '', 'chat-old')
+    ctl.serverCreated(encodeTmuxName('chat-old'), 'claude')
+    // foreign/undecodable-by-den sessions are never GC'd
+    ctl.serverCreated('foreign', '', '')
+    procs[1].emitExit(null) // chat-old's client detaches at t≈0
+    vi.advanceTimersByTime(gcMs - 1000) // boundary −1s: no sweep yet, nothing killed
+    expect(ctl.kills).toEqual([])
+    vi.advanceTimersByTime(1000) // first sweep at t=gcMs: detached exactly gcMs → eligible
+    expect(ctl.kills).toEqual([encodeTmuxName('chat-old')])
+    expect(ctl.sessions.has(encodeTmuxName('chat-live'))).toBe(true)
+    expect(ctl.sessions.has('foreign')).toBe(true)
+    expect(manager.list().some((r) => r.denSession === 'chat-live' && r.state === 'running')).toBe(
+      true,
+    )
+    // GC kills are audited and end the room like any harness exit
+    const lines = readFileSync(join(stateDir, 'term-audit.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+    expect(lines.at(-1)).toMatchObject({
+      action: 'kill',
+      reason: 'session-gc',
+      id: `tmux-${encodeTmuxName('chat-old')}`,
+    })
+    expect(
+      ingested.filter((e) => e.type === 'session.end' && e.session === 'chat-old'),
+    ).toHaveLength(1)
+  })
+
+  it('sessionGcMs:0 never GCs — detached sessions live until explicitly killed', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeTmuxCtl()
+    const m = makeManager({ mux: 'tmux', sessionGcMs: 0 }, { tmuxCtl: ctl })
+    m.manager.spawn('claude', 80, 24, '', 'chat-forever')
+    ctl.serverCreated(encodeTmuxName('chat-forever'), 'claude')
+    m.procs[0].emitExit(null)
+    vi.advanceTimersByTime(7_200_000) // two hours of sweeps — never a kill
+    expect(ctl.kills).toEqual([])
+    expect(ctl.sessions.has(encodeTmuxName('chat-forever'))).toBe(true)
+  })
+
+  it('falls back to direct PTY with ONE log line when tmux is not on PATH', () => {
+    const prevPath = process.env.PATH
+    process.env.PATH = ''
+    try {
+      // mux unset (default) and no injected ctl → detection runs and fails
+      const { manager, spawns, logs } = makeManager({ mux: undefined })
+      manager.spawn('shell', 80, 24, '')
+      expect(spawns[0].argv).toEqual(['bash', '-l']) // direct spawn, byte-identical
+      const fallbackLogs = logs.filter((l) => l.includes('tmux not found on PATH'))
+      expect(fallbackLogs).toHaveLength(1)
+    } finally {
+      process.env.PATH = prevPath
+    }
+  })
+
+  it('detects a tmux binary on PATH by default and uses the mux layer', () => {
+    // hermetic "binary": answers -V like tmux 3.4, everything else exit 1
+    // (the real ctl reads exit 1 as "no server/session")
+    const binDir = tmp()
+    writeFileSync(
+      join(binDir, 'tmux'),
+      '#!/bin/sh\nif [ "$1" = "-V" ]; then echo "tmux 3.4"; exit 0; fi\nexit 1\n',
+      { mode: 0o755 },
+    )
+    const prevPath = process.env.PATH
+    process.env.PATH = binDir
+    try {
+      const { manager, spawns } = makeManager({ mux: undefined })
+      manager.spawn('shell', 80, 24, '')
+      expect(spawns[0].argv[0]).toBe('tmux')
+      expect(spawns[0].argv[1]).toBe('-L')
+      expect(spawns[0].argv[2]).toMatch(/^rivet-[0-9a-f]{8}$/)
+    } finally {
+      process.env.PATH = prevPath
+    }
+  })
+
+  it('rejects a too-old tmux (< 3.2) and non-files on PATH (#16)', () => {
+    const binDir = tmp()
+    writeFileSync(join(binDir, 'tmux'), '#!/bin/sh\necho "tmux 2.9"\n', { mode: 0o755 })
+    const prevPath = process.env.PATH
+    process.env.PATH = binDir
+    try {
+      const { manager, spawns, logs } = makeManager({ mux: undefined })
+      manager.spawn('shell', 80, 24, '')
+      expect(spawns[0].argv).toEqual(['bash', '-l']) // auto fallback
+      expect(logs.some((l) => l.includes('older than 3.2'))).toBe(true)
+    } finally {
+      process.env.PATH = prevPath
+    }
+    // a DIRECTORY named tmux on PATH is not a binary
+    const dirDir = tmp()
+    mkdirSync(join(dirDir, 'tmux'))
+    process.env.PATH = dirDir
+    try {
+      const { manager, spawns } = makeManager({ mux: undefined })
+      manager.spawn('shell', 80, 24, '')
+      expect(spawns[0].argv).toEqual(['bash', '-l'])
+    } finally {
+      process.env.PATH = prevPath
+    }
+  })
+
+  it('explicit tmux mode with no binary → every spawn throws tmux-unavailable (#19)', () => {
+    const prevPath = process.env.PATH
+    process.env.PATH = ''
+    try {
+      const { manager, spawns, logs } = makeManager({ mux: 'tmux' })
+      expect(() => manager.spawn('shell', 80, 24, '')).toThrowError(/tmux/)
+      expect(spawns).toEqual([]) // never a silent direct spawn in explicit mode
+      expect(logs.some((l) => l.includes("term.mux is 'tmux'"))).toBe(true)
+    } finally {
+      process.env.PATH = prevPath
+    }
+  })
+
+  it('explicit mode: a ctl failure fails the spawn (tmux-unavailable) — never creates (#9)', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.failWith = new TmuxUnavailableError('wedged server')
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    expect(() => manager.spawn('shell', 80, 24, '')).toThrowError(/tmux unavailable/)
+    expect(spawns).toEqual([])
+  })
+
+  it('auto mode: a mid-life ctl failure spawns direct with ONE log line (#9/#19)', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.failWith = new TmuxUnavailableError('wedged server')
+    const { manager, spawns, logs } = makeManager({ mux: undefined }, { tmuxCtl: ctl })
+    const a = manager.spawn('shell', 80, 24, '')
+    expect(spawns[0].argv).toEqual(['bash', '-l']) // true none fallback for this call
+    expect(a.mux).toBeUndefined()
+    manager.spawn('shell', 80, 24, '')
+    expect(spawns[1].argv).toEqual(['bash', '-l'])
+    expect(logs.filter((l) => l.includes('became unavailable mid-life'))).toHaveLength(1)
+  })
+
+  it('a ctl failure inside onExit/list never throws and never ends a live room (#9)', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, procs, ingested } = makeManager(
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, roomOpen: () => true },
+    )
+    manager.spawn('claude', 80, 24, '', 'chat-wedge')
+    ctl.serverCreated(encodeTmuxName('chat-wedge'))
+    ctl.failWith = new TmuxUnavailableError('wedged server')
+    // the client exit must not throw, and "unknown" reads as ALIVE — the
+    // room stays open until the sweep can confirm the session is gone
+    expect(() => procs[0].emitExit(null)).not.toThrow()
+    expect(ingested.filter((e) => e.type === 'session.end')).toEqual([])
+    // list degrades to den records instead of failing the poll
+    expect(manager.list()).toEqual([])
+  })
+
+  it('mux:none ignores an injected ctl entirely (byte-identical direct spawn)', () => {
+    const ctl = new FakeTmuxCtl()
+    const { manager, spawns } = makeManager({ mux: 'none' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('shell', 80, 24, '')
+    expect(spawns[0].argv).toEqual(['bash', '-l'])
+    expect(pty.mux).toBeUndefined()
+    expect(manager.list()[0].mux).toBeUndefined()
+  })
+})
+
+// The real ctl's argv shape and error classification, driven by a scripted
+// exec — no real tmux needed (#2, #3, #9).
+describe('real tmux ctl (scripted exec)', () => {
+  it('puts -L <sock> -f <conf> and -t =<name> on every call; exit 1 reads as not-found', () => {
+    const calls: string[][] = []
+    const exec: TmuxExec = (_bin, args) => {
+      calls.push(args)
+      throw Object.assign(new Error('exit 1'), { status: 1 })
+    }
+    const ctl = createRealTmuxCtl('/usr/bin/tmux', 'rivet-abcd1234', '/tmp/den/tmux.conf', exec)
+    expect(ctl.hasSession('abc')).toBe(false)
+    expect(ctl.listSessions()).toEqual([])
+    expect(() => ctl.killSession('abc')).not.toThrow()
+    expect(calls).toHaveLength(3)
+    for (const c of calls) {
+      expect(c.slice(0, 4)).toEqual(['-L', 'rivet-abcd1234', '-f', '/tmp/den/tmux.conf'])
+    }
+    expect(calls[0][calls[0].indexOf('-t') + 1]).toBe('=abc')
+    expect(calls[2][calls[2].indexOf('-t') + 1]).toBe('=abc')
+  })
+
+  it('ETIMEDOUT / ENOENT / other statuses throw TmuxUnavailableError (fail closed)', () => {
+    const mk = (err: Error): TmuxCtl => {
+      const exec: TmuxExec = () => {
+        throw err
+      }
+      return createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exec)
+    }
+    expect(() => mk(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })).hasSession('a')).toThrow(
+      TmuxUnavailableError,
+    )
+    expect(() => mk(Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' })).listSessions()).toThrow(
+      TmuxUnavailableError,
+    )
+    expect(() => mk(Object.assign(new Error('exit 2'), { status: 2 })).killSession('a')).toThrow(
+      TmuxUnavailableError,
+    )
+  })
+
+  it('listSessions parses @rivet_command/@rivet_user and memoizes ~1s until refresh', () => {
+    let calls = 0
+    const exec: TmuxExec = () => {
+      calls++
+      return 'chat_c1\t1800000000\t1799999900\t4321\tclaude\tcoco\nforeign\t1800000000\t1799999900\t0\t\t\n'
+    }
+    const ctl = createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exec)
+    const a = ctl.listSessions()
+    expect(calls).toBe(1)
+    expect(ctl.listSessions()).toBe(a) // memo hit — no second fork
+    expect(calls).toBe(1)
+    ctl.refresh?.()
+    ctl.listSessions()
+    expect(calls).toBe(2)
+    expect(a).toEqual([
+      {
+        name: 'chat_c1',
+        activity: 1_800_000_000,
+        created: 1_799_999_900,
+        pid: 4321,
+        command: 'claude',
+        user: 'coco',
+      },
+      { name: 'foreign', activity: 1_800_000_000, created: 1_799_999_900, command: '', user: '' },
+    ])
   })
 })
 

@@ -15,8 +15,10 @@
 //   GET  /mesh.json             den-enabled mesh roster + per-node den health
 //   GET  /term/config           terminal roster (keys + labels — never argv)
 //   POST /term                  spawn a roster command in a PTY (opt-in)
-//   GET  /term/list             live + recently-exited PTYs
-//   DELETE /term?id=<id>        kill a PTY (SIGHUP → SIGKILL)
+//   GET  /term/list             live + recently-exited PTYs, plus tmux
+//                               sessions with no den client (persisted:true)
+//   DELETE /term?id=<id>        kill a PTY (tmux: kill-session, then
+//                               SIGHUP → SIGKILL on den's client as backstop)
 //   WS   /term?id=<pty>         terminal attach: hello + scrollback replay +
 //        | ?session=<den>       live bytes (see term/ws.ts for the framing)
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
@@ -63,6 +65,7 @@ import { createMeshView } from './mesh.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
+import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import { createTermWs } from './term/ws.js'
 import { MicBridge } from './audio/bridge.js'
 import { createAudioWs } from './audio/ws.js'
@@ -285,6 +288,10 @@ export interface DenServerOptions {
   /** PTY backend override for tests: a fake spawn, or null to simulate a
    *  failed node-pty import. Omitted = lazy real node-pty. */
   ptySpawn?: PtySpawn | null
+  /** tmux control override for tests (T1) — scripted has-session/kill-session
+   *  answers so tests never spawn a real tmux. Omitted = real execFileSync
+   *  tmux on the per-den `-L rivet-<hash>` socket (when mux resolves to tmux). */
+  tmuxCtl?: TmuxCtl
   /**
    * Gateway route mounts (G0, Appendix F): matched by longest prefix AFTER
    * the bearer gate and BEFORE den's own API routes and static serving —
@@ -517,6 +524,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
+        tmuxCtl: opts.tmuxCtl,
         log: console.error,
       })
       return termManager
@@ -1198,12 +1206,26 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               command: pty.command,
               pid: pty.pid,
               createdAt: pty.createdAt,
+              // T1: stamped only when tmux backs the PTY — under mux:none the
+              // response stays byte-identical to before. `reattached` marks a
+              // live client that joined an already-running tmux session
+              // (`persisted` is reserved for client-less /term/list rows).
+              ...(pty.mux ? { mux: pty.mux } : {}),
+              ...(pty.reattached ? { reattached: true } : {}),
             })
           } catch (e) {
             if (e instanceof TermSpawnError)
-              return json(res, e.code === 'cap' ? 409 : e.code === 'user-mismatch' ? 403 : 404, {
-                error: e.message,
-              })
+              return json(
+                res,
+                e.code === 'cap'
+                  ? 409
+                  : e.code === 'user-mismatch'
+                    ? 403
+                    : e.code === 'tmux-unavailable'
+                      ? 503
+                      : 404,
+                { error: e.message },
+              )
             throw e
           }
         }
@@ -1246,10 +1268,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
         if (req.method === 'DELETE' && url.pathname === '/term') {
           const id = url.searchParams.get('id') ?? ''
-          // a PTY dies only at its owner's hand
+          // a PTY dies only at its owner's hand. Fail closed: unknown id is
+          // 404 and must NOT reach kill() — get() and kill() resolve the same
+          // id forms, so a bare denSession can never skip the ownership check.
           const info = manager.get(id)
-          if (info && denyIfForbidden('DELETE /term', info.denSession)) return
-          if (!manager.kill(id)) return json(res, 404, { error: 'unknown pty' })
+          if (!info) return json(res, 404, { error: 'unknown pty' })
+          if (denyIfForbidden('DELETE /term', info.denSession)) return
+          try {
+            if (!manager.kill(id)) return json(res, 404, { error: 'unknown pty' })
+          } catch (e) {
+            // tmux unreachable: fail closed (503) — never pretend the kill
+            // happened, never silently skip it
+            if (e instanceof TmuxUnavailableError)
+              return json(res, 503, { error: `tmux unavailable: ${e.message}` })
+            throw e
+          }
           return json(res, 200, { ok: true })
         }
 

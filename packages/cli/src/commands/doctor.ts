@@ -25,7 +25,7 @@
 
 import { readFile, access, writeFile, unlink, stat as fsStat } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { execSync } from 'node:child_process'
+import { execSync, execFileSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
 import { validateConfig } from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
@@ -726,6 +726,86 @@ async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Check: Terminal mux (T1) — WARN when terminals are on and mux would be
+// tmux but the binary is missing (sessions won't survive den restarts)
+// ---------------------------------------------------------------------------
+
+function checkTerminalMux(rawConfig: string | null): CheckResult[] {
+  const results: CheckResult[] = []
+
+  // Read the SAME keys the den-server runtime parses: enablement is
+  // RIVETOS_DEN_TERM (or YAML den.terminal.enabled, which the gateway
+  // registrar translates into it); the mux choice is RIVETOS_DEN_TERM_MUX —
+  // there is NO YAML mux key (den.terminal.mux is not a known config key).
+  let termEnabled = false
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as {
+        den?: { terminal?: { enabled?: unknown } }
+      }
+      termEnabled = parsed.den?.terminal?.enabled === true
+    } catch {
+      /* expected */
+    }
+  }
+  const envTerm = (process.env.RIVETOS_DEN_TERM ?? '').trim().toLowerCase()
+  if (envTerm === '1' || envTerm === 'on') termEnabled = true
+  const mux = process.env.RIVETOS_DEN_TERM_MUX
+
+  if (!termEnabled) return results
+
+  const muxRaw = mux?.trim().toLowerCase()
+  if (muxRaw === 'none') {
+    results.push(check('terminal', 'mux', 'pass', 'Terminal mux: none (tmux disabled by config)'))
+    return results
+  }
+  // Match den-server config: a garbage value fails safe to 'none' (never
+  // silent "auto"). Report the effective mode, not "tmux found".
+  if (muxRaw && muxRaw !== 'tmux') {
+    results.push(
+      check('terminal', 'mux', 'warn', 'Terminal mux: none (invalid RIVETOS_DEN_TERM_MUX value)'),
+    )
+    return results
+  }
+
+  // mux is 'tmux' or unset (unset defaults to tmux when the binary exists).
+  // Probe with execFileSync (no shell) and gate on the version: the den
+  // create form needs new-session -e, which requires tmux ≥ 3.2.
+  try {
+    const out = execFileSync('tmux', ['-V'], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const m = /(\d+)\.(\d+)/.exec(out)
+    const ok = m !== null && (Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 2))
+    if (!ok) {
+      results.push(
+        check(
+          'terminal',
+          'mux',
+          'warn',
+          `tmux found but too old (${out || 'unparseable version'}) — den terminal persistence needs tmux ≥ 3.2`,
+        ),
+      )
+    } else {
+      results.push(check('terminal', 'mux', 'pass', `Terminal mux: tmux found (${out})`))
+    }
+  } catch {
+    results.push(
+      check(
+        'terminal',
+        'mux',
+        'warn',
+        'tmux not installed — den terminal sessions will not survive restarts (sudo apt install tmux)',
+      ),
+    )
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // Check: leaf cert expiry (90-day leaves; warn within 30 days)
 // ---------------------------------------------------------------------------
 
@@ -904,6 +984,9 @@ export default async function doctor(): Promise<void> {
 
   const peerResults = await checkPeers(opts.sshUser)
   allResults.push(...peerResults)
+
+  const terminalMuxResults = checkTerminalMux(rawConfig)
+  allResults.push(...terminalMuxResults)
 
   const leafCertResults = await checkLeafCert(rawConfig)
   allResults.push(...leafCertResults)

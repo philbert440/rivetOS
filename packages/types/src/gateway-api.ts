@@ -731,15 +731,28 @@ export interface PtyInfo {
   denSession: string
   command: string
   state: 'running' | 'exited'
-  pid: number
+  /** child pid — absent on client-less persisted rows when tmux didn't
+   *  report a pane pid (never a fake 0) */
+  pid?: number
   /** currently attached WS clients */
   attached: number
   exitCode?: number | null
   /** epoch ms */
   createdAt: number
   lastOutputTs?: number
-  cols: number
-  rows: number
+  /** last geometry reported by a live client — absent on client-less
+   *  persisted rows (unknown, not 0) */
+  cols?: number
+  rows?: number
+  /** Mux layer under this PTY (T1). Present only when 'tmux'; absent = none. */
+  mux?: 'tmux'
+  /** /term/list only: the tmux session backing this row outlived its den
+   *  client — there is NO live den client for it (reattach with
+   *  POST /term {session}). Never set on live client rows. */
+  persisted?: boolean
+  /** live rows only: this den client (re)attached to an already-running
+   *  tmux session (the harness survived a den restart/detach). */
+  reattached?: boolean
 }
 
 export interface TermListResponse {
@@ -758,6 +771,12 @@ export interface TermHelloFrame {
   rows: number
   state: 'running' | 'exited'
   exitCode?: number | null
+  /** Mux layer under the PTY (T1). Absent ⇒ 'none'. Under 'tmux' the
+   *  following binary replay frame is empty ONLY on the first attach after
+   *  the tmux client was (re)spawned (tmux redraws the screen for a new
+   *  client; clear the local buffer instead of replaying). A reattach on the
+   *  same still-live client carries den's scrollback ring as usual. */
+  mux?: 'tmux'
 }
 
 export interface TermExitFrame {
