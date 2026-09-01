@@ -117,11 +117,7 @@ export class TurnHandler {
       // System prompt — built once per session, cached. An inbound
       // metadata.systemPrompt (RivetHub agent preset) appends on first build.
       if (!session.systemPrompt) {
-        session.systemPrompt = await workspace.buildSystemPrompt(
-          agent.id,
-          agent.local ?? false,
-          message.userId,
-        )
+        session.systemPrompt = await workspace.buildSystemPrompt(agent.id, message.userId)
         // Voice turns are spoken aloud — keep them short and unformatted.
         if (message.chatType === 'voice') {
           session.systemPrompt += VOICE_MODE_PROMPT
