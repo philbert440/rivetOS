@@ -3,7 +3,7 @@
  * rivet-android: conversation drawer on the left, transcript + composer on
  * the right.
  *
- * Two bindings feed one surface (docs/plans/harness-control-plane.md):
+ * Two bindings feed one surface (docs/ARCHITECTURE.md):
  *
  *   - **Control plane.** Sessions a registered HarnessDriver claims come from
  *     `GET /api/harnesses/:id/sessions`, stream over

@@ -67,7 +67,7 @@
  * there is no channel on the den wire to answer one. `interrupt` / `resume` /
  * `liveStream` are true only when the machinery behind them is wired here.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'

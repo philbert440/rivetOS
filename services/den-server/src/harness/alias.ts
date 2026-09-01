@@ -5,8 +5,8 @@
  * Alias resolution is CONTROL-PLANE-OWNED: the gateway resolves a superseded
  * or legacy id to its canonical `<harness-id>:<native-session-id>` BEFORE
  * dispatching to a driver, so drivers only ever see canonical ids and never
- * consult this store (docs/plans/harness-control-plane.md § Contract
- * semantics).
+ * consult this store (docs/ARCHITECTURE.md § HarnessDriver:
+ * control-plane contract).
  *
  * Two distinct jobs live here:
  *

@@ -57,7 +57,7 @@
  * live in `bindRoom` here; the meaning is written down in each driver's own
  * file header.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { type HarnessSessionSummary, type SessionId } from '@rivetos/types'

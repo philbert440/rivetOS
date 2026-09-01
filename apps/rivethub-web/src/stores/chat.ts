@@ -18,7 +18,7 @@
  * (`lib/harness-attach.ts` — its own WS plus a transcript hard-resync). This
  * socket then ignores it: den events reach both surfaces, so folding each
  * twice would double every delta. Everything else keeps the gateway chat
- * channel binding verbatim (docs/plans/harness-control-plane.md § Phase 3).
+ * channel binding verbatim.
  */
 
 import { create } from 'zustand'

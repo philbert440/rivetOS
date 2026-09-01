@@ -9,8 +9,8 @@
  * Not a provider plugin: there is no `LanguageModel` here and no
  * `providers.kimi-code` config slice — the package exists so `@rivetos/boot`
  * can register a real executor for harness id `kimi-code` where #476 could
- * only register an honest rejection. See docs/plans/harness-control-plane.md
- * § As built (kimi-code task executor).
+ * only register an honest rejection. See docs/ARCHITECTURE.md
+ * § HarnessDriver: control-plane contract.
  */
 
 export {

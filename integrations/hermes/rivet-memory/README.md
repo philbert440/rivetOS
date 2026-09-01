@@ -99,8 +99,7 @@ isn't replicated. The discipline lives in the skill + system prompt block.
   taken from the `platform` kwarg of `initialize()`.
 - **Conversation key:** `hermes:<session_id>` — the canonical `SessionId` of
   the harness control plane, the same string the `hermes` HarnessDriver and
-  `~/.hermes/state.db` use (docs/plans/harness-control-plane.md § Session
-  identity standard).
+  `~/.hermes/state.db` use (docs/ARCHITECTURE.md § Session identity standard).
 - **Rotations are aliases.** Hermes replaces its session id in place on
   `/new`, `/branch`, a mid-chat `/resume`, a rewind, and a compaction that
   forks a child session. Each one writes a `session-rotation` breadcrumb under

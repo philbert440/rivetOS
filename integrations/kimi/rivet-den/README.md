@@ -40,7 +40,7 @@ fallback.
 ## Session identity
 
 Rooms key on the canonical `kimi-code:<native-session-id>`
-(`docs/plans/harness-control-plane.md` § Session identity) — the same key the
+(`docs/ARCHITECTURE.md § Session identity) — the same key the
 rivet-memory capture worker writes, so the den room and the memory
 conversation join on one identity instead of two.
 
@@ -133,7 +133,7 @@ records carry the reply (`text`) and the thinking (`think`) verbatim, plus
 per-turn usage and a real `isError` per tool. A hard-resync therefore shows the
 full conversation that the live room cannot. Streaming those deltas from a
 transcript watch is the documented follow-up (see
-`docs/plans/harness-control-plane.md` § As built (kimi-code)).
+`docs/ARCHITECTURE.md § Four harness drivers).
 
 ## What the den does show — read this before pointing it anywhere shared
 

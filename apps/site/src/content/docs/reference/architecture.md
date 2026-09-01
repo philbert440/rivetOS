@@ -11,7 +11,6 @@ description: RivetOS as a harness-first per-node control plane
 > Last updated: 2026-08-09 (Phase 5 docs rewrite: harness control plane as product frame;
 > preserves accuracy from the #453 staleness sweep).
 >
-> Product plan: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md).
 > Engineering file map: [CODEBASE-REFERENCE.md](https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md).
 > Hub operator guide: [HUB-SETUP.md](/guides/hub-setup/).
 
@@ -184,7 +183,7 @@ SessionId = <harness-id> ":" <native-session-id>
 - **Rotation:** driver emits `session-updated` with `previousSessionId`; control plane stores alias, re-keys live subscriptions, retires old id from `listSessions`. Hermes is the real rotating customer; capture writes a durable breadcrumb (`metadata.kind='session-rotation'`). Registry aliases are in-memory; the breadcrumb is the durable link across restarts.
 - **Tasks:** harness spawns write under canonical SessionId + `ros_conversations.task_id`; `Memory.getTaskHistory` unions by `task_id` **or** legacy `session_key = 'task:<id>'`. `RIVETOS_SESSION_KEY=task:<id>` write override is deprecated (still honored for in-flight deploys).
 
-Full normative rules: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md) § Session identity.
+Full normative rules: the Harness Control Plane design doc, § Session identity (maintained outside this repo).
 
 ### Gateway surface (as built)
 
@@ -424,8 +423,6 @@ rivetOS/
     CODEBASE-REFERENCE.md        ← engineering reference (file-by-file)
     MEMORY-DESIGN.md
     DEN.md
-    plans/
-      harness-control-plane.md   ← product + as-built control plane
   infra/
     containers/
       rivetos/                   ← Unified runtime image — built once, dispatched via `--role`
@@ -922,7 +919,6 @@ When documenting mesh peers, use hostnames or documentation address space
 
 | Doc | Role |
 |-----|------|
-| [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md) | Product plan + full As-built driver notes |
 | [HUB-SETUP.md](/guides/hub-setup/) | Build and point RivetHub at a node |
 | [CODEBASE-REFERENCE.md](https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md) | File-level map (#453 accuracy baseline) |
 | [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md) | Den product / protocol entry |

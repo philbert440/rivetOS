@@ -102,7 +102,7 @@ import {
 // registrar and handed to the gateway channel, so it rides this export path.
 export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcript-watch.js'
 
-// Harness control plane (docs/plans/harness-control-plane.md) — the registry,
+// Harness control plane (docs/ARCHITECTURE.md) — the registry,
 // the `claude-code` reference driver, the `grok-build`, `hermes`,
 // `kimi-code` and `deepseek-harness` drivers, the `PtyHarnessDriver` base
 // they share, and the alias/codec helpers around them. Re-exported here so
@@ -264,7 +264,7 @@ export interface DenServer {
   /** Current reducer state (exposed for tests/inspection). */
   state(): DenState
   /**
-   * Harness control plane (docs/plans/harness-control-plane.md): the node's
+   * Harness control plane (docs/ARCHITECTURE.md): the node's
    * `HarnessDriver` registry. The five built-in drivers (`claude-code`,
    * `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`) register here at
    * boot. Extra drivers can still be added via `DenServerOptions.harnessDrivers`.
@@ -544,7 +544,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     if (!Object.hasOwn(roster.commands, key)) return roster.cwd
     return roster.commands[key].cwd ?? roster.cwd
   }
-  // The node's HarnessDriver registry (docs/plans/harness-control-plane.md).
+  // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
   // All five built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
   // the den AgentEvent stream — behind the one contract, and share it through

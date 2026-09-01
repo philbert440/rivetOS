@@ -12,8 +12,8 @@
  *     (`capabilities.ts`).
  *   - **Alias resolution before dispatch.** Legacy and superseded ids are
  *     collapsed to canonical here, so drivers only ever see canonical ids —
- *     including for `subscribe` (docs/plans/harness-control-plane.md
- *     § Contract semantics).
+ *     including for `subscribe` (docs/ARCHITECTURE.md
+ *     § HarnessDriver: control-plane contract).
  *   - **Rotation bookkeeping.** The registry tails every driver's
  *     `subscribeEvents` stream; a `session-updated` carrying
  *     `previousSessionId` becomes an alias, so a client holding the old id

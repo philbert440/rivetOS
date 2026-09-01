@@ -61,7 +61,7 @@
  * same position `claude-code` is in. `grok-driver.test.ts` pins the
  * non-rotation explicitly instead.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'
