@@ -19,7 +19,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { hostname } from 'node:os'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import {
   sharedDir,
@@ -73,6 +73,8 @@ export class FileMeshRegistry implements MeshRegistry {
   private filePath: string
   private heartbeatTimer?: ReturnType<typeof setInterval>
   private localNodeId?: string
+  /** Snapshot of the node passed to start() — used to re-register if the roster is wiped. */
+  private localNode?: MeshNode
 
   constructor(config: MeshRegistryConfig) {
     this.config = config
@@ -122,7 +124,19 @@ export class FileMeshRegistry implements MeshRegistry {
   async heartbeat(nodeId: string, status?: MeshNode['status']): Promise<void> {
     const data = await this.load()
     const node = data.nodes[nodeId]
-    if (!node) return
+    if (!node) {
+      // Empty/reset roster (e.g. truncated mesh.json): re-register from the
+      // start() snapshot instead of no-op'ing and leaving the fleet blind.
+      if (this.localNode && this.localNode.id === nodeId) {
+        log.warn(`Local node ${nodeId} missing from mesh roster — re-registering`)
+        await this.register({
+          ...this.localNode,
+          lastSeen: Date.now(),
+          ...(status ? { status } : {}),
+        })
+      }
+      return
+    }
 
     node.lastSeen = Date.now()
     if (status) node.status = status
@@ -209,6 +223,7 @@ export class FileMeshRegistry implements MeshRegistry {
    */
   async start(localNode: MeshNode): Promise<void> {
     this.localNodeId = localNode.id
+    this.localNode = { ...localNode }
     await this.register(localNode)
 
     const interval = this.config.mesh.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
@@ -332,7 +347,9 @@ export class FileMeshRegistry implements MeshRegistry {
 
   private async save(data: MeshFile): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(data, null, 2), 'utf-8')
+    const tmpPath = `${this.filePath}.tmp-${process.pid}`
+    await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
+    await rename(tmpPath, this.filePath)
   }
 
   // -----------------------------------------------------------------------
