@@ -4,7 +4,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'vitest'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile, mkdir, readFile, stat } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, mkdir, readFile, stat, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -53,6 +53,23 @@ describe('SkillManagerImpl', () => {
       const names = skills.map((s) => s.name)
       assert.ok(names.includes('Camera'))
       assert.ok(names.includes('Email'))
+    })
+
+    it('follows symlinked skill directories (curated shared sets)', async () => {
+      await createSkill(
+        'camera',
+        '---\nname: Camera\ndescription: Controls cameras\ntriggers: camera\n---\n# Camera Skill',
+      )
+      const linkDir = await mkdtemp(join(tmpdir(), 'skills-linked-'))
+      await symlink(join(tempDir, 'camera'), join(linkDir, 'camera-link'))
+      // A symlink to a non-skill file must still be skipped
+      await writeFile(join(tempDir, 'stray.md'), '# not a skill')
+      await symlink(join(tempDir, 'stray.md'), join(linkDir, 'stray-link'))
+
+      const skills = await manager.discover([linkDir])
+      assert.equal(skills.length, 1)
+      assert.equal(skills[0].name, 'Camera')
+      await rm(linkDir, { recursive: true, force: true })
     })
 
     it('skips directories without SKILL.md', async () => {
