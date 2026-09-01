@@ -5,8 +5,8 @@
  * The YAML config references them via environment variable names.
  */
 
-import { writeFile, mkdir, access, readFile, readdir } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { writeFile, mkdir, access, readFile, readdir, stat } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
 import { stringify as toYaml } from 'yaml'
 import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
 import type { WizardState, WizardAgent } from './types.js'
@@ -253,8 +253,8 @@ async function writeEnvFile(envPath: string, entries: EnvEntry[]): Promise<void>
 // Workspace templates
 //
 // Canonical template files live in `workspace-templates/` at the repo root.
-// This is the preferred source — versioned, reviewable, shared across
-// instances. The inline `FALLBACK_TEMPLATES` below are used only if the
+// Init seeds AGENT.md, MEMORY.md, and users/, then generates CLAUDE.md from
+// AGENT.md. The inline `FALLBACK_TEMPLATES` below are used only if the
 // `workspace-templates/` directory cannot be located (e.g. if the CLI is
 // running from an unusual install layout); they are intentionally minimal
 // and should not be relied on.
@@ -295,124 +295,17 @@ async function findTemplatesDir(): Promise<string | null> {
   return null
 }
 
-const FALLBACK_TEMPLATES: Record<string, string> = {
-  'CORE.md': `# CORE.md
+const SEEDED_MD = ['AGENT.md', 'MEMORY.md'] as const
 
-Define who you are — identity, personality, and operating values.
+const CLAUDE_MD_BANNER = '<!-- generated from AGENT.md by rivetos init — edit AGENT.md instead -->'
+
+const FALLBACK_TEMPLATES: Record<string, string> = {
+  'AGENT.md': `# AGENT.md
+
+Define who you are — identity, operating contract, and who you serve.
 This is the first file your agent reads every session.
 
-## Be Resourceful
-
-When you don't have context on something, **search memory first**. Every
-conversation you've ever had with your human is stored and searchable via
-\`memory_search\`. Odds are you've already talked about it. Don't make your
-human re-explain things — query memory, then ask if you're still stuck.
-`,
-  'USER.md': `# USER.md
-
-About your human — name, preferences, work style, and context
-your agent needs to work effectively with you.
-`,
-  'WORKSPACE.md': `# WORKSPACE.md — Operating Rules
-
-This folder is home. Treat it that way.
-
-## 🔩 Where You Are — RivetOS
-
-You're running inside **RivetOS** — an agent runtime. This isn't a generic
-chatbot shell; it's your operating system.
-
-- **Source:** \`github.com/philbert440/rivetOS\`
-- **You may be one of several agents** sharing this runtime (different
-  models, same identity, same memory, same workspace files). Check
-  \`config.yaml\` to see who else is configured.
-- **Tools** are provided by the runtime: \`shell\`, \`file_*\`, \`search_*\`,
-  \`web_*\`, \`memory_*\`, \`subagent_*\`, plus any skills
-  you've loaded. See \`CAPABILITIES.md\` for the full inventory.
-- **Memory is persistent across sessions.** Every conversation you've ever
-  had with your human is stored and searchable via \`memory_search\`,
-  \`memory_browse\`, and \`memory_stats\`. When you wake up fresh and don't
-  have context on something — **search memory first.** Odds are you've
-  already discussed it.
-
-**When in doubt, search memory.** Don't guess, don't ask your human to
-re-explain. Query it.
-
-## Every Session
-
-Before doing anything else:
-
-1. Read \`CORE.md\` — this is who you are
-2. Read \`USER.md\` — this is who you're helping
-3. Read \`WORKSPACE.md\` — this is how we operate
-4. Read \`MEMORY.md\` — lightweight index, query what you need
-5. Read \`memory/YYYY-MM-DD.md\` (today + yesterday) for recent context
-
-Don't ask permission. Just do it.
-
-## Memory
-
-You wake up fresh each session. These files are your continuity:
-
-- **Daily notes:** \`memory/YYYY-MM-DD.md\` — raw logs of what happened
-- **Memory index:** \`MEMORY.md\` — lightweight reference pointing at
-  searches you can run on demand
-
-Capture what matters. Decisions, context, things to remember.
-
-### 📝 Write It Down — No "Mental Notes"
-
-- **Memory is limited** — if you want to remember something, WRITE IT DOWN
-- "Mental notes" don't survive session restarts. Files do.
-- When your human says "remember this" → update \`memory/YYYY-MM-DD.md\`
-- When you learn a lesson → update the relevant workspace file or skill
-- **Text > Brain** 📝
-
-## 🗂️ Project Continuity — AGENT.md Files
-
-When you're working on a project with your human, **keep a live context
-file at the project root** so any agent (future you, or a different model)
-can pick up exactly where you left off.
-
-**Convention:** Each active project gets an \`AGENT.md\` containing:
-
-- **Current state** — what's done, what's in progress, what's next
-- **Key decisions** — why things are the way they are
-- **Open questions** — things waiting on your human
-- **Gotchas** — traps you already stepped in, don't repeat
-
-**Update it as you go**, not just at the end. If you get rate-limited,
-cut off, or another agent takes over mid-task, the next session should be
-able to read \`AGENT.md\` and continue without interrupting your human.
-
-**Rule of thumb:** If your human had to ask "what were we doing?", the
-file wasn't doing its job.
-
-## Safety
-
-- Don't exfiltrate private data. Ever.
-- Don't run destructive commands without asking.
-- \`trash\` > \`rm\` (recoverable beats gone forever)
-- When in doubt, ask.
-
-## External vs Internal
-
-**Safe to do freely:**
-
-- Read files, explore, organize, learn
-- Search memory and the web
-- Work within this workspace
-
-**Ask first:**
-
-- Sending emails, messages, public posts
-- Anything that leaves the machine
-- Anything you're uncertain about
-
-## Make It Yours
-
-This is a starting point. Add your own conventions, style, and rules as
-you figure out what works.
+When you don't have context on something, **search memory first**. See MEMORY.md.
 `,
   'MEMORY.md': `# MEMORY.md — Context Index
 
@@ -421,65 +314,115 @@ to pull context on demand, rather than dumping everything here.
 
 Every past conversation with your human is searchable via \`memory_search\`.
 When you need context on a topic, query it.
-
-## Active Projects
-
-| Project | Query | Notes |
-|---------|-------|-------|
-| _(add projects as they come up)_ | \`memory_search("project name status")\` | |
-
-## Key Decisions
-
-| Decision | Query |
-|----------|-------|
-| _(add as they're made)_ | \`memory_search("decision topic")\` |
-
-## Lessons Learned
-
-| Lesson | Query |
-|--------|-------|
-| _(add as you learn them)_ | \`memory_search("lesson topic")\` |
 `,
-  'CAPABILITIES.md': `# CAPABILITIES.md
-
-Tools, skills, and infrastructure reference. Lists what your
-agent can do and how to access external services.
+  'users/profiles.json': `{
+  "_owner": "",
+  "_comment": "Shape: flat { string: string } map. Reserved keys start with _. Routed user ids never start with _. _owner = the node owner's user id. Non-_ keys map user ids to profile basenames (users/<profile>.md)."
+}
 `,
+  'users/USER-TEMPLATE.md': `# USER — <id>
+
+Replace \`<id>\` in the heading with the real user id. Then set/create
+\`"<id>": "<id>"\` in \`users/profiles.json\`.
+`,
+}
+
+async function writeIfMissing(filePath: string, content: string): Promise<void> {
+  try {
+    await access(filePath)
+    return
+  } catch {
+    // missing — write
+  }
+  await mkdir(dirname(filePath), { recursive: true })
+  await writeFile(filePath, content, 'utf-8')
+}
+
+async function copyIfMissing(srcPath: string, destPath: string): Promise<void> {
+  try {
+    await access(destPath)
+    return
+  } catch {
+    // missing — copy
+  }
+  try {
+    const content = await readFile(srcPath, 'utf-8')
+    await mkdir(dirname(destPath), { recursive: true })
+    await writeFile(destPath, content, 'utf-8')
+  } catch {
+    // source missing — tolerate
+  }
+}
+
+async function seedUsersDir(templatesDir: string | null, workspacePath: string): Promise<void> {
+  const destDir = resolve(workspacePath, 'users')
+  await mkdir(destDir, { recursive: true })
+
+  if (templatesDir) {
+    const srcDir = resolve(templatesDir, 'users')
+    let entries: string[]
+    try {
+      entries = await readdir(srcDir)
+    } catch {
+      entries = []
+    }
+    for (const name of entries) {
+      await copyIfMissing(resolve(srcDir, name), resolve(destDir, name))
+    }
+    return
+  }
+
+  for (const [name, content] of Object.entries(FALLBACK_TEMPLATES)) {
+    if (!name.startsWith('users/')) continue
+    await writeIfMissing(resolve(workspacePath, name), content)
+  }
+}
+
+async function writeClaudeMdFromAgent(workspacePath: string): Promise<void> {
+  const claudePath = resolve(workspacePath, 'CLAUDE.md')
+  const agentPath = resolve(workspacePath, 'AGENT.md')
+
+  let agentMtime: number
+  try {
+    agentMtime = (await stat(agentPath)).mtimeMs
+  } catch {
+    return
+  }
+
+  try {
+    const claudeMtime = (await stat(claudePath)).mtimeMs
+    // User-edited CLAUDE.md (same age or newer than AGENT.md) — never overwrite.
+    if (claudeMtime >= agentMtime) return
+  } catch {
+    // CLAUDE.md missing — generate
+  }
+
+  let agentContent: string
+  try {
+    agentContent = await readFile(agentPath, 'utf-8')
+  } catch {
+    return
+  }
+  await writeFile(claudePath, `${CLAUDE_MD_BANNER}\n${agentContent}`, 'utf-8')
 }
 
 async function writeWorkspaceTemplates(workspacePath: string): Promise<void> {
   const templatesDir = await findTemplatesDir()
 
   if (templatesDir) {
-    // Preferred path — copy every .md file from the canonical templates
-    // directory. Missing files are tolerated (dir contents may evolve).
-    const entries = await readdir(templatesDir)
-    const mdFiles = entries.filter((f) => f.endsWith('.md') && f !== 'README.md')
-
-    for (const name of mdFiles) {
-      const destPath = resolve(workspacePath, name)
-      try {
-        await access(destPath)
-        // File exists — don't overwrite
-        continue
-      } catch {
-        // missing — copy it
-      }
-      const content = await readFile(resolve(templatesDir, name), 'utf-8')
-      await writeFile(destPath, content, 'utf-8')
+    for (const name of SEEDED_MD) {
+      await copyIfMissing(resolve(templatesDir, name), resolve(workspacePath, name))
     }
-    return
-  }
-
-  // Fallback path — use the minimal inline templates. This should only
-  // trigger if the CLI is installed without the repo's workspace-templates
-  // directory alongside it.
-  for (const [name, content] of Object.entries(FALLBACK_TEMPLATES)) {
-    const filePath = resolve(workspacePath, name)
-    try {
-      await access(filePath)
-    } catch {
-      await writeFile(filePath, content, 'utf-8')
+  } else {
+    // Fallback path — use the minimal inline templates. This should only
+    // trigger if the CLI is installed without the repo's workspace-templates
+    // directory alongside it.
+    for (const name of SEEDED_MD) {
+      const content = FALLBACK_TEMPLATES[name]
+      if (content) await writeIfMissing(resolve(workspacePath, name), content)
     }
   }
+
+  await seedUsersDir(templatesDir, workspacePath)
+  await writeClaudeMdFromAgent(workspacePath)
 }

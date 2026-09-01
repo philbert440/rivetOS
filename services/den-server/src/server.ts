@@ -96,16 +96,11 @@ import {
   type RotationBreadcrumbSource,
 } from './harness/alias-restore.js'
 import {
-  clientDevice,
   isGatewayAuthorized,
   isLoopbackHost,
   wantsHtmlUnauthorized,
   UNAUTHORIZED_HTML,
 } from './auth.js'
-
-/** Log-once registry for mapped devices whose user has no usable
- *  RIVETOS_USER_DBS entry — one line per device, not one per request. */
-const warnedUnroutableDevices = new Set<string>()
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -933,28 +928,6 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         bindRequestUser(req, userCtx)
         stampUserHeader(req, userCtx)
         if (!userCtx.isOwner) routedUser = userCtx.userId
-      } else {
-        // Legacy #561 path when no registry could be built (single-owner node).
-        const dev = clientDevice(req)
-        const mapped = dev && config.deviceUsers ? config.deviceUsers[dev.deviceId] : undefined
-        if (mapped && !config.userDbs?.[mapped]) {
-          const key = dev?.deviceId ?? '?'
-          if (!warnedUnroutableDevices.has(key)) {
-            warnedUnroutableDevices.add(key)
-            console.error(
-              `[den] device "${key}" maps to user "${mapped}" but RIVETOS_USER_DBS has no usable entry — refusing`,
-            )
-          }
-          for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
-          return json(res, 403, {
-            error: 'unroutable identity',
-            detail: `user "${mapped}" has no usable database`,
-          })
-        }
-        if (mapped) {
-          routedUser = mapped
-          req.headers['x-rivetos-user'] = mapped
-        }
       }
 
       // Single ownership guard for every session-scoped route below — one
@@ -1207,16 +1180,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               )
                 return
             }
-            const userEnv =
-              captureEnvFor(userCtx) ??
-              (() => {
-                const userDb = routedUser ? config.userDbs?.[routedUser] : undefined
-                const env: Record<string, string> = {}
-                if (routedUser) env.RIVETOS_USER_ID = routedUser
-                if (userDb?.pgUrl) env.RIVETOS_PG_URL = userDb.pgUrl
-                if (userDb?.envFile) env.RIVETOS_ENV_FILE = userDb.envFile
-                return Object.keys(env).length > 0 ? env : undefined
-              })()
+            const userEnv = captureEnvFor(userCtx)
             const pty = manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
