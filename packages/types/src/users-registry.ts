@@ -45,7 +45,7 @@ export interface UsersRegistry {
   users: Record<string, UserRecord>
 }
 
-export type ResolveUserResult = { ok: true; ctx: UserContext } | { ok: false; error: string }
+export type ResolveUserResult = { ok: true; ctx: UserContext } | { ok: false, error: string }
 
 function asDeviceId(raw: string): string {
   const t = raw.trim()
@@ -308,11 +308,11 @@ export function mergeUserDbs(
  */
 export function resolveUser(registry: UsersRegistry, deviceId: string | null): ResolveUserResult {
   const owner = ownerRecord(registry)
-  if (!owner) return { ok: false; error: `owner user "${registry.ownerUserId}" is missing` }
+  if (!owner) return { ok: false, error: `owner user "${registry.ownerUserId}" is missing` }
 
   if (deviceId === null) {
     const db = dbFor(owner)
-    if (!db) return { ok: false; error: `owner user "${owner.id}" has no usable database` }
+    if (!db) return { ok: false, error: `owner user "${owner.id}" has no usable database` }
     return { ok: true, ctx: contextFor(registry, owner, null, db) }
   }
 
