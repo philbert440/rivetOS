@@ -103,13 +103,38 @@ export interface HarnessRegistry {
    */
   isSuperseded(id: SessionId): boolean
   /**
-   * Guard a caller-pinned `startSession` id: alias chains occupy the
-   * namespace, so a native id matching ANY chain member is a collision even if
-   * the harness store itself has forgotten it (§ Collision rules, rule 3).
+   * Append-only `supersedes` lineage recorded for a session (immutable
+   * session ids, plan W1 stage 1): every supersedes edge the control plane
+   * accepted for `sessionId`, oldest-first. A field on the session record,
+   * not an alias chain — edges do NOT occupy the alias namespace, do not
+   * re-key subscriptions, and retire nothing.
+   */
+  supersedesFor(sessionId: SessionId): SessionId[]
+  /**
+   * Mark `sessionId` as client-minted (plan W1 keystone: THE id never
+   * changes). A legacy `previousSessionId` rotation naming a minted session —
+   * or any session that already carries supersedes lineage — is refused:
+   * dropped with one warning, the canonical id unchanged.
+   */
+  noteMinted(sessionId: SessionId): void
+  /**
+   * Guard a caller-pinned `startSession` id against every namespace the
+   * control plane owns (§ Collision rules):
+   *
+   *   - **Alias chains** — a native id matching ANY chain member is a
+   *     collision even if the harness store itself has forgotten it
+   *     (rule 3);
+   *   - **Supersedes lineage** — a past native incarnation of a live session
+   *     is taken for as long as the lineage remembers it. "Not an alias" means
+   *     an edge resolves nowhere and retires nothing; it does NOT mean the
+   *     native is mintable again (plan W1);
+   *   - **The live harness store** — an id that is already a live session
+   *     (its canonical id, or the current native under one) can never be
+   *     minted over: that is takeover, not creation.
    *
    * @throws HarnessError `session_id_collision` | `invalid_session_id`
    */
-  assertPinnable(harnessId: HarnessId, nativeSessionId: string): void
+  assertPinnable(harnessId: HarnessId, nativeSessionId: string): Promise<void>
   /**
    * `listSessions` for one driver, canonical-only. Superseded ids never reach
    * a client: a row still keyed on a rotated-away id is reported under its
@@ -202,9 +227,12 @@ function remember(sub: SessionSubscription, key: string): void {
   if (!oldest.done) sub.delivered.delete(oldest.value)
 }
 
-export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): HarnessRegistry {
+export function createHarnessRegistry(
+  opts: { aliases?: AliasStore; log?: (msg: string) => void } = {},
+): HarnessRegistry {
   const drivers = new Map<HarnessId, HarnessDriver>()
   const aliases = opts.aliases ?? createAliasStore()
+  const log = opts.log ?? ((): void => undefined)
   const sinks = new Set<{ harnessId?: HarnessId; sink: (e: HarnessEvent) => void }>()
   const capabilitySinks = new Set<{
     harnessId?: HarnessId
@@ -222,6 +250,57 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
   const sessionSubs = new Set<SessionSubscription>()
   /** Ids already reported `ended` by a rotation — retirement happens once. */
   const retired = new Set<SessionId>()
+  /**
+   * Supersedes lineage (plan W1 stage 1): canonical id → accepted edges,
+   * oldest-first. Deliberately NOT the alias store — a supersedes edge leaves
+   * the session's id unchanged, so nothing here may resolve, re-key, or
+   * retire. Append-only for the life of the process.
+   *
+   * PROCESS-LOCAL BY DESIGN: like the alias store, this Map dies with the
+   * process and is not rebuilt at boot. Durable lineage (a supersedes
+   * breadcrumb analog to `alias-restore.ts`) is stage 3's problem, not stage
+   * 1's — until then a restarted node simply starts a fresh log.
+   */
+  const lineage = new Map<SessionId, SessionId[]>()
+  /**
+   * Ids that entered via the client-minted path (plan W1 keystone: immutable
+   * session ids). A legacy `previousSessionId` rotation naming one — or one
+   * naming a session that already has supersedes lineage — is refused.
+   */
+  const minted = new Set<SessionId>()
+
+  /**
+   * Record one supersedes edge. Same-harness only, exactly like rotation
+   * aliases (§ Rotation, rule 8) — a cross-harness edge is a driver bug and is
+   * dropped, never forced in. A self-edge is legal: the first rotation off a
+   * client-minted id supersedes the canonical id itself.
+   *
+   * Lineage is a LOG, not a chain: append-only, and only the tail dedupes
+   * (re-emitting the current tail edge is an idempotent no-op, mirroring the
+   * alias store). Re-emitting a non-tail edge — or a cycle A → B → A —
+   * appends another entry, deliberately: the log records what the driver
+   * SAID, in order, and since nothing here resolves, re-keys, or retires, a
+   * repeated edge is history, not corruption.
+   *
+   * Returns `false` when the edge was DROPPED (cross-harness or malformed),
+   * so the caller can strip the field from the fanned-out event — the control
+   * plane already decided the edge is junk, and a consumer that trusts the
+   * field without repeating the same-harness check would record it.
+   */
+  const recordSupersedes = (sessionId: SessionId, supersedes: SessionId): boolean => {
+    try {
+      if (parseSessionId(sessionId).harnessId !== parseSessionId(supersedes).harnessId) {
+        return false
+      }
+    } catch {
+      return false // malformed edge — dropped; the caller strips it from the wire copy
+    }
+    const edges = lineage.get(sessionId) ?? []
+    if (edges[edges.length - 1] === supersedes) return true
+    edges.push(supersedes)
+    lineage.set(sessionId, edges)
+    return true
+  }
 
   const fanout = (harnessId: HarnessId, event: HarnessEvent): void => {
     for (const entry of [...sinks]) {
@@ -382,21 +461,54 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
           // retire a live session on the stream.
           event.previousSessionId !== event.sessionId
         ) {
-          try {
-            aliases.record(event.previousSessionId, event.sessionId)
-            rotated = event.previousSessionId
-          } catch {
-            // Cross-harness, cyclic, or a second successor for an id that
-            // already rotated — all driver bugs. Drop the alias but still
-            // deliver the event so clients see the status.
+          if (minted.has(event.previousSessionId) || lineage.has(event.previousSessionId)) {
+            // REFUSE (plan W1 keystone): this session's canonical id is
+            // immutable — it entered via the client-minted path or already
+            // carries supersedes lineage — so a legacy `previousSessionId`
+            // rotation for it is dropped with one warning. The id does NOT
+            // change: no alias, no re-key, no retirement. A mid-stream event
+            // cannot 4xx, so the event itself still fans out below; a
+            // consumer that only watches ids reads it as a status tick.
+            log(
+              `[den-server] ${harnessId}: dropped legacy rotation of immutable session ` +
+                `${event.previousSessionId} → ${event.sessionId}; canonical id unchanged`,
+            )
+          } else {
+            try {
+              aliases.record(event.previousSessionId, event.sessionId)
+              rotated = event.previousSessionId
+            } catch {
+              // Cross-harness, cyclic, or a second successor for an id that
+              // already rotated — all driver bugs. Drop the alias but still
+              // deliver the event so clients see the status.
+            }
+          }
+        }
+        // The event as fanned out: verbatim what the driver emitted, EXCEPT
+        // that a supersedes edge the control plane rejected is stripped —
+        // the plane already decided the edge is junk, and a consumer that
+        // trusts the field without repeating the same-harness check would
+        // record a bad edge.
+        let wire: HarnessEvent = event
+        if (
+          (event.type === 'session-updated' || event.type === 'session-created') &&
+          event.supersedes !== undefined
+        ) {
+          // Supersedes lineage (plan W1): the canonical id does not change,
+          // so there is nothing to alias, re-key, or retire — record the edge
+          // and let the event fan out. Independent of the legacy rotation
+          // path above: an event carrying both gets both treatments.
+          if (!recordSupersedes(event.sessionId, event.supersedes)) {
+            wire = { ...event }
+            delete (wire as { supersedes?: SessionId }).supersedes
           }
         }
         // Re-key live tails BEFORE the fanout: the rotation event reaches
         // per-session subscribers through their own (now moved) sink, and a
         // registry subscriber that reacts synchronously to the fanout must
         // already see the post-rotation world.
-        if (rotated && event.type === 'session-updated') rekey(harnessId, rotated, event)
-        fanout(harnessId, event)
+        if (rotated && wire.type === 'session-updated') rekey(harnessId, rotated, wire)
+        fanout(harnessId, wire)
         // The superseded id's lifecycle ends here. Reported once — a driver
         // that re-emits the same rotation records an idempotent alias, and
         // must not produce a second retirement — and AFTER the rotation
@@ -502,7 +614,13 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
       }
     },
 
-    assertPinnable(harnessId, nativeSessionId): void {
+    supersedesFor: (sessionId) => [...(lineage.get(sessionId) ?? [])],
+
+    noteMinted: (sessionId) => {
+      minted.add(sessionId)
+    },
+
+    async assertPinnable(harnessId, nativeSessionId): Promise<void> {
       const pinned = formatSessionId(harnessId, nativeSessionId)
       if (aliases.knows(pinned)) {
         throw new HarnessError(
@@ -510,6 +628,35 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
           `${pinned} is already part of an alias chain`,
           { harnessId, sessionId: pinned },
         )
+      }
+      // Supersedes lineage occupies the namespace too (plan W1): "not an
+      // alias" means an edge resolves nowhere and retires nothing — it does
+      // NOT mean the native is mintable. Every native a lineage names is a
+      // past incarnation of a session, so minting over it would graft a new
+      // session onto that history.
+      for (const edges of lineage.values()) {
+        if (edges.includes(pinned)) {
+          throw new HarnessError(
+            'session_id_collision',
+            `${pinned} is already part of a supersedes lineage`,
+            { harnessId, sessionId: pinned },
+          )
+        }
+      }
+      // The live harness store itself: a session that never rotated sits in
+      // no alias chain and no lineage, yet its id — the canonical id, or the
+      // current native under one — is taken. Minting over it would ATTACH to
+      // (take over) the existing session, so check the store before dispatch.
+      // A probe failure reads as "not live", the same tradeoff as resolve()'s
+      // bare-uuid probe: a driver that cannot answer must not 500 every
+      // pinned create.
+      const driver = drivers.get(harnessId)
+      const existing = driver ? await driver.getSession(pinned).catch(() => null) : null
+      if (existing) {
+        throw new HarnessError('session_id_collision', `${pinned} is already a live session`, {
+          harnessId,
+          sessionId: pinned,
+        })
       }
     },
 
@@ -528,6 +675,12 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
       // Keyed by canonical id, insertion-ordered. A row the driver still keys
       // on a rotated-away id is rewritten, and loses to the canonical row when
       // the driver returns both — one session must not list twice.
+      //
+      // The lineage field is CONTROL-PLANE-OWNED here: the latest recorded
+      // supersedes edge is stamped onto every row, so a driver that emits
+      // `session-updated` without updating its own list row cannot make the
+      // record and the list disagree (the row the driver keeps is its own;
+      // this list is ours).
       const byCanonical = new Map<SessionId, HarnessSessionSummary>()
       for (const row of await driver.listSessions()) {
         let canonical: SessionId
@@ -537,8 +690,11 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
           canonical = row.sessionId // broken chain: report it as the driver sees it
         }
         const rewritten = canonical === row.sessionId ? row : { ...row, sessionId: canonical }
+        const edges = lineage.get(canonical)
+        const latest = edges?.[edges.length - 1]
+        const merged = latest !== undefined ? { ...rewritten, supersedes: latest } : rewritten
         if (byCanonical.has(canonical) && canonical !== row.sessionId) continue
-        byCanonical.set(canonical, rewritten)
+        byCanonical.set(canonical, merged)
       }
       return [...byCanonical.values()]
     },
@@ -610,6 +766,8 @@ export function createHarnessRegistry(opts: { aliases?: AliasStore } = {}): Harn
         }
       }
       sessionSubs.clear()
+      lineage.clear()
+      minted.clear()
       for (const off of detach.values()) {
         try {
           off()

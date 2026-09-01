@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto'
 import {
   HarnessError,
   formatSessionId,
+  parseSessionId,
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessEvent,
@@ -103,6 +104,8 @@ export class FakeRotatingDriver implements HarnessDriver {
   private readonly registrySinks = new Set<(e: HarnessEvent) => void>()
   /** Rows `listSessions` still reports under a rotated-away id. */
   private readonly stale = new Set<SessionId>()
+  /** Current native id per session, for new-style (`supersedes`) rotations. */
+  private readonly currentNative = new Map<SessionId, string>()
 
   constructor(opts: FakeRotatingDriverOpts = {}) {
     this.harnessId = opts.harnessId ?? 'hermes'
@@ -194,6 +197,37 @@ export class FakeRotatingDriver implements HarnessDriver {
     this.emitSession(sessionId, { type: 'assistant-delta', sessionId, text })
   }
 
+  /**
+   * New-style rotation (immutable session ids, plan W1): the harness replaces
+   * the native id UNDER `sessionId` — resume/fork/crash recovery — and the
+   * canonical id does NOT change. Emits one `session-updated` carrying
+   * `supersedes` = the previous native id on both streams, records the edge in
+   * the session record's lineage field, and keeps every sink pinned to
+   * `sessionId`: there is nothing to re-key. Returns the NEW native id as a
+   * SessionId, so a test can name the edge the next rotation will carry.
+   */
+  supersede(sessionId: SessionId, nativeSessionId = randomUUID()): SessionId {
+    const previousNative =
+      this.currentNative.get(sessionId) ?? parseSessionId(sessionId).nativeSessionId
+    this.currentNative.set(sessionId, nativeSessionId)
+    const edge = formatSessionId(this.harnessId, previousNative)
+    const carried = this.sessions.get(sessionId) ?? this.summary(sessionId)
+    this.sessions.set(sessionId, {
+      ...carried,
+      supersedes: edge,
+      updatedAt: new Date().toISOString(),
+    })
+    const event: HarnessEvent = {
+      type: 'session-updated',
+      sessionId,
+      supersedes: edge,
+      status: 'active',
+    }
+    this.emitRegistry(event)
+    this.emitSession(sessionId, event)
+    return formatSessionId(this.harnessId, nativeSessionId)
+  }
+
   /** Put an arbitrary event on the driver's registry stream (malformed rotations). */
   emitRaw(event: HarnessEvent): void {
     this.emitRegistry(event)
@@ -202,7 +236,27 @@ export class FakeRotatingDriver implements HarnessDriver {
   // -- HarnessDriver ---------------------------------------------------------
 
   startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
-    const native = opts.nativeSessionId ?? randomUUID()
+    // Never re-form a foreign id: a client-minted `sessionId` must name THIS
+    // harness. The control plane already rejects a mismatch (400) before
+    // dispatch, but the fake is not a second source of truth — it refuses
+    // rather than silently rewriting the id onto its own harness.
+    if (
+      opts.sessionId !== undefined &&
+      parseSessionId(opts.sessionId).harnessId !== this.harnessId
+    ) {
+      return Promise.reject(
+        new HarnessError(
+          'invalid_session_id',
+          `fake ${this.harnessId} driver cannot start ${opts.sessionId}`,
+          { harnessId: this.harnessId, sessionId: opts.sessionId },
+        ),
+      )
+    }
+    // A client-minted canonical id pins its native half, exactly as an
+    // explicit `nativeSessionId` pin does (the control plane sends both).
+    const native =
+      opts.nativeSessionId ??
+      (opts.sessionId !== undefined ? parseSessionId(opts.sessionId).nativeSessionId : randomUUID())
     const sessionId = formatSessionId(this.harnessId, native)
     if (this.sessions.has(sessionId)) {
       return Promise.reject(
@@ -284,7 +338,19 @@ export class FakeRotatingDriver implements HarnessDriver {
   }
 
   getSession(sessionId: SessionId): Promise<HarnessSessionSummary | null> {
-    return Promise.resolve(this.sessions.get(sessionId) ?? null)
+    const direct = this.sessions.get(sessionId)
+    if (direct) return Promise.resolve(direct)
+    // Native-keyed lookup: a harness store keyed on native ids answers a query
+    // for a session's CURRENT native id with that session's row — including
+    // after a supersedes rotation moved the native under an unchanged
+    // canonical id. This is exactly the shape the control plane's pin guard
+    // probes to keep a post-rotation native unmintable.
+    for (const [canonical, native] of this.currentNative) {
+      if (formatSessionId(this.harnessId, native) === sessionId) {
+        return Promise.resolve(this.sessions.get(canonical) ?? null)
+      }
+    }
+    return Promise.resolve(null)
   }
 
   transcript(sessionId: SessionId): Promise<{ turns: HarnessTranscriptTurn[] }> {

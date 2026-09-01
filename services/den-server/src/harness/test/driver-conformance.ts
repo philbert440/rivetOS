@@ -235,20 +235,15 @@ export function runHarnessRotationConformance(name: string, setup: RotationConfo
 
         for (const id of [previous, next]) {
           const { nativeSessionId } = parseSessionId(id)
-          let thrown: unknown
-          try {
-            ctx.registry.assertPinnable(harnessId, nativeSessionId)
-          } catch (err) {
-            thrown = err
-          }
-          expect(thrown).toBeInstanceOf(HarnessError)
-          expect((thrown as HarnessError).code).toBe('session_id_collision')
+          await expect(
+            ctx.registry.assertPinnable(harnessId, nativeSessionId),
+          ).rejects.toMatchObject({ code: 'session_id_collision' })
         }
         // A fresh id is still pinnable — the rule is about chains, not a
         // blanket ban on pinning.
-        expect(() => {
-          ctx.registry.assertPinnable(harnessId, 'e6bd9c34-0000-4000-8000-0000000000ff')
-        }).not.toThrow()
+        await expect(
+          ctx.registry.assertPinnable(harnessId, 'e6bd9c34-0000-4000-8000-0000000000ff'),
+        ).resolves.toBeUndefined()
       })
     })
   })
