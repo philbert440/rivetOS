@@ -23,7 +23,10 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import {
   sharedDir,
-  sharedPath,
+  parseMeshFile,
+  isMeshFlatArrayError,
+  MeshParseError,
+  type MeshFile,
   type MeshNode,
   type MeshNodeRole,
   type MeshRegistry,
@@ -63,12 +66,6 @@ export interface MeshRegistryConfig {
    * Required when mesh.tls is configured (i.e., always in production).
    * If absent, seed sync will fail gracefully with a warning. */
   tls?: import('../runtime/agent-channel.js').AgentChannelTlsConfig
-}
-
-interface MeshFile {
-  version: 1
-  nodes: Record<string, MeshNode | undefined>
-  updatedAt: number
 }
 
 export class FileMeshRegistry implements MeshRegistry {
@@ -315,26 +312,20 @@ export class FileMeshRegistry implements MeshRegistry {
   private async load(): Promise<MeshFile> {
     try {
       const raw = await readFile(this.filePath, 'utf-8')
-      const parsed = JSON.parse(raw) as MeshFile
-
-      // Pre-capabilities flat-array format is no longer supported — fail loud.
-      if (Array.isArray((parsed as { nodes?: unknown }).nodes)) {
-        const msg =
-          `mesh.json at ${this.filePath} uses the pre-capabilities flat-array format, ` +
-          'which is no longer supported. Rewrite the file as Record-format ' +
-          `{ version, nodes: { [id]: node }, updatedAt } (see live ${sharedPath('mesh.json')}).`
-        log.error(msg)
-        throw new Error(msg)
-      }
-
-      return parsed
+      // Skip a single bad node (warn inside the parser) so a hand-edit typo
+      // cannot brick every fleet heartbeat. Flat-array / root-shape still throw.
+      return parseMeshFile(raw, this.filePath, { onInvalidNode: 'skip' })
     } catch (err) {
-      // Re-throw unsupported-format errors so callers fail loud instead of
-      // treating a legacy array file as an empty registry.
-      if (err instanceof Error && err.message.includes('pre-capabilities flat-array')) {
+      // Re-throw unsupported-format / root-shape errors so callers fail loud
+      // instead of treating a legacy or malformed file as an empty registry.
+      const hardParse =
+        isMeshFlatArrayError(err) ||
+        (err instanceof MeshParseError && err.code !== 'MESH_JSON_INVALID')
+      if (hardParse) {
+        if (err instanceof Error) log.error(err.message)
         throw err
       }
-      // File doesn't exist yet / unreadable — return empty registry
+      // File doesn't exist yet / unreadable / invalid JSON — empty registry
       return { version: 1, nodes: {}, updatedAt: Date.now() }
     }
   }
