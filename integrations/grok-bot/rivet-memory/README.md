@@ -3,11 +3,25 @@
 RivetOS shared memory for Cursor Grok Bot agents, not the Grok Build CLI.
 Sibling of integrations/grok/rivet-memory. That plugin stays as-is.
 
-Query and write the same Postgres store. Ingest sessions tagged source=grokbot, agent=rivet-grokbot, and optional persona.
-Convention: agent stays rivet-grokbot (ros_messages.agent / ros_conversations.agent key); persona varies per Grok Bot personality and lives in metadata only.
+Query and write the same Postgres store. Ingest sessions tagged source=grokbot with per-bot agent keys.
+
+## Node and Models
+
+The grokbot node runs multiple Grok Bot agents, each with its own agent key and session ID:
+
+- **Rivet** (`rivet-grokbot`): Main bot, session `grokbot-rivet-grokbot`
+- **Bob** (`rivet-bob`): session `grokbot-bob`
+- **Gary** (`rivet-gary`): session `grokbot-gary`
+- **Maggie** (`rivet-maggie`): session `grokbot-maggie`
+- **Frank** (`rivet-frank`): session `grokbot-frank`
+- **dr eggbot** (`rivet-eggbot`): session `grokbot-eggbot`
+
+Convention: each bot gets its own agent key. See `capture/models.json` for full model IDs and mappings.
 Full mesh mTLS join is out of scope.
 
 ## Install
+
+**Version:** 0.2.0 (added capture/ for grokbot node automated transcript ingestion)
 
 Preferred: as a Grok Bot plugin. Add the marketplace `philbert440/rivetOS` in Grok Bot
 (it reads `.cursor-plugin/marketplace.json`) and install `rivet-memory-grokbot`. The plugin
@@ -39,9 +53,32 @@ Ingest skips ordinals already stored for that session.
 Offline: node bin/ingest-session.mjs --session-id ID --agent rivet-grokbot [--persona P] file.jsonl
 That calls the same ingestSession() as the sidecar (requires a built checkout).
 
+## Capture (Automated Ingestion)
+
+The `capture/` directory provides automated transcript conversion and ingestion for the grokbot node.
+
+**Setup:**
+
+1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `/home/box/grokbot/transcripts`)
+2. Set `RIVETOS_PG_URL` in `~/.rivetos/.env` or environment
+3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`)
+
+**Run:**
+
+```bash
+cd capture/
+./run-once.sh
+```
+
+The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>.jsonl`, then ingests to Postgres when reachable. Fails closed if PG or packages are missing (conversion succeeds, ingest skipped).
+
+**Schedule:** Typically via cron/systemd hourly. Desk hourly hop remains the backstop.
+
+**Deferred:** Den app/event integration is out of scope. Tailscale/PG reachability from the grokbot node is an ops follow-up.
+
 ## Related
 
 - Grok Build sibling (do not break): ../grok/rivet-memory/
 - Claude Code sibling: ../claude-code/rivet-memory/
-- Kimi Code sibling: ../kimi/rivet-memory/ (same agent-stays-fixed convention)
+- Kimi Code sibling: ../kimi/rivet-memory/
 - Sidecar: services/mcp-sidecar/

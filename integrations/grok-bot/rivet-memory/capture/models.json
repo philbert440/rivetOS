@@ -1,0 +1,42 @@
+{
+  "nodeId": "grokbot",
+  "transcriptRel": "$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl",
+  "models": [
+    {
+      "id": "6a155e75-0dd5-4c8a-8391-994878ed683a",
+      "name": "Rivet",
+      "sessionId": "grokbot-rivet-grokbot",
+      "agentId": "rivet-grokbot"
+    },
+    {
+      "id": "00df02ea-4f5f-4d3e-945a-864e1c9c78dc",
+      "name": "Bob",
+      "sessionId": "grokbot-bob",
+      "agentId": "rivet-bob"
+    },
+    {
+      "id": "71aebcf6-8b3b-4649-abe1-ad6d653e6156",
+      "name": "Gary",
+      "sessionId": "grokbot-gary",
+      "agentId": "rivet-gary"
+    },
+    {
+      "id": "27ee75a9-7d89-417a-9d12-298781542c50",
+      "name": "Maggie",
+      "sessionId": "grokbot-maggie",
+      "agentId": "rivet-maggie"
+    },
+    {
+      "id": "b2fdc631-7921-41da-ae81-d61a08781a30",
+      "name": "Frank",
+      "sessionId": "grokbot-frank",
+      "agentId": "rivet-frank"
+    },
+    {
+      "id": "fe09510f-c3ce-49bc-9d93-8c5ab5705809",
+      "name": "dr eggbot",
+      "sessionId": "grokbot-eggbot",
+      "agentId": "rivet-eggbot"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "rivet-memory-grokbot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "RivetOS memory for Cursor Grok Bot. Query/write and session ingest tagged source=grokbot.",
   "license": "MIT"
 }
