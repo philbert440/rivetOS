@@ -45,7 +45,7 @@ export interface UsersRegistry {
   users: Record<string, UserRecord>
 }
 
-export type ResolveUserResult = { ok: true; ctx: UserContext } | { ok: false, error: string }
+export type ResolveUserResult = { ok: true; ctx: UserContext } | { ok: false; error: string }
 
 function asDeviceId(raw: string): string {
   const t = raw.trim()
