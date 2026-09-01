@@ -28,8 +28,22 @@ try {
   process.exit(1)
 }
 
+// Two-file workspace: only AGENT.md, MEMORY.md, and users/ still ship.
+const KEEP = ['AGENT.md', 'MEMORY.md', 'users']
+
 await rm(DEST, { recursive: true, force: true })
 await mkdir(DEST, { recursive: true })
-await cp(SRC, DEST, { recursive: true })
+const copied = []
+for (const name of KEEP) {
+  const from = resolve(SRC, name)
+  try {
+    await access(from)
+  } catch {
+    console.warn(`⚠ Skipping missing template: ${name}`)
+    continue
+  }
+  await cp(from, resolve(DEST, name), { recursive: true })
+  copied.push(name)
+}
 
-console.log(`✓ Bundled workspace-templates → ${DEST}`)
+console.log(`✓ Bundled workspace-templates (${copied.join(', ')}) → ${DEST}`)

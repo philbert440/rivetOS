@@ -209,9 +209,7 @@ describe('Runtime Integration', () => {
   beforeAll(async () => {
     workspaceDir = await mkdtemp(join(tmpdir(), 'rivetos-test-'))
     // Create minimal workspace files
-    await writeFile(join(workspaceDir, 'CORE.md'), '# Test Core')
-    await writeFile(join(workspaceDir, 'WORKSPACE.md'), '# Test Workspace')
-    await writeFile(join(workspaceDir, 'USER.md'), '# Test User')
+    await writeFile(join(workspaceDir, 'AGENT.md'), '# Test Agent')
     await writeFile(join(workspaceDir, 'MEMORY.md'), '# Test Memory')
     await mkdir(join(workspaceDir, 'memory'), { recursive: true })
   })
