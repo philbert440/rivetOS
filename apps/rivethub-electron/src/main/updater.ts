@@ -14,9 +14,11 @@
  */
 
 import { createHash } from 'node:crypto'
+import * as fs from 'node:fs'
 import { createWriteStream } from 'node:fs'
 import { chmod, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import * as path from 'node:path'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -36,6 +38,24 @@ export interface UpdateCheckResult {
   platform: string
   /** Present when the manifest names a strictly newer build. */
   available?: { version: string; sizeBytes?: number }
+}
+
+/**
+ * Resolve the install path for an AppImage update. APPIMAGE is the running
+ * image's path, but if we're already running from a temp updater path (the
+ * bug this fix addresses), APPIMAGE is a temp path - using it would
+ * perpetuate the problem. Treat APPIMAGE as usable only if it is a
+ * persistent path (not under tmpdir, not matching rivethub-update-).
+ */
+export function resolveInstallPath(
+  appImageEnv: string | undefined,
+  homeDir: string,
+  tmp: string,
+): string {
+  const fallback = path.join(homeDir, '.local', 'bin', 'rivethub')
+  if (!appImageEnv) return fallback
+  const isTemp = appImageEnv.startsWith(tmp) || appImageEnv.includes('rivethub-update-')
+  return isTemp ? fallback : appImageEnv
 }
 
 const MANIFEST_TIMEOUT_MS = 15_000
@@ -169,9 +189,19 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
       return
     }
     await chmod(dest, 0o755)
-    // xdg-open on an AppImage is unreliable (exec bit vs handler); run it
-    // directly — but strip the RUNNING AppImage's runtime vars, or the new
-    // image's runtime resolves against the OLD mount (review, PR #562).
+
+    // Install the AppImage to a persistent path, not the temp updater path.
+    const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
+    const installDir = path.dirname(installTo)
+    if (!fs.existsSync(installDir)) {
+      await fs.promises.mkdir(installDir, { recursive: true })
+    }
+    await fs.promises.copyFile(dest, installTo)
+    await chmod(installTo, 0o755)
+
+    // Run the INSTALLED AppImage, not the temp download. Strip the RUNNING
+    // AppImage's runtime vars, or the new image's runtime resolves against
+    // the OLD mount (review, PR #562).
     const env = { ...process.env }
     delete env.APPIMAGE
     delete env.APPDIR
@@ -185,7 +215,7 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     // after the window is the acknowledged residual.
     app.releaseSingleInstanceLock()
     try {
-      const child = spawn(dest, [], { detached: true, stdio: 'ignore', env })
+      const child = spawn(installTo, [], { detached: true, stdio: 'ignore', env })
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           cleanup()

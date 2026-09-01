@@ -7,10 +7,12 @@
 
 import { app, clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
 import type { PipeState } from './mtls-pipe.js'
+import type { SettingsStore } from './settings-store.js'
 import { checkForUpdate, downloadAndInstall } from './updater.js'
 
 export interface IpcDeps {
   pipes: PipeState
+  settingsStore: SettingsStore
   /** Per-window unread report; the shell aggregates across windows. */
   setUnread: (webContentsId: number, count: number) => void
   /** True when the given frame URL belongs to the bundled app origin. */
@@ -160,5 +162,23 @@ export function registerIpc(deps: IpcDeps): void {
       updating = false
       throw err
     }
+  })
+
+  // Settings persistence: the main process owns settings.json in userData,
+  // and hydrates the renderer's localStorage on boot if Chromium store is
+  // empty. The renderer reads all settings on load, then writes back to
+  // the file on every change via setSettings.
+  guarded('settings:getAll', () => deps.settingsStore.getAll())
+  guarded('settings:set', (_e, key: unknown, value: unknown): void => {
+    if (typeof key !== 'string' || key.length === 0 || key.length > 256) return
+    deps.settingsStore.set(key, value)
+  })
+  guarded('settings:setAll', (_e, updates: unknown): void => {
+    if (typeof updates !== 'object' || updates === null) return
+    deps.settingsStore.setAll(updates as Record<string, unknown>)
+  })
+  guarded('settings:remove', (_e, key: unknown): void => {
+    if (typeof key !== 'string') return
+    deps.settingsStore.remove(key)
   })
 }

@@ -35,6 +35,14 @@ export interface RivetShell {
   zoomAdjust?(delta: 1 | -1 | 0): Promise<void>
   /** Quit the app for real (close-to-tray does not apply). */
   quitApp?(): Promise<void>
+  /** Read all settings from the main process's settings.json file. */
+  settingsGetAll?(): Promise<Record<string, unknown>>
+  /** Write a single setting to the main process's settings.json file. */
+  settingsSet?(key: string, value: unknown): Promise<void>
+  /** Write multiple settings to the main process's settings.json file. */
+  settingsSetAll?(updates: Record<string, unknown>): Promise<void>
+  /** Remove a single setting from the main process's settings.json file. */
+  settingsRemove?(key: string): Promise<void>
 }
 
 const SHELL_METHODS = [
@@ -71,4 +79,11 @@ export function isDesktopShell(
   },
 ): boolean {
   return rivetShell(g) !== undefined || g.__TAURI__ != null
+}
+
+/** Type guard for Electron shell (has `kind: 'electron'`). */
+export function isElectronShell(
+  shell: RivetShell | undefined,
+): shell is RivetShell & { kind: 'electron' } {
+  return shell?.kind === 'electron'
 }

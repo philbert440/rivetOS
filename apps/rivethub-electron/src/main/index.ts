@@ -29,6 +29,7 @@ import {
 } from 'electron'
 import { CrashLog } from './crash-log.js'
 import { PipeState } from './mtls-pipe.js'
+import { SettingsStore } from './settings-store.js'
 import { registerIpc } from './ipc.js'
 import {
   allowMediaCheck,
@@ -136,6 +137,7 @@ function identityDir(): string {
 }
 
 const pipes = new PipeState(identityDir)
+const settingsStore = new SettingsStore(app)
 
 
 /** Parsed http(s) check — a prefix regex would pass junk after the scheme. */
@@ -525,6 +527,7 @@ function startup(): void {
   serveDist(protocol, distDir())
   registerIpc({
     pipes,
+    settingsStore,
     setUnread,
     isBundledUrl,
     summon: summonWindow,
