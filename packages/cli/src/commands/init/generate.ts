@@ -297,8 +297,7 @@ async function findTemplatesDir(): Promise<string | null> {
 
 const SEEDED_MD = ['AGENT.md', 'MEMORY.md'] as const
 
-const CLAUDE_MD_BANNER =
-  '<!-- generated from AGENT.md by rivetos init — edit AGENT.md instead -->'
+const CLAUDE_MD_BANNER = '<!-- generated from AGENT.md by rivetos init — edit AGENT.md instead -->'
 
 const FALLBACK_TEMPLATES: Record<string, string> = {
   'AGENT.md': `# AGENT.md
@@ -361,7 +360,7 @@ async function seedUsersDir(templatesDir: string | null, workspacePath: string):
 
   if (templatesDir) {
     const srcDir = resolve(templatesDir, 'users')
-    let entries: string[] = []
+    let entries: string[]
     try {
       entries = await readdir(srcDir)
     } catch {
