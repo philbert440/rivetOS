@@ -2,8 +2,12 @@
 //
 // Server → client framing:
 //   1. one JSON text frame   {type:'hello', v:1, id, denSession, command,
-//      cols, rows, state:'running'|'exited', exitCode?}
-//   2. one binary frame      scrollback replay (possibly empty)
+//      cols, rows, state:'running'|'exited', exitCode?, mux?:'tmux'}
+//   2. one binary frame      scrollback replay (possibly empty). Under
+//      mux:'tmux' a NON-empty ring is replayed as usual (the tmux client
+//      already attached at POST /term, so its redraw is in the ring before
+//      the browser WS connects). An empty ring yields an empty frame —
+//      tmux will redraw the client.
 //   3. live PTY output       binary frames
 //   4. on child exit         {type:'exit', code, signal?} then close(1000)
 //      after a short grace so trailing output frames flush first
@@ -231,8 +235,15 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       state: info.state,
     }
     if (info.state === 'exited') hello.exitCode = info.exitCode ?? null
+    // mux is stamped only when tmux backs the PTY — under 'none' the frame
+    // stays byte-identical to before T1.
+    if (info.mux) hello.mux = info.mux
     sendJson(hello)
-    ws.send(manager.scrollback(ptyId) ?? Buffer.alloc(0), { binary: true })
+    // Replay den's ring whenever it is NON-empty (tmux client's attach
+    // redraw is already in the ring by the time the browser WS connects).
+    // Empty ring → empty frame; tmux will redraw the client.
+    const replay = manager.scrollback(ptyId) ?? Buffer.alloc(0)
+    ws.send(replay, { binary: true })
 
     detach = manager.attach(
       ptyId,

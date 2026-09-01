@@ -17,6 +17,7 @@ import { createTermManager, type TermManager } from './manager.js'
 import { defaultRoster } from './roster.js'
 import type { PtyProc, PtySpawn, PtySpawnOpts } from './pty.js'
 import { createTermWs, type TermSocket, type TermWs } from './ws.js'
+import type { TmuxCtl } from './tmux.js'
 
 class FakeProc extends EventEmitter implements PtyProc {
   writes: string[] = []
@@ -128,6 +129,9 @@ function baseConfig(stateDir: string, term: Partial<DenTermConfig> = {}): DenCon
       detachedTtlMs: 1_800_000,
       idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
+      // Pinned: these tests assert the pre-T1 wire format byte-for-byte;
+      // the tmux hello/replay behavior has its own test below.
+      mux: 'none',
       ...term,
     },
     audio: {
@@ -423,7 +427,7 @@ describe('WS /term protocol core (scripted sockets)', () => {
     procs: FakeProc[]
   }
 
-  function makeCore(term: Partial<DenTermConfig> = {}): CoreHarness {
+  function makeCore(term: Partial<DenTermConfig> = {}, tmuxCtl?: TmuxCtl): CoreHarness {
     const stateDir = mkdtempSync(join(tmpdir(), 'den-term-ws-core-'))
     dirs.push(stateDir)
     const procs: FakeProc[] = []
@@ -437,6 +441,7 @@ describe('WS /term protocol core (scripted sockets)', () => {
       spawn,
       roster: () => defaultRoster(),
       ingest: () => {},
+      tmuxCtl,
       log: () => {},
     })
     managers.push(manager)
@@ -474,6 +479,48 @@ describe('WS /term protocol core (scripted sockets)', () => {
     expect(procs[0].kills).toEqual([])
     vi.advanceTimersByTime(1)
     expect(procs[0].kills).toEqual(['SIGHUP'])
+  })
+
+  it('tmux mux: non-empty ring is replayed; empty ring yields an empty frame', () => {
+    const ctl: TmuxCtl = {
+      hasSession: () => false,
+      killSession: () => {},
+      listSessions: () => [],
+    }
+    const { manager, termWs, procs } = makeCore({ mux: 'tmux' }, ctl)
+    const pty = manager.spawn('shell', 80, 24, '')
+    procs[0].emitData('screen-contents-that-tmux-redraws')
+
+    const sock = new FakeSocket()
+    termWs.attach(manager, pty.id, sock)
+    expect(sock.textFrames()[0]).toMatchObject({ type: 'hello', id: pty.id, mux: 'tmux' })
+    // tmux client already attached at POST /term — redraw bytes are in the
+    // ring; a non-empty ring is replayed so the browser is not blank
+    expect(sock.binaryFrames()[0].toString()).toBe('screen-contents-that-tmux-redraws')
+    procs[0].emitData('live!')
+    expect(sock.binaryFrames().map(String)).toEqual(['screen-contents-that-tmux-redraws', 'live!'])
+
+    const sock2 = new FakeSocket()
+    termWs.attach(manager, pty.id, sock2)
+    expect(sock2.textFrames()[0]).toMatchObject({ type: 'hello', mux: 'tmux' })
+    expect(sock2.binaryFrames()[0].toString()).toBe('screen-contents-that-tmux-redrawslive!')
+
+    // empty ring → empty frame (tmux will redraw the client)
+    const empty = makeCore({ mux: 'tmux' }, ctl)
+    const pty2 = empty.manager.spawn('shell', 80, 24, '')
+    const sock3 = new FakeSocket()
+    empty.termWs.attach(empty.manager, pty2.id, sock3)
+    expect(sock3.binaryFrames()[0]).toEqual(Buffer.alloc(0))
+  })
+
+  it('mux:none hello has NO mux property and a non-empty replay (pre-T1 wire)', () => {
+    const { manager, termWs, procs } = makeCore()
+    const pty = manager.spawn('shell', 80, 24, '')
+    procs[0].emitData('ring-contents')
+    const sock = new FakeSocket()
+    termWs.attach(manager, pty.id, sock)
+    expect(sock.textFrames()[0]).not.toHaveProperty('mux')
+    expect(sock.binaryFrames()[0].toString()).toBe('ring-contents')
   })
 
   it('terminates a single client buffered past the 1MB cap (same rule as /ws)', () => {
