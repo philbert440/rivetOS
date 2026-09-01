@@ -76,11 +76,8 @@ echo "RivetOS root:     $RIVETOS_ROOT"
 echo "Kimi config home: $KIMI_HOME  (override with KIMI_CODE_HOME)"
 echo
 
-# 1. Check build
+# 1. Check build (services/mcp-sidecar is the only MCP server path)
 CLI="$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js"
-if [ ! -f "$CLI" ]; then
-  CLI="$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js"
-fi
 if [ ! -f "$CLI" ]; then
   echo "❌ RivetOS MCP server not built."
   echo "   Please run: cd $RIVETOS_ROOT && npm install && npm run build"

@@ -23,20 +23,19 @@
  * are NOT written — sync prints a hint when a managed block looks missing.
  * Everything else it writes is a file we own outright; local edits to those
  * are overwritten (by design — see issue #198 "out of scope").
+ *
+ * The copy engine is `rsync -a -i` (one child_process spawn per mapping
+ * entry): `--delete` only for the managed dirs we own outright (the entries
+ * that historically removed stale files), `--exclude` for the names the old
+ * engine skipped, `-n` for --dry-run. Stats and the +/~/- audit log are
+ * derived from rsync's itemized output.
  */
 
+import { execFileSync } from 'node:child_process'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const EXCLUDE = new Set(['node_modules', '.git', '__pycache__', '.pytest_cache'])
@@ -53,58 +52,140 @@ interface Ctx {
 }
 
 // ---------------------------------------------------------------------------
-// tiny copy engine: content-compared, audit-logged, delete-in-managed-dirs
+// copy engine: rsync argv assembly + spawn, audit log from itemized output
 // ---------------------------------------------------------------------------
 
-function listFiles(dir: string, base = dir): string[] {
-  const out: string[] = []
+function rsyncExcludes(): string[] {
+  return [...EXCLUDE].flatMap((name) => ['--exclude', name])
+}
+
+/** argv for a directory mirror: contents of srcDir into destDir.
+ *  BOTH operands are slash-terminated: without the trailing slash on srcDir,
+ *  rsync nests dest/<basename(src)> instead of mirroring contents, and a
+ *  --delete scoped that way can treat siblings under dest as extraneous
+ *  (data loss in shared user dirs). `--` guards paths that start with '-'. */
+export function rsyncDirArgs(
+  srcDir: string,
+  destDir: string,
+  opts: { deleteExtraneous: boolean; dryRun: boolean },
+): string[] {
+  return [
+    '-a',
+    '-i',
+    ...(opts.dryRun ? ['-n'] : []),
+    ...(opts.deleteExtraneous ? ['--delete'] : []),
+    ...rsyncExcludes(),
+    '--',
+    `${srcDir}/`,
+    `${destDir}/`,
+  ]
+}
+
+/** argv for a single-file copy (dest may rename the file). */
+export function rsyncFileArgs(src: string, dest: string, opts: { dryRun: boolean }): string[] {
+  return ['-a', '-i', ...(opts.dryRun ? ['-n'] : []), '--', src, dest]
+}
+
+export interface RsyncChange {
+  kind: 'written' | 'removed'
+  rel: string
+  isNew: boolean
+}
+
+/** Parse `rsync -i` itemized output into write/remove events. */
+export function parseItemized(output: string): RsyncChange[] {
+  const changes: RsyncChange[] = []
+  for (const line of output.split('\n')) {
+    if (!line) continue
+    if (line.startsWith('*deleting')) {
+      changes.push({ kind: 'removed', rel: line.replace(/^\*deleting\s+/, ''), isNew: false })
+      continue
+    }
+    // %i is an 11-char change string (YXcstpoguax), then a space, then the
+    // path. Y = update type, X = file type. Only files/symlinks carry content
+    // we track; directory lines (cd+++++++++ etc.) are implied by their files.
+    const yx = line.slice(0, 2)
+    if ('>.c'.includes(yx[0]) && (yx[1] === 'f' || yx[1] === 'L')) {
+      changes.push({
+        kind: 'written',
+        rel: line.slice(12),
+        isNew: line.slice(0, 11).includes('+++++++++'),
+      })
+    }
+  }
+  return changes
+}
+
+/** Count sync-managed source files (EXCLUDE-filtered) for the unchanged stat. */
+function countFiles(dir: string): number {
+  let n = 0
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (EXCLUDE.has(e.name)) continue
     const p = join(dir, e.name)
-    if (e.isDirectory()) out.push(...listFiles(p, base))
-    else if (e.isFile()) out.push(relative(base, p))
+    if (e.isDirectory()) n += countFiles(p)
+    else if (e.isFile()) n++
   }
-  return out
+  return n
 }
 
-function sameContent(a: string, b: string): boolean {
+function runRsync(ctx: Ctx, args: string[], label: string, singleFile: boolean, srcFiles: number) {
+  let output: string
   try {
-    const sa = statSync(a)
-    const sb = statSync(b)
-    if (sa.size !== sb.size) return false
-    return readFileSync(a).equals(readFileSync(b))
-  } catch {
-    return false
+    output = execFileSync('rsync', args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string }
+    if (e.code === 'ENOENT') {
+      throw new Error('rsync not found on PATH — install rsync (expected on every fleet node)')
+    }
+    const stderr = e.stderr ? String(e.stderr).trim() : ''
+    throw new Error(
+      `rsync failed for ${label} (exit ${e.status ?? 'unknown'})${stderr ? `: ${stderr}` : ''}`,
+    )
   }
+  let written = 0
+  for (const change of parseItemized(output)) {
+    const path = singleFile ? label : `${label}/${change.rel}`
+    if (change.kind === 'removed') {
+      console.log(`  - ${ctx.dryRun ? '(dry-run) ' : ''}${path} (stale)`)
+      ctx.stats.removed.push(path)
+    } else {
+      written++
+      console.log(`  ${change.isNew ? '+' : '~'} ${ctx.dryRun ? '(dry-run) ' : ''}${path}`)
+      ctx.stats.written.push(path)
+    }
+  }
+  ctx.stats.unchanged += Math.max(0, srcFiles - written)
 }
 
-function copyFile(ctx: Ctx, src: string, dest: string, label: string): void {
-  if (sameContent(src, dest)) {
-    ctx.stats.unchanged++
-    return
-  }
-  const verb = existsSync(dest) ? '~' : '+'
-  console.log(`  ${verb} ${ctx.dryRun ? '(dry-run) ' : ''}${label}`)
-  ctx.stats.written.push(label)
-  if (ctx.dryRun) return
-  mkdirSync(dirname(dest), { recursive: true })
-  writeFileSync(dest, readFileSync(src))
-}
-
-/** Mirror srcDir into destDir: copy changed files, remove stale ones.
+/** Mirror srcDir into destDir, removing stale files (--delete).
  *  Only use for directories we own outright. */
 function syncManagedDir(ctx: Ctx, srcDir: string, destDir: string, label: string): void {
-  const srcFiles = new Set(listFiles(srcDir))
-  for (const rel of srcFiles) {
-    copyFile(ctx, join(srcDir, rel), join(destDir, rel), `${label}/${rel}`)
-  }
-  if (!existsSync(destDir)) return
-  for (const rel of listFiles(destDir)) {
-    if (srcFiles.has(rel)) continue
-    console.log(`  - ${ctx.dryRun ? '(dry-run) ' : ''}${label}/${rel} (stale)`)
-    ctx.stats.removed.push(`${label}/${rel}`)
-    if (!ctx.dryRun) rmSync(join(destDir, rel), { force: true })
-  }
+  if (!ctx.dryRun) mkdirSync(destDir, { recursive: true })
+  runRsync(
+    ctx,
+    rsyncDirArgs(srcDir, destDir, { deleteExtraneous: true, dryRun: ctx.dryRun }),
+    label,
+    false,
+    countFiles(srcDir),
+  )
+}
+
+/** Copy our files from srcDir into a shared destDir; never delete others'. */
+function syncSharedDir(ctx: Ctx, srcDir: string, destDir: string, label: string): void {
+  if (!ctx.dryRun) mkdirSync(destDir, { recursive: true })
+  runRsync(
+    ctx,
+    rsyncDirArgs(srcDir, destDir, { deleteExtraneous: false, dryRun: ctx.dryRun }),
+    label,
+    false,
+    countFiles(srcDir),
+  )
+}
+
+/** Copy a single managed file (dest may rename it). */
+function syncFile(ctx: Ctx, src: string, dest: string, label: string): void {
+  if (!ctx.dryRun) mkdirSync(dirname(dest), { recursive: true })
+  runRsync(ctx, rsyncFileArgs(src, dest, { dryRun: ctx.dryRun }), label, true, 1)
 }
 
 // ---------------------------------------------------------------------------
@@ -244,19 +325,12 @@ function syncGrok(ctx: Ctx, root: string, home: string): void {
     // commands: copy our files into the shared dir; never delete others'
     const commandsDir = join(src, 'commands')
     if (existsSync(commandsDir)) {
-      for (const rel of listFiles(commandsDir)) {
-        copyFile(
-          ctx,
-          join(commandsDir, rel),
-          join(grokDir, 'commands', rel),
-          `~/.grok/commands/${rel}`,
-        )
-      }
+      syncSharedDir(ctx, commandsDir, join(grokDir, 'commands'), '~/.grok/commands')
     }
     // hooks: whole-file ours, named per plugin
     const hooksSrc = join(src, 'hooks', 'hooks.json')
     if (existsSync(hooksSrc)) {
-      copyFile(
+      syncFile(
         ctx,
         hooksSrc,
         join(grokDir, 'hooks', `${plugin}.json`),
@@ -266,7 +340,7 @@ function syncGrok(ctx: Ctx, root: string, home: string): void {
     // always-on reflex
     const grokMd = join(src, 'GROK.md')
     if (existsSync(grokMd)) {
-      copyFile(ctx, grokMd, join(grokDir, 'AGENTS.md'), '~/.grok/AGENTS.md')
+      syncFile(ctx, grokMd, join(grokDir, 'AGENTS.md'), '~/.grok/AGENTS.md')
     }
   }
   // co-owned config: hint only, never write
@@ -310,7 +384,7 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
   // into the user-co-owned config.yaml (never clobbered — see mergeHermesDenHooks).
   const denHook = join(root, 'integrations', 'hermes', 'rivet-den', 'hooks', 'hermes-den-hook.mjs')
   if (existsSync(denHook)) {
-    copyFile(
+    syncFile(
       ctx,
       denHook,
       join(hermesDir, 'agent-hooks', 'hermes-den-hook.mjs'),

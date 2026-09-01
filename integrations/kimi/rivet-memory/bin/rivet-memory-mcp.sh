@@ -17,34 +17,20 @@
 # All diagnostics and errors go to stderr.
 set -euo pipefail
 
-# RivetOS install root — override with RIVETOS_ROOT if installed elsewhere.
-RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Shared install-root discovery + env loading (integrations/shared).
+# shellcheck source=../../../shared/rivet-paths.sh
+. "$SCRIPT_DIR/../../../shared/rivet-paths.sh"
+unset SCRIPT_DIR # don't leak a global into the sourced namespace
 
-# Env file holding RIVETOS_PG_URL / RIVETOS_EMBED_URL (and other secrets).
-RIVETOS_ENV="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
-
-# Load credentials so the memory tools are enabled.
-# Without them, the server will still start but only expose echo + web tools.
-if [ -f "$RIVETOS_ENV" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$RIVETOS_ENV" 2>/dev/null || true
-  set +a
-fi
-
-CLI="$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js"
-# pre-unification fallback (older checkouts still ship the shim path)
-if [ ! -f "$CLI" ]; then
-  CLI="$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js"
-fi
-
-if [ ! -f "$CLI" ]; then
-  echo "rivet-memory: MCP server not found at $CLI" >&2
-  echo "rivet-memory: Run 'npm run build' in $RIVETOS_ROOT" >&2
-  exit 1
-fi
+# Load RIVETOS_PG_URL / RIVETOS_EMBED_URL (and a possible RIVETOS_ROOT
+# override) from ~/.rivetos/.env, then locate the install root.
+rivetos_load_env
+RIVETOS_ROOT="$(rivetos_find_root)"
+export RIVETOS_ROOT
 
 # Tell the MCP server we're running in stdio mode.
 export RIVETOS_MCP_STDIO=1
 
+CLI="$(rivetos_mcp_cli "$RIVETOS_ROOT")"
 exec node "$CLI" --stdio
