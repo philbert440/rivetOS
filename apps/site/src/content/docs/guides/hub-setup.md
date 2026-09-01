@@ -8,7 +8,6 @@ description: Build and point RivetHub at a RivetOS node gateway
 > not a separate agent runtime.
 >
 > Architecture frame: [ARCHITECTURE.md](/reference/architecture/).
-> Control-plane plan: [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md).
 
 ---
 
@@ -250,4 +249,3 @@ npx nx test @rivetos/rivethub-web
 - [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md): den viewer and protocol
 - [GETTING-STARTED.md](/guides/getting-started/): install RivetOS
 - [DEPLOYMENT.md](/guides/deployment/): Docker / Proxmox / mesh
-- [plans/harness-control-plane.md](https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md): as-built hub binding
