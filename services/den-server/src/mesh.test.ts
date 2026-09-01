@@ -1,10 +1,16 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
-import { createMeshView, loadMeshFile, meshFilePaths, type MeshOverview } from './mesh.js'
+import {
+  createMeshView,
+  loadMeshFile,
+  localMeshIdentity,
+  meshFilePaths,
+  type MeshOverview,
+} from './mesh.js'
 import { loadConfig, type DenConfig } from './config.js'
 
 const servers: DenServer[] = []
@@ -20,7 +26,9 @@ function tmp(): string {
   return dir
 }
 
-async function start(overrides: Partial<DenConfig> = {}): Promise<{ den: DenServer; base: string }> {
+async function start(
+  overrides: Partial<DenConfig> = {},
+): Promise<{ den: DenServer; base: string }> {
   const stateDir = tmp()
   const config: DenConfig = {
     port: 0,
@@ -254,6 +262,80 @@ describe('mesh view', () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe('MeshView.localIdentity', () => {
+  it('reads host and sshUser from the roster without probing', async () => {
+    const file = join(tmp(), 'mesh.json')
+    writeMesh(file, {
+      ct116: node('ct116', { host: '192.0.2.116', sshUser: 'philip' }),
+    })
+    const view = createMeshView({
+      meshFile: file,
+      cacheMs: 10_000,
+      probeTimeoutMs: 50,
+      localNodeId: 'ct116',
+    })
+    await expect(view.localIdentity()).resolves.toEqual({
+      host: '192.0.2.116',
+      sshUser: 'philip',
+    })
+  })
+
+  it('falls back to hostname + rivet when mesh.json is a pre-capabilities flat array', async () => {
+    const file = join(tmp(), 'mesh.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        nodes: [{ name: 'legacy-node', ip: '192.0.2.1' }],
+        updatedAt: 99,
+      }),
+    )
+    const view = createMeshView({
+      meshFile: file,
+      cacheMs: 10_000,
+      localNodeId: 'ct116',
+    })
+    await expect(view.localIdentity()).resolves.toEqual({
+      host: hostname(),
+      sshUser: 'rivet',
+    })
+  })
+})
+
+describe('localMeshIdentity', () => {
+  it('reads host and sshUser from the roster entry for this node', () => {
+    expect(
+      localMeshIdentity(
+        { nodes: { ct116: { id: 'ct116', host: '192.0.2.116', sshUser: 'philip' } } },
+        'ct116',
+        'fallback',
+      ),
+    ).toEqual({
+      host: '192.0.2.116',
+      sshUser: 'philip',
+    })
+  })
+
+  it('defaults sshUser to rivet and falls back to hostname when the node is missing', () => {
+    expect(localMeshIdentity(null, 'ct116', 'box')).toEqual({ host: 'box', sshUser: 'rivet' })
+    expect(
+      localMeshIdentity({ nodes: { other: { id: 'other', host: '192.0.2.10' } } }, 'ct116', 'box'),
+    ).toEqual({ host: 'box', sshUser: 'rivet' })
+  })
+
+  it('matches by node.id when the map key differs', () => {
+    expect(
+      localMeshIdentity(
+        { nodes: { alias: { id: 'ct116', host: '192.0.2.10', sshUser: 'rivet' } } },
+        'ct116',
+        'box',
+      ),
+    ).toEqual({
+      host: '192.0.2.10',
+      sshUser: 'rivet',
+    })
   })
 })
 

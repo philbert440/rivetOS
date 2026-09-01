@@ -146,11 +146,7 @@ describe('resolveTerminalLauncher linux', () => {
   })
 
   it('skips $TERMINAL with unsafe characters rather than throwing', () => {
-    const l = resolveTerminalLauncher(
-      'linux',
-      { TERMINAL: 'kitty -e' },
-      whichOf('xterm'),
-    )
+    const l = resolveTerminalLauncher('linux', { TERMINAL: 'kitty -e' }, whichOf('xterm'))
     expect(l).toEqual({ kind: 'argv', command: '/usr/bin/xterm', prefix: ['-e'] })
   })
 
@@ -192,11 +188,7 @@ describe('resolveTerminalLauncher linux', () => {
       'xfce4-terminal',
       'xterm',
     ])
-    const l = resolveTerminalLauncher(
-      'linux',
-      {},
-      whichOf('xterm', 'gnome-terminal', 'alacritty'),
-    )
+    const l = resolveTerminalLauncher('linux', {}, whichOf('xterm', 'gnome-terminal', 'alacritty'))
     expect(l).toEqual({
       kind: 'argv',
       command: '/usr/bin/alacritty',
@@ -226,25 +218,26 @@ describe('resolveTerminalLauncher darwin / win32', () => {
 
   it('falls through to iTerm then Terminal.app', () => {
     expect(
-      resolveTerminalLauncher(
-        'darwin',
-        {},
-        () => undefined,
-        existsOf('/Applications/iTerm.app'),
-      ),
+      resolveTerminalLauncher('darwin', {}, () => undefined, existsOf('/Applications/iTerm.app')),
     ).toEqual({
       kind: 'mac-command',
       app: 'iTerm',
     })
-    expect(resolveTerminalLauncher('darwin', {}, () => undefined, () => false)).toEqual({
+    expect(
+      resolveTerminalLauncher(
+        'darwin',
+        {},
+        () => undefined,
+        () => false,
+      ),
+    ).toEqual({
       kind: 'mac-command',
       app: 'Terminal',
     })
   })
 
   it('prefers wt.exe new-tab -- argv on Windows', () => {
-    const which = (cmd: string) =>
-      cmd === 'wt.exe' ? 'C:\\Windows\\System32\\wt.exe' : undefined
+    const which = (cmd: string) => (cmd === 'wt.exe' ? 'C:\\Windows\\System32\\wt.exe' : undefined)
     expect(resolveTerminalLauncher('win32', {}, which)).toEqual({
       kind: 'argv',
       command: 'C:\\Windows\\System32\\wt.exe',
@@ -279,6 +272,27 @@ describe('parseTermAttach / attachArgv', () => {
       'rivet@192.0.2.116',
       ...LOCAL_ARGV,
     ])
+  })
+
+  it('accepts RFC 3849 IPv6 hosts as a bare ssh dest', () => {
+    const v6 = { ...LOCAL, local: false, host: '2001:db8::1' }
+    expect(parseTermAttach(v6)).toEqual(v6)
+    expect(HOST_RE.test('2001:db8::1')).toBe(true)
+    expect(HOST_RE.test('[2001:db8::1]')).toBe(true)
+    expect(HOST_RE.test(':::::')).toBe(false)
+    expect(HOST_RE.test('1::2::3')).toBe(false)
+    expect(HOST_RE.test('::')).toBe(false)
+    // `ffff` is a legal DNS label (hostname alt); the v6 alt requires ≥2 colons.
+    expect(HOST_RE.test('ffff')).toBe(true)
+    expect(attachArgv(parseTermAttach(v6))).toEqual([
+      'ssh',
+      '-t',
+      'rivet@2001:db8::1',
+      ...LOCAL_ARGV,
+    ])
+    expect(attachArgv(parseTermAttach({ ...v6, host: '[2001:db8::1]' }))[2]).toBe(
+      'rivet@2001:db8::1',
+    )
   })
 
   it('rejects an argv array (old API / wrong argv[0])', () => {
@@ -344,6 +358,10 @@ describe('parseTermAttach / attachArgv', () => {
     expect(() => parseTermAttach({ ...LOCAL, socket: 'a;b' })).toThrow(
       'invalid attach field: socket',
     )
+    expect(() => parseTermAttach({ ...LOCAL, host: ':::::' })).toThrow('invalid attach field: host')
+    expect(() => parseTermAttach({ ...LOCAL, host: '1::2::3' })).toThrow(
+      'invalid attach field: host',
+    )
   })
 })
 
@@ -353,9 +371,7 @@ describe('macOS temp-file path shape', () => {
     expect(p.endsWith('.command')).toBe(true)
     expect(p).toContain('rivet-attach-deadbeef')
     expect(p.startsWith('/var/folders/xx/T')).toBe(true)
-    expect(macCommandScript(['tmux', '-L', 'rivet'])).toBe(
-      "#!/bin/sh\nexec 'tmux' '-L' 'rivet'\n",
-    )
+    expect(macCommandScript(['tmux', '-L', 'rivet'])).toBe("#!/bin/sh\nexec 'tmux' '-L' 'rivet'\n")
     expect(shellQuote("foo'bar")).toBe("'foo'\\''bar'")
   })
 })
@@ -375,13 +391,16 @@ describe('openInTerminal', () => {
       }),
     ).rejects.toThrow('attach must be a TermAttachInfo object')
     await expect(
-      openInTerminal({ ...LOCAL, socket: '-f' }, {
-        ...silentIo,
-        platform: 'linux',
-        env: {},
-        which: whichOf('xterm'),
-        spawn,
-      }),
+      openInTerminal(
+        { ...LOCAL, socket: '-f' },
+        {
+          ...silentIo,
+          platform: 'linux',
+          env: {},
+          which: whichOf('xterm'),
+          spawn,
+        },
+      ),
     ).rejects.toThrow('invalid attach field: socket')
   })
 
@@ -438,6 +457,31 @@ describe('openInTerminal', () => {
     expect(MAC_COMMAND_UNLINK_MS).toBe(60_000)
     scheduled.fn?.()
     expect(unlinked).toBe(written.file)
+  })
+
+  it('macos unlinks the temp .command when open -a rejects', async () => {
+    const written: { file?: string } = {}
+    let unlinked: string | undefined
+    await expect(
+      openInTerminal(LOCAL, {
+        platform: 'darwin',
+        env: {},
+        which: () => undefined,
+        exists: () => false,
+        tmpdir: () => '/tmp',
+        randomId: () => 'deadbeef',
+        writeFileSync: (file) => {
+          written.file = file
+        },
+        unlinkSync: (file) => {
+          unlinked = file
+        },
+        spawn: fakeSpawn({}, 'error', new Error('ENOENT')),
+        setTimeout: () => ({}),
+      }),
+    ).rejects.toThrow('failed to launch open: ENOENT')
+    expect(unlinked).toBe(written.file)
+    expect(written.file).toMatch(/rivet-attach-deadbeef\.command$/)
   })
 
   it('macos prefers Ghostty.app when exists reports it', async () => {

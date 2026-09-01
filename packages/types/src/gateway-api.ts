@@ -527,6 +527,12 @@ export interface TermSpawnResponse {
   pid: number
   /** epoch ms */
   createdAt: number
+  /** Present only when the PTY is tmux-backed. */
+  mux?: 'tmux'
+  /** Live client joined an already-running tmux session. */
+  reattached?: boolean
+  /** Present only when mux is tmux. Never contains argv or env. */
+  attach?: TermAttachInfo
 }
 
 /**
@@ -753,6 +759,9 @@ export interface PtyInfo {
   /** live rows only: this den client (re)attached to an already-running
    *  tmux session (the harness survived a den restart/detach). */
   reattached?: boolean
+  /** How to open an external emulator onto this PTY's tmux session.
+   *  Present only when mux is tmux. Never contains argv or env. */
+  attach?: TermAttachInfo
 }
 
 export interface TermListResponse {

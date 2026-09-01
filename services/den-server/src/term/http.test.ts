@@ -4,7 +4,7 @@
 
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
@@ -13,7 +13,7 @@ import { parseUsersRegistry } from '@rivetos/types'
 import { createDenServer, type DenServer, type DenServerOptions } from '../server.js'
 import type { DenConfig, DenTermConfig } from '../config.js'
 import type { PtyProc, PtySpawn, PtySpawnOpts } from './pty.js'
-import { encodeTmuxName, type TmuxCtl, type TmuxSessionInfo } from './tmux.js'
+import { encodeTmuxName, tmuxSocketName, type TmuxCtl, type TmuxSessionInfo } from './tmux.js'
 
 class FakeProc extends EventEmitter implements PtyProc {
   kills: (string | undefined)[] = []
@@ -136,6 +136,7 @@ describe('term endpoints', () => {
     expect(pty.command).toBe('claude') // built-in roster default
     expect(typeof pty.pid).toBe('number')
     expect(typeof pty.createdAt).toBe('number')
+    expect(pty).not.toHaveProperty('attach')
     expect(spawns[0].argv).toEqual(['claude'])
     // cols/rows defaulted
     expect(spawns[0].opts).toMatchObject({ cols: 80, rows: 24 })
@@ -213,6 +214,7 @@ describe('term endpoints', () => {
       attached: 0,
       state: 'running',
     })
+    expect(list.ptys[0]).not.toHaveProperty('attach')
     expect((await fetch(`${base}/term?id=nope`, { method: 'DELETE' })).status).toBe(404)
     const del = await fetch(`${base}/term?id=${pty.id}`, { method: 'DELETE' })
     expect(del.status).toBe(200)
@@ -273,7 +275,9 @@ describe('term endpoints', () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
     const first = await new Promise<Record<string, unknown>>((resolve) => {
-      ws.once('message', (d: Buffer) => resolve(JSON.parse(d.toString()) as Record<string, unknown>))
+      ws.once('message', (d: Buffer) =>
+        resolve(JSON.parse(d.toString()) as Record<string, unknown>),
+      )
     })
     ws.close()
     expect(first.type).toBe('snapshot')
@@ -322,9 +326,9 @@ describe('term endpoints', () => {
     // term disabled → 503 for actions, config reports enabled:false
     const disabled = await start({}, { enabled: false })
     expect((await post(disabled.base, '/term', {})).status).toBe(503)
-    expect(((await (await post(disabled.base, '/term', {})).json()) as { error: string }).error).toBe(
-      'terminal disabled',
-    )
+    expect(
+      ((await (await post(disabled.base, '/term', {})).json()) as { error: string }).error,
+    ).toBe('terminal disabled')
     expect((await fetch(`${disabled.base}/term/list`)).status).toBe(503)
     const cfg = (await (await fetch(`${disabled.base}/term/config`)).json()) as { enabled: boolean }
     expect(cfg.enabled).toBe(false)
@@ -415,6 +419,139 @@ describe('term endpoints', () => {
     expect(running[0]).toMatchObject({ id: again.id, reattached: true })
     // no client-less tmux row anymore — the new den client claimed it
     expect(after.ptys.some((p) => String(p.id).startsWith('tmux-'))).toBe(false)
+  })
+
+  it('tmux mux: attach is present only for tmux PTYs, local is loopback, no argv/env leak', async () => {
+    const ctl: TmuxCtl & { sessions: Map<string, TmuxSessionInfo> } = {
+      sessions: new Map(),
+      hasSession(name) {
+        return this.sessions.has(name)
+      },
+      killSession(name) {
+        this.sessions.delete(name)
+      },
+      listSessions() {
+        return [...this.sessions.values()]
+      },
+    }
+    const meshDir = mkdtempSync(join(tmpdir(), 'den-term-mesh-'))
+    dirs.push(meshDir)
+    const meshFile = join(meshDir, 'mesh.json')
+    writeFileSync(
+      meshFile,
+      JSON.stringify({
+        version: 1,
+        updatedAt: 1,
+        nodes: {
+          ct116: {
+            id: 'ct116',
+            name: 'ct116',
+            host: '192.0.2.116',
+            sshUser: 'philip',
+            port: 3000,
+            agents: [],
+            providers: [],
+            capabilities: ['den'],
+            status: 'online',
+            lastSeen: 0,
+          },
+        },
+      }),
+    )
+    const { base, stateDir, procs } = await start(
+      { meshFile },
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, localNodeId: 'ct116' },
+    )
+    const sock = tmuxSocketName(stateDir, 0)
+    const first = (await (
+      await post(base, '/term', { command: 'claude', session: 'chat-p1' })
+    ).json()) as SpawnedPty & {
+      mux?: string
+      attach?: {
+        socket: string
+        session: string
+        host: string
+        sshUser: string
+        local: boolean
+        argv?: unknown
+        env?: unknown
+      }
+    }
+    expect(first.mux).toBe('tmux')
+    expect(first.attach).toEqual({
+      socket: sock,
+      session: encodeTmuxName('chat-p1'),
+      host: '192.0.2.116',
+      sshUser: 'philip',
+      local: true,
+    })
+    expect(first.attach).not.toHaveProperty('argv')
+    expect(first.attach).not.toHaveProperty('env')
+    const spawnText = JSON.stringify(first)
+    expect(spawnText).not.toMatch(/"argv"/)
+    expect(spawnText).not.toMatch(/"env"/)
+
+    ctl.sessions.set(encodeTmuxName('chat-p1'), {
+      name: encodeTmuxName('chat-p1'),
+      activity: 1_800_000_000,
+      created: 1_799_999_000,
+      pid: 4321,
+      command: 'claude',
+      user: 'owner',
+    })
+    const whileLive = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: Record<string, unknown>[]
+    }
+    expect(whileLive.ptys).toHaveLength(1)
+    expect(whileLive.ptys[0].attach).toEqual(first.attach)
+    expect(whileLive.ptys[0]).not.toHaveProperty('socket')
+    expect(whileLive.ptys[0]).not.toHaveProperty('session')
+    expect(JSON.stringify(whileLive)).not.toMatch(/"argv"/)
+
+    procs[0].emitExit(null)
+    const persisted = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: Record<string, unknown>[]
+    }
+    const orphan = persisted.ptys.find((p) => p.persisted === true)!
+    expect(orphan.attach).toEqual(first.attach)
+  })
+
+  it('malformed mesh.json does not 500 POST /term or GET /term/list', async () => {
+    const meshDir = mkdtempSync(join(tmpdir(), 'den-term-badmesh-'))
+    dirs.push(meshDir)
+    const meshFile = join(meshDir, 'mesh.json')
+    writeFileSync(
+      meshFile,
+      JSON.stringify({
+        nodes: [{ name: 'legacy-node', ip: '192.0.2.1' }],
+        updatedAt: 99,
+      }),
+    )
+    const ctl: TmuxCtl & { sessions: Map<string, TmuxSessionInfo> } = {
+      sessions: new Map(),
+      hasSession(name) {
+        return this.sessions.has(name)
+      },
+      killSession(name) {
+        this.sessions.delete(name)
+      },
+      listSessions() {
+        return [...this.sessions.values()]
+      },
+    }
+    const { base } = await start(
+      { meshFile },
+      { mux: 'tmux' },
+      { tmuxCtl: ctl, localNodeId: 'ct116' },
+    )
+    const listed = await fetch(`${base}/term/list`)
+    expect(listed.status).toBe(200)
+    const spawned = await post(base, '/term', { command: 'claude', session: 'chat-badmesh' })
+    expect(spawned.status).toBe(201)
+    const body = (await spawned.json()) as { attach?: { host: string; sshUser: string } }
+    expect(body.attach?.host).toBe(hostname())
+    expect(body.attach?.sshUser).toBe('rivet')
   })
 
   it("DELETE /term?id=<A's denSession> is 403 for another user; unknown id is 404 and does not kill", async () => {

@@ -20,8 +20,21 @@ export const SAFE_ARGV_TOKEN = /^[A-Za-z0-9._@:=/-]+$/
 export const SOCKET_RE = /^[\w.-]{1,64}$/
 export const SESSION_RE = /^[\w.-]{1,128}$/
 export const SSH_USER_RE = /^[a-z_][\w-]{0,31}$/
-/** Hostname or IPv4; no `@`, no leading `-` (leading dash rejected below). */
-export const HOST_RE = /^[\w.-]{1,253}$/
+/** Hostname, IPv4, or IPv6 (bare or already-bracketed). IPv6 requires ≥2
+ *  colons, ≤8 hex groups, and at most one `::` compression. No `@`, no
+ *  leading `-` (leading dash rejected below). */
+const IPV6 =
+  '(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}' +
+  '|(?:[0-9A-Fa-f]{1,4}:){1,7}:' +
+  '|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}' +
+  '|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}' +
+  '|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}' +
+  '|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}' +
+  '|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}' +
+  '|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}' +
+  '|:(?::[0-9A-Fa-f]{1,4}){1,7}'
+
+export const HOST_RE = new RegExp(`^(?:[\\w.-]{1,253}|\\[(?:${IPV6})\\]|(?:${IPV6}))$`)
 
 /** macOS .command is unlinked this long after spawn — enough for `open` to read it. */
 export const MAC_COMMAND_UNLINK_MS = 60_000
@@ -96,11 +109,18 @@ export function parseTermAttach(raw: unknown): TermAttachInfo {
   return { socket, session, host, sshUser, local: o.local }
 }
 
+/** `user@host`. IPv6 must be bare — OpenSSH only strips brackets in
+ *  `[host]:port` / `ssh://` contexts, so `user@[v6]` fails to resolve. */
+export function sshDest(user: string, host: string): string {
+  const h = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  return user + '@' + h
+}
+
 /** Same argv the web `attachArgv` builds. The `=` session prefix is added here. */
 export function attachArgv(attach: TermAttachInfo): string[] {
   const tmux = ['tmux', '-L', attach.socket, 'attach-session', '-t', '=' + attach.session]
   if (attach.local) return tmux
-  return ['ssh', '-t', attach.sshUser + '@' + attach.host, ...tmux]
+  return ['ssh', '-t', sshDest(attach.sshUser, attach.host), ...tmux]
 }
 
 function binBasename(bin: string): string {
@@ -196,13 +216,15 @@ export function macCommandScript(argv: readonly string[]): string {
   return `#!/bin/sh\nexec ${argv.map(shellQuote).join(' ')}\n`
 }
 
+/** Used surface of `child_process.spawn` — same arity so production wraps
+ *  `spawn` with no cast. The child must expose `.on` (error/spawn hook). */
 export type SpawnFn = (
   command: string,
-  args: string[],
+  args: readonly string[],
   options: { detached: true; stdio: 'ignore' },
 ) => {
   unref(): void
-  on?(event: 'error' | 'spawn', cb: (err: Error) => void): void
+  on(event: 'error' | 'spawn', cb: (err: Error) => void): unknown
 }
 
 export interface OpenInTerminalIo {
@@ -251,7 +273,7 @@ function defaultIo(): OpenInTerminalIo {
     env: process.env,
     which: (cmd) => whichOnPath(cmd, process.env, process.platform),
     exists: existsSync,
-    spawn: spawn as unknown as SpawnFn,
+    spawn: (command, args, options) => spawn(command, [...args], options),
     writeFileSync,
     unlinkSync,
     tmpdir: osTmpdir,
@@ -285,8 +307,8 @@ function launch(command: string, args: string[], spawnFn: SpawnFn): Promise<void
       settled = true
       reject(new Error(`failed to launch ${command}: ${err.message}`))
     }
-    child.on?.('error', fail)
-    child.on?.('spawn', succeed)
+    child.on('error', fail)
+    child.on('spawn', succeed)
     child.unref()
   })
 }
