@@ -51,6 +51,10 @@ export interface MeshViewOptions {
 export interface MeshView {
   /** Assembled overview, or null when no mesh.json is readable. */
   overview(): Promise<MeshOverview | null>
+  /** This node's ssh target from the roster. Never throws: a missing or
+   *  unparseable mesh.json falls back to os.hostname() + sshUser `rivet`,
+   *  and a rejected load is not cached for the TTL. */
+  localIdentity(): Promise<{ host: string; sshUser: string }>
 }
 
 /**
@@ -63,6 +67,36 @@ export const meshFilePaths = (meshFile: string, sharedRoot?: string): string[] =
   meshFile
     ? [meshFile]
     : [join(sharedRoot ?? sharedDir(), 'mesh.json'), join(homedir(), '.rivetos', 'mesh.json')]
+
+/** This node's ssh target, derived from the mesh roster. Falls back to
+ *  `fallbackHost` (typically `os.hostname()`) and sshUser `rivet` when the
+ *  roster is missing or has no matching node. Lookup is by map key or
+ *  `node.id` against `RIVETOS_DEN_NODE_ID`. */
+export function localMeshIdentity(
+  file:
+    | {
+        nodes: Record<string, { id?: string; host?: string; sshUser?: string } | undefined>
+      }
+    | null
+    | undefined,
+  nodeId: string,
+  fallbackHost: string,
+): { host: string; sshUser: string } {
+  if (!file) return { host: fallbackHost, sshUser: 'rivet' }
+  const byKey = file.nodes[nodeId]
+  let byId: { id?: string; host?: string; sshUser?: string } | undefined
+  for (const n of Object.values(file.nodes)) {
+    if (n && n.id === nodeId) {
+      byId = n
+      break
+    }
+  }
+  const node = byKey ?? byId
+  if (!node) return { host: fallbackHost, sshUser: 'rivet' }
+  const host = (node.host ?? '').trim() || fallbackHost
+  const sshUser = node.sshUser?.trim() || 'rivet'
+  return { host, sshUser }
+}
 
 /** First readable + parseable candidate wins; null when none is.
  *  Pre-capabilities flat-array and root-shape errors throw (same as CLI).
@@ -207,6 +241,8 @@ export function createMeshView(opts: MeshViewOptions): MeshView {
   // the promise is cached (not the value) so concurrent requests inside the
   // TTL share one probe sweep instead of stampeding the peers
   let cached: { at: number; result: Promise<MeshOverview | null> } | null = null
+  let identityCached: { at: number; result: Promise<{ host: string; sshUser: string }> } | null =
+    null
   return {
     overview() {
       if (cached && Date.now() - cached.at < opts.cacheMs) return cached.result
@@ -219,6 +255,23 @@ export function createMeshView(opts: MeshViewOptions): MeshView {
         },
         () => {
           if (cached?.result === result) cached = null
+        },
+      )
+      return result
+    },
+    localIdentity() {
+      if (identityCached && Date.now() - identityCached.at < opts.cacheMs) {
+        return identityCached.result
+      }
+      const loaded = loadMeshFile(paths).then((file) =>
+        localMeshIdentity(file, localNodeId, hostname()),
+      )
+      const result = loaded.catch(() => ({ host: hostname(), sshUser: 'rivet' }))
+      identityCached = { at: Date.now(), result }
+      void loaded.then(
+        () => undefined,
+        () => {
+          if (identityCached?.result === result) identityCached = null
         },
       )
       return result

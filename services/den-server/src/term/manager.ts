@@ -125,6 +125,13 @@ export interface PtyInfo {
   /** Den-stamped routed identity (#561); absent for the node owner. Lets
    *  list consumers show WHOSE terminal this is, not just where it ran. */
   routedUser?: string
+  /** tmux `-L` socket name. Present only when mux is tmux. The HTTP layer
+   *  maps this into `attach.socket` together with host/sshUser/local — never
+   *  sent on the wire as a top-level field. */
+  socket?: string
+  /** Encoded tmux session name. Present only when mux is tmux. The HTTP
+   *  layer maps this into `attach.session`. */
+  session?: string
 }
 
 type DataSubscriber = (data: string | Buffer) => void
@@ -762,8 +769,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     if (r.state === 'exited') out.exitCode = r.exitCode
     // Only stamped when tmux actually backs THIS pty — under 'none' (or an
     // auto-mode direct fallback) the descriptor stays byte-identical to
-    // before T1.
-    if (r.tmuxName) out.mux = 'tmux'
+    // before T1. socket + session are for the HTTP layer to compose attach;
+    // they are stripped before the wire (see term/attach.ts).
+    if (r.tmuxName) {
+      out.mux = 'tmux'
+      out.socket = tmuxSocket
+      out.session = r.tmuxName
+    }
     if (r.persisted) out.reattached = true
     if (r.routedUser !== undefined) out.routedUser = r.routedUser
     return out
@@ -783,6 +795,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     lastOutputTs: s.activity * 1000,
     mux: 'tmux',
     persisted: true,
+    socket: tmuxSocket,
+    session: s.name,
     ...(s.pid !== undefined ? { pid: s.pid } : {}),
     ...(s.user && s.user !== 'owner' ? { routedUser: s.user } : {}),
   })

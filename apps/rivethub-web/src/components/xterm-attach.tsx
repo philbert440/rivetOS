@@ -123,7 +123,11 @@ export function XtermAttach(props: {
   /** Node the PTY lives on when it is not the globally connected one —
    *  cross-node sessions attach over that node's own (pipe-routed) gateway. */
   base?: string
+  /** Fired when the PTY process exits (hello state or exit frame). */
+  onExit?: () => void
 }): JSX.Element {
+  const onExitRef = useRef(props.onExit)
+  onExitRef.current = props.onExit
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | undefined>(undefined)
   const fitRef = useRef<FitAddon | undefined>(undefined)
@@ -586,9 +590,13 @@ export function XtermAttach(props: {
           if (frame.type === 'hello') {
             if (frame.cols !== term.cols || frame.rows !== term.rows)
               sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-            if (frame.state === 'exited') setStatus('exited')
+            if (frame.state === 'exited') {
+              setStatus('exited')
+              onExitRef.current?.()
+            }
           } else {
             setStatus('exited')
+            onExitRef.current?.()
             term.write(`\r\n\x1b[2m[process exited ${String(frame.code)}]\x1b[0m\r\n`)
           }
           return

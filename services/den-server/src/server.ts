@@ -62,6 +62,7 @@ import {
 } from './identity.js'
 import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
 import { createMeshView } from './mesh.js'
+import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
@@ -97,6 +98,7 @@ import {
 import {
   isGatewayAuthorized,
   isLoopbackHost,
+  isLoopbackRemote,
   wantsHtmlUnauthorized,
   UNAUTHORIZED_HTML,
 } from './auth.js'
@@ -292,6 +294,9 @@ export interface DenServerOptions {
    *  answers so tests never spawn a real tmux. Omitted = real execFileSync
    *  tmux on the per-den `-L rivet-<hash>` socket (when mux resolves to tmux). */
   tmuxCtl?: TmuxCtl
+  /** Which mesh.json node is this process — default $RIVETOS_DEN_NODE_ID,
+   *  else os.hostname(). Used for attach.host / attach.sshUser. */
+  localNodeId?: string
   /**
    * Gateway route mounts (G0, Appendix F): matched by longest prefix AFTER
    * the bearer gate and BEFORE den's own API routes and static serving —
@@ -433,10 +438,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     evictTimers.set(session, t)
   }
 
+  const localNodeId = opts.localNodeId ?? process.env.RIVETOS_DEN_NODE_ID ?? hostname()
   const meshView = createMeshView({
     meshFile: config.meshFile,
     sharedRoot: config.sharedRoot,
     cacheMs: config.meshCacheMs,
+    localNodeId,
     // Trust the Rivet CA for https peers (#491) — peers' node leaves don't
     // chain to system roots, so without this every TLS peer shows offline.
     caPath: config.tls.caPath,
@@ -1200,6 +1207,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               if (sessionKey) sessionOwners.set(sessionKey, userCtx.userId)
               if (resumeKey) sessionOwners.set(resumeKey, userCtx.userId)
             }
+            const identity = await meshView.localIdentity()
+            // `local` is the TCP peer address, not X-Forwarded-For. A
+            // same-host reverse proxy makes every requester look loopback, so
+            // the copied `tmux -L …` command then fails on the user's machine.
+            // We still key off the socket so a client cannot opt into the
+            // local tmux path by spoofing a header.
+            const attach = composeTermAttach(pty, identity, isLoopbackRemote(req))
             return json(res, 201, {
               id: pty.id,
               denSession: pty.denSession,
@@ -1212,6 +1226,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               // (`persisted` is reserved for client-less /term/list rows).
               ...(pty.mux ? { mux: pty.mux } : {}),
               ...(pty.reattached ? { reattached: true } : {}),
+              ...(attach ? { attach } : {}),
             })
           } catch (e) {
             if (e instanceof TermSpawnError)
@@ -1231,9 +1246,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         }
 
         if (req.method === 'GET' && url.pathname === '/term/list') {
-          const ptys = manager.list()
+          const identity = await meshView.localIdentity()
+          // Same loopback-vs-proxy trade-off as POST /term (see above).
+          const local = isLoopbackRemote(req)
+          const rows = manager.list()
+          const visible = userCtx
+            ? rows.filter((p) => sessionOwners.visible(p.denSession, userCtx))
+            : rows
           return json(res, 200, {
-            ptys: userCtx ? ptys.filter((p) => sessionOwners.visible(p.denSession, userCtx)) : ptys,
+            ptys: visible.map((p) => wirePtyInfo(p, identity, local)),
           })
         }
 

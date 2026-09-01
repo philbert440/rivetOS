@@ -34,6 +34,7 @@ import {
   type ApprovalDecision,
   type HarnessSessionSummary,
   type SessionMessage,
+  type TermAttachInfo,
 } from '@rivetos/types'
 import {
   agentForSession,
@@ -68,6 +69,7 @@ import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer, type ComposerHandle } from '../components/composer.js'
 import { XtermAttach } from '../components/xterm-attach.js'
+import { OpenInTerminalButton } from '../components/open-in-terminal.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
@@ -1012,6 +1014,7 @@ function ActiveSession(props: {
     setModeState('terminal')
   }, [itemKind, sessionBase, props.sessionId])
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
+  const [termAttach, setTermAttach] = useState<TermAttachInfo | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect)
@@ -1189,6 +1192,7 @@ function ActiveSession(props: {
       // with the newly chosen model if terminal is showing.
       termPtyRef.current = undefined
       setTermPtyId(undefined)
+      setTermAttach(undefined)
     }
   }, [agentSel])
 
@@ -1222,6 +1226,7 @@ function ActiveSession(props: {
       ? await gw.termSpawn(body).catch(() => gw.termSpawn({ session: props.sessionId }))
       : await gw.termSpawn(body)
     setTermPtyId(p.id)
+    setTermAttach(p.attach)
     termPtyRef.current = p.id
     return p.id
   }
@@ -1366,6 +1371,7 @@ function ActiveSession(props: {
         // interrupt, so the retry never sends Esc.
         termPtyRef.current = undefined
         setTermPtyId(undefined)
+        setTermAttach(undefined)
         await ensurePty()
         await gw.termInject({ session: props.sessionId, text: injectText })
       }
@@ -1536,6 +1542,7 @@ function ActiveSession(props: {
             Stop
           </button>
         )}
+        {mode === 'terminal' && termAttach && <OpenInTerminalButton attach={termAttach} />}
         {/* [Terminal | Chat | Den] — three views of ONE session, ordered by
             immersion (terminal is home); the bar stays visible so the den
             never takes over with no way back. */}
@@ -1647,6 +1654,7 @@ function ActiveSession(props: {
           key={`${sessionBase}|${termPtyId}`}
           ptyId={termPtyId}
           base={isRemote ? sessionBase : undefined}
+          onExit={() => setTermAttach(undefined)}
         />
       ) : (
         <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
