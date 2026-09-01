@@ -1,7 +1,7 @@
 /**
  * Post-restart alias reconstructor — the reader for the rotation breadcrumbs
- * hermes capture writes (docs/plans/harness-control-plane.md
- * § Rotation migration story).
+ * hermes capture writes (docs/ARCHITECTURE.md
+ * § Session identity).
  *
  * The problem it closes, plainly: the registry's alias store is in-memory and
  * per-node, so it dies with den-server. Every rotation the node observed while

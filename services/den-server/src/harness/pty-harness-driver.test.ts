@@ -252,7 +252,7 @@ describe.each(subjects)('%s: the in-flight turn lock is not racy', (_name, make)
 
 // -- capability runtime truthing ---------------------------------------------
 //
-// The gap (docs/plans/harness-control-plane.md § As built (node control plane)):
+// The gap (docs/ARCHITECTURE.md § Gateway surface (as built)):
 // `interrupt`/`resume` were `!!deps.pty`, i.e. "are den terminals ENABLED" —
 // a config question standing in for a runtime one. A node whose `node-pty`
 // import failed advertised `true` on `GET /api/harnesses` and answered 501.

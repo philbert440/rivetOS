@@ -1,7 +1,6 @@
 /**
  * Capability **runtime truthing** — the den-side half of the honest-flags rule
- * (docs/plans/harness-control-plane.md § Contract semantics, "Capability flags
- * gate methods").
+ * (docs/ARCHITECTURE.md § Capability flags (as wired)).
  *
  * The gap this closes: a driver computes its flags once, at construction. The
  * PTY drivers read `interrupt`/`resume` off whether den terminals are

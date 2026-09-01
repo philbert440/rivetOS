@@ -1,5 +1,5 @@
 // Session-id normalization + the rotation alias store: the legacy-key table
-// from docs/plans/harness-control-plane.md, and the chain-hygiene rules
+// (docs/ARCHITECTURE.md § Session identity), and the chain-hygiene rules
 // (same-harness, cycle detection, depth cap).
 
 import { describe, expect, it } from 'vitest'

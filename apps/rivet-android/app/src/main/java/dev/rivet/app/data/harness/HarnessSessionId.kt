@@ -18,7 +18,7 @@ import java.util.Base64
  * Pure string work — no Android framework, no logging — so it unit-tests on the
  * plain JVM classpath.
  *
- * Source of truth: docs/plans/harness-control-plane.md, Session identity.
+ * Source of truth: docs/ARCHITECTURE.md § Session identity.
  */
 
 /** Thrown for anything the contract calls `invalid_session_id`. */

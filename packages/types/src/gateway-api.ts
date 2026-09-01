@@ -651,7 +651,7 @@ export interface HarnessTranscriptResponse {
 
 // ---------------------------------------------------------------------------
 // Harness control plane — /api/harnesses + /api/harness-sessions
-// (docs/plans/harness-control-plane.md § As built).
+// (docs/ARCHITECTURE.md § Gateway surface (as built)).
 //
 // Distinct from the legacy `/api/terminal/harness-sessions` shapes above: this
 // family is keyed by canonical `SessionId`, path params carry

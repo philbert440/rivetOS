@@ -1,7 +1,7 @@
 /**
  * HarnessDriver **rotation** conformance suite — the shared contract tests any
  * driver whose harness can replace its native session id must pass before it
- * ships (docs/plans/harness-control-plane.md § Native session id rotation,
+ * ships (docs/ARCHITECTURE.md § Session identity,
  * § Contract semantics).
  *
  * Rotation is control-plane machinery, so most of what this asserts is the

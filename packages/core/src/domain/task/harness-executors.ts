@@ -1,6 +1,6 @@
 /**
  * Per-harness `harness-session` executors — the task engine's half of the
- * harness control plane (docs/plans/harness-control-plane.md § Phase 3).
+ * harness control plane.
  *
  * The executor registry keys `harness-session` on a HARNESS ID, the same
  * `claude-code | grok-build | kimi-code | hermes | deepseek-harness`

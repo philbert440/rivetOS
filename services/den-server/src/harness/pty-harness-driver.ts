@@ -5,8 +5,7 @@
  *
  * This is the rule-of-three extraction the `grok-build` slice deferred
  * ("extracting a common base is the right move at driver three … when there is
- * a third data point to shape it", docs/plans/harness-control-plane.md
- * § As built (grok-build)). `hermes` is that third driver, and the three of
+ * a third data point to shape it"). `hermes` is that third driver, and the three of
  * them wrap exactly the same machinery:
  *
  *   | Contract method | Machinery                                            |
@@ -77,7 +76,7 @@
  * anything, it IS the answer — and `listSessions` is a store scan that reports
  * an empty list rather than failing. `approvals` is false unconditionally.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { randomUUID } from 'node:crypto'

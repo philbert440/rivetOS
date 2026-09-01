@@ -63,7 +63,7 @@
  *     map and reads as `ended` until its den hooks speak. Sessions spawned
  *     through a driver or the `/term` drawer are adopted at spawn time.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'

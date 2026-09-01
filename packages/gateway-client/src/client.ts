@@ -481,7 +481,7 @@ export class RivetGateway {
     return request(this.config, '/api/events/sessions', { signal })
   }
 
-  // -- harness control plane (docs/plans/harness-control-plane.md) -----------
+  // -- harness control plane (docs/ARCHITECTURE.md) -----------
   //
   // The node's HarnessDriver registry: `/api/harnesses` for drivers and their
   // capability flags, `/api/harness-sessions/:enc` for one session. Distinct

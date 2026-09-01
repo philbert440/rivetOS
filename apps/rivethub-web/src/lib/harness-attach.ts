@@ -7,7 +7,7 @@
  * lost whatever happened during the gap. The only correct recovery is a hard
  * resync from the transcript source of truth. This module therefore resyncs
  * on EVERY `open`, first connect and reconnect alike, and never assumes replay
- * (docs/plans/harness-control-plane.md § Contract semantics).
+ * (docs/ARCHITECTURE.md § HarnessDriver: control-plane contract).
  *
  * It also resyncs at `turn-complete`: the live tail carries text and tool
  * calls, but usage, thinking and the committed turn text come from the store.
