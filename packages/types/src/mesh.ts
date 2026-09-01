@@ -239,10 +239,7 @@ export interface MeshDelegationRoute {
 // ---------------------------------------------------------------------------
 
 export type MeshParseErrorCode =
-  | 'MESH_JSON_INVALID'
-  | 'MESH_FLAT_ARRAY'
-  | 'MESH_INVALID_SHAPE'
-  | 'MESH_NODE_INVALID'
+  'MESH_JSON_INVALID' | 'MESH_FLAT_ARRAY' | 'MESH_INVALID_SHAPE' | 'MESH_NODE_INVALID'
 
 export class MeshParseError extends RivetError {
   readonly path: string
@@ -385,9 +382,7 @@ function parseMeshNode(key: string, raw: unknown, path: string): MeshNode {
 
   const id = typeof raw.id === 'string' && raw.id ? raw.id : key
   const name = typeof raw.name === 'string' && raw.name ? raw.name : id
-  const status = (
-    typeof raw.status === 'string' ? raw.status : 'offline'
-  ) as MeshNode['status']
+  const status = (typeof raw.status === 'string' ? raw.status : 'offline') as MeshNode['status']
 
   const node: MeshNode = {
     id,
@@ -438,11 +433,9 @@ export function assertRecordMeshFile(
   options?: MeshParseOptions,
 ): MeshFile {
   if (!isPlainObject(parsed)) {
-    throw new MeshParseError(
-      'MESH_INVALID_SHAPE',
-      `mesh.json at ${path} is not a JSON object`,
-      { path },
-    )
+    throw new MeshParseError('MESH_INVALID_SHAPE', `mesh.json at ${path} is not a JSON object`, {
+      path,
+    })
   }
   if (Array.isArray(parsed.nodes)) {
     throw new MeshParseError('MESH_FLAT_ARRAY', flatArrayMessage(path), { path })
@@ -463,11 +456,7 @@ export function assertRecordMeshFile(
     try {
       nodes[key] = parseMeshNode(key, value, path)
     } catch (err) {
-      if (
-        skipInvalid &&
-        err instanceof MeshParseError &&
-        err.code === 'MESH_NODE_INVALID'
-      ) {
+      if (skipInvalid && err instanceof MeshParseError && err.code === 'MESH_NODE_INVALID') {
         console.warn(`mesh.json at ${path}: skipping invalid node "${key}"`)
         continue
       }
@@ -478,9 +467,7 @@ export function assertRecordMeshFile(
   const version =
     typeof parsed.version === 'number' && Number.isFinite(parsed.version) ? parsed.version : 1
   const updatedAt =
-    typeof parsed.updatedAt === 'number' && Number.isFinite(parsed.updatedAt)
-      ? parsed.updatedAt
-      : 0
+    typeof parsed.updatedAt === 'number' && Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0
   const file: MeshFile = { version, nodes, updatedAt }
   for (const [k, v] of Object.entries(parsed)) {
     if (k === 'version' || k === 'nodes' || k === 'updatedAt') continue
