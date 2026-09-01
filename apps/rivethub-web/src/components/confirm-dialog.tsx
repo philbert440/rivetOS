@@ -132,13 +132,15 @@ export function useConfirmDialog(): {
               target?.focus()
             }}
           >
-            <Dialog.Title className="sr-only">
+            {/* The visible message is the dialog's accessible name (Title
+                asChild); the kind word is a redundant sr-only Description. */}
+            <Dialog.Description className="sr-only">
               {current.kind === 'prompt'
                 ? 'Prompt'
                 : current.kind === 'choice'
                   ? 'Choose'
                   : 'Confirm'}
-            </Dialog.Title>
+            </Dialog.Description>
             <form
               ref={formRef}
               onSubmit={(e) => {
@@ -148,9 +150,9 @@ export function useConfirmDialog(): {
                 )
               }}
             >
-              <Dialog.Description asChild>
+              <Dialog.Title asChild>
                 <p className="mb-3 text-sm text-ink">{current.message}</p>
-              </Dialog.Description>
+              </Dialog.Title>
               {current.kind === 'prompt' && (
                 <input
                   value={input}
