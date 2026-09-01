@@ -43,6 +43,11 @@ export interface SearchOptions {
   before?: string // ISO timestamp
 }
 
+export interface SearchDegraded {
+  vector: true
+  reason: string
+}
+
 export interface SearchHit {
   id: string
   type: 'message' | 'summary'
@@ -64,6 +69,41 @@ export interface SearchHit {
   kind?: string
   earliestAt?: Date
   latestAt?: Date
+  /**
+   * Present when this hit was recovered because FTS returned nothing and the
+   * server-side trigram fallback ran. Additive — older callers ignore it.
+   */
+  fallback?: 'trigram'
+  /**
+   * Present when the vector arm was dropped for the search that produced this
+   * hit. Additive — older callers ignore it. Also set on the result array
+   * (see {@link SearchResults}) so empty result sets can still signal it.
+   */
+  degraded?: SearchDegraded
+}
+
+/**
+ * `search()` return: a hit array with optional result-set metadata. Assignable
+ * to `SearchHit[]`; `degraded` / `fallback` live on the array so an empty
+ * result can still tell the caller the vector arm dropped or trigram recovered.
+ */
+export type SearchResults = SearchHit[] & {
+  degraded?: SearchDegraded
+  fallback?: 'trigram'
+}
+
+/**
+ * In-process counters surfaced by `memory_stats`.
+ *
+ * Each `SearchEngine` owns its own counters (owner DB vs each per-user DB).
+ * Routed `memory_stats` reports the engine for that user; values are not
+ * summed across users (tenant isolation).
+ */
+export interface SearchRuntimeStats {
+  vectorArmDropped: number
+  vectorArmDroppedLastHour: number
+  queryEmbedCacheHits: number
+  queryEmbedCacheMisses: number
 }
 
 /**
@@ -82,6 +122,16 @@ export interface SearchEngineConfig {
   embedEndpoint?: string
   /** Model name for embedding (required when embedEndpoint is set) */
   embedModel?: string
+  /**
+   * Prefix applied ONLY to search-time query embeddings (Qwen3-Embedding is
+   * asymmetric). Empty string disables. Default is the Qwen3 instruct prefix.
+   * Documents (embedding-worker) are never prefixed.
+   */
+  embedQueryInstruction?: string
+  /** Query-embed fetch timeout in ms (default 8000, floor 500, cap 60000). */
+  embedTimeoutMs?: number | string
+  /** Per-query hnsw.ef_search (default 100, clamp 10..1000). */
+  hnswEfSearch?: number | string
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +195,22 @@ interface EmbedResponse {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Query embedding timeout — single text, should be fast */
-const EMBED_TIMEOUT_MS = 5_000
+/** Qwen3-Embedding query prefix. Documents get nothing. Empty string disables. */
+export const DEFAULT_EMBED_QUERY_INSTRUCTION =
+  'Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: '
+
+export const DEFAULT_EMBED_TIMEOUT_MS = 8_000
+export const MIN_EMBED_TIMEOUT_MS = 500
+export const MAX_EMBED_TIMEOUT_MS = 60_000
+export const DEFAULT_HNSW_EF_SEARCH = 100
+export const MIN_HNSW_EF_SEARCH = 10
+export const MAX_HNSW_EF_SEARCH = 1_000
+export const QUERY_EMBED_CACHE_MAX = 256
+export const QUERY_EMBED_CACHE_TTL_MS = 10 * 60 * 1000
+const EMBED_INPUT_MAX = 8_000
+const VECTOR_DROP_LOG_INTERVAL_MS = 60_000
+const DROP_BUCKET_MINUTES = 60
+const MINUTE_MS = 60_000
 
 /**
  * Candidate pool depth retrieved per method before fusion. Deeper pools let a
@@ -204,13 +268,114 @@ const SUMMARY_FUSION_BONUS = 1.3
 
 /**
  * A query "looks literal" when it carries tokens FTS tokenization mangles —
- * dotted ids/domains/versions, paths, host:port, IPs, or alnum model ids
- * (fp8, v100, w4a16). The trigram arm is routed in only for these; on prose it
- * is blind character-overlap noise. Mirrors the recall discipline's
- * "trigram-first for literal/punctuated terms".
+ * dotted ids/domains/versions, paths, host:port, IPs, or dotted brand/package
+ * names (`families.app`, `qwen3.6-27b-int4`). Hyphens are NOT in this class:
+ * ordinary hyphenated prose (`state-of-the-art model`) must not inject the
+ * trigram arm into hybrid RRF. Hyphenated tokens still qualify for the
+ * empty-FTS trigram *fallback* via {@link shouldTrigramFallback}.
  */
 const LITERAL_QUERY_RE = /\w[./:_@]\w|\d{1,3}(?:\.\d{1,3}){2,}|[a-z]\d|\d[a-z]/i
-const looksLiteral = (q: string): boolean => LITERAL_QUERY_RE.test(q)
+
+export function looksLiteral(q: string): boolean {
+  return LITERAL_QUERY_RE.test(q)
+}
+
+/**
+ * Server-side trigram fallback eligibility: looksLiteral OR a token containing
+ * `.` `/` `:` `-` (domains, paths, ids, IPs, model names). Hyphen is gated on
+ * an empty FTS arm — it must not route trigram as a hybrid parallel arm.
+ */
+export function shouldTrigramFallback(q: string): boolean {
+  if (looksLiteral(q)) return true
+  return /[^\s][./:-][^\s]/.test(q)
+}
+
+export function normalizeQueryText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ')
+}
+
+export function applyEmbedQueryInstruction(instruction: string, text: string): string {
+  const budget = Math.max(0, EMBED_INPUT_MAX - instruction.length)
+  const sliced = text.slice(0, budget)
+  if (!instruction) return sliced
+  return `${instruction}${sliced}`
+}
+
+export function clampEmbedTimeoutMs(raw: unknown): number {
+  const n = coerceNumber(raw)
+  if (n === null) return DEFAULT_EMBED_TIMEOUT_MS
+  return Math.min(MAX_EMBED_TIMEOUT_MS, Math.max(MIN_EMBED_TIMEOUT_MS, Math.trunc(n)))
+}
+
+export function clampHnswEfSearch(raw: unknown): number {
+  const n = coerceNumber(raw)
+  if (n === null) return DEFAULT_HNSW_EF_SEARCH
+  return Math.min(MAX_HNSW_EF_SEARCH, Math.max(MIN_HNSW_EF_SEARCH, Math.trunc(n)))
+}
+
+function coerceNumber(raw: unknown): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
+  if (typeof raw === 'string' && raw.trim() !== '') {
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+/** LRU + TTL cache for successful query embeddings. */
+class QueryEmbedCache {
+  hits = 0
+  misses = 0
+  private map = new Map<string, { vec: number[]; expiresAt: number }>()
+
+  get(key: string, now: number): number[] | undefined {
+    const entry = this.map.get(key)
+    if (!entry) {
+      this.misses += 1
+      return undefined
+    }
+    if (now >= entry.expiresAt) {
+      this.map.delete(key)
+      this.misses += 1
+      return undefined
+    }
+    this.map.delete(key)
+    this.map.set(key, entry)
+    this.hits += 1
+    return entry.vec
+  }
+
+  set(key: string, vec: number[], now: number): void {
+    if (this.map.has(key)) this.map.delete(key)
+    this.map.set(key, { vec, expiresAt: now + QUERY_EMBED_CACHE_TTL_MS })
+    while (this.map.size > QUERY_EMBED_CACHE_MAX) {
+      const oldest = this.map.keys().next().value
+      if (oldest === undefined) break
+      this.map.delete(oldest)
+    }
+  }
+}
+
+function withSearchMeta(
+  hits: SearchHit[],
+  meta: { degraded?: SearchDegraded; fallback?: 'trigram' } = {},
+): SearchResults {
+  const prior = hits as SearchResults
+  const fallback = meta.fallback ?? prior.fallback
+  const degraded = meta.degraded ?? prior.degraded
+  const needAnnotate = Boolean(degraded || fallback)
+  const annotated = needAnnotate
+    ? hits.map((h) => ({
+        ...h,
+        ...(fallback ? { fallback } : {}),
+        ...(degraded ? { degraded } : {}),
+      }))
+    : hits
+  const out = annotated as SearchResults
+  if (degraded) out.degraded = degraded
+  if (fallback) out.fallback = fallback
+  return out
+}
 
 /** Fallback semantic proxy when embedding is unavailable */
 const SEMANTIC_PROXY = (alias: string): string => `LEAST(LENGTH(${alias}.content) / 1000.0, 1.0)`
@@ -229,6 +394,15 @@ export class SearchEngine {
   private pool: pg.Pool
   private embedEndpoint: string | null
   private embedModel: string
+  private embedQueryInstruction: string
+  private embedTimeoutMs: number
+  private hnswEfSearch: number
+  private queryEmbedCache = new QueryEmbedCache()
+  private vectorArmDroppedTotal = 0
+  /** 60 one-minute buckets; index = epochMinute % 60. Bounded last-hour count. */
+  private dropBucketCounts = new Array<number>(DROP_BUCKET_MINUTES).fill(0)
+  private dropBucketEpoch = new Array<number>(DROP_BUCKET_MINUTES).fill(-1)
+  private lastVectorDropLogAt = 0
 
   constructor(pool: pg.Pool, config?: SearchEngineConfig) {
     this.pool = pool
@@ -239,6 +413,21 @@ export class SearchEngine {
       )
     }
     this.embedModel = config?.embedModel ?? ''
+    this.embedQueryInstruction =
+      config?.embedQueryInstruction === undefined
+        ? DEFAULT_EMBED_QUERY_INSTRUCTION
+        : config.embedQueryInstruction
+    this.embedTimeoutMs = clampEmbedTimeoutMs(config?.embedTimeoutMs)
+    this.hnswEfSearch = clampHnswEfSearch(config?.hnswEfSearch)
+  }
+
+  getRuntimeStats(): SearchRuntimeStats {
+    return {
+      vectorArmDropped: this.vectorArmDroppedTotal,
+      vectorArmDroppedLastHour: this.lastHourDropCount(Date.now()),
+      queryEmbedCacheHits: this.queryEmbedCache.hits,
+      queryEmbedCacheMisses: this.queryEmbedCache.misses,
+    }
   }
 
   /**
@@ -257,7 +446,7 @@ export class SearchEngine {
    *
    * Access counts are incremented for returned results.
    */
-  async search(query: string, options?: SearchOptions): Promise<SearchHit[]> {
+  async search(query: string, options?: SearchOptions): Promise<SearchResults> {
     const mode = options?.mode ?? 'hybrid'
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 20
@@ -267,13 +456,25 @@ export class SearchEngine {
     }
 
     if (mode === 'vector') {
-      const qvec = await this.embedQuery(query)
+      const embedded = await this.embedQuery(query)
       // No embedding available (endpoint down / not configured) — degrade to FTS
       // rather than returning nothing.
-      if (!qvec) return this.singleTextSearch('fts', query, scope, limit, options)
-      const hits = await this.vectorSearch(qvec, { scope, limit, agent: options?.agent })
+      if (!embedded.vec) {
+        // Skip a second embed attempt — the query embed already failed.
+        const hits = await this.singleTextSearch('fts', query, scope, limit, options, {
+          skipEmbed: true,
+        })
+        if (this.embedEndpoint) {
+          this.recordVectorArmDropped(embedded.reason ?? 'unknown', embedded.elapsedMs)
+          return withSearchMeta(hits, {
+            degraded: { vector: true, reason: embedded.reason ?? 'unknown' },
+          })
+        }
+        return withSearchMeta(hits)
+      }
+      const hits = await this.vectorSearch(embedded.vec, { scope, limit, agent: options?.agent })
       void this.bumpAccess(hits)
-      return hits
+      return withSearchMeta(hits)
     }
 
     // Explicit single text mode: fts / trigram / regex.
@@ -283,6 +484,11 @@ export class SearchEngine {
   /**
    * Single-method text search (fts / trigram / regex) with the original
    * composite scoring. Preserved as the explicit escape hatch.
+   *
+   * Explicit `fts` may embed the query for a cosine rerank term (not a hybrid
+   * vector arm). If that embed fails, we attach `degraded` and emit the
+   * rate-limited warn log so the miss is never silent — but we do **not**
+   * increment `vectorArmDropped`. That counter is the hybrid/vector arm only.
    */
   private async singleTextSearch(
     mode: string,
@@ -290,13 +496,20 @@ export class SearchEngine {
     scope: 'messages' | 'summaries' | 'both',
     limit: number,
     options?: SearchOptions,
-  ): Promise<SearchHit[]> {
+    extras?: { skipEmbed?: boolean },
+  ): Promise<SearchResults> {
     const results: SearchHit[] = []
 
     // Embed query once for FTS hybrid scoring (semantic rerank term).
     let queryEmbedding: number[] | null = null
-    if (mode === 'fts' && this.embedEndpoint) {
-      queryEmbedding = await this.embedQuery(query)
+    let degraded: SearchDegraded | undefined
+    if (mode === 'fts' && this.embedEndpoint && !extras?.skipEmbed) {
+      const embedded = await this.embedQuery(query)
+      queryEmbedding = embedded.vec
+      if (!queryEmbedding) {
+        this.logVectorArmDropped(embedded.reason ?? 'unknown', embedded.elapsedMs)
+        degraded = { vector: true, reason: embedded.reason ?? 'unknown' }
+      }
     }
 
     if (scope === 'messages' || scope === 'both') {
@@ -308,8 +521,18 @@ export class SearchEngine {
 
     results.sort((a, b) => b.score - a.score)
     const topResults = results.slice(0, limit)
+
+    // Explicit fts: if FTS returned nothing and the query looks like a literal
+    // token, recover via trigram and annotate. Recurses only into trigram.
+    if (mode === 'fts' && topResults.length === 0 && shouldTrigramFallback(query)) {
+      const recovered = await this.singleTextSearch('trigram', query, scope, limit, options)
+      if (recovered.length > 0) {
+        return withSearchMeta(recovered, { fallback: 'trigram', degraded })
+      }
+    }
+
     void this.bumpAccess(topResults)
-    return topResults
+    return withSearchMeta(topResults, { degraded })
   }
 
   /**
@@ -322,17 +545,23 @@ export class SearchEngine {
     scope: 'messages' | 'summaries' | 'both',
     limit: number,
     options?: SearchOptions,
-  ): Promise<SearchHit[]> {
+  ): Promise<SearchResults> {
     const pool = Math.min(HYBRID_POOL_MAX, Math.max(HYBRID_POOL_MIN, limit * 3))
 
     // Embed once for the vector arm; null (no endpoint / failure) drops that arm.
-    const qvec = this.embedEndpoint ? await this.embedQuery(query) : null
+    const embedded = this.embedEndpoint ? await this.embedQuery(query) : null
+    const qvec = embedded?.vec ?? null
+    let degraded: SearchDegraded | undefined
+    if (this.embedEndpoint && embedded && !embedded.vec) {
+      this.recordVectorArmDropped(embedded.reason ?? 'unknown', embedded.elapsedMs)
+      degraded = { vector: true, reason: embedded.reason ?? 'unknown' }
+    }
 
     // Route the trigram arm in only for literal/dotted queries; on prose it is
     // blind character-overlap noise. FTS always runs; vector runs when embedded.
     const useTrigram = looksLiteral(query)
 
-    const [ftsList, trigramList, vectorList] = await Promise.all([
+    const [ftsList, initialTrigram, vectorList] = await Promise.all([
       this.retrieveTextCandidates('fts', query, scope, pool, options),
       useTrigram
         ? this.retrieveTextCandidates('trigram', query, scope, pool, options)
@@ -342,8 +571,21 @@ export class SearchEngine {
         : Promise.resolve([] as Candidate[]),
     ])
 
+    let trigramList = initialTrigram
+    let fallback: 'trigram' | undefined
+    // Only annotate fallback when trigram ran as recovery — not when it was
+    // already the hybrid-routed arm (`useTrigram` / looksLiteral).
+    if (!useTrigram && ftsList.length === 0 && shouldTrigramFallback(query)) {
+      if (trigramList.length === 0) {
+        trigramList = await this.retrieveTextCandidates('trigram', query, scope, pool, options)
+      }
+      if (trigramList.length > 0) {
+        fallback = 'trigram'
+      }
+    }
+
     const fused = this.rrfFuse([ftsList, trigramList, vectorList])
-    const topResults = fused.slice(0, limit)
+    const topResults = withSearchMeta(fused.slice(0, limit), { degraded, fallback })
     void this.bumpAccess(topResults)
     return topResults
   }
@@ -459,26 +701,27 @@ export class SearchEngine {
     options?: SearchOptions,
   ): Promise<Candidate[]> {
     const vecLiteral = toVectorLiteral(qvec)
-    const out: Candidate[] = []
+    return this.withHnswEfSearch(async (client) => {
+      const out: Candidate[] = []
 
-    if (scope === 'messages' || scope === 'both') {
-      const params: unknown[] = [vecLiteral]
-      const conds = ['m.embedding IS NOT NULL', MESSAGE_QUALITY_SQL]
-      if (options?.agent) {
-        params.push(options.agent)
-        conds.push(`m.agent = $${String(params.length)}`)
-      }
-      if (options?.since) {
-        params.push(options.since)
-        conds.push(`m.created_at >= $${String(params.length)}`)
-      }
-      if (options?.before) {
-        params.push(options.before)
-        conds.push(`m.created_at < $${String(params.length)}`)
-      }
-      params.push(pool)
-      const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
-      const sql = `
+      if (scope === 'messages' || scope === 'both') {
+        const params: unknown[] = [vecLiteral]
+        const conds = ['m.embedding IS NOT NULL', MESSAGE_QUALITY_SQL]
+        if (options?.agent) {
+          params.push(options.agent)
+          conds.push(`m.agent = $${String(params.length)}`)
+        }
+        if (options?.since) {
+          params.push(options.since)
+          conds.push(`m.created_at >= $${String(params.length)}`)
+        }
+        if (options?.before) {
+          params.push(options.before)
+          conds.push(`m.created_at < $${String(params.length)}`)
+        }
+        params.push(pool)
+        const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
+        const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
                m.tool_name, m.tool_result,
                ${boostExpr} AS boost
@@ -487,27 +730,27 @@ export class SearchEngine {
         ORDER BY m.embedding <=> $1::halfvec
         LIMIT $${String(params.length)}
       `
-      const res = await this.pool.query<CandidateRow>(sql, params)
-      out.push(...res.rows.map((r) => this.mapCandidate(r, 'message')))
-    }
+        const res = await client.query<CandidateRow>(sql, params)
+        out.push(...res.rows.map((r) => this.mapCandidate(r, 'message')))
+      }
 
-    if (scope === 'summaries' || scope === 'both') {
-      const params: unknown[] = [vecLiteral]
-      const conds = [
-        's.embedding IS NOT NULL', // summaries are cross-agent
-        `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
-      ]
-      if (options?.since) {
-        params.push(options.since)
-        conds.push(`s.created_at >= $${String(params.length)}`)
-      }
-      if (options?.before) {
-        params.push(options.before)
-        conds.push(`s.created_at < $${String(params.length)}`)
-      }
-      params.push(pool)
-      const boostExpr = `((${temporalDecaySql('s')}) * ${W_TEMPORAL} + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE})`
-      const sql = `
+      if (scope === 'summaries' || scope === 'both') {
+        const params: unknown[] = [vecLiteral]
+        const conds = [
+          's.embedding IS NOT NULL', // summaries are cross-agent
+          `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
+        ]
+        if (options?.since) {
+          params.push(options.since)
+          conds.push(`s.created_at >= $${String(params.length)}`)
+        }
+        if (options?.before) {
+          params.push(options.before)
+          conds.push(`s.created_at < $${String(params.length)}`)
+        }
+        params.push(pool)
+        const boostExpr = `((${temporalDecaySql('s')}) * ${W_TEMPORAL} + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE})`
+        const sql = `
         SELECT s.id, s.content, s.kind AS role, 'summary' AS agent, s.conversation_id,
                s.created_at, s.kind, s.earliest_at, s.latest_at,
                ${boostExpr} AS boost
@@ -516,11 +759,12 @@ export class SearchEngine {
         ORDER BY s.embedding <=> $1::halfvec
         LIMIT $${String(params.length)}
       `
-      const res = await this.pool.query<CandidateRow>(sql, params)
-      out.push(...res.rows.map((r) => this.mapCandidate(r, 'summary')))
-    }
+        const res = await client.query<CandidateRow>(sql, params)
+        out.push(...res.rows.map((r) => this.mapCandidate(r, 'summary')))
+      }
 
-    return out
+      return out
+    })
   }
 
   /** Map a candidate row to a Candidate (raw per-method score is unused → 0). */
@@ -565,22 +809,23 @@ export class SearchEngine {
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 10
     const vecLiteral = toVectorLiteral(embedding)
-    const results: SearchHit[] = []
+    const results = await this.withHnswEfSearch(async (client) => {
+      const out: SearchHit[] = []
 
-    if (scope === 'messages' || scope === 'both') {
-      // $1 = vector, optional $2 = agent, last = limit
-      const params: unknown[] = [vecLiteral]
-      let agentFilter = ''
-      if (options?.agent) {
-        params.push(options.agent)
-        agentFilter = `AND m.agent = $${String(params.length)}`
-      }
-      params.push(limit)
-      const limitIdx = params.length
-      const temporal = temporalDecaySql('m')
-      const importance = importanceSql('m')
+      if (scope === 'messages' || scope === 'both') {
+        // $1 = vector, optional $2 = agent, last = limit
+        const params: unknown[] = [vecLiteral]
+        let agentFilter = ''
+        if (options?.agent) {
+          params.push(options.agent)
+          agentFilter = `AND m.agent = $${String(params.length)}`
+        }
+        params.push(limit)
+        const limitIdx = params.length
+        const temporal = temporalDecaySql('m')
+        const importance = importanceSql('m')
 
-      const sql = `
+        const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata,
                m.conversation_id, m.created_at, m.tool_name, m.tool_result,
                (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
@@ -595,36 +840,36 @@ export class SearchEngine {
         LIMIT $${String(limitIdx)}
       `
 
-      const res = await this.pool.query<MessageSearchRow>(sql, params)
-      results.push(
-        ...res.rows.map((r) => ({
-          id: r.id,
-          type: 'message' as const,
-          content: r.content,
-          role: r.role,
-          agent: r.agent,
-          conversationId: r.conversation_id,
-          score: parseFloat(r.score),
-          createdAt: r.created_at,
-          toolName: r.tool_name ?? null,
-          toolResult: r.tool_result ?? null,
-          ...(r.metadata?.truncated === true
-            ? {
-                truncated: true,
-                fullLength: [
-                  r.metadata.full_content_length,
-                  r.metadata.full_tool_result_length,
-                ].find((v): v is number => typeof v === 'number'),
-              }
-            : {}),
-        })),
-      )
-    }
+        const res = await client.query<MessageSearchRow>(sql, params)
+        out.push(
+          ...res.rows.map((r) => ({
+            id: r.id,
+            type: 'message' as const,
+            content: r.content,
+            role: r.role,
+            agent: r.agent,
+            conversationId: r.conversation_id,
+            score: parseFloat(r.score),
+            createdAt: r.created_at,
+            toolName: r.tool_name ?? null,
+            toolResult: r.tool_result ?? null,
+            ...(r.metadata?.truncated === true
+              ? {
+                  truncated: true,
+                  fullLength: [
+                    r.metadata.full_content_length,
+                    r.metadata.full_tool_result_length,
+                  ].find((v): v is number => typeof v === 'number'),
+                }
+              : {}),
+          })),
+        )
+      }
 
-    if (scope === 'summaries' || scope === 'both') {
-      const temporal = temporalDecaySql('s')
+      if (scope === 'summaries' || scope === 'both') {
+        const temporal = temporalDecaySql('s')
 
-      const sql = `
+        const sql = `
         SELECT s.id, s.content, s.kind AS role, 'summary' AS agent,
                s.conversation_id, s.created_at,
                s.kind, s.earliest_at, s.latest_at,
@@ -640,23 +885,26 @@ export class SearchEngine {
         LIMIT $2
       `
 
-      const res = await this.pool.query<SummarySearchRow>(sql, [vecLiteral, limit])
-      results.push(
-        ...res.rows.map((r) => ({
-          id: r.id,
-          type: 'summary' as const,
-          content: r.content,
-          role: r.role,
-          agent: r.agent,
-          conversationId: r.conversation_id,
-          score: parseFloat(r.score),
-          createdAt: r.created_at,
-          kind: r.kind,
-          earliestAt: r.earliest_at ?? undefined,
-          latestAt: r.latest_at ?? undefined,
-        })),
-      )
-    }
+        const res = await client.query<SummarySearchRow>(sql, [vecLiteral, limit])
+        out.push(
+          ...res.rows.map((r) => ({
+            id: r.id,
+            type: 'summary' as const,
+            content: r.content,
+            role: r.role,
+            agent: r.agent,
+            conversationId: r.conversation_id,
+            score: parseFloat(r.score),
+            createdAt: r.created_at,
+            kind: r.kind,
+            earliestAt: r.earliest_at ?? undefined,
+            latestAt: r.latest_at ?? undefined,
+          })),
+        )
+      }
+
+      return out
+    })
 
     results.sort((a, b) => b.score - a.score)
     const topResults = results.slice(0, limit)
@@ -670,55 +918,151 @@ export class SearchEngine {
 
   /**
    * Embed a query string via the configured embedding endpoint.
-   * Returns null on any failure (timeout, network, bad response).
-   * Caller should fall back to the length-based semantic proxy.
+   * Failures return a reason + elapsed ms so callers can signal degraded mode
+   * instead of dropping the vector arm silently. Successful vectors are cached.
    */
-  private async embedQuery(text: string): Promise<number[] | null> {
-    if (!this.embedEndpoint) return null
+  private async embedQuery(text: string): Promise<{
+    vec: number[] | null
+    reason?: string
+    elapsedMs: number
+  }> {
+    if (!this.embedEndpoint) {
+      return { vec: null, reason: 'not configured', elapsedMs: 0 }
+    }
 
+    const now = Date.now()
+    const normalized = normalizeQueryText(text)
+    const cacheKey = `${this.embedQueryInstruction}\0${normalized}`
+    const cached = this.queryEmbedCache.get(cacheKey, now)
+    if (cached) {
+      return { vec: cached, elapsedMs: 0 }
+    }
+
+    const started = Date.now()
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), this.embedTimeoutMs)
     try {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS)
-
       const response = await fetch(`${this.embedEndpoint}/v1/embeddings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: [text.slice(0, 8000)],
+          input: [applyEmbedQueryInstruction(this.embedQueryInstruction, normalized)],
           model: this.embedModel,
         }),
         signal: controller.signal,
       })
 
-      clearTimeout(timeout)
-
+      const elapsedMs = Date.now() - started
       if (!response.ok) {
-        console.warn(`[SearchEngine] Query embedding failed: HTTP ${String(response.status)}`)
-        return null
+        return { vec: null, reason: `http ${String(response.status)}`, elapsedMs }
       }
 
-      const data = (await response.json()) as EmbedResponse
+      let data: EmbedResponse
+      try {
+        data = (await response.json()) as EmbedResponse
+      } catch {
+        return { vec: null, reason: 'bad response', elapsedMs }
+      }
       const vec = data.data?.[0]?.embedding
       if (!vec || !Array.isArray(vec) || vec.length === 0) {
-        console.warn('[SearchEngine] Query embedding returned empty/invalid vector')
-        return null
+        return { vec: null, reason: 'empty vector', elapsedMs }
       }
 
       // Truncate to pgvector halfvec max (4000 dims). Nemotron returns 4096
       // natively; stored rows are sliced to 4000 by the embedding worker.
       // Must match to avoid "different halfvec dimensions" errors on <=>.
       const EMBED_DIMS = 4000
-      return vec.length > EMBED_DIMS ? vec.slice(0, EMBED_DIMS) : vec
+      const clipped = vec.length > EMBED_DIMS ? vec.slice(0, EMBED_DIMS) : vec
+      this.queryEmbedCache.set(cacheKey, clipped, Date.now())
+      return { vec: clipped, elapsedMs }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      // Don't log abort as an error — it's expected on timeout
-      if (msg.includes('abort')) {
-        console.warn('[SearchEngine] Query embedding timed out (5s)')
-      } else {
-        console.warn(`[SearchEngine] Query embedding failed: ${msg}`)
+      const elapsedMs = Date.now() - started
+      const isAbort =
+        (err instanceof Error && err.name === 'AbortError') ||
+        (typeof err === 'object' &&
+          err !== null &&
+          'name' in err &&
+          (err as { name: string }).name === 'AbortError') ||
+        (err instanceof Error && /abort/i.test(err.message))
+      return {
+        vec: null,
+        reason: isAbort ? 'timeout' : 'network',
+        elapsedMs,
       }
-      return null
+    } finally {
+      clearTimeout(timeout)
     }
+  }
+
+  /**
+   * Run vector-arm SQL inside a transaction with `SET LOCAL hnsw.ef_search`
+   * so each query uses the configured probe depth regardless of the database
+   * default. `n` is interpolated only after clamping to 10..1000.
+   *
+   * Callers must invoke this only after the query embedding has resolved so a
+   * pooled connection is never held across the embed HTTP call.
+   */
+  private async withHnswEfSearch<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect()
+    let releaseErr: Error | boolean | undefined
+    try {
+      await client.query('BEGIN')
+      await client.query(`SET LOCAL hnsw.ef_search = ${String(this.hnswEfSearch)}`)
+      const result = await fn(client)
+      await client.query('COMMIT')
+      return result
+    } catch (err) {
+      releaseErr = err instanceof Error ? err : true
+      try {
+        await client.query('ROLLBACK')
+      } catch {
+        // ignore — original error is what matters; release still gets the err
+      }
+      throw err
+    } finally {
+      client.release(releaseErr)
+    }
+  }
+
+  private recordVectorArmDropped(reason: string, elapsedMs: number): void {
+    this.vectorArmDroppedTotal += 1
+    this.addDropBucket(Date.now())
+    this.logVectorArmDropped(reason, elapsedMs)
+  }
+
+  /**
+   * Rate-limited warn for a dropped vector signal. Used by the hybrid/vector
+   * arm (via {@link recordVectorArmDropped}) and by explicit-fts rerank
+   * failure (no counter bump — rerank is not an arm).
+   */
+  private logVectorArmDropped(reason: string, elapsedMs: number): void {
+    const now = Date.now()
+    if (now - this.lastVectorDropLogAt >= VECTOR_DROP_LOG_INTERVAL_MS) {
+      console.warn(`[memory-search] vector arm dropped: ${reason} (${String(elapsedMs)}ms)`)
+      this.lastVectorDropLogAt = now
+    }
+  }
+
+  private addDropBucket(now: number): void {
+    const minute = Math.floor(now / MINUTE_MS)
+    const i = minute % DROP_BUCKET_MINUTES
+    if (this.dropBucketEpoch[i] !== minute) {
+      this.dropBucketCounts[i] = 0
+      this.dropBucketEpoch[i] = minute
+    }
+    this.dropBucketCounts[i] += 1
+  }
+
+  private lastHourDropCount(now: number): number {
+    const minute = Math.floor(now / MINUTE_MS)
+    let n = 0
+    for (let i = 0; i < DROP_BUCKET_MINUTES; i++) {
+      const epoch = this.dropBucketEpoch[i]
+      if (epoch >= 0 && minute - epoch < DROP_BUCKET_MINUTES) {
+        n += this.dropBucketCounts[i]
+      }
+    }
+    return n
   }
 
   // -----------------------------------------------------------------------

@@ -22,14 +22,14 @@ import {
   type MemoryStatsResponse,
 } from '@rivetos/types'
 import type pg from 'pg'
-import { SearchEngine, type SearchHit, type SearchOptions } from '../search.js'
+import { SearchEngine, type SearchOptions, type SearchResults } from '../search.js'
 import { applyWindowArgs } from '../tools/helpers.js'
 
 export type MemorySearchFn = (
   pool: pg.Pool,
   query: string,
   options?: SearchOptions,
-) => Promise<SearchHit[]>
+) => Promise<SearchResults>
 
 export interface MemoryApiOptions {
   /** The node owner's database — used only for requests den left unstamped. */
@@ -39,6 +39,9 @@ export interface MemoryApiOptions {
   userPools?: ReadonlyMap<string, pg.Pool | null>
   embedEndpoint?: string
   embedModel?: string
+  embedQueryInstruction?: string
+  embedTimeoutMs?: number | string
+  hnswEfSearch?: number | string
   /** Test seam — production uses SearchEngine. */
   search?: MemorySearchFn
 }
@@ -106,6 +109,9 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
       new SearchEngine(pool, {
         embedEndpoint: opts.embedEndpoint,
         embedModel: opts.embedModel,
+        embedQueryInstruction: opts.embedQueryInstruction,
+        embedTimeoutMs: opts.embedTimeoutMs,
+        hnswEfSearch: opts.hnswEfSearch,
       }).search(query, options))
 
   return {
@@ -184,19 +190,35 @@ async function handleSearch(
     kind: h.kind,
     conversationId: h.conversationId,
     sessionId: h.conversationId ? (keys.get(h.conversationId) ?? null) : null,
+    ...(h.fallback ? { fallback: h.fallback } : {}),
   }))
   const body: MemorySearchResponse = {
     query: q,
     scope,
-    degraded: embedOk
-      ? null
-      : {
-          reason: 'embedding endpoint not configured',
-          effect: 'Keyword / FTS ranking only — not meaning-based.',
-        },
+    degraded: httpSearchDegraded(hits, embedOk),
+    ...(hits.fallback ? { fallback: hits.fallback } : {}),
     results,
   }
   json(res, 200, body)
+}
+
+function httpSearchDegraded(
+  hits: SearchResults,
+  embedOk: boolean,
+): MemorySearchResponse['degraded'] {
+  if (hits.degraded) {
+    return {
+      reason: hits.degraded.reason,
+      effect: 'Keyword / FTS ranking only — not meaning-based.',
+    }
+  }
+  if (!embedOk) {
+    return {
+      reason: 'embedding endpoint not configured',
+      effect: 'Keyword / FTS ranking only — not meaning-based.',
+    }
+  }
+  return null
 }
 
 async function handleBrowse(url: URL, res: ServerResponse, pool: pg.Pool): Promise<void> {

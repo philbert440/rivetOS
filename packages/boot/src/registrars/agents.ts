@@ -662,6 +662,7 @@ export async function registerAgentTools(
         userPools,
         embedEndpoint: embedEndpoint || undefined,
         embedModel: embedModel || undefined,
+        ...memoryApiEmbedFromEnv(),
       }),
     )
   }
@@ -1034,6 +1035,19 @@ export function makeWikiFor<T>(
       cache.set(userId, entry)
     }
     return entry
+  }
+}
+
+/** Env keys forwarded into Hub `/api/memory` SearchEngine. */
+export function memoryApiEmbedFromEnv(env: NodeJS.ProcessEnv = process.env): {
+  embedQueryInstruction: string | undefined
+  embedTimeoutMs: string | undefined
+  hnswEfSearch: string | undefined
+} {
+  return {
+    embedQueryInstruction: env.RIVETOS_EMBED_QUERY_INSTRUCTION,
+    embedTimeoutMs: env.RIVETOS_EMBED_TIMEOUT_MS,
+    hnswEfSearch: env.RIVETOS_HNSW_EF_SEARCH,
   }
 }
 
