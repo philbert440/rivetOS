@@ -35,7 +35,7 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
     expect(config.usersRegistry!.unmappedIsOwner).toBe(false)
   })
 
-  it('a valid file registry wins over the env maps', () => {
+  it('a valid file registry is the source of truth (leftover env maps ignored)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'den-config-'))
     dirs.push(dir)
     const file = join(dir, 'users.json')
@@ -52,15 +52,34 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
     )
     const config = loadConfig({
       RIVETOS_USERS_FILE: file,
-      // env maps disagree with the file — the file must win
+      // leftover #561 env maps disagree with the file — they must be ignored
       RIVETOS_DEN_DEVICE_USERS: '{"win-coco":"mallory"}',
+      RIVETOS_USER_DBS: '{"mallory":{"pgUrl":"postgres://mallory@db/mallory"}}',
       RIVETOS_PG_URL: 'postgres://phil@db/phil_memory',
     } as NodeJS.ProcessEnv)
     expect(config.usersRegistry).toBeDefined()
     expect(config.usersRegistry!.unmappedIsOwner).toBe(false)
     const r = resolveUser(config.usersRegistry!, 'win-coco')
     expect(r.ok && r.ctx.userId).toBe('coco')
+    expect(config.usersRegistry!.users.mallory).toBeUndefined()
     // and an unmapped device fails closed
     expect(resolveUser(config.usersRegistry!, 'stranger').ok).toBe(false)
+  })
+
+  it('env-var-only configuration yields NO routing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-config-noroute-'))
+    dirs.push(dir)
+    const config = loadConfig({
+      RIVETOS_SHARED_DIR: dir,
+      RIVETOS_USERS_FILE: join(dir, 'missing.json'),
+      RIVETOS_USER_DBS: '{"coco":{"pgUrl":"postgres://coco@db/coco_memory"}}',
+      RIVETOS_DEN_DEVICE_USERS: '{"win-coco":"coco"}',
+      RIVETOS_PG_URL: 'postgres://phil@db/phil_memory',
+    } as NodeJS.ProcessEnv)
+    expect(config.usersRegistry).toBeDefined()
+    expect(config.usersRegistry!.users.coco).toBeUndefined()
+    expect(resolveUser(config.usersRegistry!, 'win-coco').ok).toBe(false)
+    const owner = resolveUser(config.usersRegistry!, null)
+    expect(owner.ok).toBe(true)
   })
 })

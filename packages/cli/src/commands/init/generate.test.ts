@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { mkdtemp, rm, readFile, access, readdir, writeFile, mkdir, utimes } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
-import { buildConfigYaml, meshSectionFromEnroll } from './generate.js'
+import { buildConfigYaml, generateConfig, meshSectionFromEnroll } from './generate.js'
 import type { WizardState } from './types.js'
 
 const SNIPPET = `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.
@@ -78,5 +81,83 @@ describe('buildConfigYaml mesh branch', () => {
     expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
     expect(yaml).toMatch(/tls:\s*true/)
     expect(yaml).not.toMatch(/advertise_host:/)
+  })
+})
+
+describe('generateConfig workspace templates', () => {
+  const banner = '<!-- generated from AGENT.md by rivetos init — edit AGENT.md instead -->'
+  let rivetDir: string
+
+  beforeEach(async () => {
+    rivetDir = await mkdtemp(join(tmpdir(), 'rivetos-init-workspace-'))
+  })
+
+  afterEach(async () => {
+    await rm(rivetDir, { recursive: true, force: true })
+  })
+
+  it('seeds AGENT.md, MEMORY.md, users/, and CLAUDE.md', async () => {
+    const result = await generateConfig(baseState(), rivetDir)
+    const ws = result.workspacePath
+
+    const agent = await readFile(join(ws, 'AGENT.md'), 'utf-8')
+    const memory = await readFile(join(ws, 'MEMORY.md'), 'utf-8')
+    expect(agent.length).toBeGreaterThan(0)
+    expect(memory.length).toBeGreaterThan(0)
+
+    await access(join(ws, 'users', 'profiles.json'))
+    await access(join(ws, 'users', 'USER-TEMPLATE.md'))
+
+    const claude = await readFile(join(ws, 'CLAUDE.md'), 'utf-8')
+    expect(claude.startsWith(banner)).toBe(true)
+    expect(claude.slice(banner.length)).toBe(`\n${agent}`)
+  })
+
+  it('does not seed retired workspace files', async () => {
+    const result = await generateConfig(baseState(), rivetDir)
+    const names = await readdir(result.workspacePath)
+    for (const retired of [
+      'CORE.md',
+      'USER.md',
+      'WORKSPACE.md',
+      'CAPABILITIES.md',
+      'FILESYSTEM.md',
+      'README.md',
+      'HEARTBEAT.md',
+    ]) {
+      expect(names).not.toContain(retired)
+    }
+  })
+
+  it('does not overwrite pre-existing AGENT.md, MEMORY.md, users/, or CLAUDE.md', async () => {
+    const ws = join(rivetDir, 'workspace')
+    await mkdir(join(ws, 'users'), { recursive: true })
+    await writeFile(join(ws, 'AGENT.md'), 'custom agent')
+    await writeFile(join(ws, 'MEMORY.md'), 'custom memory')
+    await writeFile(join(ws, 'CLAUDE.md'), 'custom claude')
+    await writeFile(join(ws, 'users', 'profiles.json'), '{"_owner":"me"}')
+
+    await generateConfig(baseState(), rivetDir)
+
+    expect(await readFile(join(ws, 'AGENT.md'), 'utf-8')).toBe('custom agent')
+    expect(await readFile(join(ws, 'MEMORY.md'), 'utf-8')).toBe('custom memory')
+    expect(await readFile(join(ws, 'CLAUDE.md'), 'utf-8')).toBe('custom claude')
+    expect(await readFile(join(ws, 'users', 'profiles.json'), 'utf-8')).toBe('{"_owner":"me"}')
+  })
+
+  it('regenerates CLAUDE.md when AGENT.md is newer', async () => {
+    const ws = join(rivetDir, 'workspace')
+    await mkdir(ws, { recursive: true })
+    await writeFile(join(ws, 'AGENT.md'), 'updated agent')
+    await writeFile(join(ws, 'CLAUDE.md'), 'stale claude')
+    const past = new Date(Date.now() - 60_000)
+    await utimes(join(ws, 'CLAUDE.md'), past, past)
+
+    await generateConfig(baseState(), rivetDir)
+
+    const claude = await readFile(join(ws, 'CLAUDE.md'), 'utf-8')
+    expect(claude.startsWith(banner)).toBe(true)
+    expect(claude).toContain('updated agent')
+    expect(claude).not.toContain('stale claude')
   })
 })

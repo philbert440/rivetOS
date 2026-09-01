@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('./adapter.js', () => ({
   PostgresMemory: class {
@@ -22,13 +25,24 @@ import { SearchEngine } from './search.js'
 function fakeCtx(pluginConfig: Record<string, unknown>, env: Record<string, string> = {}) {
   return {
     pluginConfig,
-    env: { RIVETOS_PG_URL: 'postgres://test', ...env },
+    // Isolate from a live fleet users.json: explicit missing file fail-closes
+    // (owner only) unless the test supplies its own RIVETOS_USERS_FILE.
+    env: {
+      RIVETOS_PG_URL: 'postgres://test',
+      RIVETOS_USERS_FILE: '/nonexistent/rivetos-test-no-users.json',
+      ...env,
+    },
     logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
     registerMemory: vi.fn(),
     registerTool: vi.fn(),
     registerHook: vi.fn(),
   }
 }
+
+const tmpDirs: string[] = []
+afterEach(() => {
+  tmpDirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
+})
 
 describe('memory-postgres manifest', () => {
   it('does NOT register the delegation tracker by default', async () => {
@@ -68,6 +82,42 @@ describe('memory-postgres manifest', () => {
     )
     await expect(manifest.register(ctx as never)).resolves.toBeUndefined()
     expect(ctx.registerMemory).toHaveBeenCalled()
+  })
+
+  it('env-var-only configuration does not enable per-user routing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mem-noroute-'))
+    tmpDirs.push(dir)
+    const ctx = fakeCtx(
+      {},
+      {
+        RIVETOS_USER_DBS: '{"coco":{"pgUrl":"postgres://coco@db/coco_memory"}}',
+        RIVETOS_USERS_FILE: join(dir, 'missing.json'),
+        RIVETOS_SHARED_DIR: dir,
+      },
+    )
+    await manifest.register(ctx as never)
+    expect(ctx.registerMemory).toHaveBeenCalledTimes(1)
+    expect(ctx.registerMemory.mock.calls[0][0].constructor.name).not.toBe('RoutingMemory')
+  })
+
+  it('users.json registry enables per-user routing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mem-route-'))
+    tmpDirs.push(dir)
+    const file = join(dir, 'users.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: 'postgres://phil@db/phil' },
+          coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
+        },
+      }),
+    )
+    const ctx = fakeCtx({}, { RIVETOS_USERS_FILE: file, RIVETOS_SHARED_DIR: dir })
+    await manifest.register(ctx as never)
+    expect(ctx.registerMemory.mock.calls[0][0].constructor.name).toBe('RoutingMemory')
   })
 })
 

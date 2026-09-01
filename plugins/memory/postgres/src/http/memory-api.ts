@@ -34,8 +34,8 @@ export type MemorySearchFn = (
 export interface MemoryApiOptions {
   /** The node owner's database — used only for requests den left unstamped. */
   pool: pg.Pool
-  /** Per-user pools from RIVETOS_USER_DBS. `null` = configured but unusable
-   *  (tombstone): the user must get an error, never the owner's data. */
+  /** Per-user pools from the users.json registry. `null` = configured but
+   *  unusable (tombstone): the user must get an error, never the owner's data. */
   userPools?: ReadonlyMap<string, pg.Pool | null>
   embedEndpoint?: string
   embedModel?: string
