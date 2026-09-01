@@ -418,12 +418,16 @@ export interface MemorySearchHit {
   conversationId?: string
   /** Harness / capture session key — Chat deep-link when present. */
   sessionId?: string | null
+  /** Present when this hit was recovered by the empty-FTS trigram fallback. */
+  fallback?: 'trigram'
 }
 
 export interface MemorySearchResponse {
   query: string
   scope: 'messages' | 'summaries' | 'both'
   degraded: { reason: string; effect: string } | null
+  /** Present when the empty-FTS trigram fallback recovered hits. */
+  fallback?: 'trigram'
   results: MemorySearchHit[]
 }
 

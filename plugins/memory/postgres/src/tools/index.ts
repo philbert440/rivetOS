@@ -26,7 +26,11 @@ export function createMemoryTools(
 
   if (config?.pool) {
     tools.push(createBrowseTool(config.pool))
-    tools.push(createStatsTool(config.pool))
+    tools.push(
+      createStatsTool(config.pool, {
+        searchRuntime: () => searchEngine.getRuntimeStats(),
+      }),
+    )
     tools.push(createGetFullTool(config.pool))
   }
 

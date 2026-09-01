@@ -132,6 +132,34 @@ describe('/api/memory', () => {
     expect(body.degraded).toBeNull()
   })
 
+  it('derives degraded from hits.degraded and keeps fallback on hits', async () => {
+    const recovered = {
+      ...HIT,
+      fallback: 'trigram' as const,
+      degraded: { vector: true as const, reason: 'timeout' },
+    }
+    const hits = Object.assign([recovered], {
+      degraded: { vector: true as const, reason: 'timeout' },
+      fallback: 'trigram' as const,
+    })
+    const base = await serve({
+      pool: fakePool(),
+      embedEndpoint: 'http://192.168.1.9:9401',
+      embedTimeoutMs: '900',
+      hnswEfSearch: '80',
+      search: async () => hits,
+    })
+    const body = (await (await fetch(`${base}/api/memory/search?q=x`)).json()) as {
+      degraded: { reason: string } | null
+      fallback?: 'trigram'
+      results: Array<{ fallback?: 'trigram'; content: string }>
+    }
+    expect(body.degraded?.reason).toBe('timeout')
+    expect(body.fallback).toBe('trigram')
+    expect(body.results[0].fallback).toBe('trigram')
+    expect(body.results[0].content).toContain('loopback-only')
+  })
+
   it('browse returns newest messages with session ids', async () => {
     const base = await serve({ pool: fakePool(), search: async () => [] })
     const body = (await (await fetch(`${base}/api/memory/browse?role=user&limit=10`)).json()) as {

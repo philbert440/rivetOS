@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { makeWikiFor, resolveAdvertiseHost } from './agents.js'
+import { makeWikiFor, memoryApiEmbedFromEnv, resolveAdvertiseHost } from './agents.js'
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -23,6 +23,19 @@ describe('resolveAdvertiseHost', () => {
   it('ignores a blank advertise_host and falls back', () => {
     vi.stubEnv('RIVETOS_HOST', '192.0.2.51')
     expect(resolveAdvertiseHost({ advertise_host: '   ' })).toBe('192.0.2.51')
+  })
+})
+
+describe('createMemoryApiRoute env pass-through', () => {
+  it('receives embedQueryInstruction, embedTimeoutMs, hnswEfSearch from env', () => {
+    vi.stubEnv('RIVETOS_EMBED_QUERY_INSTRUCTION', 'Instruct: test\nQuery: ')
+    vi.stubEnv('RIVETOS_EMBED_TIMEOUT_MS', '8000')
+    vi.stubEnv('RIVETOS_HNSW_EF_SEARCH', '80')
+    expect(memoryApiEmbedFromEnv()).toEqual({
+      embedQueryInstruction: 'Instruct: test\nQuery: ',
+      embedTimeoutMs: '8000',
+      hnswEfSearch: '80',
+    })
   })
 })
 

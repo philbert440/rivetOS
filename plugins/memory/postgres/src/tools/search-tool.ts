@@ -3,13 +3,14 @@
  */
 
 import type { Tool } from '@rivetos/types'
-import type { SearchEngine, SearchHit } from '../search.js'
+import type { SearchEngine, SearchHit, SearchResults } from '../search.js'
 import type { Expander } from '../expand.js'
 import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
 import {
   applyWindowArgs,
   formatEmptySearchResult,
   formatSearchMessageBody,
+  formatVectorArmUnavailable,
   fmtHitWhen,
   fmtLocalDate,
   queryLlm,
@@ -98,7 +99,7 @@ export function createSearchTool(
       const shouldSynthesize = args.synthesize === true
 
       // 1. Search
-      const results = await searchEngine.search(query, {
+      const results: SearchResults = await searchEngine.search(query, {
         mode: mode as 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector',
         scope: scope as 'messages' | 'summaries' | 'both',
         limit,
@@ -107,16 +108,29 @@ export function createSearchTool(
         before,
       })
 
+      const degradedLine =
+        results.degraded && mode !== 'trigram' && mode !== 'regex'
+          ? formatVectorArmUnavailable(
+              results.degraded.reason,
+              mode as 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector',
+              results.length,
+            )
+          : ''
+      const degradedBanner = degradedLine ? `${degradedLine}\n\n` : ''
+
       if (results.length === 0) {
         // Hermes parity + full empty-path guidance (trigram / multi-angle /
         // browse). Bare "No results found." caused agents to trust a false
         // negative and burn turns instead of retrying.
-        return formatEmptySearchResult({
-          query,
-          since,
-          before,
-          window: typeof args.window === 'string' ? args.window : undefined,
-        })
+        return (
+          degradedBanner +
+          formatEmptySearchResult({
+            query,
+            since,
+            before,
+            window: typeof args.window === 'string' ? args.window : undefined,
+          })
+        )
       }
 
       // 2. Separate summaries from messages
@@ -175,10 +189,10 @@ export function createSearchTool(
           2000,
           config.compactorApiKey,
         )
-        return `## Synthesized Answer\n\n${answer}\n\n---\n\n${sections.join('\n')}`
+        return `${degradedBanner}## Synthesized Answer\n\n${answer}\n\n---\n\n${sections.join('\n')}`
       }
 
-      return sections.join('\n')
+      return degradedBanner + sections.join('\n')
     },
   }
 }

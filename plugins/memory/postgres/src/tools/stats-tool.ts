@@ -4,6 +4,7 @@
 
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
+import type { SearchRuntimeStats } from '../search.js'
 import { MIN_BATCH_SIZE } from '../compactor/types.js'
 import {
   fmtDate,
@@ -47,6 +48,7 @@ export interface StatsReportBlocks {
   stuckJobs?: string
   orphans?: string
   embeddingQueue: string
+  searchRuntime?: string
   unsummarized: string
   eligibleConvs?: string
   byAgent?: string
@@ -58,13 +60,25 @@ export interface StatsReportBlocks {
   freshness: string
 }
 
+export function formatSearchRuntimeStats(stats: SearchRuntimeStats): string {
+  return (
+    `\n**Search runtime:**` +
+    `\n  vectorArmDropped: ${String(stats.vectorArmDropped)}` +
+    `\n  vectorArmDroppedLastHour: ${String(stats.vectorArmDroppedLastHour)}` +
+    `\n  queryEmbedCacheHits: ${String(stats.queryEmbedCacheHits)}` +
+    `\n  queryEmbedCacheMisses: ${String(stats.queryEmbedCacheMisses)}`
+  )
+}
+
 export function assembleStatsReport(blocks: StatsReportBlocks): string {
   const parts: string[] = ['## Memory System Health', blocks.headline]
 
   if (blocks.stuckJobs) parts.push(blocks.stuckJobs)
   if (blocks.orphans) parts.push(blocks.orphans)
 
-  parts.push(blocks.embeddingQueue, blocks.unsummarized)
+  parts.push(blocks.embeddingQueue)
+  if (blocks.searchRuntime) parts.push(blocks.searchRuntime)
+  parts.push(blocks.unsummarized)
   if (blocks.eligibleConvs) parts.push(blocks.eligibleConvs)
 
   if (blocks.byAgent) parts.push(blocks.byAgent)
@@ -80,7 +94,10 @@ export function assembleStatsReport(blocks: StatsReportBlocks): string {
   return parts.join('\n')
 }
 
-export function createStatsTool(pool: pg.Pool): Tool {
+export function createStatsTool(
+  pool: pg.Pool,
+  opts?: { searchRuntime?: () => SearchRuntimeStats },
+): Tool {
   return {
     name: 'memory_stats',
     description:
@@ -413,11 +430,15 @@ export function createStatsTool(pool: pg.Pool): Tool {
           `\n  Newest message: ${newestMsg}` +
           `\n  Newest summary: ${newestSum}`
 
+        const runtime = opts?.searchRuntime?.()
+        const searchRuntime = runtime ? formatSearchRuntimeStats(runtime) : undefined
+
         return assembleStatsReport({
           headline,
           stuckJobs,
           orphans,
           embeddingQueue,
+          searchRuntime,
           unsummarized,
           eligibleConvs: eligibleConvsSection,
           byAgent: byAgentSection,

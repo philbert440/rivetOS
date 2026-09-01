@@ -28,7 +28,14 @@ export { PostgresMemory } from './adapter.js'
 export type { PostgresMemoryConfig } from './adapter.js'
 
 export { SearchEngine } from './search.js'
-export type { SearchOptions, SearchHit, SearchEngineConfig } from './search.js'
+export type {
+  SearchOptions,
+  SearchHit,
+  SearchEngineConfig,
+  SearchResults,
+  SearchDegraded,
+  SearchRuntimeStats,
+} from './search.js'
 
 export { Expander } from './expand.js'
 export type { SummaryNode, ExpandResult } from './expand.js'
@@ -115,11 +122,21 @@ export const manifest: PluginManifest = {
         'RIVETOS_EMBED_MODEL (or memory.postgres.embed_model) is required when an embedding URL is set. OpenAI-compatible embedding model id (example: text-embedding-3-small)',
       )
     }
+    // Config-first then env — same convention as embed_endpoint / embed_model.
+    const embedQueryInstruction =
+      (cfg.embed_query_instruction as string | undefined) ?? ctx.env.RIVETOS_EMBED_QUERY_INSTRUCTION
+    const embedTimeoutMs =
+      (cfg.embed_timeout_ms as number | string | undefined) ?? ctx.env.RIVETOS_EMBED_TIMEOUT_MS
+    const hnswEfSearch =
+      (cfg.hnsw_ef_search as number | string | undefined) ?? ctx.env.RIVETOS_HNSW_EF_SEARCH
 
     const memory = new PostgresMemory({
       connectionString,
       embedEndpoint: embedEndpoint || undefined,
       embedModel,
+      embedQueryInstruction,
+      embedTimeoutMs,
+      hnswEfSearch,
     })
 
     // Per-user routing (users.json registry): additional humans on this node
@@ -138,6 +155,9 @@ export const manifest: PluginManifest = {
           connectionString: db.pgUrl,
           embedEndpoint: embedEndpoint || undefined,
           embedModel,
+          embedQueryInstruction,
+          embedTimeoutMs,
+          hnswEfSearch,
         })
         userStores.set(userId, store)
         userEngines.set(userId, store)
