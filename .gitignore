@@ -49,3 +49,4 @@ apps/rivethub-desktop/src-tauri/gen/
 # Python bytecode
 __pycache__/
 *.pyc
+
