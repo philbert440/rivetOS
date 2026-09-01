@@ -43,10 +43,6 @@ const LINK_MAP = {
   'DEN.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md',
   'CODEBASE-REFERENCE.md':
     'https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md',
-  'plans/harness-control-plane.md':
-    'https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md',
-  'docs/plans/harness-control-plane.md':
-    'https://github.com/philbert440/rivetOS/blob/main/docs/plans/harness-control-plane.md',
 };
 
 const MAPPINGS = [

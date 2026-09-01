@@ -38,7 +38,7 @@
  * so it emits no `session-updated` with `previousSessionId` and the rotation
  * conformance suite has nothing to run against it.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'

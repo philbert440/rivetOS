@@ -28,7 +28,7 @@
  * **No pinning.** `dsh --help` documents `dsh --profile tui --resume
  * <session>` for an EXISTING session. There is no `--session-id`.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'

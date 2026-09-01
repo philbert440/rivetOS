@@ -271,7 +271,7 @@ export async function registerGateway(
   extraRoutes: GatewayRoute[] = [],
   extraUpgrades: GatewayUpgrade[] = [],
   /**
-   * Harness control plane (docs/plans/harness-control-plane.md): drivers to
+   * Harness control plane (docs/ARCHITECTURE.md): drivers to
    * register on the node's HarnessDriver registry at boot, alongside the
    * built-in drivers (`claude-code`, `grok-build`, `hermes`, `kimi-code`,
    * `deepseek-harness`) the gateway registers itself. A node with a harness of

@@ -250,7 +250,7 @@ async function main() {
 
   // ---- session identity ------------------------------------------------
   // Canonical form is `<harness-id>:<native-session-id>`
-  // (docs/plans/harness-control-plane.md § Session identity) — the SAME key
+  // (docs/ARCHITECTURE.md § Session identity) — the SAME key
   // the rivet-memory capture worker writes, so the den room and the memory
   // conversation join on one identity instead of two.
   //

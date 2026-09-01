@@ -346,7 +346,7 @@ class ChatService(
             DenHarnessClient.tryList(den, tokenForNode(den))
         }
 
-    // ---- harness control plane (docs/plans/harness-control-plane.md) ----
+    // ---- harness control plane (docs/ARCHITECTURE.md) ----
     //
     // Per-session plane selection, matching RivetHub web: a row a registered
     // driver claims sends/streams/resyncs through /api/harness-sessions, and

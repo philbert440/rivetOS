@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
  * Blocking by design, like [DenHarnessClient] — callers are already on
  * `Dispatchers.IO`.
  *
- * Contract: docs/plans/harness-control-plane.md, "As built (node control plane)".
+ * Contract: docs/ARCHITECTURE.md § Gateway surface (as built).
  */
 class HarnessControlPlaneClient(
     denBaseUrl: String,

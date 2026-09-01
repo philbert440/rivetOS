@@ -8,7 +8,7 @@
  * Node-only globals, so browser clients (`@rivetos/gateway-client`, hub) can
  * use the same codec the node uses.
  *
- * Source of truth: docs/plans/harness-control-plane.md § Session identity.
+ * Source of truth: docs/ARCHITECTURE.md § Session identity.
  */
 
 import { HarnessError } from './errors.js'

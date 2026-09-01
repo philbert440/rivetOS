@@ -1,5 +1,5 @@
 // Session-id normalization + the rotation alias store: the legacy-key table
-// from docs/plans/harness-control-plane.md, and the chain-hygiene rules
+// (docs/ARCHITECTURE.md § Session identity), and the chain-hygiene rules
 // (same-harness, cycle detection, depth cap).
 
 import { describe, expect, it } from 'vitest'
@@ -152,7 +152,8 @@ describe('alias store', () => {
 
   it(`caps chain depth at ${String(MAX_ALIAS_CHAIN_DEPTH)}`, () => {
     const store = createAliasStore()
-    const id = (n: number): SessionId => `claude-code:link-${String(n).padStart(4, '0')}` as SessionId
+    const id = (n: number): SessionId =>
+      `claude-code:link-${String(n).padStart(4, '0')}` as SessionId
     // Grow the chain from the head so each record() re-walks the whole thing:
     // a_n → a_{n-1} → … → a_0.
     let deepest = 0

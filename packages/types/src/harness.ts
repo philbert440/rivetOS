@@ -11,7 +11,7 @@
  * Types only; the session-id runtime helpers live in `harness-session-id.ts`
  * (same split as `task.ts` / `task-result.ts`).
  *
- * Source of truth: docs/plans/harness-control-plane.md.
+ * Source of truth: docs/ARCHITECTURE.md.
  */
 
 /** Left half of SessionId. Fixed product tokens. */

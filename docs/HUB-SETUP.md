@@ -4,7 +4,6 @@
 > not a separate agent runtime.
 >
 > Architecture frame: [ARCHITECTURE.md](ARCHITECTURE.md).
-> Control-plane plan: [plans/harness-control-plane.md](plans/harness-control-plane.md).
 
 ---
 
@@ -252,4 +251,3 @@ npx nx test @rivetos/rivethub-web
 - [DEN.md](DEN.md): den viewer and protocol
 - [GETTING-STARTED.md](GETTING-STARTED.md): install RivetOS
 - [DEPLOYMENT.md](DEPLOYMENT.md): Docker / Proxmox / mesh
-- [plans/harness-control-plane.md](plans/harness-control-plane.md): as-built hub binding

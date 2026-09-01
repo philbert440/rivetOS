@@ -35,7 +35,7 @@ Rail: Conversations (`/`), Terminal, Den — separator — Memory, Files, Tasks,
 ### Harness control plane binding (2026-08-08)
 
 Chat now speaks the node's harness control plane
-(`docs/plans/harness-control-plane.md`) for sessions a registered driver owns —
+(`docs/ARCHITECTURE.md`) for sessions a registered driver owns —
 `claude-code` today. Two bindings, one surface, chosen per session:
 
 | | control plane | legacy (unclaimed harnesses) |

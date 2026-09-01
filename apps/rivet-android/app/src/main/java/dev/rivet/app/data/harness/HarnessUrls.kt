@@ -12,7 +12,7 @@ package dev.rivet.app.data.harness
  * - WS resources ride the query string, since there is no dynamic segment for
  *   a router to match.
  *
- * See docs/plans/harness-control-plane.md, "As built (node control plane)".
+ * See docs/ARCHITECTURE.md § Gateway surface (as built).
  */
 class HarnessUrls(denBaseUrl: String) {
 

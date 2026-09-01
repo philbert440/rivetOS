@@ -98,8 +98,8 @@ export interface AgentEventMeta {
    * hook reports both: `session` stays the den room everything joins on, and
    * this carries the id the harness store and capture key. It is also the only
    * place on the wire a session-id ROTATION is observable — the hermes driver
-   * watches this field change within one room (docs/plans/harness-control-plane.md
-   * § Native session id rotation).
+   * watches this field change within one room (docs/ARCHITECTURE.md
+   * § Session identity).
    */
   harnessSession?: string
   /** Milliseconds since epoch at emit time. */

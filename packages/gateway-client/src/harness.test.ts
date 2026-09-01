@@ -1,5 +1,5 @@
 // Client half of the harness control-plane shape lock (see
-// docs/plans/harness-control-plane.md § As built). The stub server records the
+// docs/ARCHITECTURE.md § Gateway surface (as built)). The stub server records the
 // exact path/method/body it was called with, so these assertions pin the URL
 // shapes — including `enc(SessionId)` round-tripping through ids that contain
 // `:` and `/` — and the typed-error → GatewayError mapping.

@@ -31,7 +31,7 @@
  * Auth is the den server's bearer gate, same as every other `/api/*` route;
  * these handlers assume the caller already passed it.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'

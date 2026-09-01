@@ -88,7 +88,7 @@
  * unchanged, and its TUI parses bracketed paste (DEC 2004), which is what the
  * term manager wraps an injected turn in.
  *
- * See docs/plans/harness-control-plane.md.
+ * See docs/ARCHITECTURE.md.
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'

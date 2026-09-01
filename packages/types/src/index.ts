@@ -138,7 +138,7 @@ export {
   taskResultFenceInstructions,
 } from './task-result.js'
 export type { ParsedTaskResult } from './task-result.js'
-// Harness control plane (docs/plans/harness-control-plane.md). `SessionSummary`
+// Harness control plane (docs/ARCHITECTURE.md). `SessionSummary`
 // is re-exported as `HarnessSessionSummary`: the bare name is already taken by
 // the den chat-session summary in gateway-api.js.
 export type {
