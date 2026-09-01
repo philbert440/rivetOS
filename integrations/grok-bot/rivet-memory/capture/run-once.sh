@@ -34,6 +34,12 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# GROKBOT_TRANSCRIPT_ROOT is required — fail hard if unset
+if [[ -z "${GROKBOT_TRANSCRIPT_ROOT}" ]]; then
+    echo "ERROR: GROKBOT_TRANSCRIPT_ROOT not set, cannot locate transcripts" >&2
+    exit 1
+fi
+
 # Fail-closed check: memory-postgres and sidecar dist must exist
 SKIP_INGEST=0
 if [[ ! -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]]; then
@@ -66,6 +72,7 @@ models=$(jq -r '.models[] | @json' "${MODELS_JSON}")
 transcript_rel=$(jq -r '.transcriptRel' "${MODELS_JSON}")
 
 any_model_failed=0
+any_model_processed=0
 
 # Process each model
 while IFS= read -r model_json; do
@@ -77,11 +84,6 @@ while IFS= read -r model_json; do
     echo "Processing model: ${model_name} (${model_id})"
     
     # Resolve transcript path
-    if [[ -z "${GROKBOT_TRANSCRIPT_ROOT}" ]]; then
-        echo "  SKIP: GROKBOT_TRANSCRIPT_ROOT not set, cannot locate transcript"
-        continue
-    fi
-    
     transcript_path="${transcript_rel//<id>/${model_id}}"
     transcript_path="${transcript_path//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
     
@@ -89,6 +91,8 @@ while IFS= read -r model_json; do
         echo "  SKIP: Transcript not found at ${transcript_path}"
         continue
     fi
+    
+    any_model_processed=1
     
     # Convert
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"
@@ -126,6 +130,12 @@ while IFS= read -r model_json; do
     
     echo "  Done: ${model_name}"
 done <<< "${models}"
+
+# All models skipped (no transcripts found) must not look like success
+if [[ ${any_model_processed} -eq 0 ]]; then
+    echo "ERROR: No models processed (no transcripts found)" >&2
+    exit 1
+fi
 
 echo "Capture run complete"
 exit ${any_model_failed}

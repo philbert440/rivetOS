@@ -3,6 +3,7 @@
 Emits one output row per source line (strict 1:1) so ordinals stay stable.
 Blank/unparseable/contentless source lines become placeholder rows.
 Each assistant row keeps all text plus every tool_use in full.
+Output uses camelCase (toolCalls, createdAt) matching ingestSession interface.
 """
 import json
 import sys
@@ -41,6 +42,27 @@ def normalize_timestamp(raw):
     return None
 
 
+def extract_tool_result_text(content):
+    """Extract text from tool_result content (may be string, list, or dict)."""
+    if isinstance(content, str):
+        return content[:8000]
+    if isinstance(content, list):
+        # Claude-shaped: list of text blocks
+        chunks = []
+        for block in content:
+            if isinstance(block, dict) and block.get('type') == 'text':
+                chunks.append(str(block.get('text', '')))
+            elif isinstance(block, str):
+                chunks.append(block)
+            else:
+                chunks.append(str(block))
+        return '\n'.join(chunks)[:8000]
+    if isinstance(content, dict):
+        # Extract text field if present
+        return str(content.get('text') or content)[:8000]
+    return str(content)[:8000]
+
+
 def parts_of(rec):
     """Extract role and content from various Grok Bot message shapes."""
     if not isinstance(rec, dict):
@@ -57,7 +79,7 @@ def parts_of(rec):
 
 
 def flatten(rec):
-    """Flatten Grok Bot message into role, text, and tool_calls."""
+    """Flatten Grok Bot message into role, text, and toolCalls."""
     role, content = parts_of(rec)
     chunks = []
     tools = []
@@ -81,8 +103,8 @@ def flatten(rec):
             elif t == 'tool_use':
                 tools.append({'id': p.get('id'), 'name': p.get('name'), 'input': p.get('input')})
             elif t == 'tool_result':
-                # Keep tool_result text inline (not as tool_calls)
-                result_text = str(p.get('content') or '')[:8000]
+                # Keep tool_result text inline (not as toolCalls)
+                result_text = extract_tool_result_text(p.get('content'))
                 if result_text:
                     chunks.append('[tool_result] ' + result_text)
     text = '\n'.join(c for c in chunks if c)
@@ -122,14 +144,15 @@ with open(SRC, encoding='utf-8', errors='replace') as fin, open(tmp_dst, 'w', en
         # Even if text/tools empty, emit row (ordinal stability)
         out = {'role': role, 'content': text}
         if tools:
-            out['tool_calls'] = tools
+            # camelCase to match IngestMessage interface
+            out['toolCalls'] = tools
 
-        # Preserve timing, normalizing to ISO-8601
+        # Preserve timing, normalizing to ISO-8601, using camelCase
         for k in ('createdAt', 'timestamp', 'created_at'):
             if rec.get(k) is not None:
                 normalized = normalize_timestamp(rec[k])
                 if normalized:
-                    out['created_at'] = normalized
+                    out['createdAt'] = normalized
                     break
 
         # Preserve id if present
