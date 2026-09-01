@@ -9,6 +9,7 @@ import { useWikiSettings } from '../stores/wiki-settings.js'
 import { BUILD_INFO } from '../lib/build-info.js'
 import { DevicesSection } from '../components/devices-section.js'
 import { UpdatesSection } from '../components/updates-section.js'
+import { TerminalSection } from '../components/terminal-section.js'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -242,6 +243,8 @@ export function SettingsPage(): JSX.Element {
         ))}
       </div>
       <p className="mt-2 text-xs text-ink-dim">System follows the OS light/dark setting.</p>
+
+      <TerminalSection />
 
       <SavedNodesSection />
 
