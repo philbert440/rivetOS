@@ -38,6 +38,7 @@ import {
   type NodeChoice,
 } from '../lib/agent-roster.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
+import { accentFor } from '../lib/agent-accent.js'
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
@@ -439,13 +440,16 @@ function AgentRow({
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
         title={nodeKnown ? agent.name : 'node unknown'}
       >
-        {agent.color && (
-          <span
-            className="size-2 shrink-0 rounded-full"
-            style={{ background: agent.color }}
-            aria-hidden
-          />
-        )}
+        <span
+          className="size-2 shrink-0 rounded-full"
+          style={{
+            background: accentFor({
+              presetColor: agent.color,
+              command: agent.model,
+            }),
+          }}
+          aria-hidden
+        />
         <span className="min-w-0 truncate text-xs text-ink">{agent.name}</span>
         {activityLabel && (
           <span

@@ -71,7 +71,7 @@ import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
-import { harnessAccent } from '../lib/harness-colors.js'
+import { accentFor } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import {
@@ -103,9 +103,18 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import { Archive, ArchiveRestore, Pencil, Square, Trash2 } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  Square,
+  Trash2,
+} from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
+import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { discardDraft } from '../lib/discard-session.js'
 import {
   getSessionMode,
@@ -339,13 +348,27 @@ export function ChatPage(): JSX.Element {
     const pins = listAllAgentPins()
     const pinIds = new Set(pins.map((p) => p.sessionId))
     const withoutAgentDrafts = base.filter((it) => !(it.kind === 'draft' && pinIds.has(it.key)))
-    const existing = new Set(withoutAgentDrafts.map((it) => it.key))
     const house = queryClient
-      .getQueriesData<{ id: string; name: string; color: string }[]>({
+      .getQueriesData<{ id: string; name: string; color: string; model: string }[]>({
         queryKey: ['agents-all-nodes'],
       })
       .flatMap(([, data]) => data ?? [])
     const byId = new Map(house.map((a) => [a.id, a]))
+    const pinBySession = new Map(pins.map((p) => [p.sessionId, p]))
+    const withAgentAccent = withoutAgentDrafts.map((it) => {
+      const pin = pinBySession.get(it.key)
+      if (!pin) return it
+      const preset = byId.get(pin.agentId)
+      if (!preset) return it
+      return {
+        ...it,
+        accent: accentFor({
+          presetColor: preset.color,
+          command: preset.model || it.command,
+        }),
+      }
+    })
+    const existing = new Set(withAgentAccent.map((it) => it.key))
     const pinItems: ChatItem[] = []
     for (const pin of pins) {
       if (existing.has(pin.sessionId)) continue
@@ -357,10 +380,12 @@ export function ChatPage(): JSX.Element {
         updatedAt: Date.now(),
         pin: true,
         pinNodeBaseUrl: pin.nodeBaseUrl,
-        accent: preset?.color || undefined,
+        accent: preset
+          ? accentFor({ presetColor: preset.color, command: preset.model })
+          : undefined,
       })
     }
-    const listed = [...pinItems, ...withoutAgentDrafts]
+    const listed = [...pinItems, ...withAgentAccent]
     // Keep the open conversation listed even when no source carries its key —
     // a pin rekeyed out from under the open thread (the sidebar probe adopting
     // a claimed id, a rotation the registry stream delivered) must not drop
@@ -582,12 +607,15 @@ function DrawerItem(props: {
           props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
         }`}
       >
-        {/* harness accent: claude clay / grok grey / local emerald */}
+        {/* same accent as the Agents rail dot (preset hex, else harness) */}
         <span
           className="size-1.5 shrink-0 rounded-full"
           style={{
-            background:
-              props.item.accent || harnessAccent(props.item.harnessId ?? props.item.command),
+            background: accentFor({
+              presetColor: props.item.accent,
+              harnessId: props.item.harnessId,
+              command: props.item.command,
+            }),
           }}
           aria-hidden
         />
@@ -674,6 +702,8 @@ function SessionDrawer(props: {
   const archivedKeys = useArchived((s) => s.keys)
   const archive = useArchived((s) => s.archive)
   const unarchive = useArchived((s) => s.unarchive)
+  const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
+  const setConversationsCollapsed = useSidebarPrefs((s) => s.setConversationsCollapsed)
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
 
@@ -699,18 +729,52 @@ function SessionDrawer(props: {
     )
   })
 
+  const openConversation = (key: string): void => {
+    setActive(key)
+    if (conversationsCollapsed) setConversationsCollapsed(false)
+  }
+
+  const activeListed = props.items.find((it) => it.key === props.active)
+
+  const renderRow = (it: ChatItem): JSX.Element => (
+    <DrawerItem
+      key={it.key}
+      item={it}
+      active={it.key === props.active}
+      archived={isArchived(it)}
+      onSelect={() => openConversation(it.key)}
+      onArchive={() => archive(storageKey(itemBase(it), it.key))}
+      onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
+      onDiscard={it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined}
+    />
+  )
+
   return (
     <div
       style={{ width: props.width }}
       className="flex shrink-0 flex-col border-r border-line bg-panel/40"
     >
       <div className="flex items-center justify-between px-3 py-3">
-        <span className="font-mono text-xs text-ink-dim">
-          conversations{' '}
-          <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
-            {wsStatus === 'open' ? '●' : '○'}
+        <button
+          type="button"
+          aria-expanded={!conversationsCollapsed}
+          aria-controls="conversations-list"
+          onClick={() => setConversationsCollapsed(!conversationsCollapsed)}
+          className="flex min-w-0 flex-1 items-center gap-1 font-mono text-xs text-ink-dim hover:text-ink"
+        >
+          {conversationsCollapsed ? (
+            <ChevronRight className="size-3 shrink-0" aria-hidden />
+          ) : (
+            <ChevronDown className="size-3 shrink-0" aria-hidden />
+          )}
+          <span className="min-w-0 truncate">
+            conversations{' '}
+            <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
+              {wsStatus === 'open' ? '●' : '○'}
+            </span>{' '}
+            ({props.items.length - archivedCount})
           </span>
-        </span>
+        </button>
         <button
           onClick={() => {
             const id = newSessionId()
@@ -722,7 +786,7 @@ function SessionDrawer(props: {
           + new
         </button>
       </div>
-      {(props.items.length >= DRAWER_FILTER_MIN || q) && (
+      {!conversationsCollapsed && (props.items.length >= DRAWER_FILTER_MIN || q) && (
         <div className="px-3 pb-2">
           <input
             value={filter}
@@ -734,39 +798,36 @@ function SessionDrawer(props: {
         </div>
       )}
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
-      <div className="flex-1 overflow-y-auto px-2">
-        {items.map((it) => (
-          <DrawerItem
-            key={it.key}
-            item={it}
-            active={it.key === props.active}
-            archived={isArchived(it)}
-            onSelect={() => setActive(it.key)}
-            onArchive={() => archive(storageKey(itemBase(it), it.key))}
-            onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
-            onDiscard={
-              it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined
-            }
-          />
-        ))}
-        {items.length === 0 && q && (
-          <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
-        )}
-        {items.length === 0 && !q && archivedCount > 0 && (
-          <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
-        )}
-        {props.items.length === 0 && !props.error && (
-          <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
+      <div id="conversations-list" className="flex min-h-0 flex-1 flex-col">
+        {conversationsCollapsed ? (
+          activeListed && <div className="px-2">{renderRow(activeListed)}</div>
+        ) : (
+          <>
+            <div className="flex-1 overflow-y-auto px-2">
+              {items.map((it) => renderRow(it))}
+              {items.length === 0 && q && (
+                <div className="px-3 py-2 text-xs text-ink-dim">
+                  no matches for “{filter.trim()}”
+                </div>
+              )}
+              {items.length === 0 && !q && archivedCount > 0 && (
+                <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
+              )}
+              {props.items.length === 0 && !props.error && (
+                <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
+              )}
+            </div>
+            {archivedCount > 0 && (
+              <button
+                onClick={() => setShowArchived((v) => !v)}
+                className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-ink-dim hover:text-ink"
+              >
+                {showArchived ? '▾' : '▸'} archived ({archivedCount})
+              </button>
+            )}
+          </>
         )}
       </div>
-      {archivedCount > 0 && (
-        <button
-          onClick={() => setShowArchived((v) => !v)}
-          className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-ink-dim hover:text-ink"
-        >
-          {showArchived ? '▾' : '▸'} archived ({archivedCount})
-        </button>
-      )}
     </div>
   )
 }
@@ -1501,7 +1562,10 @@ function ActiveSession(props: {
           {/* Transcript owns its scroll container (stick-to-bottom lives there). */}
           <Transcript
             messages={shownMessages}
-            accent={harnessAccent(harnessCommand ?? settings?.agent)}
+            accent={accentFor({
+              presetColor: props.item?.accent,
+              command: harnessCommand ?? settings?.agent,
+            })}
             live={live}
             outbound={outboundStatus}
             onInjectOutbound={onInjectOutbound}
