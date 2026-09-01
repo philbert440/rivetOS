@@ -48,6 +48,35 @@ export interface SearchDegraded {
   reason: string
 }
 
+/**
+ * Chunk arm unavailable for this search. Distinct from {@link SearchDegraded}:
+ * the vector arm still ran over the parent tables, only the per-chunk index was
+ * skipped (table missing, `SELECT` not granted to the connecting role, or the
+ * chunk vectors are a different width than the query embedding).
+ */
+export interface ChunkArmDegraded {
+  chunks: true
+  reason: string
+}
+
+/**
+ * The best-matching chunk of a long message, from `ros_message_chunks`.
+ *
+ * `charStart`/`charEnd` index the *composed embed text* the worker chunked
+ * (content.trim() + '\n' + tool_result, capped at 32768) — NOT
+ * `ros_messages.content`. Render `text` verbatim; never re-slice the parent
+ * content with these offsets.
+ */
+export interface SearchSnippet {
+  text: string
+  charStart: number
+  charEnd: number
+  /** 0-based chunk index within the message. */
+  chunkIdx: number
+  /** Total chunks stored for the message, when known (for `[chunk 3/7]`). */
+  chunkCount?: number
+}
+
 export interface SearchHit {
   id: string
   type: 'message' | 'summary'
@@ -80,6 +109,16 @@ export interface SearchHit {
    * (see {@link SearchResults}) so empty result sets can still signal it.
    */
   degraded?: SearchDegraded
+  /**
+   * Present when the chunk arm was skipped for the search that produced this
+   * hit (parents were still searched). Additive; also set on the result array.
+   */
+  chunkArm?: ChunkArmDegraded
+  /**
+   * Best-matching chunk for a long message, when the chunk arm won the merge.
+   * Renderers show this instead of the message head.
+   */
+  snippet?: SearchSnippet
 }
 
 /**
@@ -90,6 +129,7 @@ export interface SearchHit {
 export type SearchResults = SearchHit[] & {
   degraded?: SearchDegraded
   fallback?: 'trigram'
+  chunkArm?: ChunkArmDegraded
 }
 
 /**
@@ -104,6 +144,15 @@ export interface SearchRuntimeStats {
   vectorArmDroppedLastHour: number
   queryEmbedCacheHits: number
   queryEmbedCacheMisses: number
+  /** Vector-arm message hits returned (post-slice) whose similarity came from `ros_message_chunks`. */
+  chunkArmHits: number
+  /** Vector-arm message hits returned (post-slice) whose similarity came from the parent embedding. */
+  parentArmHits: number
+  /**
+   * Times this engine disabled the chunk arm (missing table / grant / width).
+   * Sticky for the process lifetime once tripped — not a per-search tally.
+   */
+  chunkArmUnavailable: number
 }
 
 /**
@@ -115,6 +164,12 @@ export interface SearchRuntimeStats {
 interface Candidate extends SearchHit {
   /** temporal·W_TEMPORAL + importance·W_IMPORTANCE, roughly [0, 0.55] */
   boost: number
+  /**
+   * Cosine similarity from the vector arm (parent embedding, or the best chunk
+   * once merged). Only set by the vector retriever — text arms leave it
+   * undefined. Used to merge the chunk and parent arms; never scored directly.
+   */
+  sim?: number
 }
 
 export interface SearchEngineConfig {
@@ -180,6 +235,17 @@ interface CandidateRow {
   kind?: string
   earliest_at?: Date | null
   latest_at?: Date | null
+  /** Cosine similarity, present on vector-arm rows only. */
+  semantic_sim?: string | null
+}
+
+/** A vector-arm row sourced from `ros_message_chunks` (joined to its parent). */
+interface ChunkCandidateRow extends CandidateRow {
+  chunk_content: string
+  chunk_char_start: number
+  chunk_char_end: number
+  chunk_idx: number
+  chunk_count?: string | number | null
 }
 
 interface EmbedResponseItem {
@@ -219,6 +285,29 @@ const MINUTE_MS = 60_000
  */
 const HYBRID_POOL_MIN = 50
 const HYBRID_POOL_MAX = 100
+
+/**
+ * Chunk-arm ANN depth, as a multiple of the message pool. Several chunks of the
+ * same message can crowd the top of the chunk index, so the raw scan must be
+ * deeper than the pool it collapses into (DISTINCT ON message_id).
+ */
+const CHUNK_POOL_MULTIPLIER = 4
+const CHUNK_POOL_MAX = 400
+
+/**
+ * Probe deciding whether the chunk arm can run. Returns `present` and
+ * `granted` separately: the table may not exist yet (pre-0014 DB) and
+ * `rivet_device` may lack SELECT on it (grant added to DEVICE_GROUP_GRANTS_SQL
+ * after some deployments bootstrapped). `to_regclass` guards
+ * `has_table_privilege`, which errors on an unknown relation name.
+ */
+const CHUNK_ARM_PROBE_SQL = `SELECT
+    reg IS NOT NULL AS present,
+    CASE
+      WHEN reg IS NULL THEN false
+      ELSE has_table_privilege(current_user, 'ros_message_chunks', 'SELECT')
+    END AS granted
+  FROM (SELECT to_regclass('ros_message_chunks') AS reg) t`
 
 /**
  * Minimum trimmed content length for a message to be eligible in HYBRID search.
@@ -356,25 +445,102 @@ class QueryEmbedCache {
   }
 }
 
+/**
+ * Human-readable reason for a chunk-arm failure. Postgres SQLSTATEs we expect:
+ * 42501 = insufficient privilege (grant never applied), 42P01 = undefined table
+ * (pre-0014 DB), 22000/XX000 = halfvec width mismatch on a half-migrated DB.
+ */
+export function chunkArmErrorReason(err: unknown): string {
+  const code = typeof err === 'object' && err !== null && 'code' in err ? String(err.code) : ''
+  if (code === '42501') return 'no SELECT on ros_message_chunks'
+  if (code === '42P01') return 'ros_message_chunks missing'
+  if (code) return `sql ${code}`
+  return err instanceof Error ? err.message : 'unknown'
+}
+
 function withSearchMeta(
   hits: SearchHit[],
-  meta: { degraded?: SearchDegraded; fallback?: 'trigram' } = {},
+  meta: { degraded?: SearchDegraded; fallback?: 'trigram'; chunkArm?: ChunkArmDegraded } = {},
 ): SearchResults {
   const prior = hits as SearchResults
   const fallback = meta.fallback ?? prior.fallback
   const degraded = meta.degraded ?? prior.degraded
-  const needAnnotate = Boolean(degraded || fallback)
+  const chunkArm = meta.chunkArm ?? prior.chunkArm
+  const needAnnotate = Boolean(degraded || fallback || chunkArm)
   const annotated = needAnnotate
     ? hits.map((h) => ({
         ...h,
         ...(fallback ? { fallback } : {}),
         ...(degraded ? { degraded } : {}),
+        ...(chunkArm ? { chunkArm } : {}),
       }))
     : hits
   const out = annotated as SearchResults
   if (degraded) out.degraded = degraded
   if (fallback) out.fallback = fallback
+  if (chunkArm) out.chunkArm = chunkArm
   return out
+}
+
+/**
+ * Merge the two vector arms for messages: per-chunk hits and whole-message
+ * (parent embedding) hits.
+ *
+ * A message's similarity is the max of the two arms — a 12k-char message whose
+ * answer sits in chunk 3 scores on chunk 3 alone instead of being diluted by
+ * the mean-pooled parent vector. The snippet is attached whenever the chunk arm
+ * matched at least as well as the parent (a strictly better parent match means
+ * the message as a whole is the hit, so no single chunk is billed as *the*
+ * excerpt). Ties go to the chunk: identical score, strictly more information.
+ *
+ * Messages found by only one arm pass through untouched, so a parent-only row
+ * (short message, or chunks not embedded yet) is never dropped.
+ *
+ * Returns candidates ordered by similarity. When `limit` is set, the list is
+ * sliced to that many hits *before* the per-arm win counts (these feed
+ * `memory_stats`) so the counters match what the caller actually returned,
+ * not the pre-slice merged pool.
+ */
+export function mergeChunkAndParentCandidates<
+  T extends { id: string; sim?: number; snippet?: SearchSnippet },
+>(
+  parents: T[],
+  chunks: T[],
+  limit?: number,
+): { merged: T[]; chunkWins: number; parentWins: number } {
+  const simOf = (c: T): number => c.sim ?? 0
+  const byId = new Map<string, T>()
+
+  for (const p of parents) {
+    if (!byId.has(p.id)) byId.set(p.id, p)
+  }
+
+  for (const c of chunks) {
+    const parent = byId.get(c.id)
+    if (!parent) {
+      byId.set(c.id, c)
+      continue
+    }
+    if (simOf(c) >= simOf(parent)) {
+      // Chunk wins: keep the parent row (identical columns) but take the chunk
+      // similarity and its snippet.
+      byId.set(c.id, { ...parent, sim: simOf(c), snippet: c.snippet })
+    }
+  }
+
+  const merged = Array.from(byId.values())
+  merged.sort((a, b) => simOf(b) - simOf(a))
+  const out = limit !== undefined ? merged.slice(0, limit) : merged
+
+  const chunkIds = new Set(chunks.map((c) => c.id))
+  let chunkWins = 0
+  let parentWins = 0
+  for (const m of out) {
+    if (chunkIds.has(m.id) && m.snippet) chunkWins += 1
+    else parentWins += 1
+  }
+
+  return { merged: out, chunkWins, parentWins }
 }
 
 /** Fallback semantic proxy when embedding is unavailable */
@@ -403,6 +569,16 @@ export class SearchEngine {
   private dropBucketCounts = new Array<number>(DROP_BUCKET_MINUTES).fill(0)
   private dropBucketEpoch = new Array<number>(DROP_BUCKET_MINUTES).fill(-1)
   private lastVectorDropLogAt = 0
+  /**
+   * Chunk-arm availability, probed once per engine (grants/DDL do not change
+   * under a live process in practice, and a probe per search is a wasted
+   * round trip). `null` = not yet probed.
+   */
+  private chunkArmAvailable: boolean | null = null
+  private chunkArmDisabledReason: string | null = null
+  private chunkArmHitsTotal = 0
+  private parentArmHitsTotal = 0
+  private chunkArmUnavailableTotal = 0
 
   constructor(pool: pg.Pool, config?: SearchEngineConfig) {
     this.pool = pool
@@ -427,6 +603,9 @@ export class SearchEngine {
       vectorArmDroppedLastHour: this.lastHourDropCount(Date.now()),
       queryEmbedCacheHits: this.queryEmbedCache.hits,
       queryEmbedCacheMisses: this.queryEmbedCache.misses,
+      chunkArmHits: this.chunkArmHitsTotal,
+      parentArmHits: this.parentArmHitsTotal,
+      chunkArmUnavailable: this.chunkArmUnavailableTotal,
     }
   }
 
@@ -474,7 +653,7 @@ export class SearchEngine {
       }
       const hits = await this.vectorSearch(embedded.vec, { scope, limit, agent: options?.agent })
       void this.bumpAccess(hits)
-      return withSearchMeta(hits)
+      return withSearchMeta(hits, { chunkArm: this.chunkArmSignal() })
     }
 
     // Explicit single text mode: fts / trigram / regex.
@@ -585,7 +764,12 @@ export class SearchEngine {
     }
 
     const fused = this.rrfFuse([ftsList, trigramList, vectorList])
-    const topResults = withSearchMeta(fused.slice(0, limit), { degraded, fallback })
+    const topResults = withSearchMeta(fused.slice(0, limit), {
+      degraded,
+      fallback,
+      // Only meaningful when the vector arm actually ran.
+      ...(qvec ? { chunkArm: this.chunkArmSignal() } : {}),
+    })
     void this.bumpAccess(topResults)
     return topResults
   }
@@ -604,7 +788,9 @@ export class SearchEngine {
     const armKeySets = lists.map((l) => new Set(l.map(keyOf)))
 
     const scored = Array.from(fusedMap.values()).map(({ item, rrf }) => {
-      const { boost, ...rest } = item
+      // `sim` is vector-arm bookkeeping (merge input), not part of SearchHit.
+      const { boost, sim, ...rest } = item
+      void sim
       const key = keyOf(item)
       const armCount = armKeySets.reduce((n, s) => n + (s.has(key) ? 1 : 0), 0)
       // Summaries (curated layer) get a modest bonus so they aren't buried under
@@ -724,6 +910,7 @@ export class SearchEngine {
         const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
                m.tool_name, m.tool_result,
+               (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
                ${boostExpr} AS boost
         FROM ros_messages m
         WHERE ${conds.join(' AND ')}
@@ -731,7 +918,16 @@ export class SearchEngine {
         LIMIT $${String(params.length)}
       `
         const res = await client.query<CandidateRow>(sql, params)
-        out.push(...res.rows.map((r) => this.mapCandidate(r, 'message')))
+        const parents = res.rows.map((r) => this.mapCandidate(r, 'message'))
+        const chunks = await this.retrieveChunkCandidates(client, vecLiteral, pool, options)
+        const { merged, chunkWins, parentWins } = mergeChunkAndParentCandidates(
+          parents,
+          chunks,
+          pool,
+        )
+        this.chunkArmHitsTotal += chunkWins
+        this.parentArmHitsTotal += parentWins
+        out.push(...merged)
       }
 
       if (scope === 'summaries' || scope === 'both') {
@@ -767,6 +963,178 @@ export class SearchEngine {
     })
   }
 
+  /**
+   * Chunk arm: nearest chunks in `ros_message_chunks`, collapsed to one row per
+   * parent message (the best chunk wins) and joined back to `ros_messages` so
+   * every candidate carries the same columns as the parent arm.
+   *
+   * Runs inside the caller's `withHnswEfSearch` transaction but under its own
+   * SAVEPOINT: a chunk-arm failure (missing grant, or chunk vectors at a
+   * different width than the query embedding on a half-migrated DB) must not
+   * abort the transaction the parent arm already succeeded in. On failure the
+   * arm is disabled for the life of the engine and the search returns parents.
+   *
+   * The same date/agent/quality filters as the parent arm are applied to the
+   * joined message, so chunks inherit the message's tenancy and windowing.
+   */
+  private async retrieveChunkCandidates(
+    client: pg.PoolClient,
+    vecLiteral: string,
+    pool: number,
+    options?: SearchOptions,
+  ): Promise<Candidate[]> {
+    if (!(await this.chunkArmReady(client))) return []
+
+    const params: unknown[] = [vecLiteral]
+    // Deliberately omit `m.embedding IS NOT NULL`: a message with chunk vectors
+    // but no parent vector must still surface from this arm.
+    const conds = ['c.embedding IS NOT NULL', MESSAGE_QUALITY_SQL]
+    if (options?.agent) {
+      params.push(options.agent)
+      conds.push(`m.agent = $${String(params.length)}`)
+    }
+    if (options?.since) {
+      params.push(options.since)
+      conds.push(`m.created_at >= $${String(params.length)}`)
+    }
+    if (options?.before) {
+      params.push(options.before)
+      conds.push(`m.created_at < $${String(params.length)}`)
+    }
+    params.push(Math.min(CHUNK_POOL_MAX, pool * CHUNK_POOL_MULTIPLIER))
+    const chunkPoolIdx = params.length
+    params.push(pool)
+    const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
+
+    const sql = `
+      WITH ranked AS (
+        SELECT c.message_id, c.idx, c.char_start, c.char_end, c.content,
+               (1 - (c.embedding <=> $1::halfvec)) AS sim
+        FROM ros_message_chunks c
+        JOIN ros_messages m ON m.id = c.message_id
+        WHERE ${conds.join(' AND ')}
+        ORDER BY c.embedding <=> $1::halfvec
+        LIMIT $${String(chunkPoolIdx)}
+      ), best AS (
+        SELECT DISTINCT ON (message_id)
+               message_id, idx, char_start, char_end, content, sim
+        FROM ranked
+        ORDER BY message_id, sim DESC, idx
+      )
+      SELECT m.id, m.content, m.role, m.agent, m.metadata, m.conversation_id, m.created_at,
+             m.tool_name, m.tool_result,
+             ${boostExpr} AS boost,
+             b.sim AS semantic_sim,
+             b.content AS chunk_content,
+             b.char_start AS chunk_char_start,
+             b.char_end AS chunk_char_end,
+             b.idx AS chunk_idx,
+             -- Total chunks for the message (not the ranked-LIMIT subset). A
+             -- window over ranked would under-count [chunk 3/7].
+             (SELECT count(*) FROM ros_message_chunks c2 WHERE c2.message_id = b.message_id)
+               AS chunk_count
+      FROM best b
+      JOIN ros_messages m ON m.id = b.message_id
+      ORDER BY b.sim DESC
+      LIMIT $${String(params.length)}
+    `
+
+    try {
+      await client.query('SAVEPOINT chunk_arm')
+      const res = await client.query<ChunkCandidateRow>(sql, params)
+      await client.query('RELEASE SAVEPOINT chunk_arm')
+      return res.rows.map((r) => this.mapChunkCandidate(r))
+    } catch (err: unknown) {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT chunk_arm')
+        await client.query('RELEASE SAVEPOINT chunk_arm')
+      } catch {
+        // Transaction is unusable; the parent rows already returned are kept
+        // and withHnswEfSearch will surface the COMMIT failure if any.
+      }
+      this.disableChunkArm(chunkArmErrorReason(err))
+      return []
+    }
+  }
+
+  /**
+   * True when the chunk arm may run. Probes table presence and SELECT grant
+   * once and caches: pre-0014 DBs have no table, and deployments that
+   * bootstrapped `rivet_device` before the grant landed can read messages but
+   * not chunks. Reasons differ ("not present (run migrations)" vs missing GRANT).
+   *
+   * The probe runs under a SAVEPOINT so a thrown SQLSTATE cannot abort the
+   * transaction the parent arm already succeeded in (Postgres marks the txn
+   * aborted on any error unless a savepoint rolls it back).
+   */
+  private async chunkArmReady(client: pg.PoolClient): Promise<boolean> {
+    if (this.chunkArmAvailable !== null) return this.chunkArmAvailable
+    try {
+      await client.query('SAVEPOINT chunk_arm_probe')
+      const res = await client.query<{ present: boolean | null; granted: boolean | null }>(
+        CHUNK_ARM_PROBE_SQL,
+      )
+      await client.query('RELEASE SAVEPOINT chunk_arm_probe')
+      const present = res.rows[0]?.present === true
+      const granted = res.rows[0]?.granted === true
+      const ok = present && granted
+      this.chunkArmAvailable = ok
+      if (!ok) {
+        this.disableChunkArm(
+          present
+            ? 'no SELECT on ros_message_chunks'
+            : 'ros_message_chunks not present (run migrations)',
+        )
+      }
+      return ok
+    } catch (err: unknown) {
+      try {
+        await client.query('ROLLBACK TO SAVEPOINT chunk_arm_probe')
+        await client.query('RELEASE SAVEPOINT chunk_arm_probe')
+      } catch {
+        // Transaction is unusable; parent rows already in JS are kept.
+      }
+      this.disableChunkArm(chunkArmErrorReason(err))
+      return false
+    }
+  }
+
+  private disableChunkArm(reason: string): void {
+    if (this.chunkArmAvailable === false && this.chunkArmDisabledReason) return
+    this.chunkArmAvailable = false
+    this.chunkArmDisabledReason = reason
+    this.chunkArmUnavailableTotal += 1
+    console.warn(`[memory-search] chunk arm unavailable: ${reason} — searching parents only`)
+  }
+
+  /** Degrade marker for the current engine state, or undefined when healthy. */
+  private chunkArmSignal(): ChunkArmDegraded | undefined {
+    if (this.chunkArmAvailable === false && this.chunkArmDisabledReason) {
+      return { chunks: true, reason: this.chunkArmDisabledReason }
+    }
+    return undefined
+  }
+
+  /** Map a chunk-arm row: parent columns + the winning chunk as the snippet. */
+  private mapChunkCandidate(r: ChunkCandidateRow): Candidate {
+    const base = this.mapCandidate(r, 'message')
+    const rawCount = r.chunk_count
+    const chunkCount =
+      typeof rawCount === 'number'
+        ? rawCount
+        : typeof rawCount === 'string'
+          ? Number(rawCount)
+          : undefined
+    base.snippet = {
+      text: r.chunk_content,
+      charStart: r.chunk_char_start,
+      charEnd: r.chunk_char_end,
+      chunkIdx: r.chunk_idx,
+      ...(chunkCount !== undefined && Number.isFinite(chunkCount) ? { chunkCount } : {}),
+    }
+    return base
+  }
+
   /** Map a candidate row to a Candidate (raw per-method score is unused → 0). */
   private mapCandidate(r: CandidateRow, type: 'message' | 'summary'): Candidate {
     const base: Candidate = {
@@ -779,6 +1147,12 @@ export class SearchEngine {
       score: 0,
       createdAt: r.created_at,
       boost: parseFloat(r.boost),
+    }
+    // pg returns numeric/float8 as a string; the vector arms are the only
+    // retrievers that select it.
+    if (r.semantic_sim !== undefined && r.semantic_sim !== null) {
+      const sim = parseFloat(r.semantic_sim)
+      if (Number.isFinite(sim)) base.sim = sim
     }
     if (type === 'message') {
       base.toolName = r.tool_name ?? null
@@ -822,47 +1196,39 @@ export class SearchEngine {
         }
         params.push(limit)
         const limitIdx = params.length
-        const temporal = temporalDecaySql('m')
-        const importance = importanceSql('m')
+        const boostExpr = `((${temporalDecaySql('m')}) * ${W_TEMPORAL} + (${importanceSql('m')}) * ${W_IMPORTANCE})`
 
+        // `score` is assembled in TS (sim·W_SEMANTIC + boost) rather than SQL so
+        // the chunk arm's similarity can replace the parent's after the merge
+        // without a second round trip. Same formula, same weights.
         const sql = `
         SELECT m.id, m.content, m.role, m.agent, m.metadata,
                m.conversation_id, m.created_at, m.tool_name, m.tool_result,
                (1 - (m.embedding <=> $1::halfvec)) AS semantic_sim,
-               (
-                 (1 - (m.embedding <=> $1::halfvec)) * ${W_SEMANTIC}
-                 + (${temporal}) * ${W_TEMPORAL}
-                 + (${importance}) * ${W_IMPORTANCE}
-               ) AS score
+               ${boostExpr} AS boost
         FROM ros_messages m
         WHERE m.embedding IS NOT NULL ${agentFilter}
         ORDER BY m.embedding <=> $1::halfvec
         LIMIT $${String(limitIdx)}
       `
 
-        const res = await client.query<MessageSearchRow>(sql, params)
+        const res = await client.query<CandidateRow>(sql, params)
+        const parents = res.rows.map((r) => this.mapCandidate(r, 'message'))
+        const chunks = await this.retrieveChunkCandidates(client, vecLiteral, limit, {
+          agent: options?.agent,
+        })
+        const { merged, chunkWins, parentWins } = mergeChunkAndParentCandidates(
+          parents,
+          chunks,
+          limit,
+        )
+        this.chunkArmHitsTotal += chunkWins
+        this.parentArmHitsTotal += parentWins
         out.push(
-          ...res.rows.map((r) => ({
-            id: r.id,
-            type: 'message' as const,
-            content: r.content,
-            role: r.role,
-            agent: r.agent,
-            conversationId: r.conversation_id,
-            score: parseFloat(r.score),
-            createdAt: r.created_at,
-            toolName: r.tool_name ?? null,
-            toolResult: r.tool_result ?? null,
-            ...(r.metadata?.truncated === true
-              ? {
-                  truncated: true,
-                  fullLength: [
-                    r.metadata.full_content_length,
-                    r.metadata.full_tool_result_length,
-                  ].find((v): v is number => typeof v === 'number'),
-                }
-              : {}),
-          })),
+          ...merged.map((c) => {
+            const { boost, sim, ...rest } = c
+            return { ...rest, score: (sim ?? 0) * W_SEMANTIC + boost }
+          }),
         )
       }
 

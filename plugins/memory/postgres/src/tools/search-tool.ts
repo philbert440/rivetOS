@@ -8,6 +8,7 @@ import type { Expander } from '../expand.js'
 import type { ExpandedSummary, MemoryToolsConfig } from './helpers.js'
 import {
   applyWindowArgs,
+  formatChunkArmUnavailable,
   formatEmptySearchResult,
   formatSearchMessageBody,
   formatVectorArmUnavailable,
@@ -108,15 +109,19 @@ export function createSearchTool(
         before,
       })
 
-      const degradedLine =
-        results.degraded && mode !== 'trigram' && mode !== 'regex'
-          ? formatVectorArmUnavailable(
-              results.degraded.reason,
-              mode as 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector',
-              results.length,
-            )
-          : ''
-      const degradedBanner = degradedLine ? `${degradedLine}\n\n` : ''
+      const bannerLines: string[] = []
+      if (results.degraded && mode !== 'trigram' && mode !== 'regex') {
+        const degradedLine = formatVectorArmUnavailable(
+          results.degraded.reason,
+          mode as 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector',
+          results.length,
+        )
+        if (degradedLine) bannerLines.push(degradedLine)
+      }
+      if (results.chunkArm) {
+        bannerLines.push(formatChunkArmUnavailable(results.chunkArm.reason))
+      }
+      const degradedBanner = bannerLines.length > 0 ? `${bannerLines.join('\n')}\n\n` : ''
 
       if (results.length === 0) {
         // Hermes parity + full empty-path guidance (trigram / multi-angle /

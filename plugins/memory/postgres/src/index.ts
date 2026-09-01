@@ -35,6 +35,8 @@ export type {
   SearchResults,
   SearchDegraded,
   SearchRuntimeStats,
+  SearchSnippet,
+  ChunkArmDegraded,
 } from './search.js'
 
 export { Expander } from './expand.js'

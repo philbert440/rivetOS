@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { SearchEngine, SearchHit, SearchResults } from '../search.js'
 import type { Expander } from '../expand.js'
 import { createSearchTool } from './search-tool.js'
-import { formatVectorArmUnavailable } from './helpers.js'
+import { formatChunkArmUnavailable, formatVectorArmUnavailable } from './helpers.js'
 
 const HIT: SearchHit = {
   id: 'm1',
@@ -55,6 +55,14 @@ describe('formatVectorArmUnavailable', () => {
   })
 })
 
+describe('formatChunkArmUnavailable', () => {
+  it('names the reason and that parents still ran', () => {
+    expect(formatChunkArmUnavailable('no SELECT on ros_message_chunks')).toBe(
+      '⚠ chunk arm unavailable (no SELECT on ros_message_chunks) — searching parent embeddings only',
+    )
+  })
+})
+
 describe('memory_search degraded banner', () => {
   it('prints the warning as the first line when the vector arm dropped', async () => {
     const results = Object.assign([HIT], {
@@ -62,9 +70,9 @@ describe('memory_search degraded banner', () => {
     }) as SearchResults
     const tool = createSearchTool(fakeEngine(results), expander)
     const out = await tool.execute({ query: 'families.app', expand: false })
-    expect(out.startsWith('⚠ vector arm unavailable (timeout) — results are fts/trigram only')).toBe(
-      true,
-    )
+    expect(
+      out.startsWith('⚠ vector arm unavailable (timeout) — results are fts/trigram only'),
+    ).toBe(true)
     expect(out).toContain('## Memory Search:')
     expect(out).toContain('families.app')
   })
@@ -75,9 +83,9 @@ describe('memory_search degraded banner', () => {
     }) as SearchResults
     const tool = createSearchTool(fakeEngine(results), expander)
     const out = await tool.execute({ query: 'nope', expand: false })
-    expect(out.startsWith('⚠ vector arm unavailable (http 503) — results are fts/trigram only')).toBe(
-      true,
-    )
+    expect(
+      out.startsWith('⚠ vector arm unavailable (http 503) — results are fts/trigram only'),
+    ).toBe(true)
     expect(out).toContain('No results found')
   })
 
@@ -111,6 +119,38 @@ describe('memory_search degraded banner', () => {
     expect(out).toContain(HIT.content)
   })
 
+  it('renders a chunk snippet instead of the message head', async () => {
+    const hit: SearchHit = {
+      ...HIT,
+      content: 'filler prose about unrelated deploys that must not appear in the hit',
+      snippet: {
+        text: 'The V100 NVFP4 cudagraph cap must never be lower than seqs x (K+1).',
+        charStart: 6000,
+        charEnd: 7024,
+        chunkIdx: 2,
+        chunkCount: 7,
+      },
+    }
+    const tool = createSearchTool(fakeEngine([hit] as SearchResults), expander)
+    const out = await tool.execute({ query: 'nvfp4 cudagraph cap', expand: false })
+    expect(out).toContain('[chunk 3/7')
+    expect(out).toContain('The V100 NVFP4 cudagraph cap')
+    expect(out).toContain(`memory_get_full id=${hit.id}`)
+    expect(out).not.toContain('filler prose about unrelated deploys')
+  })
+
+  it('prints a chunk-arm warning when the grant is missing', async () => {
+    const results = Object.assign([HIT], {
+      chunkArm: { chunks: true as const, reason: 'no SELECT on ros_message_chunks' },
+    }) as SearchResults
+    const tool = createSearchTool(fakeEngine(results), expander)
+    const out = await tool.execute({ query: 'families.app', expand: false })
+    expect(out.startsWith('⚠ chunk arm unavailable (no SELECT on ros_message_chunks)')).toBe(true)
+    expect(out).toContain('searching parent embeddings only')
+    expect(out).toContain('## Memory Search:')
+    expect(out).toContain(HIT.content)
+  })
+
   it('never emits the banner in trigram or regex mode', async () => {
     const results = Object.assign([HIT], {
       degraded: { vector: true as const, reason: 'timeout' },
@@ -130,9 +170,9 @@ describe('memory_search degraded banner', () => {
     }) as SearchResults
     const tool = createSearchTool(fakeEngine(results), expander)
     const out = await tool.execute({ query: 'state-of-the-art model', expand: false })
-    expect(out.startsWith('⚠ vector arm unavailable (timeout) — results are fts/trigram only')).toBe(
-      true,
-    )
+    expect(
+      out.startsWith('⚠ vector arm unavailable (timeout) — results are fts/trigram only'),
+    ).toBe(true)
     expect(out).toContain('## Memory Search:')
     expect(out).toContain(HIT.content)
   })
