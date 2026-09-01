@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import {
   createDialogQueue,
+  dialogCancelValue,
   type DialogQueue,
   type DialogRequest,
 } from '../lib/confirm-dialog-queue.js'
@@ -8,6 +10,12 @@ import {
 /**
  * Themed Promise dialogs because `window.confirm` / `window.prompt` paint
  * native GTK message boxes in the desktop shell.
+ *
+ * Rendering is Radix Dialog — focus trap/restore, Escape, outside-pointer
+ * dismiss, aria-modal and scroll lock all come from the primitive (theme
+ * tokens live on <html>, so the portaled content styles like the popover).
+ * The Promise contract and one-at-a-time queue stay framework-free in
+ * lib/confirm-dialog-queue.ts (unit-tested).
  */
 export function useConfirmDialog(): {
   confirm: (message: string, opts?: { confirmLabel?: string; danger?: boolean }) => Promise<boolean>
@@ -25,6 +33,10 @@ export function useConfirmDialog(): {
 } {
   const [current, setCurrent] = useState<DialogRequest | undefined>()
   const [input, setInput] = useState('')
+  // Bumped per displayed request and used as the Content key, so a promoted
+  // queued dialog remounts and Radix re-runs its open auto-focus (the focus
+  // scope only auto-focuses on mount, not on a content swap while open).
+  const [seq, setSeq] = useState(0)
   // One dialog at a time; further calls queue (an upload loop can hit a
   // 409 per file). The queue lives in a ref so show/settle never run side
   // effects inside a setState updater (StrictMode double-invokes those); the
@@ -33,6 +45,7 @@ export function useConfirmDialog(): {
   queueRef.current ??= createDialogQueue((req) => {
     setInput(req?.defaultValue ?? '')
     setCurrent(req)
+    setSeq((n) => n + 1)
   })
   const queue = queueRef.current
 
@@ -85,116 +98,101 @@ export function useConfirmDialog(): {
 
   // Cancel resolves false for confirm (matching `window.confirm`) and
   // undefined for prompt/choice (matching `window.prompt`'s null).
-  const cancelValue = current?.kind === 'confirm' ? false : undefined
+  const cancelValue = current ? dialogCancelValue(current) : undefined
 
-  const dialogRef = useRef<HTMLFormElement | null>(null)
+  const formRef = useRef<HTMLFormElement | null>(null)
 
-  // Focus on open (and on each queued dialog's promotion): the prompt input,
-  // else the submit/danger button — Enter confirms and Escape cancels without
-  // a click into the dialog first (the common path for delete/kill/revoke).
-  useEffect(() => {
-    if (!current) return
-    const el = dialogRef.current
-    const target =
-      current.kind === 'prompt'
-        ? el?.querySelector('input')
-        : el?.querySelector<HTMLElement>('button[type="submit"]')
-    target?.focus()
-  }, [current])
-
-  // Document-level keys: the dialog claims aria-modal exclusivity, so Escape
-  // cancels and Tab cycles within it even when focus never landed inside.
-  useEffect(() => {
-    if (!current) return
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        queue.settle(current.kind === 'confirm' ? false : undefined)
-        return
-      }
-      if (e.key !== 'Tab') return
-      e.preventDefault()
-      const el = dialogRef.current
-      const focusables = el
-        ? Array.from(el.querySelectorAll<HTMLElement>('input, button')).filter(
-            (n) => !n.hasAttribute('disabled'),
-          )
-        : []
-      if (focusables.length === 0) return
-      const idx = focusables.indexOf(document.activeElement as HTMLElement)
-      const next =
-        idx === -1
-          ? focusables[e.shiftKey ? focusables.length - 1 : 0]
-          : focusables[(idx + (e.shiftKey ? -1 : 1) + focusables.length) % focusables.length]
-      next?.focus()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [current, queue])
-
-  const element = current ? (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
-      role="presentation"
-      onClick={() => queue.settle(cancelValue)}
+  const element = (
+    <Dialog.Root
+      open={current !== undefined}
+      onOpenChange={(open) => {
+        // Escape and pointer-down-outside both route here (Radix owns the
+        // gestures); settling resolves the caller's Promise with its cancel
+        // value. No-op when the last dialog already settled programmatically.
+        if (!open) queue.settle(cancelValue)
+      }}
     >
-      <form
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={current.message}
-        tabIndex={-1}
-        className="w-80 rounded-md border border-line bg-panel p-4 shadow-lg"
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={(e) => {
-          e.preventDefault()
-          queue.settle(
-            current.kind === 'prompt' ? input : current.kind === 'choice' ? 'keep' : true,
-          )
-        }}
-      >
-        <p className="mb-3 text-sm text-ink">{current.message}</p>
-        {current.kind === 'prompt' && (
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            className="mb-3 w-full rounded border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none focus:border-em"
-          />
-        )}
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => queue.settle(cancelValue)}
-            className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+      {current && (
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+          <Dialog.Content
+            key={seq}
+            className="fixed left-1/2 top-1/2 z-50 w-80 -translate-x-1/2 -translate-y-1/2 rounded-md border border-line bg-panel p-4 shadow-lg outline-none"
+            onOpenAutoFocus={(e) => {
+              // Preserve the old keyboard flow: prompt focuses the input,
+              // confirm/choice focus the submit/danger button — Enter confirms
+              // and Escape cancels without a click into the dialog first (the
+              // common path for delete/kill/revoke).
+              e.preventDefault()
+              const el = formRef.current
+              const target =
+                current.kind === 'prompt'
+                  ? el?.querySelector('input')
+                  : el?.querySelector<HTMLElement>('button[type="submit"]')
+              target?.focus()
+            }}
           >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className={
-              current.danger
-                ? 'rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red'
-                : 'rounded bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em'
-            }
-          >
-            {current.kind === 'choice'
-              ? (current.keepLabel ?? 'Keep')
-              : (current.confirmLabel ?? 'OK')}
-          </button>
-          {current.kind === 'choice' && (
-            <button
-              type="button"
-              onClick={() => queue.settle('reset')}
-              className="rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red"
+            <Dialog.Title className="sr-only">
+              {current.kind === 'prompt'
+                ? 'Prompt'
+                : current.kind === 'choice'
+                  ? 'Choose'
+                  : 'Confirm'}
+            </Dialog.Title>
+            <form
+              ref={formRef}
+              onSubmit={(e) => {
+                e.preventDefault()
+                queue.settle(
+                  current.kind === 'prompt' ? input : current.kind === 'choice' ? 'keep' : true,
+                )
+              }}
             >
-              {current.resetLabel ?? 'Start over'}
-            </button>
-          )}
-        </div>
-      </form>
-    </div>
-  ) : (
-    <></>
+              <Dialog.Description asChild>
+                <p className="mb-3 text-sm text-ink">{current.message}</p>
+              </Dialog.Description>
+              {current.kind === 'prompt' && (
+                <input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  className="mb-3 w-full rounded border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none focus:border-em"
+                />
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => queue.settle(cancelValue)}
+                  className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className={
+                    current.danger
+                      ? 'rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red'
+                      : 'rounded bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em'
+                  }
+                >
+                  {current.kind === 'choice'
+                    ? (current.keepLabel ?? 'Keep')
+                    : (current.confirmLabel ?? 'OK')}
+                </button>
+                {current.kind === 'choice' && (
+                  <button
+                    type="button"
+                    onClick={() => queue.settle('reset')}
+                    className="rounded border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red"
+                  >
+                    {current.resetLabel ?? 'Start over'}
+                  </button>
+                )}
+              </div>
+            </form>
+          </Dialog.Content>
+        </Dialog.Portal>
+      )}
+    </Dialog.Root>
   )
 
   return { confirm, prompt, choose, element }
