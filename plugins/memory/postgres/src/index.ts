@@ -44,7 +44,7 @@ export {
 // Schema migration helpers — still needed by agent CTs to ensure columns exist
 export { ensureEmbedderSchema } from './embedder.js'
 
-export { RoutingMemory, parseUserDbs, userFromSessionKey } from './user-routing.js'
+export { RoutingMemory, userDbsFromRegistry, userFromSessionKey } from './user-routing.js'
 export type { UserDbEntry } from './user-routing.js'
 
 // Compactor types/prompts/formatters — shared with Datahub compaction-worker and CLI
@@ -86,11 +86,17 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 // Plugin manifest
 // ---------------------------------------------------------------------------
 
-import type { PluginManifest, DelegationAfterContext, Tool, Memory } from '@rivetos/types'
+import {
+  loadUsersRegistry,
+  type PluginManifest,
+  type DelegationAfterContext,
+  type Tool,
+  type Memory,
+} from '@rivetos/types'
 import { PostgresMemory } from './adapter.js'
 import { createMemoryTools } from './tools/index.js'
 import { ensureEmbedderSchema } from './embedder.js'
-import { BlockedMemory, parseUserDbs, RoutingMemory } from './user-routing.js'
+import { BlockedMemory, RoutingMemory, userDbsFromRegistry } from './user-routing.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -116,14 +122,14 @@ export const manifest: PluginManifest = {
       embedModel,
     })
 
-    // Per-user routing (RIVETOS_USER_DBS): additional humans on this node get
-    // their own database; everything unmapped keeps flowing to `memory`.
-    // parseUserDbs already dropped unusable entries (pgUrl required — shared
-    // policy in @rivetos/types). A configured user whose store fails to
-    // construct is TOMBSTONED, not skipped: den still stamps that id, so a
-    // fall-through to the owner store would mix the user's traffic into the
-    // owner's database. Their calls error instead.
-    const userDbs = parseUserDbs(ctx.env.RIVETOS_USER_DBS)
+    // Per-user routing (users.json registry): additional humans on this node
+    // get their own database; everything unmapped keeps flowing to `memory`.
+    // userDbsFromRegistry already dropped unusable entries and the owner
+    // (pgUrl required — shared policy in @rivetos/types). A configured user
+    // whose store fails to construct is TOMBSTONED, not skipped: den still
+    // stamps that id, so a fall-through to the owner store would mix the
+    // user's traffic into the owner's database. Their calls error instead.
+    const userDbs = userDbsFromRegistry(loadUsersRegistry(ctx.env))
     const userStores = new Map<string, Memory>()
     const userEngines = new Map<string, PostgresMemory>()
     for (const [userId, db] of Object.entries(userDbs ?? {})) {
