@@ -49,7 +49,7 @@ import {
   reduceDen,
   type DenState,
 } from '@rivetos/den-protocol'
-import type { HarnessDriver, UserContext } from '@rivetos/types'
+import { MeshParseError, type HarnessDriver, type UserContext } from '@rivetos/types'
 import type { DenConfig } from './config.js'
 import {
   bindRequestUser,
@@ -1094,9 +1094,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // `.json` deliberately: the extensionless /mesh belongs to the viewer
       // SPA and falls through to the static index.html fallback below
       if (req.method === 'GET' && url.pathname === '/mesh.json') {
-        const overview = await meshView.overview()
-        if (!overview) return json(res, 404, { error: 'no mesh file' })
-        return json(res, 200, overview)
+        try {
+          const overview = await meshView.overview()
+          if (!overview) return json(res, 404, { error: 'no mesh file' })
+          return json(res, 200, overview)
+        } catch (err) {
+          if (err instanceof MeshParseError) {
+            console.error('mesh.json parse failed:', err)
+            return json(res, 500, { error: 'mesh.json parse failed', code: err.code })
+          }
+          throw err
+        }
       }
 
       if (req.method === 'DELETE' && url.pathname === '/session') {

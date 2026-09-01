@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileMeshRegistry, buildLocalNode } from './mesh.js'
@@ -345,7 +345,6 @@ describe('FileMeshRegistry', () => {
   })
 
   it('fails loud on pre-capabilities flat-array mesh.json', async () => {
-    const { writeFile } = await import('node:fs/promises')
     await writeFile(
       join(tmpDir, 'mesh.json'),
       JSON.stringify({
@@ -356,5 +355,86 @@ describe('FileMeshRegistry', () => {
     )
 
     await expect(registry.getNodes()).rejects.toThrow(/pre-capabilities flat-array/)
+  })
+
+  it('round-trips unknown node and root fields through heartbeat', async () => {
+    await writeFile(
+      join(tmpDir, 'mesh.json'),
+      JSON.stringify(
+        {
+          version: 1,
+          updatedAt: 1,
+          extraRoot: { future: true },
+          nodes: {
+            n1: {
+              id: 'n1',
+              name: 'n1',
+              host: '192.0.2.1',
+              port: 3100,
+              agents: [],
+              providers: [],
+              models: [],
+              capabilities: [],
+              status: 'online',
+              lastSeen: 1,
+              registeredAt: 1,
+              version: '1',
+              unknownNodeField: 'keep-me',
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf-8',
+    )
+
+    await registry.heartbeat('n1', 'online')
+
+    const saved = JSON.parse(await readFile(join(tmpDir, 'mesh.json'), 'utf-8')) as {
+      extraRoot?: unknown
+      nodes: Record<string, { unknownNodeField?: unknown; lastSeen: number }>
+    }
+    expect(saved.extraRoot).toEqual({ future: true })
+    expect(saved.nodes.n1.unknownNodeField).toBe('keep-me')
+    expect(saved.nodes.n1.lastSeen).toBeGreaterThan(1)
+  })
+
+  it('skips a malformed node instead of failing the registry load', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await writeFile(
+        join(tmpDir, 'mesh.json'),
+        JSON.stringify({
+          version: 1,
+          updatedAt: 1,
+          nodes: {
+            good: {
+              id: 'good',
+              name: 'good',
+              host: '192.0.2.1',
+              port: 3100,
+              agents: [],
+              providers: [],
+              models: [],
+              capabilities: [],
+              status: 'online',
+              lastSeen: 1,
+              registeredAt: 1,
+              version: '1',
+            },
+            bad: { host: 'h', port: '3100' },
+          },
+        }),
+        'utf-8',
+      )
+
+      const nodes = await registry.getNodes()
+      expect(nodes.map((n) => n.id)).toEqual(['good'])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/"bad"/)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

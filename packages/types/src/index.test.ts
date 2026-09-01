@@ -78,4 +78,11 @@ describe('@rivetos/types exports', () => {
     assert.equal(typeof types.installRoot, 'function')
     assert.equal(typeof types.installPath, 'function')
   })
+
+  it('should export parseMeshFile from the barrel', async () => {
+    const types = await import('./index.js')
+    assert.equal(typeof types.parseMeshFile, 'function')
+    assert.equal(typeof types.assertRecordMeshFile, 'function')
+    assert.equal(typeof types.isMeshFlatArrayError, 'function')
+  })
 })
