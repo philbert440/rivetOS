@@ -60,6 +60,21 @@ export interface DenTermConfig {
    *  detection, and a CR fused onto multi-line/long text is absorbed as a
    *  literal newline in the composer instead of submitting the turn. */
   injectSubmitDelayMs?: number
+  /** Mux layer under every PTY (RIVETOS_DEN_TERM_MUX). 'tmux' runs the harness
+   *  inside a tmux session on the `-L rivet` socket so it survives den
+   *  restarts and browser detaches; 'none' is today's direct spawn. Unset =
+   *  detect at manager construction: tmux when the binary is on PATH, else
+   *  none (one log line). */
+  mux?: 'tmux' | 'none'
+  /** Tmux session garbage collection (RIVETOS_DEN_TERM_SESSION_GC_MS). When
+   *  > 0, a periodic sweep kills tmux sessions on our socket whose last
+   *  activity is older than this and that have no den client attached.
+   *  0 (default) = sessions live until explicitly killed. */
+  sessionGcMs?: number
+  /** Append `source-file -q ~/.tmux.conf` to our generated tmux.conf
+   *  (RIVETOS_DEN_TERM_TMUX_USER_CONF). Default off — our socket never fights
+   *  the user's own tmux setup unless they opt in. */
+  tmuxUserConf?: boolean
 }
 
 /** Host→node microphone bridge (MicBridge). See docs/MICBRIDGE.md. */
@@ -271,6 +286,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
+      mux: ((): 'tmux' | 'none' | undefined => {
+        const raw = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()
+        if (raw === 'tmux' || raw === 'none') return raw
+        // a typo must not silently mean "auto" (which would enable tmux
+        // against the operator's intent) — fail safe to 'none' and say so
+        if (raw) {
+          console.error(
+            `[den-server] config: RIVETOS_DEN_TERM_MUX=${JSON.stringify(env.RIVETOS_DEN_TERM_MUX)} is not 'tmux' or 'none' — using 'none'`,
+          )
+          return 'none'
+        }
+        return undefined
+      })(),
+      sessionGcMs: intEnv(env, 'RIVETOS_DEN_TERM_SESSION_GC_MS', 0),
+      tmuxUserConf: truthyEnv(env.RIVETOS_DEN_TERM_TMUX_USER_CONF),
     },
     audio: {
       enabled: truthyEnv(env.RIVETOS_DEN_AUDIO),

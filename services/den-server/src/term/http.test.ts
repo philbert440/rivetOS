@@ -3,15 +3,17 @@
 // /sessions + WS snapshots, and the startup security gate.
 
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
+import { parseUsersRegistry } from '@rivetos/types'
 import { createDenServer, type DenServer, type DenServerOptions } from '../server.js'
 import type { DenConfig, DenTermConfig } from '../config.js'
 import type { PtyProc, PtySpawn, PtySpawnOpts } from './pty.js'
+import { encodeTmuxName, type TmuxCtl, type TmuxSessionInfo } from './tmux.js'
 
 class FakeProc extends EventEmitter implements PtyProc {
   kills: (string | undefined)[] = []
@@ -78,6 +80,9 @@ async function start(
       idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
       injectReadyMs: 10,
+      // Pinned: these tests assert the pre-T1 behavior byte-for-byte; the
+      // tmux paths have their own test below.
+      mux: 'none',
       ...term,
     },
     audio: {
@@ -98,7 +103,7 @@ async function start(
     spawns.push({ argv, opts })
     return proc
   }
-  const den = createDenServer(config, serverOpts ?? { ptySpawn: fakeSpawn })
+  const den = createDenServer(config, { ptySpawn: fakeSpawn, ...serverOpts })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -329,5 +334,142 @@ describe('term endpoints', () => {
     const { base } = await start()
     expect((await fetch(`${base}/term/config`)).status).toBe(200)
     expect((await post(base, '/term', { command: 'shell' })).status).toBe(201)
+  })
+
+  it('tmux mux: reattach skips --resume, /term/list shows persisted rows without duplicates', async () => {
+    // the helper's third param is DenServerOptions — this call really does
+    // run with mux:'tmux' and the scripted ctl (review: verify the wiring)
+    const ctl: TmuxCtl & { sessions: Map<string, TmuxSessionInfo>; kills: string[] } = {
+      sessions: new Map(),
+      kills: [],
+      hasSession(name) {
+        return this.sessions.has(name)
+      },
+      killSession(name) {
+        this.kills.push(name)
+        this.sessions.delete(name)
+      },
+      listSessions() {
+        return [...this.sessions.values()]
+      },
+    }
+    const { base, procs, spawns } = await start({}, { mux: 'tmux' }, { tmuxCtl: ctl })
+
+    // fresh spawn: tmux session created server-side afterwards
+    const first = (await (
+      await post(base, '/term', { command: 'claude', session: 'chat-p1' })
+    ).json()) as SpawnedPty & { mux?: string; reattached?: boolean }
+    expect(first.mux).toBe('tmux')
+    expect(first.reattached).toBeUndefined()
+    ctl.sessions.set(encodeTmuxName('chat-p1'), {
+      name: encodeTmuxName('chat-p1'),
+      activity: 1_800_000_000,
+      created: 1_799_999_000,
+      pid: 4321,
+      command: 'claude',
+      user: 'owner',
+    })
+
+    // while den's client is alive, /term/list has exactly the live row
+    const whileLive = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: { id: string; persisted?: boolean }[]
+    }
+    expect(whileLive.ptys).toHaveLength(1)
+    expect(whileLive.ptys[0].persisted).toBeUndefined()
+
+    // den's client dies (browser detach / den restart); the tmux session
+    // lives → a persisted row appears (and the exited record is reaped
+    // immediately — exactly ONE row for the denSession)
+    procs[0].emitExit(null)
+    const persisted = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: Record<string, unknown>[]
+    }
+    expect(persisted.ptys).toHaveLength(1)
+    const orphan = persisted.ptys.find((p) => p.persisted === true)!
+    expect(orphan).toMatchObject({
+      denSession: 'chat-p1',
+      command: 'claude',
+      state: 'running',
+      mux: 'tmux',
+      pid: 4321,
+      attached: 0,
+    })
+
+    // re-POST the same session: attach-session without --resume/--session-id
+    const again = (await (
+      await post(base, '/term', { command: 'claude', session: 'chat-p1' })
+    ).json()) as SpawnedPty & { reattached?: boolean; persisted?: boolean }
+    expect(again.reattached).toBe(true)
+    expect(again.persisted).toBeUndefined() // persisted is for client-less rows only
+    expect(again.id).not.toBe(first.id)
+    expect(spawns[1].argv).toContain('attach-session')
+    expect(spawns[1].argv).not.toContain('--resume')
+    expect(spawns[1].argv).not.toContain('-A')
+    // and the reattached client claims the session — exactly one running
+    // row for it, and no persisted (client-less) row anymore.
+    const after = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: Record<string, unknown>[]
+    }
+    const running = after.ptys.filter((p) => p.denSession === 'chat-p1' && p.state === 'running')
+    expect(running).toHaveLength(1)
+    expect(running[0]).toMatchObject({ id: again.id, reattached: true })
+    // no client-less tmux row anymore — the new den client claimed it
+    expect(after.ptys.some((p) => String(p.id).startsWith('tmux-'))).toBe(false)
+  })
+
+  it("DELETE /term?id=<A's denSession> is 403 for another user; unknown id is 404 and does not kill", async () => {
+    // Loopback HTTP always resolves as the node owner, so this suite cannot
+    // present a routed device cert. Equivalent fence: tenancy on, session
+    // owned by alice, loopback owner DELETE by bare denSession → 403, and
+    // kill() is never reached (ctl.kills stays empty).
+    const stateDir = mkdtempSync(join(tmpdir(), 'den-term-http-tenancy-'))
+    dirs.push(stateDir)
+    writeFileSync(
+      join(stateDir, 'session-owners.json'),
+      JSON.stringify({ 'chat-a': 'alice' }) + '\n',
+    )
+    const usersRegistry = parseUsersRegistry(
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: 'postgres://phil@db/phil' },
+          alice: { devices: ['win-alice'], pgUrl: 'postgres://alice@db/alice' },
+        },
+      }),
+    )
+    expect(usersRegistry).toBeDefined()
+    const ctl: TmuxCtl & { sessions: Map<string, TmuxSessionInfo>; kills: string[] } = {
+      sessions: new Map(),
+      kills: [],
+      hasSession(name) {
+        return this.sessions.has(name)
+      },
+      killSession(name) {
+        this.kills.push(name)
+        this.sessions.delete(name)
+      },
+      listSessions() {
+        return [...this.sessions.values()]
+      },
+    }
+    const name = encodeTmuxName('chat-a')
+    ctl.sessions.set(name, {
+      name,
+      activity: 1_800_000_000,
+      created: 1_799_999_000,
+      pid: 4321,
+      command: 'claude',
+      user: 'alice',
+    })
+    const { base } = await start({ stateDir, usersRegistry }, { mux: 'tmux' }, { tmuxCtl: ctl })
+
+    const forbidden = await fetch(`${base}/term?id=chat-a`, { method: 'DELETE' })
+    expect(forbidden.status).toBe(403)
+    expect(ctl.kills).toEqual([])
+
+    const missing = await fetch(`${base}/term?id=chat-nope`, { method: 'DELETE' })
+    expect(missing.status).toBe(404)
+    expect(ctl.kills).toEqual([])
   })
 })
