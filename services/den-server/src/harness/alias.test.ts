@@ -152,7 +152,8 @@ describe('alias store', () => {
 
   it(`caps chain depth at ${String(MAX_ALIAS_CHAIN_DEPTH)}`, () => {
     const store = createAliasStore()
-    const id = (n: number): SessionId => `claude-code:link-${String(n).padStart(4, '0')}` as SessionId
+    const id = (n: number): SessionId =>
+      `claude-code:link-${String(n).padStart(4, '0')}` as SessionId
     // Grow the chain from the head so each record() re-walks the whole thing:
     // a_n → a_{n-1} → … → a_0.
     let deepest = 0

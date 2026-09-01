@@ -129,9 +129,7 @@ const subjects: [name: string, make: () => Subject][] = [
       const pty = fakePty()
       // hermes refuses startSession (it cannot pin an id), so a session exists
       // in its store first and is resumed.
-      const store = fakeStore([
-        { id: HERMES_NATIVE, command: 'hermes', title: 't', updatedAt: 1 },
-      ])
+      const store = fakeStore([{ id: HERMES_NATIVE, command: 'hermes', title: 't', updatedAt: 1 }])
       const driver = new HermesDriver({
         store,
         pty: () => Promise.resolve(pty.host),
