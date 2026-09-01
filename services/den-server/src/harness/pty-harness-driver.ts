@@ -28,20 +28,21 @@
  *
  *   - **`nativeFor`** — which native session id a den event belongs to.
  *     Claude and grok pin the harness's native id to the den room key, so the
- *     room key IS the native id; hermes cannot pin (no `--session-id` flag) and
- *     maps room → native itself.
+ *     room key IS the native id; the harnesses that cannot pin (no
+ *     `--session-id` flag) share the room → native mapping in
+ *     `AdoptingPtyHarnessDriver` (`adopting-harness-driver.ts`).
  *   - **`room`** — the inverse: which den room a native id is running in.
  *   - **`storeExists`** — grok's ground truth is a session DIR that predates
  *     its `summary.json`; claude's is simply "the store can describe it".
  *   - **`assertPinnable`** — claude and grok require a uuid because their
  *     `--session-id` does; a harness with no pinning flag refuses outright.
  *   - **`rotate`** — emitting `session-updated` with `previousSessionId`. Only
- *     hermes has an observable rotation; the helper lives here because the
- *     bookkeeping (carry the live state, retire the old key locally) is
- *     contract-level rather than harness-level. Note what it deliberately does
- *     NOT do: re-key subscriber sinks. That is control-plane work
- *     (`registry.ts` → `rekey`), and a driver that did it too would leave every
- *     tail attached twice.
+ *     the adopting drivers have an observable rotation; the helper lives here
+ *     because the bookkeeping (carry the live state, retire the old key
+ *     locally) is contract-level rather than harness-level. Note what it
+ *     deliberately does NOT do: re-key subscriber sinks. That is control-plane
+ *     work (`registry.ts` → `rekey`), and a driver that did it too would leave
+ *     every tail attached twice.
  *
  * Everything else is identical across the three, including the honest-capability
  * stance: flags report what is ACTUALLY wired on this node (terminals enabled,
@@ -607,7 +608,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   /**
    * Which den room a native id runs in. Identity for the pinning harnesses;
-   * a harness that cannot pin its id maps this itself.
+   * `AdoptingPtyHarnessDriver` maps it through its room ↔ native map.
    */
   protected room(native: string): string {
     return native
