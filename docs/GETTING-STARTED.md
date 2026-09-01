@@ -34,7 +34,7 @@ The wizard will:
 2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
 3. **Configure agents**: pick a provider, enter your API key, choose a model
 4. **Join a RivetHub mesh** (optional): datahub SSH target, node name, optional advertise host — enrolls via the same path as `rivetos mesh enroll`
-5. **Owner user id** for a single-owner `users.json` seed at `$RIVETOS_SHARED_DIR/rivetos/users.json` (default `owner`; existing file is left in place). First init on an install that has no `users.json` writes `unmappedIsOwner: false` (fail closed) — a missing file used to be treated as permissive (unmapped devices resolve as the owner). This file is the only per-user routing source (`rivetos user add` writes it; override the path with `RIVETOS_USERS_FILE`).
+5. **Owner user id** for a single-owner `users.json` seed at `$RIVETOS_SHARED_DIR/rivetos/users.json` (default `owner`; existing file is left in place). First init on an install that has no `users.json` writes `unmappedIsOwner: false` (fail closed) — a missing file used to be treated as permissive (unmapped devices resolve as the owner). This file is the only per-user routing source (`rivetos user add` writes it; override the path with `RIVETOS_USERS_FILE`). den loads the registry once at boot (no watcher) — restart den / the rivetos node after `rivetos user add` for routing to take effect.
 6. **Review and deploy**: summary of your choices, then one-click deploy
 
 Social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub.

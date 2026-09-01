@@ -176,6 +176,52 @@ describe('loadUsersRegistry', () => {
     expect(resolveUser(reg!, 'win-coco').ok).toBe(true)
   })
 
+  it('fails closed when the shared users.json exists but is invalid', () => {
+    const dir = emptyDir()
+    mkdirSync(join(dir, 'rivetos'))
+    writeFileSync(join(dir, 'rivetos', 'users.json'), '{nope')
+    const home = join(dir, 'home')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'users.json'),
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: philDb.pgUrl },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+        },
+      }),
+    )
+    const reg = loadUsersRegistry(
+      { RIVETOS_SHARED_DIR: dir, RIVETOS_PG_URL: philDb.pgUrl },
+      { homedir: () => home },
+    )
+    expect(reg?.unmappedIsOwner).toBe(false)
+    expect(reg?.users.coco).toBeUndefined()
+    expect(resolveUser(reg!, 'win-coco').ok).toBe(false)
+    expect(resolveUser(reg!, null).ok).toBe(true)
+  })
+
+  it('falls through to home when the shared users.json is absent', () => {
+    const dir = emptyDir()
+    const home = join(dir, 'home')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'users.json'),
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: philDb.pgUrl },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+        },
+      }),
+    )
+    const reg = loadUsersRegistry({ RIVETOS_SHARED_DIR: dir }, { homedir: () => home })
+    expect(resolveUser(reg!, 'win-coco').ok).toBe(true)
+  })
+
   it('fails closed when the explicit file is missing', () => {
     const dir = emptyDir()
     const reg = loadUsersRegistry(

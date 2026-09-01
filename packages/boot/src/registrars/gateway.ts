@@ -129,6 +129,15 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   const embed = process.env.RIVETOS_EMBED_URL?.trim()
   if (pg) env.RIVETOS_PG_URL = pg
   if (embed) env.RIVETOS_EMBED_URL = embed
+  // RIVETOS_SHARED_DIR / RIVETOS_OWNER_USER_ID match neither prefix
+  // (RIVETOS_DEN_* / RIVETOS_USER*). Without an explicit forward, a node
+  // with a custom shared dir has boot/memory/claude-cli routing from the
+  // real registry while embedded den discovers nothing at /rivet-shared
+  // and silently collapses every device to the owner.
+  const shared = process.env.RIVETOS_SHARED_DIR?.trim()
+  const ownerUserId = process.env.RIVETOS_OWNER_USER_ID?.trim()
+  if (shared) env.RIVETOS_SHARED_DIR = shared
+  if (ownerUserId) env.RIVETOS_OWNER_USER_ID = ownerUserId
   // Mesh device enrollment (Settings → Devices).
   const devices = den.devices
   if (devices?.enabled === true) {

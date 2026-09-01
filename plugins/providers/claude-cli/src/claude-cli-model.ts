@@ -51,6 +51,9 @@ import {
 import type { BridgeLogger } from './log.js'
 import { createLogger } from './log.js'
 
+/** Loaded once at module import (boot), matching den / memory-postgres / agents. */
+const routedUserDbs = userDbsFromRegistry(loadUsersRegistry(process.env))
+
 // Spawn / flag-assembly / stream-json layer lives in spawn-turn.ts (shared
 // with the ClaudeCliExecutor). Re-export the types this module historically
 // owned so existing importers keep working.
@@ -322,7 +325,9 @@ function userRoutingEnv(
   // Shared policy (@rivetos/types userDbsFromRegistry): a usable entry has
   // pgUrl — the same predicate den's stamping and the memory plugin use, so
   // a tagged turn is either fully routable here or refused, never half-routed.
-  const db = userDbsFromRegistry(loadUsersRegistry(process.env))?.[userId]
+  // Registry is loaded once at module scope (not per turn) so a changed
+  // pgUrl cannot split capture vs memory/den until the node restarts.
+  const db = routedUserDbs?.[userId]
   if (!db) {
     throw new Error(
       `per-user memory routing for "${userId}" has no usable users-registry database on this node — refusing to spawn with the node owner's capture env`,

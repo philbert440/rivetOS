@@ -105,6 +105,14 @@ describe('buildGatewayEnv — device enrollment', () => {
     expect(env.RIVETOS_DEN_DEVICES).toBeUndefined()
   })
 
+  it('forwards RIVETOS_SHARED_DIR and RIVETOS_OWNER_USER_ID to the embedded den', () => {
+    vi.stubEnv('RIVETOS_SHARED_DIR', '/custom/shared')
+    vi.stubEnv('RIVETOS_OWNER_USER_ID', 'owner-x')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_SHARED_DIR).toBe('/custom/shared')
+    expect(env.RIVETOS_OWNER_USER_ID).toBe('owner-x')
+  })
+
   it('omits relay_sudo when false and leaves optional keys unset', () => {
     const env = buildGatewayEnv(
       base({ devices: { enabled: true, pool: '10.0.0.1-10.0.0.9' } }),

@@ -5,15 +5,22 @@
  *   rivetos user list
  *   rivetos user add <id> --device <deviceId> [--persona <name>] [--url <pg>] [--file <path>]
  *
- * Identity is written to the registry file (no fleet restart). `--url` stores
- * the user's Postgres URL on that record so den can route from users.json.
- * CREATE DATABASE / role / migrate is printed when
+ * Identity is written to the registry file. `--url` stores the user's
+ * Postgres URL on that record so den can route from users.json. den (and
+ * the other routing consumers) load the registry once at boot — there is
+ * no watcher, so a newly added user does not route until den / the node
+ * restarts. CREATE DATABASE / role / migrate is printed when
  * RIVETOS_TEAM_PG_ADMIN_URL is unset.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { parseUsersRegistry, sharedPath, type UsersRegistry } from '@rivetos/types'
+import {
+  DEFAULT_OWNER_USER_ID,
+  parseUsersRegistry,
+  sharedPath,
+  type UsersRegistry,
+} from '@rivetos/types'
 
 function defaultFile(): string {
   return process.env.RIVETOS_USERS_FILE?.trim() || sharedPath('rivetos', 'users.json')
@@ -21,10 +28,11 @@ function defaultFile(): string {
 
 function load(file: string): UsersRegistry {
   if (!existsSync(file)) {
+    const ownerUserId = process.env.RIVETOS_OWNER_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
     return {
-      ownerUserId: 'phil',
+      ownerUserId,
       unmappedIsOwner: false,
-      users: { phil: { id: 'phil', devices: [] } },
+      users: { [ownerUserId]: { id: ownerUserId, devices: [] } },
     }
   }
   const parsed = parseUsersRegistry(readFileSync(file, 'utf8'))
@@ -106,6 +114,7 @@ function add(id: string, args: string[]): void {
   registry.users[id] = existing
   save(file, registry)
   console.log(`[user] wrote ${id} device=${bare} → ${file}`)
+  console.log(`[user] restart den (or the rivetos node) for routing to pick up the new user`)
   if (!url && !existing.db) {
     console.log(
       `[user] no --url given. After CREATE DATABASE, re-run with --url so the registry has a database handle.`,

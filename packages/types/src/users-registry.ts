@@ -131,6 +131,13 @@ export function parseUsersRegistry(raw: string | undefined): UsersRegistry | und
   return { ownerUserId, unmappedIsOwner, users }
 }
 
+/**
+ * Default node-owner user id when users.json / RIVETOS_OWNER_USER_ID is unset.
+ * Fleet installs historically used `phil`; deployments override via
+ * RIVETOS_OWNER_USER_ID (forwarded to the embedded den by buildGatewayEnv).
+ */
+export const DEFAULT_OWNER_USER_ID = 'phil'
+
 export type EnvLike = Record<string, string | undefined>
 
 export interface LoadUsersRegistryOptions {
@@ -153,7 +160,7 @@ function defaultReadFile(path: string): string | undefined {
 }
 
 function failClosedOwner(env: EnvLike): UsersRegistry {
-  const ownerUserId = env.RIVETOS_OWNER_USER_ID?.trim() || 'phil'
+  const ownerUserId = env.RIVETOS_OWNER_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
   return mergeUserDbs(
     {
       ownerUserId,
@@ -172,8 +179,11 @@ function failClosedOwner(env: EnvLike): UsersRegistry {
  *   3. ~/.rivetos/users.json
  *
  * Explicit path set but missing/invalid → fail-closed owner-only registry
- * (`unmappedIsOwner=false`). No file anywhere → undefined (tenancy off).
- * Owner `pgUrl` is filled from RIVETOS_PG_URL when the file omits it.
+ * (`unmappedIsOwner=false`). Shared-dir file present but invalid → same
+ * fail-closed (does not fall through to home or tenancy-off). Absent
+ * shared-dir file still falls through. No file anywhere → undefined
+ * (tenancy off). Owner `pgUrl` is filled from RIVETOS_PG_URL when the
+ * file omits it.
  */
 export function loadUsersRegistry(
   env: EnvLike = process.env,
@@ -191,19 +201,33 @@ export function loadUsersRegistry(
     return parseUsersRegistry(raw)
   }
 
-  const fileReg = explicit
-    ? tryParse(explicit)
-    : (tryParse(join(sharedRoot, 'rivetos', 'users.json')) ??
-      tryParse(join(home(), '.rivetos', 'users.json')))
-
-  if (explicit && !fileReg) {
-    console.error(
-      `[rivetos] RIVETOS_USERS_FILE="${explicit}" missing or invalid — ALL device identities refused (fail closed); fix or unset the file`,
-    )
-    return failClosedOwner(env)
+  if (explicit) {
+    const fileReg = tryParse(explicit)
+    if (!fileReg) {
+      console.error(
+        `[rivetos] RIVETOS_USERS_FILE="${explicit}" missing or invalid — ALL device identities refused (fail closed); fix or unset the file`,
+      )
+      return failClosedOwner(env)
+    }
+    return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
   }
-  if (!fileReg) return undefined
-  return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
+
+  const sharedFile = join(sharedRoot, 'rivetos', 'users.json')
+  const sharedRaw = read(sharedFile)
+  if (sharedRaw !== undefined) {
+    const fileReg = parseUsersRegistry(sharedRaw)
+    if (!fileReg) {
+      console.error(
+        `[rivetos] users registry "${sharedFile}" exists but is invalid — ALL device identities refused (fail closed); fix the file`,
+      )
+      return failClosedOwner(env)
+    }
+    return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
+  }
+
+  const homeReg = tryParse(join(home(), '.rivetos', 'users.json'))
+  if (!homeReg) return undefined
+  return mergeUserDbs(homeReg, undefined, env.RIVETOS_PG_URL)
 }
 
 /**
@@ -234,7 +258,7 @@ export function registryFromEnv(opts: {
   ownerPgUrl?: string
   ownerUserId?: string
 }): UsersRegistry | undefined {
-  const ownerUserId = opts.ownerUserId?.trim() || 'phil'
+  const ownerUserId = opts.ownerUserId?.trim() || DEFAULT_OWNER_USER_ID
   const users: Record<string, UserRecord> = {}
   const ownerDb = opts.ownerPgUrl?.trim() ? { pgUrl: opts.ownerPgUrl.trim() } : undefined
   users[ownerUserId] = { id: ownerUserId, devices: [], db: ownerDb }
@@ -284,11 +308,11 @@ export function mergeUserDbs(
  */
 export function resolveUser(registry: UsersRegistry, deviceId: string | null): ResolveUserResult {
   const owner = ownerRecord(registry)
-  if (!owner) return { ok: false, error: `owner user "${registry.ownerUserId}" is missing` }
+  if (!owner) return { ok: false; error: `owner user "${registry.ownerUserId}" is missing` }
 
   if (deviceId === null) {
     const db = dbFor(owner)
-    if (!db) return { ok: false, error: `owner user "${owner.id}" has no usable database` }
+    if (!db) return { ok: false; error: `owner user "${owner.id}" has no usable database` }
     return { ok: true, ctx: contextFor(registry, owner, null, db) }
   }
 
