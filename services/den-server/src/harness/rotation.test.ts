@@ -6,7 +6,7 @@
 // control-plane-only edges the suite deliberately leaves out.
 
 import { describe, expect, it } from 'vitest'
-import type { HarnessEvent, SessionId } from '@rivetos/types'
+import { parseSessionId, type HarnessEvent, type SessionId } from '@rivetos/types'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
 import { runHarnessRotationConformance } from './test/driver-conformance.js'
 import {
@@ -335,6 +335,240 @@ describe('rotation bookkeeping edges', () => {
     driver.activity(current)
     expect(seen.map((e) => e.sessionId)).toEqual([current])
     expect((await registry.resolve(sessionId)).sessionId).toBe(current)
+    registry.close()
+  })
+})
+
+describe('supersedes lineage (immutable session ids, plan W1 stage 1)', () => {
+  it('records the edge without changing the id, aliasing, re-keying, or retiring', async () => {
+    const { registry, driver, sessionId } = harness()
+    const stream: HarnessEvent[] = []
+    const tail: HarnessEvent[] = []
+    registry.subscribe((e) => stream.push(e))
+    registry.subscribeSession(sessionId, (e) => tail.push(e))
+
+    const newNative = driver.supersede(sessionId)
+
+    // The id is THE id: no alias entry, no retirement, no subscription re-key.
+    expect(registry.knows(newNative)).toBe(false)
+    expect(registry.isSuperseded(sessionId)).toBe(false)
+    expect(driver.subscribeCalls).toEqual([sessionId])
+    expect(
+      stream.filter((e) => e.type === 'session-updated' && e.status === 'ended'),
+    ).toEqual([])
+
+    // The first rotation off a client-minted id supersedes the canonical id
+    // itself (its native half WAS the original native id) — a legal self-edge.
+    expect(registry.supersedesFor(sessionId)).toEqual([sessionId])
+    // The event fans out verbatim on both streams.
+    expect(stream).toEqual([
+      { type: 'session-updated', sessionId, supersedes: sessionId, status: 'active' },
+    ])
+    expect(tail).toEqual(stream)
+
+    // Later events still carry the unchanged id on the same sink.
+    tail.length = 0
+    driver.activity(sessionId)
+    expect(tail.map((e) => e.sessionId)).toEqual([sessionId])
+
+    // listSessions: still one row under the unchanged id, lineage field carried.
+    const listed = await registry.listSessions('hermes')
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({ sessionId, supersedes: sessionId })
+    registry.close()
+  })
+
+  it('appends successive edges and dedupes an idempotent re-emit', () => {
+    const { registry, driver, sessionId } = harness()
+    const n1 = driver.supersede(sessionId)
+    driver.supersede(sessionId)
+    expect(registry.supersedesFor(sessionId)).toEqual([sessionId, n1])
+
+    // Re-emitting the current tail edge is an idempotent no-op, like aliases.
+    driver.emitRaw({ type: 'session-updated', sessionId, supersedes: n1, status: 'active' })
+    expect(registry.supersedesFor(sessionId)).toEqual([sessionId, n1])
+    registry.close()
+  })
+
+  it('drops a cross-harness edge and strips it from the fanned-out event', () => {
+    const { registry, driver, sessionId } = harness()
+    const stream: HarnessEvent[] = []
+    registry.subscribe((e) => stream.push(e))
+    const foreign = 'claude-code:00000000-0000-4000-8000-000000000000' as SessionId
+    driver.emitRaw({ type: 'session-updated', sessionId, supersedes: foreign, status: 'active' })
+
+    expect(registry.supersedesFor(sessionId)).toEqual([])
+    // The event itself still fans out — but WITHOUT the field the control
+    // plane rejected: a consumer must never record an edge the plane called
+    // junk by trusting the field without repeating the same-harness check.
+    expect(stream).toEqual([{ type: 'session-updated', sessionId, status: 'active' }])
+    registry.close()
+  })
+
+  it('drops a malformed edge and strips it from the fanned-out event', () => {
+    const { registry, driver, sessionId } = harness()
+    const stream: HarnessEvent[] = []
+    registry.subscribe((e) => stream.push(e))
+    driver.emitRaw({
+      type: 'session-updated',
+      sessionId,
+      supersedes: 'not-an-id' as SessionId,
+      status: 'active',
+    })
+
+    expect(registry.supersedesFor(sessionId)).toEqual([])
+    expect(stream).toEqual([{ type: 'session-updated', sessionId, status: 'active' }])
+    registry.close()
+  })
+
+  it('records an adoption edge declared at birth (session-created)', () => {
+    const { registry, driver, sessionId } = harness()
+    const parent = 'hermes:11111111-2222-4333-8444-555555555555' as SessionId
+    driver.emitRaw({
+      type: 'session-created',
+      sessionId,
+      summary: {
+        sessionId,
+        harnessId: 'hermes',
+        createdAt: '2026-08-08T00:00:00.000Z',
+        updatedAt: '2026-08-08T00:00:00.000Z',
+        status: 'idle',
+      },
+      supersedes: parent,
+    })
+
+    // Lineage, not an alias: the parent occupies no chain and resolves nowhere.
+    expect(registry.supersedesFor(sessionId)).toEqual([parent])
+    expect(registry.knows(parent)).toBe(false)
+    registry.close()
+  })
+
+  it('handles a legacy rotation and a supersedes edge on one event independently', () => {
+    const { registry, driver, sessionId } = harness()
+    const next = 'hermes:99999999-1111-4222-8333-444455556666' as SessionId
+    driver.emitRaw({
+      type: 'session-updated',
+      sessionId: next,
+      previousSessionId: sessionId,
+      supersedes: sessionId,
+      status: 'active',
+    })
+
+    // Legacy half: alias recorded, old id retired. New half: edge on the record.
+    expect(registry.isSuperseded(sessionId)).toBe(true)
+    expect(registry.supersedesFor(next)).toEqual([sessionId])
+    registry.close()
+  })
+
+  it('stamps the latest recorded edge onto list rows the driver never updated', async () => {
+    const { registry, driver, sessionId } = harness()
+    const edge = 'hermes:22222222-3333-4444-8555-666666666666' as SessionId
+    // The driver emits the edge but never touches its own list row: record
+    // and list must still agree, because the lineage field on the list the
+    // control plane serves is control-plane-owned.
+    driver.emitRaw({ type: 'session-updated', sessionId, supersedes: edge, status: 'active' })
+
+    const listed = await registry.listSessions('hermes')
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toMatchObject({ sessionId, supersedes: edge })
+    expect(registry.supersedesFor(sessionId)).toEqual([edge])
+    registry.close()
+  })
+})
+
+describe('pin guard: the id namespace is closed (immutable session ids, plan W1)', () => {
+  it('makes every native a supersedes lineage names unpinnable', async () => {
+    const { registry, driver, sessionId } = harness()
+    const n1 = driver.supersede(sessionId)
+
+    // The superseded native — here the canonical id itself, a self-edge — is
+    // taken. Lineage is "not an alias", but it is a pin denylist.
+    await expect(
+      registry.assertPinnable('hermes', parseSessionId(sessionId).nativeSessionId),
+    ).rejects.toMatchObject({ code: 'session_id_collision' })
+
+    // After a second rotation the first new native is an edge too.
+    driver.supersede(sessionId)
+    await expect(
+      registry.assertPinnable('hermes', parseSessionId(n1).nativeSessionId),
+    ).rejects.toMatchObject({ code: 'session_id_collision' })
+    registry.close()
+  })
+
+  it('makes the CURRENT native under a live canonical id unpinnable', async () => {
+    const { registry, driver, sessionId } = harness()
+    // The new native is not in any edge yet — only the harness store knows
+    // it — so the guard must probe the store, not just the lineage.
+    const current = driver.supersede(sessionId)
+    await expect(
+      registry.assertPinnable('hermes', parseSessionId(current).nativeSessionId),
+    ).rejects.toMatchObject({ code: 'session_id_collision' })
+    registry.close()
+  })
+
+  it('makes a never-rotated live session unpinnable — minting over it is takeover', async () => {
+    const { registry, driver, sessionId } = harness()
+    // No alias chain, no lineage: the id sits only in the live store.
+    expect(registry.knows(sessionId)).toBe(false)
+    expect(registry.supersedesFor(sessionId)).toEqual([])
+    await expect(
+      registry.assertPinnable('hermes', parseSessionId(sessionId).nativeSessionId),
+    ).rejects.toMatchObject({ code: 'session_id_collision' })
+    registry.close()
+  })
+})
+
+describe('legacy rotation refusal (immutable ids, plan W1 keystone)', () => {
+  it('drops a previousSessionId rotation of a client-minted session: id unchanged, warning, no alias', async () => {
+    const warnings: string[] = []
+    const driver = new FakeRotatingDriver()
+    const registry = createHarnessRegistry({ log: (msg) => warnings.push(msg) })
+    registry.register(driver)
+    const sessionId = driver.seed()
+    registry.noteMinted(sessionId)
+    const stream: HarnessEvent[] = []
+    registry.subscribe((e) => stream.push(e))
+
+    const attempted = driver.rotate(sessionId)
+
+    // No alias entry, no retirement, no re-key: THE id is unchanged.
+    expect(registry.knows(attempted)).toBe(false)
+    expect(registry.isSuperseded(sessionId)).toBe(false)
+    await expect(registry.resolve(sessionId)).resolves.toMatchObject({ sessionId })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(sessionId)
+    // The event itself still fans out (a stream cannot 4xx) — as a plain
+    // status tick; the old id is not retired.
+    expect(stream).toEqual([
+      {
+        type: 'session-updated',
+        sessionId: attempted,
+        previousSessionId: sessionId,
+        status: 'active',
+      },
+    ])
+    expect(
+      stream.filter((e) => e.type === 'session-updated' && e.status === 'ended'),
+    ).toEqual([])
+    registry.close()
+  })
+
+  it('drops a previousSessionId rotation of a session that has supersedes lineage', () => {
+    const warnings: string[] = []
+    const driver = new FakeRotatingDriver()
+    const registry = createHarnessRegistry({ log: (msg) => warnings.push(msg) })
+    registry.register(driver)
+    const sessionId = driver.seed()
+    driver.supersede(sessionId) // any supersedes edge makes the id immutable too
+    const stream: HarnessEvent[] = []
+    registry.subscribe((e) => stream.push(e))
+
+    const attempted = driver.rotate(sessionId)
+
+    expect(registry.knows(attempted)).toBe(false)
+    expect(registry.isSuperseded(sessionId)).toBe(false)
+    expect(warnings).toHaveLength(1)
+    expect(registry.supersedesFor(sessionId)).toEqual([sessionId])
     registry.close()
   })
 })

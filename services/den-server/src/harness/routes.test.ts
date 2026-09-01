@@ -6,6 +6,7 @@
 // capability-false → 501, and the HarnessError → HTTP status table.
 
 import { mkdtempSync, rmSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -25,6 +26,8 @@ import {
 } from '@rivetos/types'
 import { createDenServer, type DenServer, type DenServerOptions } from '../server.js'
 import type { DenConfig } from '../config.js'
+import { createHarnessRegistry } from './registry.js'
+import { createHarnessRoutes } from './routes.js'
 import { FakeRotatingDriver } from './test/fake-rotating-driver.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
@@ -49,6 +52,8 @@ interface FakeCalls {
 class FakeDriver implements HarnessDriver {
   readonly calls: FakeCalls = { started: [], resumed: [], turns: [], interrupted: [] }
   readonly sessions = new Map<SessionId, HarnessSessionSummary>()
+  /** Ids passed to `destroySession`, in order. */
+  readonly destroyed: SessionId[] = []
   private readonly sinks = new Set<(e: HarnessEvent) => void>()
   private readonly registrySinks = new Set<(e: HarnessEvent) => void>()
   /** Thrown by the next mutating call, if set. */
@@ -118,6 +123,12 @@ class FakeDriver implements HarnessDriver {
   }
   getSession(sessionId: SessionId): Promise<HarnessSessionSummary | null> {
     return Promise.resolve(this.sessions.get(sessionId) ?? null)
+  }
+  /** Feature-detected cleanup surface (honor-check 501 must not orphan). */
+  destroySession(sessionId: SessionId): Promise<void> {
+    this.destroyed.push(sessionId)
+    this.sessions.delete(sessionId)
+    return Promise.resolve()
   }
   transcript(sessionId: SessionId): Promise<{ turns: { role: 'user'; text: string }[] }> {
     return Promise.resolve({ turns: [{ role: 'user', text: `transcript of ${sessionId}` }] })
@@ -320,8 +331,8 @@ describe('more than one driver on a node', () => {
     expect(await list('claude-code')).toEqual([SID])
     expect(await list('grok-build')).toEqual([GROK_SID])
 
-    await post(base, '/api/harnesses/grok-build/sessions', { nativeSessionId: GROK_UUID })
-    expect(grok.calls.started).toEqual([{ nativeSessionId: GROK_UUID }])
+    await post(base, '/api/harnesses/grok-build/sessions', { nativeSessionId: 'fresh-grok-native' })
+    expect(grok.calls.started).toEqual([{ nativeSessionId: 'fresh-grok-native' }])
     expect(claude.calls.started).toEqual([])
   })
 
@@ -384,7 +395,15 @@ describe('POST /api/harnesses/:id/sessions', () => {
       nativeSessionId: UUID,
     })
     expect(res.status).toBe(201)
-    expect((await res.json()) as HarnessSessionSummary).toMatchObject({ sessionId: SID })
+    // The `nativeSessionId`-only pin is a legacy path too: exact body, exact
+    // driver opts — no new keys on either side of the wire.
+    expect(await res.json()).toEqual({
+      sessionId: SID,
+      harnessId: 'claude-code',
+      createdAt: '2026-08-08T00:00:00.000Z',
+      updatedAt: '2026-08-08T00:00:00.000Z',
+      status: 'idle',
+    })
     expect(driver.calls.started).toEqual([{ nativeSessionId: UUID }])
   })
 
@@ -403,6 +422,224 @@ describe('POST /api/harnesses/:id/sessions', () => {
     expect(res.status).toBe(409)
     expect(((await res.json()) as { code: string }).code).toBe('session_id_collision')
     expect(driver.calls.started).toEqual([])
+  })
+
+  it('honors a client-minted sessionId verbatim — no adoption event, no alias entry', async () => {
+    const driver = new FakeDriver()
+    const { base, den } = await start(driver)
+    const events: HarnessEvent[] = []
+    den.harnesses.subscribe((e) => events.push(e))
+
+    const res = await post(base, '/api/harnesses/claude-code/sessions', { sessionId: SID })
+
+    expect(res.status).toBe(201)
+    // Exact body: if the invariance claim is serious, extra keys on the
+    // summary fail here, not in review.
+    expect(await res.json()).toEqual({
+      sessionId: SID,
+      harnessId: 'claude-code',
+      createdAt: '2026-08-08T00:00:00.000Z',
+      updatedAt: '2026-08-08T00:00:00.000Z',
+      status: 'idle',
+    })
+    // The driver is handed the native pin plus the canonical id verbatim.
+    expect(driver.calls.started).toEqual([{ nativeSessionId: UUID, sessionId: SID }])
+    // No adoption: the id occupies no alias chain and no event was synthesized.
+    expect(den.harnesses.knows(SID)).toBe(false)
+    expect(events).toEqual([])
+  })
+
+  it('keeps the legacy assign path byte-identical when no sessionId is supplied', async () => {
+    const driver = new FakeDriver()
+    const { base } = await start(driver)
+    const res = await post(base, '/api/harnesses/claude-code/sessions', {
+      cwd: '/repo',
+      model: 'opus',
+      metadata: { origin: 'test' },
+    })
+    expect(res.status).toBe(201)
+    // Exact response body, and exactly the opts the driver saw before
+    // `sessionId` existed — no new keys on either side of the wire.
+    expect(await res.json()).toEqual({
+      sessionId: 'claude-code:minted',
+      harnessId: 'claude-code',
+      createdAt: '2026-08-08T00:00:00.000Z',
+      updatedAt: '2026-08-08T00:00:00.000Z',
+      status: 'idle',
+    })
+    expect(driver.calls.started).toEqual([
+      { cwd: '/repo', model: 'opus', metadata: { origin: 'test' } },
+    ])
+  })
+
+  it('accepts sessionId and nativeSessionId together when they agree', async () => {
+    const driver = new FakeDriver()
+    const { base } = await start(driver)
+    const res = await post(base, '/api/harnesses/claude-code/sessions', {
+      sessionId: SID,
+      nativeSessionId: UUID,
+    })
+    expect(res.status).toBe(201)
+    expect(driver.calls.started).toEqual([{ nativeSessionId: UUID, sessionId: SID }])
+  })
+
+  it('400s a sessionId that is malformed, cross-harness, or disagrees with nativeSessionId', async () => {
+    const driver = new FakeDriver()
+    const { base } = await start(driver)
+    expect(
+      (await post(base, '/api/harnesses/claude-code/sessions', { sessionId: 'not-an-id' })).status,
+    ).toBe(400)
+    expect(
+      (
+        await post(base, '/api/harnesses/claude-code/sessions', {
+          sessionId: `grok-build:${UUID}`,
+        })
+      ).status,
+    ).toBe(400)
+    expect(
+      (
+        await post(base, '/api/harnesses/claude-code/sessions', {
+          sessionId: SID,
+          nativeSessionId: 'different',
+        })
+      ).status,
+    ).toBe(400)
+    // …and a sessionId of the wrong JSON type never reaches the driver either.
+    expect((await post(base, '/api/harnesses/claude-code/sessions', { sessionId: 42 })).status).toBe(
+      400,
+    )
+    expect(driver.calls.started).toEqual([])
+  })
+
+  it('answers every create 400 through the one HarnessError shape', async () => {
+    const driver = new FakeDriver()
+    const { base } = await start(driver)
+    // Malformed, cross-harness and disagreeing ids all go through the same
+    // HarnessError fail() path — clients see ONE 400 document, not two.
+    expect(
+      await (
+        await post(base, '/api/harnesses/claude-code/sessions', { sessionId: 'not-an-id' })
+      ).json(),
+    ).toEqual({
+      error: 'SessionId is missing a harness-id prefix',
+      code: 'invalid_session_id',
+      retryable: false,
+    })
+    expect(
+      await (
+        await post(base, '/api/harnesses/claude-code/sessions', {
+          sessionId: `grok-build:${UUID}`,
+        })
+      ).json(),
+    ).toEqual({
+      error: 'sessionId harness grok-build does not match route harness claude-code',
+      code: 'invalid_session_id',
+      retryable: false,
+    })
+    expect(
+      await (
+        await post(base, '/api/harnesses/claude-code/sessions', {
+          sessionId: SID,
+          nativeSessionId: 'different',
+        })
+      ).json(),
+    ).toEqual({
+      error: 'sessionId and nativeSessionId disagree',
+      code: 'invalid_session_id',
+      retryable: false,
+    })
+    expect(driver.calls.started).toEqual([])
+  })
+
+  it('409s a client-minted sessionId that already lives in an alias chain', async () => {
+    const driver = new FakeDriver()
+    const { base, den } = await start(driver)
+    den.harnesses.alias(SID, 'claude-code:rotated' as SessionId)
+    const res = await post(base, '/api/harnesses/claude-code/sessions', { sessionId: SID })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { code: string }).code).toBe('session_id_collision')
+    expect(driver.calls.started).toEqual([])
+  })
+
+  it('409s a client-minted sessionId that is already a live session, and leaves it untouched', async () => {
+    const driver = new FakeDriver()
+    const before = driver.add(SID, { title: 'keep me' })
+    const { base, den } = await start(driver)
+    // Never rotated: the id sits in NO alias chain — only the live harness
+    // store knows it. Minting over it would be a takeover, not a creation.
+    expect(den.harnesses.knows(SID)).toBe(false)
+
+    const res = await post(base, '/api/harnesses/claude-code/sessions', { sessionId: SID })
+
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { code: string }).code).toBe('session_id_collision')
+    // The driver was never dispatched to, and the existing session is intact.
+    expect(driver.calls.started).toEqual([])
+    expect(await driver.getSession(SID)).toEqual(before)
+  })
+
+  it('501s when the driver does not honor the client-minted id — and destroys the session it created', async () => {
+    const driver = new FakeDriver()
+    driver.startSession = () =>
+      Promise.resolve(driver.add('claude-code:ignored-the-pin' as SessionId))
+    const { base } = await start(driver)
+    const res = await post(base, '/api/harnesses/claude-code/sessions', { sessionId: SID })
+    expect(res.status).toBe(501)
+    expect(((await res.json()) as { code: string }).code).toBe('capability_unsupported')
+    // The honor check failed AFTER startSession ran; the session the driver
+    // actually created must not be left live behind the rejection.
+    expect(driver.destroyed).toEqual(['claude-code:ignored-the-pin'])
+    expect(await driver.getSession('claude-code:ignored-the-pin' as SessionId)).toBeNull()
+  })
+
+  it('fans the driver session-created payload out verbatim on a legacy create', async () => {
+    const driver = new FakeRotatingDriver()
+    const { base, den } = await start(driver)
+    const events: HarnessEvent[] = []
+    den.harnesses.subscribe((e) => events.push(e))
+
+    const res = await post(base, '/api/harnesses/hermes/sessions', {})
+
+    expect(res.status).toBe(201)
+    const summary = (await res.json()) as HarnessSessionSummary
+    // The registry stream carries exactly what the driver announced — the
+    // create path synthesizes nothing and rewrites nothing.
+    expect(events).toEqual([{ type: 'session-created', sessionId: summary.sessionId, summary }])
+  })
+})
+
+describe('claimSession on create', () => {
+  it('never 201s a summary the bound user may not own — minted ids included', async () => {
+    // Den wires claimSession from its tenancy context, which these tests
+    // don't have; drive the route surface directly with a denying claim.
+    const driver = new FakeDriver()
+    const registry = createHarnessRegistry()
+    registry.register(driver)
+    const routes = createHarnessRoutes({ registry, claimSession: () => false })
+    const server = createServer((req, res) => {
+      void routes
+        .handle(req, res, new URL(req.url ?? '/', 'http://127.0.0.1'))
+        .then((handled) => {
+          if (!handled) {
+            res.writeHead(404)
+            res.end()
+          }
+        })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    try {
+      const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`
+      const res = await post(base, '/api/harnesses/claude-code/sessions', { sessionId: SID })
+      // The minted id WAS honored — but the summary belongs to whoever owns
+      // the id, and leaking it on 201 is the cross-user read the fence is for.
+      expect(res.status).toBe(403)
+      expect(await res.json()).toEqual({ error: 'session is owned by another user' })
+    } finally {
+      routes.close()
+      await new Promise<void>((r) => {
+        server.close(() => r())
+      })
+    }
   })
 })
 

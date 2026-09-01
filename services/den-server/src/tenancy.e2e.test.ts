@@ -612,12 +612,15 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       ca: pki.ca,
     }, { nativeSessionId: 'start-steal' })
     expect(first.status).toBe(201)
-    // the fake driver get-or-creates on native id: without the claim check
-    // this 201'd the owner's summary to coco
+    // The pin guard probes the live store BEFORE dispatch: starting over an
+    // existing native id is a collision (takeover), whoever asks — the driver
+    // is never invoked and no summary crosses the fence. (Before the guard
+    // checked the store, the fake driver's get-or-create 201'd the owner's
+    // summary to coco and only the claim check caught it, with a 403.)
     const steal = await call('POST', `${remote}/api/harnesses/claude-code/sessions`, coco, {
       nativeSessionId: 'start-steal',
     })
-    expect(steal.status).toBe(403)
+    expect(steal.status).toBe(409)
   })
 
   it('control plane: resume claims an unowned session for the resumer, then fences it', async () => {
