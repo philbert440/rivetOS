@@ -5,6 +5,10 @@ import { join } from 'node:path'
 import { FileMeshRegistry, buildLocalNode } from './mesh.js'
 import type { MeshNode, MeshNodeEvent } from '@rivetos/types'
 
+// node:fs/promises is an ESM builtin namespace — spyOn cannot redefine its
+// exports; spy-mode automock wraps writeFile so mockRejectedValueOnce works.
+vi.mock('node:fs/promises', { spy: true })
+
 describe('FileMeshRegistry', () => {
   let tmpDir: string
   let registry: FileMeshRegistry
