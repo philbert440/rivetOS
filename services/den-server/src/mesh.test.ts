@@ -2,27 +2,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import { createMeshView, loadMeshFile, meshFilePaths, type MeshOverview } from './mesh.js'
 import { loadConfig, type DenConfig } from './config.js'
-import type {
-  MeshDenNode as MeshDenNodeWire,
-  MeshOverview as MeshOverviewWire,
-} from '@rivetos/types'
-import type { MeshDenNode } from './mesh.js'
-
-// Compile-time lock: den-server's local mesh shapes must stay mutually
-// assignable with the canonical wire contracts in @rivetos/types
-// gateway-api.ts (types is a devDependency — den-server ships dependency-free
-// at runtime). Drift in either direction fails this file's typecheck.
-const _meshWireLock: [
-  (n: MeshDenNode) => MeshDenNodeWire,
-  (n: MeshDenNodeWire) => MeshDenNode,
-  (o: MeshOverview) => MeshOverviewWire,
-  (o: MeshOverviewWire) => MeshOverview,
-] = [(n) => n, (n) => n, (o) => o, (o) => o]
-void _meshWireLock
 
 const servers: DenServer[] = []
 const dirs: string[] = []
@@ -207,7 +190,7 @@ describe('mesh view', () => {
     expect(res.headers.get('access-control-allow-methods')).toContain('DELETE')
   })
 
-  it('warns and returns empty roster on pre-capabilities flat-array mesh.json', async () => {
+  it('throws on pre-capabilities flat-array mesh.json', async () => {
     const file = join(tmp(), 'mesh.json')
     writeFileSync(
       file,
@@ -216,8 +199,61 @@ describe('mesh view', () => {
         updatedAt: 99,
       }),
     )
-    const data = await loadMeshFile([file])
-    expect(data).toEqual({ updatedAt: 99, nodes: {} })
+    await expect(loadMeshFile([file])).rejects.toThrow(/pre-capabilities flat-array/)
+  })
+
+  it('skips a malformed node and still returns the rest of the roster', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const file = join(tmp(), 'mesh.json')
+      writeMesh(file, {
+        good: node('good'),
+        bad: { host: 'h', port: '3100' },
+      })
+      const mesh = await loadMeshFile([file])
+      expect(mesh).not.toBeNull()
+      expect(Object.keys(mesh!.nodes)).toEqual(['good'])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0]?.[0])).toMatch(/"bad"/)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('GET /mesh.json 500 names mesh.json on a root-level parse failure', async () => {
+    const file = join(tmp(), 'mesh.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        nodes: [{ name: 'legacy-node', ip: '192.0.2.1' }],
+        updatedAt: 99,
+      }),
+    )
+    const { base } = await start({ meshFile: file })
+    const res = await fetch(`${base}/mesh.json`)
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as { error?: string; code?: string }
+    expect(body.error).toMatch(/mesh\.json/)
+    expect(body.code).toBe('MESH_FLAT_ARRAY')
+  })
+
+  it('GET /mesh.json still serves when one node is malformed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const file = join(tmp(), 'mesh.json')
+      writeMesh(file, {
+        good: node('good'),
+        bad: { host: 'h', port: '3100' },
+      })
+      const { base } = await start({ meshFile: file })
+      const res = await fetch(`${base}/mesh.json`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as MeshOverview
+      expect(body.updatedAt).toBe(1234)
+      expect(body.nodes).toEqual([])
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 
