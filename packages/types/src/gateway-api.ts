@@ -707,6 +707,25 @@ export interface HarnessApprovalAccepted extends HarnessTurnAccepted {
   requestId: string
 }
 
+/**
+ * How a client opens an external emulator onto this PTY's tmux session.
+ * Present only when the PTY is tmux-backed. Never contains argv or env —
+ * those are derived client-side from these fields. T5b populates this
+ * server-side.
+ */
+export interface TermAttachInfo {
+  /** tmux server socket name (`tmux -L <socket>`). */
+  socket: string
+  /** tmux session name (encoded). */
+  session: string
+  /** Mesh host of this node (ssh target when `local` is false). */
+  host: string
+  /** Roster ssh user for this node (default `rivet`). */
+  sshUser: string
+  /** True when the requester is on loopback (skip ssh). */
+  local: boolean
+}
+
 export interface PtyInfo {
   id: string
   denSession: string

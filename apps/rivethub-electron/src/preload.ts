@@ -7,6 +7,15 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 
+/** Same fields as `@rivetos/types` TermAttachInfo — inlined so the preload bundle never imports main. */
+type TermAttachInfo = {
+  socket: string
+  session: string
+  host: string
+  sshUser: string
+  local: boolean
+}
+
 // Renderer context — the app tsconfig is Node-only, so declare the one DOM
 // global this file touches.
 declare const window: { self: unknown; top: unknown }
@@ -43,6 +52,9 @@ const api = {
   // shape check, so an older shell keeps working against a newer dist) ----
   /** Which OS this shell runs on. */
   platform: process.platform as 'win32' | 'linux' | 'darwin',
+  /** Launch the user's real terminal emulator onto a tmux attach (T5). */
+  openInTerminal: (attach: TermAttachInfo): Promise<void> =>
+    ipcRenderer.invoke('terminal:open-external', attach) as Promise<void>,
   /** Open one more shell window (no application menu on Windows — the
    *  renderer owns the chord and forwards it here). */
   newWindow: (): Promise<void> => ipcRenderer.invoke('window:new') as Promise<void>,

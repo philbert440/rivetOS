@@ -292,6 +292,7 @@ export type {
   AudioMicHealth,
   AudioMicServerFrame,
   AudioMicClientFrame,
+  TermAttachInfo,
   PtyInfo,
   TermListResponse,
   TermHelloFrame,
