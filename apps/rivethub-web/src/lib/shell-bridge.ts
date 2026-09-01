@@ -82,6 +82,8 @@ export function isDesktopShell(
 }
 
 /** Type guard for Electron shell (has `kind: 'electron'`). */
-export function isElectronShell(shell: RivetShell | undefined): shell is RivetShell & { kind: 'electron' } {
+export function isElectronShell(
+  shell: RivetShell | undefined,
+): shell is RivetShell & { kind: 'electron' } {
   return shell?.kind === 'electron'
 }
