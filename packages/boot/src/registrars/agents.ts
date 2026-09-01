@@ -58,9 +58,10 @@ import { WorkflowEngine, resolveCaseDirRoot, defaultWorkflowsDefsRoot } from '@r
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import {
-  parseUserDbs,
+  loadUsersRegistry,
   sharedDir,
   sharedPath,
+  userDbsFromRegistry,
   type GatewayRoute,
   type HarnessId,
   type MeshConfig,
@@ -142,12 +143,13 @@ export async function registerAgentTools(
   if (pgUrl) {
     pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
     // /api/memory answers with the den-stamped user's database, so build a
-    // pool per RIVETOS_USER_DBS entry alongside the owner pool. An entry with
-    // an unparseable URL (pg defers parsing to first connect) is tombstoned
-    // (null): the route refuses that user rather than 500ing into the owner
-    // path. max 2: the panel's search+browse+stats burst queues its third
-    // query briefly rather than holding a wider pool per user open forever.
-    const userDbs = parseUserDbs(process.env.RIVETOS_USER_DBS)
+    // pool per users.json registry entry alongside the owner pool. An entry
+    // with an unparseable URL (pg defers parsing to first connect) is
+    // tombstoned (null): the route refuses that user rather than 500ing into
+    // the owner path. max 2: the panel's search+browse+stats burst queues
+    // its third query briefly rather than holding a wider pool per user open
+    // forever.
+    const userDbs = userDbsFromRegistry(loadUsersRegistry(process.env))
     if (userDbs) {
       const pools = new Map<string, pg.Pool | null>()
       userPools = pools

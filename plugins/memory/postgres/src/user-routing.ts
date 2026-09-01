@@ -2,7 +2,7 @@
  * Per-user memory routing — one node, several humans, separate databases.
  *
  * The node owner's memory stays the plugin's main `PostgresMemory` exactly as
- * before. When `RIVETOS_USER_DBS` maps additional user ids to their own
+ * before. When the users.json registry maps additional user ids to their own
  * Postgres URLs, `RoutingMemory` fronts the registered Memory slot and
  * delegates each call to the store owned by the user the call belongs to.
  *
@@ -21,7 +21,7 @@
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
 // One shared policy for what a routable user is — den's stamping, this
 // plugin's stores, and the claude-cli spawn env must agree (see user-dbs.ts).
-export { isUsableUserDb, parseUserDbs } from '@rivetos/types'
+export { isUsableUserDb, userDbsFromRegistry } from '@rivetos/types'
 export type { UserDbEntry } from '@rivetos/types'
 
 /**

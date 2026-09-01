@@ -1,16 +1,20 @@
 /**
  * First-class user tenancy registry.
  *
- * Replaces the #561 env maps (`RIVETOS_DEN_DEVICE_USERS` / `RIVETOS_USER_DBS`)
- * as the source of truth: user id → device CN(s) → database handle → persona.
- * Resolve once at the TLS edge into a `UserContext`; nothing downstream
- * re-derives identity.
+ * Source of truth: users.json (RIVETOS_USERS_FILE / `<shared>/rivetos/users.json`
+ * / `~/.rivetos/users.json`). User id → device CN(s) → database handle →
+ * persona. Resolve once at the TLS edge into a `UserContext`; nothing
+ * downstream re-derives identity.
  *
  * A user is routable IFF they have a usable `UserDbEntry` (same policy as
  * user-dbs.ts). Mapped-without-a-DB fails closed — falling through to the
  * node owner is a data leak, not a default.
  */
 
+import { existsSync, readFileSync } from 'node:fs'
+import { homedir as osHomedir } from 'node:os'
+import { join } from 'node:path'
+import { sharedDir } from './shared-dir.js'
 import { isUsableUserDb, type UserDbEntry } from './user-dbs.js'
 
 /** Identity resolved at the connection edge and carried through den. */
@@ -35,9 +39,7 @@ export interface UsersRegistry {
   ownerUserId: string
   /**
    * When true, an enrolled device that is not in any user's `devices` list
-   * resolves as the owner. Env-bootstrap sets this so existing Phil certs
-   * keep working before they are listed. A file registry should set false
-   * (fail closed).
+   * resolves as the owner. A file registry should set false (fail closed).
    */
   unmappedIsOwner: boolean
   users: Record<string, UserRecord>
@@ -69,10 +71,14 @@ function contextFor(
   }
 }
 
+function dbFor(record: UserRecord): UserDbEntry | undefined {
+  return record.db && isUsableUserDb(record.db) ? record.db : undefined
+}
+
 /**
  * Parse a users.json document. Malformed input returns undefined and logs —
- * never throws. Secrets (`pgUrl`) are optional on the file; callers merge
- * `UserDbEntry` maps separately.
+ * never throws. Secrets (`pgUrl`) are optional on the file; {@link loadUsersRegistry}
+ * fills the owner from RIVETOS_PG_URL when omitted.
  */
 export function parseUsersRegistry(raw: string | undefined): UsersRegistry | undefined {
   const trimmed = raw?.trim()
@@ -126,8 +132,125 @@ export function parseUsersRegistry(raw: string | undefined): UsersRegistry | und
 }
 
 /**
- * Strangler: build a registry from the live #561 env maps so Coco's capture
- * path keeps working before a users.json is written.
+ * Default node-owner user id when users.json / RIVETOS_OWNER_USER_ID is unset.
+ * Fleet installs historically used `phil`; deployments override via
+ * RIVETOS_OWNER_USER_ID (forwarded to the embedded den by buildGatewayEnv).
+ */
+export const DEFAULT_OWNER_USER_ID = 'phil'
+
+export type EnvLike = Record<string, string | undefined>
+
+export interface LoadUsersRegistryOptions {
+  /** Explicit file path; overrides env.RIVETOS_USERS_FILE. */
+  path?: string
+  /** Injected file read (missing → undefined). Default: node:fs. */
+  readFile?: (path: string) => string | undefined
+  /** Injected homedir for the ~/.rivetos/users.json fallback. */
+  homedir?: () => string
+}
+
+function defaultReadFile(path: string): string | undefined {
+  try {
+    if (!existsSync(path)) return undefined
+    return readFileSync(path, 'utf8')
+  } catch {
+    console.error(`[rivetos] users registry "${path}" unreadable`)
+    return undefined
+  }
+}
+
+function failClosedOwner(env: EnvLike): UsersRegistry {
+  const ownerUserId = env.RIVETOS_OWNER_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
+  return mergeUserDbs(
+    {
+      ownerUserId,
+      unmappedIsOwner: false,
+      users: { [ownerUserId]: { id: ownerUserId, devices: [] } },
+    },
+    undefined,
+    env.RIVETOS_PG_URL,
+  )
+}
+
+/**
+ * Load users.json. Path resolution (first hit wins):
+ *   1. opts.path or env.RIVETOS_USERS_FILE
+ *   2. $RIVETOS_SHARED_DIR/rivetos/users.json (default /rivet-shared)
+ *   3. ~/.rivetos/users.json
+ *
+ * Explicit path set but missing/invalid → fail-closed owner-only registry
+ * (`unmappedIsOwner=false`). Shared-dir file present but invalid → same
+ * fail-closed (does not fall through to home or tenancy-off). Absent
+ * shared-dir file still falls through. No file anywhere → undefined
+ * (tenancy off). Owner `pgUrl` is filled from RIVETOS_PG_URL when the
+ * file omits it.
+ */
+export function loadUsersRegistry(
+  env: EnvLike = process.env,
+  opts?: LoadUsersRegistryOptions,
+): UsersRegistry | undefined {
+  const read = opts?.readFile ?? defaultReadFile
+  const home = opts?.homedir ?? osHomedir
+  const explicit = (opts?.path ?? env.RIVETOS_USERS_FILE)?.trim() || undefined
+  const sharedRoot = env.RIVETOS_SHARED_DIR?.trim() || sharedDir()
+
+  const tryParse = (path: string | undefined): UsersRegistry | undefined => {
+    if (!path) return undefined
+    const raw = read(path)
+    if (raw === undefined) return undefined
+    return parseUsersRegistry(raw)
+  }
+
+  if (explicit) {
+    const fileReg = tryParse(explicit)
+    if (!fileReg) {
+      console.error(
+        `[rivetos] RIVETOS_USERS_FILE="${explicit}" missing or invalid — ALL device identities refused (fail closed); fix or unset the file`,
+      )
+      return failClosedOwner(env)
+    }
+    return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
+  }
+
+  const sharedFile = join(sharedRoot, 'rivetos', 'users.json')
+  const sharedRaw = read(sharedFile)
+  if (sharedRaw !== undefined) {
+    const fileReg = parseUsersRegistry(sharedRaw)
+    if (!fileReg) {
+      console.error(
+        `[rivetos] users registry "${sharedFile}" exists but is invalid — ALL device identities refused (fail closed); fix the file`,
+      )
+      return failClosedOwner(env)
+    }
+    return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
+  }
+
+  const homeReg = tryParse(join(home(), '.rivetos', 'users.json'))
+  if (!homeReg) return undefined
+  return mergeUserDbs(homeReg, undefined, env.RIVETOS_PG_URL)
+}
+
+/**
+ * Per-user db map for routing consumers. The owner is omitted — their store
+ * is RIVETOS_PG_URL / the plugin main store. Unusable entries are dropped.
+ * A user is routable IFF they appear here.
+ */
+export function userDbsFromRegistry(
+  registry: UsersRegistry | undefined,
+): Record<string, UserDbEntry> | undefined {
+  if (!registry) return undefined
+  const out: Record<string, UserDbEntry> = {}
+  for (const rec of Object.values(registry.users)) {
+    if (rec.id === registry.ownerUserId) continue
+    const db = dbFor(rec)
+    if (db) out[rec.id] = db
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/**
+ * Build a registry from device→user and user→db maps. Test / fixture helper;
+ * production loads the file registry via {@link loadUsersRegistry}.
  */
 export function registryFromEnv(opts: {
   deviceUsers?: Record<string, string>
@@ -135,7 +258,7 @@ export function registryFromEnv(opts: {
   ownerPgUrl?: string
   ownerUserId?: string
 }): UsersRegistry | undefined {
-  const ownerUserId = opts.ownerUserId?.trim() || 'phil'
+  const ownerUserId = opts.ownerUserId?.trim() || DEFAULT_OWNER_USER_ID
   const users: Record<string, UserRecord> = {}
   const ownerDb = opts.ownerPgUrl?.trim() ? { pgUrl: opts.ownerPgUrl.trim() } : undefined
   users[ownerUserId] = { id: ownerUserId, devices: [], db: ownerDb }
@@ -159,7 +282,7 @@ export function registryFromEnv(opts: {
   return { ownerUserId, unmappedIsOwner: true, users }
 }
 
-/** Merge pgUrl/envFile from the env map onto registry users that lack a db. */
+/** Fill missing db handles from a side map, then the owner PG URL. */
 export function mergeUserDbs(
   registry: UsersRegistry,
   userDbs: Record<string, UserDbEntry> | undefined,
@@ -174,10 +297,6 @@ export function mergeUserDbs(
     users[id] = { ...rec, db }
   }
   return { ...registry, users }
-}
-
-function dbFor(record: UserRecord): UserDbEntry | undefined {
-  return record.db && isUsableUserDb(record.db) ? record.db : undefined
 }
 
 /**
