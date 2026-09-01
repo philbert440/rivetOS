@@ -70,9 +70,9 @@
  * See docs/plans/harness-control-plane.md.
  */
 
-import { formatSessionId, type HarnessSessionSummary, type SessionId } from '@rivetos/types'
+import { formatSessionId, type SessionId } from '@rivetos/types'
+import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
 import {
-  PtyHarnessDriver,
   type DenAgentEventLike,
   type HarnessPtyHost,
   type HarnessStoreHost,
@@ -97,46 +97,19 @@ export interface HermesStoreHost extends HarnessStoreHost {
 
 export type HermesDriverDeps = PtyHarnessDriverDeps<HermesStoreHost>
 
-/**
- * The hook field carrying hermes's OWN session id, alongside the den room key
- * in `session`. Added to the den protocol for this driver
- * (`AgentEventMeta.harnessSession`) because hermes is the first harness whose
- * native id the den room key cannot be.
- */
-function announcedNative(ev: DenAgentEventLike): string | undefined {
-  const raw = ev.harnessSession
-  if (typeof raw !== 'string') return undefined
-  const trimmed = raw.trim()
-  // `unknown-<ppid>` is the translator's last-resort key for a hermes it could
-  // not identify — a room, never a session id.
-  if (!trimmed || trimmed.startsWith('unknown-')) return undefined
-  return trimmed
-}
-
-export class HermesDriver extends PtyHarnessDriver<HermesStoreHost> {
-  /**
-   * den room key → the hermes session currently running in it.
-   *
-   * EXTRACTION POINT: `kimi-code` is the second driver that cannot pin an id
-   * and therefore keeps this same room ↔ native pair, plus the same
-   * `nativeFor` / `room` / `ownsEvent` / `bindRoom` shape around it. Two is a
-   * deliberate duplicate under this plan's own rule — the `PtyHarnessDriver`
-   * base was extracted at driver THREE precisely so the shape had three data
-   * points to be sure of. A THIRD adopting driver is the trigger: extract the
-   * room map (and the adopt-vs-rotate decision in `bindRoom`) into a shared
-   * intermediate then, not before. See `kimi-driver.ts` for the twin, and for
-   * the two places kimi genuinely diverges.
-   */
-  private readonly roomNative = new Map<string, string>()
-  /** The inverse — which room a native id is live in. See `room()`. */
-  private readonly nativeRoom = new Map<string, string>()
-
+export class HermesDriver extends AdoptingPtyHarnessDriver<HermesStoreHost> {
   constructor(deps: HermesDriverDeps) {
     super(
       {
         harnessId: HERMES_HARNESS_ID,
         rosterCommand: HERMES_ROSTER_COMMAND,
         productName: 'Hermes',
+        // The verbatim refusal — see "no pinning" in the file header.
+        noPinReason:
+          'hermes: starting a session through the control plane is not supported — hermes has ' +
+          'no flag to pin a new session id (--resume/--continue reference existing sessions ' +
+          'only), so the control plane cannot name the session it would be creating. Spawn ' +
+          'hermes from the den roster; the driver adopts it when its hooks announce an id.',
       },
       deps,
     )
@@ -147,116 +120,27 @@ export class HermesDriver extends PtyHarnessDriver<HermesStoreHost> {
     return formatSessionId(HERMES_HARNESS_ID, nativeId)
   }
 
-  /**
-   * Refused, deliberately — see "no pinning" in the file header. A caller that
-   * wants a fresh hermes starts one from the den roster; this driver adopts it
-   * when its hooks announce the id hermes picked.
-   */
-  startSession(): Promise<HarnessSessionSummary> {
-    return Promise.reject(
-      this.unsupported(
-        'hermes: starting a session through the control plane is not supported — hermes has ' +
-          'no flag to pin a new session id (--resume/--continue reference existing sessions ' +
-          'only), so the control plane cannot name the session it would be creating. Spawn ' +
-          'hermes from the den roster; the driver adopts it when its hooks announce an id.',
-      ),
-    )
-  }
+  // -- divergent hooks ---------------------------------------------------------
 
   /**
-   * Resuming binds the den room key TO the native id (`hermes --resume <id>` in
-   * a room named `<id>`), which is the one case where hermes's two ids
-   * coincide. The bind happens AFTER the base has checked the store, not
-   * before: binding marks the session live, which would talk the base out of
-   * rejecting an id the harness has never heard of.
+   * hermes's OWN session id off a den event, or undefined when the hook did
+   * not report one. The hook field carrying it, alongside the den room key in
+   * `session`, was added to the den protocol for this driver
+   * (`AgentEventMeta.harnessSession`) because hermes is the first harness
+   * whose native id the den room key cannot be. Shape-checked rather than
+   * trusted: the field is a wire value.
    */
-  async resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
-    // Bind AFTER the base has checked the store: binding marks the session
-    // live, which would otherwise talk the base out of rejecting an id the
-    // harness has never heard of.
-    const summary = await super.resumeSession(sessionId)
-    const native = this.native(sessionId)
-    if (!this.nativeRoom.has(native)) this.bindRoom(native, native)
-    return summary
+  protected override announcedNative(ev: DenAgentEventLike): string | undefined {
+    const raw = ev.harnessSession
+    if (typeof raw !== 'string') return undefined
+    const trimmed = raw.trim()
+    // `unknown-<ppid>` is the translator's last-resort key for a hermes it could
+    // not identify — a room, never a session id.
+    if (!trimmed || trimmed.startsWith('unknown-')) return undefined
+    return trimmed
   }
 
-  // -- subclass hooks --------------------------------------------------------
-
-  /** The den room a session is live in — its own id until the map says otherwise. */
-  protected override room(native: string): string {
-    return this.nativeRoom.get(native) ?? native
-  }
-
-  /**
-   * Hermes native ids are not uuids, so the base's uuid gate would drop every
-   * event. The room's identity comes from the hook's `harnessSession` field
-   * instead; a room we have never bound is not ours to report on.
-   *
-   * A node still running an older hook (no `harnessSession`) degrades rather
-   * than guesses: sessions this driver resumed itself keep streaming, because
-   * their room key IS the native id; a drawer-spawned hermes stays invisible
-   * until the hook is updated, which beats inventing an id for it.
-   */
-  protected override nativeFor(ev: DenAgentEventLike): string | undefined {
-    const room = ev.session
-    if (!room) return undefined
-    const announced = announcedNative(ev)
-    if (announced !== undefined) {
-      if (!this.isHermesRoom(room, ev)) return undefined
-      this.bindRoom(room, announced)
-      return announced
-    }
-    return this.roomNative.get(room)
-  }
-
-  /**
-   * `nativeFor` has already established the room is ours (a bound room, or a
-   * hermes-stamped event), so the base's second check would only re-derive it.
-   */
-  protected override ownsEvent(): boolean {
-    return true
-  }
-
-  // -- internals -------------------------------------------------------------
-
-  /** Is this den room hermes's? den rooms also carry claude, grok and shells. */
-  private isHermesRoom(room: string, ev: DenAgentEventLike): boolean {
-    if (this.roomNative.has(room)) return true
-    // hermes-den-hook.mjs stamps `harness: 'hermes'` on everything it posts;
-    // the term manager's synthetic session.start for a roster spawn stamps
-    // `rivetos` + `<host>:hermes`.
-    if (ev.harness === HERMES_HARNESS_ID) return true
-    return (
-      ev.harness === 'rivetos' &&
-      typeof ev.name === 'string' &&
-      ev.name.endsWith(`:${HERMES_ROSTER_COMMAND}`)
-    )
-  }
-
-  /**
-   * Point a den room at the hermes session running in it. First sighting is an
-   * adoption (announce it and start tracking); a room that changes its session
-   * id is a ROTATION — `/new`, `/branch`, mid-chat `/resume`, a rewind, a
-   * compaction that forked a child session, or a den room re-spawned into a
-   * fresh hermes (the room is the conversation either way). The driver cannot
-   * tell those apart on the den wire and does not need to: every one of them
-   * replaces the native id of the session this room is running, which is
-   * exactly what the contract's `previousSessionId` means. Reasons are
-   * preserved where they are
-   * observable — capture stamps hermes's own `reason` on its rotation
-   * breadcrumb (`integrations/hermes/rivet-memory`).
-   */
-  private bindRoom(room: string, native: string): void {
-    const previous = this.roomNative.get(room)
-    if (previous === native) return
-    this.roomNative.set(room, native)
-    this.nativeRoom.set(native, room)
-    if (previous === undefined) {
-      this.ensureLive(native)
-      this.announceIfNew(native)
-      return
-    }
-    this.nativeRoom.delete(previous)
-    this.rotate(previous, native)
-  }
+  // `canonicalRoomNative` is deliberately NOT overridden: hermes has no
+  // outside-den path that posts under a canonical `hermes:<native>` room key,
+  // so the adopting base's default (undefined) is hermes's answer.
 }

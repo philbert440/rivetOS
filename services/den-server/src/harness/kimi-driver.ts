@@ -61,8 +61,8 @@
  * the room is the conversation as far as every attached client is concerned. So
  * the driver reports that as a rotation — the same event, the same registry
  * machinery — and the rotation conformance suite runs against it. Rotation here
- * means "this room moved on", never "kimi renamed itself", and the header of
- * `bindRoom` is where that distinction is written down.
+ * means "this room moved on", never "kimi renamed itself", and this class's
+ * doc comment is where that distinction is written down.
  *
  * **What the live stream does not carry, stated rather than faked.** kimi's
  * `Stop` hook payload is `{ stop_hook_active }` — no reply text — and no kimi
@@ -91,9 +91,9 @@
  * See docs/plans/harness-control-plane.md.
  */
 
-import { formatSessionId, type HarnessSessionSummary, type SessionId } from '@rivetos/types'
+import { formatSessionId, type SessionId } from '@rivetos/types'
+import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
 import {
-  PtyHarnessDriver,
   type DenAgentEventLike,
   type HarnessPtyHost,
   type HarnessStoreHost,
@@ -122,49 +122,44 @@ export interface KimiStoreHost extends HarnessStoreHost {
 export type KimiDriverDeps = PtyHarnessDriverDeps<KimiStoreHost>
 
 /**
- * kimi's OWN session id off a den event, or undefined when the hook did not
- * report one. Shape-checked rather than trusted: the field is a wire value.
+ * The adopting shape (room ↔ native map, adopt-vs-rotate in `bindRoom`,
+ * refused `startSession`) is the shared `AdoptingPtyHarnessDriver` — extracted
+ * when deepseek became the THIRD adopting driver, exactly as the EXTRACTION
+ * POINT notes that used to sit here and on hermes's copy prescribed.
+ *
+ * What that extraction deliberately did NOT take, because it is kimi's own:
+ *
+ *   - kimi accepts a canonical `kimi-code:<native>` ROOM KEY as an id
+ *     announcement (`canonicalRoomNative` below — hermes has no such path).
+ *   - What a changed room MEANS differs from hermes, and it is worth being
+ *     precise about what that case IS for kimi, because it is narrower.
+ *     Hermes switches session inside one process (`/new`, `/branch`, a
+ *     mid-chat `/resume`, a rewind, a forking compaction) and fires a hook
+ *     for it. Kimi does none of that: its `/clear` and its compaction are
+ *     context operations on the running session id, and a resume replays the
+ *     same id — a kimi process is one session for its whole life. So the only
+ *     way a kimi room changes session is that the ROOM was re-spawned into a
+ *     different kimi (a reaped PTY restarted from the drawer, an operator
+ *     re-running the roster entry). The room is the conversation every
+ *     attached client is watching, so that still means "the native id behind
+ *     this session id has been replaced", which is exactly what
+ *     `previousSessionId` says — and it still wants an alias, a moved tail
+ *     and a retired predecessor, which is exactly what the control plane does
+ *     with it.
  */
-function announcedNative(ev: DenAgentEventLike): string | undefined {
-  const raw = ev.harnessSession
-  if (typeof raw !== 'string') return undefined
-  const trimmed = raw.trim()
-  // `unknown-<hex>` is the translator's cached fallback id for a kimi that sent
-  // no session_id at all — a room key, never a store id, and resuming one would
-  // ask the CLI for a session that does not exist.
-  if (!trimmed || !trimmed.startsWith('session_')) return undefined
-  return trimmed
-}
-
-export class KimiCodeDriver extends PtyHarnessDriver<KimiStoreHost> {
-  /**
-   * den room key → the kimi session currently running in it.
-   *
-   * EXTRACTION POINT: this room ↔ native pair, and the `nativeFor` / `room` /
-   * `ownsEvent` / `bindRoom` shape around it, is copy TWO of
-   * `hermes-driver.ts`. Deliberately not extracted yet, under this plan's own
-   * rule — the `PtyHarnessDriver` base was pulled out at driver THREE so the
-   * shape had three data points to be sure of, and an adopting-driver base
-   * drawn from two would be guessing at which parts are general. A THIRD
-   * adopting driver is the trigger: extract then, taking the room map and the
-   * adopt-vs-rotate decision in `bindRoom` with it. The same note sits on
-   * hermes's copy, so whichever file the next author opens says so.
-   *
-   * What is NOT shared, and would have to survive any extraction: kimi accepts
-   * a canonical `kimi-code:<native>` ROOM KEY as an id announcement (hermes has
-   * no such path), and what a changed room MEANS differs — hermes switches
-   * session inside one process, kimi never does. See `bindRoom` below.
-   */
-  private readonly roomNative = new Map<string, string>()
-  /** The inverse — which room a native id is live in. See `room()`. */
-  private readonly nativeRoom = new Map<string, string>()
-
+export class KimiCodeDriver extends AdoptingPtyHarnessDriver<KimiStoreHost> {
   constructor(deps: KimiDriverDeps) {
     super(
       {
         harnessId: KIMI_HARNESS_ID,
         rosterCommand: KIMI_ROSTER_COMMAND,
         productName: 'Kimi Code',
+        // The verbatim refusal — see "no pinning" in the file header.
+        noPinReason:
+          'kimi-code: starting a session through the control plane is not supported — kimi has ' +
+          'no flag to pin a new session id (-S/--session and --continue reference existing ' +
+          'sessions only), so the control plane cannot name the session it would be creating. ' +
+          'Spawn kimi from the den roster; the driver adopts it when its hooks announce an id.',
       },
       deps,
     )
@@ -175,135 +170,36 @@ export class KimiCodeDriver extends PtyHarnessDriver<KimiStoreHost> {
     return formatSessionId(KIMI_HARNESS_ID, nativeId)
   }
 
+  // -- divergent hooks ---------------------------------------------------------
+
   /**
-   * Refused, deliberately — see "no pinning" in the file header. A caller that
-   * wants a fresh kimi starts one from the den roster; this driver adopts it
-   * when its hooks announce the id kimi picked.
+   * kimi's OWN session id off a den event, or undefined when the hook did not
+   * report one. Shape-checked rather than trusted: the field is a wire value.
    */
-  startSession(): Promise<HarnessSessionSummary> {
-    return Promise.reject(
-      this.unsupported(
-        'kimi-code: starting a session through the control plane is not supported — kimi has ' +
-          'no flag to pin a new session id (-S/--session and --continue reference existing ' +
-          'sessions only), so the control plane cannot name the session it would be creating. ' +
-          'Spawn kimi from the den roster; the driver adopts it when its hooks announce an id.',
-      ),
-    )
+  protected override announcedNative(ev: DenAgentEventLike): string | undefined {
+    const raw = ev.harnessSession
+    if (typeof raw !== 'string') return undefined
+    const trimmed = raw.trim()
+    // `unknown-<hex>` is the translator's cached fallback id for a kimi that sent
+    // no session_id at all — a room key, never a store id, and resuming one would
+    // ask the CLI for a session that does not exist.
+    if (!trimmed || !trimmed.startsWith('session_')) return undefined
+    return trimmed
   }
 
   /**
-   * Resuming binds the den room key TO the native id (`kimi --session <id>` in
-   * a room named `<id>`), which is the one case where kimi's two ids coincide.
-   */
-  async resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
-    // Bind AFTER the base has checked the store: binding marks the session
-    // live, which would otherwise talk the base out of rejecting an id the
-    // harness has never heard of.
-    const summary = await super.resumeSession(sessionId)
-    const native = this.native(sessionId)
-    if (!this.nativeRoom.has(native)) this.bindRoom(native, native)
-    return summary
-  }
-
-  // -- subclass hooks --------------------------------------------------------
-
-  /** The den room a session is live in — its own id until the map says otherwise. */
-  protected override room(native: string): string {
-    return this.nativeRoom.get(native) ?? native
-  }
-
-  /**
-   * kimi native ids are `session_<uuid>`, not bare uuids, so the base's uuid
-   * gate would drop every event. Identity comes from the hook's
-   * `harnessSession` field instead; a room we have never bound is not ours.
+   * A kimi running outside den posts under its own canonical id as the room
+   * key (`kimi-code:session_<uuid>`), because there is no `RIVET_DEN_SESSION`
+   * to pin one. Recover the native id from that shape — and only that shape,
+   * so a room key that merely contains a colon is not mistaken for one.
    *
-   * A node still running an older kimi hook (no `harnessSession`) degrades
-   * rather than guesses, exactly as hermes does: sessions this driver resumed
-   * itself keep streaming because their room key IS the native id, and a
-   * drawer-spawned kimi stays invisible until the hook is updated. The one
-   * kimi-specific case is a kimi running OUTSIDE den entirely — no
-   * `RIVET_DEN_SESSION` to pin a room, so its hook posts under the canonical
-   * `kimi-code:session_<uuid>`, which carries the native id in plain sight.
+   * (This is one of the two places kimi genuinely diverges from hermes, which
+   * has no outside-den canonical-room path and keeps the base's default.)
    */
-  protected override nativeFor(ev: DenAgentEventLike): string | undefined {
-    const room = ev.session
-    if (!room) return undefined
-    const announced = announcedNative(ev) ?? canonicalRoomNative(room)
-    if (announced !== undefined) {
-      if (!this.isKimiRoom(room, ev)) return undefined
-      this.bindRoom(room, announced)
-      return announced
-    }
-    return this.roomNative.get(room)
+  protected override canonicalRoomNative(room: string): string | undefined {
+    const prefix = `${KIMI_HARNESS_ID}:`
+    if (!room.startsWith(prefix)) return undefined
+    const native = room.slice(prefix.length)
+    return native.startsWith('session_') ? native : undefined
   }
-
-  /**
-   * `nativeFor` has already established the room is ours (a bound room, or a
-   * kimi-stamped event), so the base's second check would only re-derive it.
-   */
-  protected override ownsEvent(): boolean {
-    return true
-  }
-
-  // -- internals -------------------------------------------------------------
-
-  /** Is this den room kimi's? den rooms also carry the other three and shells. */
-  private isKimiRoom(room: string, ev: DenAgentEventLike): boolean {
-    if (this.roomNative.has(room)) return true
-    // kimi-den-hook.mjs stamps `harness: 'kimi-code'` on everything it posts;
-    // the term manager's synthetic session.start for a roster spawn stamps
-    // `rivetos` + `<host>:kimi`.
-    if (ev.harness === KIMI_HARNESS_ID) return true
-    return (
-      ev.harness === 'rivetos' &&
-      typeof ev.name === 'string' &&
-      ev.name.endsWith(`:${KIMI_ROSTER_COMMAND}`)
-    )
-  }
-
-  /**
-   * Point a den room at the kimi session running in it. First sighting is an
-   * adoption (announce it and start tracking); a room that changes its session
-   * id is a ROTATION.
-   *
-   * Worth being precise about what that second case IS for kimi, because it is
-   * narrower than hermes's. Hermes switches session inside one process (`/new`,
-   * `/branch`, a mid-chat `/resume`, a rewind, a forking compaction) and fires
-   * a hook for it. Kimi does none of that: its `/clear` and its compaction are
-   * context operations on the running session id, and a resume replays the same
-   * id — a kimi process is one session for its whole life. So the only way a
-   * kimi room changes session is that the ROOM was re-spawned into a different
-   * kimi (a reaped PTY restarted from the drawer, an operator re-running the
-   * roster entry). The room is the conversation every attached client is
-   * watching, so that still means "the native id behind this session id has
-   * been replaced", which is exactly what `previousSessionId` says — and it
-   * still wants an alias, a moved tail and a retired predecessor, which is
-   * exactly what the control plane does with it.
-   */
-  private bindRoom(room: string, native: string): void {
-    const previous = this.roomNative.get(room)
-    if (previous === native) return
-    this.roomNative.set(room, native)
-    this.nativeRoom.set(native, room)
-    if (previous === undefined) {
-      this.ensureLive(native)
-      this.announceIfNew(native)
-      return
-    }
-    this.nativeRoom.delete(previous)
-    this.rotate(previous, native)
-  }
-}
-
-/**
- * A kimi running outside den posts under its own canonical id as the room key
- * (`kimi-code:session_<uuid>`), because there is no `RIVET_DEN_SESSION` to pin
- * one. Recover the native id from that shape — and only that shape, so a room
- * key that merely contains a colon is not mistaken for one.
- */
-function canonicalRoomNative(room: string): string | undefined {
-  const prefix = `${KIMI_HARNESS_ID}:`
-  if (!room.startsWith(prefix)) return undefined
-  const native = room.slice(prefix.length)
-  return native.startsWith('session_') ? native : undefined
 }

@@ -1,27 +1,20 @@
 #!/usr/bin/env bash
 # rivet-memory-mcp — launch the RivetOS MCP server in stdio mode for dsh.
+#
+# stdout is reserved for the JSON-RPC channel.
+# All diagnostics and errors go to stderr.
 set -euo pipefail
 
-RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
-RIVETOS_ENV="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Shared install-root discovery + env loading (integrations/shared).
+# shellcheck source=../../../shared/rivet-paths.sh
+. "$SCRIPT_DIR/../../../shared/rivet-paths.sh"
+unset SCRIPT_DIR # don't leak a global into the sourced namespace
 
-if [ -f "$RIVETOS_ENV" ]; then
-  set -a
-  # shellcheck disable=SC1090
-  . "$RIVETOS_ENV" 2>/dev/null || true
-  set +a
-fi
-
-CLI="$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js"
-if [ ! -f "$CLI" ]; then
-  CLI="$RIVETOS_ROOT/plugins/transports/mcp-server/dist/cli.js"
-fi
-
-if [ ! -f "$CLI" ]; then
-  echo "rivet-memory: MCP server not found at $CLI" >&2
-  echo "rivet-memory: Run 'npm run build' in $RIVETOS_ROOT" >&2
-  exit 1
-fi
+rivetos_load_env
+RIVETOS_ROOT="$(rivetos_find_root)"
+export RIVETOS_ROOT
 
 export RIVETOS_MCP_STDIO=1
+CLI="$(rivetos_mcp_cli "$RIVETOS_ROOT")"
 exec node "$CLI" --stdio
