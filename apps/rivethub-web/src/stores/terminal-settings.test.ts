@@ -108,6 +108,19 @@ describe('terminal settings store', () => {
     expect(normalizeSettings({ scheme: '' }).scheme).toBe(TERMINAL_DEFAULTS.scheme)
   })
 
+  it('rehydrates persisted ligatures:true to false (no DOM renderer)', async () => {
+    expect(normalizeSettings({ ligatures: true }).ligatures).toBe(false)
+    localStorage.setItem(
+      TERMINAL_STORAGE_KEY,
+      JSON.stringify({
+        state: { ligatures: true },
+        version: 0,
+      }),
+    )
+    await useTerminalSettings.persist.rehydrate()
+    expect(useTerminalSettings.getState().ligatures).toBe(false)
+  })
+
   it('themeSource imported without a palette falls back to app', () => {
     expect(normalizeSettings({ themeSource: 'imported' }).themeSource).toBe('app')
     const dracula = getTerminalScheme('dracula')!

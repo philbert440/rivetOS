@@ -199,21 +199,10 @@ export function XtermAttach(props: {
     webglFailedRef.current = false
 
     const initial = useTerminalSettings.getState()
-    // Construction is exception-safe: if any addon or handler throws, the
-    // terminal is disposed in the finally instead of leaking half-wired
-    // listeners and leaving a blank pane.
-    const term = new Terminal({
-      fontFamily: initial.fontFamily,
-      fontSize: initial.fontSize,
-      lineHeight: initial.lineHeight,
-      letterSpacing: initial.letterSpacing,
-      cursorStyle: initial.cursorStyle,
-      cursorBlink: initial.cursorBlink,
-      // Harness output is chatty — the 1000-line default loses the top of a
-      // single long tool run. 5k lines is still trivial memory-wise.
-      scrollback: initial.scrollback,
-      theme: resolveXtermTheme(initial, resolvedThemeOf(useTheme.getState())),
-    })
+    // Construction is exception-safe: if the constructor (a bad persisted
+    // option) or any addon/handler throws, disposePartial runs so the
+    // exception never escapes the effect and nothing half-wired leaks.
+    let term: Terminal | undefined
     let alive = true
     let constructed = false
     let selSub: { dispose: () => void } | undefined
@@ -221,19 +210,25 @@ export function XtermAttach(props: {
     let fit: FitAddon | undefined
     let search: SearchAddon | undefined
     const onContextMenu = (e: MouseEvent): void => {
-      if (!useTerminalSettings.getState().rightClickPaste) return
+      if (!term || !useTerminalSettings.getState().rightClickPaste) return
       // A live selection keeps the native context menu (Copy) — right-click
       // paste only replaces the menu when there is nothing to copy.
       if (term.getSelection()) return
       e.preventDefault()
       void readTextFromClipboard().then((text) => {
-        if (text && alive) term.paste(text)
+        if (text && alive) term?.paste(text)
       })
     }
-    const onBellAnimationEnd = (): void => host.classList.remove('term-bell-flash')
+    const onBellAnimationEnd = (e: AnimationEvent): void => {
+      // xterm animations bubble from descendants; only the host's own bell
+      // flash should clear the class.
+      if (e.target !== host) return
+      host.classList.remove('term-bell-flash')
+    }
     const disposePartial = (): void => {
       alive = false
       if (selTimerRef.current) clearTimeout(selTimerRef.current)
+      if (bellTimerRef.current) clearTimeout(bellTimerRef.current)
       host.removeEventListener('contextmenu', onContextMenu)
       host.removeEventListener('animationend', onBellAnimationEnd)
       selSub?.dispose()
@@ -242,21 +237,34 @@ export function XtermAttach(props: {
       termRef.current = undefined
       fitRef.current = undefined
       searchRef.current = undefined
-      term.dispose()
+      term?.dispose()
     }
     try {
+      const instance = new Terminal({
+        fontFamily: initial.fontFamily,
+        fontSize: initial.fontSize,
+        lineHeight: initial.lineHeight,
+        letterSpacing: initial.letterSpacing,
+        cursorStyle: initial.cursorStyle,
+        cursorBlink: initial.cursorBlink,
+        // Harness output is chatty — the 1000-line default loses the top of a
+        // single long tool run. 5k lines is still trivial memory-wise.
+        scrollback: initial.scrollback,
+        theme: resolveXtermTheme(initial, resolvedThemeOf(useTheme.getState())),
+      })
+      term = instance
       fit = new FitAddon()
-      term.loadAddon(fit)
+      instance.loadAddon(fit)
       // Clickable URLs in TUI output (PR links, dashboards) — openExternal
       // routes through shell IPC where window.open is denied, and plain
       // window.open in browsers.
-      term.loadAddon(new WebLinksAddon((_e, uri) => openExternal(uri)))
+      instance.loadAddon(new WebLinksAddon((_e, uri) => openExternal(uri)))
       // Unicode 11 grapheme widths — current emoji/CJK align in TUI output.
-      term.loadAddon(new Unicode11Addon())
-      term.unicode.activeVersion = '11'
+      instance.loadAddon(new Unicode11Addon())
+      instance.unicode.activeVersion = '11'
       // Inline images: sixel + iTerm2 inline-images protocol, with conservative
       // size caps so a hostile/buggy stream can't eat unbounded memory.
-      term.loadAddon(
+      instance.loadAddon(
         new ImageAddon({
           sixelSupport: true,
           sixelSizeLimit: 25_000_000,
@@ -266,7 +274,7 @@ export function XtermAttach(props: {
         }),
       )
       search = new SearchAddon()
-      term.loadAddon(search)
+      instance.loadAddon(search)
       // OSC 52 clipboard: ONE write-only handler on every host. Reads (`?`),
       // empty, and malformed payloads are claimed and ignored — answering a
       // read would leak the clipboard to whatever holds the PTY, and
@@ -274,7 +282,7 @@ export function XtermAttach(props: {
       // the app clipboard chain (lib/clipboard.ts: rivetShell IPC → Tauri
       // shim → navigator.clipboard → execCommand) when the host actually has
       // a clipboard — some WebView hosts have none at all.
-      term.parser.registerOscHandler(52, (data) => {
+      instance.parser.registerOscHandler(52, (data) => {
         const text = decodeOsc52Write(data)
         if (text !== undefined && hasAnyClipboard()) {
           void copyTextToClipboard(text).catch(() => undefined)
@@ -290,17 +298,17 @@ export function XtermAttach(props: {
       // when rightClickPaste is on. Plain Ctrl+C stays SIGINT and plain Ctrl+V
       // stays a native paste event into xterm's hidden textarea — neither is
       // intercepted here.
-      selSub = term.onSelectionChange(() => {
+      selSub = instance.onSelectionChange(() => {
         if (selSuppressRef.current) return
         if (!useTerminalSettings.getState().copyOnSelect) return
         if (selTimerRef.current) clearTimeout(selTimerRef.current)
         selTimerRef.current = setTimeout(() => {
           if (!alive) return
-          const sel = term.getSelection()
+          const sel = instance.getSelection()
           if (sel) void copyTextToClipboard(sel).catch(() => undefined)
         }, 150)
       })
-      term.attachCustomKeyEventHandler((e) => {
+      instance.attachCustomKeyEventHandler((e) => {
         if (e.type !== 'keydown') return true
         // Find bar: Ctrl/Cmd+Shift+F opens it; Esc closes it — but only
         // while its input is focused. Once the user refocuses the terminal,
@@ -317,7 +325,7 @@ export function XtermAttach(props: {
         }
         if (!e.ctrlKey || !e.shiftKey) return true
         if (e.code === 'KeyC') {
-          const sel = term.getSelection()
+          const sel = instance.getSelection()
           if (!sel) return true // nothing selected — let the browser have it
           void copyTextToClipboard(sel).catch(() => undefined)
           e.preventDefault()
@@ -325,7 +333,7 @@ export function XtermAttach(props: {
         }
         if (e.code === 'KeyV') {
           void readTextFromClipboard().then((text) => {
-            if (text) term.paste(text)
+            if (text) instance.paste(text)
           })
           e.preventDefault()
           return false
@@ -340,24 +348,32 @@ export function XtermAttach(props: {
       // timeout is the fallback for prefers-reduced-motion, where the
       // animation is disabled and animationend may never fire.
       host.addEventListener('animationend', onBellAnimationEnd)
-      bellSub = term.onBell(() => {
+      bellSub = instance.onBell(() => {
         if (useTerminalSettings.getState().bell !== 'visual') return
         host.classList.remove('term-bell-flash')
         // Force a reflow so re-adding the class restarts the animation.
         void host.offsetWidth
         host.classList.add('term-bell-flash')
-        if (bellLiveRef.current) bellLiveRef.current.textContent = 'Terminal bell'
+        const live = bellLiveRef.current
+        if (live) {
+          // Identical text does not retrigger aria-live; clear first.
+          live.textContent = ''
+          live.textContent = 'Terminal bell'
+        }
         if (bellTimerRef.current) clearTimeout(bellTimerRef.current)
-        bellTimerRef.current = setTimeout(() => host.classList.remove('term-bell-flash'), 300)
+        bellTimerRef.current = setTimeout(() => {
+          host.classList.remove('term-bell-flash')
+          if (bellLiveRef.current) bellLiveRef.current.textContent = ''
+        }, 300)
       })
 
-      term.open(host)
-      termRef.current = term
+      instance.open(host)
+      termRef.current = instance
       fitRef.current = fit
       searchRef.current = search
 
       if (initial.renderer === 'webgl') {
-        const addon = mountWebgl(term, webglRef, webglFailedRef)
+        const addon = mountWebgl(instance, webglRef, webglFailedRef)
         webglRef.current = addon
         useTerminalSettings.getState().setRendererActual(addon ? 'webgl' : 'canvas')
       } else {
@@ -387,7 +403,7 @@ export function XtermAttach(props: {
       termRef.current = undefined
       fitRef.current = undefined
       searchRef.current = undefined
-      term.dispose()
+      term?.dispose()
     }
   }, [props.ptyId])
 

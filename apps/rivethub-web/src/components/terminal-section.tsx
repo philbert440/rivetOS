@@ -39,7 +39,6 @@ function Row(props: { label: string; controlId?: string; children: ReactNode }):
  *  Appearance theme buttons (no native controls: WebKitGTK paints them as OS
  *  chrome). */
 function Toggle(props: {
-  label: string
   value: boolean
   onChange: (v: boolean) => void
   id?: string
@@ -51,7 +50,6 @@ function Toggle(props: {
       role="switch"
       id={props.id}
       aria-checked={props.value}
-      aria-label={props.label}
       disabled={props.disabled}
       onClick={() => props.onChange(!props.value)}
       className={
@@ -71,7 +69,6 @@ function Toggle(props: {
  *  which would otherwise slam the field to the clamp min on an accidental
  *  clear. */
 function NumberField(props: {
-  ariaLabel: string
   value: number
   onCommit: (v: number) => void
   id?: string
@@ -88,7 +85,6 @@ function NumberField(props: {
       id={props.id}
       value={draft}
       inputMode="decimal"
-      aria-label={props.ariaLabel}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
@@ -105,7 +101,6 @@ function NumberField(props: {
 /** Draft-commit text input, same contract as NumberField: a half-typed font
  *  stack must never hit the live terminal mid-keystroke; blank reverts. */
 function TextField(props: {
-  ariaLabel: string
   value: string
   onCommit: (v: string) => void
   id?: string
@@ -122,7 +117,6 @@ function TextField(props: {
     <input
       id={props.id}
       value={draft}
-      aria-label={props.ariaLabel}
       placeholder={props.placeholder}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
@@ -165,7 +159,7 @@ function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme 
   const { settings, theme } = props
   return (
     <div
-      className="mt-2 overflow-x-auto rounded border border-line p-3 font-mono whitespace-pre"
+      className="mt-2 overflow-x-auto rounded border border-line p-3 font-mono"
       style={{
         fontFamily: settings.fontFamily,
         fontSize: settings.fontSize,
@@ -175,9 +169,9 @@ function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme 
         color: theme.foreground,
       }}
     >
-      <div>The quick brown fox jumps over the lazy dog 0123456789</div>
-      <div>{'-> => != <= |> == [] {} ()'}</div>
-      <div className="mt-2 flex">
+      <div className="whitespace-pre">The quick brown fox jumps over the lazy dog 0123456789</div>
+      <div className="whitespace-pre">{'-> => != <= |> == [] {} ()'}</div>
+      <div className="mt-2 flex whitespace-normal">
         {ANSI_SWATCH_KEYS.slice(0, 8).map((key, i) => (
           <span
             key={key}
@@ -187,7 +181,7 @@ function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme 
           />
         ))}
       </div>
-      <div className="flex">
+      <div className="flex whitespace-normal">
         {ANSI_SWATCH_KEYS.slice(8).map((key, i) => (
           <span
             key={key}
@@ -272,7 +266,6 @@ export function TerminalSection(): JSX.Element {
         </label>
         <TextField
           id="terminal-font-family"
-          ariaLabel="Terminal font family"
           value={settings.fontFamily}
           onCommit={(v) => update({ fontFamily: v })}
           placeholder="'JetBrains Mono', monospace"
@@ -286,7 +279,6 @@ export function TerminalSection(): JSX.Element {
       >
         <NumberField
           id="terminal-font-size"
-          ariaLabel="Terminal font size"
           value={settings.fontSize}
           onCommit={(v) => update({ fontSize: v })}
         />
@@ -297,7 +289,6 @@ export function TerminalSection(): JSX.Element {
       >
         <NumberField
           id="terminal-line-height"
-          ariaLabel="Terminal line height"
           value={settings.lineHeight}
           onCommit={(v) => update({ lineHeight: v })}
         />
@@ -308,7 +299,6 @@ export function TerminalSection(): JSX.Element {
       >
         <NumberField
           id="terminal-letter-spacing"
-          ariaLabel="Terminal letter spacing"
           value={settings.letterSpacing}
           onCommit={(v) => update({ letterSpacing: v })}
         />
@@ -316,7 +306,6 @@ export function TerminalSection(): JSX.Element {
       <Row label="Ligatures" controlId="terminal-ligatures">
         <Toggle
           id="terminal-ligatures"
-          label="Terminal ligatures"
           value={settings.ligatures}
           onChange={(v) => update({ ligatures: v })}
           disabled
@@ -344,7 +333,6 @@ export function TerminalSection(): JSX.Element {
       <Row label="Cursor blink" controlId="terminal-cursor-blink">
         <Toggle
           id="terminal-cursor-blink"
-          label="Terminal cursor blink"
           value={settings.cursorBlink}
           onChange={(v) => update({ cursorBlink: v })}
         />
@@ -355,7 +343,6 @@ export function TerminalSection(): JSX.Element {
       >
         <NumberField
           id="terminal-scrollback"
-          ariaLabel="Terminal scrollback"
           value={settings.scrollback}
           onCommit={(v) => update({ scrollback: v })}
         />
@@ -392,7 +379,6 @@ export function TerminalSection(): JSX.Element {
       <Row label="Copy on select" controlId="terminal-copy-on-select">
         <Toggle
           id="terminal-copy-on-select"
-          label="Terminal copy on select"
           value={settings.copyOnSelect}
           onChange={(v) => update({ copyOnSelect: v })}
         />
@@ -400,7 +386,6 @@ export function TerminalSection(): JSX.Element {
       <Row label="Right-click paste" controlId="terminal-right-click-paste">
         <Toggle
           id="terminal-right-click-paste"
-          label="Terminal right-click paste"
           value={settings.rightClickPaste}
           onChange={(v) => update({ rightClickPaste: v })}
         />

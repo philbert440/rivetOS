@@ -121,7 +121,10 @@ export function normalizeSettings(s: Partial<TerminalSettings>): TerminalSetting
         TERMINAL_LIMITS.letterSpacing.max,
       ),
     ),
-    ligatures: s.ligatures === true,
+    // Ligatures need xterm's DOM renderer, which is not an option today
+    // (WebGL/canvas shape glyphs themselves). Force off so a persisted
+    // `true` cannot stick the disabled toggle On.
+    ligatures: false,
     cursorStyle:
       s.cursorStyle === 'underline' || s.cursorStyle === 'bar' ? s.cursorStyle : d.cursorStyle,
     cursorBlink: s.cursorBlink !== false,
