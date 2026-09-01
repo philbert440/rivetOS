@@ -1,9 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import * as fs from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileMeshRegistry, buildLocalNode } from './mesh.js'
 import type { MeshNode, MeshNodeEvent } from '@rivetos/types'
+
+// node:fs/promises is an ESM builtin namespace — spyOn cannot redefine its
+// exports; spy-mode automock wraps writeFile so mockRejectedValueOnce works.
+vi.mock('node:fs/promises', { spy: true })
 
 describe('FileMeshRegistry', () => {
   let tmpDir: string
@@ -356,5 +361,73 @@ describe('FileMeshRegistry', () => {
     )
 
     await expect(registry.getNodes()).rejects.toThrow(/pre-capabilities flat-array/)
+  })
+
+  it('save leaves the original mesh.json intact when writeFile fails', async () => {
+    const node = buildLocalNode({
+      name: 'kept-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+    await registry.register(node)
+
+    const meshPath = join(tmpDir, 'mesh.json')
+    const before = await readFile(meshPath, 'utf-8')
+
+    vi.mocked(fs.writeFile).mockRejectedValueOnce(
+      Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }),
+    )
+
+    const other = buildLocalNode({
+      name: 'other-node',
+      agents: ['grok'],
+      host: '192.168.1.102',
+      port: 3100,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+    await expect(registry.register(other)).rejects.toThrow(/ENOSPC/)
+
+    const after = await readFile(meshPath, 'utf-8')
+    expect(after).toBe(before)
+    const retrieved = await registry.getNode(node.id)
+    expect(retrieved?.name).toBe('kept-node')
+  })
+
+  it('heartbeat on an empty roster re-registers instead of no-op', async () => {
+    const node = buildLocalNode({
+      name: 'self-heal-node',
+      agents: ['opus'],
+      host: '192.168.1.101',
+      port: 3100,
+      providers: ['anthropic'],
+      models: ['claude-sonnet-4-20250514'],
+      version: '0.7.0',
+    })
+    await registry.start(node)
+
+    await writeFile(
+      join(tmpDir, 'mesh.json'),
+      JSON.stringify({ version: 1, nodes: {}, updatedAt: 0 }),
+      'utf-8',
+    )
+
+    expect(await registry.getNode(node.id)).toBeUndefined()
+
+    await registry.heartbeat(node.id, 'online')
+
+    const restored = await registry.getNode(node.id)
+    expect(restored).toBeDefined()
+    expect(restored!.id).toBe(node.id)
+    expect(restored!.name).toBe('self-heal-node')
+    expect(restored!.agents).toEqual(['opus'])
+    expect(restored!.host).toBe('192.168.1.101')
+    expect(restored!.status).toBe('online')
+    expect(restored!.lastSeen).toBeGreaterThan(node.lastSeen)
   })
 })
