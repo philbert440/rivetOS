@@ -37,7 +37,7 @@ import type {
 } from '@ai-sdk/provider'
 import { APICallError } from '@ai-sdk/provider'
 import type { Tool } from '@rivetos/types'
-import { parseUserDbs } from '@rivetos/types'
+import { loadUsersRegistry, userDbsFromRegistry } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
   buildArgs,
@@ -50,6 +50,9 @@ import {
 } from './spawn-turn.js'
 import type { BridgeLogger } from './log.js'
 import { createLogger } from './log.js'
+
+/** Loaded once at module import (boot), matching den / memory-postgres / agents. */
+const routedUserDbs = userDbsFromRegistry(loadUsersRegistry(process.env))
 
 // Spawn / flag-assembly / stream-json layer lives in spawn-turn.ts (shared
 // with the ClaudeCliExecutor). Re-export the types this module historically
@@ -303,7 +306,7 @@ function mapEffortFromProviderOptions(
 /**
  * Per-user memory routing: when the loop tags the turn with
  * `providerOptions.rivetos.userId` (server-built — see AgentLoop; never
- * client input) and RIVETOS_USER_DBS maps that user to a database, the
+ * client input) and the users.json registry maps that user to a database, the
  * spawned turn's env points capture (the CLI's Stop-hook transcript ingest)
  * and any in-session memory sidecar at that user's DB instead of the node
  * owner's. Unmapped turns spawn with no override.
@@ -319,13 +322,15 @@ function userRoutingEnv(
   const rivetos = providerOptions?.rivetos as { userId?: unknown } | undefined
   const userId = typeof rivetos?.userId === 'string' ? rivetos.userId : undefined
   if (!userId) return undefined
-  // Shared policy (@rivetos/types parseUserDbs): a usable entry has pgUrl —
-  // the same predicate den's stamping and the memory plugin use, so a tagged
-  // turn is either fully routable here or refused, never half-routed.
-  const db = parseUserDbs(process.env.RIVETOS_USER_DBS)?.[userId]
+  // Shared policy (@rivetos/types userDbsFromRegistry): a usable entry has
+  // pgUrl — the same predicate den's stamping and the memory plugin use, so
+  // a tagged turn is either fully routable here or refused, never half-routed.
+  // Registry is loaded once at module scope (not per turn) so a changed
+  // pgUrl cannot split capture vs memory/den until the node restarts.
+  const db = routedUserDbs?.[userId]
   if (!db) {
     throw new Error(
-      `per-user memory routing for "${userId}" has no usable RIVETOS_USER_DBS entry on this node — refusing to spawn with the node owner's capture env`,
+      `per-user memory routing for "${userId}" has no usable users-registry database on this node — refusing to spawn with the node owner's capture env`,
     )
   }
   // Every memory key is emitted explicitly: RIVETOS_PG_URL always (routing

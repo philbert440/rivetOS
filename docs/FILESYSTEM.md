@@ -54,6 +54,7 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 - `config.yaml`: primary configuration (`runtime.workspace`, agents, providers, channels, memory, MCP, etc.)
 - `.env`: secrets and environment variables (API keys, DB URLs, tokens). **Never commit.**
+- `users.json`: fallback tenancy registry when `$RIVETOS_SHARED_DIR/rivetos/users.json` is absent (override with `RIVETOS_USERS_FILE`).
 - `workspace/`: the directory referenced by `runtime.workspace`:
   - `CORE.md`: identity, personality, operating values (injected every turn)
   - `USER.md`: who the human is
@@ -93,6 +94,7 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 
 **What belongs:**
 
+- `rivetos/users.json`: tenancy registry (user id → devices → database handle). Source of truth for per-user memory routing. Override path with `RIVETOS_USERS_FILE`.
 - `RivetOS/`: the shared clone of the source tree (development and PRs happen here; runtimes run from `/opt/rivetos/`)
 - Project plans, roadmaps, specifications (`*.md`, diagrams)
 - Shared repositories or project directories

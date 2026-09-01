@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
+  loadUsersRegistry,
   mergeUserDbs,
   parseUsersRegistry,
   registryFromEnv,
   resolveUser,
   sessionVisibleTo,
+  userDbsFromRegistry,
 } from './users-registry.js'
 
 const cocoDb = { pgUrl: 'postgres://coco@db/coco_memory' }
@@ -36,7 +41,7 @@ describe('parseUsersRegistry', () => {
 })
 
 describe('registryFromEnv', () => {
-  it('synthesizes coco + owner and leaves unmappedIsOwner on (strangler)', () => {
+  it('synthesizes coco + owner and leaves unmappedIsOwner on', () => {
     const reg = registryFromEnv({
       deviceUsers: { 'win-coco': 'coco' },
       userDbs: { coco: cocoDb },
@@ -111,6 +116,157 @@ describe('resolveUser', () => {
     const r = resolveUser(envReg, 'pixel-phil')
     expect(r.ok && r.ctx.userId).toBe('phil')
     expect(r.ok && r.ctx.isOwner).toBe(true)
+  })
+})
+
+describe('loadUsersRegistry', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
+  })
+
+  function emptyDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'users-reg-'))
+    dirs.push(dir)
+    return dir
+  }
+
+  it('loads a file via explicit path and fills owner pgUrl from env', () => {
+    const dir = emptyDir()
+    const file = join(dir, 'users.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [] },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+        },
+      }),
+    )
+    const reg = loadUsersRegistry(
+      { RIVETOS_PG_URL: philDb.pgUrl },
+      { path: file, homedir: () => dir },
+    )
+    expect(reg?.users.phil.db).toEqual(philDb)
+    expect(reg?.users.coco.db).toEqual(cocoDb)
+    const r = resolveUser(reg!, 'win-coco')
+    expect(r.ok && r.ctx.userId).toBe('coco')
+  })
+
+  it('resolves $shared/rivetos/users.json when no explicit path is set', () => {
+    const dir = emptyDir()
+    mkdirSync(join(dir, 'rivetos'))
+    writeFileSync(
+      join(dir, 'rivetos', 'users.json'),
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: philDb.pgUrl },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+        },
+      }),
+    )
+    const reg = loadUsersRegistry(
+      { RIVETOS_SHARED_DIR: dir },
+      { homedir: () => join(dir, 'no-home') },
+    )
+    expect(resolveUser(reg!, 'win-coco').ok).toBe(true)
+  })
+
+  it('fails closed when the shared users.json exists but is invalid', () => {
+    const dir = emptyDir()
+    mkdirSync(join(dir, 'rivetos'))
+    writeFileSync(join(dir, 'rivetos', 'users.json'), '{nope')
+    const home = join(dir, 'home')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'users.json'),
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: philDb.pgUrl },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+        },
+      }),
+    )
+    const reg = loadUsersRegistry(
+      { RIVETOS_SHARED_DIR: dir, RIVETOS_PG_URL: philDb.pgUrl },
+      { homedir: () => home },
+    )
+    expect(reg?.unmappedIsOwner).toBe(false)
+    expect(reg?.users.coco).toBeUndefined()
+    expect(resolveUser(reg!, 'win-coco').ok).toBe(false)
+    expect(resolveUser(reg!, null).ok).toBe(true)
+  })
+
+  it('falls through to home when the shared users.json is absent', () => {
+    const dir = emptyDir()
+    const home = join(dir, 'home')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'users.json'),
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: philDb.pgUrl },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+        },
+      }),
+    )
+    const reg = loadUsersRegistry({ RIVETOS_SHARED_DIR: dir }, { homedir: () => home })
+    expect(resolveUser(reg!, 'win-coco').ok).toBe(true)
+  })
+
+  it('fails closed when the explicit file is missing', () => {
+    const dir = emptyDir()
+    const reg = loadUsersRegistry(
+      {
+        RIVETOS_USERS_FILE: join(dir, 'missing.json'),
+        RIVETOS_PG_URL: philDb.pgUrl,
+      },
+      { homedir: () => dir },
+    )
+    expect(reg?.unmappedIsOwner).toBe(false)
+    expect(resolveUser(reg!, 'win-coco').ok).toBe(false)
+    expect(resolveUser(reg!, null).ok).toBe(true)
+  })
+
+  it('env-var-only configuration yields NO routing', () => {
+    // Deletion is behavioral: leftover #561 env maps must not synthesize a registry.
+    const dir = emptyDir()
+    const reg = loadUsersRegistry(
+      {
+        RIVETOS_USER_DBS: '{"coco":{"pgUrl":"postgres://coco@db/coco_memory"}}',
+        RIVETOS_DEN_DEVICE_USERS: '{"win-coco":"coco"}',
+        RIVETOS_PG_URL: philDb.pgUrl,
+        RIVETOS_SHARED_DIR: dir,
+      },
+      { homedir: () => dir },
+    )
+    expect(reg).toBeUndefined()
+    expect(userDbsFromRegistry(reg)).toBeUndefined()
+  })
+})
+
+describe('userDbsFromRegistry', () => {
+  it('omits the owner and drops users without a usable db', () => {
+    const reg = parseUsersRegistry(
+      JSON.stringify({
+        ownerUserId: 'phil',
+        unmappedIsOwner: false,
+        users: {
+          phil: { devices: [], pgUrl: philDb.pgUrl },
+          coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
+          ghost: { devices: ['win-ghost'] },
+        },
+      }),
+    )
+    expect(userDbsFromRegistry(reg)).toEqual({ coco: cocoDb })
   })
 })
 
