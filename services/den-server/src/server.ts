@@ -77,15 +77,11 @@ import { createDevicesRoutes } from './devices.js'
 import { createAgentsRoutes } from './agents.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
-import { createClaudeStoreHost } from './harness/claude-store.js'
 import { GrokBuildDriver } from './harness/grok-driver.js'
-import { createGrokStoreHost } from './harness/grok-store.js'
 import { HermesDriver } from './harness/hermes-driver.js'
-import { createHermesStoreHost } from './harness/hermes-store.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
-import { createKimiStoreHost } from './harness/kimi-store.js'
 import { DeepseekHarnessDriver } from './harness/deepseek-driver.js'
-import { createDeepseekStoreHost } from './harness/deepseek-store.js'
+import { createHarnessStore } from './harness/harness-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
@@ -151,7 +147,6 @@ export {
   type ClaudeStoreHost,
   type DenAgentEventLike,
 } from './harness/claude-driver.js'
-export { createClaudeStoreHost } from './harness/claude-store.js'
 export {
   GrokBuildDriver,
   GROK_HARNESS_ID,
@@ -160,7 +155,6 @@ export {
   type GrokPtyHost,
   type GrokStoreHost,
 } from './harness/grok-driver.js'
-export { createGrokStoreHost } from './harness/grok-store.js'
 export {
   HermesDriver,
   HERMES_HARNESS_ID,
@@ -169,7 +163,6 @@ export {
   type HermesPtyHost,
   type HermesStoreHost,
 } from './harness/hermes-driver.js'
-export { createHermesStoreHost } from './harness/hermes-store.js'
 export {
   KimiCodeDriver,
   KIMI_HARNESS_ID,
@@ -178,7 +171,6 @@ export {
   type KimiPtyHost,
   type KimiStoreHost,
 } from './harness/kimi-driver.js'
-export { createKimiStoreHost } from './harness/kimi-store.js'
 export {
   DeepseekHarnessDriver,
   DEEPSEEK_HARNESS_ID,
@@ -187,7 +179,7 @@ export {
   type DeepseekPtyHost,
   type DeepseekStoreHost,
 } from './harness/deepseek-driver.js'
-export { createDeepseekStoreHost } from './harness/deepseek-store.js'
+export { createHarnessStore, type HarnessStoreName } from './harness/harness-store.js'
 export {
   PtyHarnessDriver,
   type HarnessPtyHost,
@@ -195,6 +187,10 @@ export {
   type PtyHarnessDriverDeps,
   type PtyHarnessIdentity,
 } from './harness/pty-harness-driver.js'
+export {
+  AdoptingPtyHarnessDriver,
+  type AdoptingHarnessIdentity,
+} from './harness/adopting-harness-driver.js'
 export {
   createHarnessRoutes,
   decodeSessionSegment,
@@ -569,35 +565,35 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   if (!opts.skipBuiltinHarnessDrivers) {
     builtinDrivers.push(
       new ClaudeCodeDriver({
-        store: createClaudeStoreHost(),
+        store: createHarnessStore('claude'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('claude'),
         log: console.error,
       }),
       new GrokBuildDriver({
-        store: createGrokStoreHost(),
+        store: createHarnessStore('grok'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('grok'),
         log: console.error,
       }),
       new HermesDriver({
-        store: createHermesStoreHost(),
+        store: createHarnessStore('hermes'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('hermes'),
         log: console.error,
       }),
       new KimiCodeDriver({
-        store: createKimiStoreHost(),
+        store: createHarnessStore('kimi'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         cwd: rosterCwdFor('kimi'),
         log: console.error,
       }),
       new DeepseekHarnessDriver({
-        store: createDeepseekStoreHost(),
+        store: createHarnessStore('deepseek'),
         pty: termEnabled ? () => ensureManager() : undefined,
         // Tap is wired so a future harnessSession stamp can adopt a drawer
         // spawn. dsh itself has no hook-fed events today; liveStream then
