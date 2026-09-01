@@ -4,7 +4,14 @@
  * Pure string assembly — no Postgres required.
  */
 import { describe, expect, it } from 'vitest'
-import { assembleStatsReport, type StatsReportBlocks } from './stats-tool.js'
+import {
+  assembleStatsReport,
+  formatQueueHealth,
+  fmtQueueAge,
+  queryQueueHealth,
+  QUEUE_HEALTH_SQL,
+  type StatsReportBlocks,
+} from './stats-tool.js'
 
 function censusBlocks(overrides: Partial<StatsReportBlocks> = {}): StatsReportBlocks {
   return {
@@ -101,5 +108,99 @@ describe('assembleStatsReport', () => {
     const agent = sectionIndex(report, '**By agent:**')
     expect(stuck).toBeLessThan(eligible)
     expect(eligible).toBeLessThan(agent)
+  })
+
+  it('places queue health with the alerts, before the embedding queue', () => {
+    const report = assembleStatsReport(
+      censusBlocks({
+        stuckJobs:
+          "\n**⚠️ Stuck queue jobs (at max attempts, won't retry):**\n  extract-wiki: 1 dead",
+        queueHealth:
+          '\n**Queue health (graphile-worker):**\n  extract-wiki: 3 pending (oldest 45m), ⚠️ 1 dead',
+      }),
+    )
+    const stuck = sectionIndex(report, '⚠️ Stuck queue jobs')
+    const health = sectionIndex(report, '**Queue health (graphile-worker):**')
+    const embedQueue = sectionIndex(report, '**Embedding queue:**')
+    expect(health).toBeGreaterThan(stuck)
+    expect(health).toBeLessThan(embedQueue)
+  })
+})
+
+describe('formatQueueHealth', () => {
+  it('renders pending, dead, oldest age, and a truncated error per task', () => {
+    const block = formatQueueHealth([
+      {
+        task: 'extract-wiki',
+        pending: '12',
+        dead: '3435',
+        oldest_pending_age_min: 45.2,
+        last_error: 'LLM unreachable at http://pve3:8003/v1 (fetch failed)',
+      },
+      {
+        task: 'compact-conversation',
+        pending: '0',
+        dead: '510',
+        oldest_pending_age_min: null,
+        last_error: 'deadlock detected',
+      },
+      {
+        task: 'embed-target',
+        pending: '7',
+        dead: '0',
+        oldest_pending_age_min: 900,
+        last_error: null,
+      },
+    ])
+
+    expect(block).toContain('**Queue health (graphile-worker):**')
+    expect(block).toContain('extract-wiki: 12 pending (oldest 45m), ⚠️ 3,435 dead')
+    expect(block).toContain('— LLM unreachable')
+    expect(block).toContain('compact-conversation: 0 pending, ⚠️ 510 dead — deadlock detected')
+    expect(block).toContain('embed-target: 7 pending (oldest 15h), 0 dead')
+  })
+
+  it('renders a present-but-empty queue as (empty), not omit/undefined', () => {
+    expect(formatQueueHealth([])).toContain('(empty)')
+  })
+
+  it('clamps negative oldest ages to 0m', () => {
+    expect(fmtQueueAge(-5)).toBe('0m')
+    const block = formatQueueHealth([
+      {
+        task: 'embed-target',
+        pending: '1',
+        dead: '0',
+        oldest_pending_age_min: -5,
+        last_error: null,
+      },
+    ])
+    expect(block).toContain('(oldest 0m)')
+    expect(block).not.toContain('-5')
+  })
+})
+
+describe('queryQueueHealth', () => {
+  it('returns null on 42P01 (schema absent) instead of throwing', async () => {
+    const rows = await queryQueueHealth(async () => {
+      throw Object.assign(new Error('undefined table'), { code: '42P01' })
+    })
+    expect(rows).toBeNull()
+  })
+
+  it('returns [] for a present empty queue and uses QUEUE_HEALTH_SQL', async () => {
+    const rows = await queryQueueHealth(async (sql) => {
+      expect(sql).toBe(QUEUE_HEALTH_SQL)
+      return { rows: [] }
+    })
+    expect(rows).toEqual([])
+  })
+
+  it('pending filter excludes locked/future run_at and last_error is latest not lex MAX', () => {
+    expect(QUEUE_HEALTH_SQL).toContain("j.locked_at < now() - interval '4 hours'")
+    expect(QUEUE_HEALTH_SQL).toContain('j.run_at <= now()')
+    expect(QUEUE_HEALTH_SQL).toContain('array_agg(j.last_error ORDER BY j.updated_at DESC')
+    expect(QUEUE_HEALTH_SQL).toContain('CASE WHEN MIN(')
+    expect(QUEUE_HEALTH_SQL).toContain('IS NULL THEN NULL ELSE GREATEST(0,')
   })
 })

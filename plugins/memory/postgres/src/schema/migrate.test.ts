@@ -45,4 +45,13 @@ describe('baseline migration discovery', () => {
     expect(ms[0].name).toBe('0001_baseline.sql')
     expect(ms[0].sql).toMatch(/CREATE TABLE.*ros_messages/)
   })
+
+  it('0016 defers embed enqueue when rivet.defer_embed_enqueue is on', () => {
+    const baselineDir = resolve(__dirname, 'migrations')
+    const ms = listMigrations(baselineDir)
+    const m = ms.find((row) => row.name === '0016_defer_embed_enqueue.sql')
+    expect(m).toBeDefined()
+    expect(m?.sql).toContain("current_setting('rivet.defer_embed_enqueue', true) = 'on'")
+    expect(m?.sql).toContain('RETURN NEW')
+  })
 })

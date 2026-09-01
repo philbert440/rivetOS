@@ -50,6 +50,34 @@ interface IdleConvRow {
 
 const ENQUEUE_LIMIT = 10
 
+/** Shared with enqueue-stale-compaction so payload/key/attempts cannot drift. */
+export const COMPACT_JOB_MAX_ATTEMPTS = 3
+export const COMPACT_JOB_KEY_MODE = 'preserve_run_at' as const
+
+export function compactConversationPayload(
+  conversationId: string,
+  triggerType: 'session_idle' | 'session_stale',
+): { conversationId: string; triggerType: 'session_idle' | 'session_stale' } {
+  return { conversationId, triggerType }
+}
+
+export function compactConversationJobOptions(
+  conversationId: string,
+  extra?: { priority?: number },
+): {
+  jobKey: string
+  jobKeyMode: 'preserve_run_at'
+  maxAttempts: number
+  priority?: number
+} {
+  return {
+    jobKey: conversationId,
+    jobKeyMode: COMPACT_JOB_KEY_MODE,
+    maxAttempts: COMPACT_JOB_MAX_ATTEMPTS,
+    ...(extra?.priority !== undefined ? { priority: extra.priority } : {}),
+  }
+}
+
 /**
  * Eligibility SELECT for the enqueue-idle cron.
  * Exported so unit tests can lock the heartbeat exclusion and trigger clauses.
@@ -107,8 +135,8 @@ export const enqueueIdleTask: Task = async (_payload, helpers) => {
       if (row.trigger === 'session_stale') staleCount += 1
       await helpers.addJob(
         'compact-conversation',
-        { conversationId: row.conversation_id, triggerType: row.trigger },
-        { jobKey: row.conversation_id, jobKeyMode: 'preserve_run_at', maxAttempts: 3 },
+        compactConversationPayload(row.conversation_id, row.trigger),
+        compactConversationJobOptions(row.conversation_id),
       )
     }
 

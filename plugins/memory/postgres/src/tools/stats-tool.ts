@@ -22,6 +22,7 @@ import {
   type StuckJobRow,
   type TreeDepthRow,
   type FreshnessRow,
+  type QueueHealthRow,
   sqlNotHeartbeatConversation,
 } from './helpers.js'
 
@@ -47,6 +48,7 @@ export interface StatsReportBlocks {
   headline: string
   stuckJobs?: string
   orphans?: string
+  queueHealth?: string
   embeddingQueue: string
   searchRuntime?: string
   unsummarized: string
@@ -75,6 +77,7 @@ export function assembleStatsReport(blocks: StatsReportBlocks): string {
 
   if (blocks.stuckJobs) parts.push(blocks.stuckJobs)
   if (blocks.orphans) parts.push(blocks.orphans)
+  if (blocks.queueHealth) parts.push(blocks.queueHealth)
 
   parts.push(blocks.embeddingQueue)
   if (blocks.searchRuntime) parts.push(blocks.searchRuntime)
@@ -94,6 +97,92 @@ export function assembleStatsReport(blocks: StatsReportBlocks): string {
   return parts.join('\n')
 }
 
+/** Compact age label for the queue block: 45m / 6h / 3d. Negative / NaN → 0m. */
+export function fmtQueueAge(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes < 0) return '0m'
+  if (minutes < 60) return `${String(Math.floor(minutes))}m`
+  if (minutes < 60 * 24) return `${String(Math.floor(minutes / 60))}h`
+  return `${String(Math.floor(minutes / 60 / 24))}d`
+}
+
+/**
+ * Pending = not-dead, stealable (unlocked or lock older than 4 h), and
+ * run_at already due. Oldest pending uses the same filter. last_error is
+ * the most recently updated dead-job error, not lexicographic MAX(text).
+ */
+export const QUEUE_HEALTH_SQL = `SELECT t.identifier AS task,
+                    COUNT(*) FILTER (WHERE j.attempts < j.max_attempts
+                      AND (j.locked_at IS NULL OR j.locked_at < now() - interval '4 hours')
+                      AND j.run_at <= now())::text AS pending,
+                    COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts)::text AS dead,
+                    CASE WHEN MIN(j.run_at) FILTER (
+                      WHERE j.attempts < j.max_attempts
+                        AND (j.locked_at IS NULL OR j.locked_at < now() - interval '4 hours')
+                        AND j.run_at <= now()
+                    ) IS NULL THEN NULL ELSE GREATEST(0, EXTRACT(EPOCH FROM (now() - MIN(j.run_at) FILTER (
+                      WHERE j.attempts < j.max_attempts
+                        AND (j.locked_at IS NULL OR j.locked_at < now() - interval '4 hours')
+                        AND j.run_at <= now()
+                    ))) / 60) END AS oldest_pending_age_min,
+                    LEFT((array_agg(j.last_error ORDER BY j.updated_at DESC NULLS LAST)
+                      FILTER (WHERE j.attempts >= j.max_attempts))[1], 120) AS last_error
+               FROM graphile_worker._private_jobs j
+               JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+              GROUP BY t.identifier
+              ORDER BY COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts) DESC,
+                       COUNT(*) FILTER (WHERE j.attempts < j.max_attempts) DESC`
+
+export function isMissingRelationError(err: unknown): boolean {
+  return Boolean(
+    err && typeof err === 'object' && 'code' in err && (err as { code?: string }).code === '42P01',
+  )
+}
+
+/**
+ * Run QUEUE_HEALTH_SQL. Returns null when graphile_worker is absent (42P01)
+ * so the caller can omit the block; [] means schema present and empty.
+ */
+export async function queryQueueHealth(
+  query: (sql: string) => Promise<{ rows: QueueHealthRow[] }>,
+): Promise<QueueHealthRow[] | null> {
+  try {
+    const { rows } = await query(QUEUE_HEALTH_SQL)
+    return rows
+  } catch (err) {
+    if (isMissingRelationError(err)) return null
+    throw err
+  }
+}
+
+/**
+ * Render the per-task graphile-worker queue block: pending + dead counts,
+ * oldest pending age, and a truncated dead-job error sample. Dead jobs
+ * (attempts >= max_attempts) never retry on their own — they are the ⚠️
+ * signal; `rivetos memory requeue --task <name>` revives them.
+ *
+ * Always returns a block. Call only when the graphile schema is present;
+ * [] renders as `(empty)` so a healthy-empty queue is distinguishable from
+ * "didn't check" (omit/queue: null is reserved for schema-absent).
+ */
+export function formatQueueHealth(rows: QueueHealthRow[]): string {
+  if (rows.length === 0) {
+    return '\n**Queue health (graphile-worker):**\n  (empty)'
+  }
+  const lines = rows.map((r) => {
+    const pending = Number(r.pending)
+    const dead = Number(r.dead)
+    const age =
+      r.oldest_pending_age_min !== null && pending > 0
+        ? ` (oldest ${fmtQueueAge(r.oldest_pending_age_min)})`
+        : ''
+    const deadPart =
+      dead > 0 ? `, ⚠️ ${dead.toLocaleString('en-US')} dead` : `, ${String(dead)} dead`
+    const err = dead > 0 && r.last_error ? ` — ${r.last_error}` : ''
+    return `  ${r.task}: ${pending.toLocaleString('en-US')} pending${age}${deadPart}${err}`
+  })
+  return '\n**Queue health (graphile-worker):**\n' + lines.join('\n')
+}
+
 export function createStatsTool(
   pool: pg.Pool,
   opts?: { searchRuntime?: () => SearchRuntimeStats },
@@ -101,7 +190,7 @@ export function createStatsTool(
   return {
     name: 'memory_stats',
     description:
-      'Memory system health check — alerts first (stuck jobs, orphans), then embedding queue, ' +
+      'Memory system health check — alerts first (stuck jobs, orphans, per-task queue health), then embedding queue, ' +
       'compaction status, then census breakdowns by agent/role/kind. ' +
       'Use to diagnose memory issues or check if background jobs are keeping up.',
     parameters: {
@@ -365,6 +454,7 @@ export function createStatsTool(
            ) AS present`,
         )
         let stuckJobs: string | undefined
+        let queueHealth: string | undefined
         if (hasGraphileWorker.rows[0]?.present) {
           const stuck = await pool.query<StuckJobRow>(
             `SELECT t.identifier AS task,
@@ -387,6 +477,18 @@ export function createStatsTool(
                     (r.sample_error ? ` — ${r.sample_error}` : ''),
                 )
                 .join('\n')
+          }
+
+          // Per-task queue state (pending + dead + oldest pending age). Dead
+          // counts include keyless corpses (graphile 0.17 add_jobs nulls the
+          // key on conflict) — they do not block re-enqueue, but they rot
+          // the dashboard until reap-dead-jobs deletes them. Keyed dead rows
+          // are the ones `rivetos memory requeue` / the wiki sweep revive.
+          // Absent schema → block omitted (queue: null). Present + 0 rows →
+          // "(empty)" so healthy-empty is distinguishable from unchecked.
+          const queueRows = await queryQueueHealth((sql) => pool.query<QueueHealthRow>(sql))
+          if (queueRows !== null) {
+            queueHealth = formatQueueHealth(queueRows)
           }
         }
 
@@ -437,6 +539,7 @@ export function createStatsTool(
           headline,
           stuckJobs,
           orphans,
+          queueHealth,
           embeddingQueue,
           searchRuntime,
           unsummarized,

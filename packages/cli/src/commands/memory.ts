@@ -16,8 +16,17 @@
  *                              [--dry-run] [--json]
  *       Reset dead graphile-worker jobs (attempts >= max_attempts) so workers
  *       pick them up again. Required after a code fix when thousands of jobs
- *       sit stuck (e.g. extract-wiki after the text[] & SQL bug). job_key rows
- *       stay in place — only attempts/last_error/run_at/locked_* are cleared.
+ *       sit stuck (e.g. extract-wiki after the text[] & SQL bug). job_key
+ *       (when still set) stays in place — only attempts/last_error/run_at/
+ *       locked_* are cleared. graphile 0.17 add_jobs already nulls the key
+ *       on a dead conflict, so most dead rows are keyless corpses.
+ *
+ *   rivetos memory requeue --task <id> [--limit N] [--dry-run] [--json]
+ *       Revive dead jobs via the official graphile_worker.reschedule_jobs()
+ *       (attempts := 0, run_at := now, low priority) instead of a hand-written
+ *       UPDATE. --task is allowlisted; --limit defaults to 200 and is never
+ *       unbounded. Use retry-failed when you also need last_error cleared or
+ *       an --error substring filter.
  *
  * Environment:
  *   RIVETOS_PG_URL  Required.
@@ -41,6 +50,9 @@ export default async function memory(): Promise<void> {
     case 'retry-failed':
       await retryFailed(args.slice(1))
       break
+    case 'requeue':
+      await requeue(args.slice(1))
+      break
     default:
       printHelp()
   }
@@ -54,6 +66,7 @@ function printHelp(): void {
     backfill-tool-synth   Enqueue historical tool-call messages for synthesis
     queue-status          Show graphile-worker job queue state
     retry-failed          Re-queue dead jobs (attempts >= max_attempts)
+    requeue               Revive dead jobs via reschedule_jobs (operators' default)
 
   Run "rivetos memory <command> --help" for command-specific options.
 `)
@@ -560,6 +573,291 @@ async function retryFailed(args: string[]): Promise<void> {
         console.log(`  ${task}: ${n.toLocaleString()}`)
       }
       console.log('Workers will pick them up via is_available (attempts < max_attempts).')
+    }
+  } catch (err) {
+    if ((err as { code?: string }).code === '42P01') {
+      console.error(
+        'Error: graphile_worker schema not installed yet — start the worker services first.',
+      )
+      process.exit(1)
+    }
+    throw err
+  } finally {
+    await pool.end()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// requeue
+// ---------------------------------------------------------------------------
+
+/** Exported for unit tests — flag parse for `rivetos memory requeue`. */
+export interface RequeueFlags {
+  tasks: string[]
+  limit: number
+  dryRun: boolean
+  json: boolean
+}
+
+/**
+ * Priority given to revived jobs (graphile: higher number = runs later).
+ * Requeued jobs are backfill by definition — live enqueue-idle /
+ * enqueue-wiki-backfill work must win. Matches the compaction-worker's
+ * backstop sweeps.
+ */
+export const REQUEUE_PRIORITY = 10
+
+/** Default / maximum --limit. Omitted --limit is the default, never unbounded. */
+export const REQUEUE_DEFAULT_LIMIT = 200
+export const REQUEUE_MAX_LIMIT = 1000
+
+/** Memory graphile task ids this CLI is allowed to revive. Frozen allowlist. */
+export const REQUEUE_ALLOWED_TASKS = [
+  'extract-wiki',
+  'compact-conversation',
+  'embed-target',
+  'synthesize-tool-call',
+] as const
+
+const REQUEUE_ALLOWED_SET: ReadonlySet<string> = new Set(REQUEUE_ALLOWED_TASKS)
+
+/**
+ * Official graphile-worker 0.17 revive path: attempts := 0 makes the row
+ * is_available again while a remaining job_key (and its dedupe) stays intact.
+ * The 5th argument is omitted (same shape as the worker helper) so a STRICT
+ * definition cannot no-op the UPDATE. reschedule_jobs never clears locked_at,
+ * so stale locks are unlocked first — see UNLOCK_STALE_LOCKED_SQL.
+ */
+export const REQUEUE_RESCHEDULE_SQL = `SELECT graphile_worker.reschedule_jobs($1::bigint[], now(), $2, 0)`
+
+/**
+ * Unlock stale locks (graphile's 4 h steal window) so reschedule_jobs can
+ * make the row is_available. Live locks are left alone. Duplicated in
+ * reschedule-dead.ts — CLI cannot import the worker module.
+ */
+export const UNLOCK_STALE_LOCKED_SQL = `UPDATE graphile_worker._private_jobs SET locked_at = NULL, locked_by = NULL WHERE id = ANY($1::bigint[]) AND locked_at < now() - interval '4 hours'`
+
+/**
+ * Dead + stealable (unlocked, or lock older than graphile's 4 h window) and
+ * still holding a key. Keyless corpses must never be requeued (no dedupe).
+ * LIMIT is mandatory ($2) so a null bind can never mean LIMIT ALL.
+ */
+export const REQUEUE_SELECT_SQL = `SELECT j.id::text AS id,
+              t.identifier AS task,
+              LEFT(j.last_error, 120) AS last_error
+         FROM graphile_worker._private_jobs j
+         JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+        WHERE j.attempts >= j.max_attempts
+          AND j.key IS NOT NULL
+          AND (j.locked_at IS NULL OR j.locked_at < now() - interval '4 hours')
+          AND t.identifier = ANY($1::text[])
+        ORDER BY j.run_at ASC
+        LIMIT $2`
+
+export interface RequeueResult {
+  dryRun: boolean
+  matched: number
+  requeued: number
+  skipped: number
+  byTask: Record<string, number>
+  sample: { id: string; task: string; lastError: string | null }[]
+  priority: number
+  durationMs: number
+}
+
+/**
+ * Parse CLI flags for requeue. Requires at least one --task so operators never
+ * mass-revive a poison queue by accident (same guard as retry-failed).
+ * --task must be in REQUEUE_ALLOWED_TASKS. --limit is required-shaped: omitted
+ * → 200; invalid / ≤0 / a following flag → throw; cap REQUEUE_MAX_LIMIT.
+ */
+export function parseRequeueFlags(args: string[]): RequeueFlags {
+  const flags: RequeueFlags = {
+    tasks: [],
+    limit: REQUEUE_DEFAULT_LIMIT,
+    dryRun: false,
+    json: false,
+  }
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    switch (arg) {
+      case '--task': {
+        const v = args[++i]
+        if (!v || v.startsWith('-')) {
+          throw new Error('--task requires a task identifier (e.g. extract-wiki)')
+        }
+        if (!REQUEUE_ALLOWED_SET.has(v)) {
+          throw new Error(
+            `--task ${v} is not an allowed memory task (${REQUEUE_ALLOWED_TASKS.join(', ')})`,
+          )
+        }
+        flags.tasks.push(v)
+        break
+      }
+      case '--limit': {
+        const raw = args[++i]
+        if (!raw || raw.startsWith('-')) {
+          throw new Error('--limit requires a positive integer')
+        }
+        const v = parseInt(raw, 10)
+        if (!Number.isFinite(v) || v <= 0) {
+          throw new Error('--limit requires a positive integer')
+        }
+        flags.limit = Math.min(v, REQUEUE_MAX_LIMIT)
+        break
+      }
+      case '--dry-run':
+        flags.dryRun = true
+        break
+      case '--json':
+        flags.json = true
+        break
+      default:
+        throw new Error(`Unknown option: ${arg}`)
+    }
+  }
+
+  if (flags.tasks.length === 0) {
+    throw new Error(
+      'At least one --task <identifier> is required (e.g. --task extract-wiki). ' +
+        'Refusing to requeue every dead job without an explicit task filter.',
+    )
+  }
+
+  return flags
+}
+
+interface RequeuePool {
+  query: (
+    sql: string,
+    values?: unknown[],
+  ) => Promise<{
+    rows: Array<{ id: string; task: string; last_error: string | null }>
+    rowCount: number | null
+  }>
+}
+
+/**
+ * Select dead jobs and optionally reschedule them. Exported for unit tests
+ * (fake pool asserts SQL text + args; dry-run never calls reschedule_jobs).
+ */
+export async function requeueDeadJobs(
+  pool: RequeuePool,
+  flags: RequeueFlags,
+): Promise<RequeueResult> {
+  const candidates = await pool.query(REQUEUE_SELECT_SQL, [flags.tasks, flags.limit])
+  const matched = candidates.rowCount ?? candidates.rows.length
+  const byTask: Record<string, number> = {}
+  for (const row of candidates.rows) {
+    byTask[row.task] = (byTask[row.task] ?? 0) + 1
+  }
+  const sample = candidates.rows.slice(0, 5).map((r) => ({
+    id: r.id,
+    task: r.task,
+    lastError: r.last_error,
+  }))
+
+  if (flags.dryRun || matched === 0) {
+    return {
+      dryRun: flags.dryRun,
+      matched,
+      requeued: 0,
+      skipped: 0,
+      byTask,
+      sample,
+      priority: REQUEUE_PRIORITY,
+      durationMs: 0,
+    }
+  }
+
+  const started = Date.now()
+  const ids = candidates.rows.map((r) => r.id)
+  await pool.query(UNLOCK_STALE_LOCKED_SQL, [ids])
+  const res = await pool.query(REQUEUE_RESCHEDULE_SQL, [ids, REQUEUE_PRIORITY])
+  const requeued = res.rowCount ?? res.rows.length
+  return {
+    dryRun: false,
+    matched,
+    requeued,
+    skipped: Math.max(0, matched - requeued),
+    byTask,
+    sample,
+    priority: REQUEUE_PRIORITY,
+    durationMs: Date.now() - started,
+  }
+}
+
+async function requeue(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+  rivetos memory requeue
+
+  Revive dead graphile-worker jobs (attempts >= max_attempts) via the official
+  graphile_worker.reschedule_jobs(): attempts := 0, run_at := now(), low
+  priority — no hand-written UPDATE on _private_jobs. A remaining job_key
+  stays, so dedupe keeps working. Keyless corpses are not a blockage
+  (graphile 0.17 add_jobs already released the key); use the reaper for those.
+
+  --task is required and allowlisted. --limit defaults to ${String(REQUEUE_DEFAULT_LIMIT)}
+  (cap ${String(REQUEUE_MAX_LIMIT)}); omitting it is never unbounded.
+
+  Example (the 2026-09-01 extract-wiki outage pile):
+    rivetos memory requeue --task extract-wiki --dry-run
+    rivetos memory requeue --task extract-wiki --limit 500
+
+  Options:
+    --task <id>   Task identifier to requeue (required; repeatable; allowlisted)
+    --limit <N>   Cap how many jobs to revive (oldest run_at first; default ${String(REQUEUE_DEFAULT_LIMIT)})
+    --dry-run     Count + sample only — do not reschedule
+    --json        Output summary as JSON
+`)
+    return
+  }
+
+  let flags: RequeueFlags
+  try {
+    flags = parseRequeueFlags(args)
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+  }
+
+  const pgUrl = process.env.RIVETOS_PG_URL
+  if (!pgUrl) {
+    console.error('Error: RIVETOS_PG_URL is required.')
+    process.exit(1)
+  }
+
+  const { default: pg } = await import('pg')
+  const pool = new pg.Pool({ connectionString: pgUrl, max: 2 })
+
+  try {
+    const summary = await requeueDeadJobs(pool, flags)
+    if (flags.json) {
+      console.log(JSON.stringify(summary, null, 2))
+      return
+    }
+    if (flags.dryRun || summary.matched === 0) {
+      console.log(`Matched dead jobs: ${summary.matched.toLocaleString('en-US')}`)
+      for (const [task, n] of Object.entries(summary.byTask)) {
+        console.log(`  ${task}: ${n.toLocaleString('en-US')}`)
+      }
+      for (const s of summary.sample) {
+        console.log(`  [${s.task}] id=${s.id} err=${s.lastError ?? '(none)'}`)
+      }
+      console.log(flags.dryRun ? '--dry-run set, exiting without reschedule.' : 'Nothing to do.')
+      return
+    }
+    console.log(
+      `Requeued ${summary.requeued.toLocaleString('en-US')} of ${summary.matched.toLocaleString('en-US')} dead job(s)` +
+        (summary.skipped > 0
+          ? ` (${summary.skipped.toLocaleString('en-US')} skipped — still locked)`
+          : '') +
+        ` in ${(summary.durationMs / 1000).toFixed(1)}s (priority ${String(REQUEUE_PRIORITY)}).`,
+    )
+    for (const [task, n] of Object.entries(summary.byTask)) {
+      console.log(`  ${task}: ${n.toLocaleString('en-US')}`)
     }
   } catch (err) {
     if ((err as { code?: string }).code === '42P01') {

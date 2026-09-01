@@ -14,6 +14,7 @@
  *   8. Embedding width — ros_messages.embedding atttypmod vs EMBED_TRUNCATE_DIMS
  *      (same connection; skipped when the backend check already failed)
  *      + rivet_device SELECT on ros_message_chunks
+ *      + Memory queue — graphile-worker dead jobs (WARN when any task has some)
  *   9. Shared storage — RIVETOS_SHARED_DIR (default /rivet-shared) mount writable
  *  10. Provider connectivity — API endpoint reachability
  *  11. DNS — can resolve provider hostnames
@@ -690,6 +691,126 @@ export async function checkDeviceChunkGrant(opts?: {
 }
 
 // ---------------------------------------------------------------------------
+// Check: Memory Queue (graphile-worker dead jobs)
+// ---------------------------------------------------------------------------
+
+export interface MemoryQueueDeadRow {
+  task: string
+  keyed_dead: string
+  keyless_dead: string
+  last_error: string | null
+}
+
+/**
+ * Dead graphile-worker jobs per task. Dead = attempts >= max_attempts: the
+ * row never retries on its own. graphile 0.17 add_jobs already releases the
+ * key on a dead conflict, so most of these are keyless corpses (dashboard
+ * rot, not a blockage). Keyed dead rows still need `rivetos memory requeue`;
+ * keyless corpses are deleted by the hourly reap-dead-jobs sweep after 7 days
+ * and must never be requeued (no job_key → no dedupe). Live proof
+ * (phil_memory, 2026-09-01): 3,435 extract-wiki + 510 compact-conversation
+ * jobs dead with nothing surfacing them — those piles are keyless.
+ */
+export const MEMORY_QUEUE_DEAD_SQL = `SELECT t.identifier AS task,
+       COUNT(*) FILTER (WHERE j.key IS NOT NULL)::text AS keyed_dead,
+       COUNT(*) FILTER (WHERE j.key IS NULL)::text AS keyless_dead,
+       LEFT((array_agg(j.last_error ORDER BY j.updated_at DESC NULLS LAST))[1], 120) AS last_error
+  FROM graphile_worker._private_jobs j
+  JOIN graphile_worker._private_tasks t ON t.id = j.task_id
+ WHERE j.attempts >= j.max_attempts
+ GROUP BY t.identifier
+ ORDER BY COUNT(*) DESC`
+
+interface PgLikeClient {
+  query(sql: string): Promise<{ rows: MemoryQueueDeadRow[] }>
+  end(): Promise<void>
+}
+
+/**
+ * WARN when any task has dead jobs. Pass `client` in tests; the default
+ * connects via RIVETOS_PG_URL (skipped silently when unset — the
+ * memory/postgres check already warns about that).
+ */
+export async function checkMemoryQueue(client?: PgLikeClient): Promise<CheckResult[]> {
+  const results: CheckResult[] = []
+
+  let pgClient: PgLikeClient | undefined = client
+  let owned = false
+  if (!pgClient) {
+    const pgUrl = process.env.RIVETOS_PG_URL
+    if (!pgUrl) return results
+    try {
+      const { default: pg } = await import('pg')
+      const c = new pg.Client({ connectionString: pgUrl })
+      await c.connect()
+      pgClient = c
+      owned = true
+    } catch (err) {
+      results.push(
+        check('memory', 'queue', 'warn', 'Memory queue: unable to connect', (err as Error).message),
+      )
+      return results
+    }
+  }
+
+  try {
+    const { rows } = await pgClient.query(MEMORY_QUEUE_DEAD_SQL)
+    const totalDead = rows.reduce(
+      (sum, r) => sum + Number(r.keyed_dead) + Number(r.keyless_dead),
+      0,
+    )
+    if (totalDead === 0) {
+      results.push(check('memory', 'queue', 'pass', 'Memory queue: no dead jobs'))
+    } else {
+      for (const row of rows) {
+        const keyed = Number(row.keyed_dead)
+        const keyless = Number(row.keyless_dead)
+        const total = keyed + keyless
+        if (total === 0) continue
+        const prescriptions: string[] = []
+        if (keyed > 0) {
+          prescriptions.push(`revive with: rivetos memory requeue --task ${row.task}`)
+        }
+        if (keyless > 0) {
+          prescriptions.push(
+            'keyless dead rows are corpses; the hourly reap-dead-jobs sweep deletes them after 7 days',
+          )
+        }
+        const countLabel =
+          keyed > 0 && keyless > 0
+            ? `${total.toLocaleString('en-US')} dead job(s) (${keyed.toLocaleString('en-US')} keyed, ${keyless.toLocaleString('en-US')} keyless)`
+            : `${total.toLocaleString('en-US')} dead job(s)`
+        results.push(
+          check(
+            'memory',
+            `queue-${row.task}`,
+            'warn',
+            `Memory queue: ${row.task} has ${countLabel} (won't retry)`,
+            (row.last_error ? `${row.last_error} — ` : '') + prescriptions.join('; '),
+          ),
+        )
+      }
+    }
+  } catch (err) {
+    if ((err as { code?: string }).code === '42P01') {
+      // graphile_worker schema not installed on this DB — workers not deployed
+      // here; nothing to warn about.
+      results.push(
+        check('memory', 'queue', 'pass', 'Memory queue: graphile-worker schema not present'),
+      )
+    } else {
+      results.push(
+        check('memory', 'queue', 'warn', 'Memory queue: unable to check', (err as Error).message),
+      )
+    }
+  } finally {
+    if (owned) await pgClient.end().catch(() => {})
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // Check: Shared Storage
 // ---------------------------------------------------------------------------
 
@@ -1094,8 +1215,9 @@ Options:
   -h, --help          Show this help
 
 Checks: system, config, workspace, env vars, secrets, containers,
-        memory backend, embedding width, shared storage, DNS, provider
-        connectivity, peer reachability, service user, leaf cert expiry
+        memory backend, embedding width, memory queue (dead jobs), shared
+        storage, DNS, provider connectivity, peer reachability, service user,
+        leaf cert expiry
 `)
 }
 
@@ -1152,6 +1274,9 @@ export default async function doctor(): Promise<void> {
       await memory.close?.()
     }
   }
+
+  const memoryQueueResults = await checkMemoryQueue()
+  allResults.push(...memoryQueueResults)
 
   const sharedResults = await checkSharedStorage()
   allResults.push(...sharedResults)

@@ -218,6 +218,21 @@ export interface StuckJobRow {
 }
 
 /**
+ * Per-task graphile-worker queue state for the memory_stats queue block.
+ * dead = attempts >= max_attempts (won't retry until rescheduled; most are
+ * keyless corpses on graphile 0.17, not a job_key blockage);
+ * pending = not-dead, stealable, run_at due; oldest_pending_age_min is NULL
+ * when nothing is pending under that filter.
+ */
+export interface QueueHealthRow {
+  task: string
+  pending: string
+  dead: string
+  oldest_pending_age_min: number | null
+  last_error: string | null
+}
+
+/**
  * Scheduled heartbeat conversations use `session_key = 'heartbeat:<agent>'`.
  * They are operational noise (HEARTBEAT_OK + tool chatter), not user work.
  *
