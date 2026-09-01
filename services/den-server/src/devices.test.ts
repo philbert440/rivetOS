@@ -21,8 +21,8 @@ import type {
 import type { MeshDevice, DeviceEnrollConfig, DeviceEnrollQr } from './devices.js'
 
 // Compile-time lock: den-server's local device shapes must stay mutually
-// assignable with the canonical wire contracts in @rivetos/types (same idiom
-// as mesh.test.ts — types is a devDependency, den-server ships dep-free).
+// assignable with the canonical wire contracts in @rivetos/types.
+// Rule: no third-party runtime deps; workspace types/pure-lib imports allowed.
 const _devicesWireLock: [
   (d: MeshDevice) => MeshDeviceWire,
   (d: MeshDeviceWire) => MeshDevice,

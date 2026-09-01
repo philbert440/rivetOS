@@ -214,8 +214,25 @@ jobs:
         run: npx nx run-many -t build --all --parallel=5 --exclude container-rivetos,site
 
       - name: Publish changed packages
+        # Publishing requires npm Trusted Publishing to be configured on
+        # npmjs.com for every package below (registry-side, owner-only).
+        # Until then, attempting to publish fails ENEEDAUTH and reddens every
+        # main run while masking real regressions and skipping Notify Deploy.
+        # The gate is EXPLICIT and LOUD, never silent: flip it with
+        #   gh variable set NPM_TRUSTED_PUBLISHING_READY --body true
+        # once the trusted publishers exist. Do not remove the gate in favor
+        # of tolerating publish errors — a red publish must mean a real
+        # publish failure.
+        env:
+          NPM_TRUSTED_PUBLISHING_READY: ${{ vars.NPM_TRUSTED_PUBLISHING_READY }}
         run: |
           set -euo pipefail
+
+          if [[ "${NPM_TRUSTED_PUBLISHING_READY:-}" != "true" ]]; then
+            echo "::warning title=npm publish SKIPPED::NPM_TRUSTED_PUBLISHING_READY is not 'true' — packages are NOT being published. Configure npm Trusted Publishing for the @rivetos packages (repo philbert440/rivetOS, workflow pipeline.yml), then: gh variable set NPM_TRUSTED_PUBLISHING_READY --body true"
+            echo "⚠️  npm publish gated off — registry-side Trusted Publishing not configured yet."
+            exit 0
+          fi
 
           # All publishable packages (order matters — dependencies first)
           PACKAGES=(

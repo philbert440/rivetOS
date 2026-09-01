@@ -10,7 +10,14 @@
  * - Seed node: `rivetos init --join <host>` registers with an existing node
  * - mDNS: automatic discovery on the local network
  * - Static: manually configured peers in rivet.config.yaml
+ *
+ * On-disk `mesh.json` is owned here: {@link MeshFile} + {@link parseMeshFile}.
+ * Callers that need I/O (CLI path candidates, den-server probe/roster, core
+ * registry RMW) parse through this module and keep their own file/network logic.
  */
+
+import { RivetError } from './errors.js'
+import { sharedPath } from './shared-dir.js'
 
 // ---------------------------------------------------------------------------
 // Mesh Node — a single agent instance in the mesh
@@ -61,6 +68,40 @@ export interface MeshNode {
 
   /** Arbitrary metadata */
   metadata?: Record<string, unknown>
+
+  /**
+   * SSH login for update/deploy tooling when it isn't `rivet`
+   * (e.g. phildesk → `philip`). Consumed by CLI `update` / `mesh` / `keys`.
+   */
+  sshUser?: string
+
+  /**
+   * Source-tree path when it isn't `$RIVETOS_INSTALL_ROOT` (default
+   * `/opt/rivetos`). Consumed by CLI `update` remote-node deploy.
+   */
+  installRoot?: string
+
+  /**
+   * Host platform. Default 'linux'. Non-linux nodes (e.g. rivet-phone →
+   * 'android') are full mesh members but have no automated update path yet:
+   * `update --mesh` probes and reports them without attempting git/systemd.
+   */
+  platform?: string
+}
+
+// ---------------------------------------------------------------------------
+// Mesh file — on-disk mesh.json (Record-format only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical on-disk mesh.json document. Pre-capabilities `nodes: []` is rejected.
+ * Extra top-level keys (and extra keys on each node) are preserved so a
+ * load→mutate→save cycle does not strip fields a newer writer added.
+ */
+export interface MeshFile {
+  version: number
+  nodes: Record<string, MeshNode>
+  updatedAt: number
 }
 
 // ---------------------------------------------------------------------------
@@ -191,4 +232,271 @@ export interface MeshDelegationRoute {
 
   /** Whether this is a local (same-process) or remote (HTTP) delegation */
   type: 'local' | 'remote'
+}
+
+// ---------------------------------------------------------------------------
+// mesh.json parser — zero third-party deps, no I/O
+// ---------------------------------------------------------------------------
+
+export type MeshParseErrorCode =
+  'MESH_JSON_INVALID' | 'MESH_FLAT_ARRAY' | 'MESH_INVALID_SHAPE' | 'MESH_NODE_INVALID'
+
+export class MeshParseError extends RivetError {
+  readonly path: string
+
+  constructor(
+    code: MeshParseErrorCode,
+    message: string,
+    options?: { path?: string; cause?: Error; context?: Record<string, unknown> },
+  ) {
+    super({
+      code,
+      message,
+      severity: 'fatal',
+      retryable: false,
+      cause: options?.cause,
+      context: {
+        ...options?.context,
+        ...(options?.path ? { path: options.path } : {}),
+      },
+    })
+    this.name = 'MeshParseError'
+    this.path = options?.path ?? 'mesh.json'
+  }
+}
+
+/** True when `err` is the pre-capabilities flat-array rejection. */
+export function isMeshFlatArrayError(err: unknown): boolean {
+  if (err instanceof MeshParseError) return err.code === 'MESH_FLAT_ARRAY'
+  return err instanceof Error && err.message.includes('pre-capabilities flat-array')
+}
+
+function flatArrayMessage(path: string): string {
+  return (
+    `mesh.json at ${path} uses the pre-capabilities flat-array format, ` +
+    'which is no longer supported. Rewrite the file as Record-format ' +
+    `{ version, nodes: { [id]: node }, updatedAt } ` +
+    `(see live ${sharedPath('mesh.json')}; override with RIVETOS_SHARED_DIR).`
+  )
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function nodeFieldError(path: string, key: string, field: string, detail: string): MeshParseError {
+  return new MeshParseError(
+    'MESH_NODE_INVALID',
+    `mesh.json at ${path}: node "${key}" has invalid ${field} (${detail})`,
+    { path, context: { nodeId: key, field } },
+  )
+}
+
+const KNOWN_NODE_KEYS = new Set([
+  'id',
+  'name',
+  'host',
+  'port',
+  'role',
+  'status',
+  'version',
+  'sshUser',
+  'installRoot',
+  'platform',
+  'lastSeen',
+  'registeredAt',
+  'agents',
+  'providers',
+  'models',
+  'capabilities',
+  'metadata',
+])
+
+function parseMeshNode(key: string, raw: unknown, path: string): MeshNode {
+  if (!isPlainObject(raw)) {
+    throw new MeshParseError(
+      'MESH_NODE_INVALID',
+      `mesh.json at ${path}: node "${key}" is not an object`,
+      { path, context: { nodeId: key } },
+    )
+  }
+
+  if ('id' in raw && typeof raw.id !== 'string') {
+    throw nodeFieldError(path, key, 'id', 'must be a string')
+  }
+  if ('name' in raw && typeof raw.name !== 'string') {
+    throw nodeFieldError(path, key, 'name', 'must be a string')
+  }
+  if ('host' in raw && typeof raw.host !== 'string') {
+    throw nodeFieldError(path, key, 'host', 'must be a string')
+  }
+  if ('port' in raw && (typeof raw.port !== 'number' || !Number.isFinite(raw.port))) {
+    throw nodeFieldError(path, key, 'port', 'must be a finite number')
+  }
+  if ('role' in raw && typeof raw.role !== 'string') {
+    throw nodeFieldError(path, key, 'role', 'must be a string')
+  }
+  if ('status' in raw && typeof raw.status !== 'string') {
+    throw nodeFieldError(path, key, 'status', 'must be a string')
+  }
+  if ('version' in raw && typeof raw.version !== 'string') {
+    throw nodeFieldError(path, key, 'version', 'must be a string')
+  }
+  if ('sshUser' in raw && typeof raw.sshUser !== 'string') {
+    throw nodeFieldError(path, key, 'sshUser', 'must be a string')
+  }
+  if ('installRoot' in raw && typeof raw.installRoot !== 'string') {
+    throw nodeFieldError(path, key, 'installRoot', 'must be a string')
+  }
+  if ('platform' in raw && typeof raw.platform !== 'string') {
+    throw nodeFieldError(path, key, 'platform', 'must be a string')
+  }
+  if ('lastSeen' in raw && (typeof raw.lastSeen !== 'number' || !Number.isFinite(raw.lastSeen))) {
+    throw nodeFieldError(path, key, 'lastSeen', 'must be a finite number')
+  }
+  if (
+    'registeredAt' in raw &&
+    (typeof raw.registeredAt !== 'number' || !Number.isFinite(raw.registeredAt))
+  ) {
+    throw nodeFieldError(path, key, 'registeredAt', 'must be a finite number')
+  }
+  if ('agents' in raw && !isStringArray(raw.agents)) {
+    throw nodeFieldError(path, key, 'agents', 'must be a string array')
+  }
+  if ('providers' in raw && !isStringArray(raw.providers)) {
+    throw nodeFieldError(path, key, 'providers', 'must be a string array')
+  }
+  if ('models' in raw && !isStringArray(raw.models)) {
+    throw nodeFieldError(path, key, 'models', 'must be a string array')
+  }
+  if ('capabilities' in raw && !isStringArray(raw.capabilities)) {
+    throw nodeFieldError(path, key, 'capabilities', 'must be a string array')
+  }
+  if ('metadata' in raw && !isPlainObject(raw.metadata)) {
+    throw nodeFieldError(path, key, 'metadata', 'must be an object')
+  }
+
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : key
+  const name = typeof raw.name === 'string' && raw.name ? raw.name : id
+  const status = (typeof raw.status === 'string' ? raw.status : 'offline') as MeshNode['status']
+
+  const node: MeshNode = {
+    id,
+    name,
+    host: typeof raw.host === 'string' ? raw.host : '',
+    port: typeof raw.port === 'number' ? raw.port : 0,
+    agents: isStringArray(raw.agents) ? raw.agents : [],
+    providers: isStringArray(raw.providers) ? raw.providers : [],
+    models: isStringArray(raw.models) ? raw.models : [],
+    capabilities: isStringArray(raw.capabilities) ? raw.capabilities : [],
+    status,
+    lastSeen: typeof raw.lastSeen === 'number' ? raw.lastSeen : 0,
+    registeredAt: typeof raw.registeredAt === 'number' ? raw.registeredAt : 0,
+    version: typeof raw.version === 'string' ? raw.version : '',
+  }
+  if (typeof raw.role === 'string') node.role = raw.role as MeshNodeRole
+  if (isPlainObject(raw.metadata)) node.metadata = raw.metadata
+  if (typeof raw.sshUser === 'string') node.sshUser = raw.sshUser
+  if (typeof raw.installRoot === 'string') node.installRoot = raw.installRoot
+  if (typeof raw.platform === 'string') node.platform = raw.platform
+
+  // Unknown keys are copied verbatim after known fields are validated, so a
+  // future RivetOS field (or a hand-added notes/tags key) survives RMW.
+  for (const [k, v] of Object.entries(raw)) {
+    if (!KNOWN_NODE_KEYS.has(k)) (node as unknown as Record<string, unknown>)[k] = v
+  }
+  return node
+}
+
+/**
+ * Per-node failure policy for {@link parseMeshFile} / {@link assertRecordMeshFile}.
+ * `'throw'` (default) fails the whole document; `'skip'` omits the bad entry
+ * and continues. Flat-array and root-shape errors always throw.
+ */
+export interface MeshParseOptions {
+  onInvalidNode?: 'throw' | 'skip'
+}
+
+/**
+ * Assert a parsed JSON value is Record-format mesh.json.
+ * Throws {@link MeshParseError} on the pre-capabilities flat-array shape and
+ * (unless `onInvalidNode: 'skip'`) on per-node field errors. Unknown extra
+ * keys on the root and on each node are preserved verbatim.
+ */
+export function assertRecordMeshFile(
+  parsed: unknown,
+  path = 'mesh.json',
+  options?: MeshParseOptions,
+): MeshFile {
+  if (!isPlainObject(parsed)) {
+    throw new MeshParseError('MESH_INVALID_SHAPE', `mesh.json at ${path} is not a JSON object`, {
+      path,
+    })
+  }
+  if (Array.isArray(parsed.nodes)) {
+    throw new MeshParseError('MESH_FLAT_ARRAY', flatArrayMessage(path), { path })
+  }
+  if ('nodes' in parsed && parsed.nodes !== undefined && !isPlainObject(parsed.nodes)) {
+    throw new MeshParseError(
+      'MESH_INVALID_SHAPE',
+      `mesh.json at ${path}: nodes must be an object keyed by node id`,
+      { path },
+    )
+  }
+
+  const nodesIn = isPlainObject(parsed.nodes) ? parsed.nodes : {}
+  const nodes: Record<string, MeshNode> = {}
+  const skipInvalid = options?.onInvalidNode === 'skip'
+  for (const [key, value] of Object.entries(nodesIn)) {
+    if (value === null || value === undefined) continue
+    try {
+      nodes[key] = parseMeshNode(key, value, path)
+    } catch (err) {
+      if (skipInvalid && err instanceof MeshParseError && err.code === 'MESH_NODE_INVALID') {
+        console.warn(`mesh.json at ${path}: skipping invalid node "${key}"`)
+        continue
+      }
+      throw err
+    }
+  }
+
+  const version =
+    typeof parsed.version === 'number' && Number.isFinite(parsed.version) ? parsed.version : 1
+  const updatedAt =
+    typeof parsed.updatedAt === 'number' && Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0
+  const file: MeshFile = { version, nodes, updatedAt }
+  for (const [k, v] of Object.entries(parsed)) {
+    if (k === 'version' || k === 'nodes' || k === 'updatedAt') continue
+    ;(file as unknown as Record<string, unknown>)[k] = v
+  }
+  return file
+}
+
+/**
+ * Parse a mesh.json document from its raw string.
+ * Zero I/O, zero third-party deps. `path` is only interpolated into errors.
+ * Unknown extra keys on the root and on each node are preserved so a
+ * load→mutate→save cycle is lossless for future/unknown fields.
+ *
+ * @throws {@link MeshParseError}
+ */
+export function parseMeshFile(
+  raw: string,
+  path = 'mesh.json',
+  options?: MeshParseOptions,
+): MeshFile {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (cause) {
+    throw new MeshParseError('MESH_JSON_INVALID', `mesh.json at ${path} is not valid JSON`, {
+      path,
+      cause: cause instanceof Error ? cause : undefined,
+    })
+  }
+  return assertRecordMeshFile(parsed, path, options)
 }
