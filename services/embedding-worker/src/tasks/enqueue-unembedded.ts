@@ -26,6 +26,13 @@
  * graphile-worker dedup via job_key='embed-<table>-<id>' (job_key_mode
  * 'preserve_run_at') means a row that already has a live job is coalesced, so
  * the sweep can run unconditionally without piling up duplicates.
+ *
+ * When EMBED_CHUNKS_ENABLED, also sweeps ros_message_chunks WHERE embedding
+ * IS NULL AND embed_status IS NULL (same job_key as the insert trigger:
+ * embed-ros_message_chunks-<id>, so a trigger-enqueued live job is not
+ * duplicated). Terminal unembeddable/failed chunks stay out of the sweep.
+ * Missing table (0014 not applied) is logged, not a crash. Disabled flag
+ * skips this arm — trigger jobs are a no-op in embed-target.
  */
 
 import type { Task } from 'graphile-worker'
@@ -127,8 +134,41 @@ export const enqueueUnembeddedTask: Task = async (_payload, helpers) => {
       }
     }
 
+    if (config.embedChunksEnabled) {
+      try {
+        const chunkRows = await client.query<UnembeddedRow>(
+          `SELECT id::text AS id
+             FROM ros_message_chunks
+            WHERE embedding IS NULL
+              AND embed_status IS NULL
+              AND content IS NOT NULL AND LENGTH(btrim(content)) > 0
+            ORDER BY created_at DESC
+            LIMIT $1`,
+          [config.sweepLimit],
+        )
+        for (const row of chunkRows.rows) {
+          await helpers.addJob(
+            'embed-target',
+            { targetTable: 'ros_message_chunks', targetId: row.id },
+            {
+              // Same key as notify_chunk_embedding_queue — trigger vs sweep dedupes.
+              jobKey: `embed-ros_message_chunks-${row.id}`,
+              jobKeyMode: 'preserve_run_at',
+              maxAttempts: config.sweepMaxAttempts,
+            },
+          )
+          enqueued += 1
+        }
+      } catch (err) {
+        helpers.logger.warn(
+          `[enqueue-unembedded] ros_message_chunks sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+
     if (enqueued > 0) {
       helpers.logger.info(`[enqueue-unembedded] re-enqueued ${enqueued} unembedded row(s)`)
     }
   })
 }
+

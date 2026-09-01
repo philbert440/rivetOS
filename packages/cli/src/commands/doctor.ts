@@ -11,11 +11,14 @@
  *   5. Secrets — .env permissions, no secrets in config YAML
  *   6. Containers — Docker health (if applicable)
  *   7. Memory backend — Postgres connectivity
- *   8. Shared storage — RIVETOS_SHARED_DIR (default /rivet-shared) mount writable
- *   9. Provider connectivity — API endpoint reachability
- *  10. DNS — can resolve provider hostnames
- *  11. Peer reachability — health check other agents in mesh
- *  12. Leaf cert expiry — warn if this node's mTLS leaf expires within 30 days
+ *   8. Embedding width — ros_messages.embedding atttypmod vs EMBED_TRUNCATE_DIMS
+ *      (same connection; skipped when the backend check already failed)
+ *      + rivet_device SELECT on ros_message_chunks
+ *   9. Shared storage — RIVETOS_SHARED_DIR (default /rivet-shared) mount writable
+ *  10. Provider connectivity — API endpoint reachability
+ *  11. DNS — can resolve provider hostnames
+ *  12. Peer reachability — health check other agents in mesh
+ *  13. Leaf cert expiry — warn if this node's mTLS leaf expires within 30 days
  *
  * Usage:
  *   rivetos doctor               Run all checks
@@ -494,23 +497,54 @@ function checkContainers(): CheckResult[] {
 // Check: Memory Backend
 // ---------------------------------------------------------------------------
 
-async function checkMemoryBackend(): Promise<CheckResult[]> {
+type DoctorPgQuery = (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>
+
+async function checkMemoryBackend(): Promise<{
+  results: CheckResult[]
+  query?: DoctorPgQuery
+  close?: () => Promise<void>
+}> {
   const results: CheckResult[] = []
   const pgUrl = process.env.RIVETOS_PG_URL
 
   if (!pgUrl) {
     results.push(check('memory', 'postgres', 'warn', 'Memory backend: RIVETOS_PG_URL not set'))
-    return results
+    return { results }
   }
 
   try {
     // Dynamic import to avoid hard dependency on pg
     const { default: pg } = await import('pg')
     const client = new pg.Client({ connectionString: pgUrl })
-    await client.connect()
-    await client.query('SELECT 1')
-    await client.end()
+    try {
+      await client.connect()
+      await client.query('SELECT 1')
+    } catch (err) {
+      try {
+        await client.end()
+      } catch {
+        /* ignore close errors after a failed connect */
+      }
+      results.push(
+        check(
+          'memory',
+          'postgres',
+          'fail',
+          'Memory backend: PostgreSQL unreachable',
+          (err as Error).message,
+        ),
+      )
+      return { results }
+    }
     results.push(check('memory', 'postgres', 'pass', 'Memory backend: PostgreSQL connected'))
+    return {
+      results,
+      query: async (sql) => {
+        const res = await client.query(sql)
+        return { rows: res.rows as Array<Record<string, unknown>> }
+      },
+      close: () => client.end(),
+    }
   } catch (err) {
     results.push(
       check(
@@ -521,9 +555,138 @@ async function checkMemoryBackend(): Promise<CheckResult[]> {
         (err as Error).message,
       ),
     )
+    return { results }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Check: Embedding width (#624)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_EMBED_DIMS = 1024
+
+function expectedEmbedDims(): number {
+  const raw = process.env.EMBED_TRUNCATE_DIMS
+  if (!raw) return DEFAULT_EMBED_DIMS
+  const parsed = parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EMBED_DIMS
+}
+
+/**
+ * WARN when ros_messages.embedding atttypmod ≠ configured embed dims.
+ * pgvector stores the dimension in atttypmod (not typmod+4). Default expected
+ * width is EMBED_TRUNCATE_DIMS, else 1024 (fleet Qwen3-Embedding-0.6B).
+ */
+export async function checkEmbeddingWidth(opts?: {
+  query?: (sql: string) => Promise<{ rows: Array<{ atttypmod: number | null }> }>
+}): Promise<CheckResult[]> {
+  const expected = expectedEmbedDims()
+  const sql = `SELECT a.atttypmod AS atttypmod
+                 FROM pg_attribute a
+                WHERE a.attrelid = 'ros_messages'::regclass
+                  AND a.attname = 'embedding'
+                  AND NOT a.attisdropped`
+
+  let typmod: number | null | undefined
+  try {
+    if (!opts?.query) {
+      // Live doctor reuses checkMemoryBackend's connection. Standalone /
+      // unit-test callers pass `query`. No query and no live client → skip
+      // rather than opening a second connection (duplicate of the backend check).
+      return []
+    }
+    const res = await opts.query(sql)
+    typmod = res.rows[0]?.atttypmod ?? null
+  } catch (err) {
+    return [
+      check(
+        'memory',
+        'embedding-width',
+        'warn',
+        'Memory: unable to read ros_messages.embedding width',
+        (err as Error).message,
+      ),
+    ]
   }
 
-  return results
+  if (typmod == null) {
+    return [
+      check('memory', 'embedding-width', 'warn', 'Memory: ros_messages.embedding column not found'),
+    ]
+  }
+
+  if (typmod === expected) {
+    return [
+      check(
+        'memory',
+        'embedding-width',
+        'pass',
+        `Memory: ros_messages.embedding is halfvec(${String(typmod)})`,
+      ),
+    ]
+  }
+
+  return [
+    check(
+      'memory',
+      'embedding-width',
+      'warn',
+      `Memory: ros_messages.embedding is halfvec(${String(typmod)}), expected halfvec(${String(expected)}) (issue #624)`,
+      'Apply migration 0015_embedding_width.sql when the column has zero non-null rows, or follow the manual recast procedure in that migration. checkEmbeddingWidth is the operator signal; a refused 0015 does not block 0014_chunks.sql.',
+    ),
+  ]
+}
+
+/** Exact GRANT documented in 0014_chunks.sql for deploys that ran bootstrap before the table existed. */
+export const DEVICE_CHUNK_GRANT_SQL = 'GRANT SELECT ON ros_message_chunks TO rivet_device;'
+
+/**
+ * WARN when role rivet_device exists but lacks SELECT on ros_message_chunks.
+ * Skip when the role or table is missing (not every deploy has devices / 0014).
+ */
+export async function checkDeviceChunkGrant(opts?: {
+  query?: DoctorPgQuery
+}): Promise<CheckResult[]> {
+  const sql = `SELECT CASE
+         WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rivet_device') THEN NULL
+         WHEN to_regclass('ros_message_chunks') IS NULL THEN NULL
+         ELSE has_table_privilege('rivet_device', 'ros_message_chunks', 'SELECT')
+       END AS allowed`
+
+  if (!opts?.query) return []
+
+  let allowed: unknown
+  try {
+    const res = await opts.query(sql)
+    allowed = res.rows[0]?.allowed
+  } catch {
+    // Backend connectivity is already reported by checkMemoryBackend.
+    return []
+  }
+
+  if (allowed == null) return []
+  if (allowed === true || allowed === 't') {
+    return [
+      check(
+        'memory',
+        'device-chunk-grant',
+        'pass',
+        'Memory: rivet_device has SELECT on ros_message_chunks',
+      ),
+    ]
+  }
+  if (allowed === false || allowed === 'f') {
+    return [
+      check(
+        'memory',
+        'device-chunk-grant',
+        'warn',
+        'Memory: rivet_device cannot SELECT ros_message_chunks',
+        DEVICE_CHUNK_GRANT_SQL,
+      ),
+    ]
+  }
+  return []
 }
 
 // ---------------------------------------------------------------------------
@@ -931,8 +1094,8 @@ Options:
   -h, --help          Show this help
 
 Checks: system, config, workspace, env vars, secrets, containers,
-        memory backend, shared storage, DNS, provider connectivity,
-        peer reachability, service user, leaf cert expiry
+        memory backend, embedding width, shared storage, DNS, provider
+        connectivity, peer reachability, service user, leaf cert expiry
 `)
 }
 
@@ -970,8 +1133,25 @@ export default async function doctor(): Promise<void> {
   const containerResults = checkContainers()
   allResults.push(...containerResults)
 
-  const memoryResults = await checkMemoryBackend()
-  allResults.push(...memoryResults)
+  const memory = await checkMemoryBackend()
+  allResults.push(...memory.results)
+
+  if (memory.query) {
+    try {
+      const q = memory.query
+      allResults.push(
+        ...(await checkEmbeddingWidth({
+          query: async (sql) => {
+            const res = await q(sql)
+            return { rows: res.rows as Array<{ atttypmod: number | null }> }
+          },
+        })),
+      )
+      allResults.push(...(await checkDeviceChunkGrant({ query: q })))
+    } finally {
+      await memory.close?.()
+    }
+  }
 
   const sharedResults = await checkSharedStorage()
   allResults.push(...sharedResults)

@@ -127,6 +127,7 @@ function add(id: string, args: string[]): void {
     console.log(
       `  ALTER TABLE ros_messages OWNER TO rivet_${id};  -- after rivetos db migrate --url …`,
     )
+    console.log(`  ALTER TABLE ros_message_chunks OWNER TO rivet_${id};`)
   }
 }
 

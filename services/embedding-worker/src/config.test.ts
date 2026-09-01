@@ -46,10 +46,26 @@ describe('embedding-worker config', () => {
   })
 
   it('loads the provided model when URL and model are set', async () => {
-    stubRequired()
+    stubRequired({ EMBED_TRUNCATE_DIMS: undefined })
     const { config } = await import('./config.js')
     expect(config.embedModel).toBe('text-embedding-3-small')
     expect(config.embedUrl).toBe('http://127.0.0.1:9401')
+    expect(config.embedChunksEnabled).toBe(true)
+    expect(config.chunkBackfillLimit).toBe(200)
+    expect(config.truncateDims).toBe(1024)
+  })
+
+  it('defaults EMBED_TRUNCATE_DIMS to 1024 when unset (schema / doctor width)', async () => {
+    stubRequired({ EMBED_TRUNCATE_DIMS: undefined })
+    const { config } = await import('./config.js')
+    expect(config.truncateDims).toBe(1024)
+  })
+
+  it('honours EMBED_CHUNKS_ENABLED=false and CHUNK_BACKFILL_LIMIT', async () => {
+    stubRequired({ EMBED_CHUNKS_ENABLED: 'false', CHUNK_BACKFILL_LIMIT: '50' })
+    const { config } = await import('./config.js')
+    expect(config.embedChunksEnabled).toBe(false)
+    expect(config.chunkBackfillLimit).toBe(50)
   })
 
   it('exits when RIVETOS_EMBED_MODEL is missing with URL set', async () => {
