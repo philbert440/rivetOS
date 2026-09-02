@@ -8,6 +8,7 @@ import { useEffect, type JSX } from 'react'
 import { Outlet, createRootRoute, createRoute } from '@tanstack/react-router'
 import { Sidebar } from './components/sidebar.js'
 import { Toasts } from './components/toasts.js'
+import { useSidebarPrefs } from './stores/sidebar-prefs.js'
 import { ChatPage } from './pages/chat.js'
 import { FilesPage } from './pages/files.js'
 import { MemoryHubPage } from './memory/MemoryHubPage.js'
@@ -28,6 +29,7 @@ function RootLayout(): JSX.Element {
   // identity pipe (baseUrl unchanged) — see connection.ts transportEpoch.
   const transportEpoch = useConnection((s) => s.transportEpoch)
   const connectNotifications = useNotifications((s) => s.connect)
+  const railCollapsed = useSidebarPrefs((s) => s.railCollapsed)
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
   // toasts fire on any page.
@@ -37,7 +39,10 @@ function RootLayout(): JSX.Element {
   }, [baseUrl, transportEpoch, connectNotifications])
 
   return (
-    <div className="flex h-full" style={{ ['--hub-rail' as string]: '14rem' }}>
+    <div
+      className="flex h-full"
+      style={{ ['--hub-rail' as string]: railCollapsed ? '3rem' : '14rem' }}
+    >
       <Sidebar />
       <main className="min-w-0 flex-1 overflow-y-auto">
         <Outlet />

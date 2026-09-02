@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Server } from 'lucide-react'
 import { useConnection } from '../stores/connection.js'
 import { urlLabel, useNodeName } from '../lib/node-name.js'
 import { performNodeSwitch } from '../lib/switch-mode.js'
+import { Tooltip } from './ui/tooltip.js'
 
 /**
  * Node switcher. Roster persists in localStorage; mesh overview of the
  * CURRENT node seeds discovery (peers advertise denUrl = hub face).
  * Always re-points the gateway via switchTo — the local/bundled UI stays put.
  */
-export function NodeSwitcher(): JSX.Element {
+export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
+  const compact = props.compact ?? false
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -62,17 +65,37 @@ export function NodeSwitcher(): JSX.Element {
 
   return (
     <div ref={rootRef} className="relative border-t border-line">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-panel-2"
-        title={baseUrl}
-      >
-        <span className="truncate font-mono text-[11px] text-ink-dim">{currentName}</span>
-        <span className="font-mono text-[10px] text-ink-dim">{open ? '▾' : '▴'}</span>
-      </button>
+      <Tooltip label={currentName} disabled={!compact} block>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-label={`Current node: ${currentName}`}
+          aria-expanded={open}
+          className={
+            compact
+              ? 'flex w-full items-center justify-center py-3 text-ink-dim hover:bg-panel-2 hover:text-ink'
+              : 'flex w-full items-center justify-between px-4 py-3 text-left hover:bg-panel-2'
+          }
+        >
+          {compact ? (
+            <Server className="size-4" aria-hidden />
+          ) : (
+            <>
+              <span className="truncate font-mono text-[11px] text-ink-dim">{currentName}</span>
+              <span className="font-mono text-[10px] text-ink-dim">{open ? '▾' : '▴'}</span>
+            </>
+          )}
+        </button>
+      </Tooltip>
 
       {open && (
-        <div className="absolute bottom-full left-2 right-2 z-40 mb-1 rounded-lg border border-line bg-panel-2 p-2 shadow-lg">
+        <div
+          className={
+            compact
+              ? 'absolute bottom-full left-full z-40 mb-1 ml-1 w-56 rounded-lg border border-line bg-panel-2 p-2 shadow-lg'
+              : 'absolute bottom-full left-2 right-2 z-40 mb-1 rounded-lg border border-line bg-panel-2 p-2 shadow-lg'
+          }
+        >
           <div className="mb-1 px-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
             nodes
           </div>

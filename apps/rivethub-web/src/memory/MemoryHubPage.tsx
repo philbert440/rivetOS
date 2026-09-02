@@ -8,6 +8,7 @@ import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { NotConnected } from '../components/not-connected.js'
 import { MemoryPage } from '../pages/memory.js'
 import { useWikiEndpoint } from '../lib/wiki-client.js'
+import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { BrowseView } from './BrowseView.js'
 import { MemoryHubNav, type MemoryTab } from './MemoryHubNav.js'
 import { SearchView } from './SearchView.js'
@@ -22,6 +23,7 @@ export function MemoryHubPage(): JSX.Element {
   const { endpoint, pending, needNode } = useWikiEndpoint()
 
   function openSession(sessionId: string): void {
+    useSidebarPrefs.getState().openConversation()
     void navigate({ to: '/', search: { session: sessionId } })
   }
 
