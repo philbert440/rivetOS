@@ -140,16 +140,26 @@ export const APP_THEME_FALLBACK: Record<
   light: { background: '#f6f4ee', foreground: '#20293a', cursor: '#059669' },
 }
 
-export function appXtermTheme(resolved: ResolvedTheme): XtermTheme {
+export function appXtermTheme(resolved: ResolvedTheme, ansi?: TerminalPalette['ansi']): XtermTheme {
   const fallback = APP_THEME_FALLBACK[resolved]
-  if (typeof document === 'undefined') return { ...fallback }
-  const css = getComputedStyle(document.documentElement)
-  const v = (name: string): string => css.getPropertyValue(name).trim()
-  const background = v('--color-bg')
-  const foreground = v('--color-ink')
-  const cursor = v('--color-em')
-  if (!background || !foreground || !cursor) return { ...fallback }
-  return { background, foreground, cursor }
+  let theme: XtermTheme
+  if (typeof document === 'undefined') {
+    theme = { ...fallback }
+  } else {
+    const css = getComputedStyle(document.documentElement)
+    const v = (name: string): string => css.getPropertyValue(name).trim()
+    const background = v('--color-bg')
+    const foreground = v('--color-ink')
+    const cursor = v('--color-em')
+    theme =
+      !background || !foreground || !cursor ? { ...fallback } : { background, foreground, cursor }
+  }
+  if (ansi) {
+    ANSI_KEYS.forEach((key, i) => {
+      theme[key] = ansi[i]
+    })
+  }
+  return theme
 }
 
 /**

@@ -17,6 +17,7 @@ import { applyBootNodeParam } from './lib/boot-node-param.js'
 import { installClipboardBridge } from './lib/clipboard.js'
 import { installShellKeys } from './lib/shell-keys.js'
 import { hydrateSettingsIfEmpty, installSettingsSync } from './lib/settings-sync.js'
+import { installOmarchySync } from './lib/omarchy-sync.js'
 import { adoptStoredRemoteUi } from './lib/remote-ui.js'
 import { useConnection } from './stores/connection.js'
 
@@ -51,12 +52,13 @@ if (!rootEl) throw new Error('missing #root element')
 // 3) Honor ?node= (Android drawer deep-link). Auth is device mTLS.
 // 4) Mount React.
 void hydrateSettingsIfEmpty()
-  .then(() =>
-    adoptStoredRemoteUi((baseUrl) => {
+  .then(() => {
+    installOmarchySync()
+    return adoptStoredRemoteUi((baseUrl) => {
       const { baseUrl: current, setConnection } = useConnection.getState()
       if (!current) setConnection(baseUrl)
-    }),
-  )
+    })
+  })
   .then(() => {
     applyBootNodeParam({
       setConnection: (url) => useConnection.getState().setConnection(url),

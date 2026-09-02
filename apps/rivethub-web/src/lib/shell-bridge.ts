@@ -46,6 +46,7 @@ export interface RivetShell {
       includes: Record<string, string>
       themeName?: string
       usesOmarchy?: boolean
+      colorsToml?: string
     }>
   >
   /** Read all settings from the main process's settings.json file. */

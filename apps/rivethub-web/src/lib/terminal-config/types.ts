@@ -55,4 +55,6 @@ export interface TerminalConfigFile {
   /** Set by main when an include's realpath sits under the Omarchy theme
    *  dir. The Omarchy import prefers this emulator for fonts. */
   usesOmarchy?: boolean
+  /** Omarchy `colors.toml` text, schema A or B; only for kind `omarchy`. */
+  colorsToml?: string
 }

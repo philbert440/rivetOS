@@ -83,6 +83,7 @@ const api = {
       includes: Record<string, string>
       themeName?: string
       usesOmarchy?: boolean
+      colorsToml?: string
     }>
   > =>
     ipcRenderer.invoke('terminal:readConfigs') as Promise<
@@ -93,6 +94,7 @@ const api = {
         includes: Record<string, string>
         themeName?: string
         usesOmarchy?: boolean
+        colorsToml?: string
       }>
     >,
   /** Read all settings from the main process's settings.json file. */
