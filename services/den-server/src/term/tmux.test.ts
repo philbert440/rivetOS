@@ -7,6 +7,7 @@ import {
   classifyExistingTmuxSession,
   createRealTmuxCtl,
   encodeTmuxName,
+  ensureUtf8Locale,
   isDenTmuxName,
   TMUX_ENV_WRAP_SCRIPT,
   tmuxAttachArgv,
@@ -83,7 +84,7 @@ describe('tmux argv builders', () => {
       user: 'coco',
       unsetKeys: ['RIVETOS_PG_URL', 'RIVETOS_USER_ID'],
     })
-    expect(argv[0]).toBe('tmux')
+    expect(argv.slice(0, 4)).toEqual(['tmux', '-u', '-L', 'rivet-deadbeef'])
     expect(argv).toContain('new-session')
     expect(argv).not.toContain('-A')
     const fromNew = argv.slice(argv.indexOf('new-session'))
@@ -102,6 +103,7 @@ describe('tmux argv builders', () => {
   it('attach argv keeps -t =<name> (session already exists)', () => {
     expect(tmuxAttachArgv('rivet-x', '/tmp/c', 'chat-f')).toEqual([
       'tmux',
+      '-u',
       '-L',
       'rivet-x',
       '-f',
@@ -136,6 +138,50 @@ describe('tmux argv builders', () => {
     ])
     ctl.listSessions()
     expect(calls.filter((c) => c.includes('list-sessions'))).toHaveLength(2)
+  })
+})
+
+describe('ensureUtf8Locale', () => {
+  it('rewrites the deciding locale key to C.UTF-8 and leaves UTF-8 alone', () => {
+    const cases: Array<{
+      env: Record<string, string>
+      after: Record<string, string>
+      changed: string[]
+    }> = [
+      { env: {}, after: { LANG: 'C.UTF-8' }, changed: ['LANG'] },
+      { env: { LANG: 'C' }, after: { LANG: 'C.UTF-8' }, changed: ['LANG'] },
+      { env: { LANG: 'POSIX' }, after: { LANG: 'C.UTF-8' }, changed: ['LANG'] },
+      { env: { LANG: 'en_US.UTF-8' }, after: { LANG: 'en_US.UTF-8' }, changed: [] },
+      { env: { LANG: 'en_US.utf8' }, after: { LANG: 'en_US.utf8' }, changed: [] },
+      {
+        env: { LC_ALL: 'C', LANG: 'en_US.UTF-8' },
+        after: { LC_ALL: 'C.UTF-8', LANG: 'en_US.UTF-8' },
+        changed: ['LC_ALL'],
+      },
+      {
+        env: { LC_ALL: 'en_US.UTF-8', LANG: 'C' },
+        after: { LC_ALL: 'en_US.UTF-8', LANG: 'C' },
+        changed: [],
+      },
+      {
+        env: { LC_CTYPE: 'C', LANG: 'C' },
+        after: { LC_CTYPE: 'C.UTF-8', LANG: 'C' },
+        changed: ['LC_CTYPE'],
+      },
+      {
+        env: { LC_ALL: '', LANG: 'C' },
+        after: { LC_ALL: '', LANG: 'C.UTF-8' },
+        changed: ['LANG'],
+      },
+    ]
+    for (const c of cases) {
+      const env = { ...c.env }
+      expect({ input: c.env, changed: ensureUtf8Locale(env) }).toEqual({
+        input: c.env,
+        changed: c.changed,
+      })
+      expect({ input: c.env, env }).toEqual({ input: c.env, env: c.after })
+    }
   })
 })
 
@@ -223,5 +269,116 @@ describe.skipIf(!tmuxAvailable())(
       expect(envOut).toMatch(/^-RIVETOS_PG_URL$/m)
       expect(envOut).not.toMatch(/^RIVETOS_PG_URL=/m)
     })
+
+    it('client -u reports #{client_utf8}=1 under LANG=C; without -u it is 0', async ({ skip }) => {
+      type PtySpawnFn = (
+        file: string,
+        args: string[],
+        options: {
+          name: string
+          cols: number
+          rows: number
+          cwd: string
+          env: Record<string, string>
+        },
+      ) => { pid: number; kill: (signal?: string) => void }
+      let ptySpawn: PtySpawnFn
+      try {
+        // non-literal specifier: node-pty is optional and may be absent
+        const specifier: string = 'node-pty'
+        const mod = (await import(specifier)) as { spawn: PtySpawnFn }
+        ptySpawn = mod.spawn
+      } catch {
+        skip()
+        return
+      }
+
+      const dir = mkdtempSync(join(tmpdir(), 'den-tmux-utf8-'))
+      dirs.push(dir)
+      const conf = join(dir, 'tmux.conf')
+      writeFileSync(conf, tmuxConfContent(false))
+      const envFile = join(dir, 'utf8.env')
+      writeFileSync(envFile, '')
+      const argv = tmuxCreateArgv({
+        socket,
+        confPath: conf,
+        name: 'utf8',
+        cwd: dir,
+        cols: 80,
+        rows: 24,
+        envPairs: [],
+        envFile,
+        harness: ['/bin/sh', '-c', 'sleep 60'],
+        command: 'claude',
+        user: 'owner',
+        unsetKeys: [],
+        detached: false,
+      })
+      expect(argv.slice(0, 3)).toEqual(['tmux', '-u', '-L'])
+
+      const clientEnv = {
+        PATH: process.env.PATH ?? '/usr/bin',
+        TERM: 'xterm-256color',
+        HOME: process.env.HOME ?? dir,
+        LANG: 'C',
+      }
+
+      const waitClientUtf8 = async (): Promise<string | null> => {
+        const deadline = Date.now() + 5000
+        while (Date.now() < deadline) {
+          try {
+            const out = execFileSync(
+              'tmux',
+              ['-L', socket, 'list-clients', '-F', '#{client_utf8}'],
+              {
+                encoding: 'utf8',
+                timeout: 2000,
+                stdio: ['ignore', 'pipe', 'ignore'],
+              },
+            )
+            const line = out.split('\n').find((l) => l.length > 0)
+            if (line !== undefined) return line.trim()
+          } catch {
+            // server/client not up yet
+          }
+          await new Promise((r) => setTimeout(r, 50))
+        }
+        return null
+      }
+
+      const run = async (clientArgv: string[]): Promise<string | null> => {
+        writeFileSync(envFile, '')
+        const proc = ptySpawn(clientArgv[0], clientArgv.slice(1), {
+          name: 'xterm-256color',
+          cols: 80,
+          rows: 24,
+          cwd: dir,
+          env: clientEnv,
+        })
+        try {
+          return await waitClientUtf8()
+        } finally {
+          try {
+            proc.kill()
+          } catch {
+            // already dead
+          }
+          try {
+            execFileSync('tmux', ['-L', socket, 'kill-server'], {
+              timeout: 2000,
+              stdio: ['ignore', 'ignore', 'ignore'],
+            })
+          } catch {
+            // server already gone
+          }
+        }
+      }
+
+      expect(await run(argv)).toBe('1')
+      const control = argv.slice()
+      control.splice(control.indexOf('-u'), 1)
+      expect(control.slice(0, 2)).toEqual(['tmux', '-L'])
+      expect(await run(control)).toBe('0')
+    }, 15_000)
   },
 )
