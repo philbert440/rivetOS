@@ -32,11 +32,21 @@ describe('rail header toggle', () => {
     })
   })
 
-  it('has one aria-controls per mode branch and no bottom-row chevron import', () => {
+  it('has one logo toggle and no collapse/expand icon', () => {
     const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
     const controls = src.match(/aria-controls="hub-rail-nav"/g) ?? []
-    expect(controls).toHaveLength(2)
+    expect(controls).toHaveLength(1)
+    expect(src).not.toMatch(/\bPanelLeftClose\b/)
+    expect(src).not.toMatch(/\bPanelLeftOpen\b/)
     expect(src).not.toMatch(/\bChevronLeft\b/)
     expect(src).not.toMatch(/\bChevronRight\b/)
+    expect(src).toContain('setRailCollapsed(!railCollapsed)')
+  })
+
+  it('does not render an unarchived-count conversations badge', () => {
+    const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
+    expect(src).not.toContain('unarchivedCount')
+    expect(src).not.toContain('railBadgeText')
+    expect(src).not.toContain('conversationsBadge')
   })
 })

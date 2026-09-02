@@ -21,10 +21,6 @@ interface SidebarPrefsState {
   /** True when the left nav rail is icon-only (~48 px). */
   railCollapsed: boolean
   setRailCollapsed: (collapsed: boolean) => void
-  /** Last unarchived conversation count (ephemeral — ChatPage publishes).
-   *  `null` until chat has mounted once this session. */
-  unarchivedCount: number | null
-  setUnarchivedCount: (n: number) => void
   /** True while ChatPage is mounted (WS status is only meaningful then). */
   chatMounted: boolean
   setChatMounted: (mounted: boolean) => void
@@ -33,15 +29,6 @@ interface SidebarPrefsState {
 }
 
 type PersistedSidebarPrefs = Pick<SidebarPrefsState, 'conversationsCollapsed' | 'railCollapsed'>
-
-/**
- * Badge on the Conversations rail entry when the pane is hidden.
- * Empty string means "don't render a badge" (zero / non-finite).
- */
-export function railBadgeText(unarchivedCount: number): string {
-  if (!Number.isFinite(unarchivedCount) || unarchivedCount <= 0) return ''
-  return unarchivedCount > 99 ? '99+' : String(Math.round(unarchivedCount))
-}
 
 /**
  * Whether a `?session=` URL change should re-show the conversations pane.
@@ -65,8 +52,6 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
       setConversationsCollapsed: (conversationsCollapsed) => set({ conversationsCollapsed }),
       railCollapsed: false,
       setRailCollapsed: (railCollapsed) => set({ railCollapsed }),
-      unarchivedCount: null,
-      setUnarchivedCount: (unarchivedCount) => set({ unarchivedCount }),
       chatMounted: false,
       setChatMounted: (chatMounted) => set({ chatMounted }),
       openConversation: () => set({ conversationsCollapsed: false }),

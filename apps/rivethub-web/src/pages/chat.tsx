@@ -405,8 +405,6 @@ export function ChatPage(): JSX.Element {
   const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
   const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
-  const setUnarchivedCount = useSidebarPrefs((s) => s.setUnarchivedCount)
-  const archivedKeys = useArchived((s) => s.keys)
   // Bidirectional ?session= sync. One effect, one direction at a time,
   // arbitrated by lastUrlRef so the two never fight:
   //   - URL changed (first load, deep link, back/forward) → URL wins. A
@@ -501,14 +499,6 @@ export function ChatPage(): JSX.Element {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-
-  useEffect(() => {
-    const n = items.reduce((acc, it) => {
-      const archived = archivedKeys.includes(storageKey(it.pinNodeBaseUrl ?? baseUrl, it.key))
-      return acc + (archived ? 0 : 1)
-    }, 0)
-    setUnarchivedCount(n)
-  }, [items, archivedKeys, baseUrl, setUnarchivedCount])
 
   if (!connected) {
     return (
