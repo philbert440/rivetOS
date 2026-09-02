@@ -58,6 +58,41 @@ export function resolveInstallPath(
   return isTemp ? fallback : appImageEnv
 }
 
+/** The node:fs/promises methods `installAppImage` actually calls. */
+export interface InstallIo {
+  mkdir: typeof fs.promises.mkdir
+  copyFile: typeof fs.promises.copyFile
+  chmod: typeof fs.promises.chmod
+  rename: typeof fs.promises.rename
+  rm: typeof fs.promises.rm
+}
+
+/** Copy `src` next to `installTo` as a hidden staged file, chmod 0755, then rename over `installTo`.
+ *  Never opens `installTo` for writing (a running AppImage → ETXTBSY). Cleans the staged file on failure. */
+export async function installAppImage(
+  src: string,
+  installTo: string,
+  io: InstallIo = fs.promises,
+): Promise<void> {
+  const staged = path.join(path.dirname(installTo), `.${path.basename(installTo)}.rivethub-update`)
+  await io.mkdir(path.dirname(installTo), { recursive: true })
+  try {
+    await io.copyFile(src, staged)
+    await io.chmod(staged, 0o755)
+    // If installTo is a symlink, rename replaces the link itself (copyFile
+    // would write through to the target). Intentional: the link's target may
+    // be the running image.
+    await io.rename(staged, installTo)
+  } catch (err) {
+    try {
+      await io.rm(staged, { force: true })
+    } catch {
+      /* keep the original error */
+    }
+    throw err
+  }
+}
+
 const MANIFEST_TIMEOUT_MS = 15_000
 const MANIFEST_MAX_BYTES = 1024 * 1024
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
@@ -190,14 +225,11 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     }
     await chmod(dest, 0o755)
 
-    // Install the AppImage to a persistent path, not the temp updater path.
+    // Install by sibling copy + rename. Linux refuses an in-place write to
+    // the running AppImage (ETXTBSY); rename over it is allowed and the old
+    // process keeps its inode.
     const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
-    const installDir = path.dirname(installTo)
-    if (!fs.existsSync(installDir)) {
-      await fs.promises.mkdir(installDir, { recursive: true })
-    }
-    await fs.promises.copyFile(dest, installTo)
-    await chmod(installTo, 0o755)
+    await installAppImage(dest, installTo)
 
     // Run the INSTALLED AppImage, not the temp download. Strip the RUNNING
     // AppImage's runtime vars, or the new image's runtime resolves against
