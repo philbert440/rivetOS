@@ -15,7 +15,8 @@ export interface StagedFile {
 }
 
 /** Subset of RivetGateway.stageUpload — fakes implement this, the real
- *  client is assignable. */
+ *  client is assignable. `expiresAt` is `number | string` because den
+ *  sends an ISO string while StagedUploadResponse declares a number. */
 export interface StageGateway {
   stageUpload(
     name: string,
@@ -26,7 +27,7 @@ export interface StageGateway {
     name?: string
     mime?: string
     size?: number
-    expiresAt?: number
+    expiresAt?: number | string
   }>
 }
 
@@ -39,6 +40,22 @@ const SAFE_PATH = /^[A-Za-z0-9_./:@=+-]+$/
 function fallbackName(file: File, mime: string): string {
   if (file.name) return file.name
   return mime.startsWith('image/') ? PASTED_IMAGE : PASTED_FILE
+}
+
+/** Epoch ms, or undefined when the wire value is missing/unusable. */
+function normalizeExpiresAt(raw: unknown): number | undefined {
+  let n: number
+  if (typeof raw === 'number') n = raw
+  else if (typeof raw === 'string') n = Date.parse(raw)
+  else return undefined
+  return Number.isFinite(n) ? n : undefined
+}
+
+/** Hours remaining until `expiresAt`, always ≥ 1. Missing/NaN → den's
+ *  default TTL (`6h`). */
+export function expiresInLabel(expiresAt: number | undefined, now = Date.now()): string {
+  if (expiresAt == null || !Number.isFinite(expiresAt)) return '6h'
+  return `${Math.max(1, Math.round((expiresAt - now) / 3600000))}h`
 }
 
 /** Sequential stage. Failures are collected by fallback name; later files
@@ -59,7 +76,7 @@ export async function stageFiles(
         name: res.name ?? name,
         mime: res.mime ?? mime,
         size: res.size ?? file.size,
-        expiresAt: res.expiresAt,
+        expiresAt: normalizeExpiresAt(res.expiresAt),
       })
     } catch {
       failed.push(name)
