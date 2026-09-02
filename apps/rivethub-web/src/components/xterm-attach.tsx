@@ -12,6 +12,7 @@ import { useConnection } from '../stores/connection.js'
 import { resolvedThemeOf, useResolvedTheme, useTheme } from '../stores/theme.js'
 import { resolveXtermTheme, useTerminalSettings } from '../stores/terminal-settings.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
+import { buildTerminalOptions } from '../lib/terminal-options.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
@@ -166,6 +167,9 @@ export function XtermAttach(props: {
   const [status, setStatus] = useState<'connecting' | 'attached' | 'exited' | 'closed'>(
     'connecting',
   )
+  // Set when `new Terminal` / addon load throws — the pane must not stay on
+  // 'connecting' with only a console warning.
+  const [constructError, setConstructError] = useState<string | undefined>(undefined)
   // Find bar state. findOpenRef mirrors it for the custom key handler, which
   // is registered once at terminal creation and must see the live value.
   const [findOpen, setFindOpen] = useState(false)
@@ -201,6 +205,7 @@ export function XtermAttach(props: {
     // New pane, new GPU hope: the WebGL failure latch is per-PTY, so a fresh
     // terminal retries the preferred renderer.
     webglFailedRef.current = false
+    setConstructError(undefined)
 
     const initial = useTerminalSettings.getState()
     // Construction is exception-safe: if the constructor (a bad persisted
@@ -245,15 +250,7 @@ export function XtermAttach(props: {
     }
     try {
       const instance = new Terminal({
-        fontFamily: initial.fontFamily,
-        fontSize: initial.fontSize,
-        lineHeight: initial.lineHeight,
-        letterSpacing: initial.letterSpacing,
-        cursorStyle: initial.cursorStyle,
-        cursorBlink: initial.cursorBlink,
-        // Harness output is chatty — the 1000-line default loses the top of a
-        // single long tool run. 5k lines is still trivial memory-wise.
-        scrollback: initial.scrollback,
+        ...buildTerminalOptions(initial),
         theme: resolveXtermTheme(initial, resolvedThemeOf(useTheme.getState())),
       })
       term = instance
@@ -388,10 +385,12 @@ export function XtermAttach(props: {
       fit.fit()
       constructed = true
     } catch (e) {
-      // A half-constructed terminal must not leak its addons/listeners — a
-      // blank pane with a console trail beats a wedged host element.
+      // A half-constructed terminal must not leak its addons/listeners, and
+      // the pane must not sit on 'connecting' with only a console warning.
       console.warn('[xterm] terminal construction failed', e)
       disposePartial()
+      setConstructError(e instanceof Error ? e.message : String(e))
+      setStatus('closed')
     }
     if (!constructed) return
 
@@ -689,7 +688,7 @@ export function XtermAttach(props: {
       )}
       {status !== 'attached' && (
         <div className="absolute left-4 top-3 rounded bg-panel-2 px-2 py-1 font-mono text-[11px] text-ink-dim">
-          {status}
+          {constructError ? `[terminal failed: ${constructError}]` : status}
         </div>
       )}
     </div>
