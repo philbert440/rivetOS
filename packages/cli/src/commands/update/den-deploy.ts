@@ -1,17 +1,10 @@
 /**
  * Gateway stage for `rivetos update` — G0 (Appendix F).
  *
- * The den server is embedded in the rivetos process now (the gateway), so
- * this stage no longer deploys rivet-den.service. It does two things:
- *
- *   1. retireDenUnit*  — BEFORE the rivetos restart: disable --now any
- *      installed rivet-den.service so the embedded gateway can bind the port.
- *      Idempotent, never fails the update.
- *   2. verifyGateway*  — AFTER the restart: probe /healthz on the configured
- *      den port when den.enabled, so a broken embed is loud in the summary.
- *
- * parseDenSettings stays: the retire/verify steps and the remote update
- * summary still need the node's den section (port/host/enabled).
+ * The den server is embedded in the rivetos process (the gateway). This
+ * stage probes /healthz on the configured den port when den.enabled, so a
+ * broken embed is loud in the summary. parseDenSettings stays: the verify
+ * steps still need the node's den section (port/host/enabled/tls).
  */
 
 import { execSync } from 'node:child_process'
@@ -19,11 +12,9 @@ import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
-import { installRoot, sharedPath } from '@rivetos/types'
-import { sshExec, sshExecQuiet, isSafeArg } from '../../lib/ssh.js'
+import { sharedPath } from '@rivetos/types'
+import { sshExecQuiet, isSafeArg } from '../../lib/ssh.js'
 
-/** Matches remote-nodes.ts — systemctl restart blocks until the unit is up. */
-const DEN_RESTART_TIMEOUT_MS = 90_000
 /** Total budget for the post-restart /healthz poll. */
 const DEN_HEALTH_TIMEOUT_MS = 15_000
 const DEN_HEALTH_INTERVAL_MS = 2_000
@@ -41,28 +32,22 @@ export interface DenDeploySettings {
   token: string
   termEnabled: boolean
   termOpen: boolean
-  staticDir: string
-  packsDir: string
   /** Resolved node cert path — non-empty means the den serves https (#491). */
   tlsCert: string
   /** CA bundle the probe verifies the server against. */
   tlsCa: string
 }
 
-export type DenDeployOutcome = 'deployed' | 'skipped' | 'failed' | 'unmanaged-active'
+export type DenDeployOutcome = 'deployed' | 'skipped' | 'failed'
 
 /**
  * Extract the den: section from a raw config.yaml string and apply deploy
- * defaults. `root` is the install root the static/packs defaults derive from
- * (/opt/rivetos on managed nodes). Missing/unparseable config → disabled.
+ * defaults. Missing/unparseable config → disabled.
  *
  * Deliberately lenient: hard validation is the config validator's job
  * (packages/boot validateDen); the deploy stage just needs safe values.
  */
-export function parseDenSettings(
-  rawYaml: string | null | undefined,
-  root: string,
-): DenDeploySettings {
+export function parseDenSettings(rawYaml: string | null | undefined): DenDeploySettings {
   const defaults: DenDeploySettings = {
     enabled: false,
     host: '127.0.0.1',
@@ -70,8 +55,6 @@ export function parseDenSettings(
     token: '',
     termEnabled: false,
     termOpen: false,
-    staticDir: join(root, 'apps', 'den', 'dist'),
-    packsDir: join(root, 'packages', 'den-packs', 'packs'),
     tlsCert: '',
     tlsCa: defaultTlsCa(),
   }
@@ -132,14 +115,6 @@ export function parseDenSettings(
       typeof d.tls_ca === 'string' && d.tls_ca.trim() !== '' ? d.tls_ca.trim() : defaults.tlsCa,
     termEnabled: terminal?.enabled === true,
     termOpen: terminal?.open === true,
-    staticDir:
-      typeof d.static_dir === 'string' && d.static_dir.trim() !== ''
-        ? d.static_dir.trim()
-        : defaults.staticDir,
-    packsDir:
-      typeof d.packs_dir === 'string' && d.packs_dir.trim() !== ''
-        ? d.packs_dir.trim()
-        : defaults.packsDir,
   }
 }
 
@@ -159,19 +134,6 @@ export function denProbeCmd(den: DenDeploySettings): string {
   if (!den.tlsCert) return `curl -fsS -m 3 http://${target}`
   return `curl -fsS -m 3 --cacert ${den.tlsCa} https://${target}`
 }
-
-// ---------------------------------------------------------------------------
-// Remote deploy (over SSH — mirrors remote-nodes.ts patterns)
-// ---------------------------------------------------------------------------
-
-/**
- * Deploy/refresh den-server on a remote node according to that node's own
- * config. Reads the remote ~/.rivetos/config.yaml, so per-node den settings
- * are honored without any central roster of den nodes.
- *
- * Never throws; failures are logged and reported via the outcome so a broken
- * den doesn't fail the node's rivetos update (den is auxiliary).
- */
 
 // ---------------------------------------------------------------------------
 // Local (this node)
@@ -202,27 +164,6 @@ async function readLocalConfig(homes: string[]): Promise<string | null> {
 }
 
 /**
- * Disable any installed rivet-den.service so the embedded gateway can bind
- * its port on the next rivetos start. Idempotent; never throws.
- */
-export function retireDenUnitLocal(): void {
-  const sudo = typeof process.getuid === 'function' && process.getuid() === 0 ? '' : 'sudo '
-  const state = execLocalQuiet('systemctl is-enabled rivet-den 2>/dev/null || true')
-  const active = execLocalQuiet('systemctl is-active rivet-den 2>/dev/null || true')
-  if (state !== 'enabled' && active !== 'active') return
-  console.log('  Retiring rivet-den.service (den is embedded in rivetos now)...')
-  const out = execLocalQuiet(`${sudo}systemctl disable --now rivet-den 2>&1 || true`)
-  if (execLocalQuiet('systemctl is-active rivet-den 2>/dev/null || true') === 'active') {
-    console.log(
-      `  ⚠️  rivet-den.service still active (${out.slice(0, 120)}) — the embedded gateway ` +
-        'will not bind its port until the unit is stopped manually',
-    )
-  } else {
-    console.log('  ✅ rivet-den.service retired')
-  }
-}
-
-/**
  * Post-restart gateway health: probe /healthz on the configured den port
  * when den.enabled. Same contract as the old deploy stage: never throws,
  * logs its own outcome.
@@ -231,7 +172,7 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
   const tag = '[local]'
   const rivetHome = existsSync('/home/rivet') ? '/home/rivet' : (process.env.HOME ?? '/root')
   const rawConfig = await readLocalConfig([rivetHome, process.env.HOME ?? '/root'])
-  const den = parseDenSettings(rawConfig, installRoot())
+  const den = parseDenSettings(rawConfig)
   if (!den.enabled) return 'skipped'
   if (den.tlsCert && !isSafeArg(den.tlsCa)) {
     console.error(`    ${tag} ❌ den.tls_ca "${den.tlsCa}" contains shell-unsafe characters`)
@@ -240,15 +181,6 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
   if (!restart) {
     console.log(`    ${tag} ℹ️  gateway not verified (no restart requested)`)
     return 'skipped'
-  }
-
-  // False-green guard — see verifyGatewayRemote.
-  if (execLocalQuiet('systemctl is-active rivet-den 2>/dev/null || true') === 'active') {
-    console.error(
-      `    ${tag} ❌ rivet-den.service is STILL ACTIVE — the embedded gateway could not bind; ` +
-        'stop the unit (sudo systemctl disable --now rivet-den) and restart rivetos',
-    )
-    return 'failed'
   }
 
   const probe = denProbeCmd(den)
@@ -270,50 +202,13 @@ export async function verifyGatewayLocal(restart: boolean): Promise<DenDeployOut
 }
 
 // ---------------------------------------------------------------------------
-// Remote (ssh) — same two steps, driven from the mesh update
+// Remote (ssh) — same verify step, driven from the mesh update
 // ---------------------------------------------------------------------------
-
-export async function retireDenUnitRemote(
-  host: string,
-  nodeName: string,
-  sshUser: string,
-): Promise<void> {
-  const tag = `[${nodeName}]`
-  const sudo = sshUser === 'root' ? '' : 'sudo '
-  const active = sshExecQuiet(
-    host,
-    `${sudo}systemctl is-active rivet-den 2>/dev/null || true`,
-    sshUser,
-  )
-  const enabled = sshExecQuiet(
-    host,
-    `${sudo}systemctl is-enabled rivet-den 2>/dev/null || true`,
-    sshUser,
-  )
-  if (active !== 'active' && enabled !== 'enabled') return
-  console.log(`    ${tag} Retiring rivet-den.service (den embedded in rivetos now)...`)
-  try {
-    await sshExec(
-      host,
-      `${sudo}systemctl disable --now rivet-den`,
-      `${tag} den retire`,
-      DEN_RESTART_TIMEOUT_MS,
-      sshUser,
-    )
-    console.log(`    ${tag} ✅ rivet-den.service retired`)
-  } catch (err: unknown) {
-    console.error(
-      `    ${tag} ⚠️  could not retire rivet-den.service: ${(err as Error).message} — ` +
-        `the embedded gateway will not bind its port until the unit is stopped`,
-    )
-  }
-}
 
 export async function verifyGatewayRemote(
   host: string,
   nodeName: string,
   sshUser: string,
-  nodeInstallRoot?: string,
 ): Promise<DenDeployOutcome> {
   const tag = `[${nodeName}]`
   const rawConfig = sshExecQuiet(
@@ -321,8 +216,7 @@ export async function verifyGatewayRemote(
     'cat /home/rivet/.rivetos/config.yaml 2>/dev/null || cat \\$HOME/.rivetos/config.yaml 2>/dev/null',
     sshUser,
   )
-  const rawRoot = nodeInstallRoot?.trim()
-  const den = parseDenSettings(rawConfig || null, rawRoot ? rawRoot : installRoot())
+  const den = parseDenSettings(rawConfig || null)
   if (!den.enabled) return 'skipped'
   if (!isSafeArg(den.host)) {
     console.error(`    ${tag} ❌ den.host "${den.host}" contains shell-unsafe characters`)
@@ -330,23 +224,6 @@ export async function verifyGatewayRemote(
   }
   if (den.tlsCert && !isSafeArg(den.tlsCa)) {
     console.error(`    ${tag} ❌ den.tls_ca "${den.tlsCa}" contains shell-unsafe characters`)
-    return 'failed'
-  }
-
-  // False-green guard: /healthz answering while the RETIRED unit is still
-  // active means the old standalone server is serving — the embed never cut
-  // over (e.g. sudo-less retire failed and rivetos hit EADDRINUSE).
-  const sudo = sshUser === 'root' ? '' : 'sudo '
-  const staleUnit = sshExecQuiet(
-    host,
-    `${sudo}systemctl is-active rivet-den 2>/dev/null || true`,
-    sshUser,
-  )
-  if (staleUnit === 'active') {
-    console.error(
-      `    ${tag} ❌ rivet-den.service is STILL ACTIVE — the embedded gateway could not bind; ` +
-        `stop the unit (${sudo}systemctl disable --now rivet-den) and restart rivetos`,
-    )
     return 'failed'
   }
 

@@ -29,7 +29,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Full control surface**: `/stop`, `/steer`, `/new`, `/status`, `/model`, `/think`, `/context`.
 - **Interrupt that works**: `AbortController` propagated to every API call and tool.
 - **Persistent memory**: PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
-- **rivet-den**: a live pixel-art diorama of your agent at work. [Watch the demo](docs/DEN.md).
+- **rivet-den**: harness event contract (`den-protocol`) + den-server intake for session linkage and chat indicators. [Protocol](docs/DEN.md).
 - **Structured observability**: JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
 - **Stable tagged releases**: the supported install path. Pin a tag from GitHub Releases.
 - **Apache 2.0**: no CLA, no dual-licensing, no surprises. Patent grant included.
@@ -105,7 +105,6 @@ rivetOS/
 │   ├── workflows/      # Workflows v1 engine — document model, step SDK, journal replay
 │   ├── wiki-core/      # Memory wiki page model — parse/apply/serialize
 │   ├── den-protocol/   # rivet-den event protocol + room-state reducer
-│   ├── den-packs/      # rivet-den SpritePack spec, validator, default pack
 │   ├── gateway-client/ # Typed HTTP+WS client for the gateway API
 │   ├── mcp/            # MCP primitives shared by the sidecar and clients
 │   ├── mcp-v2/         # Era-negotiating MCP surface built on mcp
@@ -133,41 +132,41 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 
 ### Providers
 
-| Plugin | Description |
-|--------|-------------|
-| `provider-anthropic` | Claude models — streaming, adaptive thinking, prompt caching |
-| `provider-google` | Gemini models via Generative Language API (thought signatures) |
-| `provider-xai` | Grok models with live search and caching |
-| `provider-ollama` | Local Ollama models (native API) |
-| `provider-vllm` | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`) |
-| `provider-llama-server` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body` escape hatch) |
-| `provider-claude-cli` | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token |
+| Plugin                  | Description                                                                                                |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `provider-anthropic`    | Claude models — streaming, adaptive thinking, prompt caching                                               |
+| `provider-google`       | Gemini models via Generative Language API (thought signatures)                                             |
+| `provider-xai`          | Grok models with live search and caching                                                                   |
+| `provider-ollama`       | Local Ollama models (native API)                                                                           |
+| `provider-vllm`         | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`) |
+| `provider-llama-server` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body` escape hatch)                                |
+| `provider-claude-cli`   | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token                   |
 
 ### Channels
 
-| Plugin | Description |
-|--------|-------------|
+| Plugin          | Description                                   |
+| --------------- | --------------------------------------------- |
 | `channel-agent` | HTTP inter-agent messaging and mesh endpoints |
 
 Social channel plugins (`channel-telegram`, `channel-discord`, `channel-voice-discord`) were **removed in Phase 5**. Human UX is RivetHub via the node gateway. Stale `channels.telegram:` (etc.) in config is a validation warning only; boot does not crash-loop.
 
 ### Tools
 
-| Plugin | Description |
-|--------|-------------|
-| `tool-shell` | Shell execution with safety categorization |
-| `tool-file` | `file_read`, `file_write`, `file_edit` with surgical edits |
-| `tool-search` | `search_glob` and `search_grep` |
-| `tool-web-search` | Google CSE + DuckDuckGo fallback, HTML → markdown |
-| `tool-interaction` | `ask_user` (structured questions) and `todo` (task list) |
-| `tool-mcp-client` | MCP protocol client (stdio + HTTP transports) |
+| Plugin             | Description                                                |
+| ------------------ | ---------------------------------------------------------- |
+| `tool-shell`       | Shell execution with safety categorization                 |
+| `tool-file`        | `file_read`, `file_write`, `file_edit` with surgical edits |
+| `tool-search`      | `search_glob` and `search_grep`                            |
+| `tool-web-search`  | Google CSE + DuckDuckGo fallback, HTML → markdown          |
+| `tool-interaction` | `ask_user` (structured questions) and `todo` (task list)   |
+| `tool-mcp-client`  | MCP protocol client (stdio + HTTP transports)              |
 
 The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_search`, `memory_browse`, and `memory_stats`. Delegation, sub-agents, and skill management add `delegate_task`, `subagent_*`, and `skill_*` tools at runtime.
 
 ### Transports
 
-| Plugin | Description |
-|--------|-------------|
+| Plugin                                  | Description                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `transport-mcp` (`@rivetos/mcp-server`) | Exposes RivetOS tools (memory, web, skills, runtime) to external MCP clients over StreamableHTTP |
 
 ## Configuration
@@ -203,15 +202,15 @@ API keys always go in `.env`, never in config files. See [Config Reference](docs
 
 Markdown files injected into the agent's system prompt:
 
-| File | Purpose |
-|------|---------|
-| `CORE.md` | Agent identity, personality, behavioral rules |
-| `USER.md` | Who the owner is |
-| `WORKSPACE.md` | Operating rules, safety boundaries, conventions |
-| `MEMORY.md` | Lightweight context index (query-based) |
-| `CAPABILITIES.md` | Extended tool/skill reference (local models) |
-| `HEARTBEAT.md` | Background task instructions |
-| `memory/YYYY-MM-DD.md` | Daily notes for continuity |
+| File                   | Purpose                                         |
+| ---------------------- | ----------------------------------------------- |
+| `CORE.md`              | Agent identity, personality, behavioral rules   |
+| `USER.md`              | Who the owner is                                |
+| `WORKSPACE.md`         | Operating rules, safety boundaries, conventions |
+| `MEMORY.md`            | Lightweight context index (query-based)         |
+| `CAPABILITIES.md`      | Extended tool/skill reference (local models)    |
+| `HEARTBEAT.md`         | Background task instructions                    |
+| `memory/YYYY-MM-DD.md` | Daily notes for continuity                      |
 
 ## CLI reference
 

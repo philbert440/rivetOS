@@ -28,11 +28,11 @@ Web / Desktop / Android
    capture → memory     den events → hub dens / chat
 ```
 
-| Who | Owns |
-|-----|------|
-| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store |
-| **Rivet** (this node) | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
-| **Clients** (Hub web, desktop, Android) | Full clients of the **same** gateway, not separate agent runtimes |
+| Who                                                      | Owns                                                                                              |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
+| **Rivet** (this node)                                    | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
+| **Clients** (Hub web, desktop, Android)                  | Full clients of the **same** gateway, not separate agent runtimes                                 |
 
 **Out of product scope (Phase 0 freeze):** social channels as first-class UX (Telegram, Discord, voice-discord, **removed** in Phase 5); AI-SDK chat as the interactive product loop (AI SDK remains for non-harness / headless / provider plugins only until an optional later ProviderPort extract).
 
@@ -113,15 +113,15 @@ Web / Desktop / Android
 
 ### What Rivet does
 
-| Concern | Mechanism |
-|---------|-----------|
-| **Sessions** | `HarnessDriver` registry; list / start / resume / get; room ↔ native maps where needed |
-| **Identity** | `SessionId` parse/format; alias store for rotation; gateway path encoding (`enc` = unpadded base64url) |
-| **Capture / memory** | Per-harness capture plugins → postgres under canonical `SessionId`; task association via `task_id` |
-| **Den** | AgentEvent ingest, room state, viewer, mesh den discovery |
-| **Mesh** | `mesh.json` registry, heartbeat, cross-node delegation |
-| **Tasks** | `harness-session` executors keyed by harness id; catalog honesty |
-| **Gateway** | HTTP+WS surface all clients share; uploads staging |
+| Concern              | Mechanism                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| **Sessions**         | `HarnessDriver` registry; list / start / resume / get; room ↔ native maps where needed                 |
+| **Identity**         | `SessionId` parse/format; alias store for rotation; gateway path encoding (`enc` = unpadded base64url) |
+| **Capture / memory** | Per-harness capture plugins → postgres under canonical `SessionId`; task association via `task_id`     |
+| **Den**              | AgentEvent ingest, room state, viewer, mesh den discovery                                              |
+| **Mesh**             | `mesh.json` registry, heartbeat, cross-node delegation                                                 |
+| **Tasks**            | `harness-session` executors keyed by harness id; catalog honesty                                       |
+| **Gateway**          | HTTP+WS surface all clients share; uploads staging                                                     |
 
 ### What clients do
 
@@ -136,24 +136,24 @@ Implementations live under `services/den-server/src/harness/`. All four are thin
 subclasses of `PtyHarnessDriver`. Claude (`claude-code`) is the **reference**
 driver; the others match the same interface.
 
-| HarnessId | Store | startSession | Rotation | Live stream notes | Task executor |
-|-----------|-------|--------------|----------|-------------------|---------------|
-| `claude-code` | `~/.claude/projects` | yes (pins via `--session-id`) | no | den events; thinking as spinner status lines | yes (`@rivetos/provider-claude-cli`, target `claude-code`) |
-| `grok-build` | `~/.grok/sessions` | yes | no | real `agent_thought_chunk` → `reasoning-delta` | explicit rejection (ACP path recorded, not wired node-side) |
-| `hermes` | `~/.hermes/state.db` | **unsupported** (no pin flag) | **yes** (first rotating driver) | full den mapping | explicit rejection |
-| `kimi-code` | `~/.kimi-code/sessions` | **unsupported** (no pin flag) | room re-spawn only; native id does not rename | lifecycle + tools + turn boundaries; **no** assistant/reasoning deltas (hooks carry none); text from `transcript()` | yes (`@rivetos/harness-kimi-code`, headless `kimi -p`) |
+| HarnessId     | Store                   | startSession                  | Rotation                                      | Live stream notes                                                                                                   | Task executor                                               |
+| ------------- | ----------------------- | ----------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `claude-code` | `~/.claude/projects`    | yes (pins via `--session-id`) | no                                            | den events; thinking as spinner status lines                                                                        | yes (`@rivetos/provider-claude-cli`, target `claude-code`)  |
+| `grok-build`  | `~/.grok/sessions`      | yes                           | no                                            | real `agent_thought_chunk` → `reasoning-delta`                                                                      | explicit rejection (ACP path recorded, not wired node-side) |
+| `hermes`      | `~/.hermes/state.db`    | **unsupported** (no pin flag) | **yes** (first rotating driver)               | full den mapping                                                                                                    | explicit rejection                                          |
+| `kimi-code`   | `~/.kimi-code/sessions` | **unsupported** (no pin flag) | room re-spawn only; native id does not rename | lifecycle + tools + turn boundaries; **no** assistant/reasoning deltas (hooks carry none); text from `transcript()` | yes (`@rivetos/harness-kimi-code`, headless `kimi -p`)      |
 
 ### Capability flags (as wired)
 
 Flags reflect what is actually available on the node, not aspirations:
 
-| Flag | All four when den terminals + event tap present | Notes |
-|------|--------------------------------------------------|-------|
-| `interrupt` | true if terminals enabled | Esc via term manager inject |
-| `resume` | true if terminals enabled | `--resume` / `--session` through spawn-or-get |
-| `approvals` | **false** for all four | TUI-local only; `resolveApproval` → 501 |
-| `liveStream` | true if den event tap present | kimi stream is thinner (see above) |
-| `listSessions` | true | store scan |
+| Flag           | All four when den terminals + event tap present | Notes                                         |
+| -------------- | ----------------------------------------------- | --------------------------------------------- |
+| `interrupt`    | true if terminals enabled                       | Esc via term manager inject                   |
+| `resume`       | true if terminals enabled                       | `--resume` / `--session` through spawn-or-get |
+| `approvals`    | **false** for all four                          | TUI-local only; `resolveApproval` → 501       |
+| `liveStream`   | true if den event tap present                   | kimi stream is thinner (see above)            |
+| `listSessions` | true                                            | store scan                                    |
 
 All four reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
 `sendUserTurn` with `capability_unsupported`. A PTY paste cannot hand a file to
@@ -185,21 +185,21 @@ Full normative rules: the Harness Control Plane design doc, § Session identity 
 
 den dispatches by literal path prefixes (no dynamic segments). Contract names map as:
 
-| Contract name | As built |
-|---------------|----------|
-| `GET /harnesses` | `GET /api/harnesses` |
-| (one driver) | `GET /api/harnesses/:harnessId` |
-| `GET /harnesses/:id/events` | `WS /api/harnesses/ws[?harness=<id>]` |
-| `POST /harnesses/:id/sessions` | `POST /api/harnesses/:harnessId/sessions` |
-| `GET /harnesses/:id/sessions` | `GET /api/harnesses/:harnessId/sessions` |
-| `GET /sessions/:sessionId` | `GET /api/harness-sessions/:enc` |
-| `POST …/resume` | `POST /api/harness-sessions/:enc/resume` |
-| `POST …/turns` | `POST /api/harness-sessions/:enc/turns` |
-| `POST …/interrupt` | `POST /api/harness-sessions/:enc/interrupt` |
-| `POST …/approvals/:requestId` | `POST /api/harness-sessions/:enc/approvals/:requestId` |
-| `GET …/transcript` | `GET /api/harness-sessions/:enc/transcript` |
-| `GET …/events` | `WS /api/harness-sessions/ws?session=<enc>` |
-| `POST /uploads` | `POST /api/uploads?name=<filename>[&mime=<type>]` |
+| Contract name                  | As built                                               |
+| ------------------------------ | ------------------------------------------------------ |
+| `GET /harnesses`               | `GET /api/harnesses`                                   |
+| (one driver)                   | `GET /api/harnesses/:harnessId`                        |
+| `GET /harnesses/:id/events`    | `WS /api/harnesses/ws[?harness=<id>]`                  |
+| `POST /harnesses/:id/sessions` | `POST /api/harnesses/:harnessId/sessions`              |
+| `GET /harnesses/:id/sessions`  | `GET /api/harnesses/:harnessId/sessions`               |
+| `GET /sessions/:sessionId`     | `GET /api/harness-sessions/:enc`                       |
+| `POST …/resume`                | `POST /api/harness-sessions/:enc/resume`               |
+| `POST …/turns`                 | `POST /api/harness-sessions/:enc/turns`                |
+| `POST …/interrupt`             | `POST /api/harness-sessions/:enc/interrupt`            |
+| `POST …/approvals/:requestId`  | `POST /api/harness-sessions/:enc/approvals/:requestId` |
+| `GET …/transcript`             | `GET /api/harness-sessions/:enc/transcript`            |
+| `GET …/events`                 | `WS /api/harness-sessions/ws?session=<enc>`            |
+| `POST /uploads`                | `POST /api/uploads?name=<filename>[&mime=<type>]`      |
 
 **Why `/api/harness-sessions` not `/api/sessions`:** `/api/sessions` is owned by the gateway chat channel handler. **Why WS on query string:** upgrade mounts match exact paths.
 
@@ -296,7 +296,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -450,8 +450,7 @@ rivetOS/
     aisdk/                       ← AI SDK ↔ RivetOS adapter (secondary path)
     workflows/
     wiki-core/
-    den-protocol/
-    den-packs/
+    den-protocol/                ← harness event contract
     gateway-client/              ← typed HTTP+WS client (Hub)
     harness-kimi-code/           ← headless kimi-code task executor
     mcp/ · mcp-v2/
@@ -495,27 +494,27 @@ Skills are not part of the source tree. They are user-managed and live under the
 ### HarnessDriver: control-plane contract (primary)
 
 ```typescript
-export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes'] as const;
-export type HarnessId = (typeof HARNESS_IDS)[number];
-export type SessionId = `${HarnessId}:${string}`;
+export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes'] as const
+export type HarnessId = (typeof HARNESS_IDS)[number]
+export type SessionId = `${HarnessId}:${string}`
 
 export interface HarnessDriver {
-  readonly harnessId: HarnessId;
-  readonly capabilities: HarnessCapabilities;
+  readonly harnessId: HarnessId
+  readonly capabilities: HarnessCapabilities
 
-  startSession(opts?: StartSessionOpts): Promise<SessionSummary>;
-  resumeSession(sessionId: SessionId): Promise<SessionSummary>;
-  interrupt(sessionId: SessionId): Promise<void>;
-  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void>;
+  startSession(opts?: StartSessionOpts): Promise<SessionSummary>
+  resumeSession(sessionId: SessionId): Promise<SessionSummary>
+  interrupt(sessionId: SessionId): Promise<void>
+  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void>
   resolveApproval(
     sessionId: SessionId,
     requestId: string,
     decision: ApprovalDecision,
-  ): Promise<void>;
-  subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void;
-  subscribeEvents(sink: (e: HarnessEvent) => void): () => void;
-  listSessions(): Promise<SessionSummary[]>;
-  getSession(sessionId: SessionId): Promise<SessionSummary | null>;
+  ): Promise<void>
+  subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void
+  subscribeEvents(sink: (e: HarnessEvent) => void): () => void
+  listSessions(): Promise<SessionSummary[]>
+  getSession(sessionId: SessionId): Promise<SessionSummary | null>
 }
 ```
 
@@ -527,13 +526,13 @@ Shared suite: `harness/test/driver-conformance.ts` (rotation).
 
 ```typescript
 interface Provider {
-  id: string;
-  name: string;
-  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>;
-  chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>;
-  isAvailable(): Promise<boolean>;
-  getModel(): string;
-  setModel(model: string): void;
+  id: string
+  name: string
+  chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk>
+  chat?(messages: Message[], options?: ChatOptions): Promise<LLMResponse>
+  isAvailable(): Promise<boolean>
+  getModel(): string
+  setModel(model: string): void
 }
 ```
 
@@ -555,21 +554,27 @@ Reference implementation: `plugins/providers/anthropic/`
 
 ```typescript
 interface Channel {
-  id: string;
-  platform: string;
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  send(message: OutboundMessage): Promise<string | null>;
-  edit?(channelId: string, messageId: string, text: string, overflowIds?: string[]): Promise<EditResult | null>;
-  react?(messageId: string, emoji: string, channelId: string): Promise<void>;
-  startTyping?(channelId: string): void;
-  stopTyping?(channelId: string): void;
-  onMessage(handler: MessageHandler): void;
-  onCommand(handler: CommandHandler): void;
+  id: string
+  platform: string
+  start(): Promise<void>
+  stop(): Promise<void>
+  send(message: OutboundMessage): Promise<string | null>
+  edit?(
+    channelId: string,
+    messageId: string,
+    text: string,
+    overflowIds?: string[],
+  ): Promise<EditResult | null>
+  react?(messageId: string, emoji: string, channelId: string): Promise<void>
+  startTyping?(channelId: string): void
+  stopTyping?(channelId: string): void
+  onMessage(handler: MessageHandler): void
+  onCommand(handler: CommandHandler): void
 }
 ```
 
 Key details:
+
 - `send()` takes a full `OutboundMessage` object
 - `edit()` supports overflow: returns `EditResult` with primary + overflow message IDs
 - Message splitting, typing indicators, and platform limits are the channel's responsibility
@@ -584,7 +589,7 @@ interface Tool extends ToolDefinition {
     args: Record<string, unknown>,
     signal?: AbortSignal,
     context?: ToolContext,
-  ): Promise<ToolResult>;
+  ): Promise<ToolResult>
 }
 ```
 
@@ -598,13 +603,16 @@ Reference implementation: `plugins/tools/shell/`
 
 ```typescript
 interface Memory {
-  append(entry: MemoryEntry): Promise<string>;
-  search(query: string, options?: { agent?: string; limit?: number; scope?: 'messages' | 'summaries' | 'both' }): Promise<MemorySearchResult[]>;
-  getContextForTurn(query: string, agent: string, options?: { maxTokens?: number }): Promise<string>;
-  getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]>;
-  getTaskHistory?(taskId: string, options?: { limit?: number }): Promise<Message[]>;
-  saveSessionSettings?(sessionId: string, settings: Record<string, unknown>): Promise<void>;
-  loadSessionSettings?(sessionId: string): Promise<Record<string, unknown> | null>;
+  append(entry: MemoryEntry): Promise<string>
+  search(
+    query: string,
+    options?: { agent?: string; limit?: number; scope?: 'messages' | 'summaries' | 'both' },
+  ): Promise<MemorySearchResult[]>
+  getContextForTurn(query: string, agent: string, options?: { maxTokens?: number }): Promise<string>
+  getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]>
+  getTaskHistory?(taskId: string, options?: { limit?: number }): Promise<Message[]>
+  saveSessionSettings?(sessionId: string, settings: Record<string, unknown>): Promise<void>
+  loadSessionSettings?(sessionId: string): Promise<Record<string, unknown> | null>
 }
 ```
 
@@ -631,8 +639,8 @@ Every plugin's `index.ts` exports a `manifest: PluginManifest`:
 
 ```typescript
 export const manifest: PluginManifest = {
-  type: 'provider',           // 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
-  name: 'anthropic',          // must match `package.json#rivetos.name`
+  type: 'provider', // 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
+  name: 'anthropic', // must match `package.json#rivetos.name`
   async register(ctx) {
     // ctx.config, ctx.pluginConfig, ctx.env, ctx.workspaceDir, ctx.logger
     // ctx.registerProvider | registerChannel | registerTool | registerMemory
@@ -689,21 +697,25 @@ the remote node. Delegation is transparent via HTTP to the remote agent channel.
 ### Secondary path (AgentLoop)
 
 #### /stop: abort current turn
+
 - Each turn creates an `AbortController`
 - `/stop` calls `abort()` on it
 - `AbortSignal` passed to Provider `chatStream()`, Tool `execute()`, checked between iterations
 - Response: immediate
 
 #### /steer: inject mid-turn context
+
 - Pushes onto the AgentLoop's steer queue
 - Seen as a system message on the next tool iteration
 
 #### /new: fresh session
+
 - Aborts active turn (if any)
 - Clears in-memory conversation history
 - Transcript in postgres is unaffected
 
 #### Why this works
+
 AbortController is synchronous signal propagation. When you say stop, the fetch
 call is cancelled mid-flight.
 
@@ -719,6 +731,7 @@ Composable async pipeline with priority ordering (0-99):
 `compact:after`, `delegation:before`, `delegation:after`
 
 **Built-in hooks (wired via boot registrars):**
+
 - **Safety hooks**: Shell danger blocker (P10), workspace fence (P15), custom rules (P20), audit logger (P90)
   - Audit logger appends to `<workspace>/.data/audit/<date>.jsonl`. No rotation or retention:
     audit logs accumulate indefinitely; operators prune manually.
@@ -735,12 +748,12 @@ Harness-side hooks (claude/grok/kimi/hermes den + memory integrations) are
 The task engine's `harness-session` registry is keyed by **harness id**
 (`claude-code | grok-build | kimi-code | hermes`).
 
-| Target | Status |
-|--------|--------|
+| Target        | Status                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------------------------- |
 | `claude-code` | Implemented (headless `claude -p`); `claude-cli` accepted as **deprecated alias** for one deploy window |
-| `kimi-code` | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile) |
-| `grok-build` | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path |
-| `hermes` | Explicit rejecting executor (cannot pin session for spawn-for-task) |
+| `kimi-code`   | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile)                          |
+| `grok-build`  | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path               |
+| `hermes`      | Explicit rejecting executor (cannot pin session for spawn-for-task)                                     |
 
 `GET /api/catalog` exposes `harnessId` + `implemented` so UIs grey traps.
 Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
@@ -762,14 +775,13 @@ See [MEMORY-DESIGN.md](MEMORY-DESIGN.md).
 
 ## Den
 
-rivet-den is the live pixel-art diorama of a harness session. Lifecycle hooks
-translate agent activity into the den-protocol; den-server reduces events into
-room state; the viewer (and Hub dens page) renders the room.
+`den-protocol` is the harness event contract. Lifecycle hooks translate agent
+activity into events; den-server reduces them into room state and fans the
+stream out (`POST /event`, `POST /events`). Drivers use that stream for
+session linkage, kimi tagging, hermes reasoning, and chat indicators.
 
 - Protocol: `packages/den-protocol`
 - Server: `services/den-server`
-- Packs: `packages/den-packs`
-- Product overview: [DEN.md](DEN.md)
 
 Default bind is loopback; set host + token for LAN. Mesh discovery via
 `GET /mesh.json` projects den-enabled roster entries (`capabilities` includes
@@ -815,7 +827,8 @@ memory:
 # Only `target` is consumed at runtime — nested datahub/image/docker keys
 # are rejected as unknown by validation.
 deployment:
-  target: docker                    # or proxmox, kubernetes, manual
+  target: docker # or proxmox, kubernetes, manual
+
 
 # Headless harness executors without a provider plugin (e.g. kimi-code)
 # tasks:
@@ -842,6 +855,7 @@ RivetOS ships as container images built from source. The container IS the
 security boundary; agents can only touch what is inside their container.
 
 **Data persistence:** Containers are stateless. All persistent data lives on the host via bind mounts and named volumes:
+
 - `./workspace/` or `~/.rivetos/workspace/` → agent workspace files
 - `rivetos-pgdata` → PostgreSQL data
 - `rivetos-shared` → shared storage (`/rivet-shared/`)
@@ -854,11 +868,11 @@ Plugins live in the source tree and survive updates automatically.
 
 ### Deployment targets
 
-| Target | Implementation | Use Case |
-|--------|---------------|----------|
-| Docker | Docker Compose (`infra/docker/`) | Desktop, single-server, getting started |
-| Proxmox | LXC + `infra/scripts/provision-ct.sh` | Homelab, multi-node |
-| Manual | systemd + `npm install` | Bare-metal, custom setups |
+| Target  | Implementation                        | Use Case                                |
+| ------- | ------------------------------------- | --------------------------------------- |
+| Docker  | Docker Compose (`infra/docker/`)      | Desktop, single-server, getting started |
+| Proxmox | LXC + `infra/scripts/provision-ct.sh` | Homelab, multi-node                     |
+| Manual  | systemd + `npm install`               | Bare-metal, custom setups               |
 
 Compose stack: `datahub` (upstream pgvector) + `migrate` + `agent` + optional
 `workers` profile (embedding + compaction). Only migrate waits on datahub
@@ -887,15 +901,15 @@ When documenting mesh peers, use hostnames or documentation address space
 
 ## Deprecated surfaces (Phase 0 → Phase 5)
 
-| Surface | Status | Guidance |
-|---------|--------|----------|
-| Telegram channel | **Deprecated** | Keep section/config for existing installs; no new features; remove when prune lands |
-| Discord channel | **Deprecated** | Same |
-| voice-discord | **Removed (Phase 5)** | Package deleted |
-| AI-SDK interactive as product loop | Demoted | Headless / provider plugins only |
-| `claude-cli` task executor target name | Deprecated alias | Prefer `claude-code` |
-| `RIVETOS_SESSION_KEY=task:<id>` write override | Deprecated | Use `RIVETOS_TASK_ID` + capture association |
-| Provider plugins for Hub coding UX | Demoted | Harness drivers own interactive coding |
+| Surface                                        | Status                | Guidance                                                                            |
+| ---------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------- |
+| Telegram channel                               | **Deprecated**        | Keep section/config for existing installs; no new features; remove when prune lands |
+| Discord channel                                | **Deprecated**        | Same                                                                                |
+| voice-discord                                  | **Removed (Phase 5)** | Package deleted                                                                     |
+| AI-SDK interactive as product loop             | Demoted               | Headless / provider plugins only                                                    |
+| `claude-cli` task executor target name         | Deprecated alias      | Prefer `claude-code`                                                                |
+| `RIVETOS_SESSION_KEY=task:<id>` write override | Deprecated            | Use `RIVETOS_TASK_ID` + capture association                                         |
+| Provider plugins for Hub coding UX             | Demoted               | Harness drivers own interactive coding                                              |
 
 **Still first-class:** agent channel (mesh), memory, MCP, den, gateway, four harness drivers, Hub/Android/desktop, tasks.
 
@@ -914,12 +928,12 @@ When documenting mesh peers, use hostnames or documentation address space
 
 ## Related docs
 
-| Doc | Role |
-|-----|------|
-| [HUB-SETUP.md](HUB-SETUP.md) | Build and point RivetHub at a node |
+| Doc                                            | Role                                    |
+| ---------------------------------------------- | --------------------------------------- |
+| [HUB-SETUP.md](HUB-SETUP.md)                   | Build and point RivetHub at a node      |
 | [CODEBASE-REFERENCE.md](CODEBASE-REFERENCE.md) | File-level map (#453 accuracy baseline) |
-| [DEN.md](DEN.md) | Den product / protocol entry |
-| [GETTING-STARTED.md](GETTING-STARTED.md) | Install paths |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Docker / Proxmox / bare-metal |
-| [MEMORY-DESIGN.md](MEMORY-DESIGN.md) | Memory system design |
-| [CONFIG-REFERENCE.md](CONFIG-REFERENCE.md) | Config keys |
+| [DEN.md](DEN.md)                               | Den product / protocol entry            |
+| [GETTING-STARTED.md](GETTING-STARTED.md)       | Install paths                           |
+| [DEPLOYMENT.md](DEPLOYMENT.md)                 | Docker / Proxmox / bare-metal           |
+| [MEMORY-DESIGN.md](MEMORY-DESIGN.md)           | Memory system design                    |
+| [CONFIG-REFERENCE.md](CONFIG-REFERENCE.md)     | Config keys                             |

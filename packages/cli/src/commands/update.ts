@@ -30,7 +30,7 @@ import {
 } from '../lib/ssh.js'
 import type { UpdateOptions, NodeUpdateResult } from './update/types.js'
 import { gitUpdateNodeAsync, npmUpdateNodeAsync, waitForHealth } from './update/remote-nodes.js'
-import { retireDenUnitLocal, verifyGatewayLocal } from './update/den-deploy.js'
+import { verifyGatewayLocal } from './update/den-deploy.js'
 import {
   describePathOwner,
   detectDeployment as resolveDeployment,
@@ -336,12 +336,6 @@ export default async function update(): Promise<void> {
   }
 
   // Step 4: Restart
-  // G0: retire the standalone rivet-den unit BEFORE restarting rivetos —
-  // the gateway (embedded den) binds the same port on startup.
-  if (deployment === 'manual' || deployment === 'bare-metal') {
-    retireDenUnitLocal()
-  }
-
   if (opts.restart) {
     if (deployment === 'docker') {
       console.log('\nRestarting containers (data volumes preserved)...')
@@ -709,7 +703,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   const denBad = results.filter((r) => r.den === 'failed')
   if (denBad.length > 0) {
     console.log(
-      `  ⚠️  ${String(denBad.length)} node(s) failed the den-server deploy stage (rivetos itself updated fine — see per-node output above, and journalctl -u rivet-den on the node).`,
+      `  ⚠️  ${String(denBad.length)} node(s) failed the gateway health check (rivetos itself updated fine — see per-node output above, and journalctl -u rivetos on the node).`,
     )
   }
   console.log('')
@@ -748,8 +742,6 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       }
 
       if (localOpts.restart) {
-        // G0: retire the standalone rivet-den unit before the restart.
-        retireDenUnitLocal()
         if (!restartViaSystemd()) {
           console.log(
             '    ⚠️  Could not restart via systemd. Restart manually: sudo systemctl restart rivetos',
@@ -801,9 +793,6 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         })
 
         if (localOpts.restart) {
-          // G0: retire the standalone rivet-den unit before the restart —
-          // the embedded gateway binds the same port.
-          retireDenUnitLocal()
           console.log('    Restarting service...')
           if (!restartViaSystemd()) {
             console.log(

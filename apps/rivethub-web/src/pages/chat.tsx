@@ -1008,9 +1008,9 @@ function ActiveSession(props: {
   // Selectors must return stable references when empty (see EMPTY_* above).
   const messages = useChat((s) => s.messages[props.sessionId] ?? EMPTY_MESSAGES)
   // The live turn changes identity on every streaming tick. Subscribe to the
-  // full object only while it is actually rendered (chat mode); terminal/den
-  // ride the boolean selectors below, so a busy stream doesn't repaint the
-  // whole session view (header, xterm, iframe) per token.
+  // full object only while it is actually rendered (chat mode); terminal
+  // rides the boolean selectors below, so a busy stream doesn't repaint the
+  // whole session view (header, xterm) per token.
   const live = useChat((s) => (mode === 'chat' ? s.live[props.sessionId] : undefined))
   const liveBusy = useChat((s) => {
     const L = s.live[props.sessionId]
@@ -1036,17 +1036,6 @@ function ActiveSession(props: {
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
-  const globalDialOrigin = useConnection((s) => s.gateway.config.baseUrl)
-  // The den iframe must dial the SESSION's node — and through the pipe origin
-  // in the shell (a direct https iframe cannot present the device cert).
-  const remoteDial = useQuery({
-    queryKey: ['session-dial', sessionBase, epochForNode],
-    queryFn: async () => (await gatewayFor(sessionBase)).config.baseUrl,
-    enabled: isRemote,
-    staleTime: 300_000,
-  })
-  const dialOrigin = isRemote ? remoteDial.data : globalDialOrigin
-
   // per-conversation model + effort (persisted). Keyed per node + thread, with
   // the pre-canonical key as a read fallback; writes land on the new key.
   const settingsKey = storageKey(sessionBase, props.sessionId)
@@ -1482,14 +1471,6 @@ function ActiveSession(props: {
       })
   }
 
-  // The viewer bundle matches `?session=` against the ROOM keys in its own den
-  // snapshot, so this is the one hub→id handoff that does not go through a
-  // den-server edge and has to be projected onto the den's key space.
-  // Use the dial origin (desktop mTLS loopback pipe), not the https node URL —
-  // an iframe to https://node:5174 is a new TLS session and WebKit cannot
-  // present the device cert, so the den returns 401.
-  const denUrl = `${(dialOrigin ?? '').replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
-
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
@@ -1524,9 +1505,8 @@ function ActiveSession(props: {
             Stop
           </button>
         )}
-        {/* [Terminal | Chat | Den] — three views of ONE session, ordered by
-            immersion (terminal is home); the bar stays visible so the den
-            never takes over with no way back. */}
+        {/* [Terminal | Chat] — two views of ONE session, ordered by
+            immersion (terminal is home). */}
         <span className="shrink-0">
           <SegmentedControl
             ariaLabel="Session view"
@@ -1540,7 +1520,6 @@ function ActiveSession(props: {
             options={[
               { value: 'terminal', label: 'Terminal' },
               { value: 'chat', label: 'Chat' },
-              { value: 'den', label: '▦ Den', title: 'the den for this conversation' },
             ]}
           />
         </span>
@@ -1597,34 +1576,6 @@ function ActiveSession(props: {
             onDismissAsk={onDismissAsk}
           />
         </>
-      ) : mode === 'den' ? (
-        // Embedded, not a link-out: replaces the chat/terminal area so the
-        // toggle bar (the way back) stays put. Same session as chat/terminal.
-        dialOrigin ? (
-          <iframe
-            key={`${dialOrigin}|${props.sessionId}`}
-            src={denUrl}
-            title="den"
-            className="min-h-0 flex-1 border-0 bg-bg"
-          />
-        ) : remoteDial.isError ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-1">
-            <span className="font-mono text-sm text-red">
-              can't reach {remoteNodeName ?? urlLabel(sessionBase)}:{' '}
-              {remoteDial.error instanceof Error ? remoteDial.error.message : 'transport error'}
-            </span>
-            <button
-              onClick={() => void remoteDial.refetch()}
-              className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
-            >
-              retry
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
-            reaching {remoteNodeName ?? urlLabel(sessionBase)}…
-          </div>
-        )
       ) : termError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1">
           <span className="font-mono text-sm text-red">{termError}</span>

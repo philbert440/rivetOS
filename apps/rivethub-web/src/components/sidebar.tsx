@@ -12,8 +12,8 @@ import { Button } from './ui/button.js'
 import { Tooltip } from './ui/tooltip.js'
 
 /** Primary views after Conversations — Memory and Files as the day-to-day
- *  workspace. The standalone Terminal / Den pages are gone: chat embeds both
- *  as per-session modes, which is the only entry. Lucide icons match the
+ *  workspace. The standalone Terminal page is gone: chat embeds terminal as a
+ *  per-session mode, which is the only entry. Lucide icons match the
  *  TenPAL rail. */
 const PRIMARY_NAV = [
   { to: '/memory', label: 'Memory', icon: Library },

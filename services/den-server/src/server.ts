@@ -1,6 +1,6 @@
 // den-server: protocol event ingest + WS fanout + snapshots + layout store.
 //
-// Adapters POST validated protocol events to /event; viewers connect to
+// Adapters POST validated protocol events to /event; clients connect to
 // WS /ws (optionally ?session=<id>) and receive a full state snapshot
 // followed by the live event stream. Late joiners never replay event soup —
 // the reducer state IS the replay.
@@ -23,7 +23,7 @@
 //        | ?session=<den>       live bytes (see term/ws.ts for the framing)
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
 //   GET  /healthz               liveness (never auth-gated)
-//   GET  /packs/*, /*           static packs + built viewer, when configured
+//   GET  /*                     built hub app, when staticDir is configured
 //   GET  /v1/models             OpenAI list (agent id = model id; gateway mount)
 //   POST /v1/chat/completions   OpenAI chat (SSE or JSON; gateway mount)
 //
@@ -869,11 +869,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return
       }
       if (req.method === 'GET' || req.method === 'HEAD') {
-        if (config.packsDir && url.pathname.startsWith('/packs/')) {
-          if (serveStatic(res, config.packsDir, url.pathname.slice('/packs/'.length))) return
-        }
         // /api/* belongs to gateway route mounts and aliases — never the
-        // static viewer. Without this carve-out the SPA fallback hijacks
+        // static hub. Without this carve-out the SPA fallback hijacks
         // extensionless GETs like /api/tasks (G1 regression, fixed in G2).
         // Gateway mounts own their prefixes even outside /api/ (e.g. /wiki)
         // — without this the SPA fallback hijacks them (G1-regression class).
@@ -899,13 +896,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           !gatewayOwned
         ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
-          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the
-          // shell. A nested app bundled under the static root (the den
-          // viewer at /den/ inside a rivethub deploy) gets ITS index for
-          // paths under its prefix — /den/mesh must boot den, not rivethub.
+          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the hub shell.
           if (!extname(url.pathname)) {
-            const seg = url.pathname.split('/')[1]
-            if (seg && serveStatic(res, config.staticDir, `/${seg}/index.html`)) return
             if (serveStatic(res, config.staticDir, '/index.html')) return
           }
         }

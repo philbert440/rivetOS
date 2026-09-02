@@ -1,10 +1,9 @@
 # rivet-den — Claude Code plugin
 
-Streams your Claude Code session into a live pixel-art diorama: lifecycle
+Streams your Claude Code session into the den-protocol event stream: lifecycle
 hooks translate prompts, tool calls, todo updates, thinking, and compaction
-into rivet-den protocol events and POST them to a den-server, where the room
-plays out in real time (whiteboard plan, desk terminal, thought bubbles,
-compaction naps).
+into rivet-den protocol events and POST them to den-server (`/event` /
+`/events`). Drivers use that stream for session linkage and chat indicators.
 
 ## Install
 

@@ -116,7 +116,6 @@ function baseConfig(stateDir: string, term: Partial<DenTermConfig> = {}): DenCon
     tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
-    packsDir: '',
     evictTtlMs: 60_000,
     meshFile: '',
     meshCacheMs: 10_000,
@@ -220,7 +219,9 @@ async function connect(port: number, query: string): Promise<Attached> {
 }
 
 const texts = (frames: Frame[]): Record<string, unknown>[] =>
-  frames.filter((f) => !f.binary).map((f) => JSON.parse(f.data.toString()) as Record<string, unknown>)
+  frames
+    .filter((f) => !f.binary)
+    .map((f) => JSON.parse(f.data.toString()) as Record<string, unknown>)
 
 /** server.test.ts style: did the upgrade complete or get destroyed? */
 const upgradeResult = (port: number, query: string): Promise<'open' | 'rejected'> => {

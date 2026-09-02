@@ -17,7 +17,9 @@ describe('resolveAsset', () => {
   it('maps asset extensions to mime types', () => {
     expect(resolveAsset(DIST, '/assets/app.js')?.mime).toBe('text/javascript')
     expect(resolveAsset(DIST, '/assets/app.css')?.mime).toBe('text/css')
-    expect(resolveAsset(DIST, '/den/index.html')?.file).toBe(path.join(DIST, 'den/index.html'))
+    expect(resolveAsset(DIST, '/nested/index.html')?.file).toBe(
+      path.join(DIST, 'nested/index.html'),
+    )
     expect(resolveAsset(DIST, '/font.woff2')?.mime).toBe('font/woff2')
     expect(resolveAsset(DIST, '/blob.unknownext')?.mime).toBe('application/octet-stream')
   })
@@ -41,10 +43,10 @@ describe('resolveAsset', () => {
     expect(resolveAsset(DIST, '/a/%e0%zz/b')).toBeNull()
   })
 
-  it('trailing-slash directories get their OWN index.html, not the SPA', () => {
-    // the den viewer is nested at /den/ — it must not land on the hub SPA
-    expect(resolveAsset(DIST, '/den/')?.file).toBe(path.join(DIST, 'den/index.html'))
-    expect(resolveAsset(DIST, '/den/sub/')?.file).toBe(path.join(DIST, 'den/sub/index.html'))
+  it('extension-less paths including /den/ fall back to the hub SPA', () => {
+    expect(resolveAsset(DIST, '/den/')?.file).toBe(path.join(DIST, 'index.html'))
+    expect(resolveAsset(DIST, '/den')?.file).toBe(path.join(DIST, 'index.html'))
+    expect(resolveAsset(DIST, '/settings/')?.file).toBe(path.join(DIST, 'index.html'))
   })
 })
 
@@ -69,7 +71,11 @@ describe('isBundledUrl — both shapes the permission gates receive', () => {
 describe('media permission fences', () => {
   it('request: audio-only from the bundled main frame', async () => {
     const { allowMediaRequest } = await import('./serve-dist.js')
-    const ok = { requestingUrl: 'app://bundle/index.html', isMainFrame: true, mediaTypes: ['audio'] }
+    const ok = {
+      requestingUrl: 'app://bundle/index.html',
+      isMainFrame: true,
+      mediaTypes: ['audio'],
+    }
     expect(allowMediaRequest(ok)).toBe(true)
     expect(allowMediaRequest({ ...ok, mediaTypes: ['audio', 'video'] })).toBe(false)
     expect(allowMediaRequest({ ...ok, mediaTypes: [] })).toBe(false)

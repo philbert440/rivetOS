@@ -57,32 +57,158 @@ function makePki(extraIp: string | null): TestPki {
   const o = (args: string[]): void => {
     execFileSync('openssl', args, { cwd: dir, stdio: 'ignore' })
   }
-  o(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'ca.key', '-out', 'ca.crt',
-     '-days', '2', '-subj', '/O=Rivet Test/CN=Rivet Test CA'])
+  o([
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    'ca.key',
+    '-out',
+    'ca.crt',
+    '-days',
+    '2',
+    '-subj',
+    '/O=Rivet Test/CN=Rivet Test CA',
+  ])
   const sans = `IP:127.0.0.1${extraIp ? `,IP:${extraIp}` : ''}`
   writeFileSync(join(dir, 'srv.ext'), `subjectAltName=${sans}\nextendedKeyUsage=serverAuth\n`)
-  o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'srv.key', '-out', 'srv.csr',
-     '-subj', '/O=Rivet Test/CN=testnode.mesh'])
-  o(['x509', '-req', '-in', 'srv.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
-     '-days', '2', '-extfile', 'srv.ext', '-out', 'srv.crt'])
+  o([
+    'req',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    'srv.key',
+    '-out',
+    'srv.csr',
+    '-subj',
+    '/O=Rivet Test/CN=testnode.mesh',
+  ])
+  o([
+    'x509',
+    '-req',
+    '-in',
+    'srv.csr',
+    '-CA',
+    'ca.crt',
+    '-CAkey',
+    'ca.key',
+    '-CAcreateserial',
+    '-days',
+    '2',
+    '-extfile',
+    'srv.ext',
+    '-out',
+    'srv.crt',
+  ])
   writeFileSync(join(dir, 'dev.ext'), 'extendedKeyUsage=clientAuth\n')
-  o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'dev.key', '-out', 'dev.csr',
-     '-subj', '/O=Rivet Test/OU=client/CN=device:e2e-test'])
-  o(['x509', '-req', '-in', 'dev.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
-     '-days', '2', '-extfile', 'dev.ext', '-out', 'dev.crt'])
+  o([
+    'req',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    'dev.key',
+    '-out',
+    'dev.csr',
+    '-subj',
+    '/O=Rivet Test/OU=client/CN=device:e2e-test',
+  ])
+  o([
+    'x509',
+    '-req',
+    '-in',
+    'dev.csr',
+    '-CA',
+    'ca.crt',
+    '-CAkey',
+    'ca.key',
+    '-CAcreateserial',
+    '-days',
+    '2',
+    '-extfile',
+    'dev.ext',
+    '-out',
+    'dev.crt',
+  ])
   // A NODE leaf: same CA, clientAuth EKU, but not a device subject —
   // verifies at the TLS layer yet must fail the device-leaf check.
-  o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'node.key', '-out', 'node.csr',
-     '-subj', '/O=Rivet Test/CN=testpeer.mesh'])
-  o(['x509', '-req', '-in', 'node.csr', '-CA', 'ca.crt', '-CAkey', 'ca.key', '-CAcreateserial',
-     '-days', '2', '-extfile', 'dev.ext', '-out', 'node.crt'])
+  o([
+    'req',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    'node.key',
+    '-out',
+    'node.csr',
+    '-subj',
+    '/O=Rivet Test/CN=testpeer.mesh',
+  ])
+  o([
+    'x509',
+    '-req',
+    '-in',
+    'node.csr',
+    '-CA',
+    'ca.crt',
+    '-CAkey',
+    'ca.key',
+    '-CAcreateserial',
+    '-days',
+    '2',
+    '-extfile',
+    'dev.ext',
+    '-out',
+    'node.crt',
+  ])
   // A FOREIGN CA + client leaf: presents fine, can never verify against ours.
-  o(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'fca.key', '-out', 'fca.crt',
-     '-days', '2', '-subj', '/O=Foreign/CN=Foreign CA'])
-  o(['req', '-newkey', 'rsa:2048', '-nodes', '-keyout', 'fdev.key', '-out', 'fdev.csr',
-     '-subj', '/O=Foreign/OU=client/CN=device:intruder'])
-  o(['x509', '-req', '-in', 'fdev.csr', '-CA', 'fca.crt', '-CAkey', 'fca.key', '-CAcreateserial',
-     '-days', '2', '-extfile', 'dev.ext', '-out', 'fdev.crt'])
+  o([
+    'req',
+    '-x509',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    'fca.key',
+    '-out',
+    'fca.crt',
+    '-days',
+    '2',
+    '-subj',
+    '/O=Foreign/CN=Foreign CA',
+  ])
+  o([
+    'req',
+    '-newkey',
+    'rsa:2048',
+    '-nodes',
+    '-keyout',
+    'fdev.key',
+    '-out',
+    'fdev.csr',
+    '-subj',
+    '/O=Foreign/OU=client/CN=device:intruder',
+  ])
+  o([
+    'x509',
+    '-req',
+    '-in',
+    'fdev.csr',
+    '-CA',
+    'fca.crt',
+    '-CAkey',
+    'fca.key',
+    '-CAcreateserial',
+    '-days',
+    '2',
+    '-extfile',
+    'dev.ext',
+    '-out',
+    'fdev.crt',
+  ])
   return {
     dir,
     ca: readFileSync(join(dir, 'ca.crt'), 'utf8'),
@@ -181,7 +307,7 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
       expect((await get(`${remoteBase}/healthz`, { ca: pki.ca })).status).toBe(200)
       expect((await get(`${remoteBase}/sessions`, { ca: pki.ca })).status).toBe(401)
       expect((await get(`${remoteBase}/`, { ca: pki.ca })).status).toBe(401)
-      expect((await get(`${remoteBase}/packs/anything.png`, { ca: pki.ca })).status).toBe(401)
+      expect((await get(`${remoteBase}/assets/anything.png`, { ca: pki.ca })).status).toBe(401)
     })
 
     it('admits a verified device leaf from a non-loopback remote', async () => {
@@ -215,16 +341,13 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
       const { connect } = await import('node:tls')
       const url = new URL(remoteBase)
       const outcome = await new Promise<string>((resolve) => {
-        const sock = connect(
-          { host: url.hostname, port: Number(url.port), ca: pki.ca },
-          () => {
-            sock.write(
-              `GET /ws HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\n` +
-                `Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n` +
-                `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
-            )
-          },
-        )
+        const sock = connect({ host: url.hostname, port: Number(url.port), ca: pki.ca }, () => {
+          sock.write(
+            `GET /ws HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\n` +
+              `Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n` +
+              `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`,
+          )
+        })
         let buf = ''
         sock.on('data', (c: Buffer) => {
           buf += c.toString('utf8')

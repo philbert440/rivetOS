@@ -93,11 +93,11 @@ memory:
     # delegation_tracking: true
 
 # ---------------------------------------------------------------------------
-# rivet-den (optional) — per-node agent activity diorama (docs/DEN.md).
-# When enabled, `rivetos update` deploys/refreshes rivet-den.service on this
-# node and GENERATES ~/.rivetos/den.env from this section, and the runtime's
-# mesh registration advertises the den (capability + metadata.denPort) so
-# viewers discover it via /mesh.json.
+# den (optional) — embedded node gateway (docs/DEN.md).
+# Served inside the rivetos process (not a separate systemd unit). When
+# enabled, binds `host`:`port` and serves the hub SPA from `static_dir`
+# (default: apps/rivethub-web/dist). Mesh registration still advertises
+# the gateway (capability + metadata.denPort) via /mesh.json.
 # ---------------------------------------------------------------------------
 # den:
 #   enabled: true
@@ -116,8 +116,7 @@ memory:
 #     idle_ttl_ms: 1800000   # auto-close harness PTYs after this many ms idle
 #                            # (no output/inject/write) with no viewer attached;
 #                            # 0 disables (default 30m)
-#   # static_dir: /opt/rivetos/apps/den/dist            # defaults derived
-#   # packs_dir: /opt/rivetos/packages/den-packs/packs  # from install root
+#   # static_dir: /opt/rivetos/apps/rivethub-web/dist   # default: hub dist
 
 # ---------------------------------------------------------------------------
 # Deployment (optional) — declares the intended target for tooling.
