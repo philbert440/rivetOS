@@ -16,6 +16,7 @@ import { buildTerminalOptions } from '../lib/terminal-options.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
+import { filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
 
 /**
  * Attach an xterm to a PTY over WS /api/terminal/ws. Framing per den-server
@@ -76,6 +77,13 @@ function hasAnyClipboard(): boolean {
   if (hasTauriClipboard()) return true
   const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
   return clip != null && typeof clip.writeText === 'function'
+}
+
+/** Hint TTL from the upload response; gateway always sends expiresAt, but
+ *  fakes / older nodes may omit it. */
+function stagedExpiresLabel(expiresAt: number | undefined): string {
+  if (expiresAt == null) return '6h'
+  return `${Math.round((expiresAt - Date.now()) / 3600000)}h`
 }
 
 /**
@@ -174,6 +182,11 @@ export function XtermAttach(props: {
   const [status, setStatus] = useState<'connecting' | 'attached' | 'exited' | 'closed'>(
     'connecting',
   )
+  const statusRef = useRef(status)
+  statusRef.current = status
+  const [stageHint, setStageHint] = useState<
+    { kind: 'staging' | 'ok' | 'err'; text: string } | undefined
+  >(undefined)
   // Set when `new Terminal` / addon load throws — the pane must not stay on
   // 'connecting' with only a console warning.
   const [constructError, setConstructError] = useState<string | undefined>(undefined)
@@ -205,6 +218,12 @@ export function XtermAttach(props: {
     if (findQuery) searchRef.current?.findPrevious(findQuery)
   }
 
+  /** Same resolution the socket effect uses — pane `base` or the connected gateway. */
+  const resolveGateway = () =>
+    props.base ? gatewayFor(props.base) : Promise.resolve(useConnection.getState().gateway)
+  const resolveGatewayRef = useRef(resolveGateway)
+  resolveGatewayRef.current = resolveGateway
+
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
@@ -235,18 +254,127 @@ export function XtermAttach(props: {
         if (text && alive) term?.paste(text)
       })
     }
+    let hintTimer: ReturnType<typeof setTimeout> | undefined
+    const showHint = (
+      next: { kind: 'staging' | 'ok' | 'err'; text: string },
+      persistMs?: number,
+    ): void => {
+      if (hintTimer) {
+        clearTimeout(hintTimer)
+        hintTimer = undefined
+      }
+      if (!alive) return
+      setStageHint(next)
+      if (persistMs !== undefined) {
+        hintTimer = setTimeout(() => {
+          if (alive) setStageHint(undefined)
+        }, persistMs)
+      }
+    }
+    const stageAndPaste = (files: File[]): void => {
+      if (files.length === 0 || statusRef.current === 'exited') return
+      void (async () => {
+        const n = files.length
+        showHint({
+          kind: 'staging',
+          text: `staging ${String(n)} file${n === 1 ? '' : 's'}…`,
+        })
+        let gw
+        try {
+          gw = await resolveGatewayRef.current()
+        } catch {
+          showHint(
+            { kind: 'err', text: `upload failed: ${files[0]?.name || 'pasted-image.png'}` },
+            4000,
+          )
+          return
+        }
+        const { staged, failed } = await stageFiles(gw, files)
+        if (!alive) return
+        if (staged.length > 0 && failed.length > 0) {
+          term?.paste(pathsToPasteText(staged.map((s) => s.uri)))
+          showHint(
+            {
+              kind: 'err',
+              text: `staged ${String(staged.length)} → ${staged[0].uri} · failed: ${failed[0]}`,
+            },
+            4000,
+          )
+        } else if (staged.length > 0) {
+          term?.paste(pathsToPasteText(staged.map((s) => s.uri)))
+          showHint(
+            {
+              kind: 'ok',
+              text: `staged → ${staged[0].uri} (expires in ${stagedExpiresLabel(staged[0].expiresAt)})`,
+            },
+            4000,
+          )
+        } else {
+          showHint({ kind: 'err', text: `upload failed: ${failed[0] ?? 'file'}` }, 4000)
+        }
+      })()
+    }
+    // Capture-phase paste: file/image clipboard items must not reach xterm's
+    // text paste. Stage via the gateway and insert the node path instead.
+    const onPaste = (e: ClipboardEvent): void => {
+      const files = filesFrom(e.clipboardData)
+      if (files.length === 0) return
+      if (statusRef.current === 'exited') return
+      e.preventDefault()
+      e.stopPropagation()
+      stageAndPaste(files)
+    }
+    const dragHasFiles = (e: DragEvent): boolean => {
+      const types = e.dataTransfer?.types
+      if (!types) return false
+      return Array.from(types).includes('Files')
+    }
+    const onDragOver = (e: DragEvent): void => {
+      if (statusRef.current === 'exited' || !dragHasFiles(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+      host.setAttribute('data-drop-active', '')
+    }
+    const onDragEnter = (e: DragEvent): void => {
+      if (statusRef.current === 'exited' || !dragHasFiles(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+      host.setAttribute('data-drop-active', '')
+    }
+    const onDragLeave = (e: DragEvent): void => {
+      const related = e.relatedTarget
+      if (related instanceof Node && host.contains(related)) return
+      host.removeAttribute('data-drop-active')
+    }
+    const onDrop = (e: DragEvent): void => {
+      e.preventDefault()
+      host.removeAttribute('data-drop-active')
+      if (statusRef.current === 'exited') return
+      stageAndPaste(filesFrom(e.dataTransfer))
+    }
     const onBellAnimationEnd = (e: AnimationEvent): void => {
       // xterm animations bubble from descendants; only the host's own bell
       // flash should clear the class.
       if (e.target !== host) return
       host.classList.remove('term-bell-flash')
     }
+    const unbindHost = (): void => {
+      host.removeEventListener('contextmenu', onContextMenu)
+      host.removeEventListener('paste', onPaste, true)
+      host.removeEventListener('dragover', onDragOver)
+      host.removeEventListener('dragenter', onDragEnter)
+      host.removeEventListener('dragleave', onDragLeave)
+      host.removeEventListener('drop', onDrop)
+      host.removeEventListener('animationend', onBellAnimationEnd)
+      host.removeAttribute('data-drop-active')
+    }
     const disposePartial = (): void => {
       alive = false
       if (selTimerRef.current) clearTimeout(selTimerRef.current)
       if (bellTimerRef.current) clearTimeout(bellTimerRef.current)
-      host.removeEventListener('contextmenu', onContextMenu)
-      host.removeEventListener('animationend', onBellAnimationEnd)
+      if (hintTimer) clearTimeout(hintTimer)
+      setStageHint(undefined)
+      unbindHost()
       selSub?.dispose()
       bellSub?.dispose()
       webglRef.current = undefined
@@ -355,6 +483,11 @@ export function XtermAttach(props: {
       })
 
       host.addEventListener('contextmenu', onContextMenu)
+      host.addEventListener('paste', onPaste, true)
+      host.addEventListener('dragover', onDragOver)
+      host.addEventListener('dragenter', onDragEnter)
+      host.addEventListener('dragleave', onDragLeave)
+      host.addEventListener('drop', onDrop)
 
       // Visual bell: brief outline flash on the container (theme.css).
       // animationend removes the class so a second BEL retriggers; the
@@ -410,8 +543,9 @@ export function XtermAttach(props: {
       alive = false
       if (selTimerRef.current) clearTimeout(selTimerRef.current)
       if (bellTimerRef.current) clearTimeout(bellTimerRef.current)
-      host.removeEventListener('contextmenu', onContextMenu)
-      host.removeEventListener('animationend', onBellAnimationEnd)
+      if (hintTimer) clearTimeout(hintTimer)
+      setStageHint(undefined)
+      unbindHost()
       selSub?.dispose()
       bellSub?.dispose()
       webglRef.current = undefined
@@ -573,7 +707,7 @@ export function XtermAttach(props: {
     void (async () => {
       let gateway
       try {
-        gateway = props.base ? await gatewayFor(props.base) : useConnection.getState().gateway
+        gateway = await resolveGateway()
       } catch {
         if (!life.disposed) setStatus('closed')
         return
@@ -639,10 +773,20 @@ export function XtermAttach(props: {
 
   return (
     <div className="relative min-h-0 flex-1 p-2">
-      <div ref={hostRef} className="h-full w-full" data-terminal-font={fontFamily} />
+      <div ref={hostRef} className="h-full w-full" data-term-host data-terminal-font={fontFamily} />
       {/* Screen-reader announcement for the visual bell (the flash itself is
           purely visual — theme.css `.term-bell-flash`). */}
       <div ref={bellLiveRef} role="status" aria-live="polite" className="sr-only" />
+      {stageHint && (
+        <div
+          role="status"
+          className={`absolute bottom-3 right-4 rounded border border-line bg-panel-2 px-2 py-1 font-mono text-[11px] ${
+            stageHint.kind === 'err' ? 'text-red' : 'text-ink-dim'
+          }`}
+        >
+          {stageHint.text}
+        </div>
+      )}
       {findOpen && (
         <div className="absolute right-4 top-3 flex items-center gap-1 rounded border border-line bg-panel-2 px-2 py-1">
           <input
