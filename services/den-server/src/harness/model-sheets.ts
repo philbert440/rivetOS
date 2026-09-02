@@ -13,8 +13,14 @@ import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { EffortOption, HarnessId, HarnessModelOption } from '@rivetos/types'
 
-/** Token accepted on POST /term `model` / `effort` and as a sheet id. */
-export const MODEL_EFFORT_TOKEN_RE = /^[A-Za-z0-9._[\]:-]{1,64}$/
+/**
+ * Model id on POST /term and as a sheet id.
+ * `/` is allowed (kimi `provider/model`); `..` is not (`../x` is rejected).
+ */
+export const MODEL_TOKEN_RE = /^(?!.*\.\.)[A-Za-z0-9._[\]:/-]{1,64}$/
+
+/** Effort id — same charset as before; `/` stays out. */
+export const EFFORT_TOKEN_RE = /^[A-Za-z0-9._[\]:-]{1,64}$/
 
 export type ReadJson = (path: string) => unknown
 export type ReadText = (path: string) => string
@@ -85,7 +91,7 @@ export function sanitizeEfforts(raw: unknown): EffortOption[] {
   for (const entry of raw) {
     if (!isRecord(entry) || typeof entry.id !== 'string') continue
     const id = entry.id.trim()
-    if (!MODEL_EFFORT_TOKEN_RE.test(id)) continue
+    if (!EFFORT_TOKEN_RE.test(id)) continue
     const label = typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : id
     const opt: EffortOption = { id, label }
     if (entry.default === true) opt.default = true
@@ -101,7 +107,7 @@ export function sanitizeModels(raw: unknown): HarnessModelOption[] {
   for (const entry of raw) {
     if (!isRecord(entry) || typeof entry.id !== 'string') continue
     const id = entry.id.trim()
-    if (!MODEL_EFFORT_TOKEN_RE.test(id)) continue
+    if (!MODEL_TOKEN_RE.test(id)) continue
     const label = typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : id
     const opt: HarnessModelOption = { id, label }
     if (entry.default === true) opt.default = true
@@ -190,7 +196,7 @@ export function grokSheet(
     if (!isRecord(entry)) continue
     const info = isRecord(entry.info) ? entry.info : entry
     if (info.hidden === true) continue
-    if (!MODEL_EFFORT_TOKEN_RE.test(id)) continue
+    if (!MODEL_TOKEN_RE.test(id)) continue
     const label = typeof info.name === 'string' && info.name.trim() ? info.name.trim() : id
     const opt: HarnessModelOption = { id, label, default: false }
     if (info.supports_reasoning_effort !== false && Array.isArray(info.reasoning_efforts)) {
@@ -221,8 +227,9 @@ function grokModelsBag(raw: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Parse kimi's config.toml for `default_model` and `[models.<alias>]`
- * tables. Config missing → `models: []`. No effort flag.
+ * Parse kimi's config.toml for `default_model` and `[models.<alias>]` /
+ * `[models."<alias>"]` tables (alias may contain `/`). Config missing →
+ * `models: []`. No effort flag.
  */
 export function kimiSheet(
   readText: ReadText = defaultReadText,
@@ -246,11 +253,18 @@ export function kimiSheet(
   return empty
 }
 
-/** Tiny line parser: `default_model = "…"` and `[models.<alias>]` headers. */
+/**
+ * Tiny line parser: `default_model = "…"`, `[models.<bare>]` /
+ * `[models."<alias>"]` (alias is anything except `"`), and `display_name`
+ * inside those tables. `[[hooks]]`, `[providers.*]`, and other tables are
+ * ignored.
+ */
 export function parseKimiToml(text: string): HarnessModelOption[] {
   let defaultModel = ''
   const aliases: string[] = []
+  const labels = new Map<string, string>()
   const seen = new Set<string>()
+  let current: string | null = null
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replace(/#.*$/, '').trim()
     if (!line) continue
@@ -259,22 +273,38 @@ export function parseKimiToml(text: string): HarnessModelOption[] {
       defaultModel = (def[1] ?? def[2] ?? def[3] ?? '').trim()
       continue
     }
-    const hdr = line.match(/^\[models(?:\.("([^"]+)"|'([^']+)'|([^.\]]+)))?\]$/)
+    const hdr = line.match(/^\[models\.("([^"]+)"|'([^']+)'|([^.\]]+))\]$/)
     if (hdr) {
       const alias = (hdr[2] ?? hdr[3] ?? hdr[4] ?? '').trim()
-      if (alias && MODEL_EFFORT_TOKEN_RE.test(alias) && !seen.has(alias)) {
-        seen.add(alias)
-        aliases.push(alias)
+      if (alias && MODEL_TOKEN_RE.test(alias)) {
+        current = alias
+        if (!seen.has(alias)) {
+          seen.add(alias)
+          aliases.push(alias)
+        }
+      } else {
+        current = null
       }
+      continue
+    }
+    if (line.startsWith('[')) {
+      current = null
+      continue
+    }
+    if (!current) continue
+    const dn = line.match(/^display_name\s*=\s*(?:"([^"]*)"|'([^']*)')\s*$/)
+    if (dn) {
+      const label = (dn[1] ?? dn[2] ?? '').trim()
+      if (label) labels.set(current, label)
     }
   }
-  if (defaultModel && MODEL_EFFORT_TOKEN_RE.test(defaultModel) && !seen.has(defaultModel)) {
+  if (defaultModel && MODEL_TOKEN_RE.test(defaultModel) && !seen.has(defaultModel)) {
     aliases.unshift(defaultModel)
     seen.add(defaultModel)
   }
   return aliases.map((id) => ({
     id,
-    label: id,
+    label: labels.get(id) ?? id,
     default: defaultModel !== '' && id === defaultModel,
   }))
 }
@@ -346,7 +376,7 @@ export function appendModelEffortArgv(
   const out = [...argv]
   const modelOk =
     typeof model === 'string' &&
-    MODEL_EFFORT_TOKEN_RE.test(model) &&
+    MODEL_TOKEN_RE.test(model) &&
     !!sheet.modelFlag &&
     !!sheet.models?.some((m) => m.id === model)
   if (modelOk && sheet.modelFlag && model) {
@@ -356,7 +386,7 @@ export function appendModelEffortArgv(
   }
   const effortOk =
     typeof effort === 'string' &&
-    MODEL_EFFORT_TOKEN_RE.test(effort) &&
+    EFFORT_TOKEN_RE.test(effort) &&
     !!sheet.effortFlag &&
     effortIdsFor(sheet, modelOk ? model : undefined).includes(effort)
   if (effortOk && sheet.effortFlag && effort) {

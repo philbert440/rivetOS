@@ -66,7 +66,7 @@ import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
-import { MODEL_EFFORT_TOKEN_RE } from './harness/model-sheets.js'
+import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE } from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import { createTermWs } from './term/ws.js'
 import { MicBridge } from './audio/bridge.js'
@@ -1167,13 +1167,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'session must be a string' })
           if (p.resume !== undefined && typeof p.resume !== 'string')
             return json(res, 400, { error: 'resume must be a string' })
-          const token = (v: unknown): string | undefined | null => {
+          const token = (v: unknown, re: RegExp): string | undefined | null => {
             if (v === undefined) return undefined
-            if (typeof v !== 'string' || !MODEL_EFFORT_TOKEN_RE.test(v)) return null
+            if (typeof v !== 'string' || !re.test(v)) return null
             return v
           }
-          const modelTok = token(p.model)
-          const effortTok = token(p.effort)
+          const modelTok = token(p.model, MODEL_TOKEN_RE)
+          const effortTok = token(p.effort, EFFORT_TOKEN_RE)
           if (modelTok === null) return json(res, 400, { error: 'model must be a 1-64 token' })
           if (effortTok === null) return json(res, 400, { error: 'effort must be a 1-64 token' })
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>

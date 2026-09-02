@@ -1,16 +1,27 @@
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   appendModelEffortArgv,
   applySheetOverride,
   claudeSheet,
   deepseekSheet,
+  EFFORT_TOKEN_RE,
   grokSheet,
   hermesSheet,
   kimiSheet,
+  MODEL_TOKEN_RE,
   parseKimiToml,
+  sanitizeEfforts,
   sanitizeModels,
   sheetForHarness,
 } from './model-sheets.js'
+
+const CT116_TOML = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '__fixtures__/kimi-config-ct116.toml'),
+  'utf8',
+)
 
 const GROK_CACHE = {
   models: {
@@ -144,6 +155,33 @@ x = 1
     })
     expect(sheet).toEqual({ models: [], modelFlag: '--model' })
   })
+
+  it('parses the ct116 real config fixture (quoted slash aliases)', () => {
+    const models = parseKimiToml(CT116_TOML)
+    expect(models.length).toBeGreaterThanOrEqual(3)
+    expect(models.find((m) => m.default)?.id).toBe('moonshotai/kimi-k3')
+    expect(models.find((m) => m.id === 'moonshotai/kimi-k2-0905-preview')).toMatchObject({
+      id: 'moonshotai/kimi-k2-0905-preview',
+      label: 'Kimi K2 0905',
+    })
+    expect(models.every((m) => m.id.startsWith('moonshotai/'))).toBe(true)
+    expect(models.some((m) => m.id === 'hooks' || m.id === 'moonshotai')).toBe(false)
+    expect(models.some((m) => /hook|provider|SessionStart|\/opt\//i.test(m.id + m.label))).toBe(
+      false,
+    )
+  })
+})
+
+describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
+  it('accepts slash model ids; rejects slash efforts and traversal/space everywhere', () => {
+    expect(MODEL_TOKEN_RE.test('moonshotai/kimi-k3')).toBe(true)
+    expect(EFFORT_TOKEN_RE.test('moonshotai/kimi-k3')).toBe(false)
+    expect(EFFORT_TOKEN_RE.test('a/b')).toBe(false)
+    expect(MODEL_TOKEN_RE.test('../x')).toBe(false)
+    expect(EFFORT_TOKEN_RE.test('../x')).toBe(false)
+    expect(MODEL_TOKEN_RE.test('a b')).toBe(false)
+    expect(EFFORT_TOKEN_RE.test('a b')).toBe(false)
+  })
 })
 
 describe('hermesSheet / deepseekSheet', () => {
@@ -203,6 +241,15 @@ describe('sanitizeModels', () => {
       ]),
     ).toEqual([{ id: 'ok', label: 'OK', efforts: [{ id: 'low', label: 'Low' }] }])
   })
+
+  it('keeps slash model ids and drops slash effort ids', () => {
+    expect(sanitizeModels([{ id: 'moonshotai/kimi-k3', label: 'Kimi K3' }])).toEqual([
+      { id: 'moonshotai/kimi-k3', label: 'Kimi K3' },
+    ])
+    expect(sanitizeEfforts([{ id: 'a/b', label: 'nope' }])).toEqual([])
+    expect(sanitizeModels([{ id: '../x' }, { id: 'a b' }])).toEqual([])
+    expect(sanitizeEfforts([{ id: '../x' }, { id: 'a b' }])).toEqual([])
+  })
 })
 
 describe('appendModelEffortArgv', () => {
@@ -229,6 +276,16 @@ describe('appendModelEffortArgv', () => {
     ).toEqual(['kimi'])
     expect(appendModelEffortArgv(['dsh'], sheetForHarness('deepseek-harness'), 'x', 'y')).toEqual([
       'dsh',
+    ])
+  })
+
+  it('kimi spawn is --model <slash-id> with no effort flag', () => {
+    const sheet = kimiSheet(() => CT116_TOML, '/home/tester')
+    expect(sheet.effortFlag).toBeUndefined()
+    expect(appendModelEffortArgv(['kimi'], sheet, 'moonshotai/kimi-k3', 'high')).toEqual([
+      'kimi',
+      '--model',
+      'moonshotai/kimi-k3',
     ])
   })
 

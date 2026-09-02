@@ -1,0 +1,129 @@
+default_model = "moonshotai/kimi-k3"
+
+[[hooks]]
+event = "SessionStart"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh SessionStart"
+timeout = 8
+
+[[hooks]]
+event = "SessionEnd"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh SessionEnd"
+timeout = 8
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh UserPromptSubmit"
+timeout = 8
+
+[[hooks]]
+event = "PostToolUse"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh PostToolUse"
+timeout = 8
+
+[[hooks]]
+event = "PostToolUseFailure"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh PostToolUseFailure"
+timeout = 8
+
+[[hooks]]
+event = "Stop"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh Stop"
+timeout = 8
+
+[[hooks]]
+event = "PreCompact"
+command = "/opt/rivetos/integrations/kimi/rivet-memory/bin/kimi-memory-hook.sh PreCompact"
+timeout = 8
+
+[providers.moonshotai]
+type = "openai"
+api_key = "REDACTED"
+base_url = "https://api.moonshot.ai/v1"
+
+[models."moonshotai/kimi-k2-0711-preview"]
+provider = "moonshotai"
+model = "kimi-k2-0711-preview"
+max_context_size = 131072
+max_output_size = 16384
+capabilities = [ "tool_use" ]
+display_name = "Kimi K2 0711"
+
+[models."moonshotai/kimi-k2-0905-preview"]
+provider = "moonshotai"
+model = "kimi-k2-0905-preview"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "tool_use" ]
+display_name = "Kimi K2 0905"
+
+[models."moonshotai/kimi-k2-turbo-preview"]
+provider = "moonshotai"
+model = "kimi-k2-turbo-preview"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "tool_use" ]
+display_name = "Kimi K2 Turbo"
+
+[models."moonshotai/kimi-k2.5"]
+provider = "moonshotai"
+model = "kimi-k2.5"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "image_in", "video_in", "thinking", "tool_use" ]
+display_name = "Kimi K2.5"
+reasoning_key = "reasoning_content"
+
+[models."moonshotai/kimi-k2-thinking"]
+provider = "moonshotai"
+model = "kimi-k2-thinking"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "thinking", "tool_use" ]
+display_name = "Kimi K2 Thinking"
+reasoning_key = "reasoning_content"
+
+[models."moonshotai/kimi-k2-thinking-turbo"]
+provider = "moonshotai"
+model = "kimi-k2-thinking-turbo"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "thinking", "tool_use" ]
+display_name = "Kimi K2 Thinking Turbo"
+reasoning_key = "reasoning_content"
+
+[models."moonshotai/kimi-k2.6"]
+provider = "moonshotai"
+model = "kimi-k2.6"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "image_in", "video_in", "thinking", "tool_use" ]
+display_name = "Kimi K2.6"
+reasoning_key = "reasoning_content"
+
+[models."moonshotai/kimi-k3"]
+provider = "moonshotai"
+model = "kimi-k3"
+max_context_size = 1048576
+max_output_size = 131072
+capabilities = [ "image_in", "video_in", "thinking", "tool_use" ]
+display_name = "Kimi K3"
+reasoning_key = "reasoning_content"
+
+[models."moonshotai/kimi-k2.7-code"]
+provider = "moonshotai"
+model = "kimi-k2.7-code"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "image_in", "video_in", "thinking", "tool_use" ]
+display_name = "Kimi K2.7 Code"
+reasoning_key = "reasoning_content"
+
+[models."moonshotai/kimi-k2.7-code-highspeed"]
+provider = "moonshotai"
+model = "kimi-k2.7-code-highspeed"
+max_context_size = 262144
+max_output_size = 262144
+capabilities = [ "image_in", "video_in", "thinking", "tool_use" ]
+display_name = "Kimi K2.7 Code HighSpeed"
+reasoning_key = "reasoning_content"
+

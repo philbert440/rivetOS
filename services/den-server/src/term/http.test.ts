@@ -139,6 +139,12 @@ describe('term endpoints', () => {
     expect(spawns[1].argv).toEqual(['claude'])
 
     expect((await post(base, '/term', { command: 'claude', model: 'bad token!' })).status).toBe(400)
+    expect(
+      (await post(base, '/term', { command: 'claude', model: 'moonshotai/kimi-k3' })).status,
+    ).toBe(201)
+    expect((await post(base, '/term', { command: 'claude', effort: 'a/b' })).status).toBe(400)
+    expect((await post(base, '/term', { command: 'claude', model: '../x' })).status).toBe(400)
+    expect((await post(base, '/term', { command: 'claude', model: 'a b' })).status).toBe(400)
   })
 
   it('POST /term spawns the roster default and returns the pty descriptor', async () => {
