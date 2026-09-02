@@ -125,6 +125,7 @@ export function SettingsPage(): JSX.Element {
   const { baseUrl, setConnection } = useConnection()
   const themePreference = useTheme((s) => s.preference)
   const setThemePreference = useTheme((s) => s.setPreference)
+  const omarchy = useTheme((s) => s.omarchy)
   const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
   // The Saved Nodes editor below can repoint baseUrl from within this page —
@@ -219,28 +220,39 @@ export function SettingsPage(): JSX.Element {
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
         Appearance
       </h2>
-      <div className="flex gap-2" role="group" aria-label="Theme">
-        {(
-          [
-            ['light', 'Light'],
-            ['dark', 'Dark'],
-            ['system', 'System'],
-          ] as [ThemePreference, string][]
-        ).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            aria-pressed={themePreference === value}
-            onClick={() => setThemePreference(value)}
-            className={
-              themePreference === value
-                ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
-                : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
-            }
-          >
-            {label}
-          </button>
-        ))}
+      <div className="flex items-center gap-3">
+        <div className="flex gap-2" role="group" aria-label="Theme">
+          {(
+            [
+              ['light', 'Light'],
+              ['dark', 'Dark'],
+              ['system', 'System'],
+              ['omarchy', 'Omarchy'],
+            ] as [ThemePreference, string][]
+          ).map(([value, label]) => {
+            const disabled = value === 'omarchy' && omarchy === null
+            return (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={themePreference === value}
+                disabled={disabled}
+                title={disabled ? 'No Omarchy theme found — desktop only' : undefined}
+                onClick={() => setThemePreference(value)}
+                className={
+                  themePreference === value
+                    ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg disabled:cursor-not-allowed disabled:opacity-50'
+                    : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line'
+                }
+              >
+                {label}
+              </button>
+            )
+          })}
+        </div>
+        {themePreference === 'omarchy' && omarchy?.name ? (
+          <span className="text-xs text-ink-dim">{omarchy.name}</span>
+        ) : null}
       </div>
       <p className="mt-2 text-xs text-ink-dim">System follows the OS light/dark setting.</p>
 

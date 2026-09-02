@@ -8,17 +8,39 @@
     <title>RivetHub</title>
     <script>
       // Pre-paint theme boot — mirrors src/lib/theme.ts (rivethub.theme =
-      // light | dark | system, default system) so the first frame already has
-      // the right token set; stores/theme.ts re-applies and tracks changes.
+      // light | dark | system | omarchy, default system) so the first frame
+      // already has the right token set; stores/theme.ts re-applies and
+      // tracks changes. Omarchy tokens arrive a frame later from the store.
       ;(function () {
         var pref = localStorage.getItem('rivethub.theme')
-        var dark =
-          pref === 'dark' ||
-          (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        var dark
+        var themeColor
+        if (pref === 'omarchy') {
+          try {
+            var snap = JSON.parse(localStorage.getItem('rivethub.omarchy-theme') || 'null')
+            var colors = snap && snap.colors
+            var mode = colors && colors.mode
+            if (mode === 'light' || mode === 'dark') {
+              dark = mode === 'dark'
+            } else {
+              dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+            }
+            var bg = colors && colors.background
+            if (typeof bg === 'string' && /^#[0-9a-f]{6}$/i.test(bg)) {
+              themeColor = bg
+            }
+          } catch (e) {
+            dark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          }
+        } else {
+          dark =
+            pref === 'dark' ||
+            (pref !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        }
         document.documentElement.dataset.theme = dark ? 'dark' : 'light'
         document
           .querySelector('meta[name="theme-color"]')
-          .setAttribute('content', dark ? '#0d1117' : '#f6f4ee')
+          .setAttribute('content', themeColor || (dark ? '#0d1117' : '#f6f4ee'))
       })()
     </script>
   </head>

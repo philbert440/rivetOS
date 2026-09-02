@@ -8,7 +8,7 @@
 
 import { useEffect, useState, type JSX, type ReactNode } from 'react'
 import { Select } from './select.js'
-import { useResolvedTheme } from '../stores/theme.js'
+import { useResolvedTheme, useTheme } from '../stores/theme.js'
 import {
   resolveXtermTheme,
   TERMINAL_LIMITS,
@@ -462,8 +462,14 @@ function TerminalImportRow(props: {
 export function TerminalSection(): JSX.Element {
   const settings = useTerminalSettings()
   const resolvedTheme = useResolvedTheme()
+  const themePreference = useTheme((s) => s.preference)
+  const omarchyAnsi = useTheme((s) => s.omarchy?.colors.ansi)
   const update = settings.update
-  const theme = resolveXtermTheme(settings, resolvedTheme)
+  const theme = resolveXtermTheme(
+    settings,
+    resolvedTheme,
+    themePreference === 'omarchy' ? omarchyAnsi : undefined,
+  )
   const webglUnavailable = settings.renderer === 'webgl' && settings.rendererActual === 'canvas'
 
   return (

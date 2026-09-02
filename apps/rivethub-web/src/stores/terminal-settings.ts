@@ -245,6 +245,7 @@ export const useTerminalSettings = create<TerminalSettingsState>()(
 export function resolveXtermTheme(
   settings: Pick<TerminalSettings, 'themeSource' | 'scheme' | 'imported'>,
   resolvedAppTheme: ResolvedTheme,
+  ansi?: TerminalPalette['ansi'],
 ): XtermTheme {
   if (settings.themeSource === 'scheme') {
     const scheme = getTerminalScheme(settings.scheme)
@@ -253,5 +254,5 @@ export function resolveXtermTheme(
   if (settings.themeSource === 'imported' && settings.imported) {
     return paletteToXtermTheme(settings.imported)
   }
-  return appXtermTheme(resolvedAppTheme)
+  return appXtermTheme(resolvedAppTheme, ansi)
 }
