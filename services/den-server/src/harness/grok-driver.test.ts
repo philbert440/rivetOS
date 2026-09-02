@@ -12,7 +12,9 @@ import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import type { DenAgentEventLike } from './claude-driver.js'
 import { GrokBuildDriver, type GrokPtyHost, type GrokStoreHost } from './grok-driver.js'
+import type { SheetReaders } from './model-sheets.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
+import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
 /** A real grok id: UUIDv7, as `grok --session-id` mints and requires. */
 const UUID = '019e5f82-f0e5-7d41-a38c-4eefced7e570'
@@ -87,6 +89,7 @@ function makeDriver(
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sheetReaders?: SheetReaders
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -106,6 +109,7 @@ function makeDriver(
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
+    sheetReaders: opts.sheetReaders,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
@@ -119,9 +123,17 @@ const grokEvent = (session: string, body: Record<string, unknown>): DenAgentEven
     ...body,
   }) as DenAgentEventLike
 
+/** Force the static grok-4.6 sheet — tests do not depend on ~/.grok/models_cache.json. */
+const missingGrokCache: SheetReaders = {
+  readJson: (): never => {
+    throw new Error('ENOENT')
+  },
+}
+
 describe('capability flags are honest', () => {
   it('reports what is actually wired on this node', () => {
-    expect(makeDriver().driver.capabilities).toEqual({
+    const caps = makeDriver({ sheetReaders: missingGrokCache }).driver.capabilities
+    expect(pick(caps, FIVE_FLAGS)).toEqual({
       interrupt: true,
       resume: true,
       // Grok's permission prompts live inside its TUI (and the roster runs it
@@ -130,6 +142,41 @@ describe('capability flags are honest', () => {
       liveStream: true,
       listSessions: true,
     })
+  })
+
+  it('falls back to the static grok-4.6 sheet when the cache is unreadable', () => {
+    const caps = makeDriver({ sheetReaders: missingGrokCache }).driver.capabilities
+    expect(caps.models?.[0]?.id).toBe('grok-4.6')
+    expect(caps.effortFlag).toBe('--reasoning-effort')
+  })
+
+  it('filters hidden models from an injected cache and keeps the high default', () => {
+    const { driver } = makeDriver({
+      sheetReaders: {
+        readJson: () => ({
+          models: {
+            'grok-4.6': {
+              info: {
+                name: 'Grok 4.6',
+                hidden: false,
+                supports_reasoning_effort: true,
+                reasoning_efforts: [
+                  { id: 'xhigh', label: 'Extra High Effort', default: false },
+                  { id: 'high', label: 'High Effort', default: true },
+                ],
+              },
+            },
+            'grok-x': { info: { name: 'x', hidden: true } },
+          },
+        }),
+      },
+    })
+    const caps = driver.capabilities
+    expect(caps.models?.map((m) => m.id)).toEqual(['grok-4.6'])
+    expect(caps.models?.some((m) => m.id === 'grok-x')).toBe(false)
+    expect(caps.models?.[0]?.default).toBe(true)
+    expect(caps.models?.[0]?.efforts?.find((e) => e.default)?.id).toBe('high')
+    expect(caps.efforts?.find((e) => e.default)?.id).toBe('high')
   })
 
   it('drops interrupt/resume when den terminals are off', () => {
@@ -588,19 +635,18 @@ describe('through the real registry (the non-rotating half of the conformance su
   }
 
   it('registers under the grok-build harness id and advertises its flags', async () => {
-    const { registry } = await withRegistry()
-    expect(registry.list()).toEqual([
-      {
-        harnessId: 'grok-build',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-        },
-      },
-    ])
+    const { fakes, registry } = await withRegistry()
+    const [desc] = registry.list()
+    expect(registry.list()).toHaveLength(1)
+    expect(desc.harnessId).toBe('grok-build')
+    expect(pick(desc.capabilities, FIVE_FLAGS)).toEqual({
+      interrupt: true,
+      resume: true,
+      approvals: false,
+      liveStream: true,
+      listSessions: true,
+    })
+    expect(desc.capabilities.modelFlag).toBe(fakes.driver.capabilities.modelFlag)
   })
 
   it('resolves a bare uuid to the canonical grok-build id', async () => {

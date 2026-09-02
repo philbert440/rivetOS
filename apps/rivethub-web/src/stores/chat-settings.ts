@@ -7,12 +7,19 @@
 
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
-import type { ThinkingLevel } from '@rivetos/types'
+import type { HarnessId, ThinkingLevel } from '@rivetos/types'
 
 export interface ChatSettings {
-  /** agent id; '' = the node's default agent */
+  /** Catalog agent / roster command for the chat-loop picker; '' = node default. */
   agent: string
+  /** Chat-loop thinking level. */
   effort: ThinkingLevel
+  /** Harness this thread should spawn. */
+  harnessId?: HarnessId
+  /** Real model id passed to POST /term; empty = harness default. */
+  model?: string
+  /** Effort id passed to POST /term when it is not a ThinkingLevel (e.g. max). */
+  harnessEffort?: string
   /** Agent-preset system prompt for this thread; '' / omitted = none. */
   systemPrompt?: string
 }

@@ -12,14 +12,30 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
-import type { AgentPreset, ThinkingLevel } from '@rivetos/types'
+import {
+  migrateAgentPreset,
+  type AgentPreset,
+  type AgentUpdateRequest,
+  type HarnessId,
+  type ThinkingLevel,
+} from '@rivetos/types'
+
+/** Editor → den PATCH shape: `harnessId: null` clears the harness (JSON drops `undefined`). */
+type AgentPatch = Omit<Partial<AgentPreset>, 'harnessId'> & { harnessId?: HarnessId | null }
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { useNodeName, urlLabel } from '../lib/node-name.js'
 import { useConfirmDialog } from './confirm-dialog.js'
 import { Select } from './select.js'
-import { modelOptions } from '../lib/model-options.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
+import {
+  defaultEffort,
+  defaultModel,
+  effortOptionsFor,
+  harnessLabel,
+  modelOptionsFor,
+} from '../lib/harness-options.js'
+import { rosterCommandFor } from '../lib/harness-chat.js'
 import { uuidv4 } from '../lib/uuid.js'
 import {
   agentForSession,
@@ -73,13 +89,11 @@ function knownToChatStore(sessionId: string): boolean {
   return (chat.transcripts[sessionId]?.turns.length ?? 0) > 0
 }
 
-const EFFORT_OPTIONS: { value: ThinkingLevel; label: string }[] = [
-  { value: 'off', label: 'Off' },
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'X-High' },
-]
+const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh']
+
+function isThinkingLevel(value: string): value is ThinkingLevel {
+  return (THINKING_LEVELS as readonly string[]).includes(value)
+}
 
 interface NodeSelectorProps {
   value: string
@@ -112,7 +126,7 @@ function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Ele
 
 interface AgentEditorProps {
   agent?: AgentPreset
-  onSave: (agent: Partial<AgentPreset>) => void
+  onSave: (agent: AgentPatch) => void
   onCancel: () => void
   disabled?: boolean
   errorText?: string
@@ -128,8 +142,9 @@ function AgentEditor({
   const { baseUrl, transportEpoch } = useConnection()
   const [name, setName] = useState(agent?.name ?? '')
   const [color, setColor] = useState(agent?.color ?? '')
+  const [harnessId, setHarnessId] = useState(agent?.harnessId ?? '')
   const [model, setModel] = useState(agent?.model ?? '')
-  const [effort, setEffort] = useState<ThinkingLevel>(agent?.effort ?? 'medium')
+  const [effort, setEffort] = useState(agent?.effort ?? '')
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
   const [nodeBaseUrl, setNodeBaseUrl] = useState(agent?.nodeBaseUrl ?? baseUrl)
   const nodeLocked = Boolean(agent)
@@ -143,12 +158,38 @@ function AgentEditor({
   // the backdrop and unmount the editor, losing the draft.
   const backdropArmed = useRef(false)
 
-  const catalog = useQuery({
-    queryKey: ['catalog-agents', nodeBaseUrl, transportEpoch],
-    queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).catalogAgents(signal),
-    staleTime: 300_000,
+  const harnessesQuery = useQuery({
+    queryKey: ['harnesses', nodeBaseUrl, transportEpoch],
+    queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).harnesses(signal),
+    staleTime: 60_000,
   })
-  const models = modelOptions(catalog.data?.agents ?? [])
+  const harnesses = harnessesQuery.data?.harnesses ?? []
+  const sheet = harnesses.find((h) => h.harnessId === harnessId)?.capabilities
+  const models = modelOptionsFor(sheet)
+  if (model && !models.some((o) => o.value === model)) {
+    models.unshift({ value: model, label: model })
+  }
+  const efforts = effortOptionsFor(sheet, model)
+  if (effort && !efforts.some((o) => o.value === effort)) {
+    efforts.unshift({ value: effort, label: effort })
+  }
+  const harnessOptions: { value: string; label: string }[] = harnesses.map((h) => ({
+    value: h.harnessId,
+    label: harnessLabel(h.harnessId),
+  }))
+  if (harnessId && !harnessOptions.some((o) => o.value === harnessId)) {
+    harnessOptions.unshift({ value: harnessId, label: harnessLabel(harnessId) })
+  }
+
+  useEffect(() => {
+    if (agent || harnessId || harnesses.length === 0) return
+    const first = harnesses[0].harnessId
+    setHarnessId(first)
+    const firstSheet = harnesses[0].capabilities
+    const m = defaultModel(firstSheet)
+    setModel(m)
+    setEffort(defaultEffort(firstSheet, m))
+  }, [agent, harnessId, harnesses])
 
   // Restore focus to the opener (Plus / Pencil) when the dialog closes.
   useEffect(() => {
@@ -189,7 +230,14 @@ function AgentEditor({
 
   const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
-    const patch: Partial<AgentPreset> = { name, color, model, effort, systemPrompt }
+    const patch: AgentPatch = {
+      name,
+      color,
+      model,
+      effort,
+      systemPrompt,
+      harnessId: harnessId ? (harnessId as HarnessId) : null,
+    }
     if (!nodeLocked) patch.nodeBaseUrl = nodeBaseUrl
     onSave(patch)
   }
@@ -270,32 +318,57 @@ function AgentEditor({
         />
 
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">Model</label>
+          <label className="text-xs text-ink-dim">Harness</label>
           <Select
-            value={model}
-            options={models}
-            onChange={setModel}
-            disabled={disabled || catalog.isError}
-            title={catalog.isError ? 'catalog unavailable' : undefined}
-            label="Model"
+            value={harnessId}
+            options={harnessOptions}
+            onChange={(id) => {
+              setHarnessId(id)
+              const next = harnesses.find((h) => h.harnessId === id)?.capabilities
+              const m = defaultModel(next)
+              setModel(m)
+              setEffort(defaultEffort(next, m))
+            }}
+            disabled={disabled || harnessesQuery.isError}
+            title={harnessesQuery.isError ? 'harnesses unavailable' : undefined}
+            label="Harness"
             className="w-full"
           />
-          {catalog.isError && (
-            <span className="text-[10px] text-red">catalog unavailable on this node</span>
+          {harnessesQuery.isError && (
+            <span className="text-[10px] text-red">harnesses unavailable on this node</span>
           )}
         </div>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">Effort</label>
-          <Select
-            value={effort}
-            options={EFFORT_OPTIONS}
-            onChange={(v) => setEffort(v as ThinkingLevel)}
-            disabled={disabled}
-            label="Effort"
-            className="w-full"
-          />
-        </div>
+        {models.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-ink-dim">Model</label>
+            <Select
+              value={model}
+              options={models}
+              onChange={(id) => {
+                setModel(id)
+                setEffort(defaultEffort(sheet, id))
+              }}
+              disabled={disabled}
+              label="Model"
+              className="w-full"
+            />
+          </div>
+        )}
+
+        {efforts.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-ink-dim">Effort</label>
+            <Select
+              value={effort}
+              options={efforts}
+              onChange={setEffort}
+              disabled={disabled}
+              label="Effort"
+              className="w-full"
+            />
+          </div>
+        )}
 
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-dim">System Prompt (optional)</label>
@@ -441,7 +514,8 @@ function AgentRow({
       style={{
         background: accentFor({
           presetColor: agent.color,
-          command: agent.model,
+          harnessId: agent.harnessId,
+          command: rosterCommandFor(agent.harnessId) ?? agent.model,
         }),
       }}
       aria-hidden
@@ -553,7 +627,10 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
         for (const agent of result.agents) {
           if (seen.has(agent.id)) continue
           seen.add(agent.id)
-          allAgents.push({ ...agent, sourceNodeBaseUrl: result.nodeBaseUrl })
+          allAgents.push({
+            ...migrateAgentPreset(agent),
+            sourceNodeBaseUrl: result.nodeBaseUrl,
+          })
         }
       }
       return allAgents
@@ -566,10 +643,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const isLoading = nodeQueries.isLoading
 
   const createMutation = useMutation({
-    mutationFn: async (agent: Partial<AgentPreset>) =>
+    mutationFn: async (agent: AgentPatch) =>
       (await gatewayFor(agent.nodeBaseUrl!)).agentCreate({
         name: agent.name!,
         color: agent.color,
+        harnessId: agent.harnessId ?? undefined,
         model: agent.model,
         effort: agent.effort,
         systemPrompt: agent.systemPrompt,
@@ -588,16 +666,17 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       targetNode,
     }: {
       id: string
-      agent: Partial<AgentPreset>
+      agent: AgentPatch
       targetNode: string
     }) =>
       (await gatewayFor(targetNode)).agentUpdate(id, {
         name: agent.name,
         color: agent.color,
+        harnessId: agent.harnessId,
         model: agent.model,
         effort: agent.effort,
         systemPrompt: agent.systemPrompt,
-      }),
+      } satisfies AgentUpdateRequest),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setEditing(null)
@@ -687,8 +766,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     opts?: { replace?: boolean },
   ): void => {
     chatSettings.set(`${nodeUrl}::${sessionId}`, {
-      agent: agent.model || '',
-      effort: agent.effort,
+      agent: rosterCommandFor(agent.harnessId) ?? '',
+      harnessId: agent.harnessId,
+      model: agent.model || '',
+      effort: isThinkingLevel(agent.effort) ? agent.effort : 'medium',
+      harnessEffort: agent.effort || undefined,
       systemPrompt: agent.systemPrompt || '',
     })
     setAgentLastSession(agent.id, sessionId, nodeUrl, opts)

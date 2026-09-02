@@ -1042,6 +1042,18 @@ describe('den', () => {
       cfg.tasks = { eval: { strictness: 'max' } }
       assertWarning(validateConfig(cfg), 'tasks.eval.strictness', 'Unknown tasks.eval key')
     })
+
+    it('warns when a harness models/efforts override is empty', () => {
+      const cfg = validConfig()
+      cfg.tasks = {
+        harnesses: {
+          'claude-code': { models: [], efforts: [] },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'tasks.harnesses.claude-code.models', 'empty and will be ignored')
+      assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
+    })
   })
 
   // =========================================================================

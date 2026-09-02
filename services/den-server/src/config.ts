@@ -169,6 +169,13 @@ export interface DenConfig {
    * Undefined = tenancy off (single-owner node).
    */
   usersRegistry?: UsersRegistry
+  /**
+   * Optional per-harness model/effort list overrides, keyed by harness id.
+   * When present they REPLACE the driver's sheet lists (malformed entries
+   * dropped at apply time). Boot copies `tasks.harnesses.<id>.models/efforts`
+   * onto this field when embedding den.
+   */
+  harnesses?: Record<string, { models?: unknown; efforts?: unknown }>
 }
 
 /** Voice proxy upstreams (see voice-proxy.ts). Empty URL = that half 501s. */

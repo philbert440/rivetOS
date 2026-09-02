@@ -86,6 +86,16 @@ function makeManager(
     sessionExists?: (command: string, id: string) => boolean
     tmuxCtl?: TmuxCtl
     writeEnvFile?: (path: string, body: string) => void
+    modelSheetFor?: (
+      command: string,
+    ) =>
+      | {
+          models?: { id: string; label: string }[]
+          efforts?: { id: string; label: string }[]
+          modelFlag?: string
+          effortFlag?: string
+        }
+      | undefined
   } = {},
 ): Harness {
   const stateDir = tmp()
@@ -140,6 +150,7 @@ function makeManager(
     sessionExists: extra.sessionExists,
     tmuxCtl: extra.tmuxCtl,
     writeEnvFile: extra.writeEnvFile,
+    modelSheetFor: extra.modelSheetFor,
     log: (m) => logs.push(m),
   })
   managers.push(manager)
@@ -167,6 +178,56 @@ describe('term manager', () => {
     // linkage map — get() resolves the den-session alias too (same as kill)
     expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
     expect(manager.get(pty.denSession)?.id).toBe(pty.id)
+  })
+
+  it('appends model/effort flags from the sheet and omits unknown / no-flag', () => {
+    const fake = {
+      models: [{ id: 'fable', label: 'Fable' }],
+      efforts: [{ id: 'high', label: 'High' }],
+      modelFlag: '--model',
+      effortFlag: '--effort',
+    }
+    const listed = makeManager({}, { modelSheetFor: () => fake })
+    listed.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'fable',
+      'high',
+    )
+    expect(listed.spawns[0].argv).toEqual(['claude', '--model', 'fable', '--effort', 'high'])
+
+    const unknown = makeManager({}, { modelSheetFor: () => fake })
+    unknown.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'nope',
+      'nope',
+    )
+    expect(unknown.spawns[0].argv).toEqual(['claude'])
+
+    const noFlag = makeManager(
+      {},
+      {
+        modelSheetFor: () => ({
+          models: [{ id: 'x', label: 'X' }],
+          efforts: [{ id: 'y', label: 'Y' }],
+        }),
+      },
+    )
+    noFlag.manager.spawn('claude', 80, 24, '', undefined, undefined, undefined, undefined, 'x', 'y')
+    expect(noFlag.spawns[0].argv).toEqual(['claude'])
   })
 
   it('session join key: denSession IS the session, RIVETOS_SESSION_KEY set, spawn-or-get', () => {

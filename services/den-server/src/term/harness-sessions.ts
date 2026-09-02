@@ -41,6 +41,8 @@ export interface HarnessSession {
   title: string
   /** epoch ms of last activity (file mtime) */
   updatedAt: number
+  /** Model id when the store row records one. */
+  model?: string
   /** epoch ms the session was created. Claude has no field for it, so its
    *  readers use the store file's birthtime (falling back to ctime then
    *  mtime); grok's summary.json carries `created_at` and the reader parses it.

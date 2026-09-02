@@ -318,6 +318,17 @@ export async function registerGateway(
   const denConfig = loadDenConfig({ ...env })
   // Bearer removed: denConfig.token is always empty from loadConfig.
   // TLS paths come from den.tls_* / env in buildGatewayEnv.
+  // Model/effort list overrides live under tasks.harnesses.<id> in config.yaml
+  // and replace the driver's advertised sheet when present.
+  const harnessSheets = config.tasks?.harnesses
+  if (harnessSheets) {
+    denConfig.harnesses = Object.fromEntries(
+      Object.entries(harnessSheets).map(([id, section]) => [
+        id,
+        { models: section.models, efforts: section.efforts },
+      ]),
+    )
+  }
 
   const den = createDenServer(denConfig, {
     extraRoutes: [...extraRoutes, ...gatewayChannel.routes, openaiRoute],

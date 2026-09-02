@@ -32,6 +32,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   prefixSystemPrompt,
   type ApprovalDecision,
+  type HarnessId,
   type HarnessSessionSummary,
   type SessionMessage,
 } from '@rivetos/types'
@@ -90,11 +91,13 @@ import {
   harnessGate,
   isTurnInFlight,
   nativeIdOf,
+  rosterCommandFor,
   shortNativeId,
   sortByRecency,
   type ChatItem,
   type HarnessGate,
 } from '../lib/harness-chat.js'
+import { rowPillText, spawnModelEffort } from '../lib/harness-options.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
@@ -344,7 +347,9 @@ export function ChatPage(): JSX.Element {
     const pinIds = new Set(pins.map((p) => p.sessionId))
     const withoutAgentDrafts = base.filter((it) => !(it.kind === 'draft' && pinIds.has(it.key)))
     const house = queryClient
-      .getQueriesData<{ id: string; name: string; color: string; model: string }[]>({
+      .getQueriesData<
+        { id: string; name: string; color: string; model: string; harnessId?: HarnessId }[]
+      >({
         queryKey: ['agents-all-nodes'],
       })
       .flatMap(([, data]) => data ?? [])
@@ -357,9 +362,12 @@ export function ChatPage(): JSX.Element {
       if (!preset) return it
       return {
         ...it,
+        model: it.model || preset.model || undefined,
+        harnessId: it.harnessId ?? preset.harnessId,
         accent: accentFor({
           presetColor: preset.color,
-          command: preset.model || it.command,
+          harnessId: preset.harnessId,
+          command: rosterCommandFor(preset.harnessId) ?? it.command,
         }),
       }
     })
@@ -375,8 +383,14 @@ export function ChatPage(): JSX.Element {
         updatedAt: pin.updatedAt ?? 0,
         pin: true,
         pinNodeBaseUrl: pin.nodeBaseUrl,
+        model: preset?.model || undefined,
+        harnessId: preset?.harnessId,
         accent: preset
-          ? accentFor({ presetColor: preset.color, command: preset.model })
+          ? accentFor({
+              presetColor: preset.color,
+              harnessId: preset.harnessId,
+              command: rosterCommandFor(preset.harnessId),
+            })
           : undefined,
       })
     }
@@ -644,14 +658,21 @@ function DrawerItem(props: {
         {props.item.status === 'idle' && (
           <span className="size-1.5 shrink-0 rounded-full bg-em/40" title="session alive" />
         )}
-        {props.item.harnessId && (
-          <span
-            title={`${props.item.harnessId} ${shortNativeId(props.item.key)}`}
-            className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
-          >
-            {props.item.harnessId}
-          </span>
-        )}
+        {(() => {
+          const pill = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
+          const native = shortNativeId(props.item.key)
+          const tip = props.item.harnessId
+            ? `${props.item.harnessId} ${native}`
+            : `${pill} ${native}`
+          return pill ? (
+            <span
+              title={tip}
+              className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
+            >
+              {pill}
+            </span>
+          ) : null
+        })()}
       </button>
       <span className="hidden shrink-0 items-center group-hover:flex group-focus-within:flex">
         <button
@@ -1187,11 +1208,16 @@ function ActiveSession(props: {
     // A harness session (already in the store) resumes; a fresh conversation
     // pins its id (--session-id, via the join key) so its store file lines up.
     // Command: the harness's own for a resume, else the model dropdown.
-    const command = harnessCommand || settings?.agent || undefined
+    const command =
+      harnessCommand ||
+      (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
+      settings?.agent ||
+      undefined
     const body = {
       session: props.sessionId,
       ...(command ? { command } : {}),
       ...(harnessCommand ? { resume: props.sessionId } : {}),
+      ...spawnModelEffort(settings),
     }
     // An API-only agent has no roster command → fall back to the node default
     // rather than 404 (keeps the session id via --session-id if a UUID).

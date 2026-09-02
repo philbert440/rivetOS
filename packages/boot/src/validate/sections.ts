@@ -934,6 +934,32 @@ function validateTasksHarnesses(
         message: `"${path}.effort" must be 'low', 'medium' or 'high'`,
       })
     }
+    if (section.models !== undefined && !Array.isArray(section.models)) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.models`,
+        message: `"${path}.models" must be an array`,
+      })
+    } else if (Array.isArray(section.models) && section.models.length === 0) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.models`,
+        message: `"${path}.models" is empty and will be ignored (sheet list is kept)`,
+      })
+    }
+    if (section.efforts !== undefined && !Array.isArray(section.efforts)) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.efforts`,
+        message: `"${path}.efforts" must be an array`,
+      })
+    } else if (Array.isArray(section.efforts) && section.efforts.length === 0) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.efforts`,
+        message: `"${path}.efforts" is empty and will be ignored (sheet list is kept)`,
+      })
+    }
   }
 }
 
