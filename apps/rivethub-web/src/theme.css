@@ -442,7 +442,6 @@ html[data-theme='light'] {
   color: var(--color-em);
 }
 
-
 /* Visual bell for the embedded terminal (Settings → Terminal → Bell).
    xterm-attach toggles the class on the terminal host container. An outline
    (not an inset box-shadow): outlines paint ABOVE the element's content, so
@@ -459,6 +458,10 @@ html[data-theme='light'] {
   outline: 2px solid transparent;
   outline-offset: -2px;
   animation: term-bell-flash 300ms ease-out;
+}
+[data-drop-active] {
+  outline: 2px dashed var(--em);
+  outline-offset: -2px;
 }
 /* No motion: hold a static ring instead — animationend may not fire, so the
    class is removed by xterm-attach's timeout fallback. */
