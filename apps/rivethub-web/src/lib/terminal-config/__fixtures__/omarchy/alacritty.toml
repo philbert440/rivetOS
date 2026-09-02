@@ -1,0 +1,33 @@
+# Omarchy theme — alacritty.toml
+
+[colors.primary]
+background = "#111c18"
+foreground = "#c4d0c8"
+
+[colors.cursor]
+cursor = "#d3e0d8"
+text = "#111c18"
+
+[colors.selection]
+background = "#2a3f36"
+text = "#c4d0c8"
+
+[colors.normal]
+black = "#0e1714"
+red = "#c45c5c"
+green = "#6a9f7a"
+yellow = "#c9a227"
+blue = "#4a7a9b"
+magenta = "#8a6a9b"
+cyan = "#4d9a8a"
+white = "#c4d0c8"
+
+[colors.bright]
+black = "#3d4f48"
+red = "#e06c6c"
+green = "#8ec49a"
+yellow = "#e0c05a"
+blue = "#6a9ab8"
+magenta = "#b08ac0"
+cyan = "#6ec4b0"
+white = "#e8f0ec"

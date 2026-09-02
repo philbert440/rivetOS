@@ -24,9 +24,11 @@ import {
 import { rivetShell } from '../lib/shell-bridge.js'
 import {
   canApply,
+  combineImports,
   detectAndParse,
   EMULATOR_LABELS,
   importPatch,
+  omarchyFontPartner,
   parsePastedPalette,
   sanitizeConfigFiles,
   type TerminalConfigFile,
@@ -287,10 +289,28 @@ function TerminalImportRow(props: {
   }
 
   const previewConfig = (file: TerminalConfigFile): void => {
-    preview(
-      `${EMULATOR_LABELS[file.kind]} — ${file.path}`,
-      detectAndParse(file.kind, { text: file.text, includes: file.includes, path: file.path }),
-    )
+    const parsed = detectAndParse(file.kind, {
+      text: file.text,
+      includes: file.includes,
+      path: file.path,
+    })
+    if (file.kind === 'omarchy') {
+      const emulator = omarchyFontPartner(configs ?? [])
+      const imp = emulator
+        ? combineImports(
+            detectAndParse(emulator.kind, {
+              text: emulator.text,
+              includes: emulator.includes,
+              path: emulator.path,
+            }),
+            parsed,
+            emulator.kind,
+          )
+        : parsed
+      preview(`Omarchy — ${file.themeName ?? 'theme'}`, imp)
+      return
+    }
+    preview(`${EMULATOR_LABELS[file.kind]} — ${file.path}`, parsed)
   }
 
   const applyPending = (): void => {
@@ -320,24 +340,30 @@ function TerminalImportRow(props: {
           <p className="text-xs text-ink-dim">Looking for terminal configs…</p>
         ) : configs.length === 0 ? (
           <p className="text-xs text-ink-dim">
-            No Ghostty, Alacritty, kitty, or Windows Terminal config found.
+            No Omarchy, Ghostty, Alacritty, kitty, or Windows Terminal config found.
           </p>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {configs.map((file) => {
-              const base = file.path.replace(/^.*[/\\]/, '') || file.path
-              return (
-                <button
-                  key={file.path}
-                  type="button"
-                  title={file.path}
-                  onClick={() => previewConfig(file)}
-                  className="rounded border border-line bg-panel-2 px-3 py-1 text-xs hover:border-em"
-                >
-                  {EMULATOR_LABELS[file.kind]} ({base})
-                </button>
-              )
-            })}
+            {[...configs]
+              .sort((a, b) => Number(b.kind === 'omarchy') - Number(a.kind === 'omarchy'))
+              .map((file) => {
+                const base = file.path.replace(/^.*[/\\]/, '') || file.path
+                const label =
+                  file.kind === 'omarchy'
+                    ? `Omarchy — ${file.themeName ?? 'theme'}`
+                    : `${EMULATOR_LABELS[file.kind]} (${base})`
+                return (
+                  <button
+                    key={file.path}
+                    type="button"
+                    title={file.path}
+                    onClick={() => previewConfig(file)}
+                    className="rounded border border-line bg-panel-2 px-3 py-1 text-xs hover:border-em"
+                  >
+                    {label}
+                  </button>
+                )
+              })}
           </div>
         )
       ) : (
