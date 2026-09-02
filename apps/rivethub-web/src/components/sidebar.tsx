@@ -1,18 +1,8 @@
 import type { JSX } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import {
-  Bell,
-  Folder,
-  Library,
-  ListChecks,
-  MessageSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Settings,
-  Workflow,
-} from 'lucide-react'
+import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
-import { railBadgeText, useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useChat } from '../stores/chat.js'
 import { cn } from '../lib/utils.js'
 import { railHeaderClass, railToggle } from './sidebar-chrome.js'
@@ -80,10 +70,8 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   const onChat = pathname === '/'
   const paneHidden = useSidebarPrefs((s) => s.conversationsCollapsed)
   const setConversationsCollapsed = useSidebarPrefs((s) => s.setConversationsCollapsed)
-  const unarchivedCount = useSidebarPrefs((s) => s.unarchivedCount)
   const chatMounted = useSidebarPrefs((s) => s.chatMounted)
   const wsStatus = useChat((s) => s.wsStatus)
-  const badge = paneHidden && unarchivedCount !== null ? railBadgeText(unarchivedCount) : ''
   const wsOpen = wsStatus === 'open'
   const showWs = paneHidden && chatMounted
 
@@ -92,13 +80,11 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
       <button
         type="button"
         aria-label={
-          paneHidden
-            ? `Conversations${badge ? `, ${badge}` : ''}${showWs && !wsOpen ? ', disconnected' : ''}`
-            : 'Conversations'
+          paneHidden ? `Conversations${showWs && !wsOpen ? ', disconnected' : ''}` : 'Conversations'
         }
         aria-expanded={onChat ? !paneHidden : undefined}
         aria-controls={onChat ? 'conversations-pane' : undefined}
-        className={cn(navClass(onChat, props.collapsed), 'relative w-full')}
+        className={navClass(onChat, props.collapsed)}
         onClick={() => {
           if (!onChat) {
             useSidebarPrefs.getState().openConversation()
@@ -121,25 +107,9 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
           )}
         </span>
         {!props.collapsed && <span className="min-w-0 truncate">Conversations</span>}
-        {badge !== '' && (
-          <span
-            className={cn(
-              'font-mono text-[10px] text-em',
-              props.collapsed
-                ? 'absolute right-0.5 top-0.5 rounded-full bg-panel-2 px-1 leading-4'
-                : 'ml-auto',
-            )}
-          >
-            {badge}
-          </span>
-        )}
         {showWs && !props.collapsed && (
           <span
-            className={cn(
-              'size-1.5 shrink-0 rounded-full',
-              badge === '' ? 'ml-auto' : 'ml-1.5',
-              wsOpen ? 'bg-em' : 'bg-red',
-            )}
+            className={cn('ml-auto size-1.5 shrink-0 rounded-full', wsOpen ? 'bg-em' : 'bg-red')}
             aria-hidden
           />
         )}
@@ -165,41 +135,21 @@ export function Sidebar(): JSX.Element {
       )}
     >
       <div className={railHeaderClass(railCollapsed)}>
-        {toggle.kind === 'expand' ? (
-          <Tooltip label={toggle.label}>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={toggle.label}
-              aria-expanded={toggle.ariaExpanded}
-              aria-controls="hub-rail-nav"
-              onClick={() => setRailCollapsed(false)}
-              className="relative size-7 shrink-0 p-0"
-            >
-              <DenBot className="size-7 shrink-0" decorative />
-              <PanelLeftOpen className="absolute -bottom-0.5 -right-0.5 size-3" aria-hidden />
-            </Button>
-          </Tooltip>
-        ) : (
-          <DenBot className="size-7 shrink-0" />
-        )}
-        {toggle.kind === 'collapse' && (
-          <>
-            <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
-            <Tooltip label={toggle.label}>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 shrink-0"
-                aria-label={toggle.label}
-                aria-expanded={toggle.ariaExpanded}
-                aria-controls="hub-rail-nav"
-                onClick={() => setRailCollapsed(true)}
-              >
-                <PanelLeftClose className="size-3.5" aria-hidden />
-              </Button>
-            </Tooltip>
-          </>
+        <Tooltip label={toggle.label}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={toggle.label}
+            aria-expanded={toggle.ariaExpanded}
+            aria-controls="hub-rail-nav"
+            onClick={() => setRailCollapsed(!railCollapsed)}
+            className="size-7 shrink-0 p-0"
+          >
+            <DenBot className="size-7 shrink-0" decorative />
+          </Button>
+        </Tooltip>
+        {!railCollapsed && (
+          <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
         )}
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.
             Click = jump to Tasks (the durable record) and mark read. */}

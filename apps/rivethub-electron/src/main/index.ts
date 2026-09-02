@@ -139,7 +139,6 @@ function identityDir(): string {
 const pipes = new PipeState(identityDir)
 const settingsStore = new SettingsStore(app)
 
-
 /** Parsed http(s) check — a prefix regex would pass junk after the scheme. */
 function isWebUrl(url: string): boolean {
   try {
@@ -342,7 +341,7 @@ function createWindow(isMain: boolean): BrowserWindow {
   // The menu exists for its accelerators; the BAR never shows off macOS.
   if (process.platform !== 'darwin') win.setMenuBarVisibility(false)
   if (isMain && state.maximized) win.maximize()
-  void win.loadURL(`${APP_ORIGIN}/index.html`)
+  void win.loadURL(`${APP_ORIGIN}/`)
   return win
 }
 
@@ -491,9 +490,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => {
     if (quitting) return
-    const anyVisible = BrowserWindow.getAllWindows().some(
-      (w) => !w.isDestroyed() && w.isVisible(),
-    )
+    const anyVisible = BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isVisible())
     if (anyVisible) spawnWindow()
     else showMain()
   })

@@ -18,15 +18,13 @@ vi.hoisted(() => {
 
 afterAll(() => vi.unstubAllGlobals())
 
-const { railBadgeText, shouldOpenPaneOnUrlChange, useSidebarPrefs } =
-  await import('./sidebar-prefs.js')
+const { shouldOpenPaneOnUrlChange, useSidebarPrefs } = await import('./sidebar-prefs.js')
 
 describe('sidebar prefs store', () => {
   beforeEach(() => {
     useSidebarPrefs.setState({
       conversationsCollapsed: false,
       railCollapsed: false,
-      unarchivedCount: null,
       chatMounted: false,
     })
     localStorage.removeItem('rivethub.sidebar')
@@ -69,13 +67,11 @@ describe('sidebar prefs store', () => {
       state: {
         conversationsCollapsed: boolean
         railCollapsed: boolean
-        unarchivedCount?: number
       }
       version: number
     }
     expect(parsed.state.conversationsCollapsed).toBe(true)
     expect(parsed.state.railCollapsed).toBe(true)
-    expect(parsed.state.unarchivedCount).toBeUndefined()
     expect(parsed.version).toBe(2)
 
     // setState would persist `false` over the blob; restore it to simulate a reload.
@@ -114,22 +110,6 @@ describe('sidebar prefs store', () => {
     await useSidebarPrefs.persist.rehydrate()
     expect(useSidebarPrefs.getState().conversationsCollapsed).toBe(true)
     expect(useSidebarPrefs.getState().railCollapsed).toBe(false)
-  })
-})
-
-describe('railBadgeText', () => {
-  it('hides the badge at zero / non-finite', () => {
-    expect(railBadgeText(0)).toBe('')
-    expect(railBadgeText(-1)).toBe('')
-    expect(railBadgeText(Number.NaN)).toBe('')
-  })
-
-  it('renders the unarchived count and caps at 99+', () => {
-    expect(railBadgeText(1)).toBe('1')
-    expect(railBadgeText(12)).toBe('12')
-    expect(railBadgeText(99)).toBe('99')
-    expect(railBadgeText(100)).toBe('99+')
-    expect(railBadgeText(1500)).toBe('99+')
   })
 })
 
