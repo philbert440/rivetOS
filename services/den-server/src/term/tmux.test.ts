@@ -112,7 +112,7 @@ describe('tmux argv builders', () => {
     ])
   })
 
-  it('createRealTmuxCtl setOption uses -t =<name> and drops the list memo', () => {
+  it('createRealTmuxCtl setOption uses -t =<name>: (exact-match session form) and drops the list memo', () => {
     const calls: string[][] = []
     const exec: TmuxExec = (_bin, args) => {
       calls.push(args)
@@ -130,7 +130,7 @@ describe('tmux argv builders', () => {
       'c',
       'set-option',
       '-t',
-      '=chat-f',
+      '=chat-f:',
       '@rivet_command',
       'claude',
     ])

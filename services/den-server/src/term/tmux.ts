@@ -435,7 +435,7 @@ export function createRealTmuxCtl(
       memo = undefined
     },
     setOption(name, option, value) {
-      run(['set-option', '-t', `=${name}`, option, value])
+      run(['set-option', '-t', `=${name}:`, option, value]) // set-option takes a target-pane: `=name:` is the exact-match SESSION form (`=name` alone → "no such session")
       memo = undefined
     },
   }
