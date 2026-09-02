@@ -15,6 +15,7 @@
  *      (same connection; skipped when the backend check already failed)
  *      + rivet_device SELECT on ros_message_chunks
  *      + Memory queue — graphile-worker dead jobs (WARN when any task has some)
+ *        and extract-wiki starvation (due jobs older than 6h)
  *   9. Shared storage — RIVETOS_SHARED_DIR (default /rivet-shared) mount writable
  *  10. Provider connectivity — API endpoint reachability
  *  11. DNS — can resolve provider hostnames
@@ -699,6 +700,12 @@ export interface MemoryQueueDeadRow {
   keyed_dead: string
   keyless_dead: string
   last_error: string | null
+  /** Count of unlocked, not-dead jobs with run_at <= now(). Optional on older stubs. */
+  due?: string | null
+  /** MIN(run_at) of those due jobs. Optional on older stubs. */
+  oldest_due_at?: string | Date | null
+  /** MAX(locked_at) for this task. Optional on older stubs. */
+  last_locked_at?: string | Date | null
 }
 
 /**
@@ -712,14 +719,32 @@ export interface MemoryQueueDeadRow {
  * jobs dead with nothing surfacing them — those piles are keyless.
  */
 export const MEMORY_QUEUE_DEAD_SQL = `SELECT t.identifier AS task,
-       COUNT(*) FILTER (WHERE j.key IS NOT NULL)::text AS keyed_dead,
-       COUNT(*) FILTER (WHERE j.key IS NULL)::text AS keyless_dead,
-       LEFT((array_agg(j.last_error ORDER BY j.updated_at DESC NULLS LAST))[1], 120) AS last_error
+       COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts AND j.key IS NOT NULL)::text AS keyed_dead,
+       COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts AND j.key IS NULL)::text AS keyless_dead,
+       COUNT(*) FILTER (WHERE j.attempts < j.max_attempts
+                          AND j.run_at <= now()
+                          AND j.locked_at IS NULL)::text AS due,
+       MIN(j.run_at) FILTER (WHERE j.attempts < j.max_attempts
+                               AND j.run_at <= now()
+                               AND j.locked_at IS NULL) AS oldest_due_at,
+       MAX(j.locked_at) AS last_locked_at,
+       LEFT((array_agg(j.last_error ORDER BY j.updated_at DESC NULLS LAST)
+         FILTER (WHERE j.attempts >= j.max_attempts))[1], 120) AS last_error
   FROM graphile_worker._private_jobs j
   JOIN graphile_worker._private_tasks t ON t.id = j.task_id
- WHERE j.attempts >= j.max_attempts
+ WHERE j.attempts >= j.max_attempts OR (j.run_at <= now() AND j.locked_at IS NULL)
+    OR j.locked_at IS NOT NULL
  GROUP BY t.identifier
- ORDER BY COUNT(*) DESC`
+ ORDER BY COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts) DESC`
+
+const WIKI_STARVE_MS = 6 * 60 * 60 * 1000
+const WIKI_DRAIN_MS = 15 * 60 * 1000
+
+function oldestDueAgeMs(value: string | Date | null | undefined): number | null {
+  if (value == null || value === '') return null
+  const t = value instanceof Date ? value.getTime() : Date.parse(value)
+  return Number.isFinite(t) ? Date.now() - t : null
+}
 
 interface PgLikeClient {
   query(sql: string): Promise<{ rows: MemoryQueueDeadRow[] }>
@@ -727,7 +752,9 @@ interface PgLikeClient {
 }
 
 /**
- * WARN when any task has dead jobs. Pass `client` in tests; the default
+ * WARN when any task has dead jobs, and when extract-wiki due jobs are
+ * older than 6 hours with no extract-wiki lock in the last 15 minutes
+ * (starved — not merely draining). Pass `client` in tests; the default
  * connects via RIVETOS_PG_URL (skipped silently when unset — the
  * memory/postgres check already warns about that).
  */
@@ -790,6 +817,23 @@ export async function checkMemoryQueue(client?: PgLikeClient): Promise<CheckResu
           ),
         )
       }
+    }
+
+    const wiki = rows.find((r) => r.task === 'extract-wiki')
+    const due = Number(wiki?.due ?? 0)
+    const ageMs = oldestDueAgeMs(wiki?.oldest_due_at)
+    const lockAgeMs = oldestDueAgeMs(wiki?.last_locked_at)
+    const draining = lockAgeMs != null && lockAgeMs <= WIKI_DRAIN_MS
+    if (wiki && due > 0 && ageMs != null && ageMs > WIKI_STARVE_MS && !draining) {
+      results.push(
+        check(
+          'memory',
+          'queue-extract-wiki-starved',
+          'warn',
+          'extract-wiki starved — run a dedicated wiki worker (WORKER_ROLE=wiki)',
+          `${due.toLocaleString('en-US')} due, oldest ${Math.round(ageMs / 60_000).toLocaleString('en-US')} min`,
+        ),
+      )
     }
   } catch (err) {
     if ((err as { code?: string }).code === '42P01') {
@@ -1215,7 +1259,7 @@ Options:
   -h, --help          Show this help
 
 Checks: system, config, workspace, env vars, secrets, containers,
-        memory backend, embedding width, memory queue (dead jobs), shared
+        memory backend, embedding width, memory queue (dead jobs, wiki starve), shared
         storage, DNS, provider connectivity, peer reachability, service user,
         leaf cert expiry
 `)

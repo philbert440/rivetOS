@@ -71,4 +71,26 @@ describe('compaction-worker config', () => {
     expect(config.llmModel).toBe('gpt-4o-mini')
     expect(config.toolSynthModel).toBe('gpt-4o')
   })
+
+  it('leaves workerRoleEnv unset when WORKER_ROLE is unset (parsed in main)', async () => {
+    stubRequired()
+    vi.stubEnv('WORKER_ROLE', '')
+    delete process.env.WORKER_ROLE
+    const { config } = await import('./config.js')
+    expect(config.workerRoleEnv).toBeUndefined()
+  })
+
+  it('reads WORKER_ROLE=wiki as workerRoleEnv (parsed in main)', async () => {
+    stubRequired()
+    vi.stubEnv('WORKER_ROLE', 'wiki')
+    const { config } = await import('./config.js')
+    expect(config.workerRoleEnv).toBe('wiki')
+  })
+
+  it('does not throw at import when WORKER_ROLE is invalid (parse is deferred to main)', async () => {
+    stubRequired()
+    vi.stubEnv('WORKER_ROLE', 'embedder')
+    const { config } = await import('./config.js')
+    expect(config.workerRoleEnv).toBe('embedder')
+  })
 })
