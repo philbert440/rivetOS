@@ -2,12 +2,12 @@ import type { JSX } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Bell,
-  ChevronLeft,
-  ChevronRight,
   Folder,
   Library,
   ListChecks,
   MessageSquare,
+  PanelLeftClose,
+  PanelLeftOpen,
   Settings,
   Workflow,
 } from 'lucide-react'
@@ -15,6 +15,7 @@ import { useNotifications } from '../stores/notifications.js'
 import { railBadgeText, useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useChat } from '../stores/chat.js'
 import { cn } from '../lib/utils.js'
+import { railHeaderClass, railToggle } from './sidebar-chrome.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 import { AgentsSection } from './agents-section.js'
@@ -153,6 +154,7 @@ export function Sidebar(): JSX.Element {
   const navigate = useNavigate()
   const railCollapsed = useSidebarPrefs((s) => s.railCollapsed)
   const setRailCollapsed = useSidebarPrefs((s) => s.setRailCollapsed)
+  const toggle = railToggle(railCollapsed)
 
   return (
     <aside
@@ -162,15 +164,42 @@ export function Sidebar(): JSX.Element {
         railCollapsed ? 'w-12' : 'w-56',
       )}
     >
-      <div
-        className={cn(
-          'relative flex items-center gap-2 py-4',
-          railCollapsed ? 'justify-center px-1' : 'px-4',
+      <div className={railHeaderClass(railCollapsed)}>
+        {toggle.kind === 'expand' ? (
+          <Tooltip label={toggle.label}>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={toggle.label}
+              aria-expanded={toggle.ariaExpanded}
+              aria-controls="hub-rail-nav"
+              onClick={() => setRailCollapsed(false)}
+              className="relative size-7 shrink-0 p-0"
+            >
+              <DenBot className="size-7 shrink-0" decorative />
+              <PanelLeftOpen className="absolute -bottom-0.5 -right-0.5 size-3" aria-hidden />
+            </Button>
+          </Tooltip>
+        ) : (
+          <DenBot className="size-7 shrink-0" />
         )}
-      >
-        <DenBot className="size-7 shrink-0" />
-        {!railCollapsed && (
-          <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
+        {toggle.kind === 'collapse' && (
+          <>
+            <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
+            <Tooltip label={toggle.label}>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 shrink-0"
+                aria-label={toggle.label}
+                aria-expanded={toggle.ariaExpanded}
+                aria-controls="hub-rail-nav"
+                onClick={() => setRailCollapsed(true)}
+              >
+                <PanelLeftClose className="size-3.5" aria-hidden />
+              </Button>
+            </Tooltip>
+          </>
         )}
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.
             Click = jump to Tasks (the durable record) and mark read. */}
@@ -217,23 +246,6 @@ export function Sidebar(): JSX.Element {
           <NavLink {...SETTINGS} collapsed={railCollapsed} />
         </div>
         <NodeSwitcher compact={railCollapsed} />
-        <Tooltip label="Expand sidebar" disabled={!railCollapsed} block>
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-expanded={!railCollapsed}
-            aria-controls="hub-rail-nav"
-            aria-label={railCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-            onClick={() => setRailCollapsed(!railCollapsed)}
-            className={cn('w-full shrink-0', railCollapsed ? 'h-10' : 'h-9')}
-          >
-            {railCollapsed ? (
-              <ChevronRight className="size-4" aria-hidden />
-            ) : (
-              <ChevronLeft className="size-4" aria-hidden />
-            )}
-          </Button>
-        </Tooltip>
       </div>
     </aside>
   )
