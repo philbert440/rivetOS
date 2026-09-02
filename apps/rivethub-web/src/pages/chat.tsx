@@ -105,18 +105,10 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import {
-  Archive,
-  ArchiveRestore,
-  ChevronDown,
-  ChevronRight,
-  Pencil,
-  Square,
-  Trash2,
-} from 'lucide-react'
+import { Archive, ArchiveRestore, Pencil, Square, Trash2 } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
-import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { shouldOpenPaneOnUrlChange, useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { discardDraft } from '../lib/discard-session.js'
 import {
   getSessionMode,
@@ -240,6 +232,11 @@ export function ChatPage(): JSX.Element {
     connect(baseUrl)
     return () => useChat.getState().disconnect()
   }, [baseUrl, transportEpoch, connect])
+
+  useEffect(() => {
+    useSidebarPrefs.getState().setChatMounted(true)
+    return () => useSidebarPrefs.getState().setChatMounted(false)
+  }, [])
 
   const connected = useGatewayReady()
   // The drawer lists the node's harness sessions straight from their on-disk
@@ -409,6 +406,9 @@ export function ChatPage(): JSX.Element {
   const setActive = useChat((s) => s.setActive)
   const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
+  const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
+  const setUnarchivedCount = useSidebarPrefs((s) => s.setUnarchivedCount)
+  const archivedKeys = useArchived((s) => s.keys)
   // Bidirectional ?session= sync. One effect, one direction at a time,
   // arbitrated by lastUrlRef so the two never fight:
   //   - URL changed (first load, deep link, back/forward) → URL wins. A
@@ -422,13 +422,25 @@ export function ChatPage(): JSX.Element {
   //     would remount ActiveSession for a conversation the drawer no longer
   //     has. The URL picks the thread up once the plane adopts it and the
   //     rekey effect moves `active` onto the canonical key.
+  // The conversations pane is NOT opened on the first run: a reload of
+  // `/?session=X` must keep a deliberately hidden pane. Post-mount URL
+  // changes still open it (shouldOpenPaneOnUrlChange).
   const lastUrlRef = useRef<string | undefined>(undefined)
+  const urlSyncMountedRef = useRef(false)
   useEffect(() => {
     if (sessionFromUrl !== lastUrlRef.current) {
+      const openPane = shouldOpenPaneOnUrlChange({
+        mounted: urlSyncMountedRef.current,
+        sessionFromUrl,
+        prev: lastUrlRef.current,
+      })
       lastUrlRef.current = sessionFromUrl
       setActive(sessionFromUrl)
+      if (openPane) useSidebarPrefs.getState().openConversation()
+      urlSyncMountedRef.current = true
       return
     }
+    urlSyncMountedRef.current = true
     const urlTarget = active !== undefined && !drafts.includes(active) ? active : undefined
     if (urlTarget !== sessionFromUrl) {
       lastUrlRef.current = urlTarget
@@ -492,22 +504,43 @@ export function ChatPage(): JSX.Element {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
-  if (!connected) return <NotConnected />
+  useEffect(() => {
+    const n = items.reduce((acc, it) => {
+      const archived = archivedKeys.includes(storageKey(it.pinNodeBaseUrl ?? baseUrl, it.key))
+      return acc + (archived ? 0 : 1)
+    }, 0)
+    setUnarchivedCount(n)
+  }, [items, archivedKeys, baseUrl, setUnarchivedCount])
+
+  if (!connected) {
+    return (
+      <>
+        <div id="conversations-pane" hidden />
+        <NotConnected />
+      </>
+    )
+  }
 
   return (
     <div className="flex h-full">
-      <SessionDrawer
-        items={items}
-        active={active}
-        width={drawerWidth}
-        error={harnessQuery.isError ? harnessQuery.error.message : undefined}
-      />
-      <SplitHandle
-        width={drawerWidth}
-        onResize={resizeDrawer}
-        onCommit={commitDrawerWidth}
-        onReset={() => commitDrawerWidth(DRAWER_WIDTH_DEFAULT)}
-      />
+      {conversationsCollapsed ? (
+        <div id="conversations-pane" hidden />
+      ) : (
+        <SessionDrawer
+          items={items}
+          active={active}
+          width={drawerWidth}
+          error={harnessQuery.isError ? harnessQuery.error.message : undefined}
+        />
+      )}
+      {!conversationsCollapsed && (
+        <SplitHandle
+          width={drawerWidth}
+          onResize={resizeDrawer}
+          onCommit={commitDrawerWidth}
+          onReset={() => commitDrawerWidth(DRAWER_WIDTH_DEFAULT)}
+        />
+      )}
       {active ? (
         // Keyed by session id: switching conversations must fully remount so
         // the view (chat/terminal/den), the attached PTY, and the transcript
@@ -704,8 +737,6 @@ function SessionDrawer(props: {
   const archivedKeys = useArchived((s) => s.keys)
   const archive = useArchived((s) => s.archive)
   const unarchive = useArchived((s) => s.unarchive)
-  const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
-  const setConversationsCollapsed = useSidebarPrefs((s) => s.setConversationsCollapsed)
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
 
@@ -731,12 +762,9 @@ function SessionDrawer(props: {
     )
   })
 
-  const openConversation = (key: string): void => {
+  const openRow = (key: string): void => {
     setActive(key)
-    if (conversationsCollapsed) setConversationsCollapsed(false)
   }
-
-  const activeListed = props.items.find((it) => it.key === props.active)
 
   const renderRow = (it: ChatItem): JSX.Element => (
     <DrawerItem
@@ -744,7 +772,7 @@ function SessionDrawer(props: {
       item={it}
       active={it.key === props.active}
       archived={isArchived(it)}
-      onSelect={() => openConversation(it.key)}
+      onSelect={() => openRow(it.key)}
       onArchive={() => archive(storageKey(itemBase(it), it.key))}
       onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
       onDiscard={it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined}
@@ -753,30 +781,18 @@ function SessionDrawer(props: {
 
   return (
     <div
+      id="conversations-pane"
       style={{ width: props.width }}
       className="flex shrink-0 flex-col border-r border-line bg-panel/40"
     >
       <div className="flex items-center justify-between px-3 py-3">
-        <button
-          type="button"
-          aria-expanded={!conversationsCollapsed}
-          aria-controls="conversations-list"
-          onClick={() => setConversationsCollapsed(!conversationsCollapsed)}
-          className="flex min-w-0 flex-1 items-center gap-1 font-mono text-xs text-ink-dim hover:text-ink"
-        >
-          {conversationsCollapsed ? (
-            <ChevronRight className="size-3 shrink-0" aria-hidden />
-          ) : (
-            <ChevronDown className="size-3 shrink-0" aria-hidden />
-          )}
-          <span className="min-w-0 truncate">
-            conversations{' '}
-            <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
-              {wsStatus === 'open' ? '●' : '○'}
-            </span>{' '}
-            ({props.items.length - archivedCount})
-          </span>
-        </button>
+        <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
+          conversations{' '}
+          <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
+            {wsStatus === 'open' ? '●' : '○'}
+          </span>{' '}
+          ({props.items.length - archivedCount})
+        </span>
         <button
           onClick={() => {
             const id = newSessionId()
@@ -788,7 +804,7 @@ function SessionDrawer(props: {
           + new
         </button>
       </div>
-      {!conversationsCollapsed && (props.items.length >= DRAWER_FILTER_MIN || q) && (
+      {(props.items.length >= DRAWER_FILTER_MIN || q) && (
         <div className="px-3 pb-2">
           <input
             value={filter}
@@ -800,34 +816,26 @@ function SessionDrawer(props: {
         </div>
       )}
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
-      <div id="conversations-list" className="flex min-h-0 flex-1 flex-col">
-        {conversationsCollapsed ? (
-          activeListed && <div className="px-2">{renderRow(activeListed)}</div>
-        ) : (
-          <>
-            <div className="flex-1 overflow-y-auto px-2">
-              {items.map((it) => renderRow(it))}
-              {items.length === 0 && q && (
-                <div className="px-3 py-2 text-xs text-ink-dim">
-                  no matches for “{filter.trim()}”
-                </div>
-              )}
-              {items.length === 0 && !q && archivedCount > 0 && (
-                <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
-              )}
-              {props.items.length === 0 && !props.error && (
-                <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
-              )}
-            </div>
-            {archivedCount > 0 && (
-              <button
-                onClick={() => setShowArchived((v) => !v)}
-                className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-ink-dim hover:text-ink"
-              >
-                {showArchived ? '▾' : '▸'} archived ({archivedCount})
-              </button>
-            )}
-          </>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex-1 overflow-y-auto px-2">
+          {items.map((it) => renderRow(it))}
+          {items.length === 0 && q && (
+            <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
+          )}
+          {items.length === 0 && !q && archivedCount > 0 && (
+            <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
+          )}
+          {props.items.length === 0 && !props.error && (
+            <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
+          )}
+        </div>
+        {archivedCount > 0 && (
+          <button
+            onClick={() => setShowArchived((v) => !v)}
+            className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-ink-dim hover:text-ink"
+          >
+            {showArchived ? '▾' : '▸'} archived ({archivedCount})
+          </button>
         )}
       </div>
     </div>

@@ -46,6 +46,8 @@ import {
 } from '../lib/session-node.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
+import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { Tooltip } from './ui/tooltip.js'
 
 type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
 
@@ -339,6 +341,7 @@ function AgentEditor({
 interface AgentRowProps {
   agent: RosterAgent
   nodeKnown: boolean
+  compact?: boolean
   onOpen: () => void
   onStartOver: () => void
   onEdit: () => void
@@ -348,6 +351,7 @@ interface AgentRowProps {
 function AgentRow({
   agent,
   nodeKnown,
+  compact,
   onOpen,
   onStartOver,
   onEdit,
@@ -432,6 +436,35 @@ function AgentRow({
         ? `${activity.level} here`
         : `${activity.level} on ${activityNodeName ?? urlLabel(activity.nodeBaseUrl)}`
 
+  const swatch = (
+    <span
+      className={compact ? 'size-3 shrink-0 rounded-full' : 'size-2 shrink-0 rounded-full'}
+      style={{
+        background: accentFor({
+          presetColor: agent.color,
+          command: agent.model,
+        }),
+      }}
+      aria-hidden
+    />
+  )
+
+  if (compact) {
+    return (
+      <Tooltip label={nodeKnown ? agent.name : `${agent.name} (node unknown)`} block>
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!nodeKnown}
+          aria-label={agent.name}
+          className="flex w-full items-center justify-center rounded py-1.5 hover:bg-panel-2 disabled:opacity-50"
+        >
+          {swatch}
+        </button>
+      </Tooltip>
+    )
+  }
+
   return (
     <div className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2">
       <button
@@ -440,16 +473,7 @@ function AgentRow({
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
         title={nodeKnown ? agent.name : 'node unknown'}
       >
-        <span
-          className="size-2 shrink-0 rounded-full"
-          style={{
-            background: accentFor({
-              presetColor: agent.color,
-              command: agent.model,
-            }),
-          }}
-          aria-hidden
-        />
+        {swatch}
         <span className="min-w-0 truncate text-xs text-ink">{agent.name}</span>
         {activityLabel && (
           <span
@@ -494,7 +518,8 @@ function AgentRow({
 const mutationError = (err: unknown): string =>
   err instanceof Error ? err.message : 'request failed'
 
-export function AgentsSection(): JSX.Element {
+export function AgentsSection(props: { compact?: boolean }): JSX.Element {
+  const compact = props.compact ?? false
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { baseUrl, roster, transportEpoch } = useConnection()
@@ -679,12 +704,14 @@ export function AgentsSection(): JSX.Element {
     setSessionNodeBinding(sessionId, nodeUrl, currentBase)
     addDraft(sessionId)
     setActive(sessionId)
-    void navigate({ to: '/', search: { session: sessionId } })
+    useSidebarPrefs.getState().openConversation()
+    void navigate({ to: '/', replace: true })
     void queryClient.invalidateQueries({ queryKey: ['agent-session-status', agent.id] })
   }
 
   const openKept = (sessionId: string): void => {
     setActive(sessionId)
+    useSidebarPrefs.getState().openConversation()
     void navigate({ to: '/', search: { session: sessionId } })
   }
 
@@ -776,23 +803,32 @@ export function AgentsSection(): JSX.Element {
   }
 
   return (
-    <div className="border-t border-line px-2 py-2">
+    <div className={compact ? 'border-t border-line px-1 py-2' : 'border-t border-line px-2 py-2'}>
       {dialog.element}
       <div className="flex w-full items-center justify-between">
-        <button
-          type="button"
-          onClick={() => setCollapsed((c) => !c)}
-          className="flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink"
-        >
-          <Bot className="mr-2 size-4 shrink-0" aria-hidden />
-          <span>Agents</span>
-          {collapsed ? (
-            <ChevronRight className="ml-1 size-3 text-ink-dim" />
-          ) : (
-            <ChevronDown className="ml-1 size-3 text-ink-dim" />
-          )}
-        </button>
-        {!collapsed && (
+        <Tooltip label="Agents" disabled={!compact} block>
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-label="Agents"
+            aria-expanded={!collapsed}
+            className={
+              compact
+                ? 'flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
+                : 'flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink'
+            }
+          >
+            <Bot className={compact ? 'size-4 shrink-0' : 'mr-2 size-4 shrink-0'} aria-hidden />
+            {!compact && <span>Agents</span>}
+            {!compact &&
+              (collapsed ? (
+                <ChevronRight className="ml-1 size-3 text-ink-dim" />
+              ) : (
+                <ChevronDown className="ml-1 size-3 text-ink-dim" />
+              ))}
+          </button>
+        </Tooltip>
+        {!collapsed && !compact && (
           <button
             type="button"
             onClick={() => {
@@ -810,14 +846,15 @@ export function AgentsSection(): JSX.Element {
 
       {!collapsed && (
         <div className="mt-1 flex flex-col gap-1">
-          {isLoading && <div className="px-2 text-xs text-ink-dim">loading…</div>}
-          {!isLoading && agents.length === 0 && !creating && (
+          {isLoading && !compact && <div className="px-2 text-xs text-ink-dim">loading…</div>}
+          {!isLoading && agents.length === 0 && !creating && !compact && (
             <div className="px-2 text-xs text-ink-dim">no agents yet</div>
           )}
           {agents.map((agent) => (
             <AgentRow
               key={agent.id}
               agent={agent}
+              compact={compact}
               nodeKnown={uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)}
               onOpen={() => handleOpen(agent)}
               onStartOver={() => handleStartOver(agent)}
