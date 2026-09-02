@@ -55,6 +55,7 @@ const dirs: string[] = []
 const managers: TermManager[] = []
 afterEach(() => {
   vi.useRealTimers()
+  vi.unstubAllEnvs()
   managers.splice(0).forEach((m) => m.close())
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
 })
@@ -929,8 +930,9 @@ describe('term manager (tmux mux)', () => {
     const argv = spawns[0].argv
     const sep = argv.indexOf('--')
     expect(sep).toBeGreaterThan(0)
-    expect(argv.slice(0, 8)).toEqual([
+    expect(argv.slice(0, 9)).toEqual([
       'tmux',
+      '-u',
       '-L',
       tmuxSocketName(stateDir, 5199),
       '-f',
@@ -984,6 +986,32 @@ describe('term manager (tmux mux)', () => {
     expect(pty.persisted).toBeUndefined()
     // get() resolves the den-session alias the same way kill() does
     expect(manager.get(uuid)?.id).toBe(pty.id)
+  })
+
+  it('LANG=C is rewritten to C.UTF-8 and rides -e on create', () => {
+    vi.stubEnv('LANG', 'C')
+    vi.stubEnv('LC_ALL', '')
+    vi.stubEnv('LC_CTYPE', '')
+    const ctl = new FakeTmuxCtl()
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    manager.spawn('claude', 80, 24, '', uuid)
+    const argv = spawns[0].argv
+    const langAt = argv.indexOf('LANG=C.UTF-8')
+    expect(langAt).toBeGreaterThan(0)
+    expect(argv[langAt - 1]).toBe('-e')
+    expect(parseTmuxArgv(argv).envPairs.LANG).toBe('C.UTF-8')
+  })
+
+  it('LANG=en_US.UTF-8 is left alone but still rides -e (stale LANG=C server global env must not win)', () => {
+    vi.stubEnv('LANG', 'en_US.UTF-8')
+    vi.stubEnv('LC_ALL', '')
+    vi.stubEnv('LC_CTYPE', '')
+    const ctl = new FakeTmuxCtl()
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    manager.spawn('claude', 80, 24, '', uuid)
+    const argv = spawns[0].argv
+    expect(parseTmuxArgv(argv).envPairs.LANG).toBe('en_US.UTF-8')
+    expect(argv.filter((a) => a.startsWith('LANG=')).length).toBe(1)
   })
 
   it('-e pairs include roster env, entry env; credential override keys go in the env file', () => {
@@ -1146,6 +1174,7 @@ describe('term manager (tmux mux)', () => {
     const sock = tmuxSocketName(attached.stateDir, 5199)
     expect(attached.spawns[0].argv).toEqual([
       'tmux',
+      '-u',
       '-L',
       sock,
       '-f',
@@ -1185,6 +1214,7 @@ describe('term manager (tmux mux)', () => {
     expect(argv[0]).toBe('tmux')
     expect(argv).toEqual([
       'tmux',
+      '-u',
       '-L',
       tmuxSocketName(stateDir, 5199),
       '-f',
@@ -1270,6 +1300,7 @@ describe('term manager (tmux mux)', () => {
     expect(pty.reattached).toBe(true)
     expect(spawns[0].argv).toEqual([
       'tmux',
+      '-u',
       '-L',
       tmuxSocketName(stateDir, 5199),
       '-f',
@@ -1357,6 +1388,7 @@ describe('term manager (tmux mux)', () => {
     expect(pty.reattached).toBe(true)
     expect(spawns[0].argv).toEqual([
       'tmux',
+      '-u',
       '-L',
       tmuxSocketName(stateDir, 5199),
       '-f',
@@ -1418,6 +1450,7 @@ describe('term manager (tmux mux)', () => {
     expect(spawns[0].argv).toContain('new-session')
     expect(spawns[1].argv).toEqual([
       'tmux',
+      '-u',
       '-L',
       tmuxSocketName(stateDir, 5199),
       '-f',
@@ -1752,8 +1785,9 @@ describe('term manager (tmux mux)', () => {
       const { manager, spawns } = makeManager({ mux: undefined })
       manager.spawn('shell', 80, 24, '')
       expect(spawns[0].argv[0]).toBe('tmux')
-      expect(spawns[0].argv[1]).toBe('-L')
-      expect(spawns[0].argv[2]).toMatch(/^rivet-[0-9a-f]{8}$/)
+      expect(spawns[0].argv[1]).toBe('-u')
+      expect(spawns[0].argv[2]).toBe('-L')
+      expect(spawns[0].argv[3]).toMatch(/^rivet-[0-9a-f]{8}$/)
     } finally {
       process.env.PATH = prevPath
     }

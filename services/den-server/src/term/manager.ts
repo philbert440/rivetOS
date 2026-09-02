@@ -51,7 +51,9 @@ import {
   createRealTmuxCtl,
   decodeTmuxName,
   encodeTmuxName,
+  ensureUtf8Locale,
   findOnPath,
+  localeDecidingKey,
   TmuxUnavailableError,
   tmuxAttachArgv,
   tmuxConfContent,
@@ -1128,6 +1130,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         for (const k of Object.keys(envOverride)) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)
       }
 
+      // Harness locale (after the override so a routed user's LANG/LC_* is
+      // what gets checked): systemd system units start LANG=C, and tmux
+      // renders every non-ASCII cell as `_` for a non-UTF-8 client. Rewrite
+      // the deciding codeset key to C.UTF-8 when it is not UTF-8, and ALWAYS
+      // ride that key as `-e` — an already-running tmux server seeded by an
+      // earlier LANG=C den would otherwise hand the new pane its stale global
+      // env even when this den's own locale is fine. The direct-PTY path
+      // shares this env object, so it is covered too.
+      ensureUtf8Locale(env)
+      const localeKey = localeDecidingKey(env)
+      if (localeKey) tmuxEnvKeys.add(localeKey)
+
       // tmux spawn form (T1): den's PTY runs a tmux CLIENT of the session
       // named by the den session key. Two distinct forms (#1):
       //   attach (session exists): `attach-session -t =<name>` — read-only
@@ -1156,6 +1170,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       let envDir: string | undefined
       if (tmux && tmuxName) {
         if (persisted) {
+          // `-u` on the attach client fixes the visible `_` substitution for
+          // sessions created before the locale fix; their pane processes
+          // keep whatever LANG they started with until the harness restarts.
           spawnArgv = tmuxAttachArgv(tmuxSocket, tmuxConfPath, tmuxName)
         } else {
           const envPairs: string[] = []

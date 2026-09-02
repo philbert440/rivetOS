@@ -197,7 +197,31 @@ export function classifyExistingTmuxSession(
 /** Sourced by the CREATE harness wrapper; `$0` is the env file. */
 export const TMUX_ENV_WRAP_SCRIPT = 'set -a; . "$0"; set +a; rm -f "$0"; exec "$@"'
 
-/** tmux client argv for CREATE. Tags and `set-environment -r` are chained
+const LOCALE_KEYS = ['LC_ALL', 'LC_CTYPE', 'LANG'] as const
+
+/** The key that decides the codeset: first of LC_ALL, LC_CTYPE, LANG that is
+ *  set and non-empty (same rule as tmux and glibc); undefined when none is. */
+export function localeDecidingKey(env: Record<string, string>): string | undefined {
+  return LOCALE_KEYS.find((k) => env[k])
+}
+
+/** Rewrite the deciding locale key to C.UTF-8 unless it is already UTF-8;
+ *  with none set, LANG=C.UTF-8. Returns the keys it changed. */
+export function ensureUtf8Locale(env: Record<string, string>): string[] {
+  const deciding = localeDecidingKey(env)
+  if (deciding === undefined) {
+    env.LANG = 'C.UTF-8'
+    return ['LANG']
+  }
+  if (/utf-?8/i.test(env[deciding])) return []
+  env[deciding] = 'C.UTF-8'
+  return [deciding]
+}
+
+/** tmux client argv for CREATE. `-u` (immediately after `tmux`) forces the
+ *  client to UTF-8 regardless of den's own locale, so the RivetHub pane
+ *  renders box-drawing and other non-ASCII even when den started as LANG=C.
+ *  Tags and `set-environment -r` are chained
  *  WITHOUT `-t` — in a command sequence tmux resolves `-t =<name>` before
  *  `new-session` has created the session, so the stamp is silently dropped.
  *  The sequence's current session after `new-session` is the one just made.
@@ -225,6 +249,7 @@ export function tmuxCreateArgv(opts: {
   }
   return [
     'tmux',
+    '-u',
     '-L',
     opts.socket,
     '-f',
@@ -258,10 +283,11 @@ export function tmuxCreateArgv(opts: {
   ]
 }
 
-/** tmux client argv for ATTACH. `-t =<name>` is required here: this is a
+/** tmux client argv for ATTACH. `-u` forces the client to UTF-8 regardless
+ *  of den's own locale. `-t =<name>` is required here: this is a
  *  separate invocation against a session that already exists. */
 export function tmuxAttachArgv(socket: string, confPath: string, name: string): string[] {
-  return ['tmux', '-L', socket, '-f', confPath, 'attach-session', '-t', `=${name}`]
+  return ['tmux', '-u', '-L', socket, '-f', confPath, 'attach-session', '-t', `=${name}`]
 }
 
 // ---------------------------------------------------------------------------
