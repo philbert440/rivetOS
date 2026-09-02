@@ -5,11 +5,7 @@ import {
   listAgentSessions,
   setAgentLastSession,
 } from './agent-session.js'
-import {
-  getSessionNodeBinding,
-  sessionNodeFor,
-  setSessionNodeBinding,
-} from './session-node.js'
+import { getSessionNodeBinding, sessionNodeFor, setSessionNodeBinding } from './session-node.js'
 import { migrateSessionKey, storageKey } from './session-rekey.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { useSessionNames } from '../stores/session-names.js'
@@ -56,7 +52,11 @@ describe('migrateSessionKey', () => {
     migrateSessionKey(HUB, ROSTER, 'old-id', 'claude-code:new-id')
 
     // Pin + reverse bind point at the new id; nothing remains on the old one.
-    expect(getAgentPin('a1')).toEqual({ sessionId: 'claude-code:new-id', nodeBaseUrl: NODE_B })
+    expect(getAgentPin('a1')).toEqual({
+      sessionId: 'claude-code:new-id',
+      nodeBaseUrl: NODE_B,
+      updatedAt: expect.any(Number),
+    })
     expect(agentForSession('claude-code:new-id')).toBe('a1')
     expect(agentForSession('old-id')).toBeUndefined()
     expect(getSessionNodeBinding('claude-code:new-id')).toBe(NODE_B)

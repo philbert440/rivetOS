@@ -91,6 +91,7 @@ import {
   isTurnInFlight,
   nativeIdOf,
   shortNativeId,
+  sortByRecency,
   type ChatItem,
   type HarnessGate,
 } from '../lib/harness-chat.js'
@@ -106,7 +107,7 @@ import {
 import { Archive, ArchiveRestore, Pencil, Square, Trash2 } from 'lucide-react'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
-import { shouldOpenPaneOnUrlChange, useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { discardDraft } from '../lib/discard-session.js'
 import {
   getSessionMode,
@@ -223,6 +224,7 @@ export function ChatPage(): JSX.Element {
   // frame of the active turn.
   const connect = useChat((s) => s.connect)
   const drafts = useChat((s) => s.drafts)
+  const draftCreatedAt = useChat((s) => s.draftCreatedAt)
 
   // One socket for the whole page; reconnect (and reset per-gateway state)
   // when the endpoint identity changes.
@@ -230,11 +232,6 @@ export function ChatPage(): JSX.Element {
     connect(baseUrl)
     return () => useChat.getState().disconnect()
   }, [baseUrl, transportEpoch, connect])
-
-  useEffect(() => {
-    useSidebarPrefs.getState().setChatMounted(true)
-    return () => useSidebarPrefs.getState().setChatMounted(false)
-  }, [])
 
   const connected = useGatewayReady()
   // The drawer lists the node's harness sessions straight from their on-disk
@@ -341,6 +338,7 @@ export function ChatPage(): JSX.Element {
       drafts,
       harnessSessions: planeQuery.data ?? [],
       legacySessions: harnessQuery.data?.sessions ?? [],
+      draftCreatedAt,
     })
     const pins = listAllAgentPins()
     const pinIds = new Set(pins.map((p) => p.sessionId))
@@ -374,7 +372,7 @@ export function ChatPage(): JSX.Element {
         key: pin.sessionId,
         kind: drafts.includes(pin.sessionId) ? 'draft' : 'legacy',
         title: preset?.name ?? pin.agentId,
-        updatedAt: Date.now(),
+        updatedAt: pin.updatedAt ?? 0,
         pin: true,
         pinNodeBaseUrl: pin.nodeBaseUrl,
         accent: preset
@@ -389,11 +387,12 @@ export function ChatPage(): JSX.Element {
     // the row under the user's feet. The rekey effect moves the selection
     // onto the new key and this placeholder retires itself.
     if (active !== undefined && !listed.some((it) => it.key === active)) {
-      listed.unshift({ key: active, kind: 'legacy', title: active, updatedAt: Date.now() })
+      listed.push({ key: active, kind: 'legacy', title: active, updatedAt: Date.now() })
     }
-    return listed
+    return sortByRecency(listed)
   }, [
     drafts,
+    draftCreatedAt,
     planeQuery.data,
     harnessQuery.data?.sessions,
     pinVersion,
@@ -418,25 +417,16 @@ export function ChatPage(): JSX.Element {
   //     would remount ActiveSession for a conversation the drawer no longer
   //     has. The URL picks the thread up once the plane adopts it and the
   //     rekey effect moves `active` onto the canonical key.
-  // The conversations pane is NOT opened on the first run: a reload of
-  // `/?session=X` must keep a deliberately hidden pane. Post-mount URL
-  // changes still open it (shouldOpenPaneOnUrlChange).
+  // The conversations pane is never opened from URL changes — only the
+  // rail's Conversations button toggles it. A reload of `/?session=X` keeps
+  // a deliberately hidden pane, as does an in-app deep link.
   const lastUrlRef = useRef<string | undefined>(undefined)
-  const urlSyncMountedRef = useRef(false)
   useEffect(() => {
     if (sessionFromUrl !== lastUrlRef.current) {
-      const openPane = shouldOpenPaneOnUrlChange({
-        mounted: urlSyncMountedRef.current,
-        sessionFromUrl,
-        prev: lastUrlRef.current,
-      })
       lastUrlRef.current = sessionFromUrl
       setActive(sessionFromUrl)
-      if (openPane) useSidebarPrefs.getState().openConversation()
-      urlSyncMountedRef.current = true
       return
     }
-    urlSyncMountedRef.current = true
     const urlTarget = active !== undefined && !drafts.includes(active) ? active : undefined
     if (urlTarget !== sessionFromUrl) {
       lastUrlRef.current = urlTarget

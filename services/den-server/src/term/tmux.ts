@@ -359,7 +359,13 @@ export function tmuxConfContent(userConf: boolean): string {
     'set -g status off',
     'set -g escape-time 10',
     'set -g focus-events on',
-    'set -g mouse off',
+    'set -g mouse on',
+    'set -g extended-keys on',
+    "# wheel: forward to apps that track the mouse; alt-screen apps without mouse get arrows (today's behaviour); normal screen scrolls tmux history",
+    'bind -n WheelUpPane if -F "#{mouse_any_flag}" "send-keys -M" "if -F \'#{alternate_on}\' \'send-keys -N 3 Up\' \'copy-mode -e; send-keys -M\'"',
+    'bind -n WheelDownPane if -F "#{mouse_any_flag}" "send-keys -M" "if -F \'#{alternate_on}\' \'send-keys -N 3 Down\' \'send-keys -M\'"',
+    "# no tmux context menu on right-click — the pane's own right-click paste stays in charge",
+    'unbind -n MouseDown3Pane',
     'set -s set-clipboard on',
   ]
   return lines.join('\n') + '\n'

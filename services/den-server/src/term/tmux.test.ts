@@ -25,6 +25,21 @@ const sample: TmuxSessionInfo = {
   user: '',
 }
 
+describe('tmuxConfContent', () => {
+  it('enables mouse and extended-keys', () => {
+    const conf = tmuxConfContent(false)
+    expect(conf).toContain('set -g mouse on')
+    expect(conf).toContain('set -g extended-keys on')
+    expect(conf).not.toContain('mouse off')
+    expect(conf).toContain('bind -n WheelUpPane if -F "#{mouse_any_flag}"')
+    expect(conf).toContain('bind -n WheelDownPane')
+    expect(conf).toContain('unbind -n MouseDown3Pane')
+    const wheelUp = conf.split('\n').find((l) => l.includes('WheelUpPane'))
+    expect(wheelUp).toContain('send-keys -M')
+    expect(wheelUp).toContain('copy-mode -e')
+  })
+})
+
 describe('isDenTmuxName / classifyExistingTmuxSession', () => {
   it('round-trips encoded den session keys and rejects non-encodings', () => {
     expect(isDenTmuxName(encodeTmuxName('chat-f'))).toBe(true)
@@ -380,5 +395,42 @@ describe.skipIf(!tmuxAvailable())(
       expect(control.slice(0, 2)).toEqual(['tmux', '-L'])
       expect(await run(control)).toBe('0')
     }, 15_000)
+
+    it('loads mouse on and the WheelUpPane mouse_any_flag binding from conf', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'den-tmux-mouse-'))
+      dirs.push(dir)
+      const conf = join(dir, 'tmux.conf')
+      writeFileSync(conf, tmuxConfContent(false))
+      execFileSync(
+        'tmux',
+        [
+          '-L',
+          socket,
+          '-f',
+          conf,
+          'new-session',
+          '-d',
+          '-s',
+          'mouse-keys',
+          '--',
+          '/bin/sh',
+          '-c',
+          'sleep 60',
+        ],
+        { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+      const mouse = execFileSync('tmux', ['-L', socket, 'show-options', '-g', 'mouse'], {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      expect(mouse).toContain('mouse on')
+      const keys = execFileSync('tmux', ['-L', socket, 'list-keys', '-T', 'root', 'WheelUpPane'], {
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      expect(keys).toContain('mouse_any_flag')
+    })
   },
 )
