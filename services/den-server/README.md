@@ -7,21 +7,20 @@ single snapshot instead of replayed events.
 
 ## API
 
-| endpoint                  | method | purpose                                            |
-|---------------------------|--------|----------------------------------------------------|
-| `/event`                  | POST   | one `AgentEvent` (JSON) per request, 422 on invalid |
-| `/sessions`               | GET    | recency-ordered session list                       |
-| `/state?session=<id>`     | GET    | RoomState snapshot                                 |
-| `/layout?viewer=<key>`    | GET/POST | per-viewer layout store; GET falls back to `default` |
-| `/mesh.json`              | GET    | den-enabled mesh nodes + probed den health (see docs/DEN.md “Mesh view”) |
-| `/term/config`            | GET    | terminal roster — keys + labels only, never argv/cwd/env |
-| `/term`                   | POST   | spawn a roster command in a PTY (opt-in; `{command?, cols?, rows?}`) |
-| `/term/list`              | GET    | live + recently-exited PTYs                        |
-| `/term?id=<id>`           | DELETE | kill a PTY (SIGHUP, SIGKILL after 3 s)             |
-| `/ws?session=<id>`        | WS     | snapshot message, then live events (no param = all sessions) |
-| `/packs/*`                | GET    | static SpritePacks when `RIVETOS_DEN_PACKS_DIR` set |
-| `/*`                      | GET    | built viewer app when `RIVETOS_DEN_STATIC_DIR` set |
-| `/healthz`                | GET    | liveness — never auth-gated                        |
+| endpoint               | method   | purpose                                                                  |
+| ---------------------- | -------- | ------------------------------------------------------------------------ |
+| `/event`               | POST     | one `AgentEvent` (JSON) per request, 422 on invalid                      |
+| `/sessions`            | GET      | recency-ordered session list                                             |
+| `/state?session=<id>`  | GET      | RoomState snapshot                                                       |
+| `/layout?viewer=<key>` | GET/POST | per-viewer layout store; GET falls back to `default`                     |
+| `/mesh.json`           | GET      | den-enabled mesh nodes + probed den health (see docs/DEN.md “Mesh view”) |
+| `/term/config`         | GET      | terminal roster — keys + labels only, never argv/cwd/env                 |
+| `/term`                | POST     | spawn a roster command in a PTY (opt-in; `{command?, cols?, rows?}`)     |
+| `/term/list`           | GET      | live + recently-exited PTYs                                              |
+| `/term?id=<id>`        | DELETE   | kill a PTY (SIGHUP, SIGKILL after 3 s)                                   |
+| `/ws?session=<id>`     | WS       | snapshot message, then live events (no param = all sessions)             |
+| `/*`                   | GET      | built hub app when `RIVETOS_DEN_STATIC_DIR` set                          |
+| `/healthz`             | GET      | liveness — never auth-gated                                              |
 
 ## Configuration (env)
 
@@ -37,7 +36,7 @@ On RivetOS-managed nodes these come from `~/.rivetos/den.env`, which
   `Authorization: Bearer <token>` (or `?token=` for browser WebSockets).
   Optional on trusted mesh nodes; required for anything internet-facing.
 - `RIVETOS_DEN_STATE_DIR` (`~/.rivetos/den`) — layout persistence
-- `RIVETOS_DEN_STATIC_DIR` / `RIVETOS_DEN_PACKS_DIR` — optional static roots
+- `RIVETOS_DEN_STATIC_DIR` — optional hub static root
 - `RIVETOS_DEN_MESH_FILE` — mesh roster for `/mesh.json`; empty tries
   `/rivet-shared/mesh.json` then `~/.rivetos/mesh.json`
 - `RIVETOS_DEN_MESH_CACHE_MS` (10000) — `/mesh.json` result cache TTL
@@ -73,7 +72,7 @@ Roster file shape:
   "env": { "FOO": "bar" },
   "commands": {
     "claude": { "label": "Claude Code", "cmd": ["claude"], "room": true },
-    "shell":  { "label": "Shell", "cmd": ["bash", "-l"], "room": false }
+    "shell": { "label": "Shell", "cmd": ["bash", "-l"], "room": false }
   }
 }
 ```
@@ -97,15 +96,11 @@ install, term endpoints answer 503 and everything else works.
 ## Deploy
 
 On RivetOS nodes the den is config-driven: set `den.enabled: true` (plus
-host/port/token/terminal) in `~/.rivetos/config.yaml` and run
-`rivetos update`. The update builds this package, installs/refreshes
-`rivet-den.service`, generates `~/.rivetos/den.env` from the config, rebuilds
-`node-pty` when terminals are enabled, restarts the unit, and probes
-`/healthz`. Full flow, node-pty ABI runbook, and the terminal security model:
-[docs/DEN.md](../../docs/DEN.md), "Deploying with RivetOS".
+host/port/terminal) in `~/.rivetos/config.yaml`. Boot embeds this server as
+the gateway. `rivetos update` restarts `rivetos` and probes `/healthz`.
+Full flow and the terminal security model: [docs/DEN.md](../../docs/DEN.md),
+"Deploying with RivetOS".
 
-On non-RivetOS hosts, `rivet-den.service` is the systemd unit (there,
-`~/.rivetos/den.env` is yours to hand-edit). Harness adapters (Claude Code
-plugin, Grok Build hooks, rivetos-native emitters) live in `integrations/`
-and the core harness layer — they translate harness activity into protocol
-events and POST here.
+Harness adapters (Claude Code plugin, Grok Build hooks, rivetos-native
+emitters) live in `integrations/` and the core harness layer — they translate
+harness activity into protocol events and POST here.

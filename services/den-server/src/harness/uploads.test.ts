@@ -59,7 +59,9 @@ interface Harness {
   routes: UploadRoutes
 }
 
-function start(opts: { maxBytes?: number; ttlMs?: number; now?: () => number } = {}): Promise<Harness> {
+function start(
+  opts: { maxBytes?: number; ttlMs?: number; now?: () => number } = {},
+): Promise<Harness> {
   const root = tempDir('den-uploads-')
   const dir = join(root, 'uploads')
   const r = createUploadRoutes({
@@ -366,7 +368,6 @@ function denConfig(stateDir: string): DenConfig {
     tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
-    packsDir: '',
     rootRedirect: '',
     evictTtlMs: 60_000,
     meshFile: '',

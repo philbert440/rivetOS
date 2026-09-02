@@ -34,6 +34,22 @@ export type HarnessId = (typeof HARNESS_IDS)[number]
  */
 export type SessionId = `${HarnessId}:${string}`
 
+/** One selectable effort level advertised by a harness or a single model. */
+export interface EffortOption {
+  id: string
+  label: string
+  default?: boolean
+}
+
+/** One selectable model advertised on a harness capability sheet. */
+export interface HarnessModelOption {
+  id: string
+  label: string
+  default?: boolean
+  /** Per-model effort list; wins over harness-wide `efforts` when present. */
+  efforts?: EffortOption[]
+}
+
 /**
  * Which optional driver methods are actually implemented. A method whose flag
  * is `false` MUST reject with `capability_unsupported` (gateway → HTTP 501);
@@ -45,6 +61,17 @@ export type HarnessCapabilities = {
   approvals: boolean
   liveStream: boolean
   listSessions: boolean
+  /**
+   * Models this harness can run, from the harness's own source when it has
+   * one (grok model cache, kimi config); static list otherwise.
+   * Empty/absent = no picker.
+   */
+  models?: HarnessModelOption[]
+  /** Harness-wide effort levels (a model's own `efforts` wins). Absent = no effort picker. */
+  efforts?: EffortOption[]
+  /** CLI flags the spawn appends, e.g. `--model` / `--effort`. Absent = the harness takes no such flag. */
+  modelFlag?: string
+  effortFlag?: string
 }
 
 /** `allow-session` scope = all future invocations of the same tool `name`
@@ -181,6 +208,12 @@ export type SessionSummary = {
    * and the list agree even when a driver failed to update its own row.
    */
   supersedes?: SessionId
+  /**
+   * Model id the session is running, when the harness store (or spawn) knows
+   * it. Used by conversation-row pills; absent → UI falls back to the preset
+   * model, then the harness label.
+   */
+  model?: string
 }
 
 export type StartSessionOpts = {

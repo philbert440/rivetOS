@@ -102,6 +102,13 @@ import {
   type HarnessCapabilityEvent,
   type HarnessCapabilitySource,
 } from './capabilities.js'
+import {
+  applySheetOverride,
+  sheetForHarness,
+  type ModelSheet,
+  type SheetOverride,
+  type SheetReaders,
+} from './model-sheets.js'
 
 /** The den AgentEvent shape the tap delivers (structurally den-protocol's). */
 export interface DenAgentEventLike {
@@ -165,6 +172,16 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   turnQuietMs?: number
   now?: () => number
   log?: (msg: string) => void
+  /**
+   * Config override for this driver's model/effort sheet
+   * (`tasks.harnesses.<id>.models` / `.efforts`). Replaces the sheet lists
+   * when present.
+   */
+  sheetOverride?: SheetOverride
+  /** Injectable file readers for grok/kimi sheets (tests). */
+  sheetReaders?: SheetReaders
+  /** Full sheet factory — tests that want a fake sheet skip the built-in. */
+  sheet?: () => ModelSheet
 }
 
 /** Per-driver identity, supplied by the subclass's constructor. */
@@ -178,6 +195,8 @@ export interface PtyHarnessIdentity {
 
 const DEFAULT_LIST_LIMIT = 100
 const DEFAULT_TURN_QUIET_MS = 5 * 60_000
+/** Re-read grok/kimi sheets at most this often (`verifyCapabilities` is hot). */
+const SHEET_TTL_MS = 60_000
 /** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
 const SPAWN_COLS = 120
 const SPAWN_ROWS = 40
@@ -233,6 +252,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   private detachEvents?: () => void
   /** Flags as DECLARED at construction — the pre-probe starting point. */
   private readonly declared: HarnessCapabilities
+  private readonly sheetFn: () => ModelSheet
+  private cachedSheet: ModelSheet | undefined
+  private sheetCachedAt = Number.NEGATIVE_INFINITY
   /** What the PTY host last told us. See § capability truthing in the header. */
   private ptyVerdict: PtyVerdict = 'unprobed'
   /** Memoized proactive probe — one `deps.pty()` for the life of the driver. */
@@ -248,6 +270,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     this.log = deps.log ?? ((): void => undefined)
     this.listLimit = deps.listLimit ?? DEFAULT_LIST_LIMIT
     this.turnQuietMs = deps.turnQuietMs ?? DEFAULT_TURN_QUIET_MS
+    this.sheetFn =
+      deps.sheet ??
+      ((): ModelSheet =>
+        applySheetOverride(
+          sheetForHarness(identity.harnessId, deps.sheetReaders),
+          deps.sheetOverride,
+          this.log,
+        ))
     this.declared = {
       // Config, not yet ground truth: `deps.pty` present means den terminals
       // are ENABLED. Whether a PTY can actually be opened is what
@@ -262,7 +292,39 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       liveStream: !!deps.events,
       listSessions: true,
     }
+    this.refreshSheet()
     if (deps.events) this.detachEvents = deps.events((ev) => this.onDenEvent(ev))
+  }
+
+  /**
+   * Re-read the model/effort sheet at most once per TTL. A changed sheet
+   * is merged onto `declared` and announced the same way a PTY flip is.
+   */
+  private refreshSheet(): void {
+    const t = this.now()
+    if (this.cachedSheet !== undefined && t - this.sheetCachedAt < SHEET_TTL_MS) return
+    const nextSheet = this.sheetFn()
+    const previous = this.cachedSheet !== undefined ? this.capabilities : undefined
+    this.cachedSheet = nextSheet
+    this.sheetCachedAt = t
+    this.mergeSheet(nextSheet)
+    if (!previous) return
+    const next = this.capabilities
+    const changed = capabilityDiff(previous, next)
+    if (Object.keys(changed).length === 0) return
+    this.emitCapabilities(next, changed, `${this.harnessId}: model/effort sheet changed`)
+  }
+
+  /** Stamp model/effort fields from the sheet onto the declared flags. */
+  private mergeSheet(sheet: ModelSheet): void {
+    if (sheet.models) this.declared.models = sheet.models
+    else delete this.declared.models
+    if (sheet.efforts) this.declared.efforts = sheet.efforts
+    else delete this.declared.efforts
+    if (sheet.modelFlag) this.declared.modelFlag = sheet.modelFlag
+    else delete this.declared.modelFlag
+    if (sheet.effortFlag) this.declared.effortFlag = sheet.effortFlag
+    else delete this.declared.effortFlag
   }
 
   // -- capabilities (runtime-truthed) -----------------------------------------
@@ -288,6 +350,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * a chance to fail.
    */
   verifyCapabilities(): Promise<HarnessCapabilities> {
+    this.refreshSheet()
     // Nothing to verify when terminals are disabled: the flags are already
     // false and there is no machinery to ask.
     if (!this.deps.pty) return Promise.resolve(this.capabilities)
@@ -321,11 +384,19 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const reason = available
       ? `${this.harnessId}: PTY backend is available (${source})`
       : `${this.harnessId}: PTY backend is unavailable — interrupt/resume answer 501 (${source})`
+    this.emitCapabilities(next, changed, reason)
+  }
+
+  private emitCapabilities(
+    capabilities: HarnessCapabilities,
+    changed: Partial<HarnessCapabilities>,
+    reason: string,
+  ): void {
     this.log(`[den-server] harness: ${reason}`)
     const event: HarnessCapabilityEvent = {
       type: 'harness-capabilities',
       harnessId: this.harnessId,
-      capabilities: next,
+      capabilities,
       changed,
       reason,
     }
@@ -702,6 +773,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (row.title && row.title !== row.id) summary.title = row.title
     const cwd = this.cwd()
     if (cwd) summary.cwd = cwd
+    if (row.model) summary.model = row.model
     return summary
   }
 

@@ -53,7 +53,9 @@ describe('installPath', () => {
 
   it('joins segments onto a custom root', () => {
     process.env.RIVETOS_INSTALL_ROOT = '/custom/rivetos'
-    expect(installPath('apps', 'den', 'dist')).toBe('/custom/rivetos/apps/den/dist')
+    expect(installPath('apps', 'rivethub-web', 'dist')).toBe(
+      '/custom/rivetos/apps/rivethub-web/dist',
+    )
   })
 
   it('returns the root when given no segments', () => {

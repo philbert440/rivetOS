@@ -4,6 +4,7 @@ sidebar:
   order: 3
 description: Build and point RivetHub at a RivetOS node gateway
 ---
+
 > Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face,
 > not a separate agent runtime.
 >
@@ -13,12 +14,12 @@ description: Build and point RivetHub at a RivetOS node gateway
 
 ## What RivetHub is
 
-| Piece | Role |
-|-------|------|
-| `apps/rivethub-web` | React (Vite) UI — chat, terminal, dens, memory wiki, files, tasks, workflows, settings |
-| `apps/rivethub-electron` | Electron shell over the same web dist (tray, shortcuts, notifications, mTLS pipe) |
-| den-server | Serves hub dist as static root when configured; hosts gateway + harness APIs |
-| `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces |
+| Piece                     | Role                                                                              |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `apps/rivethub-web`       | React (Vite) UI — chat, terminal, memory wiki, files, tasks, workflows, settings  |
+| `apps/rivethub-electron`  | Electron shell over the same web dist (tray, shortcuts, notifications, mTLS pipe) |
+| den-server                | Serves hub dist as static root when configured; hosts gateway + harness APIs      |
+| `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces               |
 
 **Primary interactive path:** harness sessions on the node
 (`claude-code`, `grok-build`, `kimi-code`, `hermes`) via the gateway contract.
@@ -29,13 +30,13 @@ description: Build and point RivetHub at a RivetOS node gateway
 
 ## Prerequisites
 
-| Requirement | Notes |
-|-------------|--------|
-| Node.js ≥ 22 | 24 used in CI/containers |
-| Built monorepo | `npm install` at repo root builds packages via postinstall |
-| Running node | `rivetos` agent (or den-server) with den/gateway up |
+| Requirement               | Notes                                                         |
+| ------------------------- | ------------------------------------------------------------- |
+| Node.js ≥ 22              | 24 used in CI/containers                                      |
+| Built monorepo            | `npm install` at repo root builds packages via postinstall    |
+| Running node              | `rivetos` agent (or den-server) with den/gateway up           |
 | At least one host harness | Optional for empty drawer; needed to chat with a coding agent |
-| PostgreSQL | Memory / wiki / tasks (via datahub or external) |
+| PostgreSQL                | Memory / wiki / tasks (via datahub or external)               |
 
 ---
 
@@ -46,7 +47,7 @@ From the repo root:
 ```bash
 npm install
 
-# Production dist (also embeds den viewer under dist/den/)
+# Production dist
 npx nx build @rivetos/rivethub-web
 ```
 
@@ -65,19 +66,15 @@ Desktop starts unconfigured until a node gateway URL is set (the bundled app:// 
 
 ## Serve Hub from the node (recommended)
 
-den-server should serve hub as the static root so `/` is Hub and den nests at `/den/`.
+den-server should serve hub as the static root so `/` is Hub.
 
-Boot defaults are **hub-first** when hub dist exists: peers without an explicit
-`static_dir` no longer trap operators in a full-screen den with no way back.
+Boot defaults are **hub-first**: `static_dir` is RivetHub web dist.
 
 Environment (or den config equivalents):
 
 ```bash
-# Static UI root — hub dist preferred
+# Static UI root — hub dist
 export RIVETOS_DEN_STATIC_DIR=apps/rivethub-web/dist
-
-# Den sprite packs
-export RIVETOS_DEN_PACKS_DIR=packages/den-packs/packs
 
 # Bind (loopback by default; open host only with a token)
 export RIVETOS_DEN_HOST=0.0.0.0
@@ -125,12 +122,12 @@ Use hostnames or documentation addresses in examples; do not commit lab private 
 
 Chat binds **per session**, not per app:
 
-| Concern | Control plane (driver-owned) | Legacy (unclaimed) |
-|---------|------------------------------|--------------------|
-| List | `GET /api/harnesses/:id/sessions` | terminal harness-sessions scan |
-| Stream | `WS /api/harness-sessions/ws?session=<enc>` | all-sessions WS bridge |
-| History | transcript hard-resync on every open | server-pushed deltas |
-| Send | `POST …/turns` | `/term/inject` into PTY |
+| Concern | Control plane (driver-owned)                | Legacy (unclaimed)             |
+| ------- | ------------------------------------------- | ------------------------------ |
+| List    | `GET /api/harnesses/:id/sessions`           | terminal harness-sessions scan |
+| Stream  | `WS /api/harness-sessions/ws?session=<enc>` | all-sessions WS bridge         |
+| History | transcript hard-resync on every open        | server-pushed deltas           |
+| Send    | `POST …/turns`                              | `/term/inject` into PTY        |
 
 On a full four-driver node every harness row is claimed; fallback remains for
 drivers disabled or older nodes.
@@ -154,16 +151,15 @@ drivers disabled or older nodes.
 
 ## Sidebar map
 
-| Route | Purpose |
-|-------|---------|
-| `/` Conversations | Chat \| Terminal \| Den per conversation |
-| `/terminal` | Open PTY list; attach |
-| `/dens` | Live den sessions; embedded viewer |
-| `/memory` | Wikipedia-style wiki over datahub `GET /api/wiki` |
-| `/files` | Browse node files root (`den.files_root` / `/rivet-shared` default) |
-| `/tasks` | List / create / steer / kill tasks |
-| `/workflows` | Local workflow IR editor (no runner yet) |
-| Settings | Gateway URL, token, wiki/datahub origin |
+| Route             | Purpose                                                             |
+| ----------------- | ------------------------------------------------------------------- |
+| `/` Conversations | Chat \| Terminal per conversation                                   |
+| `/terminal`       | Open PTY list; attach                                               |
+| `/memory`         | Wikipedia-style wiki over datahub `GET /api/wiki`                   |
+| `/files`          | Browse node files root (`den.files_root` / `/rivet-shared` default) |
+| `/tasks`          | List / create / steer / kill tasks                                  |
+| `/workflows`      | Local workflow IR editor (no runner yet)                            |
+| Settings          | Gateway URL, token, wiki/datahub origin                             |
 
 ---
 

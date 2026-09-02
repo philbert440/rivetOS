@@ -11,6 +11,7 @@ import {
   type ClaudeStoreHost,
   type DenAgentEventLike,
 } from './claude-driver.js'
+import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 const UUID2 = 'b2c3d4e5-2222-4333-8444-555566667777'
@@ -32,8 +33,7 @@ function fakeStore(rows: HarnessSession[] = []) {
       return {
         list: () => Promise.resolve([...byId.values()]),
         describe: (id) => Promise.resolve(byId.get(id)),
-        transcript: (id) =>
-          Promise.resolve(this.transcripts.get(id) ?? { turns: [] }),
+        transcript: (id) => Promise.resolve(this.transcripts.get(id) ?? { turns: [] }),
       }
     },
   }
@@ -100,16 +100,18 @@ function makeDriver(
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
 
-const claudeEvent = (session: string, body: Record<string, unknown>): DenAgentEventLike => ({
-  v: 1,
-  session,
-  harness: 'claude-code',
-  ...body,
-}) as DenAgentEventLike
+const claudeEvent = (session: string, body: Record<string, unknown>): DenAgentEventLike =>
+  ({
+    v: 1,
+    session,
+    harness: 'claude-code',
+    ...body,
+  }) as DenAgentEventLike
 
 describe('capability flags are honest', () => {
   it('reports what is actually wired on this node', () => {
-    expect(makeDriver().driver.capabilities).toEqual({
+    const caps = makeDriver().driver.capabilities
+    expect(pick(caps, FIVE_FLAGS)).toEqual({
       interrupt: true,
       resume: true,
       // Claude's permission prompts live inside its TUI — never faked true.
@@ -117,6 +119,19 @@ describe('capability flags are honest', () => {
       liveStream: true,
       listSessions: true,
     })
+  })
+
+  it('advertises the claude model/effort sheet', () => {
+    const caps = makeDriver().driver.capabilities
+    expect(caps.modelFlag).toBe('--model')
+    expect(caps.effortFlag).toBe('--effort')
+    expect(caps.models?.map((m) => m.id)).toEqual(
+      expect.arrayContaining(['fable', 'opus', 'sonnet', 'fable[1m]']),
+    )
+    const defaults = caps.models?.filter((m) => m.default === true) ?? []
+    expect(defaults).toHaveLength(1)
+    expect(defaults[0]?.id).toBe('fable')
+    expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
 
   it('drops interrupt/resume when den terminals are off', () => {
@@ -262,7 +277,9 @@ describe('sendUserTurn', () => {
     const { driver, pty } = makeDriver()
     await driver.startSession({ nativeSessionId: UUID })
     await driver.sendUserTurn(SID, { text: 'hello' })
-    expect(pty.injects).toEqual([{ id: 'pty-1', text: 'hello', submit: true, interrupt: undefined }])
+    expect(pty.injects).toEqual([
+      { id: 'pty-1', text: 'hello', submit: true, interrupt: undefined },
+    ])
   })
 
   it('prefixes systemPrompt on the first turn only', async () => {
@@ -343,7 +360,11 @@ describe('interrupt', () => {
     await driver.sendUserTurn(SID, { text: 'go' })
     await driver.interrupt(SID)
     expect(pty.injects.at(-1)).toEqual({ id: 'pty-1', text: '', submit: false, interrupt: true })
-    expect(seen).toContainEqual({ type: 'turn-complete', sessionId: SID, stopReason: 'interrupted' })
+    expect(seen).toContainEqual({
+      type: 'turn-complete',
+      sessionId: SID,
+      stopReason: 'interrupted',
+    })
   })
 
   it('is a no-op with no live harness — there is no turn to cancel', async () => {

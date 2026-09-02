@@ -32,6 +32,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   prefixSystemPrompt,
   type ApprovalDecision,
+  type HarnessId,
   type HarnessSessionSummary,
   type SessionMessage,
 } from '@rivetos/types'
@@ -90,11 +91,13 @@ import {
   harnessGate,
   isTurnInFlight,
   nativeIdOf,
+  rosterCommandFor,
   shortNativeId,
   sortByRecency,
   type ChatItem,
   type HarnessGate,
 } from '../lib/harness-chat.js'
+import { rowPillText, spawnModelEffort } from '../lib/harness-options.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
@@ -344,7 +347,9 @@ export function ChatPage(): JSX.Element {
     const pinIds = new Set(pins.map((p) => p.sessionId))
     const withoutAgentDrafts = base.filter((it) => !(it.kind === 'draft' && pinIds.has(it.key)))
     const house = queryClient
-      .getQueriesData<{ id: string; name: string; color: string; model: string }[]>({
+      .getQueriesData<
+        { id: string; name: string; color: string; model: string; harnessId?: HarnessId }[]
+      >({
         queryKey: ['agents-all-nodes'],
       })
       .flatMap(([, data]) => data ?? [])
@@ -357,9 +362,12 @@ export function ChatPage(): JSX.Element {
       if (!preset) return it
       return {
         ...it,
+        model: it.model || preset.model || undefined,
+        harnessId: it.harnessId ?? preset.harnessId,
         accent: accentFor({
           presetColor: preset.color,
-          command: preset.model || it.command,
+          harnessId: preset.harnessId,
+          command: rosterCommandFor(preset.harnessId) ?? it.command,
         }),
       }
     })
@@ -375,8 +383,14 @@ export function ChatPage(): JSX.Element {
         updatedAt: pin.updatedAt ?? 0,
         pin: true,
         pinNodeBaseUrl: pin.nodeBaseUrl,
+        model: preset?.model || undefined,
+        harnessId: preset?.harnessId,
         accent: preset
-          ? accentFor({ presetColor: preset.color, command: preset.model })
+          ? accentFor({
+              presetColor: preset.color,
+              harnessId: preset.harnessId,
+              command: rosterCommandFor(preset.harnessId),
+            })
           : undefined,
       })
     }
@@ -644,14 +658,21 @@ function DrawerItem(props: {
         {props.item.status === 'idle' && (
           <span className="size-1.5 shrink-0 rounded-full bg-em/40" title="session alive" />
         )}
-        {props.item.harnessId && (
-          <span
-            title={`${props.item.harnessId} ${shortNativeId(props.item.key)}`}
-            className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
-          >
-            {props.item.harnessId}
-          </span>
-        )}
+        {(() => {
+          const pill = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
+          const native = shortNativeId(props.item.key)
+          const tip = props.item.harnessId
+            ? `${props.item.harnessId} ${native}`
+            : `${pill} ${native}`
+          return pill ? (
+            <span
+              title={tip}
+              className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
+            >
+              {pill}
+            </span>
+          ) : null
+        })()}
       </button>
       <span className="hidden shrink-0 items-center group-hover:flex group-focus-within:flex">
         <button
@@ -1008,9 +1029,9 @@ function ActiveSession(props: {
   // Selectors must return stable references when empty (see EMPTY_* above).
   const messages = useChat((s) => s.messages[props.sessionId] ?? EMPTY_MESSAGES)
   // The live turn changes identity on every streaming tick. Subscribe to the
-  // full object only while it is actually rendered (chat mode); terminal/den
-  // ride the boolean selectors below, so a busy stream doesn't repaint the
-  // whole session view (header, xterm, iframe) per token.
+  // full object only while it is actually rendered (chat mode); terminal
+  // rides the boolean selectors below, so a busy stream doesn't repaint the
+  // whole session view (header, xterm) per token.
   const live = useChat((s) => (mode === 'chat' ? s.live[props.sessionId] : undefined))
   const liveBusy = useChat((s) => {
     const L = s.live[props.sessionId]
@@ -1036,17 +1057,6 @@ function ActiveSession(props: {
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
-  const globalDialOrigin = useConnection((s) => s.gateway.config.baseUrl)
-  // The den iframe must dial the SESSION's node — and through the pipe origin
-  // in the shell (a direct https iframe cannot present the device cert).
-  const remoteDial = useQuery({
-    queryKey: ['session-dial', sessionBase, epochForNode],
-    queryFn: async () => (await gatewayFor(sessionBase)).config.baseUrl,
-    enabled: isRemote,
-    staleTime: 300_000,
-  })
-  const dialOrigin = isRemote ? remoteDial.data : globalDialOrigin
-
   // per-conversation model + effort (persisted). Keyed per node + thread, with
   // the pre-canonical key as a read fallback; writes land on the new key.
   const settingsKey = storageKey(sessionBase, props.sessionId)
@@ -1198,11 +1208,16 @@ function ActiveSession(props: {
     // A harness session (already in the store) resumes; a fresh conversation
     // pins its id (--session-id, via the join key) so its store file lines up.
     // Command: the harness's own for a resume, else the model dropdown.
-    const command = harnessCommand || settings?.agent || undefined
+    const command =
+      harnessCommand ||
+      (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
+      settings?.agent ||
+      undefined
     const body = {
       session: props.sessionId,
       ...(command ? { command } : {}),
       ...(harnessCommand ? { resume: props.sessionId } : {}),
+      ...spawnModelEffort(settings),
     }
     // An API-only agent has no roster command → fall back to the node default
     // rather than 404 (keeps the session id via --session-id if a UUID).
@@ -1482,14 +1497,6 @@ function ActiveSession(props: {
       })
   }
 
-  // The viewer bundle matches `?session=` against the ROOM keys in its own den
-  // snapshot, so this is the one hub→id handoff that does not go through a
-  // den-server edge and has to be projected onto the den's key space.
-  // Use the dial origin (desktop mTLS loopback pipe), not the https node URL —
-  // an iframe to https://node:5174 is a new TLS session and WebKit cannot
-  // present the device cert, so the den returns 401.
-  const denUrl = `${(dialOrigin ?? '').replace(/\/+$/, '')}/den/?session=${encodeURIComponent(denRoomKey(props.sessionId))}`
-
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
@@ -1524,9 +1531,8 @@ function ActiveSession(props: {
             Stop
           </button>
         )}
-        {/* [Terminal | Chat | Den] — three views of ONE session, ordered by
-            immersion (terminal is home); the bar stays visible so the den
-            never takes over with no way back. */}
+        {/* [Terminal | Chat] — two views of ONE session, ordered by
+            immersion (terminal is home). */}
         <span className="shrink-0">
           <SegmentedControl
             ariaLabel="Session view"
@@ -1540,7 +1546,6 @@ function ActiveSession(props: {
             options={[
               { value: 'terminal', label: 'Terminal' },
               { value: 'chat', label: 'Chat' },
-              { value: 'den', label: '▦ Den', title: 'the den for this conversation' },
             ]}
           />
         </span>
@@ -1597,34 +1602,6 @@ function ActiveSession(props: {
             onDismissAsk={onDismissAsk}
           />
         </>
-      ) : mode === 'den' ? (
-        // Embedded, not a link-out: replaces the chat/terminal area so the
-        // toggle bar (the way back) stays put. Same session as chat/terminal.
-        dialOrigin ? (
-          <iframe
-            key={`${dialOrigin}|${props.sessionId}`}
-            src={denUrl}
-            title="den"
-            className="min-h-0 flex-1 border-0 bg-bg"
-          />
-        ) : remoteDial.isError ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-1">
-            <span className="font-mono text-sm text-red">
-              can't reach {remoteNodeName ?? urlLabel(sessionBase)}:{' '}
-              {remoteDial.error instanceof Error ? remoteDial.error.message : 'transport error'}
-            </span>
-            <button
-              onClick={() => void remoteDial.refetch()}
-              className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
-            >
-              retry
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-1 items-center justify-center text-sm text-ink-dim">
-            reaching {remoteNodeName ?? urlLabel(sessionBase)}…
-          </div>
-        )
       ) : termError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1">
           <span className="font-mono text-sm text-red">{termError}</span>

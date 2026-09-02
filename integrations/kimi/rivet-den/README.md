@@ -1,9 +1,9 @@
 # rivet-den — Kimi Code CLI integration
 
-Streams your Kimi Code CLI session into a live pixel-art diorama: lifecycle
+Streams your Kimi Code CLI session into the den-protocol event stream: lifecycle
 hooks translate prompts, tool calls, todo updates, compaction and turn
-boundaries into rivet-den protocol events and POST them to a den-server, where
-the room plays out in real time (whiteboard plan, desk terminal, naps).
+boundaries into rivet-den protocol events and POST them to den-server
+(`/event` / `/events`). Drivers use that stream for session linkage and kimi tagging.
 
 The translator is payload-first, like the sibling `rivet-memory` capture
 worker: kimi hook payloads carry the prompt, tool name, tool input and tool
@@ -23,7 +23,7 @@ commands differ.
 ## Configuration (env, or `~/.rivetos/.env`)
 
 - `RIVET_DEN_URL` — den-server base URL (default `http://127.0.0.1:5174`);
-  comma-separated for fan-out to a local den *and* the mesh hub
+  comma-separated for fan-out to a local den _and_ the mesh hub
 - `RIVET_DEN_TOKEN` — bearer token when the server has auth enabled
 - `RIVET_DEN_NAME` — session display name shown in the viewer's picker
   (default: hostname)
@@ -78,31 +78,31 @@ kimi 0.34 defines **20** hook events (`HOOK_EVENT_TYPES` in the shipped CLI).
 Twelve are wired; the other eight are deliberately unmapped and unwired, so
 their hooks never even start.
 
-| kimi event | payload it carries | den emission |
-|---|---|---|
-| `SessionStart` | `source`, `session_title`, `model`, `profile` | none — stashes the title; the room opens on the first human prompt (anti-ghost-room gate) |
-| `UserPromptSubmit` | `prompt`, `is_steer`, `session_title` | `session.start` on the first fire, then `message.user` + the `speech.stt` pair; stamps the turn |
-| `TurnStarted` | `turn_id`, `origin_kind`, `origin_name`, `prompt` | `activity{thinking}` only — the prompt is NOT re-emitted (it would double every user bubble); this is the turn stamp for non-user origins |
-| `PreToolUse` | `tool_name`, `tool_input`, `tool_call_id` | `tool.start` (+ summarized, redacted args); `Bash` also mirrors the command to the desk terminal. `TodoList` poses `writing_plan` instead |
-| `PostToolUse` | + `tool_output` (pre-rendered text, capped at 2k) | `tool.end`; shell output tail and `✎ <file>` on the terminal. `TodoList` drives `task.plan`/`task.check` and emits no `tool.end` |
-| `PostToolUseFailure` | + `error{code,message,retryable}` (plus `name`/`details` when the throw was an `Error`; a non-`Error` throw has no `name`), no `tool_output` | same, plus `✗ <tool>: <message>` |
-| `Stop` | `stop_hook_active` | `thinking.end` + `turn.end` |
-| `StopFailure` | `error_type`, `error_message` | `✗ turn failed: …` + `thinking.end` + `turn.end` |
-| `Interrupt` | `turn_id`, `reason` | `thinking.end` + `turn.end` — `Stop` does not fire on a cancelled turn, so this *is* the boundary |
-| `PreCompact` | `trigger`, `token_count` | `thinking.end` + `activity{sleeping}` |
-| `PostCompact` | `trigger`, `estimated_token_count` | `activity{thinking}` |
-| `SessionEnd` | `reason`, `session_title` | `session.end`, state file removed |
-| `UserPromptQueued` | `prompt_id`, `prompt`, `queue_length` | **not mapped** — a queued prompt fires `UserPromptSubmit` when it is actually submitted; emitting here would double the bubble |
-| `SubagentStart` / `SubagentStop` | `agent_name`, `prompt` / `response` | **not mapped** — subagents are spawned by the `Agent` tool, which already produces the `PreToolUse`/`PostToolUse` pair. Mapping these too would leave the room holding two overlapping tools |
-| `PermissionRequest` / `PermissionResult` | tool + decision | **not mapped** — protocol v1 has no approval surface, and the following `PostToolUse`/`PostToolUseFailure` already carries the outcome |
-| `TaskStarted` | `task_id`, `kind`, `description`, … | **not mapped** — background-task lifecycle has no v1 den surface |
-| `SessionHeartbeat` | `uptime_ms` | **not mapped** — pure recency churn every 60s; leaving it unwired also means kimi never starts the heartbeat timer |
-| `Notification` | `notification_type`, `title`, `body`, … | **not mapped** — the CLI's own UI surfaces these |
+| kimi event                               | payload it carries                                                                                                                           | den emission                                                                                                                                                                                 |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionStart`                           | `source`, `session_title`, `model`, `profile`                                                                                                | none — stashes the title; the room opens on the first human prompt (anti-ghost-room gate)                                                                                                    |
+| `UserPromptSubmit`                       | `prompt`, `is_steer`, `session_title`                                                                                                        | `session.start` on the first fire, then `message.user` + the `speech.stt` pair; stamps the turn                                                                                              |
+| `TurnStarted`                            | `turn_id`, `origin_kind`, `origin_name`, `prompt`                                                                                            | `activity{thinking}` only — the prompt is NOT re-emitted (it would double every user bubble); this is the turn stamp for non-user origins                                                    |
+| `PreToolUse`                             | `tool_name`, `tool_input`, `tool_call_id`                                                                                                    | `tool.start` (+ summarized, redacted args); `Bash` also mirrors the command to the desk terminal. `TodoList` poses `writing_plan` instead                                                    |
+| `PostToolUse`                            | + `tool_output` (pre-rendered text, capped at 2k)                                                                                            | `tool.end`; shell output tail and `✎ <file>` on the terminal. `TodoList` drives `task.plan`/`task.check` and emits no `tool.end`                                                             |
+| `PostToolUseFailure`                     | + `error{code,message,retryable}` (plus `name`/`details` when the throw was an `Error`; a non-`Error` throw has no `name`), no `tool_output` | same, plus `✗ <tool>: <message>`                                                                                                                                                             |
+| `Stop`                                   | `stop_hook_active`                                                                                                                           | `thinking.end` + `turn.end`                                                                                                                                                                  |
+| `StopFailure`                            | `error_type`, `error_message`                                                                                                                | `✗ turn failed: …` + `thinking.end` + `turn.end`                                                                                                                                             |
+| `Interrupt`                              | `turn_id`, `reason`                                                                                                                          | `thinking.end` + `turn.end` — `Stop` does not fire on a cancelled turn, so this _is_ the boundary                                                                                            |
+| `PreCompact`                             | `trigger`, `token_count`                                                                                                                     | `thinking.end` + `activity{sleeping}`                                                                                                                                                        |
+| `PostCompact`                            | `trigger`, `estimated_token_count`                                                                                                           | `activity{thinking}`                                                                                                                                                                         |
+| `SessionEnd`                             | `reason`, `session_title`                                                                                                                    | `session.end`, state file removed                                                                                                                                                            |
+| `UserPromptQueued`                       | `prompt_id`, `prompt`, `queue_length`                                                                                                        | **not mapped** — a queued prompt fires `UserPromptSubmit` when it is actually submitted; emitting here would double the bubble                                                               |
+| `SubagentStart` / `SubagentStop`         | `agent_name`, `prompt` / `response`                                                                                                          | **not mapped** — subagents are spawned by the `Agent` tool, which already produces the `PreToolUse`/`PostToolUse` pair. Mapping these too would leave the room holding two overlapping tools |
+| `PermissionRequest` / `PermissionResult` | tool + decision                                                                                                                              | **not mapped** — protocol v1 has no approval surface, and the following `PostToolUse`/`PostToolUseFailure` already carries the outcome                                                       |
+| `TaskStarted`                            | `task_id`, `kind`, `description`, …                                                                                                          | **not mapped** — background-task lifecycle has no v1 den surface                                                                                                                             |
+| `SessionHeartbeat`                       | `uptime_ms`                                                                                                                                  | **not mapped** — pure recency churn every 60s; leaving it unwired also means kimi never starts the heartbeat timer                                                                           |
+| `Notification`                           | `notification_type`, `title`, `body`, …                                                                                                      | **not mapped** — the CLI's own UI surfaces these                                                                                                                                             |
 
 Payload casing: kimi snake_cases every **top-level** hook field on the way out
 (`toHookInputData` runs camelToSnake over the whole record), so the snake
 spellings above are the real ones. `tool_input` is passed through verbatim, so
-its *inner* keys are whatever the tool's schema uses — `command` for `Bash`,
+its _inner_ keys are whatever the tool's schema uses — `command` for `Bash`,
 `path` for `Read`/`Edit`/`Write`/`Grep`/`Glob`. The accessors accept camelCase
 anyway, and the tests cover both.
 

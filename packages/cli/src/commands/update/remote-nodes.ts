@@ -19,7 +19,7 @@ import {
   isSafeArg,
   quoteShellArg,
 } from '../../lib/ssh.js'
-import { retireDenUnitRemote, verifyGatewayRemote } from './den-deploy.js'
+import { verifyGatewayRemote } from './den-deploy.js'
 import { buildRemoteMeshHostsCommand, formatMeshHostsSkipDetail } from './mesh-hosts.js'
 import type { UpdateOptions, NodeUpdateResult } from './types.js'
 
@@ -412,10 +412,8 @@ export async function gitUpdateNodeAsync(
     )
   }
 
-  // Step 5: restart service. G0: retire any standalone rivet-den unit FIRST —
-  // the embedded gateway binds the same port on startup.
+  // Step 5: restart service.
   if (opts.restart) {
-    await retireDenUnitRemote(host, nodeName, sshUser)
     try {
       console.log(`    ${tag} Restarting service...`)
       // Use sudo when logged in as rivet (non-root)
@@ -456,7 +454,7 @@ export async function gitUpdateNodeAsync(
   // gateway now; probe /healthz on den-enabled nodes after the restart.
   // Auxiliary: a failed probe never fails the node update, but it is
   // surfaced in the result and the summary table.
-  const den = opts.restart ? await verifyGatewayRemote(host, nodeName, sshUser, root) : 'skipped'
+  const den = opts.restart ? await verifyGatewayRemote(host, nodeName, sshUser) : 'skipped'
 
   // Refresh per-user TUI plugin installs from the updated source (hooks,
   // MCP wiring). Non-fatal: nodes without any TUI installs just no-op.
@@ -501,7 +499,7 @@ export async function npmUpdateNodeAsync(
   opts: UpdateOptions,
   isAgent: boolean = true,
   nodeSshUser?: string,
-  nodeInstallRoot?: string,
+  _nodeInstallRoot?: string,
 ): Promise<NodeUpdateResult> {
   const tag = `[${nodeName}]`
   const start = Date.now()
@@ -567,7 +565,6 @@ export async function npmUpdateNodeAsync(
   // they don't run rivetos itself, only worker services which keep their
   // own deploy path until we migrate them too).
   if (isAgent && opts.restart) {
-    await retireDenUnitRemote(host, nodeName, sshUser)
     try {
       console.log(`    ${tag} Restarting service...`)
       const restartCmd =
@@ -582,7 +579,7 @@ export async function npmUpdateNodeAsync(
   // Step 5: gateway health — G0 closes the old npm-mode gap: the gateway is
   // embedded in rivetos, so den-enabled npm nodes get it with the package.
   if (isAgent && opts.restart) {
-    await verifyGatewayRemote(host, nodeName, sshUser, resolvedInstallRoot(nodeInstallRoot))
+    await verifyGatewayRemote(host, nodeName, sshUser)
   }
 
   // Step 6: capture installed version (rivetos version → "RivetOS v0.4.0-beta.2")

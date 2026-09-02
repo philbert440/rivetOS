@@ -15,8 +15,9 @@ import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { KimiCodeDriver, type KimiPtyHost, type KimiStoreHost } from './kimi-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
+import type { SheetReaders } from './model-sheets.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
-import { runHarnessRotationConformance } from './test/driver-conformance.js'
+import { FIVE_FLAGS, pick, runHarnessRotationConformance } from './test/driver-conformance.js'
 
 /** Real kimi ids: `session_<uuidv4>` — the store DIR name, verbatim. */
 const NAT = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
@@ -94,6 +95,7 @@ function makeDriver(
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sheetReaders?: SheetReaders
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -113,6 +115,7 @@ function makeDriver(
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
+    sheetReaders: opts.sheetReaders,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
@@ -140,9 +143,14 @@ const adopt = (f: Fakes, room: string, native: string): void => {
   f.emitDen(kimiEvent(room, native, { type: 'session.start', title: 'kimi session' }))
 }
 
+const kimiTomlReader: SheetReaders = {
+  readText: () => `default_model = "k2"\n\n[models.k2]\n\n[models.k1]\n`,
+}
+
 describe('capability flags are honest', () => {
   it('reports what is actually wired on this node', () => {
-    expect(makeDriver().driver.capabilities).toEqual({
+    const caps = makeDriver({ sheetReaders: kimiTomlReader }).driver.capabilities
+    expect(pick(caps, FIVE_FLAGS)).toEqual({
       // Esc is kimi's own documented interrupt key ("Close dialogs / interrupt
       // streaming"), which is exactly what the term manager injects.
       interrupt: true,
@@ -161,6 +169,14 @@ describe('capability flags are honest', () => {
       liveStream: true,
       listSessions: true,
     })
+  })
+
+  it('advertises --model and aliases from an injected kimi config.toml', () => {
+    const caps = makeDriver({ sheetReaders: kimiTomlReader }).driver.capabilities
+    expect(caps.modelFlag).toBe('--model')
+    expect(caps.effortFlag).toBeUndefined()
+    expect(caps.models?.map((m) => m.id)).toEqual(['k2', 'k1'])
+    expect(caps.models?.filter((m) => m.default === true).map((m) => m.id)).toEqual(['k2'])
   })
 
   it('drops interrupt/resume when den terminals are off', () => {
@@ -301,8 +317,20 @@ describe('adoption — how a kimi session enters the control plane', () => {
     const f = makeDriver()
     const seen: HarnessEvent[] = []
     f.driver.subscribeEvents((e) => seen.push(e))
-    f.emitDen({ v: 1, session: 'kimi-code:nope', harness: 'kimi-code', type: 'tool.start', tool: 'Bash' })
-    f.emitDen({ v: 1, session: 'host:kimi', harness: 'kimi-code', type: 'tool.start', tool: 'Bash' })
+    f.emitDen({
+      v: 1,
+      session: 'kimi-code:nope',
+      harness: 'kimi-code',
+      type: 'tool.start',
+      tool: 'Bash',
+    })
+    f.emitDen({
+      v: 1,
+      session: 'host:kimi',
+      harness: 'kimi-code',
+      type: 'tool.start',
+      tool: 'Bash',
+    })
     expect(seen).toEqual([])
   })
 
@@ -709,19 +737,18 @@ describe('through the real registry', () => {
   }
 
   it('registers under the kimi-code harness id and advertises its flags', () => {
-    const { registry } = withRegistry()
-    expect(registry.list()).toEqual([
-      {
-        harnessId: 'kimi-code',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-        },
-      },
-    ])
+    const { fakes, registry } = withRegistry()
+    const [desc] = registry.list()
+    expect(registry.list()).toHaveLength(1)
+    expect(desc.harnessId).toBe('kimi-code')
+    expect(pick(desc.capabilities, FIVE_FLAGS)).toEqual({
+      interrupt: true,
+      resume: true,
+      approvals: false,
+      liveStream: true,
+      listSessions: true,
+    })
+    expect(desc.capabilities.modelFlag).toBe(fakes.driver.capabilities.modelFlag)
   })
 
   it('lists canonical ids, exactly once each', async () => {

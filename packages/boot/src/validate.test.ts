@@ -871,8 +871,7 @@ describe('den', () => {
       tls_cert: '/rivet-shared/rivet-ca/issued/node.crt',
       tls_key: '/rivet-shared/rivet-ca/issued/node.key',
       terminal: { enabled: true },
-      packs_dir: '/opt/rivetos/packages/den-packs/packs',
-      static_dir: '/opt/rivetos/apps/den/dist',
+      static_dir: '/opt/rivetos/apps/rivethub-web/dist',
     }
     assertValid(validateConfig(cfg))
   })
@@ -933,12 +932,17 @@ describe('den', () => {
     assertError(validateConfig(cfg), 'den.terminal.enabled', 'must be a boolean')
   })
 
-  it('rejects empty packs_dir / static_dir overrides', () => {
+  it('rejects empty static_dir overrides', () => {
     const cfg = validConfig()
-    cfg.den = { enabled: true, packs_dir: '', static_dir: 42 }
+    cfg.den = { enabled: true, static_dir: '' }
     const result = validateConfig(cfg)
-    assertError(result, 'den.packs_dir', /non-empty string path/)
     assertError(result, 'den.static_dir', /non-empty string path/)
+  })
+
+  it('rejects a non-string static_dir', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, static_dir: 42 }
+    assertError(validateConfig(cfg), 'den.static_dir', /non-empty string path/)
   })
 
   // --- terminal security gate (mirrors den-server's startup gate) ---------
@@ -1038,6 +1042,18 @@ describe('den', () => {
       cfg.tasks = { eval: { strictness: 'max' } }
       assertWarning(validateConfig(cfg), 'tasks.eval.strictness', 'Unknown tasks.eval key')
     })
+
+    it('warns when a harness models/efforts override is empty', () => {
+      const cfg = validConfig()
+      cfg.tasks = {
+        harnesses: {
+          'claude-code': { models: [], efforts: [] },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'tasks.harnesses.claude-code.models', 'empty and will be ignored')
+      assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
+    })
   })
 
   // =========================================================================
@@ -1062,7 +1078,9 @@ describe('den', () => {
       const result = validateConfig(cfg)
       assertValid(result)
       assert.equal(
-        result.warnings.some((w) => w.path === 'workflows' && w.message.includes('Unknown top-level')),
+        result.warnings.some(
+          (w) => w.path === 'workflows' && w.message.includes('Unknown top-level'),
+        ),
         false,
       )
     })

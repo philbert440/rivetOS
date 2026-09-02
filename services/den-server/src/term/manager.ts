@@ -44,6 +44,11 @@ import { hostname } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import type { DenConfig } from '../config.js'
+import {
+  appendModelEffortArgv,
+  sheetForRosterCommand,
+  type ModelSheet,
+} from '../harness/model-sheets.js'
 import type { PtyProc, PtySpawn } from './pty.js'
 import type { TermRoster } from './roster.js'
 import {
@@ -99,6 +104,8 @@ export interface TermManagerDeps {
   writeEnvFile?: (path: string, body: string) => void
   log: (msg: string) => void
   now?: () => number
+  /** Test seam: resolve the model/effort sheet for a roster command. */
+  modelSheetFor?: (command: string) => ModelSheet | undefined
 }
 
 export interface PtyInfo {
@@ -213,6 +220,8 @@ export interface TermManager {
     resume?: string,
     envOverride?: Record<string, string>,
     routedUser?: string,
+    model?: string,
+    effort?: string,
   ): PtyInfo
   list(): PtyInfo[]
   get(id: string): PtyInfo | undefined
@@ -885,7 +894,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   }
 
   return {
-    spawn(rosterKey, cols, rows, remote, session, resume, envOverride, routedUser): PtyInfo {
+    spawn(
+      rosterKey,
+      cols,
+      rows,
+      remote,
+      session,
+      resume,
+      envOverride,
+      routedUser,
+      model,
+      effort,
+    ): PtyInfo {
       // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
       // Re-entering Terminal (or chat inject) for a live conversation reuses
       // the same harness rather than spawning a second (seamless modes).
@@ -1104,6 +1124,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // session gets the harness's own id.
           argv = [...entry.cmd, flags.sessionFlag, session]
         }
+      }
+      // Model/effort flags only on CREATE — a reattach must not rewrite a
+      // running harness's argv.
+      if (!persisted) {
+        const sheet = deps.modelSheetFor?.(key) ?? sheetForRosterCommand(key, config.harnesses)
+        argv = appendModelEffortArgv(argv, sheet, model, effort, deps.log)
       }
 
       // Per-user routing (device→user, server.ts): the override lands last so

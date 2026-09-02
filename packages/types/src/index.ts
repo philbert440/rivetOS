@@ -144,6 +144,8 @@ export type { ParsedTaskResult } from './task-result.js'
 export type {
   HarnessId,
   SessionId,
+  EffortOption,
+  HarnessModelOption,
   HarnessCapabilities,
   ApprovalDecision,
   HarnessEvent,
@@ -152,6 +154,11 @@ export type {
   HarnessDriver,
 } from './harness.js'
 export type { SessionSummary as HarnessSessionSummary } from './harness.js'
+export {
+  CATALOG_AGENT_TO_HARNESS,
+  catalogAgentToHarness,
+  migrateAgentPreset,
+} from './agent-preset.js'
 export {
   HARNESS_IDS,
   SYSTEM_PROMPT_MAX_CHARS,

@@ -1,6 +1,6 @@
 // den-server: protocol event ingest + WS fanout + snapshots + layout store.
 //
-// Adapters POST validated protocol events to /event; viewers connect to
+// Adapters POST validated protocol events to /event; clients connect to
 // WS /ws (optionally ?session=<id>) and receive a full state snapshot
 // followed by the live event stream. Late joiners never replay event soup —
 // the reducer state IS the replay.
@@ -23,7 +23,7 @@
 //        | ?session=<den>       live bytes (see term/ws.ts for the framing)
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
 //   GET  /healthz               liveness (never auth-gated)
-//   GET  /packs/*, /*           static packs + built viewer, when configured
+//   GET  /*                     built hub app, when staticDir is configured
 //   GET  /v1/models             OpenAI list (agent id = model id; gateway mount)
 //   POST /v1/chat/completions   OpenAI chat (SSE or JSON; gateway mount)
 //
@@ -66,6 +66,7 @@ import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
+import { MODEL_EFFORT_TOKEN_RE } from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import { createTermWs } from './term/ws.js'
 import { MicBridge } from './audio/bridge.js'
@@ -585,6 +586,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('claude'),
         log: console.error,
+        sheetOverride: config.harnesses?.['claude-code'],
       }),
       new GrokBuildDriver({
         store: createHarnessStore('grok'),
@@ -592,6 +594,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('grok'),
         log: console.error,
+        sheetOverride: config.harnesses?.['grok-build'],
       }),
       new HermesDriver({
         store: createHarnessStore('hermes'),
@@ -599,6 +602,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('hermes'),
         log: console.error,
+        sheetOverride: config.harnesses?.hermes,
       }),
       new KimiCodeDriver({
         store: createHarnessStore('kimi'),
@@ -606,6 +610,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('kimi'),
         log: console.error,
+        sheetOverride: config.harnesses?.['kimi-code'],
       }),
       new DeepseekHarnessDriver({
         store: createHarnessStore('deepseek'),
@@ -616,6 +621,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('dsh'),
         log: console.error,
+        sheetOverride: config.harnesses?.['deepseek-harness'],
       }),
     )
     for (const driver of builtinDrivers) harnesses.register(driver)
@@ -869,11 +875,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         return
       }
       if (req.method === 'GET' || req.method === 'HEAD') {
-        if (config.packsDir && url.pathname.startsWith('/packs/')) {
-          if (serveStatic(res, config.packsDir, url.pathname.slice('/packs/'.length))) return
-        }
         // /api/* belongs to gateway route mounts and aliases — never the
-        // static viewer. Without this carve-out the SPA fallback hijacks
+        // static hub. Without this carve-out the SPA fallback hijacks
         // extensionless GETs like /api/tasks (G1 regression, fixed in G2).
         // Gateway mounts own their prefixes even outside /api/ (e.g. /wiki)
         // — without this the SPA fallback hijacks them (G1-regression class).
@@ -899,13 +902,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           !gatewayOwned
         ) {
           if (serveStatic(res, config.staticDir, url.pathname)) return
-          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the
-          // shell. A nested app bundled under the static root (the den
-          // viewer at /den/ inside a rivethub deploy) gets ITS index for
-          // paths under its prefix — /den/mesh must boot den, not rivethub.
+          // SPA fallback: extensionless paths (e.g. /mesh, /demo) get the hub shell.
           if (!extname(url.pathname)) {
-            const seg = url.pathname.split('/')[1]
-            if (seg && serveStatic(res, config.staticDir, `/${seg}/index.html`)) return
             if (serveStatic(res, config.staticDir, '/index.html')) return
           }
         }
@@ -1160,6 +1158,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             rows?: unknown
             session?: unknown
             resume?: unknown
+            model?: unknown
+            effort?: unknown
           }
           if (p.command !== undefined && typeof p.command !== 'string')
             return json(res, 400, { error: 'command must be a roster key' })
@@ -1167,6 +1167,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'session must be a string' })
           if (p.resume !== undefined && typeof p.resume !== 'string')
             return json(res, 400, { error: 'resume must be a string' })
+          const token = (v: unknown): string | undefined | null => {
+            if (v === undefined) return undefined
+            if (typeof v !== 'string' || !MODEL_EFFORT_TOKEN_RE.test(v)) return null
+            return v
+          }
+          const modelTok = token(p.model)
+          const effortTok = token(p.effort)
+          if (modelTok === null) return json(res, 400, { error: 'model must be a 1-64 token' })
+          if (effortTok === null) return json(res, 400, { error: 'effort must be a 1-64 token' })
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
@@ -1201,6 +1210,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               resumeKey,
               userEnv,
               routedUser,
+              modelTok,
+              effortTok,
             )
             if (userCtx) {
               sessionOwners.set(pty.denSession, userCtx.userId)

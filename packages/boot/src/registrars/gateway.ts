@@ -4,10 +4,8 @@
  * route families through `extraRoutes` (G1 tasks, G2 events, …) — this file
  * owns config mapping, the bearer token, lifecycle, and the port.
  *
- * Cutover: `rivetos update` retires the standalone rivet-den.service before
- * restarting rivetos (the embedded gateway binds the same port). If the old
- * unit is somehow still holding the port, we log loudly and skip — the den
- * routes keep being served by the old unit until the next update pass.
+ * If the configured port is already in use, we log loudly and skip — the
+ * gateway is not started.
  *
  * Auth: Rivet CA device client certificates (mTLS). den.token / bearer
  * tokens are removed. Off-loopback requires RIVETOS_DEN_TLS_CERT/KEY (node
@@ -97,8 +95,6 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     RIVETOS_DEN_HOST: den.host?.trim() || '127.0.0.1',
     RIVETOS_DEN_PORT: String(den.port ?? 5174),
     RIVETOS_DEN_STATIC_DIR: den.static_dir?.trim() || defaultStaticDir(installRoot),
-    RIVETOS_DEN_PACKS_DIR:
-      den.packs_dir?.trim() || join(installRoot, 'packages', 'den-packs', 'packs'),
   }
   // Nightly/experimental switch (plan D6). Config-derived, not prefix
   // passthrough. Included on the env map passed wholesale to den-server
@@ -246,17 +242,9 @@ export function denTlsConfigured(config: RivetConfig): boolean {
   return Boolean(cert) && Boolean(key)
 }
 
-/**
- * Hub-first static default: when the node has a built RivetHub, serve it at
- * / (the den viewer rides nested at /den/ via copy-den.mjs). The bare den
- * viewer is only the root when no hub dist exists. Before this, nodes
- * without an explicit static_dir served the den viewer full-screen — a
- * node-switch from another hub landed there with no way back into the hub.
- */
+/** Static root is RivetHub web dist only. */
 function defaultStaticDir(installRoot: string): string {
-  const hub = join(installRoot, 'apps', 'rivethub-web', 'dist')
-  if (existsSync(join(hub, 'index.html'))) return hub
-  return join(installRoot, 'apps', 'den', 'dist')
+  return join(installRoot, 'apps', 'rivethub-web', 'dist')
 }
 
 export interface GatewayStart {
@@ -330,13 +318,24 @@ export async function registerGateway(
   const denConfig = loadDenConfig({ ...env })
   // Bearer removed: denConfig.token is always empty from loadConfig.
   // TLS paths come from den.tls_* / env in buildGatewayEnv.
+  // Model/effort list overrides live under tasks.harnesses.<id> in config.yaml
+  // and replace the driver's advertised sheet when present.
+  const harnessSheets = config.tasks?.harnesses
+  if (harnessSheets) {
+    denConfig.harnesses = Object.fromEntries(
+      Object.entries(harnessSheets).map(([id, section]) => [
+        id,
+        { models: section.models, efforts: section.efforts },
+      ]),
+    )
+  }
 
   const den = createDenServer(denConfig, {
     extraRoutes: [...extraRoutes, ...gatewayChannel.routes, openaiRoute],
     extraUpgrades: [gatewayChannel.upgrade, ...extraUpgrades],
     // Seamless modes (5d): bridge live harness AgentEvents into the chat WS
     // so a PTY conversation's chat view streams (thinking/tool indicators +
-    // the coalesced assistant message per turn). Terminal + den views are
+    // the coalesced assistant message per turn). Terminal view is
     // unaffected; `task:` sessions are skipped inside the bridge.
     onAgentEvent: (ev) => gatewayChannel.bridgeAgentEvent(ev),
     harnessDrivers,
@@ -345,10 +344,7 @@ export async function registerGateway(
   const listening = await new Promise<boolean>((resolve) => {
     den.server.once('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        log.warn(
-          `Gateway port ${String(denConfig.port)} in use — is the retired rivet-den.service ` +
-            `still running? (systemctl disable --now rivet-den) Gateway NOT started.`,
-        )
+        log.warn(`Gateway port ${String(denConfig.port)} in use — Gateway NOT started.`)
         resolve(false)
       } else if (err.code === 'EACCES' && denConfig.port < 1024) {
         log.warn(

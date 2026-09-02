@@ -37,7 +37,6 @@ async function start(
     tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
-    packsDir: '',
     evictTtlMs: 60_000,
     meshFile: '',
     meshCacheMs: 10_000,
