@@ -1,0 +1,84 @@
+{
+    "$help": "https://aka.ms/terminal-documentation",
+    "$schema": "https://aka.ms/terminal-profiles-schema",
+    "copyOnSelect": false,
+    "defaultProfile": "{574e775e-4f2a-5b96-ac1e-a2962a402336}",
+    "profiles":
+    {
+        // settings under "defaults" apply to every profile
+        "defaults":
+        {
+            "colorScheme": "One Half Dark",
+            "font":
+            {
+                "face": "Cascadia Mono",
+                "size": 12,
+                "cellHeight": "1.2"
+            },
+            "opacity": 90,
+        },
+        "list":
+        [
+            {
+                "guid": "{574e775e-4f2a-5b96-ac1e-a2962a402336}",
+                "name": "Ubuntu",
+                "source": "Windows.Terminal.Wsl"
+            },
+            {
+                "commandline": "%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                "guid": "{61c54bbd-c2c6-5271-96e7-009a87ff44bf}",
+                "name": "Windows PowerShell"
+            }
+        ]
+    },
+    "schemes":
+    [
+        {
+            "name": "Campbell",
+            "background": "#0C0C0C",
+            "foreground": "#CCCCCC",
+            "cursorColor": "#FFFFFF",
+            "selectionBackground": "#FFFFFF",
+            "black": "#0C0C0C",
+            "red": "#C50F1F",
+            "green": "#13A10E",
+            "yellow": "#C19C00",
+            "blue": "#0037DA",
+            "purple": "#881798",
+            "cyan": "#3A96DD",
+            "white": "#CCCCCC",
+            "brightBlack": "#767676",
+            "brightRed": "#E74856",
+            "brightGreen": "#16C60C",
+            "brightYellow": "#F9F1A5",
+            "brightBlue": "#3B78FF",
+            "brightPurple": "#B4009E",
+            "brightCyan": "#61D6D6",
+            "brightWhite": "#F2F2F2"
+        },
+        {
+            "name": "One Half Dark",
+            "background": "#282C34",
+            "foreground": "#DCDFE4",
+            "cursorColor": "#FFFFFF",
+            "selectionBackground": "#474E5D",
+            "black": "#282C34",
+            "red": "#E06C75",
+            "green": "#98C379",
+            "yellow": "#E5C07B",
+            "blue": "#61AFEF",
+            "purple": "#C678DD",
+            "cyan": "#56B6C2",
+            "white": "#DCDFE4",
+            "brightBlack": "#5A6374",
+            "brightRed": "#E06C75",
+            "brightGreen": "#98C379",
+            "brightYellow": "#E5C07B",
+            "brightBlue": "#61AFEF",
+            "brightPurple": "#C678DD",
+            "brightCyan": "#56B6C2",
+            "brightWhite": "#DCDFE4"
+        }
+    ],
+    "themes": []
+}

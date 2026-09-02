@@ -9,6 +9,7 @@ import { app, clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent }
 import { openInTerminal } from './external-terminal.js'
 import type { PipeState } from './mtls-pipe.js'
 import type { SettingsStore } from './settings-store.js'
+import { readTerminalConfigs } from './terminal-config.js'
 import { checkForUpdate, downloadAndInstall } from './updater.js'
 
 export interface IpcDeps {
@@ -171,6 +172,12 @@ export function registerIpc(deps: IpcDeps): void {
       throw err
     }
   })
+
+  // Terminal config import (Settings → Terminal → Import from…): READ-ONLY,
+  // and the channel takes no arguments on purpose — the renderer cannot name
+  // a path, so the allowlist in terminal-config.ts is the entire attack
+  // surface. Parsing happens in the renderer; main only ships bytes.
+  guarded('terminal:readConfigs', () => readTerminalConfigs())
 
   // Settings persistence: the main process owns settings.json in userData,
   // and hydrates the renderer's localStorage on boot if Chromium store is

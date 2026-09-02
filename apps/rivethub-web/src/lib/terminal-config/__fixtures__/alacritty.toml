@@ -1,0 +1,33 @@
+# Alacritty 0.15 configuration
+
+[general]
+import = ["themes/tokyonight.toml"]
+live_config_reload = true
+
+[env]
+TERM = "alacritty"
+
+[window]
+opacity = 0.95
+padding = { x = 6, y = 6 }
+decorations = "none"
+
+[font]
+size = 11.5
+
+[font.normal]
+family = "JetBrains Mono"
+style = "Regular"
+
+[font.bold]
+family = "JetBrains Mono"
+style = "Bold"
+
+[colors.primary]
+# the theme sets the rest; this machine wants a darker ground
+background = "#16161e"
+
+[[keyboard.bindings]]
+key = "N"
+mods = "Control|Shift"
+action = "CreateNewWindow"
