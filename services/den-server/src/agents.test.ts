@@ -247,6 +247,30 @@ describe('agents routes', () => {
     expect(created.json.agent).toMatchObject({ harnessId: 'claude-code', model: '' })
   })
 
+  it('accepts a slash model id on create and PATCH', async () => {
+    await start()
+    const created = await createAgent({
+      name: 'Kimi',
+      nodeBaseUrl: NODE,
+      harnessId: 'kimi-code',
+      model: 'moonshotai/kimi-k3',
+    })
+    expect(created.status).toBe(201)
+    expect(created.json.agent).toMatchObject({
+      harnessId: 'kimi-code',
+      model: 'moonshotai/kimi-k3',
+    })
+    const patched = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'moonshotai/kimi-k2-0905-preview' }),
+    })
+    expect(patched.status).toBe(200)
+    expect(((await patched.json()) as { agent: AgentPreset }).agent.model).toBe(
+      'moonshotai/kimi-k2-0905-preview',
+    )
+  })
+
   it('PATCH harnessId null unsets, then migrateAgentPreset runs on the result', async () => {
     await start()
     const created = await createAgent({
