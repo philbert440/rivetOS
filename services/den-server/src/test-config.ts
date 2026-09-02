@@ -20,7 +20,6 @@ export function baseTestDenConfig(
     tls: partial.tls ?? emptyTls(),
     stateDir,
     staticDir: partial.staticDir ?? '',
-    packsDir: partial.packsDir ?? '',
     rootRedirect: partial.rootRedirect ?? '',
     evictTtlMs: partial.evictTtlMs ?? 60_000,
     meshFile: partial.meshFile ?? '',

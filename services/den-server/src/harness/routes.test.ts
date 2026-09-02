@@ -156,7 +156,6 @@ function denConfig(stateDir: string): DenConfig {
     tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
     stateDir,
     staticDir: '',
-    packsDir: '',
     evictTtlMs: 60_000,
     meshFile: '',
     meshCacheMs: 10_000,
@@ -342,9 +341,9 @@ describe('more than one driver on a node', () => {
     grok.add(GROK_SID)
     const { base } = await start(claude, grok)
 
-    expect((await post(base, `/api/harness-sessions/${enc(GROK_SID)}/turns`, { text: 'hi' })).status).toBe(
-      202,
-    )
+    expect(
+      (await post(base, `/api/harness-sessions/${enc(GROK_SID)}/turns`, { text: 'hi' })).status,
+    ).toBe(202)
     expect(grok.calls.turns).toEqual([{ sessionId: GROK_SID, turn: { text: 'hi' } }])
     expect(claude.calls.turns).toEqual([])
 
@@ -380,9 +379,7 @@ describe('more than one driver on a node', () => {
     grok.emitRegistry({ type: 'session-updated', sessionId: GROK_SID, status: 'active' })
     await new Promise((r) => setTimeout(r, 20))
 
-    expect(frames).toEqual([
-      { type: 'session-updated', sessionId: GROK_SID, status: 'active' },
-    ])
+    expect(frames).toEqual([{ type: 'session-updated', sessionId: GROK_SID, status: 'active' }])
     ws.close()
   })
 })
@@ -505,9 +502,9 @@ describe('POST /api/harnesses/:id/sessions', () => {
       ).status,
     ).toBe(400)
     // …and a sessionId of the wrong JSON type never reaches the driver either.
-    expect((await post(base, '/api/harnesses/claude-code/sessions', { sessionId: 42 })).status).toBe(
-      400,
-    )
+    expect(
+      (await post(base, '/api/harnesses/claude-code/sessions', { sessionId: 42 })).status,
+    ).toBe(400)
     expect(driver.calls.started).toEqual([])
   })
 
@@ -617,14 +614,12 @@ describe('claimSession on create', () => {
     registry.register(driver)
     const routes = createHarnessRoutes({ registry, claimSession: () => false })
     const server = createServer((req, res) => {
-      void routes
-        .handle(req, res, new URL(req.url ?? '/', 'http://127.0.0.1'))
-        .then((handled) => {
-          if (!handled) {
-            res.writeHead(404)
-            res.end()
-          }
-        })
+      void routes.handle(req, res, new URL(req.url ?? '/', 'http://127.0.0.1')).then((handled) => {
+        if (!handled) {
+          res.writeHead(404)
+          res.end()
+        }
+      })
     })
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
     try {
@@ -717,9 +712,9 @@ describe('session-scoped actions', () => {
     driver.add(SID)
     const { base } = await start(driver)
     expect((await post(base, `/api/harness-sessions/${enc(SID)}/resume`)).status).toBe(200)
-    expect((await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'hi' })).status).toBe(
-      202,
-    )
+    expect(
+      (await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'hi' })).status,
+    ).toBe(202)
     expect((await post(base, `/api/harness-sessions/${enc(SID)}/interrupt`)).status).toBe(202)
     expect(driver.calls.resumed).toEqual([SID])
     expect(driver.calls.turns).toEqual([{ sessionId: SID, turn: { text: 'hi' } }])
@@ -793,7 +788,9 @@ describe('capability flags gate the surface (501, non-fatal)', () => {
       ['POST', `/api/harness-sessions/${enc(SID)}/approvals/req-1`],
     ] as const) {
       const res =
-        method === 'GET' ? await fetch(`${base}${path}`) : await post(base, path, { decision: 'allow' })
+        method === 'GET'
+          ? await fetch(`${base}${path}`)
+          : await post(base, path, { decision: 'allow' })
       expect(`${method} ${path} → ${String(res.status)}`).toBe(`${method} ${path} → 501`)
       expect(((await res.json()) as { code: string }).code).toBe('capability_unsupported')
     }
@@ -810,7 +807,9 @@ describe('capability flags gate the surface (501, non-fatal)', () => {
       throw new HarnessError('capability_unsupported', 'no live stream')
     }
     const { base } = await start(driver)
-    const ws = new WebSocket(`${base.replace('http', 'ws')}/api/harness-sessions/ws?session=${enc(SID)}`)
+    const ws = new WebSocket(
+      `${base.replace('http', 'ws')}/api/harness-sessions/ws?session=${enc(SID)}`,
+    )
     const frame = await new Promise<string>((resolve, reject) => {
       ws.on('message', (d) => resolve(String(d)))
       ws.on('error', reject)
@@ -978,9 +977,7 @@ describe('capability runtime truthing', () => {
     // Nobody has read the sheet yet, so the flags are still the optimistic
     // declaration. Attaching kicks the probe, and the flip finds the client.
     const { base } = await startWith({ ptySpawn: null }, termsOnPtyBroken)
-    const ws = new WebSocket(
-      `${base.replace('http', 'ws')}/api/harnesses/ws?harness=kimi-code`,
-    )
+    const ws = new WebSocket(`${base.replace('http', 'ws')}/api/harnesses/ws?harness=kimi-code`)
     // Listener BEFORE the handshake settles: the probe the attach kicks can
     // land in the same chunk as the 101, and a frame emitted with no listener
     // is simply gone.

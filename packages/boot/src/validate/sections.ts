@@ -772,7 +772,7 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     }
   }
 
-  for (const key of ['packs_dir', 'static_dir'] as const) {
+  for (const key of ['static_dir'] as const) {
     if (den[key] !== undefined && (typeof den[key] !== 'string' || den[key].trim() === '')) {
       issues.push({
         severity: 'error',

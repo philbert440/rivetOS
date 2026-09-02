@@ -78,7 +78,6 @@ export const KNOWN_DEN_KEYS = new Set([
   'tls_cert',
   'tls_key',
   'terminal',
-  'packs_dir',
   'static_dir',
   'root_redirect',
   'files_root',

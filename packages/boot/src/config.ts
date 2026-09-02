@@ -31,7 +31,7 @@ export interface RivetConfig {
   deployment?: DeploymentSection
   /** Multi-agent mesh configuration — cross-instance delegation */
   mesh?: MeshSection
-  /** rivet-den — per-node agent activity diorama server (services/den-server) */
+  /** rivet-den — node gateway (den-server) */
   den?: DenSection
   /** Durable task engine (ros_tasks + embedded runner) — phase 1 */
   tasks?: TasksSection
@@ -132,15 +132,13 @@ export interface MeshSection {
 // ---------------------------------------------------------------------------
 
 /**
- * rivet-den configuration — the per-node activity diorama server.
+ * rivet-den configuration — the per-node gateway (embedded den-server).
  *
  * When `enabled`, two things happen:
- * - `rivetos update` deploys/refreshes rivet-den.service on this node and
- *   GENERATES ~/.rivetos/den.env from this section (host/port/token/terminal
- *   flags/static+packs dirs).
+ * - boot embeds den-server as the gateway (port/host/static_dir/terminal/tls).
  * - The runtime's mesh self-registration advertises the `den` capability and
- *   `metadata.denPort`, so den viewers discover this node via /mesh.json —
- *   restart-proof, no hand-editing of mesh.json.
+ *   `metadata.denPort` / `metadata.denUrl`, so peers discover this node via
+ *   /mesh.json — restart-proof, no hand-editing of mesh.json.
  */
 /**
  * Task engine configuration — the durable `ros_tasks` model + embedded
@@ -252,12 +250,9 @@ export interface DenSection {
      *  RIVETOS_DEN_TERM_IDLE_TTL_MS. Default 1800000 (30 min); 0 disables. */
     idle_ttl_ms?: number
   }
-  /** Override for the SpritePack root served at /packs/ (default: <install>/packages/den-packs/packs) */
-  packs_dir?: string
   /** 302 target for GET / — '/wiki' makes the memory wiki the landing page (3e). */
   root_redirect?: string
-  /** Override for the built viewer app served at / (default: RivetHub dist
-   *  when built — <install>/apps/rivethub-web/dist — else <install>/apps/den/dist) */
+  /** Override for the built hub app served at / (default: <install>/apps/rivethub-web/dist) */
   static_dir?: string
   /** Shared filestore root for /api/files/* (default '/rivet-shared';
    *  empty string disables the routes). */

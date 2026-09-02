@@ -54,7 +54,7 @@ not just **what** (the diff already shows that).
 
 ## Build & deploy
 
-- This repo *is* the upstream source (`github.com/philbert440/rivetOS`).
+- This repo _is_ the upstream source (`github.com/philbert440/rivetOS`).
   When developing here, commits push directly to origin.
 - The runtime service (`rivetos.service`) loads from this same checkout
   via `/etc/systemd/system/rivetos.service`, so source edits + service
@@ -69,8 +69,8 @@ This is an **npm workspace** monorepo (`package-lock.json`, `npm ci` in CI) —
 not pnpm and not yarn. Workspace members are enumerated under `workspaces` in
 the root `package.json`: `packages/*`, five per-category plugin globs
 (`plugins/{channels,memory,providers,tools,transports}/*`), `services/*`, four
-explicitly-listed apps (`apps/den`, `apps/site`, `apps/rivethub-web`,
-`apps/rivet-android` — note the Electron shell `apps/rivethub-electron` is *not* a
+explicitly-listed apps (`apps/site`, `apps/rivethub-web`,
+`apps/rivet-android` — note the Electron shell `apps/rivethub-electron` is _not_ a
 member), and the
 two `integrations/*/rivet-memory/capture` packages.
 
@@ -82,8 +82,8 @@ the same in-tree and on the registry.
 
 The pins track each dependency's own version, so they are not uniform. Most
 of the tree is at `0.4.0-beta.6`, but several members are not — e.g.
-`den-protocol` and `den-packs` at `0.1.0`; `den-server`, `embedding-worker`,
-`compaction-worker`, `den-app`, and `site` at `0.4.0`; `rivet-android` at
+`den-protocol` at `0.1.0`; `den-server`, `embedding-worker`,
+`compaction-worker`, and `site` at `0.4.0`; `rivet-android` at
 `0.0.0`; and the two capture packages at `0.3.0` and `0.1.0`. Check the
 member's own `version` rather than assuming the common one. A handful of edges
 opt out with `"*"` (`gateway-client` → types, `den-server` → types,

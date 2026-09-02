@@ -43,10 +43,12 @@ async function start(
   evictTtlMs = 60_000,
   opts: {
     staticDir?: string
-    packsDir?: string
     extraRoutes?: Array<{
       prefix: string
-      handler: (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => void
+      handler: (
+        req: import('node:http').IncomingMessage,
+        res: import('node:http').ServerResponse,
+      ) => void
     }>
     extraUpgrades?: Array<{
       path: string
@@ -66,7 +68,6 @@ async function start(
     port: 0,
     host: '127.0.0.1',
     staticDir: opts.staticDir ?? '',
-    packsDir: opts.packsDir ?? '',
     evictTtlMs,
     term: {
       enabled: opts.term ?? false,
@@ -129,7 +130,9 @@ describe('den-server', () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?session=s1`)
     const messages: Record<string, unknown>[] = []
-    ws.on('message', (d: Buffer) => messages.push(JSON.parse(d.toString()) as Record<string, unknown>))
+    ws.on('message', (d: Buffer) =>
+      messages.push(JSON.parse(d.toString()) as Record<string, unknown>),
+    )
     await new Promise((r) => ws.once('open', r))
     await new Promise((r) => setTimeout(r, 50))
 
@@ -151,10 +154,16 @@ describe('den-server', () => {
     expect((await fetch(`${base}/layout`)).status).toBe(404)
     expect((await post(base, '/layout?viewer=default', { desk: { x: 1 } })).status).toBe(200)
     // unknown viewer falls back to the shared default
-    const fromOther = (await (await fetch(`${base}/layout?viewer=phil`)).json()) as Record<string, unknown>
+    const fromOther = (await (await fetch(`${base}/layout?viewer=phil`)).json()) as Record<
+      string,
+      unknown
+    >
     expect(fromOther.desk).toEqual({ x: 1 })
     await post(base, '/layout?viewer=phil', { desk: { x: 2 } })
-    const own = (await (await fetch(`${base}/layout?viewer=phil`)).json()) as Record<string, unknown>
+    const own = (await (await fetch(`${base}/layout?viewer=phil`)).json()) as Record<
+      string,
+      unknown
+    >
     expect(own.desk).toEqual({ x: 2 })
     expect((await post(base, '/layout?viewer=../evil', {})).status).toBe(400)
     const rawBad = await fetch(`${base}/layout`, { method: 'POST', body: 'not json' })
@@ -197,7 +206,9 @@ describe('den-server', () => {
     await post(base, '/event', EV)
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`)
     const messages: Record<string, unknown>[] = []
-    ws.on('message', (d: Buffer) => messages.push(JSON.parse(d.toString()) as Record<string, unknown>))
+    ws.on('message', (d: Buffer) =>
+      messages.push(JSON.parse(d.toString()) as Record<string, unknown>),
+    )
     await new Promise((r) => ws.once('open', r))
 
     await post(base, '/event', { v: 1, session: 's1', type: 'session.end' })
@@ -249,27 +260,23 @@ describe('den-server', () => {
     )
   })
 
-  it('serves the viewer shell and pack art on loopback; mesh.json is not shadowed by static', async () => {
+  it('serves the hub shell on loopback; mesh.json is not shadowed by static', async () => {
     const staticDir = mkdtempSync(join(tmpdir(), 'den-static-'))
-    const packsDir = mkdtempSync(join(tmpdir(), 'den-packs-'))
-    dirs.push(staticDir, packsDir)
+    dirs.push(staticDir)
     mkdirSync(join(staticDir, 'assets'))
-    writeFileSync(join(staticDir, 'index.html'), '<html>shell</html>')
-    writeFileSync(join(staticDir, 'assets', 'app.js'), 'js')
     mkdirSync(join(staticDir, 'den'))
-    writeFileSync(join(staticDir, 'den', 'index.html'), '<html>den shell</html>')
+    writeFileSync(join(staticDir, 'index.html'), '<html>shell</html>')
+    writeFileSync(join(staticDir, 'den', 'index.html'), '<html>nested-den</html>')
+    writeFileSync(join(staticDir, 'assets', 'app.js'), 'js')
     writeFileSync(join(staticDir, 'mesh.json'), '{"spoof":true}')
-    mkdirSync(join(packsDir, 'default'))
-    writeFileSync(join(packsDir, 'default', 'pack.json'), '{}')
 
-    const { base } = await start('', 60_000, { staticDir, packsDir })
+    const { base } = await start('', 60_000, { staticDir })
     expect((await fetch(`${base}/index.html`)).status).toBe(200)
     expect((await fetch(`${base}/assets/app.js`)).status).toBe(200)
     expect((await fetch(`${base}/`)).status).toBe(200)
     expect((await fetch(`${base}/mesh`)).status).toBe(200)
-    expect(await (await fetch(`${base}/den/mesh`)).text()).toBe('<html>den shell</html>')
+    expect(await (await fetch(`${base}/den/mesh`)).text()).toBe('<html>shell</html>')
     expect(await (await fetch(`${base}/demo`)).text()).toBe('<html>shell</html>')
-    expect((await fetch(`${base}/packs/default/pack.json`)).status).toBe(200)
     // Static must not shadow the mesh API with a spoofed mesh.json file
     const mesh = await fetch(`${base}/mesh.json`)
     const body = mesh.status === 200 ? await mesh.json() : null
@@ -280,7 +287,10 @@ describe('den-server', () => {
 describe('gateway route mounts (G0)', () => {
   const ping = {
     prefix: '/api/ping',
-    handler: (_req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+    handler: (
+      _req: import('node:http').IncomingMessage,
+      res: import('node:http').ServerResponse,
+    ) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ pong: true }))
     },
@@ -342,7 +352,10 @@ describe('gateway route mounts (G0)', () => {
   it('longest prefix wins and subpaths route to the mount', async () => {
     const deep = {
       prefix: '/api/ping/deep',
-      handler: (_req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse) => {
+      handler: (
+        _req: import('node:http').IncomingMessage,
+        res: import('node:http').ServerResponse,
+      ) => {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ deep: true }))
       },
@@ -431,9 +444,9 @@ describe('POST /term/inject (seamless modes 5c)', () => {
   it('is reachable via the /api/terminal/inject alias', async () => {
     const { base } = await start('', 60_000, { term: true })
     await post(base, '/term', { command: 'shell', session: 'chat-y' })
-    expect((await post(base, '/api/terminal/inject', { session: 'chat-y', text: 'hi' })).status).toBe(
-      202,
-    )
+    expect(
+      (await post(base, '/api/terminal/inject', { session: 'chat-y', text: 'hi' })).status,
+    ).toBe(202)
   })
 
   it('the transcript route decodes an encoded canonical id and echoes it', async () => {

@@ -34,7 +34,7 @@ export function isBundledUrl(url: string): boolean {
 
 /** The shell's ONE permission hole: microphone capture for the bundled UI's
  *  main frame (voice dictation). Camera, iframes, and every other origin
- *  stay denied — den iframes render LAN-served content. */
+ *  stay denied — LAN-served frames must not inherit the mic hole. */
 export function allowMediaRequest(details: {
   requestingUrl?: string
   isMainFrame?: boolean
@@ -64,8 +64,8 @@ export function allowMediaCheck(
 }
 
 /** `frame-ancestors 'none'`: nothing may frame an app:// document — without
- *  it a den page (frame-src allows http/https content INSIDE the hub) could
- *  nest app://bundle and clickjack the privileged UI (review finding,
+ *  it an embedded http/https page (frame-src allows content INSIDE the hub)
+ *  could nest app://bundle and clickjack the privileged UI (review finding,
  *  PR #555). The hub itself never frames app:// content, so 'none' costs
  *  nothing. */
 export const CSP =
@@ -94,10 +94,9 @@ const MIME: Record<string, string> = {
 
 /**
  * Resolve a request path to a file inside `distDir`, or null for traversal
- * attempts and undecodable paths. A trailing slash means the directory's own
- * index.html (`/den/` → den/index.html — the nested den viewer, not the hub
- * SPA). SPA fallback: anything else without an extension (a router path, or
- * `/`) resolves to the root index.html — the client router owns those.
+ * attempts and undecodable paths. SPA fallback: anything without a file
+ * extension (a router path, a trailing-slash directory, or `/`) resolves to
+ * the root index.html — the client router owns those.
  */
 export function resolveAsset(
   distDir: string,
@@ -111,13 +110,9 @@ export function resolveAsset(
   }
   const relative = decoded.replace(/^\/+/, '')
   const wanted =
-    relative === ''
+    relative === '' || relative.endsWith('/') || path.extname(relative) === ''
       ? 'index.html'
-      : relative.endsWith('/')
-        ? `${relative}index.html`
-        : path.extname(relative) === ''
-          ? 'index.html'
-          : relative
+      : relative
   const file = path.normalize(path.join(distDir, wanted))
   // The fence: a normalized path must stay inside the dist root.
   if (file !== distDir && !file.startsWith(distDir + path.sep)) return null

@@ -1,25 +1,19 @@
-# rivet-den: watch your agent work
+# rivet-den: harness event contract
 
-A live pixel-art diorama of an agent session. Lifecycle hooks translate what
-the agent is doing into a small event protocol: prompts, tool calls, plans,
-thinking, compaction; a tiny server reduces those events into room state;
-a Pixi viewer renders the room: whiteboard plans get written, the terminal
-shows real commands, the robot walks to the desk to code, and context
-compaction is a nap in the bed.
-
-![rivet-den demo loop](den-demo.gif)
+Lifecycle hooks translate what the agent is doing into a small event
+protocol: prompts, tool calls, plans, thinking, compaction. den-server
+reduces those events into room state and fans the stream out (`POST /event`,
+`POST /events`). Drivers use that stream for session linkage, kimi tagging,
+hermes reasoning, and chat indicators.
 
 ## Quickstart
 
 ```bash
 npm install
-npm run build -w @rivetos/den-protocol -w @rivetos/den-packs \
-              -w @rivetos/den-server   -w @rivetos/den-app
+npm run build -w @rivetos/den-protocol -w @rivetos/den-server
 
-RIVETOS_DEN_STATIC_DIR=apps/den/dist \
-RIVETOS_DEN_PACKS_DIR=packages/den-packs/packs \
 node services/den-server/dist/index.js
-# → http://127.0.0.1:5174/demo  (built-in demo loop, no agent needed)
+# → http://127.0.0.1:5174  (gateway / event intake)
 ```
 
 To stream a real session, install an adapter:
@@ -44,16 +38,11 @@ Bearer tokens removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 ## The moving parts
 
-| Doc | What it covers |
-|-----|----------------|
-| [MICBRIDGE.md](./MICBRIDGE.md) | Host mic as a native node input (RivetHub → FIFO/`pw-record` shim → Grok voice) |
+| Doc                                                 | What it covers                                                                            |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [MICBRIDGE.md](./MICBRIDGE.md)                      | Host mic as a native node input (RivetHub → FIFO/`pw-record` shim → Grok voice)           |
 | [PROTOCOL.md](../packages/den-protocol/PROTOCOL.md) | The v1 event schema and reducer semantics — the frozen contract everything else builds on |
-| [PACK.md](../packages/den-packs/PACK.md) | SpritePack spec: poses, furniture, stations, composite art, functional rects, `viewer{}` tuning |
-| [ART-PIPELINE.md](../packages/den-packs/ART-PIPELINE.md) | How default-pack@2's art was made with an image generator — the magenta studio, union-crop alignment, analytic anchor solving. Start here if you want to author a pack; it's the fun one |
-| [den-server](../services/den-server/src/server.ts) | Ingest (`POST /events` ordered batches), WS fanout, snapshots, eviction |
-
-Default pack weighs ~8.6MB of pre-keyed PNGs served once and cached;
-`grid.pxPerUnit: 2` keeps textures small and the render cheap.
+| [den-server](../services/den-server/src/server.ts)  | Ingest (`POST /events` ordered batches), WS fanout, snapshots, eviction                   |
 
 ## Mesh view
 
@@ -67,9 +56,14 @@ den `/healthz` in parallel (1.5s budget per peer), and answers:
 {
   "updatedAt": 1751600000000,
   "nodes": [
-    { "id": "rivet-claude", "name": "rivet-claude",
-      "denUrl": "http://192.0.2.10:5174", "online": true, "sessions": 2,
-      "latest": { "activity": "coding", "title": "wiring the mesh view" } }
+    {
+      "id": "rivet-claude",
+      "name": "rivet-claude",
+      "denUrl": "http://192.0.2.10:5174",
+      "online": true,
+      "sessions": 2,
+      "latest": { "activity": "coding", "title": "wiring the mesh view" }
+    }
   ]
 }
 ```
@@ -78,7 +72,7 @@ The whole result is cached for `RIVETOS_DEN_MESH_CACHE_MS` (default 10s).
 `latest` appears only on the entry that is this process; `RIVETOS_DEN_NODE_ID`
 (else the machine hostname) matched against roster node ids; when nothing
 matches, no entry carries a `latest`, which is fine. The endpoint is `/mesh.json`
-*with* the extension on purpose: the extensionless `/mesh` stays free for the
+_with_ the extension on purpose: the extensionless `/mesh` stays free for the
 viewer SPA's route.
 
 A node is den-enabled when its roster entry has `'den'` in `capabilities`, a
@@ -117,57 +111,29 @@ from any node; each node's own config decides what it gets).
 
 ```yaml
 den:
-  enabled: true            # deploy rivet-den.service + advertise this node's den
-  host: 0.0.0.0            # default 127.0.0.1 (loopback fail-safe)
-  port: 5174               # default
-  token: <bearer-token>    # REQUIRED when terminal.enabled and host isn't loopback
+  enabled: true # embed the gateway + advertise this node's den
+  host: 0.0.0.0 # default 127.0.0.1 (loopback fail-safe)
+  port: 5174 # default
+  token: <bearer-token> # REQUIRED when terminal.enabled and host isn't loopback
   terminal:
-    enabled: true          # local PTY terminals — off by default
-  # static_dir: /opt/rivetos/apps/den/dist            # defaults derived from
-  # packs_dir: /opt/rivetos/packages/den-packs/packs  # the install root
+    enabled: true # local PTY terminals — off by default
+  # static_dir: /opt/rivetos/apps/rivethub-web/dist   # default: hub dist
 ```
 
-What the update's den stage does on a den-enabled node (locally, and over SSH
-for mesh peers, honoring per-node `sshUser`; non-linux platforms are skipped
-like the rest of the update):
+What the update's gateway verify does on a den-enabled node (locally, and over
+SSH for mesh peers): after restarting `rivetos`, probe
+`http(s)://localhost:<port>/healthz`. Misconfigurations are rejected by
+`rivetos config validate` before this runs.
 
-1. builds `services/den-server` (workspace build, usually an nx cache hit),
-2. installs/refreshes `/etc/systemd/system/rivet-den.service` from
-   `services/den-server/rivet-den.service`,
-3. **generates** `~/.rivetos/den.env` from the `den:` section (host, port,
-   token, terminal flag, static/packs dirs). The file is config-managed;
-   its header says so, it is chmod 600 because the token lives there, and
-   hand-edits are overwritten on the next update. Change `config.yaml`, not
-   `den.env`,
-4. runs `npm rebuild node-pty` when `terminal.enabled` (see the ABI runbook
-   below); a missing toolchain degrades to a warning,
-5. restarts `rivet-den.service` and probes `http://localhost:<port>/healthz`.
-
-Misconfigurations are rejected by `rivetos config validate` before any of
-this runs, most importantly terminals exposed off-loopback without a token;
-the validator mirrors den-server's own startup security gate.
-
-When `den.enabled` is false/absent but a `rivet-den.service` is already
-active, the update leaves it alone and prints a notice, with no surprise
-teardowns. Retiring a den is an operator action:
-`sudo systemctl disable --now rivet-den`.
-
-A failed den stage never fails the node's rivetos update (den is auxiliary);
-it shows up as `⚠den` in the mesh summary table; check
-`journalctl -u rivet-den` on the node.
-
-Hosts that aren't RivetOS installs can still run a den-server by hand: build
-the workspace, copy the unit, write `den.env` yourself, and tag the mesh
-entry manually (see "Mesh view" above; manual tags survive only on entries
-the runtime doesn't own).
+A failed gateway probe never fails the node's rivetos update; it shows up in
+the mesh summary table. Check `journalctl -u rivetos` on the node.
 
 ### node-pty ABI runbook
 
 `node-pty` (the terminal backend) is a native module: its compiled binary
 must match the node binary that runs the service; the unit's
 `ExecStart=/usr/bin/node`. An `npm install` done under a different node (nvm,
-asdf, homebrew) leaves a mismatched binary and every term endpoint answers
-503. The deploy stage rebuilds it with `/usr/bin` first on PATH so npm runs
+asdf, homebrew) leaves a mismatched binary and every term endpoint answers 503. The deploy stage rebuilds it with `/usr/bin` first on PATH so npm runs
 under the same node the unit uses. Verify on the node with:
 
 ```bash
@@ -203,7 +169,7 @@ behind HTTP, so the whole model in one place:
   user. den-server logs the open state at startup; it is never the default.
   (`token:` can then be omitted entirely; the whole den runs unauthenticated,
   like the pre-2.0 prototype did.)
-- **Roster ownership.** The HTTP API accepts only command *keys* from the
+- **Roster ownership.** The HTTP API accepts only command _keys_ from the
   operator-owned roster (`~/.rivetos/den-term.json`); argv/cwd/env never
   travel over the wire in either direction, and every command is spawned
   directly from its argv array, never through a shell. The roster is re-read
@@ -220,8 +186,8 @@ Sample `~/.rivetos/den-term.json`:
   "cwd": "/home/rivet",
   "commands": {
     "claude": { "label": "Claude Code", "cmd": ["claude"], "room": true },
-    "grok":   { "label": "Grok Build", "cmd": ["grok"], "room": true },
-    "shell":  { "label": "Shell", "cmd": ["bash", "-l"], "room": false }
+    "grok": { "label": "Grok Build", "cmd": ["grok"], "room": true },
+    "shell": { "label": "Shell", "cmd": ["bash", "-l"], "room": false }
   }
 }
 ```
@@ -231,31 +197,12 @@ the process exits without one); `room: false` is for plain processes. See the
 [den-server README](../services/den-server/README.md) for the full roster
 shape (per-entry `cwd`/`env`) and the PTY knobs.
 
-## Mobile & performance
-
-The viewer runs fine on phones (it camera-follows the character in portrait).
-Two honest notes: Pixi renders every animation frame, so a den left open in
-the foreground will use battery like a game would; background tabs throttle
-to nothing. On weak GPUs prefer the day shell (`?tod=day`) and one session
-per tab. There is no reduced-motion mode yet.
-
-## Accessibility
-
-The chat stream and narration panel are DOM text (screen-reader reachable);
-the room's whiteboard, terminal, and activity layers are canvas and currently
-invisible to assistive tech. Future polish: mirror whiteboard/terminal state
-into an `aria-live` region and honor `prefers-reduced-motion`.
-
 ## Roadmap
 
 - **rivetos-native emitters**: events straight from the runtime's hook
-  pipeline (no CC/Grok adapter needed); next PR after this stack lands.
-- **Visual regression on packs**: render each pose/station headlessly and
-  diff against goldens, so art and anchor changes surface in review.
+  pipeline (no CC/Grok adapter needed).
 - **Hosted den tier**: the CC plugin is deliberately self-contained (plain
   Node, no rivetos install) so a hosted server + token is a copy-paste onboard.
-- **Pack marketplace**: `den-pack validate` is already the gatekeeper;
-  spec v1 is frozen; PACK.md is the authoring contract.
 
 ## Gateway (G0–G7)
 

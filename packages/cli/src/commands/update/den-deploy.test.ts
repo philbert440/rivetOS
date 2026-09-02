@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-// Mock the SSH layer — these tests exercise the den deploy stage's control
-// flow, not real SSH (mirrors remote-nodes.test.ts).
+// Mock the SSH layer — these tests exercise the gateway verify stage's
+// control flow, not real SSH (mirrors remote-nodes.test.ts).
 vi.mock('../../lib/ssh.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../lib/ssh.js')>()
   return {
@@ -11,19 +11,11 @@ vi.mock('../../lib/ssh.js', async (importOriginal) => {
   }
 })
 
-import { sshExec, sshExecQuiet } from '../../lib/ssh.js'
-import {
-  parseDenSettings,
-  denProbeHost,
-  denProbeCmd,
-  retireDenUnitRemote,
-  verifyGatewayRemote,
-} from './den-deploy.js'
+import { sshExecQuiet } from '../../lib/ssh.js'
+import { parseDenSettings, denProbeHost, denProbeCmd, verifyGatewayRemote } from './den-deploy.js'
 
-const sshExecMock = vi.mocked(sshExec)
 const sshExecQuietMock = vi.mocked(sshExecQuiet)
 
-const ROOT = '/opt/rivetos'
 const ORIGINAL_SHARED_DIR = process.env.RIVETOS_SHARED_DIR
 
 const DEN_YAML = `
@@ -37,7 +29,7 @@ den:
   token: den-secret
   terminal:
     enabled: true
-  static_dir: /srv/den/dist
+  static_dir: /srv/hub/dist
 `
 
 beforeEach(() => {
@@ -59,7 +51,7 @@ afterEach(() => {
 
 describe('parseDenSettings', () => {
   it('is disabled with sensible defaults when there is no config at all', () => {
-    const s = parseDenSettings(null, ROOT)
+    const s = parseDenSettings(null)
     expect(s.enabled).toBe(false)
     expect(s.host).toBe('127.0.0.1')
     expect(s.port).toBe(5174)
@@ -68,23 +60,17 @@ describe('parseDenSettings', () => {
   })
 
   it('is disabled when the config has no den section', () => {
-    const s = parseDenSettings('runtime:\n  workspace: /tmp\n', ROOT)
+    const s = parseDenSettings('runtime:\n  workspace: /tmp\n')
     expect(s.enabled).toBe(false)
   })
 
   it('is disabled on unparseable YAML (deploy stage must never throw)', () => {
-    const s = parseDenSettings('runtime: [unclosed', ROOT)
+    const s = parseDenSettings('runtime: [unclosed')
     expect(s.enabled).toBe(false)
   })
 
-  it('derives static/packs dirs from the install root by default', () => {
-    const s = parseDenSettings('den:\n  enabled: true\n', ROOT)
-    expect(s.staticDir).toBe('/opt/rivetos/apps/den/dist')
-    expect(s.packsDir).toBe('/opt/rivetos/packages/den-packs/packs')
-  })
-
-  it('reads the full den section, honoring overrides', () => {
-    const s = parseDenSettings(DEN_YAML, ROOT)
+  it('reads the den section used for the health probe', () => {
+    const s = parseDenSettings(DEN_YAML)
     expect(s).toEqual({
       enabled: true,
       host: '0.0.0.0',
@@ -92,37 +78,31 @@ describe('parseDenSettings', () => {
       token: 'den-secret',
       termEnabled: true,
       termOpen: false,
-      staticDir: '/srv/den/dist',
-      packsDir: '/opt/rivetos/packages/den-packs/packs',
       tlsCert: '',
       tlsCa: '/rivet-shared/rivet-ca/intermediate/chain.pem',
     })
   })
 
   it('falls back to the default port on out-of-range values', () => {
-    const s = parseDenSettings('den:\n  enabled: true\n  port: 99999\n', ROOT)
+    const s = parseDenSettings('den:\n  enabled: true\n  port: 99999\n')
     expect(s.port).toBe(5174)
   })
 
   it('reads explicit den.tls_* paths', () => {
     const s = parseDenSettings(
       'den:\n  enabled: true\n  tls_cert: /x/n.crt\n  tls_key: /x/n.key\n  tls_ca: /x/chain.pem\n',
-      ROOT,
     )
     expect(s.tlsCert).toBe('/x/n.crt')
     expect(s.tlsCa).toBe('/x/chain.pem')
   })
 
   it('stays plain-http when the cert resolves but the key does not (probe must track the gateway)', () => {
-    const s = parseDenSettings('den:\n  enabled: true\n  tls_cert: /x/n.crt\n', ROOT)
+    const s = parseDenSettings('den:\n  enabled: true\n  tls_cert: /x/n.crt\n')
     expect(s.tlsCert).toBe('')
   })
 
   it('stays plain-http when mesh.node_name has no issued cert on disk', () => {
-    const s = parseDenSettings(
-      'mesh:\n  node_name: no-such-node-xyz\nden:\n  enabled: true\n',
-      ROOT,
-    )
+    const s = parseDenSettings('mesh:\n  node_name: no-such-node-xyz\nden:\n  enabled: true\n')
     expect(s.tlsCert).toBe('')
   })
 })
@@ -138,14 +118,13 @@ describe('denProbeHost', () => {
 
 describe('denProbeCmd', () => {
   it('probes plain http when the den has no TLS material', () => {
-    const s = parseDenSettings('den:\n  enabled: true\n  host: 0.0.0.0\n', ROOT)
+    const s = parseDenSettings('den:\n  enabled: true\n  host: 0.0.0.0\n')
     expect(denProbeCmd(s)).toBe('curl -fsS -m 3 http://127.0.0.1:5174/healthz')
   })
 
   it('probes https with the CA bundle when TLS is configured (#491)', () => {
     const s = parseDenSettings(
       'den:\n  enabled: true\n  host: 0.0.0.0\n  tls_cert: /x/n.crt\n  tls_key: /x/n.key\n',
-      ROOT,
     )
     expect(denProbeCmd(s)).toBe(
       'curl -fsS -m 3 --cacert /rivet-shared/rivet-ca/intermediate/chain.pem https://127.0.0.1:5174/healthz',
@@ -154,20 +133,13 @@ describe('denProbeCmd', () => {
 })
 
 // ---------------------------------------------------------------------------
-// retire/verify — control flow over mocked SSH
+// verify — control flow over mocked SSH
 // ---------------------------------------------------------------------------
 
 /** Wire sshExecQuiet to answer by command shape. */
-function stubQuiet(opts: {
-  configYaml: string
-  unitActive?: string
-  unitEnabled?: string
-  healthz?: string
-}) {
+function stubQuiet(opts: { configYaml: string; healthz?: string }) {
   sshExecQuietMock.mockImplementation((_host: string, command: string) => {
     if (command.includes('config.yaml')) return opts.configYaml
-    if (command.includes('is-active')) return opts.unitActive ?? 'inactive'
-    if (command.includes('is-enabled')) return opts.unitEnabled ?? 'disabled'
     if (command.includes('/healthz')) return opts.healthz ?? '{"ok":true}'
     return ''
   })
@@ -176,26 +148,6 @@ function stubQuiet(opts: {
 /** Minimal den section for control-flow tests (distinct name from full DEN_YAML fixture above). */
 const DEN_YAML_MINIMAL = 'den:\n  enabled: true\n  host: 0.0.0.0\n  port: 5174\n'
 
-describe('retireDenUnitRemote', () => {
-  it('no-ops when the unit is neither active nor enabled', async () => {
-    stubQuiet({ configYaml: DEN_YAML_MINIMAL })
-    await retireDenUnitRemote('192.0.2.10', 'node-a', 'rivet')
-    expect(sshExecMock).not.toHaveBeenCalled()
-  })
-
-  it('disables an active unit before the rivetos restart', async () => {
-    stubQuiet({ configYaml: DEN_YAML_MINIMAL, unitActive: 'active' })
-    await retireDenUnitRemote('192.0.2.10', 'node-a', 'rivet')
-    expect(sshExecMock).toHaveBeenCalledWith(
-      '192.0.2.10',
-      expect.stringContaining('systemctl disable --now rivet-den'),
-      expect.any(String),
-      expect.any(Number),
-      'rivet',
-    )
-  })
-})
-
 describe('verifyGatewayRemote', () => {
   it('skips when den is disabled', async () => {
     stubQuiet({ configYaml: 'runtime:\n  workspace: /tmp\n' })
@@ -203,12 +155,7 @@ describe('verifyGatewayRemote', () => {
   })
 
   it('reports deployed on a healthy embedded gateway', async () => {
-    stubQuiet({ configYaml: DEN_YAML_MINIMAL, unitActive: 'inactive' })
+    stubQuiet({ configYaml: DEN_YAML_MINIMAL })
     expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('deployed')
-  })
-
-  it('FAILS when /healthz answers but the retired unit is still active (false-green guard)', async () => {
-    stubQuiet({ configYaml: DEN_YAML_MINIMAL, unitActive: 'active' })
-    expect(await verifyGatewayRemote('192.0.2.10', 'node-a', 'rivet')).toBe('failed')
   })
 })

@@ -1,12 +1,13 @@
 /**
- * Per-thread view memory: which of chat/terminal/den a conversation was last
+ * Per-thread view memory: which of chat/terminal a conversation was last
  * viewed in, persisted per node+session. Chat is the human default; callers
  * pass a different fallback for threads that have no chat surface (a TUI-only
  * legacy session lands in terminal). The cap is LRU on touch — a write moves
  * the key to the tail, so overflow evicts the least-recently-set thread.
+ * A stored `'den'` (removed viewer mode) is treated as unset and falls back.
  */
 
-export type SessionViewMode = 'chat' | 'terminal' | 'den'
+export type SessionViewMode = 'chat' | 'terminal'
 
 const KEY = 'rivethub.sessionModes'
 const MAX = 500
@@ -35,7 +36,7 @@ export function getSessionMode(
   fallback: SessionViewMode = 'chat',
 ): SessionViewMode {
   const raw = load()[storageKey]
-  return raw === 'terminal' || raw === 'den' || raw === 'chat' ? raw : fallback
+  return raw === 'terminal' || raw === 'chat' ? raw : fallback
 }
 
 export function setSessionMode(storageKey: string, mode: SessionViewMode): void {
@@ -57,7 +58,7 @@ export function clearSessionMode(storageKey: string): void {
  *  real choice. */
 export function hasSessionMode(storageKey: string): boolean {
   const raw = load()[storageKey]
-  return raw === 'terminal' || raw === 'den' || raw === 'chat'
+  return raw === 'terminal' || raw === 'chat'
 }
 
 /** Draft uuid → canonical id: the remembered view follows the thread. The

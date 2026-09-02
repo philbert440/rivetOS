@@ -6,17 +6,17 @@
 
 **RivetHub** = the node’s face. React (Vite) UI in `rivethub-web`; **Electron** shell in `rivethub-electron` bundles the same dist (tray, shortcuts, notifications, loopback mTLS pipe). Replaced the Tauri shell 2026-08-28 — shell detection is `window.rivetShell` first (`src/lib/shell-bridge.ts`), legacy `__TAURI__` shapes kept for the Android WebView shim.
 
-- Served by den-server as static root when `static_dir` points here; den viewer nested at `/den/` (`scripts/copy-den.mjs`).
+- Served by den-server as static root when `static_dir` points here.
 - Talks to RivetOS gateway (`@rivetos/gateway-client`, `@rivetos/types`).
 - Seamless modes: chat inject → harness PTY → den events → `bridgeAgentEvent` → sessions WS.
 
 ## Status (2026-07-10)
 
 ### Sidebar pages (2026-07-10)
-Rail: Conversations (`/`), Terminal, Den — separator — Memory, Files, Tasks, Workflows — Settings. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat | Den].
+
+Rail: Conversations (`/`), Terminal — separator — Memory, Files, Tasks, Workflows — Settings. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat].
 
 - **Terminal** (`/terminal`) lands on the node's open-PTY list (click to attach); the tab bar remains the quick switcher.
-- **Den** (`/dens`) lists the node's live den sessions (`GET /api/events/sessions` → `gateway.denSessions()`), embedded viewer iframe on pick. Replaced the old `/den/` link-out.
 - **Memory** (`/memory`, `/memory?tab=wiki|browse|stats`, `/memory/$slug`) = hub: **Search / Wiki / Browse / Stats**. Wiki tab is the existing encyclopedia over datahub `GET /api/wiki`. Search/Browse/Stats hit datahub `GET /api/memory/*` (same origin resolution). Hits deep-link Conversations via `/?session=`. Datahub origin in Settings (`rivethub.wikiUrl`); blank → mesh-discover datahub. Stored `http://lan-host` (no port) is rewritten to `https://lan-host:5174` — implicit `:443` made the desktop mTLS pipe connection-refused.
 - **Dropdowns** use `Select` (Radix Popover) — not native `<select>` (WebKitGTK paints OS menus). Matches Model/Effort/Node pickers.
 - **Tasks** (`/tasks`, `/tasks/$taskId`) = list/filter, detail (steer/kill), and **in-UI create** (goal + agent from catalog local+mesh + optional criteria lines → `POST /api/tasks`; navigates to detail). Create is no longer chat-only.
@@ -38,12 +38,12 @@ Chat now speaks the node's harness control plane
 (`docs/ARCHITECTURE.md`) for sessions a registered driver owns —
 `claude-code` today. Two bindings, one surface, chosen per session:
 
-| | control plane | legacy (unclaimed harnesses) |
-|---|---|---|
-| list | `GET /api/harnesses/:id/sessions` | `/api/terminal/harness-sessions` scan |
-| stream | `WS /api/harness-sessions/ws?session=<enc>` | all-sessions WS bridge frames |
-| history | transcript hard-resync on every (re)connect | server-pushed transcript deltas |
-| send | `POST …/turns` (`sendUserTurn`) | `POST /term/inject` into the PTY |
+|         | control plane                               | legacy (unclaimed harnesses)          |
+| ------- | ------------------------------------------- | ------------------------------------- |
+| list    | `GET /api/harnesses/:id/sessions`           | `/api/terminal/harness-sessions` scan |
+| stream  | `WS /api/harness-sessions/ws?session=<enc>` | all-sessions WS bridge frames         |
+| history | transcript hard-resync on every (re)connect | server-pushed transcript deltas       |
+| send    | `POST …/turns` (`sendUserTurn`)             | `POST /term/inject` into the PTY      |
 
 The drawer unions both lists keyed by native id (plane wins) and badges the
 harness id. `useChat.harnessBound` is the mutex: a bound session is ignored by
@@ -61,6 +61,7 @@ keys stay the bare native id (the den join key); the canonical `SessionId`
 rides on the drawer item and is what the control-plane calls use.
 
 ### Chat resync from TUI (Android parity)
+
 **Auto on open:** opening a conversation (and returning Chat←Terminal/Den) pulls
 `GET /api/terminal/harness-sessions/:id/transcript` and hard-replaces the chat
 transcript from the on-disk store (claude/grok/hermes). Skips while a live turn
@@ -70,13 +71,13 @@ Store: `useChat.replace`.
 
 ### Track 1 — Rich chat — **shipped** (PR #329)
 
-| Area | State |
-|------|--------|
-| Transcript | react-markdown + GFM; fenced code copy; assistant full-width + nerd line |
-| Live turn | multi-entry tool stack + reasoningText + human titles |
+| Area         | State                                                                     |
+| ------------ | ------------------------------------------------------------------------- |
+| Transcript   | react-markdown + GFM; fenced code copy; assistant full-width + nerd line  |
+| Live turn    | multi-entry tool stack + reasoningText + human titles                     |
 | Bridge tools | optional summarized `args` on tool.start; key-name + value-pattern redact |
-| Ask chips | stick through `done` until live clear / user pick (headless ask path) |
-| Tests | pure unit tests under `src/lib/*.test.ts` |
+| Ask chips    | stick through `done` until live clear / user pick (headless ask path)     |
+| Tests        | pure unit tests under `src/lib/*.test.ts`                                 |
 
 Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cleanly.
 
@@ -94,7 +95,7 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   generous because the bridge is block-granular for claude (long no-tool
   generations are silent).
 - **inject** on a queued bubble = interrupt-inject: `/term/inject
-  {interrupt:true}` writes Esc (behind the paste/CR serialization watermark —
+{interrupt:true}` writes Esc (behind the paste/CR serialization watermark —
   never between a prior turn's paste and its CR), waits 400ms for the TUI
   cancel redraw, then pastes. **cancel** recalls the text into the composer
   (ComposerHandle.prepend).

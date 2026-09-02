@@ -2,7 +2,6 @@
 // rivetos.dev landing: custom page, brand design system (emerald-on-dark,
 // DM Sans + JetBrains Mono, blueprint grid). Docs remain Starlight; this
 // replaces only the splash. Assets self-hosted except Google Fonts.
-import demoGif from '../assets/den-demo.gif'
 import logoDark from '../assets/logo-dark.svg'
 const GH = 'https://github.com/philbert440/rivetos'
 ---
@@ -57,19 +56,6 @@ const GH = 'https://github.com/philbert440/rivetos'
         </div>
         <p class="fine">Apache 2.0 · no CLA · runs in a container on your hardware</p>
       </div>
-      <figure class="hero-demo">
-        <img
-          src={demoGif.src}
-          width="634"
-          height="475"
-          alt="rivet-den: a pixel-art room where a robot agent writes its plan on a whiteboard, codes at a desk terminal, and naps during context compaction"
-          loading="eager"
-        />
-        <figcaption>
-          rivet-den, your session live: plans on the whiteboard, real commands on the terminal,
-          compaction is a nap.
-        </figcaption>
-      </figure>
     </header>
 
     <main>
@@ -241,7 +227,7 @@ const GH = 'https://github.com/philbert440/rivetos'
 
   .hero {
     display: grid;
-    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+    grid-template-columns: 1fr;
     gap: 48px;
     align-items: center;
     max-width: 1100px;
@@ -308,23 +294,6 @@ const GH = 'https://github.com/philbert440/rivetos'
     margin-top: 18px;
     color: var(--muted);
     font-size: 0.85rem;
-  }
-
-  .hero-demo {
-    min-width: 0;
-  }
-  .hero-demo img {
-    width: 100%;
-    height: auto;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    box-shadow: 0 0 60px #34d39918, 0 24px 48px #0008;
-  }
-  .hero-demo figcaption {
-    margin-top: 12px;
-    color: var(--muted);
-    font-size: 0.85rem;
-    font-family: var(--font-mono);
   }
 
   main {

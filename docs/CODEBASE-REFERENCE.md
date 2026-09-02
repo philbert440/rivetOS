@@ -26,6 +26,7 @@
 RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic, xAI, Google, Ollama, vLLM, llama-server, claude-cli) to messaging channels (Discord, Telegram, voice) with a tool execution loop, persistent memory, multi-agent orchestration, and an MCP transport that exposes the agent to external clients.
 
 **Key Numbers:**
+
 - ~63k lines of source code in `packages/` + `plugins/` (excluding tests)
 - 13 packages, 19 plugins across 5 categories (provider, channel, tool, memory, transport)
 - One unified `rivetos` container image with `--role agent | migrate`, no separate datahub image (Datahub is upstream `pgvector/pgvector:pg16`)
@@ -38,7 +39,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 
 ```
 /opt/rivetos/
-├── packages/                    # Core framework (13 packages)
+├── packages/                    # Core framework (12 packages)
 │   ├── types/                   # Shared interfaces. Depends only on den-protocol.
 │   ├── core/                    # Runtime engine, domain logic, hooks
 │   ├── boot/                    # Config loading, validation, registrars
@@ -47,7 +48,6 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── workflows/               # Workflows v1 engine — document model, step SDK, journal replay
 │   ├── wiki-core/               # Memory wiki page model — parse/apply/serialize, pure
 │   ├── den-protocol/            # rivet-den event protocol + pure room-state reducer
-│   ├── den-packs/               # rivet-den SpritePack spec, validator CLI, default pack
 │   ├── gateway-client/          # Typed HTTP+WS client for the gateway API (RivetHub's bridge)
 │   ├── mcp/                     # MCP primitives shared by the sidecar and clients
 │   ├── mcp-v2/                  # Era-negotiating MCP surface built on `mcp`
@@ -140,7 +140,6 @@ aisdk                   ← types
 mcp                     ← types
 mcp-v2                  ← mcp
 gateway-client          ← types
-den-packs               ← den-protocol
 
 core                    ← types, aisdk, workflows, wiki-core
 boot                    ← types, core, workflows, den-server,
@@ -170,7 +169,7 @@ infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 `@rivetos/den-protocol`, which supplies the den event contract that the runtime types
 reference. Beyond that, if you need a class or function, it goes in `core`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about *installation*, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -181,31 +180,31 @@ reference. Beyond that, if you need a class or function, it goes in `core`.
 TypeScript interfaces and type exports. The contract layer. Its only workspace
 dependency is `@rivetos/den-protocol`.
 
-| File | Purpose |
-|------|---------|
-| `message.ts` | `Message`, `ToolCall`, `ContentPart` (text + image) |
-| `provider.ts` | `Provider`, `LLMResponse`, `LLMChunk`, `ProviderError` class |
-| `channel.ts` | `Channel`, `InboundMessage`, `OutboundMessage`, `EditResult` |
-| `tool.ts` | `Tool`, `ToolDefinition`, `ToolContext`, `ToolResult` |
-| `plugin.ts` | `Plugin`, `PluginConfig` |
-| `memory.ts` | `Memory`, `MemoryEntry`, `MemorySearchResult` |
-| `workspace.ts` | `Workspace`, `WorkspaceFile` |
-| `config.ts` | `RuntimeConfig`, `AgentConfig`, `HeartbeatConfig`, `LearningLoopConfig` |
-| `deployment.ts` | `DeploymentTarget`, `DeploymentConfig` (`target` only) |
-| `defaults.ts` | Shared default values for config resolution |
-| `events.ts` | `StreamEvent`, `SessionState`, `DelegationRequest/Result`, `TokenUsage` |
-| `hooks.ts` | Full hook system types (16 event types, pipeline, config) |
-| `mesh.ts` | `MeshNode`, `MeshRegistry`, `MeshConfig`, `MeshDelegationRoute` |
-| `gateway.ts` | Gateway route/upgrade contracts registered by `boot` |
-| `gateway-api.ts` | Wire types for the gateway HTTP+WS API (shared with `gateway-client`) |
-| `session-context.ts` | Per-session context carried through a turn |
-| `task.ts` / `task-result.ts` | Task engine records and result shapes (`ros_tasks`) |
-| `commands.ts` | Slash-command descriptors |
-| `wiki.ts` | Memory wiki page + index types |
-| `skill.ts` | `Skill`, `SkillManager` |
-| `subagent.ts` | `SubagentSession`, `SubagentManager` |
-| `errors.ts` | `RivetError` hierarchy (Channel, Memory, Config, Tool, Delegation, Runtime) |
-| `utils.ts` | `splitMessage`, `getTextContent`, `hasImages`, tool result helpers |
+| File                         | Purpose                                                                     |
+| ---------------------------- | --------------------------------------------------------------------------- |
+| `message.ts`                 | `Message`, `ToolCall`, `ContentPart` (text + image)                         |
+| `provider.ts`                | `Provider`, `LLMResponse`, `LLMChunk`, `ProviderError` class                |
+| `channel.ts`                 | `Channel`, `InboundMessage`, `OutboundMessage`, `EditResult`                |
+| `tool.ts`                    | `Tool`, `ToolDefinition`, `ToolContext`, `ToolResult`                       |
+| `plugin.ts`                  | `Plugin`, `PluginConfig`                                                    |
+| `memory.ts`                  | `Memory`, `MemoryEntry`, `MemorySearchResult`                               |
+| `workspace.ts`               | `Workspace`, `WorkspaceFile`                                                |
+| `config.ts`                  | `RuntimeConfig`, `AgentConfig`, `HeartbeatConfig`, `LearningLoopConfig`     |
+| `deployment.ts`              | `DeploymentTarget`, `DeploymentConfig` (`target` only)                      |
+| `defaults.ts`                | Shared default values for config resolution                                 |
+| `events.ts`                  | `StreamEvent`, `SessionState`, `DelegationRequest/Result`, `TokenUsage`     |
+| `hooks.ts`                   | Full hook system types (16 event types, pipeline, config)                   |
+| `mesh.ts`                    | `MeshNode`, `MeshRegistry`, `MeshConfig`, `MeshDelegationRoute`             |
+| `gateway.ts`                 | Gateway route/upgrade contracts registered by `boot`                        |
+| `gateway-api.ts`             | Wire types for the gateway HTTP+WS API (shared with `gateway-client`)       |
+| `session-context.ts`         | Per-session context carried through a turn                                  |
+| `task.ts` / `task-result.ts` | Task engine records and result shapes (`ros_tasks`)                         |
+| `commands.ts`                | Slash-command descriptors                                                   |
+| `wiki.ts`                    | Memory wiki page + index types                                              |
+| `skill.ts`                   | `Skill`, `SkillManager`                                                     |
+| `subagent.ts`                | `SubagentSession`, `SubagentManager`                                        |
+| `errors.ts`                  | `RivetError` hierarchy (Channel, Memory, Config, Tool, Delegation, Runtime) |
+| `utils.ts`                   | `splitMessage`, `getTextContent`, `hasImages`, tool result helpers          |
 
 **Exception:** `ProviderError` and `RivetError` (and subclasses) are classes exported from types. This is the one place types has runtime code, because errors need to be `instanceof`-checkable across package boundaries.
 
@@ -213,15 +212,15 @@ dependency is `@rivetos/den-protocol`.
 
 The composition root. Loads config, validates, wires everything together, starts the runtime.
 
-| File | Purpose |
-|------|---------|
-| `config.ts` | YAML config loader with `${ENV_VAR}` resolution |
-| `discovery.ts` | Finds the plugin root and builds the plugin registry from manifests |
-| `lifecycle.ts` | PID file management, SIGINT/SIGTERM handlers |
-| `validate/` | Config schema validation (sections, cross-refs, deployment) |
-| `registrars/agents.ts` | Wires delegation, sub-agents, skills |
-| `registrars/hooks.ts` | Wires safety, auto-action, session hooks |
-| `registrars/plugins.ts` | Generic manifest-driven loader for all discovered providers, channels, tools, and memory plugins |
+| File                    | Purpose                                                                                           |
+| ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `config.ts`             | YAML config loader with `${ENV_VAR}` resolution                                                   |
+| `discovery.ts`          | Finds the plugin root and builds the plugin registry from manifests                               |
+| `lifecycle.ts`          | PID file management, SIGINT/SIGTERM handlers                                                      |
+| `validate/`             | Config schema validation (sections, cross-refs, deployment)                                       |
+| `registrars/agents.ts`  | Wires delegation, sub-agents, skills                                                              |
+| `registrars/hooks.ts`   | Wires safety, auto-action, session hooks                                                          |
+| `registrars/plugins.ts` | Generic manifest-driven loader for all discovered providers, channels, tools, and memory plugins  |
 | `registrars/gateway.ts` | Starts the embedded den/gateway server with the routes and WS upgrades collected from agent tools |
 
 **Boot flow:** `loadConfig()` → `validateConfig()` → `discoverPlugins()` → `registerHooks()` → `new Runtime()` → `registerPlugins()` → `registerAgentTools()` → `registerGateway()` → `writePidFile()` → `runtime.start()`
@@ -236,49 +235,50 @@ The runtime engine. Split into two layers:
 
 **Domain Layer** (`src/domain/`). Pure business logic, no I/O:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `loop.ts` | 589 | **AgentLoop** — the core execution cycle (stream → tool → stream) |
-| `router.ts` | 69 | Routes messages to agent+provider pairs |
-| `queue.ts` | 134 | Message queue with sequential processing |
-| `delegation.ts` | 448 | Agent-to-agent task handoff with caching, depth limits |
-| `subagent.ts` | 515 | Persistent interactive child sessions (spawn/send/kill) |
-| `workspace.ts` | 212 | Loads workspace files, builds system prompts |
-| `hooks.ts` | 215 | HookPipelineImpl — priority-ordered async middleware |
-| `safety-hooks.ts` | 393 | Shell danger detection, workspace fencing, audit logging |
-| `auto-actions.ts` | 330 | Auto-format, auto-lint, auto-test, auto-git-check |
-| `session-hooks.ts` | 313 | Session start/end, auto-summary, pre/post compaction |
-| `heartbeat.ts` | 133 | Scheduled agent execution with quiet hours |
-| `reconnect.ts` | 190 | Channel reconnection with exponential backoff |
-| `mesh.ts` | 344 | File-based mesh registry with heartbeat, prune, seed sync |
-| `mesh-delegation.ts` | 253 | Cross-mesh HTTP delegation |
-| `skills/` | 1,337 | Skill discovery, matching, manage tool, frontmatter parsing |
-| `constants.ts` | 9 | Silent response strings |
+| File                 | Lines | Purpose                                                           |
+| -------------------- | ----- | ----------------------------------------------------------------- |
+| `loop.ts`            | 589   | **AgentLoop** — the core execution cycle (stream → tool → stream) |
+| `router.ts`          | 69    | Routes messages to agent+provider pairs                           |
+| `queue.ts`           | 134   | Message queue with sequential processing                          |
+| `delegation.ts`      | 448   | Agent-to-agent task handoff with caching, depth limits            |
+| `subagent.ts`        | 515   | Persistent interactive child sessions (spawn/send/kill)           |
+| `workspace.ts`       | 212   | Loads workspace files, builds system prompts                      |
+| `hooks.ts`           | 215   | HookPipelineImpl — priority-ordered async middleware              |
+| `safety-hooks.ts`    | 393   | Shell danger detection, workspace fencing, audit logging          |
+| `auto-actions.ts`    | 330   | Auto-format, auto-lint, auto-test, auto-git-check                 |
+| `session-hooks.ts`   | 313   | Session start/end, auto-summary, pre/post compaction              |
+| `heartbeat.ts`       | 133   | Scheduled agent execution with quiet hours                        |
+| `reconnect.ts`       | 190   | Channel reconnection with exponential backoff                     |
+| `mesh.ts`            | 344   | File-based mesh registry with heartbeat, prune, seed sync         |
+| `mesh-delegation.ts` | 253   | Cross-mesh HTTP delegation                                        |
+| `skills/`            | 1,337 | Skill discovery, matching, manage tool, frontmatter parsing       |
+| `constants.ts`       | 9     | Silent response strings                                           |
 
 **Application Layer** (`src/runtime/`). Wires domain + I/O:
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `runtime.ts` | ~300 | **Runtime** class — registers components, owns lifecycle |
-| `turn-handler.ts` | ~250 | Processes a single message turn (route → hook → loop → deliver) |
-| `commands.ts` | ~350 | Slash command handler (/stop, /new, /status, /model, /context, etc.) |
-| `streaming.ts` | ~250 | Stream events → channel message edits (throttled, one message per turn) |
-| `sessions.ts` | ~150 | Session lifecycle, history restoration, settings persistence |
-| `media.ts` | ~100 | Attachment resolution, image download, base64 encoding |
-| `health.ts` | ~170 | HTTP health endpoint (GET /health, /health/live, /metrics) |
-| `metrics.ts` | ~170 | Runtime metrics collector (turns, tools, tokens, latency, errors) |
+| File              | Lines | Purpose                                                                 |
+| ----------------- | ----- | ----------------------------------------------------------------------- |
+| `runtime.ts`      | ~300  | **Runtime** class — registers components, owns lifecycle                |
+| `turn-handler.ts` | ~250  | Processes a single message turn (route → hook → loop → deliver)         |
+| `commands.ts`     | ~350  | Slash command handler (/stop, /new, /status, /model, /context, etc.)    |
+| `streaming.ts`    | ~250  | Stream events → channel message edits (throttled, one message per turn) |
+| `sessions.ts`     | ~150  | Session lifecycle, history restoration, settings persistence            |
+| `media.ts`        | ~100  | Attachment resolution, image download, base64 encoding                  |
+| `health.ts`       | ~170  | HTTP health endpoint (GET /health, /health/live, /metrics)              |
+| `metrics.ts`      | ~170  | Runtime metrics collector (turns, tools, tokens, latency, errors)       |
 
 **Security** (`src/security/`):
 
-| File | Lines | Purpose |
-|------|-------|---------|
-| `secrets.ts` | ~170 | Secret redaction, .env permissions, 1Password `op://` resolution |
+| File         | Lines | Purpose                                                          |
+| ------------ | ----- | ---------------------------------------------------------------- |
+| `secrets.ts` | ~170  | Secret redaction, .env permissions, 1Password `op://` resolution |
 
 Audit logging itself lives in `domain/safety-hooks.ts` and is wired by `boot`, which appends to
 `<workspace>/.data/audit/<date>.jsonl`. There is no rotation or retention: audit logs accumulate
 indefinitely and operators are expected to prune them manually.
 
 **Logger** (`src/logger.ts`, ~170 lines):
+
 - Two modes: `pretty` (dev, colored) and `json` (production, structured)
 - Scoped by component: `logger('Router')` → `[Router] message`
 - Levels: error, warn, info, debug
@@ -289,40 +289,42 @@ indefinitely and operators are expected to prune them manually.
 
 Every `rivetos <command>` lives here. Lazy-loaded via dynamic import.
 
-| Command | File | Purpose |
-|---------|------|---------|
-| `init` | `commands/init.ts` → `commands/init/` | Interactive setup wizard (@clack/prompts) |
-| `start` | `commands/start.ts` | Boot and run (`--role agent \| migrate`) |
-| `stop` | `commands/stop.ts` | Kill running instance via PID file |
-| `status` | `commands/status.ts` | Runtime status display |
-| `update` | `commands/update.ts` (+ `commands/update/`) | Source/container update, incl. remote mesh nodes |
-| `doctor` | `commands/doctor.ts` | 12-category health check |
-| `test` | `commands/test.ts` | Smoke tests (config, provider, memory, tools) |
-| `logs` | `commands/logs.ts` | Tail runtime logs with filtering |
-| `config` | `commands/config.ts` | Show/validate/edit config |
-| `agent` | `commands/agent.ts` | Add/remove/list agents |
-| `model` | `commands/model.ts` | Show/switch models |
-| `build` | `commands/build.ts` | Build container images |
-| `mesh` | `commands/mesh.ts` | Mesh management (list, ping, join, status) |
-| `gateway` | `commands/gateway.ts` | Embedded-den gateway helpers (`gateway token`, `--rotate`) |
-| `memory` | `commands/memory.ts` | Memory subsystem maintenance (backfill jobs, etc.) |
-| `db` | `commands/db.ts` | Schema migration and inspection (`db migrate`, `db status`) |
-| `keys` | `commands/keys.ts` | SSH key management for the mesh (rotate, list, status) |
-| `service` | `commands/service.ts` | Systemd service management |
-| `skills` / `skill` | `commands/skills.ts` | Skill listing (`skill init` → `skill-init.ts`, `skill validate` → `skill-validate.ts`) |
-| `plugins` / `plugin` | `commands/plugins.ts` | Plugin listing and status (`plugins sync` → `plugins-sync.ts`, `plugin init` → `plugin-init.ts`) |
-| `workflow` | `commands/workflow.ts` | Scaffold workflows (`workflow new <name>`) |
-| `provider` | `commands/provider.ts` | Provider-specific commands (setup, status) |
-| `version` | `commands/version.ts` | Version display |
+| Command              | File                                        | Purpose                                                                                          |
+| -------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `init`               | `commands/init.ts` → `commands/init/`       | Interactive setup wizard (@clack/prompts)                                                        |
+| `start`              | `commands/start.ts`                         | Boot and run (`--role agent \| migrate`)                                                         |
+| `stop`               | `commands/stop.ts`                          | Kill running instance via PID file                                                               |
+| `status`             | `commands/status.ts`                        | Runtime status display                                                                           |
+| `update`             | `commands/update.ts` (+ `commands/update/`) | Source/container update, incl. remote mesh nodes                                                 |
+| `doctor`             | `commands/doctor.ts`                        | 12-category health check                                                                         |
+| `test`               | `commands/test.ts`                          | Smoke tests (config, provider, memory, tools)                                                    |
+| `logs`               | `commands/logs.ts`                          | Tail runtime logs with filtering                                                                 |
+| `config`             | `commands/config.ts`                        | Show/validate/edit config                                                                        |
+| `agent`              | `commands/agent.ts`                         | Add/remove/list agents                                                                           |
+| `model`              | `commands/model.ts`                         | Show/switch models                                                                               |
+| `build`              | `commands/build.ts`                         | Build container images                                                                           |
+| `mesh`               | `commands/mesh.ts`                          | Mesh management (list, ping, join, status)                                                       |
+| `gateway`            | `commands/gateway.ts`                       | Embedded-den gateway helpers (`gateway token`, `--rotate`)                                       |
+| `memory`             | `commands/memory.ts`                        | Memory subsystem maintenance (backfill jobs, etc.)                                               |
+| `db`                 | `commands/db.ts`                            | Schema migration and inspection (`db migrate`, `db status`)                                      |
+| `keys`               | `commands/keys.ts`                          | SSH key management for the mesh (rotate, list, status)                                           |
+| `service`            | `commands/service.ts`                       | Systemd service management                                                                       |
+| `skills` / `skill`   | `commands/skills.ts`                        | Skill listing (`skill init` → `skill-init.ts`, `skill validate` → `skill-validate.ts`)           |
+| `plugins` / `plugin` | `commands/plugins.ts`                       | Plugin listing and status (`plugins sync` → `plugins-sync.ts`, `plugin init` → `plugin-init.ts`) |
+| `workflow`           | `commands/workflow.ts`                      | Scaffold workflows (`workflow new <name>`)                                                       |
+| `provider`           | `commands/provider.ts`                      | Provider-specific commands (setup, status)                                                       |
+| `version`            | `commands/version.ts`                       | Version display                                                                                  |
 
 **Init wizard phases:** `detect` → `deployment` → `agents` → `channels` → `review` → `generate`
 
 ### `@rivetos/nx` (`packages/nx-plugin/`)
 
 Nx generators for scaffolding new plugins:
+
 ```bash
 npx nx g @rivetos/nx:plugin --type=provider --name=deepseek
 ```
+
 Generates: `plugins/{type}/{name}/` with `package.json`, `tsconfig.json`, `src/index.ts`, `src/index.test.ts`.
 
 ---
@@ -333,13 +335,13 @@ Generates: `plugins/{type}/{name}/` with `package.json`, `tsconfig.json`, `src/i
 
 All plugins follow the same pattern: a class implementing an interface from `@rivetos/types`, dynamically imported by a registrar in `@rivetos/boot`.
 
-| Category   | Interface  | Registration |
-|------------|------------|-------------|
-| Provider   | `Provider` | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Channel    | `Channel`  | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Tool       | `Tool`     | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Memory     | `Memory`   | `boot/registrars/plugins.ts` (via `manifest.register`) |
-| Transport  | (no core interface — plugin opens its own listening surface) | `boot/registrars/plugins.ts` — registers shutdown + `onRegistrationComplete` to enumerate the finalized tool set |
+| Category  | Interface                                                    | Registration                                                                                                     |
+| --------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Provider  | `Provider`                                                   | `boot/registrars/plugins.ts` (via `manifest.register`)                                                           |
+| Channel   | `Channel`                                                    | `boot/registrars/plugins.ts` (via `manifest.register`)                                                           |
+| Tool      | `Tool`                                                       | `boot/registrars/plugins.ts` (via `manifest.register`)                                                           |
+| Memory    | `Memory`                                                     | `boot/registrars/plugins.ts` (via `manifest.register`)                                                           |
+| Transport | (no core interface — plugin opens its own listening surface) | `boot/registrars/plugins.ts` — registers shutdown + `onRegistrationComplete` to enumerate the finalized tool set |
 
 ### Provider plugin pattern
 
@@ -347,11 +349,11 @@ All plugins follow the same pattern: a class implementing an interface from `@ri
 export class ExampleProvider implements Provider {
   id = 'example'
   name = 'Example'
-  
+
   async *chatStream(messages: Message[], options?: ChatOptions): AsyncIterable<LLMChunk> {
     // Stream LLM responses
   }
-  
+
   async isAvailable(): Promise<boolean> { ... }
   getModel(): string { ... }
   setModel(model: string): void { ... }
@@ -366,7 +368,7 @@ All providers implement streaming via `chatStream()` (AsyncIterable). The non-st
 export class ExampleChannel implements Channel {
   id = 'example'
   platform = 'example'
-  
+
   async start(): Promise<void> { ... }
   async stop(): Promise<void> { ... }
   async send(message: OutboundMessage): Promise<string | null> { ... }
@@ -387,7 +389,7 @@ export class ExampleTool implements Tool {
   name = 'example_tool'
   description = 'Does something useful'
   parameters = { type: 'object', properties: { ... } }
-  
+
   async execute(args, signal?, context?): Promise<ToolResult> {
     // ToolResult = string | ContentPart[] (for multimodal)
   }
@@ -412,6 +414,7 @@ export class ExampleMemory implements Memory {
 ### Plugin package convention
 
 Every plugin lives at `plugins/{category}/{name}/` and has:
+
 - `package.json` with name `@rivetos/{category}-{name}`
 - `tsconfig.json` extending `../../../tsconfig.base.json`
 - `src/index.ts` as the main entry point
@@ -424,6 +427,7 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 ### Container images
 
 **Unified `rivetos` image** (`infra/containers/rivetos/Dockerfile`):
+
 - Single Node 24 Alpine image, non-root user (`rivetos`), tini init
 - Built once with `npm run build` (esbuild bundle in `dist/`)
 - Dispatched at runtime via `--role agent | migrate` (`packages/cli/src/commands/start.ts`). `agent` is the default. `RIVETOS_ROLE` seeds the role, but an explicit `--role` flag overrides it; the flag wins, not the env var. An unknown value exits with `unknown role`, whether it came from the flag or from `RIVETOS_ROLE`.
@@ -432,6 +436,7 @@ Every plugin lives at `plugins/{category}/{name}/` and has:
 - Workspace and config mounted as volumes
 
 **Datahub** (no custom image):
+
 - Uses upstream `pgvector/pgvector:pg16` directly
 - Schema is applied by the `migrate` role of the unified image at stack startup; the database container has no rivetos-specific code or scripts
 
@@ -500,6 +505,7 @@ runs background memory jobs; the workers are the sole consumers.
 ```
 
 **Embedding flow:**
+
 1. INSERT into `ros_messages` / `ros_summaries` → `notify_embedding_queue()` trigger → `graphile_worker.add_job('embed-target', …)`, skipped when content is empty
 2. graphile-worker picks the job up in the embedding-worker → calls the configured embed endpoint (`RIVETOS_EMBED_URL` / `RIVETOS_EMBED_MODEL`)
 3. Writes the vector back to the source row
@@ -514,11 +520,11 @@ Postgres trigger: `check_compaction_threshold` and `enqueue_idle_sessions()` are
 deliberately absent from the baseline schema. Each tick enqueues up to 10 conversations,
 picking any whose unsummarized messages satisfy one of three clauses:
 
-| Clause | Condition | Trigger type |
-|--------|-----------|--------------|
-| Full window | `>= COMPACT_LEAF_BATCH` (default 10) unsummarized — fires even while the conversation is active, so long-running sessions drain one window per tick | `session_idle` |
-| Idle | quiet for `COMPACT_IDLE_MINUTES` (default 15) and `>= MIN_BATCH_SIZE` (5) unsummarized — mops up the remainder | `session_idle` |
-| Stale | quiet for `COMPACT_STALE_MINUTES` (default 4 days) and `>= COMPACT_STALE_MIN_BATCH` (2) — flushes the below-floor tail the idle clause skips by design | `session_stale` |
+| Clause      | Condition                                                                                                                                              | Trigger type    |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------- |
+| Full window | `>= COMPACT_LEAF_BATCH` (default 10) unsummarized — fires even while the conversation is active, so long-running sessions drain one window per tick    | `session_idle`  |
+| Idle        | quiet for `COMPACT_IDLE_MINUTES` (default 15) and `>= MIN_BATCH_SIZE` (5) unsummarized — mops up the remainder                                         | `session_idle`  |
+| Stale       | quiet for `COMPACT_STALE_MINUTES` (default 4 days) and `>= COMPACT_STALE_MIN_BATCH` (2) — flushes the below-floor tail the idle clause skips by design | `session_stale` |
 
 Jobs are deduped by `jobKey = conversationId` (`preserve_run_at`, `maxAttempts: 3`), so a
 tick can enqueue unconditionally without checking for a pending job.
@@ -543,15 +549,15 @@ cron, `enqueue-wiki-backfill` (`*/10 * * * *`), queues leaves that were never mi
 
 Containers are stateless. All user data lives on volumes:
 
-| Data | Storage | Survives Update |
-|------|---------|-----------------|
-| Workspace files | Bind mount `./workspace/` | ✅ |
-| Config | Bind mount `./config.yaml` | ✅ |
-| Secrets | `.env` on host | ✅ |
-| Postgres data | Named volume `rivetos-pgdata` | ✅ |
-| Shared storage | Named volume `rivetos-shared` | ✅ |
-| Plugins | In source tree | ✅ |
-| Runtime code | Rebuilt from source | 🔄 |
+| Data            | Storage                       | Survives Update |
+| --------------- | ----------------------------- | --------------- |
+| Workspace files | Bind mount `./workspace/`     | ✅              |
+| Config          | Bind mount `./config.yaml`    | ✅              |
+| Secrets         | `.env` on host                | ✅              |
+| Postgres data   | Named volume `rivetos-pgdata` | ✅              |
+| Shared storage  | Named volume `rivetos-shared` | ✅              |
+| Plugins         | In source tree                | ✅              |
+| Runtime code    | Rebuilt from source           | 🔄              |
 
 ---
 
@@ -621,24 +627,24 @@ Channel receives message
 
 16 lifecycle events, priority-ordered (0-99, lower first), async pipelines:
 
-| Event | When | Key Use |
-|-------|------|---------|
-| `provider:before` | Before LLM call | Rate limit checks |
-| `provider:after` | After LLM response | Token logging |
-| `provider:error` | LLM failure | Logging, classification (observational only) |
-| `tool:before` | Before tool execution | **Safety gates**, audit |
-| `tool:after` | After tool execution | Auto-format, auto-lint |
-| `session:start` | New session | Context loading |
-| `session:end` | Session ending | Auto-summary |
-| `turn:before` | Before processing | Content filtering |
-| `turn:after` | After turn completes | Delegation tracking |
-| `turn:reflect` | After complex turns | Pattern analysis |
-| `skill:before` | Before skill load | Skip gate |
-| `skill:after` | After skill used | Metrics |
-| `compact:before` | Before compaction | Preserve context |
-| `compact:after` | After compaction | Verify context |
-| `delegation:before` | Before delegation | Block gate |
-| `delegation:after` | After delegation | Audit, learning |
+| Event               | When                  | Key Use                                      |
+| ------------------- | --------------------- | -------------------------------------------- |
+| `provider:before`   | Before LLM call       | Rate limit checks                            |
+| `provider:after`    | After LLM response    | Token logging                                |
+| `provider:error`    | LLM failure           | Logging, classification (observational only) |
+| `tool:before`       | Before tool execution | **Safety gates**, audit                      |
+| `tool:after`        | After tool execution  | Auto-format, auto-lint                       |
+| `session:start`     | New session           | Context loading                              |
+| `session:end`       | Session ending        | Auto-summary                                 |
+| `turn:before`       | Before processing     | Content filtering                            |
+| `turn:after`        | After turn completes  | Delegation tracking                          |
+| `turn:reflect`      | After complex turns   | Pattern analysis                             |
+| `skill:before`      | Before skill load     | Skip gate                                    |
+| `skill:after`       | After skill used      | Metrics                                      |
+| `compact:before`    | Before compaction     | Preserve context                             |
+| `compact:after`     | After compaction      | Verify context                               |
+| `delegation:before` | Before delegation     | Block gate                                   |
+| `delegation:after`  | After delegation      | Audit, learning                              |
 
 ---
 
@@ -703,17 +709,17 @@ providers:
   anthropic: { model: claude-sonnet-4-6, max_tokens: 16384 }
 
 channels:
-  agent: { port: 3100, agent_id: "opus" }
+  agent: { port: 3100, agent_id: 'opus' }
 
 memory:
-  postgres: { connection_string: "${RIVETOS_PG_URL}" }
+  postgres: { connection_string: '${RIVETOS_PG_URL}' }
 
 mcp:
   servers:
     memory: { transport: stdio, command: npx, args: [...] }
 
-deployment:             # Optional — `target` is the only key consumed at runtime
-  target: docker        # docker | proxmox | kubernetes | manual
+deployment: # Optional — `target` is the only key consumed at runtime
+  target: docker # docker | proxmox | kubernetes | manual
 ```
 
 Provisioning itself is driven by the Compose files under `infra/docker/` and the scripts
@@ -787,60 +793,60 @@ scoring, tool synthesis, wiki, migrations), and the CLI's update/mesh helpers.
 
 ### Core loop
 
-| What | Where |
-|------|-------|
-| Agent execution loop | `packages/core/src/domain/loop.ts` |
-| Message routing | `packages/core/src/domain/router.ts` |
-| Message queuing | `packages/core/src/domain/queue.ts` |
-| Turn processing | `packages/core/src/runtime/turn-handler.ts` |
-| Stream → channel delivery | `packages/core/src/runtime/streaming.ts` |
-| Session management | `packages/core/src/runtime/sessions.ts` |
+| What                      | Where                                       |
+| ------------------------- | ------------------------------------------- |
+| Agent execution loop      | `packages/core/src/domain/loop.ts`          |
+| Message routing           | `packages/core/src/domain/router.ts`        |
+| Message queuing           | `packages/core/src/domain/queue.ts`         |
+| Turn processing           | `packages/core/src/runtime/turn-handler.ts` |
+| Stream → channel delivery | `packages/core/src/runtime/streaming.ts`    |
+| Session management        | `packages/core/src/runtime/sessions.ts`     |
 
 ### Hooks & safety
 
-| What | Where |
-|------|-------|
-| Hook pipeline impl | `packages/core/src/domain/hooks.ts` |
-| Safety hooks (shell, fence, audit) | `packages/core/src/domain/safety-hooks.ts` |
-| Auto-actions (format, lint, test) | `packages/core/src/domain/auto-actions.ts` |
-| Session hooks (start, summary) | `packages/core/src/domain/session-hooks.ts` |
+| What                               | Where                                       |
+| ---------------------------------- | ------------------------------------------- |
+| Hook pipeline impl                 | `packages/core/src/domain/hooks.ts`         |
+| Safety hooks (shell, fence, audit) | `packages/core/src/domain/safety-hooks.ts`  |
+| Auto-actions (format, lint, test)  | `packages/core/src/domain/auto-actions.ts`  |
+| Session hooks (start, summary)     | `packages/core/src/domain/session-hooks.ts` |
 
 ### Multi-agent
 
-| What | Where |
-|------|-------|
-| Delegation engine | `packages/core/src/domain/delegation.ts` |
-| Sub-agent manager | `packages/core/src/domain/subagent.ts` |
-| Mesh registry | `packages/core/src/domain/mesh.ts` |
-| Mesh delegation | `packages/core/src/domain/mesh-delegation.ts` |
-| Agent HTTP channel | `plugins/channels/agent/src/index.ts` |
+| What               | Where                                         |
+| ------------------ | --------------------------------------------- |
+| Delegation engine  | `packages/core/src/domain/delegation.ts`      |
+| Sub-agent manager  | `packages/core/src/domain/subagent.ts`        |
+| Mesh registry      | `packages/core/src/domain/mesh.ts`            |
+| Mesh delegation    | `packages/core/src/domain/mesh-delegation.ts` |
+| Agent HTTP channel | `plugins/channels/agent/src/index.ts`         |
 
 ### Config & boot
 
-| What | Where |
-|------|-------|
-| Config YAML loader | `packages/boot/src/config.ts` |
-| Config validation | `packages/boot/src/validate/` |
-| Boot orchestrator | `packages/boot/src/index.ts` |
+| What               | Where                                  |
+| ------------------ | -------------------------------------- |
+| Config YAML loader | `packages/boot/src/config.ts`          |
+| Config validation  | `packages/boot/src/validate/`          |
+| Boot orchestrator  | `packages/boot/src/index.ts`           |
 | Runtime compositor | `packages/core/src/runtime/runtime.ts` |
 
 ### CLI
 
-| What | Where |
-|------|-------|
-| CLI entry point | `packages/cli/src/index.ts` |
-| Init wizard | `packages/cli/src/commands/init/` |
-| All other commands | `packages/cli/src/commands/*.ts` |
+| What               | Where                             |
+| ------------------ | --------------------------------- |
+| CLI entry point    | `packages/cli/src/index.ts`       |
+| Init wizard        | `packages/cli/src/commands/init/` |
+| All other commands | `packages/cli/src/commands/*.ts`  |
 
 ### Type definitions
 
-| What | Where |
-|------|-------|
-| All interfaces | `packages/types/src/` |
+| What             | Where                              |
+| ---------------- | ---------------------------------- |
+| All interfaces   | `packages/types/src/`              |
 | Deployment types | `packages/types/src/deployment.ts` |
-| Error hierarchy | `packages/types/src/errors.ts` |
-| Hook types | `packages/types/src/hooks.ts` |
+| Error hierarchy  | `packages/types/src/errors.ts`     |
+| Hook types       | `packages/types/src/hooks.ts`      |
 
 ---
 
-*This document is the source of truth for RivetOS architecture. Update it when you add packages, change patterns, or discover issues.*
+_This document is the source of truth for RivetOS architecture. Update it when you add packages, change patterns, or discover issues._
