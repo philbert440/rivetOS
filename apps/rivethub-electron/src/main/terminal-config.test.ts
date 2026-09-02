@@ -789,4 +789,53 @@ describe('readTerminalConfigs', () => {
       fs.rmSync(root, { recursive: true, force: true })
     },
   )
+
+  it('reads colors.toml next to the emulator file and theme.name beside a real theme dir', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-colors-'))
+    const colors = 'mode = "dark"\nbackground = "#111c18"\n'
+    write(path.join(root, '.local/state/omarchy/current/theme/alacritty.toml'), omarchyAlacritty)
+    write(path.join(root, '.local/state/omarchy/current/theme/colors.toml'), colors)
+    write(path.join(root, '.local/state/omarchy/current/theme.name'), 'osaka-jade\n')
+    const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+    expect(configs[0]?.kind).toBe('omarchy')
+    expect(configs[0]?.colorsToml).toBe(colors)
+    expect(configs[0]?.themeName).toBe('osaka-jade')
+    expect(configs[0]?.text).toBe(omarchyAlacritty)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('omits colorsToml when the theme dir has no colors.toml', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-nocolors-'))
+    write(path.join(root, '.local/state/omarchy/current/theme/ghostty.conf'), omarchyGhostty)
+    const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+    expect(configs[0]?.kind).toBe('omarchy')
+    expect(configs[0]?.colorsToml).toBeUndefined()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('ignores a theme.name that is not a safe identifier', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-badname-'))
+    write(path.join(root, '.local/state/omarchy/current/theme/alacritty.toml'), omarchyAlacritty)
+    write(path.join(root, '.local/state/omarchy/current/theme.name'), '../x\n')
+    const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+    expect(configs[0]?.kind).toBe('omarchy')
+    expect(configs[0]?.themeName).toBeUndefined()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('returns an omarchy entry from colors.toml alone when no emulator file exists', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-onlycolors-'))
+    const colors = 'mode = "dark"\nbackground = "#111c18"\n'
+    write(path.join(root, '.local/state/omarchy/current/theme/colors.toml'), colors)
+    write(path.join(root, '.local/state/omarchy/current/theme.name'), 'osaka-jade\n')
+    const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+    expect(configs[0]?.kind).toBe('omarchy')
+    expect(configs[0]?.text).toBe('')
+    expect(configs[0]?.colorsToml).toBe(colors)
+    expect(configs[0]?.themeName).toBe('osaka-jade')
+    expect(configs[0]?.path).toBe(
+      path.join(root, '.local', 'state', 'omarchy', 'current', 'theme', 'colors.toml'),
+    )
+    fs.rmSync(root, { recursive: true, force: true })
+  })
 })

@@ -41,6 +41,8 @@ export interface TerminalConfigFile {
    *  Omarchy import (stale Ghostty must not beat the Alacritty that actually
    *  includes the theme). */
   usesOmarchy?: boolean
+  /** Omarchy `colors.toml` text, schema A or B; only for kind `omarchy`. */
+  colorsToml?: string
 }
 
 /** Per file, main config and includes alike. A terminal config is a few KB;
@@ -443,10 +445,34 @@ export function includeAllowRoots(e: ConfigEnv): string[] {
 }
 
 const OMARCHY_THEME_FILES = ['ghostty.conf', 'alacritty.toml', 'kitty.conf'] as const
+const OMARCHY_THEME_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/** Sibling `current/theme.name` (Omarchy 4.x real `theme` dir). Contained
+ *  the same way as the theme files; rejected if it is not a short identifier. */
+function readOmarchyThemeNameFile(realDir: string, allow: readonly string[]): string | undefined {
+  const abs = path.join(path.dirname(realDir), 'theme.name')
+  const real = realWithinAny(allow, abs)
+  if (!real) return undefined
+  const text = readCapped(real)
+  if (text === null) return undefined
+  const name = text.trim()
+  if (name.length === 0 || name.length > 64 || !OMARCHY_THEME_NAME_RE.test(name)) return undefined
+  return name
+}
+
+function readOmarchyColorsToml(realDir: string, allow: readonly string[]): string | undefined {
+  const abs = path.join(realDir, 'colors.toml')
+  const real = realWithinAny(allow, abs)
+  if (!real) return undefined
+  const text = readCapped(real)
+  return text === null ? undefined : text
+}
 
 /** Read the Omarchy current-theme directory: ghostty.conf preferred, then
- *  alacritty.toml, then kitty.conf. The theme dir's realpath must sit under
- *  includeAllowRoots so `current/theme → ~/.ssh` is not a read. */
+ *  alacritty.toml, then kitty.conf. Also reads `colors.toml` (app theme) and,
+ *  when the dir is a real `theme` directory, sibling `theme.name`. The theme
+ *  dir's realpath must sit under includeAllowRoots so `current/theme → ~/.ssh`
+ *  is not a read. A dir with only `colors.toml` still yields an entry. */
 function readOmarchyTheme(themeDir: string, e: ConfigEnv): TerminalConfigFile | null {
   const allow = includeAllowRoots(e)
   const realDir = realWithinAny(allow, themeDir)
@@ -457,7 +483,13 @@ function readOmarchyTheme(themeDir: string, e: ConfigEnv): TerminalConfigFile | 
     return null
   }
   const base = path.basename(realDir)
-  const themeName = base === 'theme' ? undefined : base
+  let themeName = base === 'theme' ? undefined : base
+  if (!themeName) themeName = readOmarchyThemeNameFile(realDir, allow)
+  const colorsToml = readOmarchyColorsToml(realDir, allow)
+  const extra = {
+    ...(colorsToml !== undefined ? { colorsToml } : {}),
+    ...(themeName ? { themeName } : {}),
+  }
   for (const name of OMARCHY_THEME_FILES) {
     const abs = path.join(realDir, name)
     const realFile = realWithinAny(allow, abs)
@@ -471,7 +503,16 @@ function readOmarchyTheme(themeDir: string, e: ConfigEnv): TerminalConfigFile | 
       path: path.join(themeDir, name),
       text,
       includes: {},
-      ...(themeName ? { themeName } : {}),
+      ...extra,
+    }
+  }
+  if (colorsToml !== undefined) {
+    return {
+      kind: 'omarchy',
+      path: path.join(themeDir, 'colors.toml'),
+      text: '',
+      includes: {},
+      ...extra,
     }
   }
   return null

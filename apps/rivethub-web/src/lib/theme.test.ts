@@ -8,10 +8,11 @@ import {
 } from './theme.js'
 
 describe('parseThemePreference', () => {
-  it('accepts the three stored values', () => {
+  it('accepts the four stored values', () => {
     expect(parseThemePreference('light')).toBe('light')
     expect(parseThemePreference('dark')).toBe('dark')
     expect(parseThemePreference('system')).toBe('system')
+    expect(parseThemePreference('omarchy')).toBe('omarchy')
   })
 
   it('defaults to system when unset or garbage', () => {
@@ -36,6 +37,8 @@ describe('loadThemePreference / saveThemePreference', () => {
     expect(loadThemePreference(get)).toBe('light')
     saveThemePreference('dark', set)
     expect(loadThemePreference(get)).toBe('dark')
+    saveThemePreference('omarchy', set)
+    expect(loadThemePreference(get)).toBe('omarchy')
   })
 
   it('uses the bare key rivethub.theme', () => {
@@ -56,5 +59,12 @@ describe('resolveTheme', () => {
   it('system follows the OS setting', () => {
     expect(resolveTheme('system', true)).toBe('dark')
     expect(resolveTheme('system', false)).toBe('light')
+  })
+
+  it('omarchy uses the snapshot mode, falling back to the OS setting', () => {
+    expect(resolveTheme('omarchy', true, 'light')).toBe('light')
+    expect(resolveTheme('omarchy', false, 'dark')).toBe('dark')
+    expect(resolveTheme('omarchy', true)).toBe('dark')
+    expect(resolveTheme('omarchy', false)).toBe('light')
   })
 })

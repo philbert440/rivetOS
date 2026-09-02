@@ -160,9 +160,16 @@ export function XtermAttach(props: {
   const themeSource = useTerminalSettings((s) => s.themeSource)
   const scheme = useTerminalSettings((s) => s.scheme)
   const imported = useTerminalSettings((s) => s.imported)
+  const themePreference = useTheme((s) => s.preference)
+  const omarchyAnsi = useTheme((s) => s.omarchy?.colors.ansi)
   const xtermTheme = useMemo(
-    () => resolveXtermTheme({ themeSource, scheme, imported }, resolvedTheme),
-    [themeSource, scheme, imported, resolvedTheme],
+    () =>
+      resolveXtermTheme(
+        { themeSource, scheme, imported },
+        resolvedTheme,
+        themePreference === 'omarchy' ? omarchyAnsi : undefined,
+      ),
+    [themeSource, scheme, imported, resolvedTheme, themePreference, omarchyAnsi],
   )
   const [status, setStatus] = useState<'connecting' | 'attached' | 'exited' | 'closed'>(
     'connecting',
@@ -249,9 +256,14 @@ export function XtermAttach(props: {
       term?.dispose()
     }
     try {
+      const themeState = useTheme.getState()
       const instance = new Terminal({
         ...buildTerminalOptions(initial),
-        theme: resolveXtermTheme(initial, resolvedThemeOf(useTheme.getState())),
+        theme: resolveXtermTheme(
+          initial,
+          resolvedThemeOf(themeState),
+          themeState.preference === 'omarchy' ? themeState.omarchy?.colors.ansi : undefined,
+        ),
       })
       term = instance
       fit = new FitAddon()

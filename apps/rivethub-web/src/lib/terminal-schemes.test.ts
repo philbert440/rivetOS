@@ -165,4 +165,11 @@ describe('appXtermTheme', () => {
       cursor: '#333333',
     })
   })
+
+  it('spreads a given ANSI ramp onto the xterm theme', () => {
+    const ansi = XTERM_DEFAULT_ANSI
+    const theme = appXtermTheme('dark', ansi)
+    expect(theme.red).toBe(ansi[1])
+    expect(theme.brightWhite).toBe(ansi[15])
+  })
 })
