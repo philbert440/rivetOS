@@ -14,7 +14,7 @@ import type { HarnessSession } from '../term/harness-sessions.js'
 import { HermesDriver, type HermesPtyHost, type HermesStoreHost } from './hermes-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
-import { runHarnessRotationConformance } from './test/driver-conformance.js'
+import { FIVE_FLAGS, pick, runHarnessRotationConformance } from './test/driver-conformance.js'
 
 /** Real hermes ids: `YYYYMMDD_HHMMSS_<6 hex>`, deliberately not uuids. */
 const NAT = '20260802_225647_6ad0b9'
@@ -140,7 +140,8 @@ const adopt = (f: Fakes, room: string, native: string): void => {
 
 describe('capability flags are honest', () => {
   it('reports what is actually wired on this node', () => {
-    expect(makeDriver().driver.capabilities).toEqual({
+    const caps = makeDriver().driver.capabilities
+    expect(pick(caps, FIVE_FLAGS)).toEqual({
       interrupt: true,
       resume: true,
       // The roster runs `hermes --yolo --accept-hooks` so it never blocks on a
@@ -150,6 +151,13 @@ describe('capability flags are honest', () => {
       liveStream: true,
       listSessions: true,
     })
+  })
+
+  it('advertises the hermes effort sheet and no models', () => {
+    const caps = makeDriver().driver.capabilities
+    expect(caps.effortFlag).toBe('--reasoning')
+    expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high'])
+    expect(caps.models).toEqual([])
   })
 
   it('drops interrupt/resume when den terminals are off', () => {
@@ -382,7 +390,9 @@ describe('sendUserTurn', () => {
     await f.driver.sendUserTurn(SID, { text: 'hello' })
     // No live pty for that room yet → spawn-or-get into the same room.
     expect(f.pty.spawns).toEqual([{ key: 'hermes', session: ROOM, resume: NAT }])
-    expect(f.pty.injects).toEqual([{ id: 'pty-1', text: 'hello', submit: true, interrupt: undefined }])
+    expect(f.pty.injects).toEqual([
+      { id: 'pty-1', text: 'hello', submit: true, interrupt: undefined },
+    ])
   })
 
   it('re-attaches (--resume) when the PTY was LRU-evicted between turns', async () => {
@@ -625,7 +635,9 @@ describe('rotation — the driver’s whole part in it', () => {
 })
 
 describe('through the real registry', () => {
-  const withRegistry = (rows: HarnessSession[] = []): { fakes: Fakes; registry: HarnessRegistry } => {
+  const withRegistry = (
+    rows: HarnessSession[] = [],
+  ): { fakes: Fakes; registry: HarnessRegistry } => {
     const fakes = makeDriver({ rows })
     const registry = createHarnessRegistry()
     registry.register(fakes.driver)
@@ -633,19 +645,18 @@ describe('through the real registry', () => {
   }
 
   it('registers under the hermes harness id and advertises its flags', () => {
-    const { registry } = withRegistry()
-    expect(registry.list()).toEqual([
-      {
-        harnessId: 'hermes',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-        },
-      },
-    ])
+    const { fakes, registry } = withRegistry()
+    const [desc] = registry.list()
+    expect(registry.list()).toHaveLength(1)
+    expect(desc.harnessId).toBe('hermes')
+    expect(pick(desc.capabilities, FIVE_FLAGS)).toEqual({
+      interrupt: true,
+      resume: true,
+      approvals: false,
+      liveStream: true,
+      listSessions: true,
+    })
+    expect(desc.capabilities.modelFlag).toBe(fakes.driver.capabilities.modelFlag)
   })
 
   it('lists canonical ids, exactly once each', async () => {
@@ -749,15 +760,18 @@ runHarnessRotationConformance('hermes', () => {
       // `from` is always whatever the room is running right now — that is what
       // makes this a rotation rather than a second session — so the room key is
       // all the driver needs to be told.
-      const next = [NAT2, NAT3][minted++] ?? `20260803_1200${String(minted).padStart(2, '0')}_ffffff`
+      const next =
+        [NAT2, NAT3][minted++] ?? `20260803_1200${String(minted).padStart(2, '0')}_ffffff`
       fakes.emitDen(hermesEvent(ROOM, next, { type: 'session.start', title: 'Hermes' }))
       return `hermes:${next}` as SessionId
     },
     emitActivity: (id) => {
-      fakes.emitDen(hermesEvent(ROOM, id.slice('hermes:'.length), {
-        type: 'message.agent',
-        text: 'still going',
-      }))
+      fakes.emitDen(
+        hermesEvent(ROOM, id.slice('hermes:'.length), {
+          type: 'message.agent',
+          text: 'still going',
+        }),
+      )
     },
     teardown: () => {
       registry.close()

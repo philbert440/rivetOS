@@ -506,6 +506,10 @@ export interface TermConfigResponse {
 export interface TermSpawnRequest {
   /** roster key from TermConfigResponse.commands; default when omitted */
   command?: string
+  /** Model id appended as the harness's modelFlag when listed on its sheet. */
+  model?: string
+  /** Effort id appended as the harness's effortFlag when listed on its sheet. */
+  effort?: string
   /**
    * Conversation join key (seamless modes): when set, this PTY's denSession
    * IS this id and the harness runs with RIVETOS_SESSION_KEY=<session>, so
@@ -1130,16 +1134,18 @@ export interface DeviceOpenResponse {
 // /api/agents
 // ---------------------------------------------------------------------------
 
-/** Named agent preset (model + effort + system prompt + optional color + node). */
+/** Named agent preset (harness + model + effort + system prompt + optional color + node). */
 export interface AgentPreset {
   id: string
   name: string
   /** Hex color (e.g. "#3b82f6"), or empty for default. */
   color: string
-  /** Agent/harness id; empty = node default. */
+  /** Harness this agent runs; absent on legacy rows until migration. */
+  harnessId?: HarnessId
+  /** Real model id for the harness; empty = harness default. */
   model: string
-  /** Thinking level. */
-  effort: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  /** Effort id for the harness/model; empty = harness/model default. */
+  effort: string
   /** System prompt override; empty = no override. */
   systemPrompt: string
   /** Node baseUrl this agent runs on. */
@@ -1157,8 +1163,9 @@ export interface AgentsListResponse {
 export interface AgentCreateRequest {
   name: string
   color?: string
+  harnessId?: HarnessId
   model?: string
-  effort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  effort?: string
   systemPrompt?: string
   nodeBaseUrl: string
 }
@@ -1166,8 +1173,10 @@ export interface AgentCreateRequest {
 export interface AgentUpdateRequest {
   name?: string
   color?: string
+  /** `null` unsets the harness on the stored preset. */
+  harnessId?: HarnessId | null
   model?: string
-  effort?: 'off' | 'low' | 'medium' | 'high' | 'xhigh'
+  effort?: string
   systemPrompt?: string
   nodeBaseUrl?: string
 }

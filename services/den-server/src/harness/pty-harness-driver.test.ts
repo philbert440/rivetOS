@@ -397,3 +397,58 @@ describe.each(capabilitySubjects)('%s: capabilities are runtime-truthed', (name,
     expect(driver.capabilities.approvals).toBe(false)
   })
 })
+
+describe('model/effort sheet on capabilities', () => {
+  it('claude advertises fable default and --effort', () => {
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]) })
+    expect(driver.capabilities.modelFlag).toBe('--model')
+    expect(driver.capabilities.effortFlag).toBe('--effort')
+    expect(driver.capabilities.models?.find((m) => m.default)?.id).toBe('fable')
+  })
+
+  it('config override replaces the sheet lists', () => {
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      sheetOverride: {
+        models: [{ id: 'only', label: 'Only' }],
+        efforts: [{ id: 'max', label: 'Max' }],
+      },
+    })
+    expect(driver.capabilities.models).toEqual([{ id: 'only', label: 'Only' }])
+    expect(driver.capabilities.efforts).toEqual([{ id: 'max', label: 'Max' }])
+    expect(driver.capabilities.modelFlag).toBe('--model')
+  })
+
+  it('memoizes the sheet for 60s and emits when a re-read after TTL differs', async () => {
+    let t = 0
+    let reads = 0
+    let models = [{ id: 'a', label: 'A' }]
+    const flips: HarnessCapabilityEvent[] = []
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      now: () => t,
+      sheet: () => {
+        reads += 1
+        return { models: [...models], modelFlag: '--model' }
+      },
+    })
+    driver.subscribeCapabilities((e) => flips.push(e))
+    expect(reads).toBe(1)
+    await driver.verifyCapabilities()
+    await driver.verifyCapabilities()
+    expect(reads).toBe(1)
+    expect(flips).toEqual([])
+
+    t = 60_000
+    models = [{ id: 'b', label: 'B' }]
+    await driver.verifyCapabilities()
+    expect(reads).toBe(2)
+    expect(flips).toHaveLength(1)
+    expect(flips[0]).toMatchObject({
+      type: 'harness-capabilities',
+      harnessId: 'claude-code',
+      changed: { models: [{ id: 'b', label: 'B' }] },
+    })
+    expect(flips[0]?.reason).toContain('model/effort sheet changed')
+  })
+})

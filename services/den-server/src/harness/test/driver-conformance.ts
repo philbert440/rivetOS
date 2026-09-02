@@ -55,6 +55,22 @@ import {
 } from '@rivetos/types'
 import type { HarnessRegistry } from '../registry.js'
 
+/** The five wired boolean flags — independent of the model/effort sheet. */
+export const FIVE_FLAGS = [
+  'interrupt',
+  'resume',
+  'approvals',
+  'liveStream',
+  'listSessions',
+] as const
+
+/** Exact subset — a missing or extra key on the picked object still fails `toEqual`. */
+export function pick<T extends object, K extends keyof T>(obj: T, keys: readonly K[]): Pick<T, K> {
+  const out = {} as Pick<T, K>
+  for (const key of keys) out[key] = obj[key]
+  return out
+}
+
 export interface RotationConformanceContext {
   /** A real registry with `driver` already registered. */
   registry: HarnessRegistry

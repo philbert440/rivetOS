@@ -18,17 +18,36 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { SYSTEM_PROMPT_MAX_CHARS, type AgentPreset } from '@rivetos/types'
+import {
+  HARNESS_IDS,
+  SYSTEM_PROMPT_MAX_CHARS,
+  migrateAgentPreset,
+  type AgentPreset,
+  type HarnessId,
+} from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
 // helpers
 
-const EFFORT_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh'] as const
 const COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 const NODE_IMMUTABLE = 'node is immutable; recreate the agent'
+const EFFORT_RE = /^[A-Za-z0-9._[\]:-]{0,64}$/
 
-function isEffortLevel(value: string): value is AgentPreset['effort'] {
-  return (EFFORT_LEVELS as readonly string[]).includes(value)
+function isHarnessId(value: string): value is HarnessId {
+  return (HARNESS_IDS as readonly string[]).includes(value)
+}
+
+function parseEffort(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const effort = value.trim()
+  if (!EFFORT_RE.test(effort)) return undefined
+  return effort
+}
+
+function parseHarnessId(value: unknown): HarnessId | undefined | 'bad' {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string' || !isHarnessId(value)) return 'bad'
+  return value
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,6 +56,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAgentPreset(value: unknown): value is AgentPreset {
   if (!isRecord(value)) return false
+  if (
+    value.harnessId !== undefined &&
+    (typeof value.harnessId !== 'string' || !isHarnessId(value.harnessId))
+  )
+    return false
   return (
     typeof value.id === 'string' &&
     value.id.length > 0 &&
@@ -44,7 +68,7 @@ function isAgentPreset(value: unknown): value is AgentPreset {
     typeof value.color === 'string' &&
     typeof value.model === 'string' &&
     typeof value.effort === 'string' &&
-    isEffortLevel(value.effort) &&
+    EFFORT_RE.test(value.effort) &&
     typeof value.systemPrompt === 'string' &&
     typeof value.nodeBaseUrl === 'string' &&
     typeof value.createdAt === 'number' &&
@@ -112,7 +136,11 @@ function loadRegistry(file: string): Registry {
     if (!isRecord(raw) || !Array.isArray(raw.agents)) {
       return quarantineCorrupt(file, 'shape invalid')
     }
-    return { agents: raw.agents.filter(isAgentPreset) }
+    return {
+      agents: (raw.agents as unknown[])
+        .map((row): unknown => (isAgentPreset(row) ? migrateAgentPreset(row) : row))
+        .filter(isAgentPreset),
+    }
   } catch {
     return quarantineCorrupt(file, 'parse failed')
   }
@@ -198,9 +226,24 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
         return true
       }
       const color = colorRaw ?? ''
-      const model = typeof raw.model === 'string' ? raw.model.trim().slice(0, 128) : ''
-      const effortValue = typeof raw.effort === 'string' ? raw.effort : ''
-      const effort = isEffortLevel(effortValue) ? effortValue : 'medium'
+      const modelRaw = typeof raw.model === 'string' ? raw.model.trim().slice(0, 128) : ''
+      const effortParsed = parseEffort(raw.effort)
+      if (raw.effort !== undefined && effortParsed === undefined) {
+        json(res, 400, { error: 'effort must be a 0-64 token' })
+        return true
+      }
+      const hid = parseHarnessId(raw.harnessId)
+      if (hid === 'bad') {
+        json(res, 400, { error: 'harnessId must be a known harness' })
+        return true
+      }
+      const migrated = migrateAgentPreset({
+        model: modelRaw,
+        harnessId: hid,
+      })
+      const model = migrated.model
+      const harnessId = migrated.harnessId
+      const effort = effortParsed ?? 'medium'
       const systemPrompt =
         typeof raw.systemPrompt === 'string'
           ? raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
@@ -228,6 +271,7 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
         nodeBaseUrl,
         createdAt: now(),
         updatedAt: now(),
+        ...(harnessId ? { harnessId } : {}),
       }
       reg.agents.push(agent)
       saveRegistry(file, reg)
@@ -298,12 +342,30 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
       if (typeof raw.model === 'string') {
         agent.model = raw.model.trim().slice(0, 128)
       }
-      if (typeof raw.effort === 'string' && isEffortLevel(raw.effort)) {
-        agent.effort = raw.effort
+      if (raw.effort !== undefined) {
+        const effort = parseEffort(raw.effort)
+        if (effort === undefined) {
+          json(res, 400, { error: 'effort must be a 0-64 token' })
+          return true
+        }
+        agent.effort = effort
+      }
+      if (raw.harnessId !== undefined) {
+        const hid = parseHarnessId(raw.harnessId)
+        if (hid === 'bad') {
+          json(res, 400, { error: 'harnessId must be a known harness' })
+          return true
+        }
+        if (hid) agent.harnessId = hid
+        else delete agent.harnessId
       }
       if (typeof raw.systemPrompt === 'string') {
         agent.systemPrompt = raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
       }
+      const migrated = migrateAgentPreset(agent)
+      agent.model = migrated.model
+      if (migrated.harnessId) agent.harnessId = migrated.harnessId
+      else delete agent.harnessId
       agent.updatedAt = now()
       saveRegistry(file, reg)
       json(res, 200, { agent })
