@@ -55,6 +55,11 @@ export interface TmuxCtl {
    *  create-vs-attach decision — that decision needs a fresh view, not a
    *  cached one. Optional: fakes without a memo don't need it. */
   refresh?(): void
+  /** Stamp a session option on an already-existing session
+   *  (`set-option -t =<name>`). Used to adopt pre-fix untagged sessions;
+   *  create stamps tags in the new-session command chain instead (no `-t`,
+   *  because tmux resolves `-t =<name>` before `new-session` has created it). */
+  setOption?(name: string, option: string, value: string): void
 }
 
 export interface TmuxSessionInfo {
@@ -69,8 +74,9 @@ export interface TmuxSessionInfo {
   /** `#{pane_pid}` — first pane's shell pid, when the query provides it. */
   pid?: number
   /** The `@rivet_command` session option ('' when unset). Stamped atomically
-   *  at create; sessions WITHOUT it are foreign — never listed, attached or
-   *  GC'd by den. */
+   *  at create. Untagged sessions whose name round-trips as a den session key
+   *  are den's (pre-fix creates) and are adopted on attach; names that do not
+   *  decode as a den key are foreign — never listed, attached or GC'd. */
   command: string
   /** The `@rivet_user` session option ('' when unset): the den-stamped routed
    *  identity that created the session, or 'owner'. Attach refuses a mismatch. */
@@ -136,6 +142,126 @@ export function decodeTmuxName(name: string): string {
     out += name[i]
   }
   return out
+}
+
+/** True when `name` round-trips through den's tmux encoding as a legal den
+ *  session key. On den's private `-L rivet-<hash>` socket that is proof the
+ *  session is den's, even if `@rivet_command` was never stamped (pre-fix
+ *  creates). A raw underscore (`a_b`) or a `.`/':' that encoding would have
+ *  rewritten does NOT round-trip. The `~` + base64url fallback in
+ *  `encodeTmuxName` is for keys outside the den alphabet — those never
+ *  round-trip as den names, so `~` is rejected up front. */
+export function isDenTmuxName(name: string): boolean {
+  if (!name || name.startsWith('~')) return false
+  try {
+    const decoded = decodeTmuxName(name)
+    if (
+      !/^[a-zA-Z0-9:_.-]{1,120}$/.test(decoded) ||
+      decoded.startsWith('-') ||
+      decoded.startsWith('task:')
+    )
+      return false
+    return encodeTmuxName(decoded) === name
+  } catch {
+    return false
+  }
+}
+
+export type ExistingTmuxDisposition = 'attach' | 'adopt' | 'foreign' | 'user-mismatch'
+
+/** How spawn should treat a session that already exists on den's socket. */
+export function classifyExistingTmuxSession(
+  s: TmuxSessionInfo,
+  routedUser?: string,
+): ExistingTmuxDisposition {
+  const want = routedUser ?? 'owner'
+  // Once @rivet_command is set, an unset @rivet_user means 'owner' — a
+  // routed non-owner must not attach. Pre-fix sessions have BOTH tags
+  // empty and take the adopt path below.
+  if (s.command) {
+    const have = s.user || 'owner'
+    if (have !== want) return 'user-mismatch'
+    return 'attach'
+  }
+  if (s.user && s.user !== want) return 'user-mismatch'
+  if (isDenTmuxName(s.name)) {
+    // Untagged + decodable: only the node owner may adopt. A routed
+    // non-owner POSTing the same session key would otherwise claim
+    // another user's running harness (credentials included).
+    if (want !== 'owner') return 'user-mismatch'
+    return 'adopt'
+  }
+  return 'foreign'
+}
+
+/** Sourced by the CREATE harness wrapper; `$0` is the env file. */
+export const TMUX_ENV_WRAP_SCRIPT = 'set -a; . "$0"; set +a; rm -f "$0"; exec "$@"'
+
+/** tmux client argv for CREATE. Tags and `set-environment -r` are chained
+ *  WITHOUT `-t` — in a command sequence tmux resolves `-t =<name>` before
+ *  `new-session` has created the session, so the stamp is silently dropped.
+ *  The sequence's current session after `new-session` is the one just made.
+ *  Keep `-t =<name>` only on later, separate ctl calls. */
+export function tmuxCreateArgv(opts: {
+  socket: string
+  confPath: string
+  name: string
+  cwd: string
+  cols: number
+  rows: number
+  envPairs: string[]
+  envFile: string
+  harness: string[]
+  command: string
+  user: string
+  unsetKeys: string[]
+  /** Test/integration only: `new-session -d` so the chain runs without
+   *  attaching a client (the live PTY path omits `-d`). */
+  detached?: boolean
+}): string[] {
+  const unsetChain: string[] = []
+  for (const k of opts.unsetKeys) {
+    unsetChain.push(';', 'set-environment', '-r', k)
+  }
+  return [
+    'tmux',
+    '-L',
+    opts.socket,
+    '-f',
+    opts.confPath,
+    'new-session',
+    ...(opts.detached ? ['-d'] : []),
+    '-s',
+    opts.name,
+    '-c',
+    opts.cwd,
+    '-x',
+    String(opts.cols),
+    '-y',
+    String(opts.rows),
+    ...opts.envPairs,
+    '--',
+    '/bin/sh',
+    '-c',
+    TMUX_ENV_WRAP_SCRIPT,
+    opts.envFile,
+    ...opts.harness,
+    ';',
+    'set-option',
+    '@rivet_command',
+    opts.command,
+    ';',
+    'set-option',
+    '@rivet_user',
+    opts.user,
+    ...unsetChain,
+  ]
+}
+
+/** tmux client argv for ATTACH. `-t =<name>` is required here: this is a
+ *  separate invocation against a session that already exists. */
+export function tmuxAttachArgv(socket: string, confPath: string, name: string): string[] {
+  return ['tmux', '-L', socket, '-f', confPath, 'attach-session', '-t', `=${name}`]
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +432,10 @@ export function createRealTmuxCtl(
       return sessions
     },
     refresh() {
+      memo = undefined
+    },
+    setOption(name, option, value) {
+      run(['set-option', '-t', `=${name}`, option, value])
       memo = undefined
     },
   }

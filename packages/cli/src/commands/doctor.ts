@@ -29,7 +29,10 @@
  */
 
 import { readFile, access, writeFile, unlink, stat as fsStat } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
 import { validateConfig } from '@rivetos/boot'
@@ -1053,6 +1056,65 @@ async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
   return results
 }
 
+/** Den's per-process tmux socket (`rivet-<sha1(stateDir:port)[0:8]>`), matching
+ *  den-server `tmuxSocketName`. Duplicated here so the CLI does not import
+ *  den-server. Port comes from `den.port` in the config doctor already
+ *  loaded, then `RIVETOS_DEN_PORT`, then 5174 — env-only missed a
+ *  non-default yaml port and the untagged-session check became a no-op. */
+function denTmuxSocketName(rawConfig: string | null): string {
+  const stateDir = process.env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den')
+  let port: number | undefined
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as { den?: { port?: unknown } }
+      const p = parsed.den?.port
+      if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 65535) port = p
+    } catch {
+      /* expected */
+    }
+  }
+  if (port === undefined) {
+    const portRaw = process.env.RIVETOS_DEN_PORT
+    port = portRaw && /^\d+$/.test(portRaw) ? Number(portRaw) : 5174
+  }
+  const hash = createHash('sha1').update(`${stateDir}:${port}`).digest('hex').slice(0, 8)
+  return `rivet-${hash}`
+}
+
+function tmuxSocketPath(socket: string): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+  const base = process.env.TMUX_TMPDIR || `/tmp/tmux-${uid}`
+  return join(base, socket)
+}
+
+/** Cheap (one `tmux list-sessions`): WARN when den's socket has sessions with
+ *  empty `@rivet_command`. Skips when the socket file is absent so we never
+ *  start a tmux server as a side effect of doctor. */
+function checkUntaggedDenTmuxSessions(rawConfig: string | null): CheckResult | undefined {
+  const socket = denTmuxSocketName(rawConfig)
+  if (!existsSync(tmuxSocketPath(socket))) return undefined
+  try {
+    const out = execFileSync('tmux', ['-L', socket, 'list-sessions', '-F', '#{@rivet_command}'], {
+      timeout: 2000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const lines = out.split('\n')
+    if (lines.at(-1) === '') lines.pop()
+    const n = lines.filter((l) => l.length === 0).length
+    if (n === 0) return undefined
+    return check(
+      'terminal',
+      'tmux-tags',
+      'warn',
+      'untagged den tmux sessions — pre-#6xx create; they will be adopted on next open',
+      `${n} session(s) on ${socket} have empty @rivet_command`,
+    )
+  } catch {
+    return undefined
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Check: Terminal mux (T1) — WARN when terminals are on and mux would be
 // tmux but the binary is missing (sessions won't survive den restarts)
@@ -1118,6 +1180,8 @@ function checkTerminalMux(rawConfig: string | null): CheckResult[] {
       )
     } else {
       results.push(check('terminal', 'mux', 'pass', `Terminal mux: tmux found (${out})`))
+      const untagged = checkUntaggedDenTmuxSessions(rawConfig)
+      if (untagged) results.push(untagged)
     }
   } catch {
     results.push(
