@@ -15,7 +15,24 @@ import {
   useTerminalSettings,
   type TerminalSettings,
 } from '../stores/terminal-settings.js'
-import { TERMINAL_SCHEMES, XTERM_DEFAULT_ANSI, type XtermTheme } from '../lib/terminal-schemes.js'
+import {
+  paletteToXtermTheme,
+  TERMINAL_SCHEMES,
+  XTERM_DEFAULT_ANSI,
+  type XtermTheme,
+} from '../lib/terminal-schemes.js'
+import { rivetShell } from '../lib/shell-bridge.js'
+import {
+  canApply,
+  detectAndParse,
+  EMULATOR_LABELS,
+  importPatch,
+  parsePastedPalette,
+  sanitizeConfigFiles,
+  type TerminalConfigFile,
+  type TerminalImport,
+  type TerminalImportPatch,
+} from '../lib/terminal-config/index.js'
 
 /** Labelled settings row. `controlId` ties the label to the control
  *  (`htmlFor`) so clicking the label activates it and assistive tech gets
@@ -195,6 +212,227 @@ function TerminalPreview(props: { settings: TerminalSettings; theme: XtermTheme 
   )
 }
 
+/**
+ * Emulator configs the desktop shell found. Web and mobile have no bridge, so
+ * they settle straight into "none" and get the paste box instead — `null` is
+ * the still-looking state, `[]` is a real answer.
+ */
+function useDetectedConfigs(): {
+  configs: TerminalConfigFile[] | null
+  error: string | null
+} {
+  const [configs, setConfigs] = useState<TerminalConfigFile[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    const shell = rivetShell()
+    // Optional bridge method: an older installed shell (or a browser) simply
+    // has none, which is the "paste instead" path, not an error.
+    if (!shell?.readTerminalConfigs) {
+      setConfigs([])
+      return
+    }
+    let cancelled = false
+    shell.readTerminalConfigs().then(
+      (list) => {
+        // The bridge is trusted to be the shell, which is not the same as
+        // being the shape this dist expects — an older installed shell is
+        // exactly the skew sanitizeConfigFiles exists for.
+        if (!cancelled) setConfigs(sanitizeConfigFiles(list))
+      },
+      (err: unknown) => {
+        if (cancelled) return
+        // A failed read is NOT "no emulator installed" — the two states get
+        // different copy, or the user goes hunting for a config that is
+        // sitting right there.
+        setError(err instanceof Error ? err.message : String(err))
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return { configs, error }
+}
+
+/**
+ * Settings → Terminal → Import from… (T4).
+ *
+ * Nothing is written on click: an emulator button (or a pasted palette) only
+ * produces a PREVIEW, because an import silently replacing the user's font
+ * and every color is exactly the kind of surprise a settings page shouldn't
+ * spring. Apply is the only write, and it goes through `importPatch` so a
+ * palette that failed validation can never set `themeSource: 'imported'`.
+ */
+function TerminalImportRow(props: {
+  settings: TerminalSettings & { update: (patch: Partial<TerminalSettings>) => void }
+  /** The theme in force right now — what the preview falls back to for a
+   *  font-only import, so the sample doesn't flip colors on the user. */
+  theme: XtermTheme
+}): JSX.Element {
+  const { settings } = props
+  const { configs, error } = useDetectedConfigs()
+  const supported = rivetShell()?.readTerminalConfigs !== undefined
+  const [pending, setPending] = useState<{
+    source: string
+    imp: TerminalImport
+    /** Exactly what Apply will write — the preview renders THIS, not the raw
+     *  parse, so a palette that failed validation can't be shown as colors
+     *  and then applied as font-only. */
+    patch: TerminalImportPatch
+  } | null>(null)
+  const [paste, setPaste] = useState('')
+
+  const preview = (source: string, imp: TerminalImport): void => {
+    setPending({ source, imp, patch: importPatch(imp) })
+  }
+
+  const previewConfig = (file: TerminalConfigFile): void => {
+    preview(
+      `${EMULATOR_LABELS[file.kind]} — ${file.path}`,
+      detectAndParse(file.kind, { text: file.text, includes: file.includes, path: file.path }),
+    )
+  }
+
+  const applyPending = (): void => {
+    if (!pending) return
+    settings.update(pending.patch)
+    setPending(null)
+    setPaste('')
+  }
+
+  const patch = pending?.patch
+  const canApplyPending = pending !== null && canApply(pending.imp)
+  const previewSettings: TerminalSettings = {
+    ...settings,
+    ...(patch?.fontFamily ? { fontFamily: patch.fontFamily } : {}),
+    ...(patch?.fontSize !== undefined ? { fontSize: patch.fontSize } : {}),
+    ...(patch?.lineHeight !== undefined ? { lineHeight: patch.lineHeight } : {}),
+  }
+  const previewTheme = patch?.imported ? paletteToXtermTheme(patch.imported) : undefined
+
+  return (
+    <div className="mt-4 rounded border border-line p-3">
+      <span className="mb-1 block text-xs font-medium">Import from…</span>
+      {supported ? (
+        error !== null ? (
+          <p className="text-xs text-warn">Could not read your emulator configs: {error}</p>
+        ) : configs === null ? (
+          <p className="text-xs text-ink-dim">Looking for terminal configs…</p>
+        ) : configs.length === 0 ? (
+          <p className="text-xs text-ink-dim">
+            No Ghostty, Alacritty, kitty, or Windows Terminal config found.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {configs.map((file) => {
+              const base = file.path.replace(/^.*[/\\]/, '') || file.path
+              return (
+                <button
+                  key={file.path}
+                  type="button"
+                  title={file.path}
+                  onClick={() => previewConfig(file)}
+                  className="rounded border border-line bg-panel-2 px-3 py-1 text-xs hover:border-em"
+                >
+                  {EMULATOR_LABELS[file.kind]} ({base})
+                </button>
+              )
+            })}
+          </div>
+        )
+      ) : (
+        <p className="text-xs text-ink-dim">
+          Reading your emulator&apos;s config needs the desktop app — paste a palette instead.
+        </p>
+      )}
+
+      <label htmlFor="terminal-import-paste" className="mt-3 mb-1 block text-xs text-ink-dim">
+        Paste a palette
+      </label>
+      <textarea
+        id="terminal-import-paste"
+        value={paste}
+        rows={4}
+        spellCheck={false}
+        onChange={(e) => setPaste(e.target.value)}
+        placeholder={'palette = 0=#45475a\n…\nforeground = #cdd6f4\nbackground = #1e1e2e'}
+        className="w-full rounded border border-line bg-panel px-3 py-2 font-mono text-xs outline-none focus:border-em"
+      />
+      <p className="mt-1 text-xs text-ink-dim">
+        Ghostty <code>palette =</code> lines, kitty <code>colorN</code> lines, a plain list of 16
+        hex colors, or a WezTerm <code>colors</code> block — WezTerm&apos;s config is Lua, so this
+        is its import path even on the desktop.
+      </p>
+      <button
+        type="button"
+        disabled={!paste.trim()}
+        onClick={() => preview('Pasted palette', parsePastedPalette(paste))}
+        className="mt-2 rounded border border-line px-3 py-1 text-xs hover:border-em disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Preview paste
+      </button>
+
+      {pending && (
+        <div className="mt-3 border-t border-line pt-3">
+          <p className="text-xs text-ink-dim">{pending.source}</p>
+          <ul className="mt-1 text-xs text-ink-dim">
+            {pending.patch.fontFamily && <li>Font: {pending.patch.fontFamily}</li>}
+            {pending.patch.fontSize !== undefined && <li>Size: {pending.patch.fontSize}</li>}
+            {pending.patch.lineHeight !== undefined && (
+              <li>Line height: {pending.patch.lineHeight.toFixed(2)}</li>
+            )}
+            {pending.patch.imported ? (
+              <li>Palette: 16 ANSI colors + foreground/background</li>
+            ) : null}
+          </ul>
+          {pending.imp.warnings.length > 0 && (
+            <ul className="mt-1 list-inside list-disc text-xs text-warn">
+              {/* Keyed by index: two parsers can legitimately emit the same
+                  warning text, and duplicate keys drop one of them. */}
+              {pending.imp.warnings.map((w, i) => (
+                <li key={`${String(i)}-${w}`}>{w}</li>
+              ))}
+            </ul>
+          )}
+          <TerminalPreview settings={previewSettings} theme={previewTheme ?? props.theme} />
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              disabled={!canApplyPending}
+              onClick={applyPending}
+              className="rounded bg-em-dim px-3 py-1 text-xs font-medium text-bg disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Apply
+            </button>
+            <button
+              type="button"
+              onClick={() => setPending(null)}
+              className="rounded border border-line px-3 py-1 text-xs hover:border-em"
+            >
+              Discard
+            </button>
+          </div>
+          {!canApplyPending && (
+            <p className="mt-2 text-xs text-ink-dim">
+              Nothing importable was found in this — there is no font or complete palette to apply.
+            </p>
+          )}
+        </div>
+      )}
+
+      {settings.imported && !pending && (
+        <button
+          type="button"
+          onClick={() => settings.update({ imported: undefined, themeSource: 'app' })}
+          className="mt-3 rounded border border-line px-3 py-1 text-xs hover:border-em"
+        >
+          Clear imported palette
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function TerminalSection(): JSX.Element {
   const settings = useTerminalSettings()
   const resolvedTheme = useResolvedTheme()
@@ -259,6 +497,8 @@ export function TerminalSection(): JSX.Element {
           Follows the app theme (ANSI colors stay at the emulator defaults).
         </p>
       )}
+
+      <TerminalImportRow settings={settings} theme={theme} />
 
       <div className="mt-4">
         <label htmlFor="terminal-font-family" className="mb-1 block text-xs text-ink-dim">

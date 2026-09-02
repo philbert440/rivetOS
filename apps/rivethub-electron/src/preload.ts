@@ -84,6 +84,25 @@ const api = {
    *  renderer supplies only the gateway base, never a URL or digest. */
   installUpdate: (gatewayBase: string): Promise<void> =>
     ipcRenderer.invoke('update:install', gatewayBase) as Promise<void>,
+  /** The user's installed terminal-emulator configs, read-only. Main picks
+   *  the files from a fixed allowlist and resolves one level of includes;
+   *  the renderer does all the parsing (lib/terminal-config). */
+  readTerminalConfigs: (): Promise<
+    Array<{
+      kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+      path: string
+      text: string
+      includes: Record<string, string>
+    }>
+  > =>
+    ipcRenderer.invoke('terminal:readConfigs') as Promise<
+      Array<{
+        kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+        path: string
+        text: string
+        includes: Record<string, string>
+      }>
+    >,
   /** Read all settings from the main process's settings.json file. */
   settingsGetAll: (): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('settings:getAll') as Promise<Record<string, unknown>>,

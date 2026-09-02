@@ -37,6 +37,17 @@ export interface RivetShell {
   zoomAdjust?(delta: 1 | -1 | 0): Promise<void>
   /** Quit the app for real (close-to-tray does not apply). */
   quitApp?(): Promise<void>
+  /** The user's installed terminal-emulator configs (Settings → Terminal →
+   *  Import from…). Read-only and argument-free: main owns the path
+   *  allowlist, the renderer owns the parsing. */
+  readTerminalConfigs?(): Promise<
+    Array<{
+      kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+      path: string
+      text: string
+      includes: Record<string, string>
+    }>
+  >
   /** Read all settings from the main process's settings.json file. */
   settingsGetAll?(): Promise<Record<string, unknown>>
   /** Write a single setting to the main process's settings.json file. */
