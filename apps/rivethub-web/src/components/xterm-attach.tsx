@@ -16,7 +16,7 @@ import { buildTerminalOptions } from '../lib/terminal-options.js'
 import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
-import { filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
+import { expiresInLabel, filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
 
 /**
  * Attach an xterm to a PTY over WS /api/terminal/ws. Framing per den-server
@@ -77,13 +77,6 @@ function hasAnyClipboard(): boolean {
   if (hasTauriClipboard()) return true
   const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
   return clip != null && typeof clip.writeText === 'function'
-}
-
-/** Hint TTL from the upload response; gateway always sends expiresAt, but
- *  fakes / older nodes may omit it. */
-function stagedExpiresLabel(expiresAt: number | undefined): string {
-  if (expiresAt == null) return '6h'
-  return `${Math.round((expiresAt - Date.now()) / 3600000)}h`
 }
 
 /**
@@ -305,7 +298,7 @@ export function XtermAttach(props: {
           showHint(
             {
               kind: 'ok',
-              text: `staged → ${staged[0].uri} (expires in ${stagedExpiresLabel(staged[0].expiresAt)})`,
+              text: `staged → ${staged[0].uri} (expires in ${expiresInLabel(staged[0].expiresAt)})`,
             },
             4000,
           )

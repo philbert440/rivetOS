@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  expiresInLabel,
   filesFrom,
   pathsToPasteText,
   shellQuotePath,
@@ -161,6 +162,54 @@ describe('stageFiles', () => {
     expect(gw.stageUpload).toHaveBeenNthCalledWith(4, 'pasted-file', namelessBin, {
       mime: 'application/octet-stream',
     })
+  })
+
+  it('normalizes an ISO-string expiresAt to epoch ms', async () => {
+    const iso = '2026-09-03T18:00:00.000Z'
+    const gw: StageGateway = {
+      stageUpload: async () => ({ uri: '/up/a.png', expiresAt: iso }),
+    }
+    const { staged } = await stageFiles(gw, [file('a.png')])
+    expect(staged[0]?.expiresAt).toBe(Date.parse(iso))
+  })
+
+  it('passes a numeric expiresAt through as-is', async () => {
+    const ms = 1_700_000_000_000
+    const gw: StageGateway = {
+      stageUpload: async () => ({ uri: '/up/a.png', expiresAt: ms }),
+    }
+    const { staged } = await stageFiles(gw, [file('a.png')])
+    expect(staged[0]?.expiresAt).toBe(ms)
+  })
+
+  it('drops a bogus expiresAt', async () => {
+    const gw: StageGateway = {
+      stageUpload: async () => ({ uri: '/up/a.png', expiresAt: 'not-a-date' }),
+    }
+    const { staged } = await stageFiles(gw, [file('a.png')])
+    expect(staged[0]?.expiresAt).toBeUndefined()
+  })
+})
+
+describe('expiresInLabel', () => {
+  it('defaults to 6h when undefined or NaN', () => {
+    expect(expiresInLabel(undefined)).toBe('6h')
+    expect(expiresInLabel(Number.NaN)).toBe('6h')
+  })
+
+  it('rounds a 6h-ahead timestamp to 6h', () => {
+    const now = 1_000_000
+    expect(expiresInLabel(now + 6 * 3600000, now)).toBe('6h')
+  })
+
+  it('clamps 20 minutes ahead to 1h', () => {
+    const now = 1_000_000
+    expect(expiresInLabel(now + 20 * 60 * 1000, now)).toBe('1h')
+  })
+
+  it('clamps a past timestamp to 1h', () => {
+    const now = 1_000_000
+    expect(expiresInLabel(now - 3600000, now)).toBe('1h')
   })
 })
 
