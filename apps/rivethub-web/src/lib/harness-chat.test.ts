@@ -9,6 +9,7 @@ import {
   applyRegistryEventToPlaneSessions,
   chatItems,
   denRoomKey,
+  sortByRecency,
   fetchHarnessPlaneSessions,
   findChatItem,
   harnessGate,
@@ -36,7 +37,10 @@ const CLAUDE: HarnessDescriptor = {
   },
 }
 
-function summary(native: string, extra: Partial<HarnessSessionSummary> = {}): HarnessSessionSummary {
+function summary(
+  native: string,
+  extra: Partial<HarnessSessionSummary> = {},
+): HarnessSessionSummary {
   return {
     sessionId: `claude-code:${native}` as SessionId,
     harnessId: 'claude-code',
@@ -88,13 +92,21 @@ describe('chatItems', () => {
     expect(items.find((i) => i.key === UUID_B)?.sessionId).toBeUndefined()
   })
 
-  it('pins drafts on top and drops one once its store row appears', () => {
-    const withDraft = chatItems({
+  it('orders drafts by creation time and drops one once its store row appears', () => {
+    const unstamped = chatItems({
       drafts: [UUID_C],
       harnessSessions: [summary(UUID_A)],
       legacySessions: [],
     })
-    expect(withDraft.map((i) => i.kind)).toEqual(['draft', 'harness'])
+    expect(unstamped.map((i) => i.kind)).toEqual(['harness', 'draft'])
+
+    const stamped = chatItems({
+      drafts: [UUID_C],
+      harnessSessions: [summary(UUID_A, { updatedAt: '2026-08-08T00:00:01.000Z' })],
+      legacySessions: [],
+      draftCreatedAt: { [UUID_C]: Date.parse('2026-08-08T10:00:00.000Z') },
+    })
+    expect(stamped.map((i) => i.kind)).toEqual(['draft', 'harness'])
 
     const committed = chatItems({
       drafts: [UUID_C],
@@ -145,7 +157,11 @@ describe('chatItems', () => {
     // plane claims every on-disk row and nothing is left bare.
     const rows: HarnessSessionSummary[] = [
       summary(UUID_A),
-      { ...summary(UUID_B), sessionId: `grok-build:${UUID_B}` as SessionId, harnessId: 'grok-build' },
+      {
+        ...summary(UUID_B),
+        sessionId: `grok-build:${UUID_B}` as SessionId,
+        harnessId: 'grok-build',
+      },
       { ...summary(UUID_C), sessionId: `hermes:${UUID_C}` as SessionId, harnessId: 'hermes' },
     ]
     const items = chatItems({
@@ -161,6 +177,38 @@ describe('chatItems', () => {
       [`claude-code:${UUID_A}`, `grok-build:${UUID_B}`, `hermes:${UUID_C}`].sort(),
     )
     expect(items.every((i) => i.kind === 'harness')).toBe(true)
+  })
+})
+
+describe('sortByRecency', () => {
+  it('orders by updatedAt descending', () => {
+    expect(
+      sortByRecency([
+        { id: 'a', updatedAt: 1 },
+        { id: 'b', updatedAt: 3 },
+        { id: 'c', updatedAt: 2 },
+      ]).map((x) => x.id),
+    ).toEqual(['b', 'c', 'a'])
+  })
+
+  it('keeps relative order on ties', () => {
+    expect(
+      sortByRecency([
+        { id: 'a', updatedAt: 2 },
+        { id: 'b', updatedAt: 2 },
+        { id: 'c', updatedAt: 1 },
+      ]).map((x) => x.id),
+    ).toEqual(['a', 'b', 'c'])
+  })
+
+  it('sinks zero timestamps to the bottom', () => {
+    expect(
+      sortByRecency([
+        { id: 'zero', updatedAt: 0 },
+        { id: 'old', updatedAt: 1 },
+        { id: 'new', updatedAt: 9 },
+      ]).map((x) => x.id),
+    ).toEqual(['new', 'old', 'zero'])
   })
 })
 
@@ -202,7 +250,11 @@ describe('findChatItem', () => {
 
 describe('harnessGate', () => {
   it('opens only for a driver-owned row with a registered driver', () => {
-    const item = { kind: 'harness' as const, harnessId: 'claude-code' as const, sessionId: `claude-code:${UUID_A}` as SessionId }
+    const item = {
+      kind: 'harness' as const,
+      harnessId: 'claude-code' as const,
+      sessionId: `claude-code:${UUID_A}` as SessionId,
+    }
     expect(harnessGate(item, [CLAUDE])).toEqual({
       bound: true,
       stream: true,
@@ -230,7 +282,11 @@ describe('harnessGate', () => {
       },
     }
     const gate = harnessGate(
-      { kind: 'harness', harnessId: 'claude-code', sessionId: `claude-code:${UUID_A}` as SessionId },
+      {
+        kind: 'harness',
+        harnessId: 'claude-code',
+        sessionId: `claude-code:${UUID_A}` as SessionId,
+      },
       [bare],
     )
     // still bound (turns go through the driver) but the stream falls back
@@ -275,7 +331,9 @@ describe('fetchHarnessPlaneSessions', () => {
 
   it('skips drivers that cannot list', () => {
     expect(
-      listableHarnesses([{ ...CLAUDE, capabilities: { ...CLAUDE.capabilities, listSessions: false } }]),
+      listableHarnesses([
+        { ...CLAUDE, capabilities: { ...CLAUDE.capabilities, listSessions: false } },
+      ]),
     ).toEqual([])
   })
 })
@@ -468,6 +526,8 @@ describe('chatItemFromSummary', () => {
   })
 
   it('refuses a malformed session id', () => {
-    expect(chatItemFromSummary({ sessionId: '???', harnessId: 'claude-code' } as never)).toBeUndefined()
+    expect(
+      chatItemFromSummary({ sessionId: '???', harnessId: 'claude-code' } as never),
+    ).toBeUndefined()
   })
 })

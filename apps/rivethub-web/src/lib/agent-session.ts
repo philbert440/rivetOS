@@ -15,11 +15,17 @@ const BIND_PREFIX = 'rivethub.agent.'
 export interface AgentSessionPointer {
   sessionId: string
   nodeBaseUrl: string
+  /** epoch ms of the last pin write. Missing on pre-migration rows → 0. */
+  updatedAt?: number
 }
 
 type NodeEntry = { sessionId: string; updatedAt?: number }
 type NodeMap = Record<string, NodeEntry | undefined>
 type LastMap = Record<string, NodeMap | undefined>
+
+function toPointer(nodeBaseUrl: string, entry: NodeEntry): AgentSessionPointer {
+  return { sessionId: entry.sessionId, nodeBaseUrl, updatedAt: entry.updatedAt ?? 0 }
+}
 
 let version = 0
 const listeners = new Set<() => void>()
@@ -125,7 +131,7 @@ export function getAgentLastSession(
 ): AgentSessionPointer | undefined {
   const entry = readMap()[agentId]?.[nodeBaseUrl]
   if (!entry?.sessionId) return undefined
-  return { sessionId: entry.sessionId, nodeBaseUrl }
+  return toPointer(nodeBaseUrl, entry)
 }
 
 /** Every node's pointer for one agent, most recently written first. */
@@ -135,7 +141,7 @@ export function listAgentSessions(agentId: string): AgentSessionPointer[] {
   return Object.entries(nodes)
     .filter((pair): pair is [string, NodeEntry] => Boolean(pair[1]?.sessionId))
     .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
-    .map(([nodeBaseUrl, entry]) => ({ sessionId: entry.sessionId, nodeBaseUrl }))
+    .map(([nodeBaseUrl, entry]) => toPointer(nodeBaseUrl, entry))
 }
 
 /** Every agent's sticky pin — drawer merge. */
@@ -159,7 +165,7 @@ export function getAgentPin(agentId: string): AgentSessionPointer | undefined {
   if (entries.length === 0) return undefined
   entries.sort((a, b) => (a[1].updatedAt ?? 0) - (b[1].updatedAt ?? 0))
   const [nodeBaseUrl, entry] = entries[0]
-  return { sessionId: entry.sessionId, nodeBaseUrl }
+  return toPointer(nodeBaseUrl, entry)
 }
 
 /**

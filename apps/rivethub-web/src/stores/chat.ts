@@ -106,6 +106,8 @@ interface ChatState {
   wsEpoch: number
   /** sessions created locally this visit (may have no messages yet) */
   drafts: string[]
+  /** epoch ms when each local draft was minted this visit — drawer recency */
+  draftCreatedAt: Record<string, number>
   /** the open conversation */
   active?: string
   seed: (sessionId: string, messages: SessionMessage[]) => void
@@ -336,6 +338,7 @@ export const useChat = create<ChatState>((set, get) => ({
   wsStatus: 'closed',
   wsEpoch: 0,
   drafts: [],
+  draftCreatedAt: {},
 
   seed: (sessionId, msgs) =>
     set((s) => {
@@ -381,10 +384,16 @@ export const useChat = create<ChatState>((set, get) => ({
     }),
 
   addDraft: (sessionId) =>
-    set((s) => ({
-      drafts: s.drafts.includes(sessionId) ? s.drafts : [sessionId, ...s.drafts],
-      opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-    })),
+    set((s) => {
+      const already = s.drafts.includes(sessionId)
+      return {
+        drafts: already ? s.drafts : [sessionId, ...s.drafts],
+        opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+        draftCreatedAt: already
+          ? s.draftCreatedAt
+          : { ...s.draftCreatedAt, [sessionId]: Date.now() },
+      }
+    }),
 
   removeDraft: (sessionId) => {
     releaseWatch(sessionId)
@@ -404,6 +413,7 @@ export const useChat = create<ChatState>((set, get) => ({
         liveTs: drop(s.liveTs),
         ask: drop(s.ask),
         outbound: drop(s.outbound),
+        draftCreatedAt: drop(s.draftCreatedAt) as Record<string, number>,
       }
     })
   },
@@ -428,10 +438,12 @@ export const useChat = create<ChatState>((set, get) => ({
       const swap = (list: string[]): string[] =>
         list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
       /** Point the user (and so the send path) at the surviving key. */
+      const { [from]: _draftStamp, ...draftCreatedAt } = s.draftCreatedAt
       const retarget = {
         opened: s.opened.includes(to) ? s.opened.filter((id) => id !== from) : swap(s.opened),
         drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
         active: s.active === from ? to : s.active,
+        draftCreatedAt: from in s.draftCreatedAt ? draftCreatedAt : s.draftCreatedAt,
       }
       if (!moved) return retarget
       const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
@@ -723,6 +735,7 @@ export const useChat = create<ChatState>((set, get) => ({
         approvals: {},
         opened: [],
         drafts: [],
+        draftCreatedAt: {},
         active: undefined,
       })
     }

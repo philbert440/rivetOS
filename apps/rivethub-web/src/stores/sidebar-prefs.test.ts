@@ -18,14 +18,13 @@ vi.hoisted(() => {
 
 afterAll(() => vi.unstubAllGlobals())
 
-const { shouldOpenPaneOnUrlChange, useSidebarPrefs } = await import('./sidebar-prefs.js')
+const { useSidebarPrefs } = await import('./sidebar-prefs.js')
 
 describe('sidebar prefs store', () => {
   beforeEach(() => {
     useSidebarPrefs.setState({
       conversationsCollapsed: false,
       railCollapsed: false,
-      chatMounted: false,
     })
     localStorage.removeItem('rivethub.sidebar')
   })
@@ -110,48 +109,5 @@ describe('sidebar prefs store', () => {
     await useSidebarPrefs.persist.rehydrate()
     expect(useSidebarPrefs.getState().conversationsCollapsed).toBe(true)
     expect(useSidebarPrefs.getState().railCollapsed).toBe(false)
-  })
-})
-
-describe('shouldOpenPaneOnUrlChange', () => {
-  it('hidden pane stays hidden across a rehydrate with a session in the URL', () => {
-    expect(
-      shouldOpenPaneOnUrlChange({
-        mounted: false,
-        sessionFromUrl: 'sess-1',
-        prev: undefined,
-      }),
-    ).toBe(false)
-  })
-
-  it('opens the pane only for a post-mount session navigation', () => {
-    expect(
-      shouldOpenPaneOnUrlChange({
-        mounted: true,
-        sessionFromUrl: 'sess-1',
-        prev: undefined,
-      }),
-    ).toBe(true)
-    expect(
-      shouldOpenPaneOnUrlChange({
-        mounted: true,
-        sessionFromUrl: 'sess-2',
-        prev: 'sess-1',
-      }),
-    ).toBe(true)
-    expect(
-      shouldOpenPaneOnUrlChange({
-        mounted: true,
-        sessionFromUrl: 'sess-1',
-        prev: 'sess-1',
-      }),
-    ).toBe(false)
-    expect(
-      shouldOpenPaneOnUrlChange({
-        mounted: true,
-        sessionFromUrl: undefined,
-        prev: 'sess-1',
-      }),
-    ).toBe(false)
   })
 })

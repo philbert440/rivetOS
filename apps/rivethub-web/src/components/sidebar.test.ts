@@ -49,4 +49,22 @@ describe('rail header toggle', () => {
     expect(src).not.toContain('railBadgeText')
     expect(src).not.toContain('conversationsBadge')
   })
+
+  it('does not re-open the conversations pane outside the rail button', () => {
+    const agents = readFileSync(new URL('./agents-section.tsx', import.meta.url), 'utf8')
+    const memory = readFileSync(new URL('../memory/MemoryHubPage.tsx', import.meta.url), 'utf8')
+    const chat = readFileSync(new URL('../pages/chat.tsx', import.meta.url), 'utf8')
+    expect(agents).not.toContain('openConversation(')
+    expect(memory).not.toContain('openConversation(')
+    expect(chat).not.toContain('openConversation(')
+  })
+
+  it('does not render a ws-status dot on Conversations', () => {
+    const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
+    expect(src).not.toContain('wsStatus')
+    expect(src).not.toContain('showWs')
+    // Unread-notifications still uses bg-red/10 and bg-red/20. The
+    // Conversations dots used the standalone class `'bg-red'`.
+    expect(src).not.toContain("'bg-red'")
+  })
 })

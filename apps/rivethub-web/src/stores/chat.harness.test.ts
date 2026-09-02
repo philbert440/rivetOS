@@ -58,7 +58,29 @@ beforeEach(() => {
     approvals: {},
     opened: [],
     drafts: [],
+    draftCreatedAt: {},
     active: undefined,
+  })
+})
+
+describe('draftCreatedAt', () => {
+  it('addDraft stamps a creation time and removeDraft clears it', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+    useChat.getState().addDraft(KEY)
+    expect(useChat.getState().draftCreatedAt[KEY]).toBe(1_700_000_000_000)
+    useChat.getState().removeDraft(KEY)
+    expect(useChat.getState().draftCreatedAt[KEY]).toBeUndefined()
+    vi.restoreAllMocks()
+  })
+
+  it('does not restamp an existing draft', () => {
+    const now = vi.spyOn(Date, 'now')
+    now.mockReturnValueOnce(100)
+    useChat.getState().addDraft(KEY)
+    now.mockReturnValueOnce(200)
+    useChat.getState().addDraft(KEY)
+    expect(useChat.getState().draftCreatedAt[KEY]).toBe(100)
+    vi.restoreAllMocks()
   })
 })
 
