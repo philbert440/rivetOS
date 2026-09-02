@@ -21,6 +21,7 @@
  *   RIVETOS_COMPACTOR_URL       required (LLM endpoint)
  *   RIVETOS_COMPACTOR_MODEL     required (OpenAI-compatible chat model id)
  *   RIVETOS_COMPACTOR_API_KEY   optional
+ *   WORKER_ROLE                 default: all (all | compaction | wiki) — which task/cron set this process registers
  *   COMPACT_CONCURRENCY         default: 1 (compaction is CPU-heavy on the LLM, single-flight per worker)
  *   TOOL_SYNTH_CONCURRENCY      default: 2
  *   COMPACT_IDLE_MINUTES        default: 15
@@ -34,6 +35,7 @@
 
 import { parseCronItems, run } from 'graphile-worker'
 import { config } from './config.js'
+import { buildWorkerPlan, parseWorkerRole } from './role.js'
 import { compactConversationTask } from './tasks/compact-conversation.js'
 import { synthesizeToolCallTask } from './tasks/synthesize-tool-call.js'
 import { enqueueIdleTask } from './tasks/enqueue-idle.js'
@@ -45,6 +47,60 @@ import { enqueueStaleWikiTask } from './tasks/enqueue-stale-wiki.js'
 import { enqueueStaleCompactionTask } from './tasks/enqueue-stale-compaction.js'
 import { reapDeadJobsTask } from './tasks/reap-dead-jobs.js'
 
+const TASK_HANDLERS = {
+  'compact-conversation': compactConversationTask,
+  'synthesize-tool-call': synthesizeToolCallTask,
+  'enqueue-idle': enqueueIdleTask,
+  'extract-wiki': extractWikiTask,
+  'enqueue-wiki-backfill': enqueueWikiBackfillTask,
+  'consolidate-wiki': consolidateWikiTask,
+  'recompile-wiki': recompileWikiTask,
+  'enqueue-stale-wiki': enqueueStaleWikiTask,
+  'enqueue-stale-compaction': enqueueStaleCompactionTask,
+  'reap-dead-jobs': reapDeadJobsTask,
+} as const
+
+type TaskName = keyof typeof TASK_HANDLERS
+
+const CRON_BY_IDENTIFIER: Record<
+  string,
+  { task: string; match: string; identifier: string; options: { backfillPeriod: number } }
+> = {
+  'idle-enqueue': {
+    task: 'enqueue-idle',
+    match: '*/5 * * * *',
+    identifier: 'idle-enqueue',
+    options: { backfillPeriod: 0 },
+  },
+  'wiki-backfill': {
+    task: 'enqueue-wiki-backfill',
+    match: '*/10 * * * *',
+    identifier: 'wiki-backfill',
+    options: { backfillPeriod: 0 },
+  },
+  'stale-compaction-sweep': {
+    task: 'enqueue-stale-compaction',
+    match: '*/15 * * * *',
+    identifier: 'stale-compaction-sweep',
+    options: { backfillPeriod: 0 },
+  },
+  'reap-dead-jobs': {
+    task: 'reap-dead-jobs',
+    match: '0 * * * *',
+    identifier: 'reap-dead-jobs',
+    options: { backfillPeriod: 0 },
+  },
+  // Worker-boundary gate: buildWorkerPlan only includes this when
+  // wikiExtraction is on. The task itself also no-ops; both are required
+  // so a stray add_job cannot revive extract-wiki in a dark deploy.
+  'stale-wiki-sweep': {
+    task: 'enqueue-stale-wiki',
+    match: '*/15 * * * *',
+    identifier: 'stale-wiki-sweep',
+    options: { backfillPeriod: 0 },
+  },
+}
+
 async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
   console.log(`[CompactWorker] LLM endpoint: ${config.llmUrl} (model: ${config.llmModel})`)
@@ -53,62 +109,39 @@ async function main(): Promise<void> {
       `stale-partial: ${config.staleMinutes} min / >=${config.staleMinBatch} msgs`,
   )
 
+  // graphile-worker only claims jobs whose task identifier is in its
+  // taskList, so a compaction-role worker leaves wiki jobs for the wiki
+  // worker (and vice versa). Role `all` is today's union. Parse here
+  // (not at config import) so invalid WORKER_ROLE hits Fatal: below.
+  const workerRole = parseWorkerRole(config.workerRoleEnv)
+  const plan = buildWorkerPlan({ workerRole, wikiExtraction: config.wikiExtraction })
+  const taskList: { [name: string]: (typeof TASK_HANDLERS)[TaskName] } = {}
+  for (const name of plan.taskNames) {
+    const handler = TASK_HANDLERS[name as TaskName]
+    if (!handler) {
+      throw new Error(`[CompactWorker] unknown task in worker plan: ${name}`)
+    }
+    taskList[name] = handler
+  }
+  const cronItems = plan.cronIdentifiers.map((id) => {
+    const spec = CRON_BY_IDENTIFIER[id]
+    if (!spec) {
+      throw new Error(`[CompactWorker] unknown cron in worker plan: ${id}`)
+    }
+    return spec
+  })
+
+  console.log(
+    `[CompactWorker] Role: ${workerRole}; tasks: ${plan.taskNames.join(', ')}; crons: ${plan.cronIdentifiers.join(', ')}`,
+  )
+
   const runner = await run({
     connectionString: config.pgUrl,
     concurrency: config.compactConcurrency,
     noHandleSignals: false,
     pollInterval: 60_000,
-    taskList: {
-      'compact-conversation': compactConversationTask,
-      'synthesize-tool-call': synthesizeToolCallTask,
-      'enqueue-idle': enqueueIdleTask,
-      'extract-wiki': extractWikiTask,
-      'enqueue-wiki-backfill': enqueueWikiBackfillTask,
-      'consolidate-wiki': consolidateWikiTask,
-      'recompile-wiki': recompileWikiTask,
-      'enqueue-stale-wiki': enqueueStaleWikiTask,
-      'enqueue-stale-compaction': enqueueStaleCompactionTask,
-      'reap-dead-jobs': reapDeadJobsTask,
-    },
-    parsedCronItems: parseCronItems([
-      {
-        task: 'enqueue-idle',
-        match: '*/5 * * * *',
-        identifier: 'idle-enqueue',
-        options: { backfillPeriod: 0 },
-      },
-      {
-        task: 'enqueue-wiki-backfill',
-        match: '*/10 * * * *',
-        identifier: 'wiki-backfill',
-        options: { backfillPeriod: 0 },
-      },
-      {
-        task: 'enqueue-stale-compaction',
-        match: '*/15 * * * *',
-        identifier: 'stale-compaction-sweep',
-        options: { backfillPeriod: 0 },
-      },
-      {
-        task: 'reap-dead-jobs',
-        match: '0 * * * *',
-        identifier: 'reap-dead-jobs',
-        options: { backfillPeriod: 0 },
-      },
-      // Worker-boundary gate: do not even schedule the wiki sweep when the
-      // flag is off. The task itself also no-ops; both are required so a
-      // stray add_job cannot revive extract-wiki in a dark deploy.
-      ...(config.wikiExtraction
-        ? [
-            {
-              task: 'enqueue-stale-wiki',
-              match: '*/15 * * * *',
-              identifier: 'stale-wiki-sweep',
-              options: { backfillPeriod: 0 },
-            },
-          ]
-        : []),
-    ]),
+    taskList,
+    parsedCronItems: parseCronItems(cronItems),
   })
 
   console.log('[CompactWorker] Ready — graphile-worker listening')

@@ -35,6 +35,11 @@ export const config = {
   // Worker-local concurrency
   compactConcurrency: intEnv('COMPACT_CONCURRENCY', 1),
 
+  // Raw WORKER_ROLE. Parsed in main() via parseWorkerRole so an invalid
+  // value logs `[CompactWorker] Fatal:` instead of throwing at import
+  // (which bypasses main().catch). Default `all` when unset.
+  workerRoleEnv: process.env.WORKER_ROLE,
+
   // Wiki extraction (phase 3c) — dark by default; single writer per design.
   wikiExtraction: process.env.WIKI_EXTRACTION === '1',
   // wikiDir is snapshotted at module load: this worker's env is fixed at process start.

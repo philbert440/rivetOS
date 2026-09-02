@@ -110,7 +110,70 @@ describe('doctor memory queue check', () => {
     expect(MEMORY_QUEUE_DEAD_SQL).toContain(
       'array_agg(j.last_error ORDER BY j.updated_at DESC NULLS LAST)',
     )
-    expect(MEMORY_QUEUE_DEAD_SQL).toContain('FILTER (WHERE j.key IS NOT NULL)')
-    expect(MEMORY_QUEUE_DEAD_SQL).toContain('FILTER (WHERE j.key IS NULL)')
+    expect(MEMORY_QUEUE_DEAD_SQL).toContain('j.key IS NOT NULL')
+    expect(MEMORY_QUEUE_DEAD_SQL).toContain('j.key IS NULL')
+    expect(MEMORY_QUEUE_DEAD_SQL).toContain('AS due')
+    expect(MEMORY_QUEUE_DEAD_SQL).toContain('AS oldest_due_at')
+    expect(MEMORY_QUEUE_DEAD_SQL).toContain('AS last_locked_at')
+    expect(MEMORY_QUEUE_DEAD_SQL).toContain(
+      'WHERE j.attempts >= j.max_attempts OR (j.run_at <= now() AND j.locked_at IS NULL)',
+    )
+  })
+
+  it('warns when extract-wiki due jobs are older than 6 hours', async () => {
+    const client = fakeClient(async () => ({
+      rows: [
+        {
+          task: 'extract-wiki',
+          keyed_dead: '0',
+          keyless_dead: '0',
+          last_error: null,
+          due: '3773',
+          oldest_due_at: new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(),
+        },
+      ],
+    }))
+    const results = await checkMemoryQueue(client)
+    const starved = results.find((r) => r.name === 'queue-extract-wiki-starved')
+    expect(starved?.status).toBe('warn')
+    expect(starved?.message).toBe(
+      'extract-wiki starved — run a dedicated wiki worker (WORKER_ROLE=wiki)',
+    )
+    expect(starved?.detail).toMatch(/^3,773 due, oldest [\d,]+ min$/)
+  })
+
+  it('does not warn starvation when extract-wiki due jobs are younger than 6 hours', async () => {
+    const client = fakeClient(async () => ({
+      rows: [
+        {
+          task: 'extract-wiki',
+          keyed_dead: '0',
+          keyless_dead: '0',
+          last_error: null,
+          due: '4',
+          oldest_due_at: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+        },
+      ],
+    }))
+    const results = await checkMemoryQueue(client)
+    expect(results.find((r) => r.name === 'queue-extract-wiki-starved')).toBeUndefined()
+  })
+
+  it('does not warn starvation when a backlog is actively draining', async () => {
+    const client = fakeClient(async () => ({
+      rows: [
+        {
+          task: 'extract-wiki',
+          keyed_dead: '0',
+          keyless_dead: '0',
+          last_error: null,
+          due: '3773',
+          oldest_due_at: new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString(),
+          last_locked_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+        },
+      ],
+    }))
+    const results = await checkMemoryQueue(client)
+    expect(results.find((r) => r.name === 'queue-extract-wiki-starved')).toBeUndefined()
   })
 })
