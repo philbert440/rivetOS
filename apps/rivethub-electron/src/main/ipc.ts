@@ -6,7 +6,6 @@
  */
 
 import { app, clipboard, ipcMain, Notification, shell, type IpcMainInvokeEvent } from 'electron'
-import { openInTerminal } from './external-terminal.js'
 import type { PipeState } from './mtls-pipe.js'
 import type { SettingsStore } from './settings-store.js'
 import { readTerminalConfigs } from './terminal-config.js'
@@ -69,13 +68,6 @@ export function registerIpc(deps: IpcDeps): void {
       return
     }
     await shell.openExternal(url)
-  })
-
-  // Open TermAttachInfo in the user's real emulator (T5). MAIN validates the
-  // fields and builds argv — a compromised renderer cannot choose argv[0]
-  // or smuggle tmux/ssh flags (`-f`, `-oProxyCommand`, …).
-  guarded('terminal:open-external', async (_e, attach: unknown): Promise<void> => {
-    await openInTerminal(attach)
   })
 
   guarded('clipboard:writeText', (_e, text: unknown): void => {

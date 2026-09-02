@@ -1,5 +1,3 @@
-import type { TermAttachInfo } from '@rivetos/types'
-
 /**
  * Detection for the Electron shell's preload bridge (`window.rivetShell`).
  *
@@ -58,8 +56,6 @@ export interface RivetShell {
   settingsSetAll?(updates: Record<string, unknown>): Promise<void>
   /** Remove a single setting from the main process's settings.json file. */
   settingsRemove?(key: string): Promise<void>
-  /** Launch the user's real terminal emulator onto a tmux attach (feature-detected). */
-  openInTerminal?(attach: TermAttachInfo): Promise<void>
 }
 
 const SHELL_METHODS = [
