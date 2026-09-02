@@ -47,14 +47,17 @@ import type { DenConfig } from '../config.js'
 import type { PtyProc, PtySpawn } from './pty.js'
 import type { TermRoster } from './roster.js'
 import {
+  classifyExistingTmuxSession,
   createRealTmuxCtl,
   decodeTmuxName,
   encodeTmuxName,
   findOnPath,
   TmuxUnavailableError,
+  tmuxAttachArgv,
+  tmuxConfContent,
+  tmuxCreateArgv,
   tmuxSocketName,
   tmuxSupported,
-  tmuxConfContent,
   type TmuxCtl,
   type TmuxSessionInfo,
 } from './tmux.js'
@@ -337,9 +340,6 @@ const isCredentialKey = (k: string): boolean => {
   return CREDENTIAL_NAMED.has(k) || CREDENTIAL_RE.test(k)
 }
 
-/** Sourced by the CREATE harness wrapper; `$0` is the env file. */
-const ENV_WRAP_SCRIPT = 'set -a; . "$0"; set +a; rm -f "$0"; exec "$@"'
-
 /** Env files left behind when a tmux client dies before `exec`; swept at construct. */
 const ENV_STALE_MS = 10 * 60 * 1000
 
@@ -430,6 +430,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
    *  is already atomic — this set is the explicit guard that keeps it that
    *  way (and fails loudly if the path ever grows an await). */
   const spawnInflight = new Set<string>()
+  /** Untagged-session adopt log: once per tmux name per process. */
+  const adoptedTmux = new Set<string>()
 
   const submitDelayMs = config.term.injectSubmitDelayMs ?? DEFAULT_INJECT_SUBMIT_DELAY_MS
 
@@ -966,6 +968,35 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // auto mode falls back to a direct PTY for this call (one log line).
       let tmuxName: string | undefined
       let persisted = false
+      const takeExisting = (s: TmuxSessionInfo): void => {
+        const d = classifyExistingTmuxSession(s, routedUser)
+        if (d === 'foreign')
+          throw new TermSpawnError(
+            'tmux-unavailable',
+            `tmux session ${s.name} exists without den tags — refusing to attach a foreign session`,
+          )
+        if (d === 'user-mismatch')
+          throw new TermSpawnError(
+            'user-mismatch',
+            `tmux session for ${denSession} is owned by another user`,
+          )
+        if (d === 'adopt' && tmux) {
+          // Classify already refuses non-owner adopt; keep the guard here so
+          // a stub/mis-classified row cannot stamp a routed identity.
+          if ((routedUser ?? 'owner') !== 'owner')
+            throw new TermSpawnError(
+              'user-mismatch',
+              `tmux session for ${denSession} is owned by another user`,
+            )
+          tmux.setOption?.(s.name, '@rivet_command', s.command || key)
+          tmux.setOption?.(s.name, '@rivet_user', 'owner')
+          if (!adoptedTmux.has(s.name)) {
+            adoptedTmux.add(s.name)
+            deps.log(`[den-server] term: adopted untagged tmux session ${s.name} (pre-fix create)`)
+          }
+        }
+        persisted = true
+      }
       if (tmux) {
         if (spawnInflight.has(denSession))
           throw new TermSpawnError('cap', `spawn already in flight for session ${denSession}`)
@@ -973,10 +1004,25 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         try {
           tmuxName = encodeTmuxName(denSession)
           tmux.refresh?.()
-          let existing: TmuxSessionInfo | undefined
           try {
-            existing = tmux.listSessions().find((s) => s.name === tmuxName)
+            const existing = tmux.listSessions().find((s) => s.name === tmuxName)
+            if (existing) {
+              takeExisting(existing)
+            } else if (tmuxName && tmux.hasSession(tmuxName)) {
+              // Session appeared between list and now (or list missed it).
+              // Attach rather than create — new-session would print
+              // "duplicate session" and the PTY would exit 1. Fail closed
+              // when hasSession is true but list still has no row: a
+              // synthesized empty-tag stub would adopt over a real
+              // @rivet_user we cannot see.
+              tmux.refresh?.()
+              const raced = tmux.listSessions().find((s) => s.name === tmuxName)
+              if (!raced)
+                throw new TermSpawnError('tmux-unavailable', 'session exists but is not listable')
+              takeExisting(raced)
+            }
           } catch (e) {
+            if (e instanceof TermSpawnError) throw e
             if (!(e instanceof TmuxUnavailableError)) throw e
             if (muxExplicit)
               throw new TermSpawnError('tmux-unavailable', `tmux unavailable: ${e.message}`)
@@ -987,24 +1033,6 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               )
             }
             tmuxName = undefined
-          }
-          if (existing) {
-            // never attach a session that isn't den's: a name alone is not
-            // proof of ownership — the @rivet_command tag is (#7)
-            if (!existing.command)
-              throw new TermSpawnError(
-                'tmux-unavailable',
-                `tmux session ${tmuxName} exists without den tags — refusing to attach a foreign session`,
-              )
-            // an untagged-by-this-user persisted session is the owner's live
-            // pane with the owner's credentials — never join it (#7)
-            const owner = existing.user || 'owner'
-            if (owner !== (routedUser ?? 'owner'))
-              throw new TermSpawnError(
-                'user-mismatch',
-                `tmux session for ${denSession} is owned by another user`,
-              )
-            persisted = true
           }
         } catch (e) {
           spawnInflight.delete(denSession)
@@ -1084,7 +1112,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // prefers the env var over the env file. Credential-class keys never
       // ride `-e` (argv/`ps`); they go in a 0600 env file the harness wrapper
       // sources. Deletions are `unset KEY` in that file AND a chained
-      // `set-environment -t =<name> -u KEY` so an already-running tmux
+      // `set-environment -r KEY` (no `-t`: the chain's current session is
+      // the one new-session just created) so an already-running tmux
       // server's global env (the first spawner's, possibly the node owner's
       // credentials) does not leak into this user's session (#6).
       const tmuxEnvDeleted: string[] = []
@@ -1101,10 +1130,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
       // tmux spawn form (T1): den's PTY runs a tmux CLIENT of the session
       // named by the den session key. Two distinct forms (#1):
-      //   attach (session exists): `attach-session -t =<name>` — read-only:
-      //     no -e (a reattach does NOT refresh a running harness's env), no
-      //     -c/-x/-y (window-size latest applies the client's own PTY size),
-      //     no harness argv, no option churn.
+      //   attach (session exists): `attach-session -t =<name>` — read-only
+      //     aside from adopting a pre-fix untagged session (stamped via ctl
+      //     `set-option -t =<name>` BEFORE this client argv; `-t` is valid
+      //     because the session already exists). no -e (a reattach does NOT
+      //     refresh a running harness's env), no -c/-x/-y (window-size latest
+      //     applies the client's own PTY size), no harness argv.
       //   create: `new-session -s <name>` (NEVER -A: a stale/raced existence
       //     check must fail the create loudly, not silently mint a second
       //     harness with no resume flags). `-e` carries only non-credential
@@ -1112,10 +1143,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       //     0600 env file sourced by `/bin/sh -c` around the harness so they
       //     never appear on argv. The PTY env below still carries the full
       //     computed env for a fresh server. The @rivet_command/@rivet_user
-      //     tags (and set-environment -u for deletions) are CHAINED onto the
-      //     same invocation (`;` tokens) so they land atomically with the
-      //     create — a post-fork set-option races the client and can fail
-      //     before the session exists (#8).
+      //     tags (and set-environment -r for deletions (-r masks a server-global value; -u only drops the session override)) are CHAINED onto the
+      //     same invocation (`;` tokens) WITHOUT `-t =<name>` — tmux resolves
+      //     that target before new-session has created the session, so the
+      //     stamp would be dropped. They apply to the sequence's current
+      //     session (= the one just created). If new-session still fails with
+      //     `duplicate session`, fall back to attach rather than exit 1.
       let spawnArgv = argv
       // CREATE only: absolute env-file path so `. "$0"` does not depend on pane cwd.
       let envFile: string | undefined
@@ -1123,16 +1156,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       let envDir: string | undefined
       if (tmux && tmuxName) {
         if (persisted) {
-          spawnArgv = [
-            'tmux',
-            '-L',
-            tmuxSocket,
-            '-f',
-            tmuxConfPath,
-            'attach-session',
-            '-t',
-            `=${tmuxName}`,
-          ]
+          spawnArgv = tmuxAttachArgv(tmuxSocket, tmuxConfPath, tmuxName)
         } else {
           const envPairs: string[] = []
           const envFileLines: string[] = []
@@ -1148,46 +1172,20 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           envDir = resolve(join(config.stateDir, 'den', 'env'))
           envFile = join(envDir, `${tmuxName}.env`)
           envFileBody = envFileLines.join('\n') + (envFileLines.length ? '\n' : '')
-          const unsetChain: string[] = []
-          for (const k of tmuxEnvDeleted) {
-            unsetChain.push(';', 'set-environment', '-t', `=${tmuxName}`, '-u', k)
-          }
-          spawnArgv = [
-            'tmux',
-            '-L',
-            tmuxSocket,
-            '-f',
-            tmuxConfPath,
-            'new-session',
-            '-s',
-            tmuxName,
-            '-c',
+          spawnArgv = tmuxCreateArgv({
+            socket: tmuxSocket,
+            confPath: tmuxConfPath,
+            name: tmuxName,
             cwd,
-            '-x',
-            String(cols),
-            '-y',
-            String(rows),
-            ...envPairs,
-            '--',
-            '/bin/sh',
-            '-c',
-            ENV_WRAP_SCRIPT,
+            cols,
+            rows,
+            envPairs,
             envFile,
-            ...argv,
-            ';',
-            'set-option',
-            '-t',
-            `=${tmuxName}`,
-            '@rivet_command',
-            key,
-            ';',
-            'set-option',
-            '-t',
-            `=${tmuxName}`,
-            '@rivet_user',
-            routedUser ?? 'owner',
-            ...unsetChain,
-          ]
+            harness: argv,
+            command: key,
+            user: routedUser ?? 'owner',
+            unsetKeys: tmuxEnvDeleted,
+          })
         }
       }
       let proc: PtyProc
@@ -1205,14 +1203,51 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
         proc = deps.spawn(spawnArgv, { cwd, env, cols, rows })
       } catch (e) {
-        if (envFile) {
+        const dup =
+          Boolean(tmux) &&
+          Boolean(tmuxName) &&
+          !persisted &&
+          /duplicate session/i.test(e instanceof Error ? e.message : String(e))
+        if (dup && tmux && tmuxName) {
           try {
-            unlinkSync(envFile)
-          } catch {
-            // best-effort: client failed before exec — don't leave credentials
+            tmux.refresh?.()
+            const raced = tmux.listSessions().find((s) => s.name === tmuxName)
+            if (!raced)
+              throw new TermSpawnError('tmux-unavailable', 'session exists but is not listable')
+            takeExisting(raced)
+          } catch (inner) {
+            if (envFile) {
+              try {
+                unlinkSync(envFile)
+              } catch {
+                // best-effort
+              }
+            }
+            // Create already raced; a direct-PTY fallback here would start a
+            // second harness. Fail closed — including raw TmuxUnavailableError.
+            if (inner instanceof TmuxUnavailableError)
+              throw new TermSpawnError('tmux-unavailable', `tmux unavailable: ${inner.message}`)
+            throw inner
           }
+          if (envFile) {
+            try {
+              unlinkSync(envFile)
+            } catch {
+              // attach path does not source the create env file
+            }
+          }
+          spawnArgv = tmuxAttachArgv(tmuxSocket, tmuxConfPath, tmuxName)
+          proc = deps.spawn(spawnArgv, { cwd, env, cols, rows })
+        } else {
+          if (envFile) {
+            try {
+              unlinkSync(envFile)
+            } catch {
+              // best-effort: client failed before exec — don't leave credentials
+            }
+          }
+          throw e
         }
-        throw e
       } finally {
         spawnInflight.delete(denSession)
       }
