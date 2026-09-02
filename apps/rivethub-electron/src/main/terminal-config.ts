@@ -9,9 +9,12 @@
  *    first one that exists per emulator;
  *  - `include` / `config-file` / `import` directives are followed exactly ONE
  *    level and only to files that resolve — after realpath, so a symlink can't
- *    launder the check — inside an allowed include root (see includeRoots: the
- *    config's own directory, EXCEPT when that directory is a shared one like
- *    $HOME, where the emulator's own config directory is used instead).
+ *    launder the check — inside an allowed include root (see includeRoots for
+ *    the relative-path base, and includeAllowRoots for the extra containment
+ *    roots: the emulator's own config dir, $XDG_CONFIG_HOME / ~/.config,
+ *    $XDG_STATE_HOME / ~/.local/state, and ~/.local/share). The $HOME-rooted
+ *    carve-out still applies: a config sitting in $HOME does not make $HOME
+ *    itself an include root.
  *
  * Nothing here writes, creates, or deletes anything.
  */
@@ -20,7 +23,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-export type EmulatorKind = 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+export type EmulatorKind = 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal' | 'omarchy'
 
 export interface TerminalConfigFile {
   kind: EmulatorKind
@@ -29,6 +32,15 @@ export interface TerminalConfigFile {
   /** Resolved include contents, keyed by the raw directive value so the
    *  renderer's parser can splice each one where it appeared. */
   includes: Record<string, string>
+  /** Basename of the Omarchy theme symlink target. Only set for `omarchy`.
+   *  Omitted when the theme dir itself is named `theme` (a real directory
+   *  at `current/theme`, not a symlink to `themes/<name>`). */
+  themeName?: string
+  /** True when an include's realpath sits under the Omarchy current-theme
+   *  directory. The settings row uses this to pick the font partner for an
+   *  Omarchy import (stale Ghostty must not beat the Alacritty that actually
+   *  includes the theme). */
+  usesOmarchy?: boolean
 }
 
 /** Per file, main config and includes alike. A terminal config is a few KB;
@@ -64,8 +76,17 @@ export function candidatePaths(e: ConfigEnv): Array<{ kind: EmulatorKind; path: 
     out.push({ kind, path: path.join(...(parts as string[])) })
   }
   const xdg = e.env.XDG_CONFIG_HOME
+  const xdgState = e.env.XDG_STATE_HOME
   const home = e.home
   const dotConfig = path.join(home, '.config')
+  const dotState = path.join(home, '.local', 'state')
+
+  // Omarchy first so the settings row can show it ahead of the emulators.
+  // current/theme is a directory (usually a symlink to themes/<name>).
+  add('omarchy', xdgState, 'omarchy', 'current', 'theme')
+  add('omarchy', dotState, 'omarchy', 'current', 'theme')
+  add('omarchy', xdg, 'omarchy', 'current', 'theme')
+  add('omarchy', dotConfig, 'omarchy', 'current', 'theme')
 
   add('ghostty', xdg, 'ghostty', 'config')
   add('ghostty', dotConfig, 'ghostty', 'config')
@@ -117,16 +138,20 @@ export interface IncludeOpts {
   home?: string
   /** Defaults to the running platform; only win32 changes the rules. */
   platform?: NodeJS.Platform
+  /** Extra directories a target may resolve inside. Relative targets still
+   *  resolve against `dir`; these roots only widen the containment check
+   *  (lexical and realpath). Empty entries are ignored. */
+  extraRoots?: readonly string[]
 }
 
 /**
- * An include target resolved inside `dir`, or null.
+ * An include target resolved inside `dir` (or an extra allowed root), or null.
  *
  * Containment is the whole property, so the check is expressed as "resolves
- * under dir" rather than "looks relative": `~/.config/alacritty/themes/x.toml`
- * is how people actually spell an Alacritty import, and refusing it outright
- * would make the importer useless while making nothing safer. `..`, an
- * absolute path elsewhere, and a NUL are all refused. A backslash is refused
+ * under dir or extraRoots" rather than "looks relative": Omarchy themes live
+ * under `~/.local/state/omarchy/…` (and older `~/.config/omarchy/…`), which
+ * is outside the emulator's own config directory. `~/.ssh`, `/etc`, and any
+ * other landing outside the allowed roots are refused. A backslash is refused
  * everywhere but win32, where it is a real separator node's path module
  * already understands; on POSIX it would survive resolve() as a literal
  * filename character and confuse the fence's mental model (same reasoning as
@@ -148,19 +173,39 @@ export function resolveIncludePath(
     target = path.join(opts.home, target.slice(1))
   }
   const abs = path.resolve(dir, target)
-  return abs === dir || abs.startsWith(dir + path.sep) ? abs : null
+  const roots = [dir, ...(opts.extraRoots ?? [])]
+  return roots.some((root) => lexicallyWithin(root, abs)) ? abs : null
+}
+
+function lexicallyWithin(root: string, abs: string): boolean {
+  if (!root) return false
+  const r = path.resolve(root)
+  return abs === r || abs.startsWith(r + path.sep)
 }
 
 /** realpath both ends before comparing — a symlink is the one escape the
- *  lexical check above cannot see. */
-function realWithin(root: string, abs: string): string | null {
+ *  lexical check above cannot see. The target's realpath may land in any of
+ *  `roots` (emulator dir, XDG config/state, ~/.local/share), so a
+ *  `~/.local/state/omarchy/current/theme` → `~/.config/omarchy/themes/<name>`
+ *  symlink still passes. Missing roots are skipped rather than failing the
+ *  whole check. */
+function realWithinAny(roots: readonly string[], abs: string): string | null {
+  let real: string
   try {
-    const realRoot = fs.realpathSync(root)
-    const real = fs.realpathSync(abs)
-    return real === realRoot || real.startsWith(realRoot + path.sep) ? real : null
+    real = fs.realpathSync(abs)
   } catch {
     return null
   }
+  for (const root of roots) {
+    if (!root) continue
+    try {
+      const realRoot = fs.realpathSync(root)
+      if (real === realRoot || real.startsWith(realRoot + path.sep)) return real
+    } catch {
+      /* root missing — try the next one */
+    }
+  }
+  return null
 }
 
 /**
@@ -199,13 +244,40 @@ function readCapped(file: string): string | null {
   }
 }
 
-/** Read a file that must live inside `dir`, honoring the size cap. */
+/** Read a file that must live inside `dir` (or extraRoots), honoring the size cap. */
 export function readFenced(dir: string, rel: string, opts: IncludeOpts = {}): string | null {
+  return readFencedEntry(dir, rel, opts)?.text ?? null
+}
+
+function readFencedEntry(
+  dir: string,
+  rel: string,
+  opts: IncludeOpts = {},
+): { text: string; real: string } | null {
   const abs = resolveIncludePath(dir, rel, opts)
   if (!abs) return null
-  const real = realWithin(dir, abs)
+  const real = realWithinAny([dir, ...(opts.extraRoots ?? [])], abs)
   if (!real) return null
-  return readCapped(real)
+  const text = readCapped(real)
+  if (text === null) return null
+  return { text, real }
+}
+
+/** Realpaths of Omarchy `current/theme` directories that exist. An include
+ *  whose realpath sits under one of these is the emulator actually in use. */
+function realOmarchyThemeDirs(e: ConfigEnv): string[] {
+  const out: string[] = []
+  for (const c of candidatePaths(e)) {
+    if (c.kind !== 'omarchy') continue
+    try {
+      const real = fs.realpathSync(c.path)
+      if (!fs.statSync(real).isDirectory()) continue
+      if (!out.includes(real)) out.push(real)
+    } catch {
+      /* missing — try the next candidate */
+    }
+  }
+  return out
 }
 
 const QUOTED = /"([^"]*)"|'([^']*)'/g
@@ -266,6 +338,7 @@ const KIND_DIR: Record<EmulatorKind, string | undefined> = {
   alacritty: 'alacritty',
   kitty: 'kitty',
   'windows-terminal': undefined,
+  omarchy: undefined,
 }
 
 function realOrSelf(p: string): string {
@@ -293,6 +366,8 @@ function looksLikeConfigBasename(kind: EmulatorKind, file: string): boolean {
       return /^(?:\.?alacritty)\.(toml|ya?ml)$/i.test(base)
     case 'windows-terminal':
       return /^settings\.json$/i.test(base)
+    case 'omarchy':
+      return false
   }
 }
 
@@ -336,6 +411,73 @@ export function includeRoots(kind: EmulatorKind, e: ConfigEnv, configDir: string
 }
 
 /**
+ * Extra containment roots for includes (and for the Omarchy theme dir).
+ *
+ * Both the XDG override and the default are listed: an older Omarchy install
+ * still lives under ~/.config even when XDG_CONFIG_HOME points elsewhere, and
+ * a theme symlink may jump from state → config. $HOME itself is never a root
+ * — nor is a relative XDG value, the filesystem root, or any ancestor of
+ * $HOME (`XDG_STATE_HOME=/` or `=$HOME` would otherwise reopen ~/.ssh).
+ */
+export function includeAllowRoots(e: ConfigEnv): string[] {
+  const out: string[] = []
+  const home = path.resolve(e.home)
+  const add = (p: string | undefined): void => {
+    if (!p || !path.isAbsolute(p)) return
+    const abs = path.resolve(p)
+    // `/` (or `C:\`) as a containment root is every path on the volume.
+    if (abs === path.parse(abs).root) return
+    // Skip a root that *is* $HOME or contains it (an ancestor). Legit
+    // roots sit outside $HOME (`/run/user/1000/…`) or strictly under it
+    // (`~/.local/state`); those do not satisfy lexicallyWithin(root, home).
+    if (lexicallyWithin(abs, home)) return
+    if (!out.includes(abs)) out.push(abs)
+  }
+  add(e.env.XDG_CONFIG_HOME)
+  add(path.join(e.home, '.config'))
+  add(e.env.XDG_STATE_HOME)
+  add(path.join(e.home, '.local', 'state'))
+  add(e.env.XDG_DATA_HOME)
+  add(path.join(e.home, '.local', 'share'))
+  return out
+}
+
+const OMARCHY_THEME_FILES = ['ghostty.conf', 'alacritty.toml', 'kitty.conf'] as const
+
+/** Read the Omarchy current-theme directory: ghostty.conf preferred, then
+ *  alacritty.toml, then kitty.conf. The theme dir's realpath must sit under
+ *  includeAllowRoots so `current/theme → ~/.ssh` is not a read. */
+function readOmarchyTheme(themeDir: string, e: ConfigEnv): TerminalConfigFile | null {
+  const allow = includeAllowRoots(e)
+  const realDir = realWithinAny(allow, themeDir)
+  if (!realDir) return null
+  try {
+    if (!fs.statSync(realDir).isDirectory()) return null
+  } catch {
+    return null
+  }
+  const base = path.basename(realDir)
+  const themeName = base === 'theme' ? undefined : base
+  for (const name of OMARCHY_THEME_FILES) {
+    const abs = path.join(realDir, name)
+    const realFile = realWithinAny(allow, abs)
+    // Containment is the safety property; a theme file may be a symlink
+    // whose target has a different basename (`ghostty.conf` → `colors.conf`).
+    if (!realFile) continue
+    const text = readCapped(realFile)
+    if (text === null) continue
+    return {
+      kind: 'omarchy',
+      path: path.join(themeDir, name),
+      text,
+      includes: {},
+      ...(themeName ? { themeName } : {}),
+    }
+  }
+  return null
+}
+
+/**
  * Every emulator config we can find, first candidate per emulator. Missing or
  * unreadable files are simply absent — "not found" is a normal state the UI
  * renders, not an error.
@@ -343,8 +485,18 @@ export function includeRoots(kind: EmulatorKind, e: ConfigEnv, configDir: string
 export function readTerminalConfigs(e: ConfigEnv = defaultEnv()): TerminalConfigFile[] {
   const out: TerminalConfigFile[] = []
   const seen = new Set<EmulatorKind>()
+  const extraRoots = includeAllowRoots(e)
+  const omarchyThemeDirs = realOmarchyThemeDirs(e)
   for (const candidate of candidatePaths(e)) {
     if (seen.has(candidate.kind)) continue
+    if (candidate.kind === 'omarchy') {
+      const file = readOmarchyTheme(candidate.path, e)
+      if (file) {
+        seen.add('omarchy')
+        out.push(file)
+      }
+      continue
+    }
     let real: string
     try {
       // Resolve the link first: a dotfiles-managed config is usually a
@@ -359,18 +511,32 @@ export function readTerminalConfigs(e: ConfigEnv = defaultEnv()): TerminalConfig
     seen.add(candidate.kind)
     const roots = includeRoots(candidate.kind, e, path.dirname(real))
     const includes: Record<string, string> = {}
+    let usesOmarchy = false
     for (const target of includeTargets(candidate.kind, text)) {
       for (const root of roots) {
-        const included = readFenced(root, target, { home: e.home, platform: e.platform })
+        const included = readFencedEntry(root, target, {
+          home: e.home,
+          platform: e.platform,
+          extraRoots,
+        })
         if (included !== null) {
-          includes[target] = included
+          includes[target] = included.text
+          if (omarchyThemeDirs.some((dir) => lexicallyWithin(dir, included.real))) {
+            usesOmarchy = true
+          }
           break
         }
       }
     }
     // The path reported is the one from the allowlist, not the link target:
     // it is what the user recognises in the UI.
-    out.push({ kind: candidate.kind, path: candidate.path, text, includes })
+    out.push({
+      kind: candidate.kind,
+      path: candidate.path,
+      text,
+      includes,
+      ...(usesOmarchy ? { usesOmarchy } : {}),
+    })
   }
   return out
 }

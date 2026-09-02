@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   candidatePaths,
+  includeAllowRoots,
   includeRoots,
   includeTargets,
   MAX_CONFIG_BYTES,
@@ -40,10 +41,25 @@ function write(file: string, text: string): string {
 describe('candidatePaths', () => {
   it('prefers XDG_CONFIG_HOME and only lists this platform', () => {
     const linux = candidatePaths(env({ env: { XDG_CONFIG_HOME: '/xdg' } }))
-    expect(linux[0]).toEqual({ kind: 'ghostty', path: '/xdg/ghostty/config' })
+    const ghostty = linux.filter((c) => c.kind === 'ghostty')
+    expect(ghostty[0]).toEqual({ kind: 'ghostty', path: '/xdg/ghostty/config' })
     expect(linux.some((c) => c.path === path.join(home, '.config/ghostty/config'))).toBe(true)
     expect(linux.some((c) => c.kind === 'windows-terminal')).toBe(false)
     expect(linux.some((c) => c.path.includes('Application Support'))).toBe(false)
+  })
+
+  it('lists Omarchy current/theme ahead of the emulators, state then older config', () => {
+    const linux = candidatePaths(
+      env({ env: { XDG_CONFIG_HOME: '/xdg', XDG_STATE_HOME: '/xdg-state' } }),
+    )
+    const omarchy = linux.filter((c) => c.kind === 'omarchy').map((c) => c.path)
+    expect(omarchy[0]).toBe(path.join('/xdg-state', 'omarchy', 'current', 'theme'))
+    expect(omarchy).toContain(path.join(home, '.local', 'state', 'omarchy', 'current', 'theme'))
+    expect(omarchy).toContain(path.join('/xdg', 'omarchy', 'current', 'theme'))
+    expect(omarchy).toContain(path.join(home, '.config', 'omarchy', 'current', 'theme'))
+    expect(linux.findIndex((c) => c.kind === 'omarchy')).toBeLessThan(
+      linux.findIndex((c) => c.kind === 'ghostty'),
+    )
   })
 
   it('lists the Windows Terminal packages only on win32', () => {
@@ -141,6 +157,36 @@ describe('resolveIncludePath (the include fence)', () => {
     expect(resolveIncludePath(dir, 'themes\\x.toml', { platform: 'linux' })).toBeNull()
     expect(resolveIncludePath(dir, 'themes\\x.toml', { platform: 'win32' })).not.toBeNull()
   })
+
+  it('accepts a target under extraRoots (Omarchy state dir)', () => {
+    const extra = { home: '/home/u', extraRoots: ['/home/u/.local/state', '/home/u/.config'] }
+    expect(
+      resolveIncludePath(
+        '/home/u/.config/alacritty',
+        '~/.local/state/omarchy/current/theme/alacritty.toml',
+        extra,
+      ),
+    ).toBe('/home/u/.local/state/omarchy/current/theme/alacritty.toml')
+    expect(
+      resolveIncludePath(
+        '/home/u/.config/ghostty',
+        '~/.config/omarchy/themes/tokyo-night/ghostty.conf',
+        extra,
+      ),
+    ).toBe('/home/u/.config/omarchy/themes/tokyo-night/ghostty.conf')
+  })
+
+  it('still refuses ~/.ssh and /etc even with extraRoots', () => {
+    const extra = {
+      home: '/home/u',
+      extraRoots: ['/home/u/.config', '/home/u/.local/state', '/home/u/.local/share'],
+    }
+    expect(resolveIncludePath('/home/u/.config/alacritty', '~/.ssh/config', extra)).toBeNull()
+    expect(resolveIncludePath('/home/u/.config/alacritty', '/etc/passwd', extra)).toBeNull()
+    expect(
+      resolveIncludePath('/home/u/.config/alacritty', '../../.ssh/id_ed25519', extra),
+    ).toBeNull()
+  })
 })
 
 describe('readFenced', () => {
@@ -199,6 +245,12 @@ describe('includeTargets', () => {
     expect(includeTargets('ghostty', 'config-file=a.conf\n')).toEqual(['a.conf'])
     expect(includeTargets('ghostty', 'config-file = "?optional.conf"\n')).toEqual(['optional.conf'])
     expect(includeTargets('ghostty', 'config-file = ?"quoted.conf"\n')).toEqual(['quoted.conf'])
+    expect(
+      includeTargets(
+        'ghostty',
+        'config-file = ?"~/.local/state/omarchy/current/theme/ghostty.conf"\n',
+      ),
+    ).toEqual(['~/.local/state/omarchy/current/theme/ghostty.conf'])
   })
 
   it('does not treat a commented include as a target', () => {
@@ -210,6 +262,9 @@ describe('includeTargets', () => {
     expect(includeTargets('kitty', 'include ./theme.conf\nmap f1 launch --include\n')).toEqual([
       './theme.conf',
     ])
+    expect(
+      includeTargets('kitty', 'include ~/.local/state/omarchy/current/theme/kitty.conf\n'),
+    ).toEqual(['~/.local/state/omarchy/current/theme/kitty.conf'])
   })
 
   it('finds Alacritty imports in TOML (multi-line) and legacy YAML', () => {
@@ -266,6 +321,66 @@ describe('includeRoots (the shared-directory carve-out)', () => {
 
   it('has no include roots for Windows Terminal, which has no includes', () => {
     expect(includeRoots('windows-terminal', env(), home)).toEqual([])
+  })
+})
+
+describe('includeAllowRoots', () => {
+  it('lists XDG overrides and the ~/.config ~/.local/state ~/.local/share defaults', () => {
+    const roots = includeAllowRoots(
+      env({
+        env: {
+          XDG_CONFIG_HOME: '/xdg',
+          XDG_STATE_HOME: '/xdg-state',
+          XDG_DATA_HOME: '/xdg-data',
+        },
+      }),
+    )
+    expect(roots).toEqual([
+      '/xdg',
+      path.join(home, '.config'),
+      '/xdg-state',
+      path.join(home, '.local', 'state'),
+      '/xdg-data',
+      path.join(home, '.local', 'share'),
+    ])
+    expect(roots).not.toContain(home)
+  })
+
+  it('refuses XDG values that are relative, the filesystem root, $HOME, or an ancestor of $HOME', () => {
+    const e = { home: '/home/u', platform: 'linux' as const, env: {} }
+    const defaults = [
+      path.join('/home/u', '.config'),
+      path.join('/home/u', '.local', 'state'),
+      path.join('/home/u', '.local', 'share'),
+    ]
+
+    const slash = includeAllowRoots({ ...e, env: { XDG_STATE_HOME: '/' } })
+    expect(slash).not.toContain('/')
+    expect(slash).toEqual(defaults)
+
+    const atHome = includeAllowRoots({ ...e, env: { XDG_STATE_HOME: '/home/u' } })
+    expect(atHome).not.toContain('/home/u')
+    expect(atHome).toEqual(defaults)
+
+    const dot = includeAllowRoots({ ...e, env: { XDG_STATE_HOME: '.' } })
+    expect(dot).not.toContain('.')
+    expect(dot).not.toContain(path.resolve('.'))
+    expect(dot).toEqual(defaults)
+
+    const ancestor = includeAllowRoots({ ...e, env: { XDG_STATE_HOME: '/home' } })
+    expect(ancestor).not.toContain('/home')
+    expect(ancestor).toEqual(defaults)
+
+    const runUser = includeAllowRoots({
+      ...e,
+      env: { XDG_STATE_HOME: '/run/user/1000/state' },
+    })
+    expect(runUser).toEqual([
+      path.join('/home/u', '.config'),
+      '/run/user/1000/state',
+      path.join('/home/u', '.local', 'state'),
+      path.join('/home/u', '.local', 'share'),
+    ])
   })
 })
 
@@ -406,4 +521,272 @@ describe('readTerminalConfigs', () => {
     expect(readTerminalConfigs({ home: root, platform: 'linux', env: {} })).toEqual([])
     fs.rmSync(root, { recursive: true, force: true })
   })
+
+  const omarchyGhostty = [
+    'background = #111c18',
+    'foreground = #c4d0c8',
+    'cursor-color = #d3e0d8',
+    'selection-background = #2a3f36',
+    'selection-foreground = #c4d0c8',
+    ...Array.from(
+      { length: 16 },
+      (_, i) => `palette = ${i}=#${i.toString(16).repeat(6).slice(0, 6)}`,
+    ),
+    '',
+  ].join('\n')
+  const omarchyAlacritty = '[colors.primary]\nbackground = "#111c18"\nforeground = "#c4d0c8"\n'
+  const omarchyKitty = 'background #111c18\nforeground #c4d0c8\n'
+
+  function plantOmarchyTheme(
+    root: string,
+    themeName: string,
+    files: Record<string, string>,
+  ): string {
+    const real = path.join(root, '.local', 'state', 'omarchy', 'themes', themeName)
+    for (const [name, text] of Object.entries(files)) write(path.join(real, name), text)
+    const current = path.join(root, '.local', 'state', 'omarchy', 'current')
+    fs.mkdirSync(current, { recursive: true })
+    const link = path.join(current, 'theme')
+    fs.symlinkSync(real, link)
+    return link
+  }
+
+  it.skipIf(process.platform === 'win32')(
+    'splices an Alacritty import of a symlinked Omarchy theme under ~/.local/state',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-al-'))
+      plantOmarchyTheme(root, 'tokyo-night', { 'alacritty.toml': omarchyAlacritty })
+      write(
+        path.join(root, '.config/alacritty/alacritty.toml'),
+        [
+          '[general]',
+          'import = ["~/.local/state/omarchy/current/theme/alacritty.toml"]',
+          '[font.normal]',
+          'family = "JetBrainsMono Nerd Font"',
+          '',
+        ].join('\n'),
+      )
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      const alacritty = configs.find((c) => c.kind === 'alacritty')!
+      expect(alacritty.includes['~/.local/state/omarchy/current/theme/alacritty.toml']).toBe(
+        omarchyAlacritty,
+      )
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'splices an include whose realpath jumped from state into ~/.config/omarchy/themes',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-jump-inc-'))
+      const real = path.join(root, '.config', 'omarchy', 'themes', 'tokyo-night')
+      write(path.join(real, 'alacritty.toml'), omarchyAlacritty)
+      fs.mkdirSync(path.join(root, '.local/state/omarchy/current'), { recursive: true })
+      fs.symlinkSync(real, path.join(root, '.local/state/omarchy/current/theme'))
+      write(
+        path.join(root, '.config/alacritty/alacritty.toml'),
+        '[general]\nimport = ["~/.local/state/omarchy/current/theme/alacritty.toml"]\n',
+      )
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      const alacritty = configs.find((c) => c.kind === 'alacritty')!
+      expect(alacritty.includes['~/.local/state/omarchy/current/theme/alacritty.toml']).toBe(
+        omarchyAlacritty,
+      )
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'keys a Ghostty Omarchy include by the unquoted path (?"~/.local/state/…")',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-gh-'))
+      plantOmarchyTheme(root, 'tokyo-night', { 'ghostty.conf': omarchyGhostty })
+      write(
+        path.join(root, '.config/ghostty/config'),
+        [
+          'font-family = "JetBrainsMono Nerd Font"',
+          'font-size = 9',
+          'config-file = ?"~/.local/state/omarchy/current/theme/ghostty.conf"',
+          '',
+        ].join('\n'),
+      )
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      const ghostty = configs.find((c) => c.kind === 'ghostty')!
+      const key = '~/.local/state/omarchy/current/theme/ghostty.conf'
+      expect(ghostty.includes[key]).toBe(omarchyGhostty)
+      expect(ghostty.includes[`?"${key}"`]).toBeUndefined()
+      expect(ghostty.includes[`?${key}`]).toBeUndefined()
+      expect(ghostty.usesOmarchy).toBe(true)
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'splices a kitty include of ~/.local/state/omarchy/current/theme/kitty.conf',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-kt-'))
+      plantOmarchyTheme(root, 'tokyo-night', { 'kitty.conf': omarchyKitty })
+      write(
+        path.join(root, '.config/kitty/kitty.conf'),
+        [
+          'font_family JetBrainsMono Nerd Font',
+          'font_size 9',
+          'include ~/.local/state/omarchy/current/theme/kitty.conf',
+          '',
+        ].join('\n'),
+      )
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      const kitty = configs.find((c) => c.kind === 'kitty')!
+      expect(kitty.includes['~/.local/state/omarchy/current/theme/kitty.conf']).toBe(omarchyKitty)
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it('refuses an include of ~/.ssh/config even when extra roots are open', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-ssh-'))
+    write(path.join(root, '.ssh/config'), 'Host secret\nIdentityFile ~/.ssh/id_ed25519\n')
+    write(path.join(root, '.config/alacritty/alacritty.toml'), 'import = ["~/.ssh/config"]\n')
+    const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+    const alacritty = configs.find((c) => c.kind === 'alacritty')!
+    expect(alacritty.includes).toEqual({})
+    expect(JSON.stringify(configs)).not.toContain('Host secret')
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'reads Omarchy as a first-class source: ghostty.conf preferred, themeName from symlink target',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-src-'))
+      plantOmarchyTheme(root, 'tokyo-night', {
+        'ghostty.conf': omarchyGhostty,
+        'alacritty.toml': omarchyAlacritty,
+        'kitty.conf': omarchyKitty,
+      })
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(configs[0]?.kind).toBe('omarchy')
+      expect(configs[0]?.themeName).toBe('tokyo-night')
+      expect(configs[0]?.path).toBe(
+        path.join(root, '.local', 'state', 'omarchy', 'current', 'theme', 'ghostty.conf'),
+      )
+      expect(configs[0]?.text).toBe(omarchyGhostty)
+      expect(configs[0]?.includes).toEqual({})
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'falls back to alacritty.toml then kitty.conf when ghostty.conf is absent',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-fb-'))
+      plantOmarchyTheme(root, 'gruvbox', { 'alacritty.toml': omarchyAlacritty })
+      const first = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(first[0]?.path).toMatch(/alacritty\.toml$/)
+      expect(first[0]?.themeName).toBe('gruvbox')
+
+      fs.rmSync(path.join(root, '.local/state/omarchy/themes/gruvbox/alacritty.toml'))
+      write(path.join(root, '.local/state/omarchy/themes/gruvbox/kitty.conf'), omarchyKitty)
+      const second = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(second[0]?.path).toMatch(/kitty\.conf$/)
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'uses older ~/.config/omarchy/current/theme when the state dir is missing',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-old-'))
+      const real = path.join(root, '.config', 'omarchy', 'themes', 'catppuccin')
+      write(path.join(real, 'ghostty.conf'), omarchyGhostty)
+      fs.mkdirSync(path.join(root, '.config/omarchy/current'), { recursive: true })
+      fs.symlinkSync(real, path.join(root, '.config/omarchy/current/theme'))
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(configs[0]?.kind).toBe('omarchy')
+      expect(configs[0]?.themeName).toBe('catppuccin')
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses an Omarchy theme dir whose realpath is ~/.ssh',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-evil-'))
+      const ssh = path.join(root, '.ssh')
+      fs.mkdirSync(ssh, { recursive: true })
+      write(path.join(ssh, 'ghostty.conf'), 'Host secret\n')
+      fs.mkdirSync(path.join(root, '.local/state/omarchy/current'), { recursive: true })
+      fs.symlinkSync(ssh, path.join(root, '.local/state/omarchy/current/theme'))
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(configs.find((c) => c.kind === 'omarchy')).toBeUndefined()
+      expect(JSON.stringify(configs)).not.toContain('Host secret')
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'follows a theme symlink from state into ~/.config/omarchy/themes',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-jump-'))
+      const real = path.join(root, '.config', 'omarchy', 'themes', 'tokyo-night')
+      write(path.join(real, 'ghostty.conf'), omarchyGhostty)
+      fs.mkdirSync(path.join(root, '.local/state/omarchy/current'), { recursive: true })
+      fs.symlinkSync(real, path.join(root, '.local/state/omarchy/current/theme'))
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(configs[0]?.kind).toBe('omarchy')
+      expect(configs[0]?.themeName).toBe('tokyo-night')
+      expect(configs[0]?.text).toBe(omarchyGhostty)
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'sets usesOmarchy on the emulator whose include realpath lands in the Omarchy theme dir',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-uses-'))
+      plantOmarchyTheme(root, 'tokyo-night', { 'alacritty.toml': omarchyAlacritty })
+      // Stale Ghostty in candidate order, no Omarchy include.
+      write(path.join(root, '.config/ghostty/config'), 'font-size = 13\n')
+      write(
+        path.join(root, '.config/alacritty/alacritty.toml'),
+        '[general]\nimport = ["~/.local/state/omarchy/current/theme/alacritty.toml"]\n',
+      )
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      const ghostty = configs.find((c) => c.kind === 'ghostty')!
+      const alacritty = configs.find((c) => c.kind === 'alacritty')!
+      expect(ghostty.usesOmarchy).toBeUndefined()
+      expect(alacritty.usesOmarchy).toBe(true)
+      expect(alacritty.includes['~/.local/state/omarchy/current/theme/alacritty.toml']).toBe(
+        omarchyAlacritty,
+      )
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
+
+  it('omits themeName when current/theme is a real directory named theme', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-dir-'))
+    write(path.join(root, '.local/state/omarchy/current/theme/ghostty.conf'), omarchyGhostty)
+    const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+    expect(configs[0]?.kind).toBe('omarchy')
+    expect(configs[0]?.themeName).toBeUndefined()
+    expect(configs[0]?.text).toBe(omarchyGhostty)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'loads a theme file whose realpath basename differs from the allowlisted name',
+    () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rivet-term-omar-alias-'))
+      const real = path.join(root, '.local', 'state', 'omarchy', 'themes', 'tokyo-night')
+      write(path.join(real, 'colors.conf'), omarchyGhostty)
+      const current = path.join(root, '.local', 'state', 'omarchy', 'current')
+      fs.mkdirSync(current, { recursive: true })
+      fs.symlinkSync(real, path.join(current, 'theme'))
+      fs.symlinkSync(path.join(real, 'colors.conf'), path.join(real, 'ghostty.conf'))
+      const configs = readTerminalConfigs({ home: root, platform: 'linux', env: {} })
+      expect(configs[0]?.kind).toBe('omarchy')
+      expect(configs[0]?.themeName).toBe('tokyo-night')
+      expect(configs[0]?.text).toBe(omarchyGhostty)
+      expect(path.basename(configs[0]!.path)).toBe('ghostty.conf')
+      fs.rmSync(root, { recursive: true, force: true })
+    },
+  )
 })

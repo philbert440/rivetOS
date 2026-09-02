@@ -42,10 +42,12 @@ export interface RivetShell {
    *  allowlist, the renderer owns the parsing. */
   readTerminalConfigs?(): Promise<
     Array<{
-      kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+      kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal' | 'omarchy'
       path: string
       text: string
       includes: Record<string, string>
+      themeName?: string
+      usesOmarchy?: boolean
     }>
   >
   /** Read all settings from the main process's settings.json file. */

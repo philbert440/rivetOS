@@ -11,7 +11,7 @@
 
 import { TERMINAL_LIMITS } from '../../stores/terminal-settings.js'
 import { isTerminalPalette, type TerminalPalette } from '../terminal-schemes.js'
-import type { TerminalImport } from './types.js'
+import type { EmulatorKind, TerminalConfigFile, TerminalImport } from './types.js'
 
 export interface TerminalImportPatch {
   fontFamily?: string
@@ -62,4 +62,61 @@ export function importPatch(imp: TerminalImport): TerminalImportPatch {
 /** Whether Apply would change anything — drives the button's disabled state. */
 export function canApply(imp: TerminalImport): boolean {
   return Object.keys(importPatch(imp)).length > 0
+}
+
+/** Palette-missing / partial-ANSI warnings from finishPalette. Dropped from
+ *  the emulator side when Omarchy supplies a complete palette — otherwise
+ *  they sit next to a good theme and look like a failed import. */
+const PALETTE_WARNING = /no palette found|incomplete .*\bpalette\b/i
+
+function tagWarnings(source: string, warnings: readonly string[]): string[] {
+  return warnings.map((w) => `[${source}] ${w}`)
+}
+
+/**
+ * The emulator whose fonts pair with an Omarchy palette import.
+ *
+ * Prefer the one main flagged `usesOmarchy` (an include realpath under the
+ * current theme dir). Fall back to the first non-omarchy file, which is
+ * candidate order: ghostty → alacritty → kitty.
+ */
+export function omarchyFontPartner(
+  files: readonly TerminalConfigFile[],
+): TerminalConfigFile | undefined {
+  const emulators = files.filter((c) => c.kind !== 'omarchy')
+  return emulators.find((c) => c.usesOmarchy) ?? emulators[0]
+}
+
+/**
+ * Merge an emulator import with an Omarchy theme import.
+ *
+ * Fonts live in the emulator config; the palette lives in the Omarchy theme
+ * dir. Emulator fields win for fontFamily/fontSize/lineHeight; Omarchy's
+ * palette (when complete) replaces the emulator's. Remaining warnings are
+ * prefixed with their source (`[ghostty] …`, `[omarchy] …`).
+ */
+export function combineImports(
+  emulator: TerminalImport,
+  omarchy: TerminalImport,
+  emulatorKind: EmulatorKind,
+): TerminalImport {
+  const emuWarnings =
+    omarchy.palette !== undefined
+      ? emulator.warnings.filter((w) => !PALETTE_WARNING.test(w))
+      : emulator.warnings
+  const result: TerminalImport = {
+    warnings: [
+      ...tagWarnings(emulatorKind, emuWarnings),
+      ...tagWarnings('omarchy', omarchy.warnings),
+    ],
+  }
+  const fontFamily = emulator.fontFamily ?? omarchy.fontFamily
+  if (fontFamily) result.fontFamily = fontFamily
+  const fontSize = emulator.fontSize ?? omarchy.fontSize
+  if (fontSize !== undefined) result.fontSize = fontSize
+  const lineHeight = emulator.lineHeight ?? omarchy.lineHeight
+  if (lineHeight !== undefined) result.lineHeight = lineHeight
+  const palette = omarchy.palette ?? emulator.palette
+  if (palette) result.palette = palette
+  return result
 }

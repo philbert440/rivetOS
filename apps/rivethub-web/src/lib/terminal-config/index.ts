@@ -29,7 +29,13 @@ export { parseAlacritty, detectAlacrittyFormat, type AlacrittyFormat } from './a
 export { parseGhostty } from './ghostty.js'
 export { parseKitty } from './kitty.js'
 export { parseWindowsTerminal } from './windows-terminal.js'
-export { canApply, importPatch, type TerminalImportPatch } from './apply.js'
+export {
+  canApply,
+  combineImports,
+  importPatch,
+  omarchyFontPartner,
+  type TerminalImportPatch,
+} from './apply.js'
 export {
   EMULATOR_LABELS,
   type EmulatorKind,
@@ -82,7 +88,19 @@ export function sanitizeConfigFiles(raw: unknown): TerminalConfigFile[] {
         }
       }
     }
-    out.push({ kind: item.kind, path: item.path.slice(0, 1024), text: item.text, includes })
+    const file: TerminalConfigFile = {
+      kind: item.kind,
+      path: item.path.slice(0, 1024),
+      text: item.text,
+      includes,
+    }
+    if ('themeName' in item && typeof item.themeName === 'string' && item.themeName) {
+      file.themeName = item.themeName.slice(0, 256)
+    }
+    if ('usesOmarchy' in item && item.usesOmarchy === true) {
+      file.usesOmarchy = true
+    }
+    out.push(file)
   }
   return out
 }
@@ -96,6 +114,29 @@ function guarded(run: () => TerminalImport): TerminalImport {
       warnings: [`Could not read this config: ${err instanceof Error ? err.message : String(err)}`],
     }
   }
+}
+
+/** Omarchy theme dir is one of ghostty.conf / alacritty.toml / kitty.conf.
+ *  Basename of `path` picks the parser. The content sniff below is
+ *  defence-in-depth (main always reports a filename on the allowlisted
+ *  path) so a skewed or tests-only payload without one still parses. */
+function parseOmarchy(
+  text: string,
+  opts: { includes?: Record<string, string>; path?: string },
+): TerminalImport {
+  const base = (opts.path ?? '').replace(/^.*[/\\]/, '').toLowerCase()
+  if (base === 'kitty.conf') return parseKitty(text, { includes: opts.includes })
+  if (base === 'alacritty.toml' || /\.ya?ml$/.test(base)) {
+    return parseAlacritty(text, { includes: opts.includes, path: opts.path })
+  }
+  if (base === 'ghostty.conf') return parseGhostty(text, { includes: opts.includes })
+  if (/^\s*\[colors[.\]]/m.test(text) || /^\s*\[general\]/m.test(text)) {
+    return parseAlacritty(text, { includes: opts.includes, path: opts.path })
+  }
+  if (/^\s*color\d+\s/m.test(text) || /^\s*font_family\s/m.test(text)) {
+    return parseKitty(text, { includes: opts.includes })
+  }
+  return parseGhostty(text, { includes: opts.includes })
 }
 
 /**
@@ -121,6 +162,8 @@ export function detectAndParse(
         // a single file, so `files.includes` is ignored even if the shell sent
         // one.
         return parseWindowsTerminal(files.text)
+      case 'omarchy':
+        return parseOmarchy(files.text, { includes, path: files.path })
       default:
         // Unreachable through the union, but the payload crosses an IPC
         // boundary — a skewed shell must get a warning, not `undefined`.

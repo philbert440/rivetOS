@@ -1,17 +1,19 @@
 /**
  * Shared shape for the emulator-config importers (T4).
  *
- * Every parser is pure text → `TerminalImport`, so the four formats stay
+ * Every parser is pure text → `TerminalImport`, so the formats stay
  * fixture-testable without Electron, a filesystem, or an xterm instance. The
  * desktop IPC only supplies bytes (`main/terminal-config.ts`); all format
- * knowledge lives here in the renderer.
+ * knowledge lives here in the renderer. Omarchy reuses the Ghostty /
+ * Alacritty / kitty parsers.
  */
 
 import type { TerminalPalette } from '../terminal-schemes.js'
 
-export type EmulatorKind = 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+export type EmulatorKind = 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal' | 'omarchy'
 
 export const EMULATOR_LABELS: Record<EmulatorKind, string> = {
+  omarchy: 'Omarchy',
   ghostty: 'Ghostty',
   alacritty: 'Alacritty',
   kitty: 'kitty',
@@ -43,6 +45,14 @@ export interface TerminalConfigFile {
   /** `include` / `config-file` targets resolved by main, keyed by the raw
    *  directive value so the parser can splice them at the right point.
    *  Windows Terminal has no include mechanism — settings.json is always a
-   *  single file, so this map is empty for that kind. */
+   *  single file, so this map is empty for that kind. Omarchy theme files
+   *  are leaves, so this map is empty for that kind too. */
   includes: Record<string, string>
+  /** Basename of the Omarchy theme symlink target (`tokyo-night`, …).
+   *  Absent for the four emulators, and when the theme dir itself is
+   *  named `theme`. */
+  themeName?: string
+  /** Set by main when an include's realpath sits under the Omarchy theme
+   *  dir. The Omarchy import prefers this emulator for fonts. */
+  usesOmarchy?: boolean
 }

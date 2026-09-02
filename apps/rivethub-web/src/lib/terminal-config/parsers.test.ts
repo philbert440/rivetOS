@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   canApply,
+  combineImports,
   detectAlacrittyFormat,
   detectAndParse,
   importPatch,
   MAX_IMPORT_TEXT_BYTES,
+  omarchyFontPartner,
   parseAlacritty,
   parseGhostty,
   parseKitty,
@@ -13,6 +15,7 @@ import {
   parseWindowsTerminal,
   sanitizeConfigFiles,
   type EmulatorKind,
+  type TerminalConfigFile,
   type TerminalImport,
 } from './index.js'
 import {
@@ -263,6 +266,47 @@ describe('ghostty', () => {
 
   it('strips a leading BOM', () => {
     expect(parseGhostty('\uFEFFfont-size = 12\n').fontSize).toBe(12)
+  })
+
+  it('parses an Omarchy ghostty.conf fixture with bare-hex values', () => {
+    const imp = parseGhostty(fixture('omarchy/ghostty.conf'))
+    expect(imp.warnings).toEqual([])
+    expectNormalized(imp)
+    expect(imp.palette!.background).toBe('#111c18')
+    expect(imp.palette!.foreground).toBe('#c4d0c8')
+    expect(imp.palette!.cursor).toBe('#d3e0d8')
+    expect(imp.palette!.selectionBackground).toBe('#2a3f36')
+    expect(imp.palette!.ansi[0]).toBe('#0e1714')
+    expect(imp.palette!.ansi[15]).toBe('#e8f0ec')
+  })
+
+  it('splices config-file = ?"~/.local/state/..." keyed without quotes or ?', () => {
+    const key = '~/.local/state/omarchy/current/theme/ghostty.conf'
+    const imp = parseGhostty(`font-size = 9\nconfig-file = ?"${key}"\n`, {
+      includes: { [key]: fixture('omarchy/ghostty.conf') },
+    })
+    expect(imp.fontSize).toBe(9)
+    expect(imp.warnings).toEqual([])
+    expectNormalized(imp)
+    expect(imp.palette!.background).toBe('#111c18')
+  })
+})
+
+describe('omarchy fixtures', () => {
+  it('parses the Alacritty and kitty Omarchy theme shapes', () => {
+    const al = parseAlacritty(fixture('omarchy/alacritty.toml'), {
+      path: 'alacritty.toml',
+    })
+    expect(al.warnings).toEqual([])
+    expectNormalized(al)
+    expect(al.palette!.background).toBe('#111c18')
+    expect(al.palette!.ansi[1]).toBe('#c45c5c')
+
+    const kt = parseKitty(fixture('omarchy/kitty.conf'))
+    expect(kt.warnings).toEqual([])
+    expectNormalized(kt)
+    expect(kt.palette!.background).toBe('#111c18')
+    expect(kt.palette!.cursor).toBe('#d3e0d8')
   })
 })
 
@@ -730,6 +774,24 @@ describe('detectAndParse', () => {
       detectAndParse('windows-terminal', { text: fixture('windows-terminal-settings.json') })
         .fontSize,
     ).toBe(12)
+    expect(
+      detectAndParse('omarchy', {
+        text: fixture('omarchy/ghostty.conf'),
+        path: '/home/u/.local/state/omarchy/current/theme/ghostty.conf',
+      }).palette?.background,
+    ).toBe('#111c18')
+    expect(
+      detectAndParse('omarchy', {
+        text: fixture('omarchy/alacritty.toml'),
+        path: '/home/u/.local/state/omarchy/current/theme/alacritty.toml',
+      }).palette?.background,
+    ).toBe('#111c18')
+    expect(
+      detectAndParse('omarchy', {
+        text: fixture('omarchy/kitty.conf'),
+        path: '/home/u/.local/state/omarchy/current/theme/kitty.conf',
+      }).palette?.background,
+    ).toBe('#111c18')
   })
 
   it('maps a throw to a warning import with no fields', () => {
@@ -779,6 +841,56 @@ describe('sanitizeConfigFiles', () => {
     ])
     expect(files).toHaveLength(1)
     expect(files[0].includes).toEqual({ 'a.conf': 'ok' })
+  })
+
+  it('keeps an Omarchy themeName and drops a non-string one', () => {
+    const files = sanitizeConfigFiles([
+      {
+        kind: 'omarchy',
+        path: '/home/u/.local/state/omarchy/current/theme/ghostty.conf',
+        text: 'background = #111c18\n',
+        includes: {},
+        themeName: 'tokyo-night',
+      },
+      {
+        kind: 'omarchy',
+        path: '/x/ghostty.conf',
+        text: 'a',
+        includes: {},
+        themeName: 12,
+      },
+    ])
+    expect(files[0].themeName).toBe('tokyo-night')
+    expect(files[1].themeName).toBeUndefined()
+  })
+
+  it('keeps usesOmarchy only when it is the boolean true', () => {
+    const files = sanitizeConfigFiles([
+      {
+        kind: 'alacritty',
+        path: '/cfg/alacritty.toml',
+        text: 'x',
+        includes: {},
+        usesOmarchy: true,
+      },
+      {
+        kind: 'ghostty',
+        path: '/cfg/config',
+        text: 'x',
+        includes: {},
+        usesOmarchy: false,
+      },
+      {
+        kind: 'kitty',
+        path: '/cfg/kitty.conf',
+        text: 'x',
+        includes: {},
+        usesOmarchy: 'yes',
+      },
+    ])
+    expect(files[0].usesOmarchy).toBe(true)
+    expect(files[1].usesOmarchy).toBeUndefined()
+    expect(files[2].usesOmarchy).toBeUndefined()
   })
 })
 
@@ -991,6 +1103,115 @@ describe('importPatch', () => {
     expect(importPatch({ lineHeight: 9, warnings: [] }).lineHeight).toBe(
       TERMINAL_LIMITS.lineHeight.max,
     )
+  })
+})
+
+describe('combineImports', () => {
+  it('keeps emulator fonts and overlays the Omarchy palette', () => {
+    const emulator = parseGhostty(
+      'font-family = "JetBrainsMono Nerd Font"\nfont-size = 9\nforeground = #ffffff\nbackground = #000000\n' +
+        Array.from({ length: 16 }, (_, i) => `palette = ${i}=#111111`).join('\n'),
+    )
+    const omarchy = parseGhostty(fixture('omarchy/ghostty.conf'))
+    const combined = combineImports(emulator, omarchy, 'ghostty')
+    expect(combined.fontFamily).toBe("'JetBrainsMono Nerd Font', monospace")
+    expect(combined.fontSize).toBe(9)
+    expect(combined.palette!.background).toBe('#111c18')
+    expect(combined.palette!.foreground).toBe('#c4d0c8')
+    expect(combined.palette!.ansi[1]).toBe('#c45c5c')
+    expect(combined.warnings).toEqual([])
+  })
+
+  it('does not let an Omarchy font override the emulator, and falls back either way', () => {
+    const emulator: TerminalImport = {
+      fontFamily: "'Emu', monospace",
+      fontSize: 9,
+      warnings: ['emu'],
+    }
+    const omarchy: TerminalImport = {
+      fontFamily: "'Omar', monospace",
+      fontSize: 12,
+      palette: parseGhostty(fixture('omarchy/ghostty.conf')).palette,
+      warnings: ['omar'],
+    }
+    const combined = combineImports(emulator, omarchy, 'ghostty')
+    expect(combined.fontFamily).toBe("'Emu', monospace")
+    expect(combined.fontSize).toBe(9)
+    expect(combined.palette!.background).toBe('#111c18')
+    expect(combined.warnings).toEqual(['[ghostty] emu', '[omarchy] omar'])
+
+    const fontsOnly = combineImports(
+      { fontFamily: "'Emu', monospace", warnings: [] },
+      { warnings: [] },
+      'ghostty',
+    )
+    expect(fontsOnly.fontFamily).toBe("'Emu', monospace")
+    expect(fontsOnly.palette).toBeUndefined()
+
+    const paletteOnly = combineImports({ warnings: [] }, omarchy, 'ghostty')
+    expect(paletteOnly.fontFamily).toBe("'Omar', monospace")
+    expect(paletteOnly.palette!.background).toBe('#111c18')
+  })
+
+  it('drops emulator palette warnings when the Omarchy palette wins, and tags the rest', () => {
+    const emulator = parseGhostty('font-family = "JetBrains Mono"\nfont-size = 9\n')
+    expect(emulator.warnings.some((w) => /No palette found/.test(w))).toBe(true)
+    const omarchy = parseGhostty(fixture('omarchy/ghostty.conf'))
+    const combined = combineImports(emulator, omarchy, 'ghostty')
+    expect(combined.palette!.background).toBe('#111c18')
+    expect(combined.warnings.some((w) => /No palette found/.test(w))).toBe(false)
+    expect(combined.fontFamily).toBe("'JetBrains Mono', monospace")
+
+    const partial: TerminalImport = {
+      fontFamily: "'Emu', monospace",
+      warnings: [
+        'Incomplete palette — missing: 14 of 16 ANSI colors. Colors were not imported.',
+        'font-size ignored',
+      ],
+    }
+    const tagged = combineImports(partial, omarchy, 'alacritty')
+    expect(tagged.warnings).toEqual(['[alacritty] font-size ignored'])
+  })
+
+  it('keeps emulator palette warnings when Omarchy has no palette', () => {
+    const combined = combineImports(
+      { warnings: ['No palette found in this config.'] },
+      { warnings: ['No palette found in this config.'] },
+      'kitty',
+    )
+    expect(combined.warnings).toEqual([
+      '[kitty] No palette found in this config.',
+      '[omarchy] No palette found in this config.',
+    ])
+  })
+})
+
+describe('omarchyFontPartner', () => {
+  const file = (
+    kind: TerminalConfigFile['kind'],
+    over: Partial<TerminalConfigFile> = {},
+  ): TerminalConfigFile => ({
+    kind,
+    path: `/cfg/${kind}`,
+    text: 'x',
+    includes: {},
+    ...over,
+  })
+
+  it('prefers the emulator flagged usesOmarchy over candidate order', () => {
+    const ghostty = file('ghostty')
+    const alacritty = file('alacritty', { usesOmarchy: true })
+    const kitty = file('kitty')
+    const omarchy = file('omarchy', { themeName: 'tokyo-night' })
+    expect(omarchyFontPartner([omarchy, ghostty, alacritty, kitty])).toBe(alacritty)
+  })
+
+  it('falls back to the first non-omarchy config when none include the theme', () => {
+    const ghostty = file('ghostty')
+    const alacritty = file('alacritty')
+    expect(omarchyFontPartner([file('omarchy'), ghostty, alacritty])).toBe(ghostty)
+    expect(omarchyFontPartner([file('omarchy')])).toBeUndefined()
+    expect(omarchyFontPartner([])).toBeUndefined()
   })
 })
 

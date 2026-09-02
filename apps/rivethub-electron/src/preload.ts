@@ -89,18 +89,22 @@ const api = {
    *  the renderer does all the parsing (lib/terminal-config). */
   readTerminalConfigs: (): Promise<
     Array<{
-      kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+      kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal' | 'omarchy'
       path: string
       text: string
       includes: Record<string, string>
+      themeName?: string
+      usesOmarchy?: boolean
     }>
   > =>
     ipcRenderer.invoke('terminal:readConfigs') as Promise<
       Array<{
-        kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal'
+        kind: 'ghostty' | 'alacritty' | 'kitty' | 'windows-terminal' | 'omarchy'
         path: string
         text: string
         includes: Record<string, string>
+        themeName?: string
+        usesOmarchy?: boolean
       }>
     >,
   /** Read all settings from the main process's settings.json file. */
