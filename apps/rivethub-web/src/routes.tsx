@@ -5,7 +5,7 @@
  */
 
 import { useEffect, type JSX } from 'react'
-import { Outlet, createRootRoute, createRoute } from '@tanstack/react-router'
+import { Outlet, createRootRoute, createRoute, redirect } from '@tanstack/react-router'
 import { Sidebar } from './components/sidebar.js'
 import { Toasts } from './components/toasts.js'
 import { useSidebarPrefs } from './stores/sidebar-prefs.js'
@@ -63,6 +63,16 @@ const chatRoute = createRoute({
     session: typeof search.session === 'string' && search.session ? search.session : undefined,
   }),
   component: ChatPage,
+})
+
+/** Electron shells before this fix loaded /index.html; keep the old path reaching chat. */
+const indexHtmlRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/index.html',
+  beforeLoad: ({ search }) => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error -- TanStack Router redirects by throwing a Redirect, not an Error
+    throw redirect({ to: '/', search })
+  },
 })
 
 const memoryRoute = createRoute({
@@ -139,6 +149,7 @@ const settingsRoute = createRoute({
 
 export const routeTree = rootRoute.addChildren([
   chatRoute,
+  indexHtmlRoute,
   memoryRoute,
   memoryTopicRoute,
   filesRoute,

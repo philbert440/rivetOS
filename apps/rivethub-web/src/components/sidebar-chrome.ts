@@ -6,7 +6,7 @@ export function railHeaderClass(collapsed: boolean): string {
   return cn('relative flex items-center gap-2 py-4', collapsed ? 'justify-center px-1' : 'px-4')
 }
 
-/** Header hosts the rail toggle; there is no bottom-row control. */
+/** The DenBot logo button IS the rail toggle; there is no collapse/expand icon. */
 export function railToggle(collapsed: boolean): {
   kind: 'collapse' | 'expand'
   label: string
