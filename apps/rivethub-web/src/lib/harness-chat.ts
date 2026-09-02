@@ -124,15 +124,21 @@ export function denRoomKey(chatKey: string): string {
   return nativeIdOf(chatKey) ?? chatKey
 }
 
+/** Newest-first. Stable on ties (keeps the input's relative order). */
+export function sortByRecency<T extends { updatedAt: number }>(items: T[]): T[] {
+  return items.slice().sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
 /**
  * Merge drafts + control-plane sessions + legacy store rows into one drawer
- * list. Drafts stay pinned on top (they have no activity timestamp yet);
- * everything else is newest-first.
+ * list, newest-first. Drafts take `draftCreatedAt` when the caller has it;
+ * a missing stamp is 0 and sinks.
  */
 export function chatItems(input: {
   drafts: string[]
   harnessSessions: HarnessSessionSummary[]
   legacySessions: HarnessSession[]
+  draftCreatedAt?: Record<string, number>
 }): ChatItem[] {
   const legacyByKey = new Map(input.legacySessions.map((s) => [s.id, s] as const))
   // Keyed by NATIVE id: it is the only field both lists carry, so it is what
@@ -169,11 +175,15 @@ export function chatItems(input: {
     })
   }
 
-  const listed = [...items.values()].sort((a, b) => b.updatedAt - a.updatedAt)
   const drafts: ChatItem[] = input.drafts
     .filter((id) => !items.has(id))
-    .map((id) => ({ key: id, kind: 'draft', title: 'new conversation', updatedAt: 0 }))
-  return [...drafts, ...listed]
+    .map((id) => ({
+      key: id,
+      kind: 'draft',
+      title: 'new conversation',
+      updatedAt: input.draftCreatedAt?.[id] ?? 0,
+    }))
+  return sortByRecency([...items.values(), ...drafts])
 }
 
 /**

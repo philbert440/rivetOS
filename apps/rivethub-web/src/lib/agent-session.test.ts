@@ -43,6 +43,7 @@ describe('agent last-session pointer', () => {
     expect(getAgentLastSession('a1', NODE_A)).toEqual({
       sessionId: 'sess-1',
       nodeBaseUrl: NODE_A,
+      updatedAt: expect.any(Number),
     })
     expect(getAgentLastSession('a1', NODE_B)).toBeUndefined()
     expect(localStorage.getItem('rivethub.agent.sess-1')).toBe('a1')
@@ -54,14 +55,22 @@ describe('agent last-session pointer', () => {
     setAgentLastSession('a1', 'sess-b', NODE_B)
     expect(getAgentLastSession('a1', NODE_A)?.sessionId).toBe('sess-a')
     expect(getAgentLastSession('a1', NODE_B)).toBeUndefined()
-    expect(getAgentPin('a1')).toEqual({ sessionId: 'sess-a', nodeBaseUrl: NODE_A })
+    expect(getAgentPin('a1')).toEqual({
+      sessionId: 'sess-a',
+      nodeBaseUrl: NODE_A,
+      updatedAt: expect.any(Number),
+    })
   })
 
   it('replace drops other slots and writes the new pin', () => {
     setAgentLastSession('a1', 'sess-a', NODE_A)
     setAgentLastSession('a1', 'sess-b', NODE_B, { replace: true })
     expect(getAgentLastSession('a1', NODE_A)).toBeUndefined()
-    expect(getAgentPin('a1')).toEqual({ sessionId: 'sess-b', nodeBaseUrl: NODE_B })
+    expect(getAgentPin('a1')).toEqual({
+      sessionId: 'sess-b',
+      nodeBaseUrl: NODE_B,
+      updatedAt: expect.any(Number),
+    })
     expect(localStorage.getItem('rivethub.agent.sess-a')).toBeNull()
     expect(localStorage.getItem('rivethub.agent.sess-b')).toBe('a1')
   })
@@ -81,7 +90,9 @@ describe('agent last-session pointer', () => {
     )
     localStorage.setItem('rivethub.agent.sess-b', 'a1')
     expect(collapseAgentSlots('a1', NODE_A)?.sessionId).toBe('sess-a')
-    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-a', nodeBaseUrl: NODE_A }])
+    expect(listAgentSessions('a1')).toEqual([
+      { sessionId: 'sess-a', nodeBaseUrl: NODE_A, updatedAt: 1 },
+    ])
     // The dropped slot's bind must go with it, or agentForSession('sess-b')
     // keeps resolving a pruned pointer.
     expect(localStorage.getItem('rivethub.agent.sess-b')).toBeNull()
@@ -100,7 +111,9 @@ describe('agent last-session pointer', () => {
     localStorage.setItem('rivethub.agent.sess-a', 'a1')
     localStorage.setItem('rivethub.agent.sess-b', 'a1')
     expect(collapseAgentSlots('a1', NODE_A)?.sessionId).toBe('sess-a')
-    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-a', nodeBaseUrl: NODE_A }])
+    expect(listAgentSessions('a1')).toEqual([
+      { sessionId: 'sess-a', nodeBaseUrl: NODE_A, updatedAt: 9 },
+    ])
     expect(localStorage.getItem('rivethub.agent.sess-b')).toBeNull()
   })
 
@@ -117,7 +130,9 @@ describe('agent last-session pointer', () => {
     localStorage.setItem('rivethub.agent.sess-a', 'a1')
     localStorage.setItem('rivethub.agent.sess-b', 'a1')
     expect(collapseAgentSlots('a1', 'https://node-c:5174')?.sessionId).toBe('sess-b')
-    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-b', nodeBaseUrl: NODE_B }])
+    expect(listAgentSessions('a1')).toEqual([
+      { sessionId: 'sess-b', nodeBaseUrl: NODE_B, updatedAt: 1 },
+    ])
     expect(localStorage.getItem('rivethub.agent.sess-a')).toBeNull()
   })
 
@@ -149,7 +164,9 @@ describe('agent last-session pointer', () => {
 
   it('lists the single pin', () => {
     setAgentLastSession('a1', 'sess-old', NODE_A)
-    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'sess-old', nodeBaseUrl: NODE_A }])
+    expect(listAgentSessions('a1')).toEqual([
+      { sessionId: 'sess-old', nodeBaseUrl: NODE_A, updatedAt: expect.any(Number) },
+    ])
   })
 
   it('migrates the legacy single-pointer shape on read — for its node ONLY', () => {
@@ -160,10 +177,13 @@ describe('agent last-session pointer', () => {
     expect(getAgentLastSession('a1', NODE_A)).toEqual({
       sessionId: 'legacy-1',
       nodeBaseUrl: NODE_A,
+      updatedAt: 0,
     })
     // The keep-on-current-node invariant: no fallback to "any pointer".
     expect(getAgentLastSession('a1', NODE_B)).toBeUndefined()
-    expect(listAgentSessions('a1')).toEqual([{ sessionId: 'legacy-1', nodeBaseUrl: NODE_A }])
+    expect(listAgentSessions('a1')).toEqual([
+      { sessionId: 'legacy-1', nodeBaseUrl: NODE_A, updatedAt: 0 },
+    ])
     // Set-once: a later write without replace must not steal the migrated pin.
     setAgentLastSession('a1', 'sess-b', NODE_B)
     expect(getAgentLastSession('a1', NODE_A)?.sessionId).toBe('legacy-1')
@@ -219,6 +239,7 @@ describe('agent last-session pointer', () => {
     expect(getAgentLastSession('a1', NODE_A)).toEqual({
       sessionId: 'claude-code:draft-uuid',
       nodeBaseUrl: NODE_A,
+      updatedAt: expect.any(Number),
     })
     expect(localStorage.getItem('rivethub.agent.draft-uuid')).toBeNull()
     expect(localStorage.getItem('rivethub.agent.claude-code:draft-uuid')).toBe('a1')

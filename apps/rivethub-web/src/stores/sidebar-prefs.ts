@@ -21,29 +21,11 @@ interface SidebarPrefsState {
   /** True when the left nav rail is icon-only (~48 px). */
   railCollapsed: boolean
   setRailCollapsed: (collapsed: boolean) => void
-  /** True while ChatPage is mounted (WS status is only meaningful then). */
-  chatMounted: boolean
-  setChatMounted: (mounted: boolean) => void
-  /** Re-show the conversations pane (deep link, agent rail, row click). */
+  /** Re-show the conversations pane — rail Conversations button only. */
   openConversation: () => void
 }
 
 type PersistedSidebarPrefs = Pick<SidebarPrefsState, 'conversationsCollapsed' | 'railCollapsed'>
-
-/**
- * Whether a `?session=` URL change should re-show the conversations pane.
- * The first (pre-mount) run must not — otherwise a reload of `/?session=X`
- * undoes a deliberately hidden pane. Subsequent navigations still open it.
- */
-export function shouldOpenPaneOnUrlChange(opts: {
-  mounted: boolean
-  sessionFromUrl: string | undefined
-  prev: string | undefined
-}): boolean {
-  if (!opts.mounted) return false
-  if (!opts.sessionFromUrl) return false
-  return opts.sessionFromUrl !== opts.prev
-}
 
 export const useSidebarPrefs = create<SidebarPrefsState>()(
   persist(
@@ -52,8 +34,6 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
       setConversationsCollapsed: (conversationsCollapsed) => set({ conversationsCollapsed }),
       railCollapsed: false,
       setRailCollapsed: (railCollapsed) => set({ railCollapsed }),
-      chatMounted: false,
-      setChatMounted: (chatMounted) => set({ chatMounted }),
       openConversation: () => set({ conversationsCollapsed: false }),
     }),
     {

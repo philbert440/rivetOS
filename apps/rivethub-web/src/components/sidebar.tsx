@@ -3,7 +3,6 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
-import { useChat } from '../stores/chat.js'
 import { cn } from '../lib/utils.js'
 import { railHeaderClass, railToggle } from './sidebar-chrome.js'
 import { NodeSwitcher } from './node-switcher.js'
@@ -70,18 +69,12 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   const onChat = pathname === '/'
   const paneHidden = useSidebarPrefs((s) => s.conversationsCollapsed)
   const setConversationsCollapsed = useSidebarPrefs((s) => s.setConversationsCollapsed)
-  const chatMounted = useSidebarPrefs((s) => s.chatMounted)
-  const wsStatus = useChat((s) => s.wsStatus)
-  const wsOpen = wsStatus === 'open'
-  const showWs = paneHidden && chatMounted
 
   return (
     <Tooltip label="Conversations" disabled={!props.collapsed} block>
       <button
         type="button"
-        aria-label={
-          paneHidden ? `Conversations${showWs && !wsOpen ? ', disconnected' : ''}` : 'Conversations'
-        }
+        aria-label="Conversations"
         aria-expanded={onChat ? !paneHidden : undefined}
         aria-controls={onChat ? 'conversations-pane' : undefined}
         className={navClass(onChat, props.collapsed)}
@@ -94,25 +87,8 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
           setConversationsCollapsed(!paneHidden)
         }}
       >
-        <span className={cn('relative shrink-0', !props.collapsed && 'mr-2')}>
-          <MessageSquare className="size-4" aria-hidden />
-          {showWs && props.collapsed && (
-            <span
-              className={cn(
-                'absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full',
-                wsOpen ? 'bg-em' : 'bg-red',
-              )}
-              aria-hidden
-            />
-          )}
-        </span>
+        <MessageSquare className={cn('size-4 shrink-0', !props.collapsed && 'mr-2')} aria-hidden />
         {!props.collapsed && <span className="min-w-0 truncate">Conversations</span>}
-        {showWs && !props.collapsed && (
-          <span
-            className={cn('ml-auto size-1.5 shrink-0 rounded-full', wsOpen ? 'bg-em' : 'bg-red')}
-            aria-hidden
-          />
-        )}
       </button>
     </Tooltip>
   )

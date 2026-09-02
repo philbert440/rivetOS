@@ -46,7 +46,6 @@ import {
 } from '../lib/session-node.js'
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
-import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { Tooltip } from './ui/tooltip.js'
 
 type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
@@ -704,14 +703,12 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     setSessionNodeBinding(sessionId, nodeUrl, currentBase)
     addDraft(sessionId)
     setActive(sessionId)
-    useSidebarPrefs.getState().openConversation()
     void navigate({ to: '/', replace: true })
     void queryClient.invalidateQueries({ queryKey: ['agent-session-status', agent.id] })
   }
 
   const openKept = (sessionId: string): void => {
     setActive(sessionId)
-    useSidebarPrefs.getState().openConversation()
     void navigate({ to: '/', search: { session: sessionId } })
   }
 
