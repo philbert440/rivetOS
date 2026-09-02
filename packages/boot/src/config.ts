@@ -5,6 +5,7 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { logger } from '@rivetos/core'
+import type { EffortOption, HarnessModelOption } from '@rivetos/types'
 import { validateConfig, formatValidationResult } from './validate/index.js'
 
 const log = logger('Config')
@@ -187,6 +188,10 @@ export interface HarnessExecutorSection {
   cwd?: string
   /** CLI home override (e.g. KIMI_CODE_HOME) for task spawns. */
   home?: string
+  /** Replaces the driver's advertised model list when present. */
+  models?: HarnessModelOption[]
+  /** Replaces the driver's advertised effort list when present. */
+  efforts?: EffortOption[]
 }
 
 /**

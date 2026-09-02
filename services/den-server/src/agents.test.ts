@@ -59,7 +59,8 @@ describe('agents routes', () => {
     const created = await createAgent({
       name: '  Alpha  ',
       color: '#3b82f6',
-      model: 'claude-code',
+      harnessId: 'claude-code',
+      model: 'fable',
       effort: 'high',
       systemPrompt: '  be terse  ',
       nodeBaseUrl: NODE,
@@ -69,7 +70,8 @@ describe('agents routes', () => {
     expect(agent).toMatchObject({
       name: 'Alpha',
       color: '#3b82f6',
-      model: 'claude-code',
+      harnessId: 'claude-code',
+      model: 'fable',
       effort: 'high',
       systemPrompt: 'be terse',
       nodeBaseUrl: NODE,
@@ -205,5 +207,72 @@ describe('agents routes', () => {
     await start()
     expect((await createAgent({ name: 'x', nodeBaseUrl: 'ftp://nope' })).status).toBe(400)
     expect((await createAgent({ name: 'x', nodeBaseUrl: NODE, color: 'blue' })).status).toBe(400)
+  })
+
+  it('migrates a stored catalog-agent model onto harnessId', async () => {
+    await start()
+    writeFileSync(
+      join(dir!, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          {
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'Legacy',
+            color: '',
+            model: 'claude',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: NODE,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    )
+    const listed = await fetch(`${base}/api/agents`)
+    const body = (await listed.json()) as { agents: AgentPreset[] }
+    expect(body.agents).toHaveLength(1)
+    expect(body.agents[0]).toMatchObject({
+      name: 'Legacy',
+      harnessId: 'claude-code',
+      model: '',
+      effort: 'medium',
+    })
+  })
+
+  it('migrates model=claude-code on create to harnessId and empty model', async () => {
+    await start()
+    const created = await createAgent({ name: 'OldClient', nodeBaseUrl: NODE, model: 'claude' })
+    expect(created.status).toBe(201)
+    expect(created.json.agent).toMatchObject({ harnessId: 'claude-code', model: '' })
+  })
+
+  it('PATCH harnessId null unsets, then migrateAgentPreset runs on the result', async () => {
+    await start()
+    const created = await createAgent({
+      name: 'Pinned',
+      nodeBaseUrl: NODE,
+      harnessId: 'claude-code',
+      model: 'fable',
+    })
+    const id = created.json.agent!.id
+    const cleared = await fetch(`${base}/api/agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ harnessId: null }),
+    })
+    expect(cleared.status).toBe(200)
+    const clearedAgent = ((await cleared.json()) as { agent: AgentPreset }).agent
+    expect(clearedAgent.harnessId).toBeUndefined()
+    expect(clearedAgent.model).toBe('fable')
+
+    const recatalog = await fetch(`${base}/api/agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ harnessId: null, model: 'claude' }),
+    })
+    expect(recatalog.status).toBe(200)
+    const remigrated = ((await recatalog.json()) as { agent: AgentPreset }).agent
+    expect(remigrated).toMatchObject({ harnessId: 'claude-code', model: '' })
   })
 })

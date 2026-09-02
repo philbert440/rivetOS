@@ -75,14 +75,29 @@ export function asCapabilitySource(driver: HarnessDriver): HarnessCapabilitySour
     : undefined
 }
 
+function capEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    return JSON.stringify(a) === JSON.stringify(b)
+  }
+  return false
+}
+
 /** Which flags differ, as a patch of `next` over `previous`. Empty = no flip. */
 export function capabilityDiff(
   previous: HarnessCapabilities,
   next: HarnessCapabilities,
 ): Partial<HarnessCapabilities> {
   const changed: Partial<HarnessCapabilities> = {}
-  for (const key of Object.keys(next) as (keyof HarnessCapabilities)[]) {
-    if (previous[key] !== next[key]) changed[key] = next[key]
+  const setKey = (k: keyof HarnessCapabilities): void => {
+    // Object.assign keeps the per-key value type without a generic the linter
+    // flags as single-use; `changed[k] = next[k]` fails on the union key.
+    if (!capEqual(previous[k], next[k])) Object.assign(changed, { [k]: next[k] })
   }
+  const keys = new Set<keyof HarnessCapabilities>([
+    ...(Object.keys(previous) as (keyof HarnessCapabilities)[]),
+    ...(Object.keys(next) as (keyof HarnessCapabilities)[]),
+  ])
+  for (const key of keys) setKey(key)
   return changed
 }

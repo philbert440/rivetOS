@@ -15,6 +15,7 @@ import {
 } from './deepseek-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
+import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
 /** Real dsh ids: `session-<uuidv4>` — the store DIR name, verbatim. */
 const NAT = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
@@ -126,7 +127,8 @@ const adopt = (f: Fakes, room: string, native: string): void => {
 
 describe('capability flags are honest', () => {
   it('reports what is actually wired on this node', () => {
-    expect(makeDriver().driver.capabilities).toEqual({
+    const caps = makeDriver().driver.capabilities
+    expect(pick(caps, FIVE_FLAGS)).toEqual({
       interrupt: true,
       resume: true,
       approvals: false,
@@ -134,6 +136,14 @@ describe('capability flags are honest', () => {
       liveStream: true,
       listSessions: true,
     })
+  })
+
+  it('advertises no models, efforts, or spawn flags', () => {
+    const caps = makeDriver().driver.capabilities
+    expect(caps.models).toBeUndefined()
+    expect(caps.efforts).toBeUndefined()
+    expect(caps.modelFlag).toBeUndefined()
+    expect(caps.effortFlag).toBeUndefined()
   })
 
   it('drops interrupt/resume when den terminals are off', () => {
@@ -376,19 +386,18 @@ describe('through the real registry', () => {
   }
 
   it('registers under the deepseek-harness id and advertises its flags', () => {
-    const { registry } = withRegistry()
-    expect(registry.list()).toEqual([
-      {
-        harnessId: 'deepseek-harness',
-        capabilities: {
-          interrupt: true,
-          resume: true,
-          approvals: false,
-          liveStream: true,
-          listSessions: true,
-        },
-      },
-    ])
+    const { fakes, registry } = withRegistry()
+    const [desc] = registry.list()
+    expect(registry.list()).toHaveLength(1)
+    expect(desc.harnessId).toBe('deepseek-harness')
+    expect(pick(desc.capabilities, FIVE_FLAGS)).toEqual({
+      interrupt: true,
+      resume: true,
+      approvals: false,
+      liveStream: true,
+      listSessions: true,
+    })
+    expect(desc.capabilities.modelFlag).toBe(fakes.driver.capabilities.modelFlag)
   })
 
   it('lists canonical ids, exactly once each', async () => {

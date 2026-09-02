@@ -66,6 +66,7 @@ import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
+import { MODEL_EFFORT_TOKEN_RE } from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import { createTermWs } from './term/ws.js'
 import { MicBridge } from './audio/bridge.js'
@@ -585,6 +586,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('claude'),
         log: console.error,
+        sheetOverride: config.harnesses?.['claude-code'],
       }),
       new GrokBuildDriver({
         store: createHarnessStore('grok'),
@@ -592,6 +594,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('grok'),
         log: console.error,
+        sheetOverride: config.harnesses?.['grok-build'],
       }),
       new HermesDriver({
         store: createHarnessStore('hermes'),
@@ -599,6 +602,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('hermes'),
         log: console.error,
+        sheetOverride: config.harnesses?.hermes,
       }),
       new KimiCodeDriver({
         store: createHarnessStore('kimi'),
@@ -606,6 +610,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('kimi'),
         log: console.error,
+        sheetOverride: config.harnesses?.['kimi-code'],
       }),
       new DeepseekHarnessDriver({
         store: createHarnessStore('deepseek'),
@@ -616,6 +621,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         cwd: rosterCwdFor('dsh'),
         log: console.error,
+        sheetOverride: config.harnesses?.['deepseek-harness'],
       }),
     )
     for (const driver of builtinDrivers) harnesses.register(driver)
@@ -1160,6 +1166,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             rows?: unknown
             session?: unknown
             resume?: unknown
+            model?: unknown
+            effort?: unknown
           }
           if (p.command !== undefined && typeof p.command !== 'string')
             return json(res, 400, { error: 'command must be a roster key' })
@@ -1167,6 +1175,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'session must be a string' })
           if (p.resume !== undefined && typeof p.resume !== 'string')
             return json(res, 400, { error: 'resume must be a string' })
+          const token = (v: unknown): string | undefined | null => {
+            if (v === undefined) return undefined
+            if (typeof v !== 'string' || !MODEL_EFFORT_TOKEN_RE.test(v)) return null
+            return v
+          }
+          const modelTok = token(p.model)
+          const effortTok = token(p.effort)
+          if (modelTok === null) return json(res, 400, { error: 'model must be a 1-64 token' })
+          if (effortTok === null) return json(res, 400, { error: 'effort must be a 1-64 token' })
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
@@ -1201,6 +1218,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               resumeKey,
               userEnv,
               routedUser,
+              modelTok,
+              effortTok,
             )
             if (userCtx) {
               sessionOwners.set(pty.denSession, userCtx.userId)

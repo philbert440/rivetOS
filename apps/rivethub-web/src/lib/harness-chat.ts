@@ -68,6 +68,8 @@ export interface ChatItem {
   harnessId?: HarnessId
   /** Den roster command ('claude', 'grok', …) — PTY spawn + accent color. */
   command?: string
+  /** Model id from the session summary when the driver filled it. */
+  model?: string
   status?: HarnessSessionSummary['status']
   /** epoch ms, for ordering */
   updatedAt: number
@@ -85,12 +87,17 @@ export interface ChatItem {
  * normal case (both surfaces read the same store). Roster tokens are UI/spawn
  * labels — never key material (harness-control-plane.md § Legacy keys).
  */
-const ROSTER_COMMAND: Record<HarnessId, string> = {
+export const ROSTER_COMMAND: Record<HarnessId, string> = {
   'claude-code': 'claude',
   'grok-build': 'grok',
   'kimi-code': 'kimi',
   hermes: 'hermes',
   'deepseek-harness': 'dsh',
+}
+
+export function rosterCommandFor(harnessId: string | undefined): string | undefined {
+  if (!harnessId) return undefined
+  return (ROSTER_COMMAND as Record<string, string | undefined>)[harnessId]
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */
@@ -159,6 +166,7 @@ export function chatItems(input: {
       sessionId: summary.sessionId,
       harnessId: summary.harnessId,
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
+      model: summary.model,
       status: summary.status,
       updatedAt: Date.parse(summary.updatedAt) || legacy?.updatedAt || 0,
     })
@@ -202,6 +210,7 @@ export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | 
     sessionId: summary.sessionId,
     harnessId: summary.harnessId,
     command: ROSTER_COMMAND[summary.harnessId],
+    model: summary.model,
     status: summary.status,
     updatedAt: Date.parse(summary.updatedAt) || 0,
   }

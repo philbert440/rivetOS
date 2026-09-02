@@ -43,7 +43,15 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
 export const KNOWN_TASKS_KEYS = new Set(['enabled', 'pricing', 'eval', 'harnesses'])
 
 /** tasks.harnesses.<harness-id>.* keys (YAML snake_case). */
-export const KNOWN_TASKS_HARNESS_KEYS = new Set(['binary', 'model', 'effort', 'cwd', 'home'])
+export const KNOWN_TASKS_HARNESS_KEYS = new Set([
+  'binary',
+  'model',
+  'effort',
+  'cwd',
+  'home',
+  'models',
+  'efforts',
+])
 
 /** workflows.* keys (YAML snake_case). */
 export const KNOWN_WORKFLOWS_KEYS = new Set([

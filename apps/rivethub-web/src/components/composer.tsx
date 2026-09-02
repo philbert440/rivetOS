@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Mic, Paperclip, Volume2, VolumeX, X } from 'lucide-react'
-import type { ThinkingLevel } from '@rivetos/types'
+import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
+import type { SelectOption } from './select.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion } from '../lib/ask-user.js'
 import { useChat } from '../stores/chat.js'
 import { useConnection } from '../stores/connection.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
-import { modelOptions } from '../lib/model-options.js'
 import { uuidv4 } from '../lib/uuid.js'
 import { cn } from '../lib/utils.js'
 import {
@@ -39,6 +39,25 @@ import { AskUserCard } from './ask-user-card.js'
 export interface ComposerHandle {
   /** Put text back into the draft, above whatever is already being typed. */
   prepend(text: string): void
+}
+
+/** Chat-loop catalog picker (local agents). Distinct from the harness model sheet. */
+function catalogAgentOptions(agents: CatalogAgent[]): SelectOption[] {
+  const opts: SelectOption[] = [{ value: '', label: 'default agent' }]
+  const seen = new Set<string>([''])
+  const labels: Record<string, string> = {
+    claude: 'Claude Code',
+    grok: 'grok Build',
+    'grok-fast': 'grok Build (fast)',
+  }
+  for (const a of agents) {
+    if (!a.local || seen.has(a.id)) continue
+    seen.add(a.id)
+    const base = labels[a.id] ?? a.id
+    const label = 'model' in a && a.model ? `${base} (${a.model})` : base
+    opts.push({ value: a.id, label })
+  }
+  return opts
 }
 
 export function Composer(props: {
@@ -151,7 +170,7 @@ export function Composer(props: {
         : useConnection.getState().gateway.catalogAgents(signal),
     staleTime: 300_000,
   })
-  const models = modelOptions(catalog.data?.agents ?? [])
+  const models = catalogAgentOptions(catalog.data?.agents ?? [])
 
   const composerGateway = props.gatewayBase
     ? () => gatewayFor(props.gatewayBase as string)

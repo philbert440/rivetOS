@@ -76,6 +76,15 @@ describe('chatItems', () => {
     })
   })
 
+  it('copies summary.model onto the chat item for the pill', () => {
+    const items = chatItems({
+      drafts: [],
+      harnessSessions: [summary(UUID_A, { model: 'fable' })],
+      legacySessions: [],
+    })
+    expect(items[0].model).toBe('fable')
+  })
+
   it('keeps harnesses with no driver yet on the legacy binding (no regression)', () => {
     const items = chatItems({
       drafts: [],

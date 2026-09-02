@@ -126,6 +126,22 @@ interface SpawnedPty {
 }
 
 describe('term endpoints', () => {
+  it('POST /term appends model/effort flags for listed ids and omits unknown', async () => {
+    const { base, spawns } = await start()
+    expect(
+      (await post(base, '/term', { command: 'claude', model: 'fable', effort: 'high' })).status,
+    ).toBe(201)
+    expect(spawns[0].argv).toEqual(['claude', '--model', 'fable', '--effort', 'high'])
+
+    expect(
+      (await post(base, '/term', { command: 'claude', model: 'not-a-model', effort: 'nope' }))
+        .status,
+    ).toBe(201)
+    expect(spawns[1].argv).toEqual(['claude'])
+
+    expect((await post(base, '/term', { command: 'claude', model: 'bad token!' })).status).toBe(400)
+  })
+
   it('POST /term spawns the roster default and returns the pty descriptor', async () => {
     const { base, stateDir, spawns } = await start()
     const res = await post(base, '/term', {})
