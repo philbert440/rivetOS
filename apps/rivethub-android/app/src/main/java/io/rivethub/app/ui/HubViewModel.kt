@@ -54,7 +54,7 @@ import kotlinx.coroutines.launch
 import java.io.Closeable
 
 class HubViewModel(private val c: AppContainer) : ViewModel() {
-    enum class Tab { Conversations, Agents, Nodes, Settings }
+    enum class Tab { Conversations, Settings }
 
     data class DraftRow(
         val id: String,
@@ -87,6 +87,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val inboxOpen: Boolean = false,
         val prefs: Prefs = Prefs(),
         val identityGen: Int = 0,
+        val registryOpen: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -149,9 +150,43 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     fun setSearchOpen(open: Boolean) = _state.update { it.copy(searchOpen = open, query = if (open) it.query else "") }
     fun setInboxOpen(open: Boolean) = _state.update { it.copy(inboxOpen = open) }
 
-    fun selectViewNode(node: NodeRef) {
-        _state.update { it.copy(filter = ConversationFilter.Node(node.id, node.name.ifBlank { node.id }), tab = Tab.Conversations) }
-        viewModelScope.launch { c.settings.setViewNodeId(node.id) }
+    fun selectViewNode(node: NodeRef) = selectViewNode(node.id, node.name.ifBlank { node.id })
+
+    fun selectViewNode(nodeId: String, nodeName: String) {
+        val already = _state.value.prefs.viewNodeId == nodeId
+        if (already) {
+            _state.update { it.copy(filter = ConversationFilter.All, tab = Tab.Conversations) }
+            viewModelScope.launch { c.settings.setViewNodeId("") }
+        } else {
+            _state.update {
+                it.copy(
+                    filter = ConversationFilter.Node(nodeId, nodeName),
+                    tab = Tab.Conversations,
+                )
+            }
+            viewModelScope.launch { c.settings.setViewNodeId(nodeId) }
+        }
+    }
+
+    fun setAgentsCollapsed(collapsed: Boolean) {
+        viewModelScope.launch { c.settings.setAgentsCollapsed(collapsed) }
+    }
+
+    fun removeSavedNode(url: String) {
+        viewModelScope.launch {
+            c.settings.removeExtraNode(url)
+            val st = _state.value
+            val hit = st.nodes.find { it.denUrl.trimEnd('/') == url.trim().trimEnd('/') }
+            if (hit != null && st.prefs.viewNodeId == hit.id) c.settings.setViewNodeId("")
+            refresh()
+        }
+    }
+
+    fun addSavedNode(url: String) {
+        viewModelScope.launch {
+            c.settings.addExtraNode(url.trim().trimEnd('/'))
+            refresh()
+        }
     }
 
     fun archive(key: String) {
@@ -442,6 +477,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                 onEvent = { event -> registryFrames.trySend(RegistryMail(url, event, identityGen)) },
             )
         }
+        _state.update { it.copy(registryOpen = watches.isNotEmpty()) }
     }
 
     private fun onRegistry(nodeUrl: String, event: HarnessEvent, identityGen: Int) {
@@ -532,6 +568,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     private fun closeWatches() {
         watches.values.forEach { it.close() }
         watches.clear()
+        _state.update { it.copy(registryOpen = false) }
     }
 
     private data class NodeBundle(

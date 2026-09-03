@@ -10,14 +10,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,14 +21,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.rivethub.app.R
 import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 data class SelectOption(val value: String, val label: String)
 
 /** Desktop `select.tsx` as a bottom sheet (phone popover stand-in). */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RivetSelect(
     value: String,
@@ -49,7 +43,7 @@ fun RivetSelect(
     var open by remember { mutableStateOf(false) }
     val current = options.find { it.value == value }
     val triggerLabel = current?.label ?: title ?: "Select…"
-    val shape = RoundedCornerShape(Dimens.radius6)
+    val shape = RoundedCornerShape(Radius.md)
     Row(
         modifier
             .heightIn(min = 32.dp)
@@ -63,12 +57,12 @@ fun RivetSelect(
         Text(
             triggerLabel,
             color = if (enabled) colors.ink else colors.inkDim,
-            style = RivetType.monoPill,
+            style = RivetType.mono11,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        Icon(
-            Icons.Outlined.KeyboardArrowDown,
+        Lucide(
+            R.drawable.lucide_chevron_down,
             contentDescription = null,
             tint = colors.inkDim,
             modifier = Modifier.size(14.dp),
@@ -88,7 +82,6 @@ fun RivetSelect(
 }
 
 /** Bottom sheet used by [RivetSelect] and by callers that open it without a trigger. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RivetSelectSheet(
     visible: Boolean,
@@ -100,20 +93,13 @@ fun RivetSelectSheet(
 ) {
     if (!visible) return
     val colors = RivetTheme.colors
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = colors.panel,
-        contentColor = colors.ink,
-        tonalElevation = 0.dp,
-    ) {
-        val heading = title
-        if (heading != null) {
+    RivetModalSheet(onDismiss = onDismiss) {
+        if (title != null) {
             Text(
-                heading,
+                title,
                 color = colors.inkDim,
-                style = RivetType.monoPill,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                style = RivetType.mono11,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
         options.forEach { option ->
@@ -123,22 +109,22 @@ fun RivetSelectSheet(
                     .fillMaxWidth()
                     .heightIn(min = Dimens.touchTarget)
                     .clickable(role = Role.Button, onClick = { onChange(option.value) })
-                    .padding(horizontal = 16.dp),
+                    .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     option.label,
                     color = if (active) colors.ink else colors.inkDim,
-                    style = RivetType.monoPill,
+                    style = RivetType.mono11,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (active) {
-                    Icon(
-                        Icons.Outlined.Check,
-                        contentDescription = "Selected",
+                    Lucide(
+                        R.drawable.lucide_check,
+                        contentDescription = null,
                         tint = colors.em,
                         modifier = Modifier.size(16.dp),
                     )

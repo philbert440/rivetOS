@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">RivetHub</string>
+    <string name="brand_rivethub">RivetHub</string>
 
-    <string name="rail_chats">Chats</string>
-    <string name="rail_agents">Agents</string>
-    <string name="rail_nodes">Nodes</string>
-    <string name="rail_settings">Settings</string>
-    <string name="rail_more">More</string>
+    <string name="nav_conversations">Conversations</string>
+    <string name="nav_memory">Memory</string>
+    <string name="nav_files">Files</string>
+    <string name="nav_tasks">Tasks</string>
+    <string name="nav_workflows">Workflows</string>
+    <string name="nav_settings">Settings</string>
 
     <string name="title_conversations">Conversations</string>
     <string name="title_agents">Agents</string>
@@ -15,6 +17,38 @@
     <string name="title_enroll">Join the mesh</string>
     <string name="title_chat">Chat</string>
     <string name="title_gallery">Gallery</string>
+
+    <string name="cd_open_drawer">Open menu</string>
+    <string name="cd_close_drawer">Close menu</string>
+    <string name="cd_coming_soon">coming soon</string>
+    <string name="cd_den_bot">Rivet den bot</string>
+    <string name="unread_notifications">%d unread notifications</string>
+    <string name="agents_section">Agents</string>
+    <string name="add_agent">add agent</string>
+    <string name="agent_start_over">Start over</string>
+    <string name="agent_new_conversation">New conversation</string>
+    <string name="conversations_label">conversations</string>
+    <string name="action_new_plus">+ new</string>
+    <string name="filter_placeholder">filter…</string>
+    <string name="empty_search_for">no matches for \"%1$s\"</string>
+    <string name="archived_collapsed">▸ archived (%d)</string>
+    <string name="archived_expanded">▾ archived (%d)</string>
+    <string name="nodes_label">nodes</string>
+    <string name="on_the_mesh">on the mesh</string>
+    <string name="no_saved_nodes">no saved nodes</string>
+    <string name="mesh_unavailable">mesh roster unavailable on this node</string>
+    <string name="remove_node">remove %1$s</string>
+    <string name="current_node">Current node: %1$s</string>
+    <string name="action_test_connection">Test connection</string>
+    <string name="probe_probing">probing…</string>
+    <string name="probe_ok">✓ node \"%1$s\" — %2$d agents</string>
+    <string name="probe_ok_one">✓ node \"%1$s\" — 1 agent</string>
+    <string name="probe_fail">✗ %1$s</string>
+    <string name="appearance_helper">System follows the OS light/dark setting.</string>
+    <string name="strict_on">on</string>
+    <string name="strict_off">off</string>
+    <string name="action_import_p12">Import p12</string>
+    <string name="label_strict_pair">strict hostnames</string>
 
     <string name="action_search">Search</string>
     <string name="action_notifications">Notifications</string>
@@ -44,16 +78,16 @@
     <string name="filter_pinned">Pinned</string>
     <string name="archived_section">Archived (%d)</string>
     <string name="search_conversations">Search conversations</string>
-    <string name="empty_conversations">No conversations yet</string>
+    <string name="empty_conversations">no conversations yet</string>
     <string name="no_agents_hint">No agents yet — pull to refresh</string>
     <string name="pick_agent">Choose an agent</string>
     <string name="discovering_progress">discovering… %1$d/%2$d</string>
     <string name="empty_search">No matches</string>
-    <string name="empty_agents">No agents yet</string>
+    <string name="empty_agents">no agents yet</string>
     <string name="empty_nodes">No nodes discovered</string>
     <string name="empty_inbox">No notifications</string>
     <string name="inbox_title">Notifications</string>
-    <string name="everything_archived">Everything is archived</string>
+    <string name="everything_archived">everything is archived</string>
 
     <string name="mode_chat">Chat</string>
     <string name="mode_terminal">Terminal</string>
@@ -99,7 +133,7 @@
     <string name="error_cert_load">Certificate didn\'t load: %1$s</string>
 
     <string name="section_connection">Connection</string>
-    <string name="section_identity">Device identity</string>
+    <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>
     <string name="section_terminal">Terminal</string>
     <string name="section_about">About</string>

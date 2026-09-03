@@ -37,6 +37,7 @@ data class Prefs(
     val terminalFontSp: Int = 13,
     val viewNodeId: String = "",
     val currentAgentId: String = "",
+    val agentsCollapsed: Boolean = false,
 )
 
 class Settings(context: Context) {
@@ -62,6 +63,7 @@ class Settings(context: Context) {
             terminalFontSp = p[TERM_FONT] ?: 13,
             viewNodeId = p[VIEW_NODE] ?: "",
             currentAgentId = p[CURRENT_AGENT] ?: "",
+            agentsCollapsed = p[AGENTS_COLLAPSED] ?: false,
         )
     }
 
@@ -78,6 +80,7 @@ class Settings(context: Context) {
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
     suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
     suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
+    suspend fun setAgentsCollapsed(v: Boolean) = ds.edit { it[AGENTS_COLLAPSED] = v }
 
     suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
         it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
@@ -124,6 +127,7 @@ class Settings(context: Context) {
         private val TERM_FONT = intPreferencesKey("terminalFontSp")
         private val VIEW_NODE = stringPreferencesKey("viewNodeId")
         private val CURRENT_AGENT = stringPreferencesKey("currentAgentId")
+        private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

@@ -16,7 +16,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -29,11 +29,11 @@ fun SegmentedControl(
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
-    val shape = RoundedCornerShape(Dimens.radius4)
+    val shape = RoundedCornerShape(Radius.sm)
     Row(
         modifier
             .clip(shape)
-            .border(Dimens.line, colors.line, shape)
+            .border(1.dp, colors.line, shape)
             .padding(2.dp)
             .selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -44,9 +44,9 @@ fun SegmentedControl(
             Text(
                 option,
                 color = if (active) colors.em else colors.inkDim,
-                style = RivetType.monoPill,
+                style = RivetType.mono11,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(Dimens.radius4))
+                    .clip(RoundedCornerShape(Radius.sm))
                     .background(if (active) colors.panel2 else Color.Transparent)
                     .selectable(selected = active, role = Role.RadioButton, onClick = { onSelect(option) })
                     .padding(horizontal = 10.dp, vertical = 4.dp),

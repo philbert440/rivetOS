@@ -34,6 +34,7 @@ import io.rivethub.app.ui.screens.HarnessChatScreen
 import io.rivethub.app.ui.screens.HubScreen
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.ThemeMode
+import io.rivethub.app.ui.theme.blueprintGrid
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,8 +93,9 @@ private fun Screen.storeKey(): String? = when (this) {
 fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? = { null }) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
     val p = prefs
+    val colors = RivetTheme.colors
     if (p == null) {
-        Box(Modifier.fillMaxSize().background(androidx.compose.material3.MaterialTheme.colorScheme.background))
+        Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine))
         return
     }
     val nav = remember {
@@ -105,6 +107,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
     LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
 
+    Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine)) {
     when (val s = nav.current) {
         Screen.Enroll -> EnrollScreen(
             c,
@@ -174,5 +177,6 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
             }
         }
         Screen.Gallery -> ComponentGallery()
+    }
     }
 }

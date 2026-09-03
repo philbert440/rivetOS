@@ -4,9 +4,10 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,10 +16,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,13 +27,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
@@ -42,10 +41,13 @@ import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.validateEntryUrl
-import io.rivethub.app.ui.components.PrimaryButton
-import io.rivethub.app.ui.components.SectionHeader
+import io.rivethub.app.ui.components.DenBot
+import io.rivethub.app.ui.components.Lucide
+import io.rivethub.app.ui.components.RivetButton
+import io.rivethub.app.ui.components.RivetButtonVariant
+import io.rivethub.app.ui.components.RivetField
+import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.TimeFmt
-import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -87,155 +89,161 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(colors.bg)
             .statusBarsPadding()
             .imePadding(),
     ) {
-        TopBar(title = stringResource(R.string.title_enroll), onBack = onBack)
-        Column(
-            Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = Dimens.grid2, vertical = Dimens.grid2),
-        ) {
-            Text(stringResource(R.string.enroll_blurb), color = colors.inkDim, style = RivetType.body)
-            Spacer(Modifier.height(Dimens.grid2))
-
-            SectionHeader(stringResource(R.string.label_entry_url))
-            Spacer(Modifier.height(Dimens.gridHalf))
-            RivetField(
-                value = url,
-                onValueChange = { url = it },
-                placeholder = stringResource(R.string.hint_entry_url),
-                keyboard = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            )
-            Spacer(Modifier.height(Dimens.grid2))
-
-            SectionHeader(stringResource(R.string.label_p12))
-            Spacer(Modifier.height(Dimens.gridHalf))
-            if (existing != null && p12Uri == null) {
+        if (onBack != null) {
+            Box(
+                Modifier
+                    .padding(12.dp)
+                    .clickable(onClick = onBack),
+            ) {
+                Lucide(
+                    R.drawable.lucide_arrow_left,
+                    contentDescription = stringResource(R.string.action_back),
+                    tint = colors.ink,
+                    modifier = Modifier.padding(8.dp),
+                )
+            }
+        }
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val hPad = if (maxWidth < 400.dp) 16.dp else 24.dp
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = hPad, vertical = 32.dp)
+                    .widthIn(max = 576.dp)
+                    .align(Alignment.TopCenter),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Top,
+            ) {
+                DenBot(size = Dimens.denBotEnroll, modifier = Modifier.alpha(0.9f))
+                Spacer(Modifier.height(16.dp))
                 Text(
-                    stringResource(R.string.using_existing_cert, existing.cn, TimeFmt.date(existing.notAfter)),
+                    stringResource(R.string.brand_rivethub),
+                    color = colors.em,
+                    style = RivetType.lg.copy(fontFamily = RivetType.brand.fontFamily),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.enroll_blurb),
                     color = colors.inkDim,
-                    style = RivetType.meta,
+                    style = RivetType.sm,
                 )
-                Spacer(Modifier.height(Dimens.gridHalf))
-            }
-            PrimaryButton(
-                text = stringResource(if (existing != null && p12Uri == null) R.string.action_replace_p12 else R.string.action_choose_p12),
-                onClick = { pickP12.launch(arrayOf("*/*")) },
-            )
-            val chosen = p12Name ?: if (existing != null) "" else stringResource(R.string.p12_none)
-            if (chosen.isNotEmpty()) {
-                Spacer(Modifier.height(Dimens.gridHalf))
-                Text(chosen, color = colors.inkDim, style = RivetType.meta)
-            }
-            if (p12Uri != null || existing == null) {
-                Spacer(Modifier.height(Dimens.grid))
-                SectionHeader(stringResource(R.string.label_passphrase))
-                Spacer(Modifier.height(Dimens.gridHalf))
-                RivetField(
-                    value = pass,
-                    onValueChange = { pass = it },
-                    placeholder = stringResource(R.string.label_passphrase),
-                    keyboard = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    password = true,
-                )
-            }
-            error?.let {
-                Spacer(Modifier.height(Dimens.grid))
-                Text(it, color = colors.red, style = RivetType.meta)
-            }
-            Spacer(Modifier.height(Dimens.grid2))
-            PrimaryButton(
-                text = stringResource(R.string.action_connect),
-                onClick = {
-                    if (busy) return@PrimaryButton
-                    error = null
-                    val entry = url.trim().trimEnd('/')
-                    when (validateEntryUrl(entry)) {
-                        EntryUrlError.Blank, EntryUrlError.NotHttps -> {
-                            error = httpsRequired
-                            return@PrimaryButton
-                        }
-                        null -> Unit
+                Spacer(Modifier.height(24.dp))
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                    Text(
+                        stringResource(R.string.label_entry_url),
+                        color = colors.inkDim,
+                        style = RivetType.xs,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                    RivetField(
+                        value = url,
+                        onValueChange = { url = it },
+                        placeholder = stringResource(R.string.hint_entry_url),
+                        keyboard = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        size = RivetFieldSize.Settings,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    if (existing != null && p12Uri == null) {
+                        Text(
+                            stringResource(R.string.using_existing_cert, existing.cn, TimeFmt.date(existing.notAfter)),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                        )
+                        Spacer(Modifier.height(8.dp))
                     }
-                    scope.launch {
-                        busy = true
-                        try {
-                            withContext(Dispatchers.IO) {
-                                p12Uri?.let { uri ->
-                                    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                        ?: throw IllegalStateException(pickCert)
-                                    c.identity.importPkcs12(bytes, pass)
+                    RivetButton(
+                        text = stringResource(if (existing != null && p12Uri == null) R.string.action_replace_p12 else R.string.action_import_p12),
+                        onClick = { pickP12.launch(arrayOf("*/*")) },
+                        variant = RivetButtonVariant.Outline,
+                    )
+                    val chosen = p12Name ?: if (existing != null) "" else stringResource(R.string.p12_none)
+                    if (chosen.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(chosen, color = colors.inkDim, style = RivetType.xs)
+                    }
+                    if (p12Uri != null || existing == null) {
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            stringResource(R.string.label_passphrase),
+                            color = colors.inkDim,
+                            style = RivetType.xs,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+                        RivetField(
+                            value = pass,
+                            onValueChange = { pass = it },
+                            placeholder = stringResource(R.string.label_passphrase),
+                            keyboard = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            password = true,
+                            size = RivetFieldSize.Settings,
+                        )
+                    }
+                    error?.let {
+                        Spacer(Modifier.height(12.dp))
+                        Text(it, color = colors.red, style = RivetType.mono14)
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    RivetButton(
+                        text = stringResource(R.string.action_connect),
+                        onClick = {
+                            if (busy) return@RivetButton
+                            error = null
+                            val entry = url.trim().trimEnd('/')
+                            when (validateEntryUrl(entry)) {
+                                EntryUrlError.Blank, EntryUrlError.NotHttps -> {
+                                    error = httpsRequired
+                                    return@RivetButton
+                                }
+                                null -> Unit
+                            }
+                            scope.launch {
+                                busy = true
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        p12Uri?.let { uri ->
+                                            val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                                ?: throw IllegalStateException(pickCert)
+                                            c.identity.importPkcs12(bytes, pass)
+                                        }
+                                    }
+                                    pass = ""
+                                    p12Uri = null
+                                    p12Name = null
+                                    if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
+                                    c.settings.setEntryUrl(entry)
+                                    c.dropClients()
+                                    c.transport.retarget(entry, emptySet())
+                                    withContext(Dispatchers.IO) { c.transport.discover() }
+                                    c.settings.setOnboarded(true)
+                                    onDone()
+                                } catch (e: Exception) {
+                                    val mapped = enrollError(e)
+                                    error = when (mapped.kind) {
+                                        EnrollErrorKind.CertRefused -> certRefused
+                                        EnrollErrorKind.Timeout -> timeout
+                                        EnrollErrorKind.Unreachable -> unreachable
+                                        EnrollErrorKind.Cleartext -> httpsRequired
+                                        EnrollErrorKind.Other -> {
+                                            if (c.identity.hasIdentity() && c.identity.summary() == null) {
+                                                ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")
+                                            } else mapped.detail ?: e.javaClass.simpleName
+                                        }
+                                    }
+                                } finally {
+                                    busy = false
                                 }
                             }
-                            pass = ""
-                            p12Uri = null
-                            p12Name = null
-                            if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
-                            c.settings.setEntryUrl(entry)
-                            c.dropClients()
-                            c.transport.retarget(entry, emptySet())
-                            withContext(Dispatchers.IO) { c.transport.discover() }
-                            c.settings.setOnboarded(true)
-                            onDone()
-                        } catch (e: Exception) {
-                            val mapped = enrollError(e)
-                            error = when (mapped.kind) {
-                                EnrollErrorKind.CertRefused -> certRefused
-                                EnrollErrorKind.Timeout -> timeout
-                                EnrollErrorKind.Unreachable -> unreachable
-                                EnrollErrorKind.Cleartext -> httpsRequired
-                                EnrollErrorKind.Other -> {
-                                    if (c.identity.hasIdentity() && c.identity.summary() == null) {
-                                        ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")
-                                    } else mapped.detail ?: e.javaClass.simpleName
-                                }
-                            }
-                        } finally {
-                            busy = false
-                        }
-                    }
-                },
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(Dimens.grid4))
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(32.dp))
+                }
+            }
         }
     }
-}
-
-@Composable
-internal fun RivetField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-    modifier: Modifier = Modifier,
-    keyboard: KeyboardOptions = KeyboardOptions.Default,
-    password: Boolean = false,
-    singleLine: Boolean = true,
-) {
-    val colors = RivetTheme.colors
-    val shape = RoundedCornerShape(Dimens.radius6)
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
-        singleLine = singleLine,
-        textStyle = RivetType.body.copy(color = colors.ink),
-        cursorBrush = SolidColor(colors.em),
-        keyboardOptions = keyboard,
-        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
-        modifier = modifier
-            .fillMaxWidth()
-            .border(Dimens.line, colors.line, shape)
-            .background(colors.panel, shape)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        decorationBox = { inner ->
-            Box {
-                if (value.isEmpty()) Text(placeholder, color = colors.inkDim, style = RivetType.body)
-                inner()
-            }
-        },
-    )
 }

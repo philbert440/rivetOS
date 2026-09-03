@@ -1,0 +1,129 @@
+package io.rivethub.app.ui.components
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import io.rivethub.app.R
+import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.RivetTheme
+import io.rivethub.app.ui.theme.RivetType
+
+enum class ConversationRowStatus { None, InFlight, Alive }
+
+@Composable
+fun ConversationRowChrome(
+    title: String,
+    accent: Color,
+    onOpen: () -> Unit,
+    onArchive: () -> Unit,
+    onLong: () -> Unit,
+    modifier: Modifier = Modifier,
+    active: Boolean = false,
+    archived: Boolean = false,
+    status: ConversationRowStatus = ConversationRowStatus.None,
+    harness: String = "",
+    swipeEnabled: Boolean = true,
+) {
+    val colors = RivetTheme.colors
+    val titleColor = when {
+        archived -> colors.inkDim
+        active -> colors.em
+        else -> colors.ink
+    }
+    val row: @Composable () -> Unit = {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .sizeIn(minHeight = 44.dp)
+                .combinedClickable(onClick = onOpen, onLongClick = onLong)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(accent),
+            )
+            Text(
+                title,
+                color = titleColor,
+                style = RivetType.xs,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            when (status) {
+                ConversationRowStatus.InFlight -> PulseDot(colors.em)
+                ConversationRowStatus.Alive -> Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(colors.em.copy(alpha = 0.4f)),
+                )
+                ConversationRowStatus.None -> Unit
+            }
+            if (harness.isNotBlank()) HarnessChip(harness)
+        }
+    }
+    val wrap = modifier
+        .fillMaxWidth()
+        .padding(bottom = 4.dp)
+        .clip(RoundedCornerShape(Radius.sm))
+        .background(if (active) colors.panel2 else Color.Transparent)
+    if (!swipeEnabled) {
+        Box(wrap) { row() }
+        return
+    }
+    val state = rememberSwipeToDismissBoxState(
+        confirmValueChange = { v ->
+            if (v == SwipeToDismissBoxValue.EndToStart) {
+                onArchive()
+                true
+            } else false
+        },
+    )
+    SwipeToDismissBox(
+        state = state,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(colors.panel2)
+                    .padding(horizontal = 12.dp),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Lucide(
+                    R.drawable.lucide_archive,
+                    contentDescription = stringResource(R.string.action_archive),
+                    tint = colors.inkDim,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
+        },
+        modifier = wrap,
+    ) { row() }
+}

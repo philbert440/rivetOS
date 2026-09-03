@@ -7,3 +7,7 @@ Not derived from apps/rivet-android (AGPL RikkaHub fork).
 Bundled fonts (SIL Open Font License 1.1, see licenses/):
   DM Sans — Copyright 2014 The DM Sans Project Authors
   JetBrains Mono — Copyright 2020 The JetBrains Mono Project Authors
+
+  lucide icons — Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of Feather (MIT);
+  all other copyright (c) for Lucide are held by Lucide Contributors 2022 (ISC). See licenses/LICENSE-lucide.txt.
+  Bundled as res/drawable/lucide_*.xml (converted to VectorDrawable, unmodified geometry).

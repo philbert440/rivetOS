@@ -20,6 +20,7 @@ class RivetColorsTest {
         assertEquals("#fffbbf24", hex(RivetPalette.DarkWarn))
         assertEquals("#ff79c0ff", hex(RivetPalette.DarkLink))
         assertEquals("#ffd0d0d0", hex(RivetPalette.DarkAssistant))
+        assertEquals("#0b34d399", hex(RivetPalette.DarkGridLine))
     }
 
     @Test
@@ -37,6 +38,7 @@ class RivetColorsTest {
         assertEquals("#ffb45309", hex(RivetPalette.LightWarn))
         assertEquals("#ff0969da", hex(RivetPalette.LightLink))
         assertEquals("#ff3c4756", hex(RivetPalette.LightAssistant))
+        assertEquals("#12059669", hex(RivetPalette.LightGridLine))
     }
 
     @Test
