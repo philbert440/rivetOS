@@ -30,9 +30,9 @@ import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TRANSCRIPT_POLL_EVERY_MS
 import io.rivethub.app.plane.TranscriptMachine
-import io.rivethub.app.plane.fetchedHasNewAssistant
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
+import io.rivethub.app.plane.resyncCompletesTurn
 import io.rivethub.app.plane.shouldResyncFromRegistry
 import io.rivethub.app.plane.transcriptPollDue
 import io.rivethub.app.plane.anyUploading
@@ -157,6 +157,8 @@ class HarnessChatViewModel(
     private var silentPoll: Job? = null
     private var lastRegistryStatus: String? = null
     private var lastRegistryUpdatedAt: String? = null
+    /** True after inject ok / sendTurn landed — a fetch before this cannot complete the turn. */
+    private var injectCompleted: Boolean = false
 
     init {
         viewModelScope.launch { boot() }
@@ -209,6 +211,7 @@ class HarnessChatViewModel(
             is EnqueueResult.Accepted -> {
                 machine.appendOptimisticUser(text)
                 machine.beginTurn()
+                injectCompleted = false
                 publishMachine()
                 armSilentPoll()
                 viewModelScope.launch {
@@ -436,7 +439,7 @@ class HarnessChatViewModel(
             "registry resync: status=${stamp.status} session=$open",
             null,
         )
-        viewModelScope.launch { resyncTranscript(endTurn = true) }
+        viewModelScope.launch { resyncTranscript() }
     }
 
     private fun adoptCanonical(canonical: String) {
@@ -561,6 +564,8 @@ class HarnessChatViewModel(
         }
         val canon = accepted.redirectedTo?.takeIf { it.isNotBlank() } ?: accepted.sessionId.takeIf { it.isNotBlank() }
         if (canon != null) adoptCanonical(canon)
+        injectCompleted = true
+        armSilentPoll()
     }
 
     private suspend fun injectDraft(action: ChatSendAction.Inject) {
@@ -572,6 +577,8 @@ class HarnessChatViewModel(
             try {
                 withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
                 io.rivethub.app.data.AndroidLogger.warn("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
+                injectCompleted = true
+                armSilentPoll()
                 startAdoptWatch(action.sessionId)
                 return
             } catch (e: Exception) {
@@ -685,7 +692,7 @@ class HarnessChatViewModel(
 
     private fun armSilentPoll() {
         silentPoll?.cancel()
-        if (!machine.inFlight) return
+        if (!machine.inFlight || machine.sawSessionFrame) return
         val started = System.currentTimeMillis()
         var lastPollAt: Long? = null
         silentPoll = viewModelScope.launch {
@@ -706,12 +713,17 @@ class HarnessChatViewModel(
                     continue
                 }
                 lastPollAt = now
-                runCatching { resyncTranscript(endTurn = false) }
+                io.rivethub.app.data.AndroidLogger.warn(
+                    "RivetHub",
+                    "transcript poll: elapsed=${elapsed}ms inFlight=${machine.inFlight}",
+                    null,
+                )
+                runCatching { resyncTranscript(reason = "poll") }
             }
         }
     }
 
-    private suspend fun resyncTranscript(endTurn: Boolean) {
+    private suspend fun resyncTranscript(reason: String = "resync") {
         if (c.identity.generation() != identityGen) return
         val st = _state.value
         if (st.draft) return
@@ -724,10 +736,16 @@ class HarnessChatViewModel(
                 runCatching { c.harness(nodeDenUrl).transcript(enc).turns }.getOrNull()
             } ?: return
         }
-        val complete = endTurn || fetchedHasNewAssistant(turns, machine.committedAtTurnStart)
+        val complete = resyncCompletesTurn(
+            fetched = turns,
+            pendingUserText = machine.pendingUserText,
+            committedPrefix = machine.committedAtTurnStart,
+            injectCompleted = injectCompleted,
+        )
+        val label = if (reason == "poll") "transcript poll" else "transcript resync"
         io.rivethub.app.data.AndroidLogger.warn(
             "RivetHub",
-            "transcript resync: ${turns.size} turns complete=$complete",
+            "$label: ${turns.size} turns complete=$complete",
             null,
         )
         current?.bumpGeneration()

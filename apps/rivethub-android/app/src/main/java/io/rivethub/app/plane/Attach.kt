@@ -61,6 +61,9 @@ class TranscriptMachine(
     /** Committed size at [beginTurn] — poll looks for an assistant past this. */
     var committedAtTurnStart: Int = 0
         private set
+    /** Optimistic user text captured at [beginTurn]; resync completeness keys off this. */
+    var pendingUserText: String? = null
+        private set
 
     fun beginTurn() {
         val t = nowMs()
@@ -71,6 +74,7 @@ class TranscriptMachine(
         liveReasoning = ""
         sawSessionFrame = false
         committedAtTurnStart = committed.size
+        pendingUserText = optimistic.lastOrNull { it.role.equals("user", ignoreCase = true) }?.text
     }
 
     /** Desktop `addOptimisticUser` — show the send immediately. */
@@ -90,6 +94,7 @@ class TranscriptMachine(
         liveText = ""
         liveReasoning = ""
         turnStartTs = null
+        pendingUserText = null
     }
 
     /** Re-arm the idle deadline without clearing the live slot (adoption). */
@@ -153,11 +158,13 @@ class TranscriptMachine(
         inFlight = false
         turnStartTs = null
         lastFrameTs = nowMs()
+        pendingUserText = null
     }
 
     /**
-     * Apply a silent-poll fetch. [complete] is turn-complete (assistant is
-     * on disk); otherwise keep inFlight and only fold committed + optimistic.
+     * Apply a silent-poll / registry fetch. [complete] means an assistant
+     * turn is on disk after the pending user (or a turn-complete frame);
+     * otherwise keep inFlight and only fold committed + optimistic.
      */
     fun applyFetched(turns: List<HarnessTranscriptTurn>, complete: Boolean) {
         if (complete) onTurnComplete(turns)
@@ -219,10 +226,11 @@ fun registryEventMatchesOpen(event: HarnessEvent, openSessionId: String): Boolea
 
 /**
  * Registry `session-updated` / `session-created` for the open session, while
- * a turn is in flight, should hard-resync when status becomes idle/ended
- * **or** `updatedAt` moves. The first sight of a stamp (SessionCreated
- * active) is not a change — that would end the turn while Claude is still
- * working.
+ * a turn is in flight, should fetch the transcript when status becomes
+ * idle/ended **or** `updatedAt` moves. The first sight of a stamp
+ * (SessionCreated active) is not a change. The fetch itself must not end
+ * the turn unless [resyncCompletesTurn] says so — spawn-time idle is not
+ * complete.
  */
 fun shouldResyncFromRegistry(
     inFlight: Boolean,
@@ -263,6 +271,49 @@ fun fetchedHasNewAssistant(fetched: List<HarnessTranscriptTurn>, committedPrefix
     val from = committedPrefix.coerceAtLeast(0)
     if (fetched.size <= from) return false
     return fetched.drop(from).any { it.role.equals("assistant", ignoreCase = true) }
+}
+
+/**
+ * "Complete" for a poll/registry fetch: the transcript has an assistant
+ * turn newer than our pending user turn. A fetch that runs before inject
+ * landed, or that only echoes the user turn (or 0 turns), is not complete.
+ * A `turn-complete` frame is handled separately via [TranscriptMachine.onFrame].
+ */
+fun resyncCompletesTurn(
+    fetched: List<HarnessTranscriptTurn>,
+    pendingUserText: String?,
+    committedPrefix: Int,
+    injectCompleted: Boolean,
+): Boolean {
+    if (!injectCompleted) return false
+    val from = committedPrefix.coerceAtLeast(0)
+    if (!pendingUserText.isNullOrBlank()) {
+        val userIdx = fetched.indices.lastOrNull { i ->
+            i >= from &&
+                fetched[i].role.equals("user", ignoreCase = true) &&
+                fetched[i].text == pendingUserText
+        } ?: -1
+        if (userIdx < 0) return false
+        return fetched.drop(userIdx + 1).any { it.role.equals("assistant", ignoreCase = true) }
+    }
+    return fetchedHasNewAssistant(fetched, from)
+}
+
+/**
+ * Silent poll stays armed across an incomplete registry resync. Cancel only
+ * when the turn completed, a session frame arrived, inFlight dropped, or
+ * the idle deadline elapsed.
+ */
+fun silentPollShouldRemainArmed(
+    inFlight: Boolean,
+    sawSessionFrame: Boolean,
+    complete: Boolean,
+    elapsedSinceTurnMs: Long,
+    boundMs: Long = IDLE_DEADLINE_MS,
+): Boolean {
+    if (complete || !inFlight || sawSessionFrame) return false
+    if (elapsedSinceTurnMs >= boundMs) return false
+    return true
 }
 
 /**

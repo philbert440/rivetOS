@@ -482,4 +482,85 @@ class AttachTest {
         assertFalse(m.inFlight)
         assertEquals(listOf("hello", "yo"), m.transcript.map { it.text })
     }
+
+    @Test fun `premature resync of 0 turns keeps inFlight and the poll armed`() {
+        val m = TranscriptMachine({ 0 })
+        m.appendOptimisticUser("hello")
+        m.beginTurn()
+        val fetched = emptyList<HarnessTranscriptTurn>()
+        val complete = resyncCompletesTurn(
+            fetched = fetched,
+            pendingUserText = m.pendingUserText,
+            committedPrefix = m.committedAtTurnStart,
+            injectCompleted = false,
+        )
+        assertFalse(complete)
+        m.applyFetched(fetched, complete = false)
+        assertTrue(m.inFlight)
+        assertEquals(listOf("hello"), m.transcript.map { it.text })
+        assertEquals("user", m.transcript.single().role)
+        assertTrue(
+            silentPollShouldRemainArmed(
+                inFlight = m.inFlight,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = complete,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+    }
+
+    @Test fun `poll that finds the assistant turn ends inFlight and renders`() {
+        val m = TranscriptMachine({ 0 })
+        m.appendOptimisticUser("hello")
+        m.beginTurn()
+        val fetched = listOf(
+            HarnessTranscriptTurn(role = "user", text = "hello"),
+            HarnessTranscriptTurn(role = "assistant", text = "yo"),
+        )
+        val complete = resyncCompletesTurn(
+            fetched = fetched,
+            pendingUserText = m.pendingUserText,
+            committedPrefix = m.committedAtTurnStart,
+            injectCompleted = true,
+        )
+        assertTrue(complete)
+        m.applyFetched(fetched, complete = true)
+        assertFalse(m.inFlight)
+        assertEquals(listOf("hello", "yo"), m.transcript.map { it.text })
+        assertEquals(listOf("user", "assistant"), m.transcript.map { it.role })
+        assertFalse(
+            silentPollShouldRemainArmed(
+                inFlight = m.inFlight,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = complete,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+    }
+
+    @Test fun `resync with only the user turn keeps polling`() {
+        val m = TranscriptMachine({ 0 })
+        m.appendOptimisticUser("hello")
+        m.beginTurn()
+        val fetched = listOf(HarnessTranscriptTurn(role = "user", text = "hello"))
+        val complete = resyncCompletesTurn(
+            fetched = fetched,
+            pendingUserText = m.pendingUserText,
+            committedPrefix = m.committedAtTurnStart,
+            injectCompleted = true,
+        )
+        assertFalse(complete)
+        m.applyFetched(fetched, complete = false)
+        assertTrue(m.inFlight)
+        assertEquals(listOf("hello"), m.transcript.map { it.text })
+        assertEquals("user", m.transcript.single().role)
+        assertTrue(
+            silentPollShouldRemainArmed(
+                inFlight = m.inFlight,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = complete,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+    }
 }
