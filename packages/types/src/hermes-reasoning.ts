@@ -4,7 +4,7 @@
  * Rivet Bot / RivetHub must never show it as assistant text.
  *
  * Keep the copy in integrations/hermes/rivet-den/hooks/hermes-den-hook.mjs
- * and apps/rivet-bots-android HermesReasoning.kt in sync with this.
+ * and apps/rivethub-android HermesReasoning.kt in sync with this.
  */
 
 export interface HermesSplit {

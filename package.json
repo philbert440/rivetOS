@@ -53,7 +53,7 @@
     "apps/site",
     "apps/rivethub-web",
     "apps/rivet-android",
-    "apps/rivet-bots-android",
+    "apps/rivethub-android",
     "plugins/channels/*",
     "plugins/memory/*",
     "plugins/providers/*",

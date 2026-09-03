@@ -69,8 +69,8 @@ export const REMOTE_OWNERSHIP_PATHS = [
   'apps/rivethub-electron/release',
   'apps/rivet-android/.gradle',
   'apps/rivet-android/build',
-  'apps/rivet-bots-android/.gradle',
-  'apps/rivet-bots-android/build',
+  'apps/rivethub-android/.gradle',
+  'apps/rivethub-android/build',
 ] as const
 
 export type RemoteOwnershipProbe =
