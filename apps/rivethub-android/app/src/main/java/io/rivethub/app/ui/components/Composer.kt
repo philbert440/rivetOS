@@ -47,6 +47,7 @@ fun Composer(
     onSend: () -> Unit,
     onStop: () -> Unit,
     enabled: Boolean = true,
+    canStop: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
@@ -107,7 +108,7 @@ fun Composer(
                 IconSlot(onClick = onAttach, desc = "Attach", enabled = enabled) {
                     Icon(Icons.Outlined.AttachFile, contentDescription = null, tint = colors.inkDim, modifier = Modifier.size(22.dp))
                 }
-                if (live) {
+                if (live && canStop) {
                     IconSlot(onClick = onStop, desc = "Stop", enabled = enabled) {
                         Icon(Icons.Outlined.Stop, contentDescription = null, tint = colors.red, modifier = Modifier.size(22.dp))
                     }

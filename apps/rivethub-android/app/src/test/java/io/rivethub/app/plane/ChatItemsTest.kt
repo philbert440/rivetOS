@@ -227,6 +227,34 @@ class ChatItemsTest {
         assertEquals(listOf("claude-code"), listableHarnesses(listOf(claude)))
     }
 
+    @Test fun `chatItems passes pins through sortByRecency`() {
+        val items = chatItems(
+            emptyMap(),
+            emptyList(),
+            drafts = listOf(uuidA),
+            draftCreatedAt = mapOf(uuidA to 1L),
+            pins = listOf(ChatItem(uuidA, ChatItemKind.HARNESS, "Claude", sessionId = uuidA, harnessId = "claude-code", updatedAt = 9)),
+        )
+        assertEquals(1, items.size)
+        assertTrue(items[0].pin)
+        assertEquals("Claude", items[0].title)
+    }
+
+    @Test fun `pinChatItems synthesizes a row per pointer on that node`() {
+        val pointers = AgentPointers { 5 }
+        pointers.set("claude", uuidA, "https://192.0.2.10:5174")
+        pointers.set("grok", uuidB, "https://192.0.2.11:5174")
+        val agents = listOf(
+            AgentRow("claude", "Claude", "claude-code", "n1", "n1", "https://192.0.2.10:5174", uuidA, model = "opus"),
+        )
+        val pins = pinChatItems(pointers.all(), agents, "https://192.0.2.10:5174")
+        assertEquals(1, pins.size)
+        assertEquals(uuidA, pins[0].key)
+        assertEquals("Claude", pins[0].title)
+        assertEquals("opus", pins[0].model)
+        assertEquals("claude-code", pins[0].harnessId)
+    }
+
     @Test fun `findChatItem matches canonical then native`() {
         val items = chatItems(
             mapOf("claude-code" to Result.success(listOf(summary(uuidA)))),

@@ -42,3 +42,8 @@ fun withAttachmentText(text: String, uris: List<String>): String {
 
 fun readyUris(atts: List<PendingAttachment>): List<String> =
     atts.mapNotNull { a -> a.uri.takeIf { a.status == AttachmentStatus.READY && !it.isNullOrBlank() } }
+
+/** den-server `MAX_UPLOAD_BYTES` (1 GiB). Unknown size (`size < 0`) is not refused here. */
+const val MAX_UPLOAD_BYTES: Long = 1024L * 1024L * 1024L
+
+fun uploadTooLarge(size: Long): Boolean = size >= 0 && size > MAX_UPLOAD_BYTES

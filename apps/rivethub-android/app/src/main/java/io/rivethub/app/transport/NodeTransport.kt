@@ -1,6 +1,5 @@
 package io.rivethub.app.transport
 
-import io.rivethub.app.domain.Bot
 import io.rivethub.app.gateway.Gateway
 
 data class NodeRef(
@@ -27,13 +26,6 @@ interface NodeTransport {
     fun clear()
 }
 
-fun Bot.toNodeRef(): NodeRef = NodeRef(
-    id = nodeId,
-    name = nodeName,
-    denUrl = denUrl,
-    online = online,
-    sessions = nodeSessions,
-)
 
 /** Host part of a node URL, or the URL itself when it does not parse. */
 fun hostOfUrl(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)

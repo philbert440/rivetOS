@@ -21,6 +21,7 @@ fun RivetConfirmDialog(
     confirmLabel: String = "OK",
     cancelLabel: String = "Cancel",
     danger: Boolean = false,
+    title: String? = null,
 ) {
     val colors = RivetTheme.colors
     val shape = RoundedCornerShape(Dimens.radius8)
@@ -32,6 +33,7 @@ fun RivetConfirmDialog(
         titleContentColor = colors.ink,
         textContentColor = colors.ink,
         tonalElevation = 0.dp,
+        title = title?.let { { Text(it, color = colors.ink, style = RivetType.title) } },
         text = {
             Text(message, color = colors.ink, style = RivetType.body)
         },

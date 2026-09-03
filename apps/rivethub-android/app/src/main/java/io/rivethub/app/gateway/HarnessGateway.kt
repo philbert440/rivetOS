@@ -11,6 +11,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.Closeable
@@ -188,9 +189,34 @@ class HarnessGateway(
 
     /** POST /api/uploads — stage bytes on THIS node (the session's node). */
     suspend fun stageUpload(bytes: ByteArray, name: String, mime: String? = null): StagedUploadResponse =
+        stageUpload(bytes.size.toLong(), name, mime) { bytes.inputStream() }
+
+    /** Stream an upload without materialising a ByteArray. Caps at 1 GiB. */
+    suspend fun stageUpload(
+        contentLength: Long,
+        name: String,
+        mime: String? = null,
+        open: () -> java.io.InputStream,
+    ): StagedUploadResponse =
         withContext(Dispatchers.IO) {
             val media = (mime ?: "application/octet-stream").toMediaType()
-            val body = bytes.toRequestBody(media)
+            val body = object : RequestBody() {
+                override fun contentType() = media
+                override fun contentLength(): Long = if (contentLength >= 0) contentLength else -1L
+                override fun writeTo(sink: okio.BufferedSink) {
+                    open().use { input ->
+                        val buf = ByteArray(8192)
+                        var copied = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            copied += n
+                            if (copied > UPLOAD_CAP_BYTES) throw java.io.IOException("upload exceeds 1 GiB cap")
+                            sink.write(buf, 0, n)
+                        }
+                    }
+                }
+            }
             val req = Request.Builder()
                 .url(url(listOf("api", "uploads"), mapOf("name" to name, "mime" to mime)))
                 .post(body)
@@ -203,4 +229,8 @@ class HarnessGateway(
                 }
             }
         }
+
+    companion object {
+        private const val UPLOAD_CAP_BYTES = 1024L * 1024L * 1024L
+    }
 }

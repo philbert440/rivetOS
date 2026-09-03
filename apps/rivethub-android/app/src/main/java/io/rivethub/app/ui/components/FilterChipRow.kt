@@ -28,6 +28,17 @@ fun FilterChipRow(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val idx = options.indexOf(selected).coerceAtLeast(0)
+    FilterChipRow(options, idx, { i -> onSelect(options[i]) }, modifier)
+}
+
+@Composable
+fun FilterChipRow(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelectIndex: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val colors = RivetTheme.colors
     val shape = RoundedCornerShape(Dimens.radiusPill)
     Row(
@@ -37,8 +48,8 @@ fun FilterChipRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        options.forEach { option ->
-            val active = option == selected
+        options.forEachIndexed { i, option ->
+            val active = i == selectedIndex
             Text(
                 option,
                 color = if (active) colors.em else colors.inkDim,
@@ -47,7 +58,7 @@ fun FilterChipRow(
                 modifier = Modifier
                     .border(Dimens.line, if (active) colors.em else colors.line, shape)
                     .background(if (active) colors.panel2 else colors.bg, shape)
-                    .selectable(selected = active, role = Role.RadioButton, onClick = { onSelect(option) })
+                    .selectable(selected = active, role = Role.RadioButton, onClick = { onSelectIndex(i) })
                     .padding(horizontal = 10.dp, vertical = 6.dp),
             )
         }
