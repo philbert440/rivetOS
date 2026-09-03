@@ -595,7 +595,9 @@ class HarnessChatViewModel(
             // The den holds a turn "in flight" for up to 5 min when its hook events are
             // missing. If our previous turn is already answered on disk, that hold is stale:
             // deliver this turn through the PTY like the draft path does (desktop legacy path).
-            if (!isTurnInFlight(e) || !serverInFlightIsStale(machine.transcript)) throw e
+            // Evaluate over the COMMITTED transcript: a foreign client's user turn lives there,
+            // our optimistic bubble never does — so a genuine in-flight turn is never misread as stale.
+            if (!isTurnInFlight(e) || !serverInFlightIsStale(machine.committedTurns)) throw e
             val native = nativeIdOf(action.sessionId) ?: throw e
             AndroidLogger.warn("RivetHub", "409 with a finished previous turn: injecting via PTY session=$native", null)
             val pty = ensurePty(sessionOverride = native)

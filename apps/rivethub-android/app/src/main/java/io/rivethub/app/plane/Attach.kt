@@ -40,6 +40,8 @@ class TranscriptMachine(
     private val idleDeadlineMs: Long = IDLE_DEADLINE_MS,
 ) {
     private var committed: List<HarnessTranscriptTurn> = emptyList()
+    /** Turns confirmed by the node (never our optimistic bubble). */
+    val committedTurns: List<HarnessTranscriptTurn> get() = committed
     private val optimistic = ArrayList<HarnessTranscriptTurn>()
 
     /** Committed turns plus any unmatched optimistic user bubbles. */
