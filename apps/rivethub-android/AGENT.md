@@ -9,9 +9,9 @@ phone-shaped — same look/feel, same den backend, same harness-session model, d
 runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 `/rivet-shared/plans/rivethub-android-2026-09-02.md` (v2, reviewed); read it before changing anything.
 
-M3b replaced the Grok-Bot UI. `MainActivity.App()` routes Enroll → Hub (Conversations / Agents / Nodes /
-Settings) → Chat. Old Grok-Bot screens, VMs, `Bot`/`BotRepository`/`SessionResolver` remain in the tree
-unreferenced so the integrator can `git rm` them.
+M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. `MainActivity.App()`
+routes Enroll → Hub (Conversations / Agents / Nodes / Settings) → Chat. Old Grok-Bot screens, VMs,
+`Bot`/`BotRepository`/`SessionResolver` remain in the tree unreferenced so the integrator can `git rm` them.
 
 ## Where this tree came from (slice M1a, 2026-09-03)
 
@@ -24,14 +24,15 @@ What survives into the real app (plan §2): `data/DeviceIdentity.kt` (p12 vault)
 OkHttp split), `gateway/Wire.kt` (gateway twins — not reused by the plane), `gateway/HarnessWire.kt`
 + `gateway/HarnessGateway.kt` (M3a), `plane/` (M3a + M3b reducers), `transport/NodeTransport` +
 `DirectTransport` (screens obtain gateways only through this seam), `HermesReasoning.kt`,
-`ui/term/AnsiTerminal.kt` + the OSC colour-query filter, `ui/theme` + `ui/components` (M1.5).
+`ui/term/AnsiTerminal.kt` + `ui/term/TerminalPane.kt` + the OSC colour-query / OSC 52 filter,
+`ui/theme` + `ui/components` (M1.5).
 
 ## Slices (plan §6)
 
 M1a rename + M6 CI ✔ → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
 `project.json` ✔ → M2a p12 import in Settings ✔ (folded into M3b Settings) → M1.5 design system ✔
 (`ui/theme` + `ui/components`, gallery behind Settings-title long-press) → M3a pure-Kotlin plane
-layer (tests only) ✔ → **M3b Compose conversations + chat ✔ (this)** → M4 terminal mode → M5a nodes
+layer (tests only) ✔ → M3b Compose conversations + chat ✔ → **M4 terminal mode ✔ (this)** → M5a nodes
 filter polish → M5b turn-complete notification → M7 cutover.
 
 ## Screens
@@ -46,7 +47,7 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 | Agents | `ui/screens/AgentsScreen.kt` | HubViewModel | catalog rows; tap / ↺ / + pointer semantics |
 | Nodes | `ui/screens/NodesScreen.kt` | HubViewModel | view filter only; never rebinds an open chat |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | identity, theme, terminal font; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe, VT attach |
 | Gallery | `ui/components/ComponentGallery.kt` | none | M1.5 preview |
 
 Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `themeMode`
@@ -78,12 +79,35 @@ wait for registry `session-created`, `adopt`, then `sendTurn`. Attachments are `
 lines after `POST /api/uploads` on the session's node. Canonical ids contain `:`; path params are
 unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays `data/HermesReasoning.kt`.
 
+## Terminal mode (M4)
+
+Attach protocol (den-server `term/ws.ts`, rivethub-web `xterm-attach.tsx`):
+
+1. `POST /api/terminal` spawn-or-get joined to the chat's canonical/native session id (same
+   session as draft first-send — the PTY is that harness TUI).
+2. WS `/api/terminal/ws?id=` — hello JSON, one binary ring frame, live binary, exit JSON.
+3. Hello `mux:'tmux'` → clear the local VT, skip ring replay (tmux redraws). Absent / `none` → replay.
+4. Client sends binary keystrokes and JSON `{type:resize,cols,rows}` / `{type:detach}`.
+5. **Never send `{type:kill}`.** Leave, background, and the Detach menu send detach then close.
+   The manager TTL owns the PTY; reattach replays (or tmux redraws).
+6. OSC 10/11/12 colour queries are stripped and never answered. OSC 52 writes go to the clipboard;
+   OSC 52 reads (`?`) are refused.
+7. "Open in your terminal" copies `ssh <sshUser>@<host> -t tmux -L <socket> attach -t <session>`
+   rendered from the server `attach` descriptor. Hidden when `attach` is absent — never guess a
+   socket name.
+
+Attach lives in `HarnessChatViewModel` so Chat↔Terminal swipe does not drop the socket. Detach
+only when leaving the screen (VM cleared) or the app backgrounds (`ON_STOP`); reattach on return
+if Terminal was wanted. Identity `generation()` bump drops the attach. Font size is Settings
+Small/Medium/Large → 11/13/16 sp. Two-finger scroll is local `AnsiScreen` scrollback; tmux
+copy-mode history paging is out of scope.
+
 ## Build / test / install
 
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 211 (172 + 39 M3b reducer tests).
+  (`.github/workflows/android.yml`) enforces a floor of 214 (190 + 24 M4 terminal tests).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

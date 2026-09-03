@@ -1,25 +1,37 @@
 package io.rivethub.app.ui.term
 
+import io.rivethub.app.data.Osc52
 import io.rivethub.app.data.OscFilter
 import java.util.ArrayDeque
 
-/** One screen cell. [fg]/[bg] are packed ARGB. */
+/** One screen cell. [fg]/[bg] are packed ARGB; default sentinels remap through theme tokens. */
 data class TermCell(
     val ch: Char = ' ',
     val fg: Int = AnsiScreen.DEFAULT_FG,
     val bg: Int = AnsiScreen.DEFAULT_BG,
     val bold: Boolean = false,
+    val underline: Boolean = false,
+    val dim: Boolean = false,
 )
 
 /** Run of cells sharing SGR, for Compose [androidx.compose.ui.text.AnnotatedString] painting. */
-data class TermSpan(val text: String, val fg: Int, val bg: Int, val bold: Boolean)
+data class TermSpan(
+    val text: String,
+    val fg: Int,
+    val bg: Int,
+    val bold: Boolean,
+    val underline: Boolean = false,
+    val dim: Boolean = false,
+)
 
 data class TermLine(val spans: List<TermSpan>)
 
 /**
- * Compact VT/ANSI screen: SGR (16 + 256 + truecolor, bold), CR/LF/BS/TAB,
- * ED/EL, CUP/CUU/CUD/CUF/CUB (plus CHA/VPA). Unknown sequences are consumed
- * and dropped — including DSR (`CSI 6n`) so we never echo a cursor report.
+ * Compact VT/ANSI screen: SGR (16 + 256 + truecolor, bold/underline/dim),
+ * CR/LF/BS/TAB, ED/EL, CUP/CUU/CUD/CUF/CUB (plus CHA/VPA). Unknown sequences
+ * are consumed and dropped — including DSR (`CSI 6n`) so we never echo a
+ * cursor report. OSC 52 writes are drained via [drainOsc52]; OSC 10/11/12
+ * queries are stripped and never answered.
  */
 class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     var cols: Int = cols.coerceIn(MIN_COLS, MAX_COLS)
@@ -36,7 +48,10 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     private var fg = DEFAULT_FG
     private var bg = DEFAULT_BG
     private var bold = false
+    private var underline = false
+    private var dim = false
     private var cursorVisible = true
+    private val osc52Out = ArrayList<String>()
 
     private var state = State.GROUND
     private val csi = StringBuilder()
@@ -54,10 +69,11 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         scrollback.clear()
         screen = Array(rows) { blankLine(cols) }
         cx = 0; cy = 0; savedX = 0; savedY = 0
-        fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false
+        fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false; underline = false; dim = false
         cursorVisible = true
         state = State.GROUND
         csi.clear(); osc.clear()
+        osc52Out.clear()
         utfNeed = 0; utfAcc = 0
         rev++
     }
@@ -95,6 +111,11 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         rev++
     } }
 
+    fun drainOsc52(): List<String> = synchronized(this) {
+        if (osc52Out.isEmpty()) emptyList()
+        else osc52Out.toList().also { osc52Out.clear() }
+    }
+
     fun lineAt(index: Int): TermLine = synchronized(this) {
         val sb = scrollback.size
         val cells: Array<TermCell> = when {
@@ -116,6 +137,8 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
             fg = DEFAULT_BG,
             bg = CURSOR,
             bold = c.bold,
+            underline = c.underline,
+            dim = c.dim,
         )
         return out
     }
@@ -127,7 +150,12 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
             State.CSI -> csiByte(b)
             State.OSC -> oscByte(b)
             State.OSC_ESC -> {
-                state = if (b == '\\'.code) State.GROUND else State.OSC
+                if (b == '\\'.code) {
+                    finishOsc()
+                    state = State.GROUND
+                } else {
+                    state = State.OSC
+                }
             }
             State.ST_STRING -> {
                 when (b) {
@@ -193,9 +221,15 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
 
     private fun oscByte(b: Int) {
         when (b) {
-            0x07 -> state = State.GROUND
+            0x07 -> {
+                finishOsc()
+                state = State.GROUND
+            }
             0x1B -> state = State.OSC_ESC
-            else -> if (osc.length < 256) osc.append(b.toChar())
+            else -> {
+                val cap = if (osc.startsWith("52;")) Osc52.MAX_B64 + 8 else 256
+                if (osc.length < cap) osc.append(b.toChar())
+            }
         }
     }
 
@@ -240,8 +274,10 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
             when (val n = ps[i]) {
                 0 -> resetAttr()
                 1 -> bold = true
-                2 -> {} // dim — consume; we only paint bold
-                22 -> bold = false
+                2 -> dim = true
+                4 -> underline = true
+                21, 24 -> underline = false
+                22 -> { bold = false; dim = false }
                 in 30..37 -> fg = ANSI16[n - 30]
                 in 90..97 -> fg = ANSI16[n - 90 + 8]
                 in 40..47 -> bg = ANSI16[n - 40]
@@ -276,7 +312,15 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     }
 
     private fun resetAttr() {
-        fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false
+        fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false; underline = false; dim = false
+    }
+
+    private fun finishOsc() {
+        val body = osc.toString()
+        osc.clear()
+        if (body.startsWith("52;")) {
+            Osc52.decodeWrite(body.substring(3))?.let { osc52Out += it }
+        }
     }
 
     private fun eraseDisplay(mode: Int) {
@@ -297,8 +341,8 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     private fun eraseLine(mode: Int) {
         val line = screen[cy]
         when (mode) {
-            0 -> for (c in cx until cols) line[c] = TermCell(' ', fg, bg, bold)
-            1 -> for (c in 0..cx) line[c] = TermCell(' ', fg, bg, bold)
+            0 -> for (c in cx until cols) line[c] = TermCell(' ', fg, bg, bold, underline, dim)
+            1 -> for (c in 0..cx) line[c] = TermCell(' ', fg, bg, bold, underline, dim)
             2 -> screen[cy] = blankLine(cols)
         }
     }
@@ -327,8 +371,8 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
             cx = 0
             lineFeed()
         }
-        screen[cy][cx] = TermCell(ch, fg, bg, bold)
-        if (w == 2 && cx + 1 < cols) screen[cy][cx + 1] = TermCell(' ', fg, bg, bold)
+        screen[cy][cx] = TermCell(ch, fg, bg, bold, underline, dim)
+        if (w == 2 && cx + 1 < cols) screen[cy][cx + 1] = TermCell(' ', fg, bg, bold, underline, dim)
         cx += w
         if (cx >= cols) {
             cx = 0
@@ -382,11 +426,12 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
 
         private enum class State { GROUND, ESC, CSI, OSC, OSC_ESC, ST_STRING, ST_ESC, CHARSET }
 
-        private val ANSI16 = intArrayOf(
-            0xFF0D1117.toInt(), 0xFFE5484D.toInt(), 0xFF3DD68C.toInt(), 0xFFF2C531.toInt(),
-            0xFF2F8CFF.toInt(), 0xFF7C5CFF.toInt(), 0xFF2BB5A0.toInt(), 0xFFE6EDF3.toInt(),
-            0xFF6E7681.toInt(), 0xFFFF7B72.toInt(), 0xFF56D364.toInt(), 0xFFE3B341.toInt(),
-            0xFF79C0FF.toInt(), 0xFFD2A8FF.toInt(), 0xFF56D4DD.toInt(), 0xFFFFFFFF.toInt(),
+        /** xterm.js Tango ANSI ramp (`XTERM_DEFAULT_ANSI` in terminal-schemes.ts). */
+        val ANSI16 = intArrayOf(
+            0xFF2E3436.toInt(), 0xFFCC0000.toInt(), 0xFF4E9A06.toInt(), 0xFFC4A000.toInt(),
+            0xFF3465A4.toInt(), 0xFF75507B.toInt(), 0xFF06989A.toInt(), 0xFFD3D7CF.toInt(),
+            0xFF555753.toInt(), 0xFFEF2929.toInt(), 0xFF8AE234.toInt(), 0xFFFCE94F.toInt(),
+            0xFF729FCF.toInt(), 0xFFAD7FA8.toInt(), 0xFF34E2E2.toInt(), 0xFFEEEEEC.toInt(),
         )
 
         private fun rgb(r: Int, g: Int, b: Int): Int =
@@ -423,15 +468,20 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
             var fg = cells[0].fg
             var bg = cells[0].bg
             var bold = cells[0].bold
+            var underline = cells[0].underline
+            var dim = cells[0].dim
             fun flush() {
                 if (buf.isEmpty()) return
-                out.add(TermSpan(buf.toString(), fg, bg, bold))
+                out.add(TermSpan(buf.toString(), fg, bg, bold, underline, dim))
                 buf.clear()
             }
             for (cell in cells) {
-                if (cell.fg != fg || cell.bg != bg || cell.bold != bold) {
+                if (cell.fg != fg || cell.bg != bg || cell.bold != bold ||
+                    cell.underline != underline || cell.dim != dim
+                ) {
                     flush()
                     fg = cell.fg; bg = cell.bg; bold = cell.bold
+                    underline = cell.underline; dim = cell.dim
                 }
                 buf.append(cell.ch)
             }

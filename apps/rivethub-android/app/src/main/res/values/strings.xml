@@ -54,7 +54,21 @@
 
     <string name="mode_chat">Chat</string>
     <string name="mode_terminal">Terminal</string>
-    <string name="terminal_placeholder">Terminal — M4</string>
+    <string name="term_esc">Esc</string>
+    <string name="term_tab">Tab</string>
+    <string name="term_ctrl">Ctrl</string>
+    <string name="term_up">↑</string>
+    <string name="term_down">↓</string>
+    <string name="term_left">←</string>
+    <string name="term_right">→</string>
+    <string name="cd_paste">Paste</string>
+    <string name="cd_term_menu">Terminal menu</string>
+    <string name="action_open_in_terminal">Open in your terminal</string>
+    <string name="action_detach">Detach</string>
+    <string name="term_status_connecting">connecting</string>
+    <string name="term_status_attached">attached</string>
+    <string name="term_status_exited">exited</string>
+    <string name="term_status_closed">closed</string>
     <string name="composer_placeholder">Message</string>
     <string name="stream_chip">streaming</string>
     <string name="thinking_chip">thinking</string>
