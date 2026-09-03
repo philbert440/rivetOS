@@ -30,7 +30,7 @@ import io.rivethub.app.ui.theme.RivetType
 fun StreamChip(text: String, modifier: Modifier = Modifier) {
     ChipFrame(modifier) {
         EmDot()
-        Text(text, color = RivetTheme.colors.ink, style = RivetType.monoPill, maxLines = 1)
+        Text(text, color = RivetTheme.colors.inkDim, style = RivetType.monoPill, maxLines = 1)
     }
 }
 
@@ -59,7 +59,7 @@ private fun ChipFrame(modifier: Modifier = Modifier, content: @Composable RowSco
             .background(colors.bg, shape)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
         content = content,
     )
 }

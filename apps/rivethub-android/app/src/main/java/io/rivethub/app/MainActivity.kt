@@ -26,13 +26,13 @@ import io.rivethub.app.ui.HomeViewModel
 import io.rivethub.app.ui.LocalBotEdits
 import io.rivethub.app.ui.Nav
 import io.rivethub.app.ui.Screen
+import io.rivethub.app.ui.components.ComponentGallery
 import io.rivethub.app.ui.screens.ChatScreen
 import io.rivethub.app.ui.screens.ComputerScreen
 import io.rivethub.app.ui.screens.EditBotScreen
 import io.rivethub.app.ui.screens.EnrollScreen
 import io.rivethub.app.ui.screens.HomeScreen
 import io.rivethub.app.ui.screens.ProfileScreen
-import io.rivethub.app.ui.components.ComponentGallery
 import io.rivethub.app.ui.screens.SettingsScreen
 import io.rivethub.app.ui.screens.SignInScreen
 import io.rivethub.app.ui.theme.RivetBotsTheme

@@ -36,7 +36,7 @@ object RivetPalette {
     const val LightRed = 0xFFDC2626L
     const val LightWarn = 0xFFB45309L
     const val LightLink = 0xFF0969DAL
-    const val LightAssistant = 0xFF20293AL
+    const val LightAssistant = 0xFF3C4756L
 
     /** PrimaryButton label — always the dark canvas, even in light theme. */
     const val OnEm = 0xFF0D1117L

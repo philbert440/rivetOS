@@ -23,10 +23,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -41,22 +37,22 @@ import io.rivethub.app.ui.theme.RivetType
 
 @Composable
 fun Composer(
+    value: String,
+    onValueChange: (String) -> Unit,
     placeholder: String,
     live: Boolean,
     pickers: @Composable RowScope.() -> Unit,
     chips: @Composable RowScope.() -> Unit,
     onAttach: () -> Unit,
-    onSend: (String) -> Unit,
+    onSend: () -> Unit,
     onStop: () -> Unit,
+    enabled: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
-    var draft by remember { mutableStateOf("") }
     fun send() {
-        val t = draft.trim()
-        if (t.isEmpty()) return
-        onSend(t)
-        draft = ""
+        if (!enabled || value.trim().isEmpty()) return
+        onSend()
     }
     Column(modifier.fillMaxWidth().background(colors.panel)) {
         HorizontalDivider(thickness = Dimens.line, color = colors.line)
@@ -83,16 +79,18 @@ fun Composer(
                     .background(colors.bg, inputShape)
                     .padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
-                if (draft.isEmpty()) {
+                if (value.isEmpty()) {
                     Text(placeholder, color = colors.inkDim, style = RivetType.body)
                 }
                 BasicTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
+                    value = value,
+                    onValueChange = onValueChange,
+                    enabled = enabled,
                     textStyle = RivetType.body.copy(color = colors.ink),
                     cursorBrush = SolidColor(colors.em),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { send() }),
+                    maxLines = 6,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -106,15 +104,15 @@ fun Composer(
                     verticalAlignment = Alignment.CenterVertically,
                     content = pickers,
                 )
-                IconSlot(onClick = onAttach, desc = "Attach") {
+                IconSlot(onClick = onAttach, desc = "Attach", enabled = enabled) {
                     Icon(Icons.Outlined.AttachFile, contentDescription = null, tint = colors.inkDim, modifier = Modifier.size(22.dp))
                 }
                 if (live) {
-                    IconSlot(onClick = onStop, desc = "Stop") {
+                    IconSlot(onClick = onStop, desc = "Stop", enabled = enabled) {
                         Icon(Icons.Outlined.Stop, contentDescription = null, tint = colors.red, modifier = Modifier.size(22.dp))
                     }
                 } else {
-                    IconSlot(onClick = { send() }, desc = "Send") {
+                    IconSlot(onClick = { send() }, desc = "Send", enabled = enabled) {
                         Icon(Icons.Outlined.ArrowUpward, contentDescription = null, tint = colors.em, modifier = Modifier.size(22.dp))
                     }
                 }
@@ -124,12 +122,12 @@ fun Composer(
 }
 
 @Composable
-private fun IconSlot(onClick: () -> Unit, desc: String, content: @Composable () -> Unit) {
+private fun IconSlot(onClick: () -> Unit, desc: String, enabled: Boolean = true, content: @Composable () -> Unit) {
     Box(
         Modifier
             .size(Dimens.touchTarget)
             .semantics { contentDescription = desc }
-            .clickable(role = Role.Button, onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
         content = { content() },
     )

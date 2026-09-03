@@ -2,10 +2,10 @@ package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -31,7 +31,7 @@ fun RivetToggle(
             .clip(trackShape)
             .background(if (checked) colors.em else colors.bg)
             .border(Dimens.line, if (checked) colors.em else colors.line, trackShape)
-            .clickable(role = Role.Switch, onClick = { onChange(!checked) }),
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(

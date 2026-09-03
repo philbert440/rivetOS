@@ -1,6 +1,7 @@
 package io.rivethub.app.ui.theme
 
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 object Dimens {
     val radius4 = 4.dp
@@ -12,7 +13,8 @@ object Dimens {
     val rowMinHeight = 56.dp
     val railHeight = 56.dp
     val railIcon = 22.dp
-    val railLabel = 10
+    val railLabel = 10.sp
+    val bubbleMaxWidthFraction = 0.86f
 
     val line = 1.dp
 

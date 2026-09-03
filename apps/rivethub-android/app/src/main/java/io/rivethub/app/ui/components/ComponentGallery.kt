@@ -1,6 +1,8 @@
 package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Settings
@@ -25,6 +28,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.ui.theme.Dimens
@@ -40,12 +44,30 @@ private val GalleryRail = listOf(
     RailItem("more", "More", Icons.Outlined.MoreHoriz, enabled = false),
 )
 
+private val GalleryKeys = listOf(
+    ToolbarKey.Label("esc", "Esc"),
+    ToolbarKey.Label("tab", "Tab"),
+    ToolbarKey.Sticky("ctrl", "Ctrl"),
+    ToolbarKey.Label("up", "↑"),
+    ToolbarKey.Label("down", "↓"),
+    ToolbarKey.Label("left", "←"),
+    ToolbarKey.Label("right", "→"),
+    ToolbarKey.IconAction("paste", Icons.Outlined.ContentPaste, "Paste"),
+    ToolbarKey.IconAction("open-in-terminal", Icons.Outlined.MoreHoriz, "Open in terminal"),
+)
+
+private val GallerySelectOptions = listOf(
+    SelectOption("grok-4", "grok-4"),
+    SelectOption("grok-4-fast", "grok-4-fast"),
+    SelectOption("kimi", "kimi"),
+)
+
 @Composable
 fun ComponentGallery(modifier: Modifier = Modifier) {
     Column(
         modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .statusBarsPadding().verticalScroll(rememberScrollState())
             .systemBarsPadding(),
     ) {
         GalleryThemeBlock("Dark", ThemeMode.Dark)
@@ -62,6 +84,12 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
         var checked by remember { mutableStateOf(true) }
         var foldOpen by remember { mutableStateOf(false) }
         var live by remember { mutableStateOf(false) }
+        var draft by remember { mutableStateOf("") }
+        var latched by remember { mutableStateOf(setOf<String>()) }
+        var filter by remember { mutableStateOf("All") }
+        var model by remember { mutableStateOf("grok-4") }
+        var confirmOpen by remember { mutableStateOf(false) }
+        var splitSel by remember { mutableStateOf("Chat") }
         Column(Modifier.fillMaxWidth().background(colors.bg).padding(bottom = Dimens.grid2)) {
             TopBar(
                 title = "RivetHub · $label",
@@ -106,6 +134,50 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 PrimaryButton("Primary", onClick = { })
                 Spacer(Modifier.height(Dimens.grid2))
 
+                SectionHeader("Select · filter · dialog · mode")
+                Spacer(Modifier.height(8.dp))
+                RivetSelect(
+                    value = model,
+                    options = GallerySelectOptions,
+                    onChange = { model = it },
+                    title = "Model",
+                )
+                Spacer(Modifier.height(8.dp))
+                FilterChipRow(
+                    options = listOf("All", "Pinned", "Archived"),
+                    selected = filter,
+                    onSelect = { filter = it },
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Forget device…",
+                    color = colors.link,
+                    style = RivetType.meta,
+                    modifier = Modifier.clickable(role = Role.Button, onClick = { confirmOpen = true }),
+                )
+                if (confirmOpen) {
+                    RivetConfirmDialog(
+                        message = "Forget this device certificate?",
+                        onConfirm = { confirmOpen = false },
+                        onDismiss = { confirmOpen = false },
+                        confirmLabel = "Forget",
+                        danger = true,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                ModePager(
+                    pages = listOf("Chat", "Terminal"),
+                    selected = splitSel,
+                    onSelect = { splitSel = it },
+                ) { page ->
+                    Text(
+                        if (page == "Chat") "Chat pane" else "Terminal pane",
+                        color = colors.inkDim,
+                        style = RivetType.meta,
+                    )
+                }
+                Spacer(Modifier.height(Dimens.grid2))
+
                 SectionHeader("Rows")
                 Spacer(Modifier.height(8.dp))
             }
@@ -116,14 +188,12 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 accent = colors.em,
                 pinned = true,
                 onClick = {},
-                onLongClick = {},
             )
             ListRow(
                 title = "Archived draft",
                 meta = { Text("yesterday", color = colors.inkDim, style = RivetType.meta) },
                 dim = true,
                 onClick = {},
-                onLongClick = {},
             )
             Column(Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.grid)) {
                 SectionHeader("Transcript")
@@ -146,11 +216,18 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 Spacer(Modifier.height(8.dp))
             }
             KeyToolbar(
-                keys = listOf("Esc", "Tab", "Ctrl", "↑", "↓", "←", "→", "Paste"),
-                onKey = {},
+                keys = GalleryKeys,
+                latched = latched,
+                onKey = { key ->
+                    if (key is ToolbarKey.Sticky) {
+                        latched = if (key.id in latched) latched - key.id else latched + key.id
+                    }
+                },
             )
             Spacer(Modifier.height(Dimens.grid))
             Composer(
+                value = draft,
+                onValueChange = { draft = it },
                 placeholder = "Message Rivet…",
                 live = live,
                 pickers = {
@@ -161,7 +238,10 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     if (live) Pill("uploading.md", tone = PillTone.Warn)
                 },
                 onAttach = { live = !live },
-                onSend = { live = true },
+                onSend = {
+                    draft = ""
+                    live = true
+                },
                 onStop = { live = false },
             )
             TopBar(title = "With back", onBack = {})

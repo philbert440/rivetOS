@@ -5,13 +5,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.LocalTextStyle
@@ -35,7 +33,7 @@ fun MessageBubble(
         Box(
             Modifier
                 .align(align)
-                .widthIn(max = 360.dp)
+                .fillMaxWidth(Dimens.bubbleMaxWidthFraction)
                 .border(Dimens.line, border, shape)
                 .background(colors.panel, shape)
                 .padding(horizontal = Dimens.bubblePadH, vertical = Dimens.bubblePadV),

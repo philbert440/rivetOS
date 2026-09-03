@@ -1,13 +1,14 @@
 package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -17,8 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.sp
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
@@ -43,7 +42,8 @@ fun BottomRail(
         Row(
             Modifier
                 .fillMaxWidth()
-                .height(Dimens.railHeight),
+                .height(Dimens.railHeight)
+                .selectableGroup(),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -59,7 +59,12 @@ fun BottomRail(
                         .weight(1f)
                         .height(Dimens.railHeight)
                         .alpha(if (item.enabled) 1f else 0.4f)
-                        .clickable(enabled = item.enabled, role = Role.Tab, onClick = { onSelect(item.id) }),
+                        .selectable(
+                            selected = selected,
+                            enabled = item.enabled,
+                            role = Role.Tab,
+                            onClick = { onSelect(item.id) },
+                        ),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
@@ -67,7 +72,7 @@ fun BottomRail(
                     Text(
                         item.label,
                         color = tint,
-                        fontSize = Dimens.railLabel.sp,
+                        fontSize = Dimens.railLabel,
                         fontFamily = RivetFonts.Mono,
                         maxLines = 1,
                     )

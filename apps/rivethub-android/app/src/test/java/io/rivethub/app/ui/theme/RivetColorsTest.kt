@@ -7,36 +7,36 @@ import org.junit.Test
 class RivetColorsTest {
     @Test
     fun `dark tokens match the brief table exactly`() {
-        assertEquals("#0d1117", hex(RivetPalette.DarkBg))
-        assertEquals("#131a22", hex(RivetPalette.DarkPanel))
-        assertEquals("#1a232e", hex(RivetPalette.DarkPanel2))
-        assertEquals("#253041", hex(RivetPalette.DarkLine))
-        assertEquals("#161b22", hex(RivetPalette.DarkCodeBg))
-        assertEquals("#e6edf3", hex(RivetPalette.DarkInk))
-        assertEquals("#8b98a9", hex(RivetPalette.DarkInkDim))
-        assertEquals("#34d399", hex(RivetPalette.DarkEm))
-        assertEquals("#10b981", hex(RivetPalette.DarkEmDim))
-        assertEquals("#f87171", hex(RivetPalette.DarkRed))
-        assertEquals("#fbbf24", hex(RivetPalette.DarkWarn))
-        assertEquals("#79c0ff", hex(RivetPalette.DarkLink))
-        assertEquals("#d0d0d0", hex(RivetPalette.DarkAssistant))
+        assertEquals("#ff0d1117", hex(RivetPalette.DarkBg))
+        assertEquals("#ff131a22", hex(RivetPalette.DarkPanel))
+        assertEquals("#ff1a232e", hex(RivetPalette.DarkPanel2))
+        assertEquals("#ff253041", hex(RivetPalette.DarkLine))
+        assertEquals("#ff161b22", hex(RivetPalette.DarkCodeBg))
+        assertEquals("#ffe6edf3", hex(RivetPalette.DarkInk))
+        assertEquals("#ff8b98a9", hex(RivetPalette.DarkInkDim))
+        assertEquals("#ff34d399", hex(RivetPalette.DarkEm))
+        assertEquals("#ff10b981", hex(RivetPalette.DarkEmDim))
+        assertEquals("#fff87171", hex(RivetPalette.DarkRed))
+        assertEquals("#fffbbf24", hex(RivetPalette.DarkWarn))
+        assertEquals("#ff79c0ff", hex(RivetPalette.DarkLink))
+        assertEquals("#ffd0d0d0", hex(RivetPalette.DarkAssistant))
     }
 
     @Test
     fun `light tokens match the brief table exactly`() {
-        assertEquals("#f6f4ee", hex(RivetPalette.LightBg))
-        assertEquals("#fdfcf8", hex(RivetPalette.LightPanel))
-        assertEquals("#eae7dd", hex(RivetPalette.LightPanel2))
-        assertEquals("#d6d1c2", hex(RivetPalette.LightLine))
-        assertEquals("#efede5", hex(RivetPalette.LightCodeBg))
-        assertEquals("#20293a", hex(RivetPalette.LightInk))
-        assertEquals("#5b6879", hex(RivetPalette.LightInkDim))
-        assertEquals("#059669", hex(RivetPalette.LightEm))
-        assertEquals("#10b981", hex(RivetPalette.LightEmDim))
-        assertEquals("#dc2626", hex(RivetPalette.LightRed))
-        assertEquals("#b45309", hex(RivetPalette.LightWarn))
-        assertEquals("#0969da", hex(RivetPalette.LightLink))
-        assertEquals("#20293a", hex(RivetPalette.LightAssistant))
+        assertEquals("#fff6f4ee", hex(RivetPalette.LightBg))
+        assertEquals("#fffdfcf8", hex(RivetPalette.LightPanel))
+        assertEquals("#ffeae7dd", hex(RivetPalette.LightPanel2))
+        assertEquals("#ffd6d1c2", hex(RivetPalette.LightLine))
+        assertEquals("#ffefede5", hex(RivetPalette.LightCodeBg))
+        assertEquals("#ff20293a", hex(RivetPalette.LightInk))
+        assertEquals("#ff5b6879", hex(RivetPalette.LightInkDim))
+        assertEquals("#ff059669", hex(RivetPalette.LightEm))
+        assertEquals("#ff10b981", hex(RivetPalette.LightEmDim))
+        assertEquals("#ffdc2626", hex(RivetPalette.LightRed))
+        assertEquals("#ffb45309", hex(RivetPalette.LightWarn))
+        assertEquals("#ff0969da", hex(RivetPalette.LightLink))
+        assertEquals("#ff3c4756", hex(RivetPalette.LightAssistant))
     }
 
     @Test
@@ -65,8 +65,12 @@ class RivetColorsTest {
         }
     }
 
-    private fun hex(argb: Long): String {
-        val rgb = (argb and 0xFFFFFFL).toInt()
-        return "#" + rgb.toString(16).padStart(6, '0')
+    @Test
+    fun `assistant differs from ink in each theme`() {
+        assertNotEquals("light assistant must differ from ink", RivetPalette.LightInk, RivetPalette.LightAssistant)
+        assertNotEquals("dark assistant must differ from ink", RivetPalette.DarkInk, RivetPalette.DarkAssistant)
+        assertNotEquals(RivetPalette.DarkPanel, RivetPalette.DarkBg)
     }
+
+    private fun hex(argb: Long): String = "#" + java.lang.Long.toHexString(argb).padStart(8, '0')
 }
