@@ -1,5 +1,6 @@
 package io.rivethub.app.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
 import io.rivethub.app.plane.hubTabOf
+import io.rivethub.app.plane.hubTabOnBack
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.RivetDrawerContent
 import io.rivethub.app.ui.components.RivetModalSheet
@@ -58,6 +60,12 @@ fun HubScreen(
     val tab = when (st.tab) {
         HubViewModel.Tab.Settings -> HubTab.Settings
         HubViewModel.Tab.Conversations -> HubTab.Conversations
+    }
+    BackHandler(enabled = hubTabOnBack(tab) != null) {
+        when (hubTabOnBack(tab)) {
+            HubTab.Conversations -> vm.setTab(HubViewModel.Tab.Conversations)
+            HubTab.Settings, null -> Unit
+        }
     }
     fun openDrawer() { scope.launch { drawerState.open() } }
     fun closeDrawer() { scope.launch { drawerState.close() } }

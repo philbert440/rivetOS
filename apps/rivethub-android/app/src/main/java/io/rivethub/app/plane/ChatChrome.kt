@@ -2,22 +2,12 @@ package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.MessageUsage
 import io.rivethub.app.gateway.WsStatus
-import java.time.Instant
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** Phone composer pickers collapse to icon+chevron below this width. */
 const val PICKER_COMPACT_MAX_DP = 380f
-
-/** Time-only stamp; ts 0 (lost on backfill) shows nothing rather than 1970. */
-fun stamp(ts: Long, zone: ZoneId = ZoneId.systemDefault(), locale: Locale = Locale.US): String? {
-    if (ts <= 0L) return null
-    val z = Instant.ofEpochMilli(ts).atZone(zone)
-    return DateTimeFormatter.ofPattern("hh:mm a", locale).format(z)
-}
 
 fun formatCount(n: Int): String = String.format(Locale.US, "%,d", n)
 
@@ -39,8 +29,6 @@ data class ContextBarView(
             append('%')
             if (estimated) append(" est.")
         }
-
-    val pctLabel: String get() = "$pct%"
 }
 
 /**
@@ -60,20 +48,17 @@ fun contextBarView(reported: Int?, model: String?, texts: List<String>): Context
 data class StatsLine(
     val promptLabel: String,
     val completionLabel: String,
-    val tpsLabel: String?,
-    val durationLabel: String?,
 )
 
-fun statsLineOrNull(usage: MessageUsage?, durationMs: Long?): StatsLine? {
+fun statsLineOrNull(usage: MessageUsage?): StatsLine? {
     if (usage == null) return null
-    return statsLine(usage.promptTokens, usage.completionTokens, usage.cachedTokens, durationMs)
+    return statsLine(usage.promptTokens, usage.completionTokens, usage.cachedTokens)
 }
 
 fun statsLine(
     promptTokens: Int,
     completionTokens: Int,
     cachedTokens: Int,
-    durationMs: Long?,
 ): StatsLine {
     val prompt = buildString {
         append(formatCount(promptTokens))
@@ -83,13 +68,9 @@ fun statsLine(
             append(" cached)")
         }
     }
-    val secs = if (durationMs != null && durationMs > 0L) durationMs / 1000.0 else 0.0
-    val tps = if (secs > 0.0 && completionTokens > 0) completionTokens / secs else 0.0
     return StatsLine(
         promptLabel = prompt,
         completionLabel = formatCount(completionTokens),
-        tpsLabel = if (tps > 0.0) String.format(Locale.US, "%.1f tok/s", tps) else null,
-        durationLabel = if (secs > 0.0) String.format(Locale.US, "%.1fs", secs) else null,
     )
 }
 
@@ -98,5 +79,9 @@ fun composerCanSend(ws: WsStatus, text: String, hasReadyAttachment: Boolean): Bo
     val hasBody = text.trim().isNotEmpty() || hasReadyAttachment
     return ws == WsStatus.OPEN && hasBody
 }
+
+/** Stop replaces send only while a turn is in flight AND the gate can interrupt. */
+fun composerShowsStop(inFlight: Boolean, canInterrupt: Boolean): Boolean =
+    inFlight && canInterrupt
 
 fun pickerRowCompact(widthDp: Float): Boolean = widthDp < PICKER_COMPACT_MAX_DP

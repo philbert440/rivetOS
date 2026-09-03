@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -36,6 +37,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -49,10 +53,10 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.PendingAttachment
+import io.rivethub.app.plane.composerShowsStop
 import io.rivethub.app.plane.pickerRowCompact
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
-import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -65,7 +69,6 @@ fun Composer(
     sending: Boolean,
     sendEnabled: Boolean,
     canStop: Boolean,
-    error: String?,
     onAttach: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -81,12 +84,13 @@ fun Composer(
         modifier
             .fillMaxWidth()
             .background(colors.panel.copy(alpha = 0.6f))
+            .drawBehind {
+                val y = Dimens.line.toPx() / 2f
+                drawLine(colors.line, Offset(0f, y), Offset(size.width, y), Dimens.line.toPx())
+            }
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (!error.isNullOrBlank()) {
-            Text("✗ $error", color = colors.red, style = RivetType.xs.copy(fontFamily = RivetFonts.Mono))
-        }
         ask()
         if (attachments.isNotEmpty()) {
             Row(
@@ -102,16 +106,15 @@ fun Composer(
         val focusSource = remember { MutableInteractionSource() }
         val focused by focusSource.collectIsFocusedAsState()
         val shellShape = RoundedCornerShape(Radius.xl)
-        val borderColor = if (focused) colors.em.copy(alpha = 0.6f) else colors.line
+        val innerBorder = if (focused) colors.em.copy(alpha = 0.6f) else colors.line
+        val outerRing = if (focused) colors.em.copy(alpha = 0.3f) else Color.Transparent
         Column(
             Modifier
                 .fillMaxWidth()
                 .alpha(if (connected) 1f else 0.7f)
-                .border(Dimens.line, borderColor, shellShape)
-                .then(
-                    if (focused) Modifier.border(1.dp, colors.em.copy(alpha = 0.3f), shellShape)
-                    else Modifier,
-                )
+                .border(1.dp, outerRing, shellShape)
+                .padding(1.dp)
+                .border(Dimens.line, innerBorder, shellShape)
                 .background(colors.panel, shellShape)
                 .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -123,7 +126,7 @@ fun Composer(
                 BasicTextField(
                     value = value,
                     onValueChange = onValueChange,
-                    enabled = enabled && connected && !sending,
+                    enabled = enabled,
                     textStyle = RivetType.sm.copy(color = colors.ink),
                     cursorBrush = SolidColor(colors.em),
                     keyboardOptions = KeyboardOptions(
@@ -148,8 +151,7 @@ fun Composer(
                     val attachCd = stringResource(R.string.cd_attach)
                     Box(
                         Modifier
-                            .size(32.dp)
-                            .clip(CircleShape)
+                            .size(Dimens.touchTarget)
                             .semantics {
                                 contentDescription = attachCd
                                 role = Role.Button
@@ -157,18 +159,33 @@ fun Composer(
                             .clickable(enabled = enabled && connected, role = Role.Button, onClick = onAttach),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Lucide(
-                            R.drawable.lucide_paperclip,
-                            contentDescription = null,
-                            tint = colors.inkDim,
-                            modifier = Modifier.size(16.dp),
-                        )
+                        Box(
+                            Modifier.size(32.dp).clip(CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Lucide(
+                                R.drawable.lucide_paperclip,
+                                contentDescription = null,
+                                tint = colors.inkDim,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
                     }
-                    val showStop = sending
+                    val showStop = composerShowsStop(sending, canStop)
                     val sendCd = stringResource(if (showStop) R.string.cd_stop else R.string.cd_send)
-                    val sendOn = if (showStop) canStop else sendEnabled
+                    val sendOn = if (showStop) true else sendEnabled
                     Box(
-                        Modifier.size(Dimens.touchTarget),
+                        Modifier
+                            .size(Dimens.touchTarget)
+                            .semantics {
+                                contentDescription = sendCd
+                                role = Role.Button
+                            }
+                            .clickable(
+                                enabled = enabled && sendOn,
+                                role = Role.Button,
+                                onClick = if (showStop) onStop else onSend,
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
@@ -176,16 +193,7 @@ fun Composer(
                                 .size(32.dp)
                                 .alpha(if (sendOn) 1f else 0.4f)
                                 .clip(CircleShape)
-                                .background(colors.panel2)
-                                .semantics {
-                                    contentDescription = sendCd
-                                    role = Role.Button
-                                }
-                                .clickable(
-                                    enabled = enabled && sendOn,
-                                    role = Role.Button,
-                                    onClick = if (showStop) onStop else onSend,
-                                ),
+                                .background(colors.panel2),
                             contentAlignment = Alignment.Center,
                         ) {
                             Lucide(
@@ -219,8 +227,9 @@ fun ComposerPicker(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val cd = "$title: $label"
-    Row(
+    Box(
         modifier
+            .heightIn(min = Dimens.touchTarget)
             .semantics {
                 contentDescription = cd
                 role = Role.Button
@@ -231,28 +240,33 @@ fun ComposerPicker(
                 enabled = enabled,
                 role = Role.Button,
                 onClick = { open = true },
-            )
-            .background(if (pressed) colors.panel2 else androidx.compose.ui.graphics.Color.Transparent, RoundedCornerShape(Radius.sm))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ),
+        contentAlignment = Alignment.CenterStart,
     ) {
-        Lucide(icon, contentDescription = null, tint = colors.inkDim, modifier = Modifier.size(16.dp))
-        if (!compact) {
-            Text(
-                label,
-                color = if (pressed) colors.ink else colors.inkDim,
-                style = RivetType.sm,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        Row(
+            Modifier
+                .background(if (pressed) colors.panel2 else Color.Transparent, RoundedCornerShape(Radius.sm))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Lucide(icon, contentDescription = null, tint = colors.inkDim, modifier = Modifier.size(16.dp))
+            if (!compact) {
+                Text(
+                    label,
+                    color = if (pressed) colors.ink else colors.inkDim,
+                    style = RivetType.sm,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Lucide(
+                R.drawable.lucide_chevron_down,
+                contentDescription = null,
+                tint = colors.inkDim,
+                modifier = Modifier.size(12.dp),
             )
         }
-        Lucide(
-            R.drawable.lucide_chevron_down,
-            contentDescription = null,
-            tint = colors.inkDim,
-            modifier = Modifier.size(12.dp),
-        )
     }
     RivetSelectSheet(
         visible = open,
@@ -292,7 +306,7 @@ private fun AttachmentChip(a: PendingAttachment, onRemove: () -> Unit) {
         Modifier
             .alpha(if (a.status == AttachmentStatus.UPLOADING) alpha else 1f)
             .border(Dimens.line, border, shape)
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(start = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
@@ -308,7 +322,7 @@ private fun AttachmentChip(a: PendingAttachment, onRemove: () -> Unit) {
         val remove = stringResource(R.string.cd_remove_attachment, a.name)
         Box(
             Modifier
-                .size(16.dp)
+                .size(Dimens.touchTarget)
                 .semantics {
                     contentDescription = remove
                     role = Role.Button

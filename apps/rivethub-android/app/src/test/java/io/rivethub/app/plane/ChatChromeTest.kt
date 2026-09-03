@@ -8,23 +8,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.time.Instant
-import java.time.ZoneOffset
-import java.util.Locale
 
 class ChatChromeTest {
-    @Test
-    fun `stamp formats 07 colon 00 PM`() {
-        val ts = Instant.parse("2020-01-01T19:00:00Z").toEpochMilli()
-        assertEquals("07:00 PM", stamp(ts, ZoneOffset.UTC, Locale.US))
-    }
-
-    @Test
-    fun `stamp of zero is null`() {
-        assertNull(stamp(0L))
-        assertNull(stamp(-1L))
-    }
-
     @Test
     fun `context bar uses reported tokens and is not estimated`() {
         val view = contextBarView(50_202, "claude", listOf("hello"))
@@ -35,7 +20,6 @@ class ChatChromeTest {
         assertFalse(view.hot)
         assertFalse(view.estimated)
         assertEquals("50.2k/1M · 5%", view.caption)
-        assertEquals("5%", view.pctLabel)
     }
 
     @Test
@@ -67,33 +51,22 @@ class ChatChromeTest {
 
     @Test
     fun `stats line includes cached prompt and completion`() {
-        val line = statsLine(50_202, 5, 30_032, durationMs = null)
+        val line = statsLine(50_202, 5, 30_032)
         assertEquals("50,202 (30,032 cached)", line.promptLabel)
         assertEquals("5", line.completionLabel)
-        assertNull(line.tpsLabel)
-        assertNull(line.durationLabel)
     }
 
     @Test
-    fun `stats line omits tps and duration when they are zero`() {
-        val line = statsLineOrNull(MessageUsage(promptTokens = 10, completionTokens = 4, cachedTokens = 0), 0)
+    fun `stats line omits cached when it is zero`() {
+        val line = statsLineOrNull(MessageUsage(promptTokens = 10, completionTokens = 4, cachedTokens = 0))
         assertNotNull(line)
         assertEquals("10", line!!.promptLabel)
         assertEquals("4", line.completionLabel)
-        assertNull(line.tpsLabel)
-        assertNull(line.durationLabel)
-    }
-
-    @Test
-    fun `stats line includes tps and duration when present`() {
-        val line = statsLine(100, 50, 0, durationMs = 10_000)
-        assertEquals("5.0 tok/s", line.tpsLabel)
-        assertEquals("10.0s", line.durationLabel)
     }
 
     @Test
     fun `stats line is null without usage`() {
-        assertNull(statsLineOrNull(null, 1_000))
+        assertNull(statsLineOrNull(null))
     }
 
     @Test
@@ -103,6 +76,20 @@ class ChatChromeTest {
         assertFalse(composerCanSend(WsStatus.OPEN, "  ", hasReadyAttachment = false))
         assertFalse(composerCanSend(WsStatus.CONNECTING, "hi", hasReadyAttachment = false))
         assertFalse(composerCanSend(WsStatus.CLOSED, "hi", hasReadyAttachment = true))
+    }
+
+    @Test
+    fun `composer can queue a second message while a turn is in flight`() {
+        assertTrue(composerCanSend(WsStatus.OPEN, "queued while streaming", hasReadyAttachment = false))
+        assertFalse(composerShowsStop(inFlight = true, canInterrupt = false))
+    }
+
+    @Test
+    fun `stop is shown only when the gate can interrupt`() {
+        assertTrue(composerShowsStop(inFlight = true, canInterrupt = true))
+        assertFalse(composerShowsStop(inFlight = true, canInterrupt = false))
+        assertFalse(composerShowsStop(inFlight = false, canInterrupt = true))
+        assertFalse(composerShowsStop(inFlight = false, canInterrupt = false))
     }
 
     @Test

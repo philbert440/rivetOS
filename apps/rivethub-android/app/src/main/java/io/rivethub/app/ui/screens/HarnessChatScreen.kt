@@ -3,7 +3,6 @@ package io.rivethub.app.ui.screens
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,7 +38,9 @@ import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
 import io.rivethub.app.plane.contextBarView
+import io.rivethub.app.plane.humanToolTitle
 import io.rivethub.app.plane.statsLineOrNull
+import io.rivethub.app.plane.toolArgStrings
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.components.AskUserCardView
 import io.rivethub.app.ui.components.ChatSessionHeader
@@ -47,7 +48,6 @@ import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.Composer
 import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.ModePager
-import io.rivethub.app.ui.components.OutboundChip
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
 import io.rivethub.app.ui.components.ToolRow
@@ -59,12 +59,10 @@ import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.term.clipboardText
 import io.rivethub.app.ui.term.copyText
 import io.rivethub.app.ui.theme.Dimens
-import io.rivethub.app.ui.theme.RivetTheme
 
 @Composable
 fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     val st by vm.state.collectAsState()
-    val colors = RivetTheme.colors
     val ctx = LocalContext.current
     val chatLabel = stringResource(R.string.mode_chat)
     val termLabel = stringResource(R.string.mode_terminal)
@@ -129,7 +127,6 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .background(colors.bg)
             .statusBarsPadding()
             .navigationBarsPadding()
             .imePadding(),
@@ -210,7 +207,6 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
                 sending = st.inFlight,
                 sendEnabled = sendEnabled,
                 canStop = st.gate.canInterrupt,
-                error = null,
                 onAttach = { pick.launch(arrayOf("*/*")) },
                 onSend = vm::send,
                 onStop = vm::stop,
@@ -275,11 +271,14 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
     val list = rememberLazyListState()
     val last = st.turns.size + if (st.inFlight || st.liveText.isNotBlank()) 1 else 0
     LaunchedEffect(st.turns.size, st.inFlight) {
-        if (last > 0) runCatching { list.animateScrollToItem(last) }
+        val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+        if (last > 0 && (lastVisible == null || last - lastVisible <= 2)) {
+            runCatching { list.animateScrollToItem(last) }
+        }
     }
     LaunchedEffect(st.liveText) {
-        val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return@LaunchedEffect
-        if (last > 0 && last - lastVisible <= 2) {
+        val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+        if (last > 0 && (lastVisible == null || last - lastVisible <= 2)) {
             runCatching { list.scrollToItem(last) }
         }
     }
@@ -288,7 +287,7 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        itemsIndexed(st.turns, key = { i, turn -> "$i:${turnKey(turn)}" }) { _, turn ->
+        itemsIndexed(st.turns, key = { i, turn -> "$i:${turn.role}" }) { _, turn ->
             val split = if (turn.role != "user") splitHermesReasoning(turn.text) else null
             val thinking = turn.thinking?.takeIf { it.isNotBlank() } ?: split?.reasoning.orEmpty()
             val body = split?.text ?: turn.text
@@ -296,7 +295,6 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
                 TranscriptUserTurn(
                     text = body,
                     time = null,
-                    outbound = OutboundChip.None,
                     onCopy = { copyText(ctx, it) },
                 )
             } else {
@@ -306,8 +304,10 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
                     model = turn.model,
                     time = null,
                     accent = accent,
-                    tools = turn.tools.orEmpty().map { ToolRow(it.name, it.status) },
-                    stats = statsLineOrNull(turn.usage, null),
+                    tools = turn.tools.orEmpty().map {
+                        ToolRow(humanToolTitle(it.name, toolArgStrings(it.args)), it.status)
+                    },
+                    stats = statsLineOrNull(turn.usage),
                     onCopy = { copyText(ctx, it) },
                 )
             }
@@ -330,6 +330,3 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
         item { Spacer(Modifier.height(Dimens.grid2)) }
     }
 }
-
-private fun turnKey(turn: io.rivethub.app.gateway.HarnessTranscriptTurn): String =
-    "${turn.role}\n${turn.text}\n${turn.thinking.orEmpty()}\n${turn.model.orEmpty()}"

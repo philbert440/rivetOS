@@ -31,7 +31,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.ContextBarView
-import androidx.compose.ui.draw.alpha
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetFonts
@@ -169,23 +168,6 @@ fun ChatStatusStrip(
             }
             .padding(horizontal = 16.dp, vertical = 6.dp),
     )
-}
-
-@Composable
-fun ChatEmptyState(modifier: Modifier = Modifier) {
-    val colors = RivetTheme.colors
-    Column(
-        modifier.fillMaxWidth().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        DenBot(size = 64.dp, modifier = Modifier.alpha(0.9f), decorative = true)
-        Text(
-            stringResource(R.string.empty_pick_conversation),
-            color = colors.inkDim,
-            style = RivetType.sm,
-        )
-    }
 }
 
 @Composable

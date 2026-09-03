@@ -312,7 +312,7 @@ fun TerminalKeyBar(
         ToolbarKey.Label("down", stringResource(R.string.term_down)),
         ToolbarKey.Label("left", stringResource(R.string.term_left)),
         ToolbarKey.Label("right", stringResource(R.string.term_right)),
-        ToolbarKey.IconAction("paste", R.drawable.lucide_copy, pasteCd),
+        ToolbarKey.Label("paste", pasteCd),
         ToolbarKey.IconAction("menu", R.drawable.lucide_ellipsis, menuCd),
     )
     Box(modifier.fillMaxWidth()) {

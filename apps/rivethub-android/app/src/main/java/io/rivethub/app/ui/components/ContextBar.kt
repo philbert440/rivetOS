@@ -25,7 +25,6 @@ import io.rivethub.app.ui.theme.RivetType
 fun ContextBar(
     view: ContextBarView,
     modifier: Modifier = Modifier,
-    pctOnly: Boolean = false,
 ) {
     val colors = RivetTheme.colors
     val fill = if (view.hot) colors.red else colors.em
@@ -34,25 +33,23 @@ fun ContextBar(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (!pctOnly) {
+        Box(
+            Modifier
+                .width(96.dp)
+                .height(6.dp)
+                .clip(RoundedCornerShape(Radius.full))
+                .background(colors.panel2),
+        ) {
             Box(
                 Modifier
-                    .width(96.dp)
-                    .height(6.dp)
+                    .fillMaxHeight()
+                    .fillMaxWidth(view.pct / 100f)
                     .clip(RoundedCornerShape(Radius.full))
-                    .background(colors.panel2),
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(view.pct / 100f)
-                        .clip(RoundedCornerShape(Radius.full))
-                        .background(fill),
-                )
-            }
+                    .background(fill),
+            )
         }
         Text(
-            if (pctOnly) view.pctLabel else view.caption,
+            view.caption,
             color = colors.inkDim,
             style = RivetType.mono10,
             maxLines = 1,

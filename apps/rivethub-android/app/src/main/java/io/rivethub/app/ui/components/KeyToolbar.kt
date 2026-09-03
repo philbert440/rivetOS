@@ -21,6 +21,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
@@ -68,18 +71,24 @@ fun KeyToolbar(
             val pressed = key is ToolbarKey.Sticky && key.id in latched
             Box(
                 Modifier
-                    .sizeIn(minWidth = Dimens.touchTarget, minHeight = Dimens.touchTarget),
+                    .sizeIn(minWidth = Dimens.touchTarget, minHeight = Dimens.touchTarget)
+                    .semantics {
+                        role = Role.Button
+                        if (key is ToolbarKey.IconAction) {
+                            contentDescription = key.contentDescription
+                        }
+                    }
+                    .combinedClickable(
+                        role = Role.Button,
+                        onClick = { onKey(key) },
+                        onLongClick = onLongKey?.let { handler -> { handler(key) } },
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
                     Modifier
                         .border(Dimens.line, if (pressed) colors.em else colors.line, shape)
                         .background(colors.panel2, shape)
-                        .combinedClickable(
-                            role = Role.Button,
-                            onClick = { onKey(key) },
-                            onLongClick = onLongKey?.let { handler -> { handler(key) } },
-                        )
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -96,7 +105,7 @@ fun KeyToolbar(
                         )
                         is ToolbarKey.IconAction -> Lucide(
                             key.icon,
-                            contentDescription = key.contentDescription,
+                            contentDescription = null,
                             tint = colors.ink,
                             modifier = Modifier.size(16.dp),
                         )

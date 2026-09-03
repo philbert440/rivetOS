@@ -55,4 +55,10 @@ class DrawerNavTest {
         assertEquals("99+", formatUnreadBadge(100))
         assertEquals("99+", formatUnreadBadge(250))
     }
+
+    @Test
+    fun `back from settings returns to conversations`() {
+        assertEquals(HubTab.Conversations, hubTabOnBack(HubTab.Settings))
+        assertNull(hubTabOnBack(HubTab.Conversations))
+    }
 }

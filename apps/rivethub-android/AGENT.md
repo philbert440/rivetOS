@@ -174,7 +174,7 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 334 (321 + D1b chat chrome − dead D1a helpers).
+  (`.github/workflows/android.yml`) enforces a floor of 352 (D1b fix1: markdown + tool titles + hub-back − dead stamp/tps tests).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -206,7 +206,7 @@ is the detach.
   Pixel — import the device p12 once per build type. Note the session ring is keyed by the cert CN
   (`deviceTag()` = SHA-256 of the CN), so two installs sharing one p12 share one gateway session ring;
   give the debug install its own device cert if you need them independent.
-- Assistant bodies render through `MarkdownBody` (paragraphs, inline/fenced code, lists, links). Not a full GFM port.
+- Assistant bodies render through `MarkdownBody` (ATX headings, bold/italic, blockquote, pipe tables, nested lists, inline/fenced code, http(s) links). Not a full GFM port.
 - Drafts are in-memory only (`HubViewModel` drafts list). A background-killed app loses unsent drafts
   and composer text. `+ new` is cheap; composer `rememberSaveable` is still open.
 - Never cache a `Network` handle into anything long-lived; never freeze `Network.socketFactory` onto a client.

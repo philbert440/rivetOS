@@ -29,6 +29,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -41,8 +44,6 @@ import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-enum class OutboundChip { None, Queued, Sending }
-
 data class ToolRow(
     val title: String,
     val status: String,
@@ -52,10 +53,7 @@ data class ToolRow(
 fun TranscriptUserTurn(
     text: String,
     time: String?,
-    outbound: OutboundChip = OutboundChip.None,
     onCopy: (String) -> Unit,
-    onInject: (() -> Unit)? = null,
-    onCancel: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
@@ -67,67 +65,26 @@ fun TranscriptUserTurn(
         AvatarRow(mine = true, time = time)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             Box(Modifier.align(Alignment.CenterEnd).widthIn(max = maxWidth * 0.85f)) {
-                val queued = outbound != OutboundChip.None
                 val shape = RoundedCornerShape(Radius.lg)
-                Column {
-                    Text(
-                        text,
-                        color = if (queued) colors.inkDim else colors.ink,
-                        style = RivetType.sm,
-                        modifier = Modifier
-                            .border(
-                                Dimens.line,
-                                if (queued) colors.line else colors.emDim.copy(alpha = 0.4f),
-                                shape,
-                            )
-                            .background(
-                                if (queued) colors.panel2.copy(alpha = 0.5f) else colors.emDim.copy(alpha = 0.1f),
-                                shape,
-                            )
-                            .combinedClickable(
-                                onClick = {},
-                                onLongClick = { onCopy(text) },
-                            )
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                    )
-                    CopyGlyph(
-                        copied = false,
-                        onCopy = { onCopy(text) },
-                        modifier = Modifier.align(Alignment.End).padding(top = 2.dp),
-                    )
-                }
-            }
-        }
-        if (outbound != OutboundChip.None) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
                 Text(
-                    if (outbound == OutboundChip.Queued) {
-                        stringResource(R.string.status_queued)
-                    } else {
-                        stringResource(R.string.status_sending)
-                    },
-                    color = colors.inkDim,
-                    style = RivetType.mono10,
+                    text,
+                    color = colors.ink,
+                    style = RivetType.sm,
+                    modifier = Modifier
+                        .border(Dimens.line, colors.emDim.copy(alpha = 0.4f), shape)
+                        .background(colors.emDim.copy(alpha = 0.1f), shape)
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = { onCopy(text) },
+                        )
+                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                        .padding(end = 8.dp),
                 )
-                if (outbound == OutboundChip.Queued && onInject != null) {
-                    Text(
-                        stringResource(R.string.action_inject),
-                        color = colors.em,
-                        style = RivetType.mono10,
-                        modifier = Modifier.clickable(role = Role.Button, onClick = onInject),
-                    )
-                }
-                if (onCancel != null) {
-                    Text(
-                        stringResource(R.string.action_cancel_queue),
-                        color = colors.red,
-                        style = RivetType.mono10,
-                        modifier = Modifier.clickable(role = Role.Button, onClick = onCancel),
-                    )
-                }
+                CopyGlyph(
+                    copied = false,
+                    onCopy = { onCopy(text) },
+                    modifier = Modifier.align(Alignment.TopEnd),
+                )
             }
         }
     }
@@ -162,13 +119,15 @@ fun TranscriptAssistantTurn(
         }
         if (text.isNotBlank()) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
-                Box(Modifier.widthIn(max = maxWidth * 0.85f)) {
+                Box(Modifier.widthIn(max = maxWidth * 0.85f).fillMaxWidth()) {
                     MarkdownBody(
                         text,
-                        modifier = Modifier.combinedClickable(
-                            onClick = {},
-                            onLongClick = { onCopy(text) },
-                        ),
+                        modifier = Modifier
+                            .padding(end = Dimens.touchTarget)
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClick = { onCopy(text) },
+                            ),
                     )
                     CopyGlyph(
                         copied = false,
@@ -328,8 +287,6 @@ fun StatsLineRow(stats: StatsLine, modifier: Modifier = Modifier) {
     ) {
         StatBit(R.drawable.lucide_arrow_up, stats.promptLabel, dim)
         StatBit(R.drawable.lucide_arrow_down, stats.completionLabel, dim)
-        stats.tpsLabel?.let { StatBit(R.drawable.lucide_zap, it, dim) }
-        stats.durationLabel?.let { StatBit(R.drawable.lucide_clock_3, it, dim) }
     }
 }
 
@@ -354,10 +311,14 @@ fun CopyGlyph(
     val scope = rememberCoroutineScope()
     var flash by remember { mutableStateOf(copied) }
     val shape = RoundedCornerShape(Radius.sm)
+    val cd = stringResource(if (flash) R.string.cd_copied else R.string.cd_copy_message)
     Box(
         modifier
-            .border(Dimens.line, colors.line, shape)
-            .background(colors.panel.copy(alpha = 0.9f), shape)
+            .size(Dimens.touchTarget)
+            .semantics {
+                contentDescription = cd
+                role = Role.Button
+            }
             .clickable(role = Role.Button, onClick = {
                 onCopy()
                 flash = true
@@ -365,17 +326,22 @@ fun CopyGlyph(
                     delay(1500)
                     flash = false
                 }
-            })
-            .padding(4.dp),
+            }),
         contentAlignment = Alignment.Center,
     ) {
-        Lucide(
-            if (flash) R.drawable.lucide_check else R.drawable.lucide_copy,
-            contentDescription = stringResource(
-                if (flash) R.string.cd_copied else R.string.cd_copy_message,
-            ),
-            tint = if (flash) colors.em else colors.inkDim,
-            modifier = Modifier.size(12.dp),
-        )
+        Box(
+            Modifier
+                .border(Dimens.line, colors.line, shape)
+                .background(colors.panel.copy(alpha = 0.9f), shape)
+                .padding(4.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Lucide(
+                if (flash) R.drawable.lucide_check else R.drawable.lucide_copy,
+                contentDescription = null,
+                tint = if (flash) colors.em else colors.inkDim,
+                modifier = Modifier.size(12.dp),
+            )
+        }
     }
 }
