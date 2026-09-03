@@ -23,6 +23,10 @@ data class SessionPick(val id: String, val persist: Boolean)
 /**
  * Pure session-adoption rules shared by Chat and Computer.
  *
+ * Reads the gateway session ring (`GET /api/sessions`), which omits
+ * zero-message sessions, and is superseded by the harness plane under
+ * `plane/`. Kept until M3b deletes it.
+ *
  * Override (if set) always wins. Otherwise the most-recently-active row from
  * `GET /api/sessions` is adopted. The minted `defaultSessionId` is only used
  * when the node reported zero sessions (or the fetch failed — then we do
