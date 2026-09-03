@@ -88,9 +88,13 @@ private fun parseBlockRange(lines: List<String>, from: Int, to: Int): List<MdBlo
             i = next
             continue
         }
-        val buf = StringBuilder()
-        while (i < to && !isBlockInterrupt(lines[i])) {
-            if (buf.isNotEmpty()) buf.append('\n')
+        // Paragraph: ALWAYS consume the current line first so the outer loop can never stall —
+        // a line no block consumer claims (e.g. a table row with no separator after it) must
+        // still advance `i`, or parsing hangs on the main thread (final-review B3).
+        val buf = StringBuilder(lines[i])
+        i++
+        while (i < to && !isBlockInterrupt(lines, i, to)) {
+            buf.append('\n')
             buf.append(lines[i])
             i++
         }
@@ -140,14 +144,17 @@ private fun parseList(
     return block to i
 }
 
-private fun isBlockInterrupt(line: String): Boolean {
+private fun isBlockInterrupt(lines: List<String>, i: Int, to: Int): Boolean {
+    val line = lines[i]
     if (line.isBlank()) return true
     val t = line.trimStart()
     if (t.startsWith("```")) return true
     if (headingLevel(t) != null) return true
     if (t.startsWith(">")) return true
     if (isUnordered(line) || isOrdered(line)) return true
-    if (isTableRow(line)) return true
+    // A pipe row interrupts a paragraph only when it really starts a table (separator follows);
+    // a lone `| a | b |` is paragraph text, matching the table consumer above.
+    if (isTableRow(line) && i + 1 < to && isTableSep(lines[i + 1])) return true
     return false
 }
 

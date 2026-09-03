@@ -168,4 +168,24 @@ class MarkdownTest {
         assertEquals("python", fence.lang)
         assertEquals("print(\"hi\")", fence.code)
     }
+
+    @Test(timeout = 2000)
+    fun `table row with no separator is paragraph text, never a hang`() {
+        val blocks = parseMarkdown("Here:\n| a | b |")
+        assertEquals(1, blocks.size)
+        assertTrue(blocks[0] is MdBlock.Paragraph)
+    }
+
+    @Test(timeout = 2000)
+    fun `streamed table header before its separator does not stall and later rows still parse`() {
+        // mid-stream: header row arrived, separator not yet — must return, not spin
+        val partial = parseMarkdown("text\n| x | y |\nmore")
+        assertEquals(1, partial.size)
+        assertTrue(partial[0] is MdBlock.Paragraph)
+        // once the separator lands the same text becomes paragraph + table
+        val full = parseMarkdown("text\n| x | y |\n| --- | --- |\n| 1 | 2 |")
+        assertEquals(2, full.size)
+        assertTrue(full[0] is MdBlock.Paragraph)
+        assertTrue(full[1] is MdBlock.Table)
+    }
 }
