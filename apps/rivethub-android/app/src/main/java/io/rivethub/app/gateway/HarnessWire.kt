@@ -229,7 +229,7 @@ fun isFatalHarnessEvent(event: HarnessEvent): Boolean =
     event is HarnessEvent.Error && event.code in FATAL_EVENT_CODES
 
 /** Transcript GET statuses that mean the session is gone, not transient. */
-val FATAL_TRANSCRIPT_STATUS: Set<Int> = setOf(400, 404, 410, 501)
+val FATAL_TRANSCRIPT_STATUS: Set<Int> = setOf(400, 403, 404, 410, 501)
 
 fun isFatalTranscriptError(err: Throwable): Boolean =
     err is GatewayException && err.status in FATAL_TRANSCRIPT_STATUS
