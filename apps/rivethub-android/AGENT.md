@@ -13,7 +13,7 @@ runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 
 `git mv` of `apps/rivet-bots-android` (the Grok-Bot-style client, package `dev.rivetos.bots`) with the
 package renamed to `io.rivethub.app`, label "RivetHub", DataStore file "rivethub". **Zero behaviour
-change**: the Grok-Bot screens still compile and the 29 JVM tests still mean something. Everything
+change**: the Grok-Bot screens still compile and the 35 JVM tests still mean something. Everything
 `Bot*`-named in `domain/` and `ui/` is scheduled for deletion in M3a/M3b (desktop-mirroring screens on
 the harness control plane) — do not invest in it.
 
@@ -27,8 +27,8 @@ only through this seam), the turn state machine in `ui/ChatViewModel.kt`, `Herme
 ## Slices (plan §6)
 
 M1a rename + M6 CI ✔ → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
-`project.json` ✔ (this) → M2a p12 import in Settings → M1.5 design system (desktop tokens + components, Claude
-Design canvas = acceptance) → M3a pure-Kotlin plane layer (tests only) → M3b Compose conversations +
+`project.json` ✔ → M2a p12 import in Settings → M1.5 design system ✔ (this; `ui/theme` + `ui/components`,
+gallery behind Settings-title long-press) → M3a pure-Kotlin plane layer (tests only) → M3b Compose conversations +
 chat → M4 terminal mode → M5a nodes filter → M5b turn-complete notification → M7 cutover.
 
 ## Core packages
@@ -42,8 +42,12 @@ imports so an iOS port can share them behind a later Ktor swap. Enforced by
 
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
-  Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI enforces
-  a floor of 29 (bump it deliberately when the suite grows).
+  Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
+  (`.github/workflows/android.yml`) enforces a floor of 35 (bump it deliberately when the suite grows).
+- Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
+  `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
+  nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
+  sweeps would run a target named `lint`.
 - Emulator smoke (API 36, swiftshader) and wireless-adb install from the adb host: ops notes live in
   Rivet's memory, not here. The emulator does NOT enforce Android 16 Local Network Protection — device
   smoke is mandatory for anything touching networking.
@@ -63,6 +67,8 @@ imports so an iOS port can share them behind a later Ktor swap. Enforced by
 - "Open in your terminal" renders the server's `attach` descriptor; never compose the tmux command.
 
 ## Gotchas
+
+- Deferred from M1.5 (recorded here, not only in the fix notes): snackbar/toast host, `ModePager` swipe (placeholder only), `Composer.enabled=false` also disables Stop, `SelectOption.group` for grouped selects, `RivetConfirmDialog` title param, 44-dp targets on `FilterChipRow`/select trigger, `RivetSelect` `sheetState.hide()` before dismiss, `lint-android` not yet run in CI.
 
 - Harness canonical ids contain `:`; the surviving **gateway** ring ids (`Bot.defaultSessionId`) still
   must NOT, until M3a deletes that path.

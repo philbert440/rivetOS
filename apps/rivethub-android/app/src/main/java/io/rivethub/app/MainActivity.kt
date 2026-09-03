@@ -26,6 +26,7 @@ import io.rivethub.app.ui.HomeViewModel
 import io.rivethub.app.ui.LocalBotEdits
 import io.rivethub.app.ui.Nav
 import io.rivethub.app.ui.Screen
+import io.rivethub.app.ui.components.ComponentGallery
 import io.rivethub.app.ui.screens.ChatScreen
 import io.rivethub.app.ui.screens.ComputerScreen
 import io.rivethub.app.ui.screens.EditBotScreen
@@ -174,8 +175,10 @@ fun App(c: AppContainer) {
                 // Close screen sockets before the pool/client they were built on is dropped.
                 onForget = { stores.clearAll(); homeVm.shutdown(); nav.replaceAll(Screen.SignIn) },
                 onRosterChanged = { homeVm.refresh() },
+                onOpenGallery = { nav.push(Screen.Gallery) },
             )
         }
+        Screen.Gallery -> ComponentGallery()
     }
     }
 }

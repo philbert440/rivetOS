@@ -90,7 +90,7 @@ fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
 }
 
 @Composable
-fun PulsingDot(color: Color = MaterialTheme.colorScheme.tertiary, size: Int = 8) {
+fun PulsingDot(color: Color = MaterialTheme.colorScheme.primary, size: Int = 8) {
     val t = rememberInfiniteTransition(label = "pulse")
     val a by t.animateFloat(
         initialValue = 0.35f, targetValue = 1f,

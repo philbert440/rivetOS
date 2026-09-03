@@ -12,6 +12,7 @@ sealed interface Screen {
     data class Profile(val bot: Bot) : Screen
     data class EditBot(val bot: Bot) : Screen
     data object Settings : Screen
+    data object Gallery : Screen
 }
 
 /** Hand-rolled back stack — a handful of screens don't justify a navigation library. */
