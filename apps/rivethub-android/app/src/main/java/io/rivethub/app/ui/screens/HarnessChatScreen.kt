@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,8 +20,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,6 +29,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -49,12 +50,13 @@ import io.rivethub.app.ui.components.MessageBubble
 import io.rivethub.app.ui.components.ModePager
 import io.rivethub.app.ui.components.Pill
 import io.rivethub.app.ui.components.PillTone
-import io.rivethub.app.ui.components.PrimaryButton
+import io.rivethub.app.ui.components.Lucide
+import io.rivethub.app.ui.components.RivetButton
+import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetSelect
 import io.rivethub.app.ui.components.SegmentedControl
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.StreamChip
-import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.term.TerminalKeyBar
 import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.term.clipboardText
@@ -113,12 +115,10 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        TopBar(
+        ChatHeader(
             title = st.title,
             onBack = onBack,
-            actions = {
-                TopIcon(Icons.Outlined.MoreHoriz, stringResource(R.string.action_more)) { vm.setMoreOpen(!st.moreOpen) }
-            },
+            onMore = { vm.setMoreOpen(!st.moreOpen) },
             subRow = {
                 Row(
                     Modifier.padding(start = Dimens.touchTarget, end = Dimens.grid, bottom = Dimens.gridHalf),
@@ -334,7 +334,7 @@ private fun AskCard(
             Text(q.header ?: q.question ?: "", color = colors.ink, style = RivetType.body)
             q.options.forEach { opt ->
                 val selected = picked[qi].orEmpty().contains(opt.label)
-                PrimaryButton(
+                RivetButton(
                     text = opt.label,
                     onClick = {
                         picked = picked.toMutableMap().apply {
@@ -360,7 +360,7 @@ private fun AskCard(
             onValueChange = { free = it },
             placeholder = stringResource(R.string.ask_user_free),
         )
-        PrimaryButton(
+        RivetButton(
             text = stringResource(R.string.action_submit),
             onClick = { onSubmit(picked, free) },
             modifier = Modifier.fillMaxWidth(),
@@ -371,5 +371,60 @@ private fun AskCard(
             style = RivetType.meta,
             modifier = Modifier.clickable(onClick = onDismiss).padding(vertical = Dimens.grid),
         )
+    }
+}
+
+@Composable
+private fun ChatHeader(
+    title: String,
+    onBack: () -> Unit,
+    onMore: () -> Unit,
+    subRow: @Composable () -> Unit,
+) {
+    val colors = RivetTheme.colors
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(Dimens.pageHeader),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(Dimens.touchTarget)
+                    .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) {
+                Lucide(
+                    R.drawable.lucide_arrow_left,
+                    contentDescription = stringResource(R.string.action_back),
+                    tint = colors.ink,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Text(
+                title,
+                color = colors.ink,
+                style = RivetType.title,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Box(
+                Modifier
+                    .size(Dimens.touchTarget)
+                    .clickable(onClick = onMore),
+                contentAlignment = Alignment.Center,
+            ) {
+                Lucide(
+                    R.drawable.lucide_ellipsis,
+                    contentDescription = stringResource(R.string.action_more),
+                    tint = colors.ink,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        subRow()
+        Box(Modifier.fillMaxWidth().height(Dimens.line).background(colors.line))
     }
 }

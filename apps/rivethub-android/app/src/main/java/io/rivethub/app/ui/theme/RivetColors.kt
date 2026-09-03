@@ -38,8 +38,12 @@ object RivetPalette {
     const val LightLink = 0xFF0969DAL
     const val LightAssistant = 0xFF3C4756L
 
-    /** PrimaryButton label — always the dark canvas, even in light theme. */
+    /** Default-button label on `em` fills — desktop `text-bg`. */
     const val OnEm = 0xFF0D1117L
+
+    /** `--grid-line`: rgba(52,211,153,0.045) dark / rgba(5,150,105,0.07) light. */
+    const val DarkGridLine = 0x0B34D399L
+    const val LightGridLine = 0x12059669L
 }
 
 @Immutable
@@ -57,6 +61,7 @@ data class RivetColors(
     val warn: Color,
     val link: Color,
     val assistant: Color,
+    val gridLine: Color,
 )
 
 private fun token(argb: Long): Color = Color(argb)
@@ -75,6 +80,7 @@ val RivetDark = RivetColors(
     warn = token(RivetPalette.DarkWarn),
     link = token(RivetPalette.DarkLink),
     assistant = token(RivetPalette.DarkAssistant),
+    gridLine = token(RivetPalette.DarkGridLine),
 )
 
 val RivetLight = RivetColors(
@@ -91,6 +97,7 @@ val RivetLight = RivetColors(
     warn = token(RivetPalette.LightWarn),
     link = token(RivetPalette.LightLink),
     assistant = token(RivetPalette.LightAssistant),
+    gridLine = token(RivetPalette.LightGridLine),
 )
 
 val LocalRivetColors = staticCompositionLocalOf { RivetDark }

@@ -9,9 +9,10 @@ phone-shaped — same look/feel, same den backend, same harness-session model, d
 runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 `/rivet-shared/plans/rivethub-android-2026-09-02.md` (v2, reviewed); read it before changing anything.
 
-M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. `MainActivity.App()`
-routes Enroll → Hub (Conversations / Agents / Nodes / Settings) → Chat. Grok-Bot screens/VMs are
-gone from the tree (removed in the M3b commit).
+M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. D1a is desktop-parity
+chrome (drawer · conversations · settings · enroll). `MainActivity.App()` routes Enroll → Hub
+(drawer + Conversations / Settings) → Chat. Grok-Bot screens/VMs are gone from the tree
+(removed in the M3b commit).
 
 ## Where this tree came from (slice M1a, 2026-09-03)
 
@@ -41,20 +42,38 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 
 | Screen | File | ViewModel | Notes |
 |---|---|---|---|
-| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | p12 + entry URL; 401 → cert refused; `https://` only |
-| Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | BottomRail tabs; Forget calls `shutdown()` on the same instance |
-| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | recency list, pull-to-refresh, archive swipe, FAB agent picker (snackbar if none) |
-| Agents | `ui/screens/AgentsScreen.kt` | HubViewModel | `/api/agents` from every discovered node (catalog if every node returns empty); tap / ↺ / + pointer semantics |
-| Nodes | `ui/screens/NodesScreen.kt` | HubViewModel | view filter only; never rebinds an open chat; error badge is timeout/5xx only (404 harness = plane-less, no badge) |
-| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | identity, theme, terminal font; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe, VT attach |
-| Gallery | `ui/components/ComponentGallery.kt` | none | M1.5 preview |
+| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | DenBot + p12 + entry URL; 401 → cert refused; `https://` only |
+| Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Modal left drawer + Conversations (home) or Settings; Forget calls `shutdown()` on the same instance |
+| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | desktop ConversationsPane: recency list, filter after 8, archive swipe, `+ new`, no FAB / no bottom rail |
+| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe, VT attach (header is D1b) |
+| Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome preview (dark + light) |
+
+Agents live in the drawer (tap / long-press ↺ / + pointer semantics). Nodes live in the
+drawer footer sheet (view filter only; never rebinds an open chat; error badge is
+timeout/5xx only — 404 harness = plane-less, no badge).
 
 Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `themeMode`
 (`system`\|`light`\|`dark`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
 `titleOverrides`, `agentPointers` (`sessionId\tnodeBaseUrl`), `terminalFontSp`, `viewNodeId`,
-`currentAgentId`. Leftover Grok-Bot keys (`handle`, `pinned`, `hidden`, `sessionOverrides`,
-`lastSeen`, `desktopUrl`) are still decoded so a wipe is not required; their setters are gone.
+`currentAgentId`, `agentsCollapsed`. Leftover Grok-Bot keys (`handle`, `pinned`, `hidden`,
+`sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is not required;
+their setters are gone.
+
+## Design system
+
+Every visual decision traces to a desktop file under `apps/rivethub-web` (`theme.css`,
+`sidebar.tsx`, `agents-section.tsx`, `node-switcher.tsx`, `pages/chat.tsx` ConversationsPane,
+`pages/settings.tsx`, `components/ui/button.tsx`, `segmented-control.tsx`, `den-bot.tsx`).
+Do not invent Material chrome.
+
+Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13sp · mono
+`text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (DM Sans), mono =
+`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: `rounded` 4 /
+`rounded-md` 6 / `rounded-lg` 8 / `rounded-xl` 12 / `rounded-full` 999. Icons: `size-4` 16dp
+· `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a
+surfaces — no `Icons.*`. App root is `bg` + `Modifier.blueprintGrid()` (1px `--grid-line`
+every 32dp). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
 
 Chat VM is keyed `chat:<nodeDenUrl>:<sessionKey>` and torn down when that back-stack entry leaves.
 Registry watches live in HubViewModel (one unlimited Channel, sequential consumer). SessionAttach
@@ -141,7 +160,7 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 296 (255 + 41 M4 terminal tests).
+  (`.github/workflows/android.yml`) enforces a floor of 321 (297 + D1a chrome model tests).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -166,7 +185,7 @@ is the detach.
 
 ## Gotchas
 
-- Deferred from M1.5 (recorded here, not only in the fix notes): snackbar/toast host, `Composer.enabled=false` also disables Stop, `SelectOption.group` for grouped selects, 44-dp targets on `FilterChipRow`/select trigger, `RivetSelect` `sheetState.hide()` before dismiss, `lint-android` not yet run in CI.
+- Deferred from M1.5 (recorded here, not only in the fix notes): snackbar/toast host, `Composer.enabled=false` also disables Stop, `SelectOption.group` for grouped selects, `RivetSelect` `sheetState.hide()` before dismiss, `lint-android` not yet run in CI. Composer / chat transcript / terminal key bar still use Material `Icons.*` (D1b).
 - `usesCleartextTraffic=false` (manifest). Enroll and Settings refuse non-`https://` entry URLs. A mesh
   node advertising `http://` still fails; that maps to `EnrollErrorKind.Cleartext`.
 - Debug builds are `io.rivethub.app.debug`; release is `io.rivethub.app`. Both are fresh ids on the

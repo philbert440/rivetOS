@@ -1,103 +1,94 @@
 package io.rivethub.app.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.NotificationsNone
-import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
-import io.rivethub.app.plane.AccentToken
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.ChatItemKind
-import io.rivethub.app.plane.ConversationFilter
+import io.rivethub.app.plane.ConversationEmptyKind
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.LocatedChatItem
-import io.rivethub.app.plane.NodeChip
-import io.rivethub.app.plane.conversationsEmptyVisible
-import io.rivethub.app.plane.conversationsFilterChips
+import io.rivethub.app.plane.NewConversationAction
+import io.rivethub.app.plane.accentForConversation
+import io.rivethub.app.plane.conversationEmptyKind
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.filterConversations
-import io.rivethub.app.plane.harnessAccentToken
-import io.rivethub.app.plane.relativeAge
+import io.rivethub.app.plane.isActiveStatus
+import io.rivethub.app.plane.newConversationAction
 import io.rivethub.app.plane.rowPillText
+import io.rivethub.app.plane.showConversationFilter
 import io.rivethub.app.ui.HubViewModel
-import io.rivethub.app.ui.components.FilterChipRow
-import io.rivethub.app.ui.components.ListRow
-import io.rivethub.app.ui.components.Pill
+import io.rivethub.app.ui.components.ConversationRowChrome
+import io.rivethub.app.ui.components.ConversationRowStatus as RowStatus
+import io.rivethub.app.ui.components.PageHeader
 import io.rivethub.app.ui.components.RivetConfirmDialog
-import io.rivethub.app.ui.components.RivetSelectSheet
-import io.rivethub.app.ui.components.SelectOption
-import io.rivethub.app.ui.components.TopBar
-import io.rivethub.app.ui.theme.Dimens
-import io.rivethub.app.ui.theme.OnEm
-import io.rivethub.app.ui.theme.RivetColors
+import io.rivethub.app.ui.components.RivetField
+import io.rivethub.app.ui.components.RivetFieldSize
+import io.rivethub.app.ui.components.RivetModalSheet
+import io.rivethub.app.ui.components.SheetTextRow
+import io.rivethub.app.ui.components.rivetHexColor
+import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationsScreen(
     vm: HubViewModel,
     onOpenRow: (LocatedChatItem) -> Unit,
     onOpenChat: (AgentOpen) -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     val st by vm.state.collectAsState()
     val colors = RivetTheme.colors
-    val chips = conversationsFilterChips(st.nodes.map { NodeChip(it.id, it.name.ifBlank { it.id }) })
-    val chipLabels = chips.map { filterLabel(it) }
-    val selectedIndex = chips.indexOf(st.filter).coerceAtLeast(0)
     val lists = filterConversations(
         items = st.items,
         filter = st.filter,
         archived = st.archived,
-        pinnedKeys = vm.pinnedKeys(),
         query = st.query,
         titleOverrides = st.titleOverrides,
     )
-    val now by produceState(initialValue = System.currentTimeMillis()) {
-        while (true) {
-            delay(60_000)
-            value = System.currentTimeMillis()
-        }
-    }
     var archivedOpen by remember { mutableStateOf(false) }
+    var menuTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var renameTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var discardTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var renameText by remember { mutableStateOf("") }
@@ -105,150 +96,264 @@ fun ConversationsScreen(
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val noAgentsHint = stringResource(R.string.no_agents_hint)
+    val liveCount = lists.live.size
+    val empty = conversationEmptyKind(
+        lists.live.size + lists.archived.size,
+        lists.live.size,
+        lists.archived.size,
+        st.query,
+    )
+    val ptr = rememberPullToRefreshState()
 
-    Column(Modifier.fillMaxSize().background(colors.bg)) {
-        TopBar(
-            title = stringResource(R.string.title_conversations),
-            actions = {
-                TopIcon(Icons.Outlined.Search, stringResource(R.string.action_search)) { vm.setSearchOpen(!st.searchOpen) }
-                TopIcon(Icons.Outlined.NotificationsNone, stringResource(R.string.action_notifications)) { vm.setInboxOpen(true) }
-            },
-        )
-        if (st.searchOpen) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(colors.panel.copy(alpha = 0.4f)),
+    ) {
+        PageHeader(onOpenDrawer = onOpenDrawer)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    stringResource(R.string.conversations_label),
+                    color = colors.inkDim,
+                    style = RivetType.xs.copy(fontFamily = RivetType.mono11.fontFamily),
+                    maxLines = 1,
+                )
+                Box(
+                    Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(if (st.registryOpen) colors.em else colors.red),
+                )
+                Text(
+                    " ($liveCount)",
+                    color = colors.inkDim,
+                    style = RivetType.xs.copy(fontFamily = RivetType.mono11.fontFamily),
+                    maxLines = 1,
+                )
+            }
+            NewConversationButton(
+                onClick = {
+                    when (val action = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId })) {
+                        is NewConversationAction.ForAgent -> {
+                            val row = st.agents.find { it.agentId == action.agentId }
+                            if (row != null) onOpenChat(vm.openAgentAction(row, AgentAction.Plus))
+                        }
+                        NewConversationAction.PickAgent -> {
+                            if (st.agents.isEmpty()) {
+                                scope.launch { snackbar.showSnackbar(noAgentsHint) }
+                            } else {
+                                pickerOpen = true
+                            }
+                        }
+                    }
+                },
+            )
+        }
+        if (showConversationFilter(lists.live.size + lists.archived.size, st.query)) {
             RivetField(
                 value = st.query,
                 onValueChange = vm::setQuery,
-                placeholder = stringResource(R.string.search_conversations),
-                modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf),
+                placeholder = stringResource(R.string.filter_placeholder),
+                size = RivetFieldSize.Filter,
+                modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
             )
         }
-        FilterChipRow(
-            options = chipLabels,
-            selectedIndex = selectedIndex,
-            onSelectIndex = { i -> chips.getOrNull(i)?.let(vm::setFilter) },
-            modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.grid),
-        )
         HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
-        HubDiscoveringLine(st.discoveringDone, st.discoveringTotal)
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            PullToRefreshBox(isRefreshing = st.loading, onRefresh = { vm.refresh() }) {
-            LazyColumn(Modifier.fillMaxSize()) {
-                if (conversationsEmptyVisible(st.loading, lists.live.isNotEmpty(), lists.archived.isNotEmpty())) {
-                    item {
-                        Text(
-                            if (st.query.isNotBlank()) stringResource(R.string.empty_search) else stringResource(R.string.empty_conversations),
-                            color = colors.inkDim,
-                            style = RivetType.meta,
-                            modifier = Modifier.padding(Dimens.grid2),
+        Column(Modifier.weight(1f).fillMaxWidth()) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                PullToRefreshBox(
+                    isRefreshing = st.loading,
+                    onRefresh = { vm.refresh() },
+                    state = ptr,
+                    indicator = {
+                        PullToRefreshDefaults.Indicator(
+                            modifier = Modifier.align(Alignment.TopCenter),
+                            isRefreshing = st.loading,
+                            containerColor = colors.panel2,
+                            color = colors.em,
+                            state = ptr,
                         )
-                    }
-                }
-                if (lists.live.isEmpty() && lists.archived.isNotEmpty() && st.query.isBlank()) {
-                    item {
-                        Text(
-                            stringResource(R.string.everything_archived),
-                            color = colors.inkDim,
-                            style = RivetType.meta,
-                            modifier = Modifier.padding(Dimens.grid2),
-                        )
-                    }
-                }
-                items(lists.live, key = { it.item.key }) { row ->
-                    ConversationRow(
-                        row = row,
-                        title = displayTitle(row.item, st.titleOverrides),
-                        now = now,
-                        onOpen = { onOpenRow(row) },
-                        onArchive = { vm.archive(row.item.key) },
-                        onLong = {
-                            if (row.item.kind == ChatItemKind.DRAFT && !row.item.pin) discardTarget = row
-                            else {
-                                renameTarget = row
-                                renameText = displayTitle(row.item, st.titleOverrides)
+                    },
+                ) {
+                    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+                        when (empty) {
+                            ConversationEmptyKind.NoConversations -> item {
+                                EmptyLine(stringResource(R.string.empty_conversations))
                             }
-                        },
-                    )
-                }
-                if (lists.archived.isNotEmpty()) {
-                    item {
-                        Text(
-                            stringResource(R.string.archived_section, lists.archived.size),
-                            color = colors.inkDim,
-                            style = RivetType.monoPill,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { archivedOpen = !archivedOpen }
-                                .padding(horizontal = Dimens.grid2, vertical = Dimens.grid),
-                        )
-                    }
-                    if (archivedOpen) {
-                        items(lists.archived, key = { "arch-${it.item.key}" }) { row ->
-                            ConversationRow(
-                                row = row,
-                                title = displayTitle(row.item, st.titleOverrides),
-                                now = now,
-                                dim = true,
-                                onOpen = { vm.unarchive(row.item.key); onOpenRow(row) },
-                                onArchive = { vm.unarchive(row.item.key) },
-                                onLong = { vm.unarchive(row.item.key) },
+                            ConversationEmptyKind.NoMatches -> item {
+                                EmptyLine(stringResource(R.string.empty_search_for, st.query.trim()))
+                            }
+                            ConversationEmptyKind.AllArchived -> item {
+                                EmptyLine(stringResource(R.string.everything_archived))
+                            }
+                            ConversationEmptyKind.None -> Unit
+                        }
+                        items(lists.live, key = { it.item.key }) { row ->
+                            val title = displayTitle(row.item, st.titleOverrides)
+                            val agentId = vm.agentForSession(row.item.key)
+                            val preset = st.agents.find { it.agentId == agentId }?.color
+                            val hex = accentForConversation(preset, row.item.harnessId, row.item.command)
+                            ConversationRowChrome(
+                                title = title,
+                                accent = rivetHexColor(hex),
+                                onOpen = { onOpenRow(row) },
+                                onArchive = { vm.archive(row.item.key) },
+                                onLong = { menuTarget = row },
+                                rowKey = row.item.key,
+                                status = rowStatus(row),
+                                harness = rowPillText(row.item.model, null, row.item.harnessId),
                             )
                         }
+                        if (archivedOpen) {
+                            items(lists.archived, key = { "arch-${it.item.key}" }) { row ->
+                                val title = displayTitle(row.item, st.titleOverrides)
+                                val agentId = vm.agentForSession(row.item.key)
+                                val preset = st.agents.find { it.agentId == agentId }?.color
+                                val hex = accentForConversation(preset, row.item.harnessId, row.item.command)
+                                ConversationRowChrome(
+                                    title = title,
+                                    accent = rivetHexColor(hex),
+                                    onOpen = { vm.unarchive(row.item.key); onOpenRow(row) },
+                                    onArchive = { vm.unarchive(row.item.key) },
+                                    onLong = { menuTarget = row },
+                                    rowKey = "arch-${row.item.key}",
+                                    archived = true,
+                                    harness = rowPillText(row.item.model, null, row.item.harnessId),
+                                )
+                            }
+                        }
+                        item { HubDiscoveringLine(st.discoveringDone, st.discoveringTotal) }
+                        item { Spacer(Modifier.height(24.dp)) }
                     }
                 }
-                item { Spacer(Modifier.height(72.dp)) }
+                SnackbarHost(
+                    hostState = snackbar,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp),
+                ) { data ->
+                    val shape = RoundedCornerShape(Radius.md)
+                    Snackbar(
+                        snackbarData = data,
+                        containerColor = colors.panel2,
+                        contentColor = colors.ink,
+                        actionColor = colors.em,
+                        shape = shape,
+                        modifier = Modifier.border(1.dp, colors.line, shape),
+                    )
+                }
             }
-            }
-            FloatingActionButton(
-                onClick = {
-                    if (st.agents.isEmpty()) {
-                        scope.launch { snackbar.showSnackbar(noAgentsHint) }
-                    } else {
-                        pickerOpen = true
-                    }
-                },
-                containerColor = colors.em,
-                contentColor = OnEm,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(Dimens.grid2),
-            ) {
-                Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.action_new))
-            }
-            SnackbarHost(
-                hostState = snackbar,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 88.dp),
-            ) { data ->
-                Snackbar(snackbarData = data, containerColor = colors.panel, contentColor = colors.ink)
+            if (lists.archived.isNotEmpty()) {
+                Text(
+                    stringResource(
+                        if (archivedOpen) R.string.archived_expanded else R.string.archived_collapsed,
+                        lists.archived.size,
+                    ),
+                    color = colors.inkDim,
+                    style = RivetType.mono11,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .drawArchivedBorder(colors.line)
+                        .clickable { archivedOpen = !archivedOpen }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                )
             }
         }
     }
 
-    RivetSelectSheet(
-        visible = pickerOpen,
-        onDismiss = { pickerOpen = false },
-        title = stringResource(R.string.pick_agent),
-        options = st.agents.map { SelectOption(it.agentId, "${it.name} · ${it.nodeName}") },
-        value = st.prefs.currentAgentId,
-        onChange = { id ->
-            pickerOpen = false
-            val row = st.agents.find { it.agentId == id }
-            if (row != null) onOpenChat(vm.openAgentAction(row, AgentAction.Plus))
-        },
-    )
-
-    if (st.inboxOpen) {
-        InboxSheet(st.inbox, onDismiss = { vm.setInboxOpen(false) })
+    if (pickerOpen) {
+        RivetModalSheet(onDismiss = { pickerOpen = false }) {
+            Text(
+                stringResource(R.string.pick_agent),
+                color = colors.inkDim,
+                style = RivetType.mono10,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+            st.agents.forEach { agent ->
+                Text(
+                    "${agent.name} · ${agent.nodeName}",
+                    color = colors.ink,
+                    style = RivetType.xs,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .sizeIn(minHeight = 44.dp)
+                        .clickable {
+                            pickerOpen = false
+                            onOpenChat(vm.openAgentAction(agent, AgentAction.Plus))
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
+        }
     }
-    renameTarget?.let { target ->
-        RenameDialog(
-            title = stringResource(R.string.rename_title),
-            value = renameText,
-            onValue = { renameText = it },
-            onSave = {
-                vm.rename(target.item.key, renameText)
-                renameTarget = null
+
+    menuTarget?.let { target ->
+        ConversationMenuSheet(
+            target = target,
+            title = displayTitle(target.item, st.titleOverrides),
+            archived = target.item.key in st.archived,
+            onDismiss = { menuTarget = null },
+            onRename = {
+                renameText = displayTitle(target.item, st.titleOverrides)
+                renameTarget = target
+                menuTarget = null
             },
-            onDismiss = { renameTarget = null },
+            onArchive = {
+                if (target.item.key in st.archived) vm.unarchive(target.item.key) else vm.archive(target.item.key)
+                menuTarget = null
+            },
+            onDiscard = {
+                discardTarget = target
+                menuTarget = null
+            },
         )
     }
+
+    renameTarget?.let { target ->
+        RivetModalSheet(onDismiss = { renameTarget = null }) {
+            Column(Modifier.imePadding()) {
+                Text(
+                    stringResource(R.string.rename_title),
+                    color = colors.em,
+                    style = RivetType.sm,
+                    modifier = Modifier.padding(8.dp),
+                )
+                RivetField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    placeholder = stringResource(R.string.rename_hint),
+                    size = RivetFieldSize.Rename,
+                )
+                Row(
+                    Modifier.padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    io.rivethub.app.ui.components.RivetButton(
+                        text = stringResource(R.string.action_save),
+                        onClick = {
+                            vm.rename(target.item.key, renameText)
+                            renameTarget = null
+                        },
+                    )
+                    io.rivethub.app.ui.components.RivetButton(
+                        text = stringResource(R.string.action_cancel),
+                        onClick = { renameTarget = null },
+                        variant = io.rivethub.app.ui.components.RivetButtonVariant.Outline,
+                    )
+                }
+            }
+        }
+    }
+
     discardTarget?.let { target ->
         RivetConfirmDialog(
             title = stringResource(R.string.discard_title),
@@ -266,75 +371,56 @@ fun ConversationsScreen(
 }
 
 @Composable
-private fun ConversationRow(
-    row: LocatedChatItem,
+private fun ConversationMenuSheet(
+    target: LocatedChatItem,
     title: String,
-    now: Long,
-    onOpen: () -> Unit,
+    archived: Boolean,
+    onDismiss: () -> Unit,
+    onRename: () -> Unit,
     onArchive: () -> Unit,
-    onLong: () -> Unit,
-    dim: Boolean = false,
+    onDiscard: () -> Unit,
 ) {
     val colors = RivetTheme.colors
-    val state = rememberSwipeToDismissBoxState(
-        confirmValueChange = { v ->
-            if (v == SwipeToDismissBoxValue.EndToStart) {
-                onArchive()
-                true
-            } else false
-        },
-    )
-    val accent = harnessAccentToken(row.item.harnessId, row.item.command).color(colors)
-    val pill = rowPillText(row.item.model, null, row.item.harnessId)
-    val age = relativeAge(row.item.updatedAt, now)
-    SwipeToDismissBox(
-        state = state,
-        enableDismissFromStartToEnd = false,
-        backgroundContent = {
-            Box(
-                Modifier.fillMaxSize().background(colors.red).padding(horizontal = Dimens.grid2),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Text(stringResource(R.string.action_archive), color = colors.bg, style = RivetType.meta)
-            }
-        },
-    ) {
-        ListRow(
-            title = title,
-            onClick = onOpen,
-            onLongClick = onLong,
-            accent = accent,
-            dim = dim,
-            pinned = row.item.pin,
-            meta = {
-                if (pill.isNotBlank()) {
-                    Pill(pill)
-                    Spacer(Modifier.size(6.dp))
-                }
-                Pill(row.nodeName)
-                Spacer(Modifier.size(6.dp))
-                Text(ageLabel(age), color = colors.inkDim, style = RivetType.meta)
-            },
+    val draft = target.item.kind == ChatItemKind.DRAFT && !target.item.pin
+    RivetModalSheet(onDismiss = onDismiss) {
+        Text(title, color = colors.em, style = RivetType.sm, modifier = Modifier.padding(8.dp), maxLines = 1)
+        SheetTextRow(stringResource(R.string.action_rename), colors.ink, onRename)
+        SheetTextRow(
+            stringResource(if (archived) R.string.action_unarchive else R.string.action_archive),
+            colors.ink,
+            onArchive,
         )
+        if (draft) {
+            SheetTextRow(stringResource(R.string.action_discard), colors.red, onDiscard)
+        }
     }
 }
 
 @Composable
-internal fun ageLabel(age: io.rivethub.app.plane.RelativeAge): String = when (age) {
-    io.rivethub.app.plane.RelativeAge.Empty -> ""
-    io.rivethub.app.plane.RelativeAge.Now -> stringResource(R.string.time_now)
-    is io.rivethub.app.plane.RelativeAge.Minutes -> stringResource(R.string.time_minutes, age.n)
-    is io.rivethub.app.plane.RelativeAge.Hours -> stringResource(R.string.time_hours, age.n)
-    is io.rivethub.app.plane.RelativeAge.Days -> stringResource(R.string.time_days, age.n)
-    is io.rivethub.app.plane.RelativeAge.Weeks -> stringResource(R.string.time_weeks, age.n)
+private fun NewConversationButton(onClick: () -> Unit) {
+    io.rivethub.app.ui.components.RivetButton(
+        text = stringResource(R.string.action_new_plus),
+        onClick = onClick,
+        variant = io.rivethub.app.ui.components.RivetButtonVariant.Outline,
+        size = io.rivethub.app.ui.components.RivetButtonSize.Sm,
+    )
 }
 
 @Composable
-internal fun filterLabel(filter: ConversationFilter): String = when (filter) {
-    ConversationFilter.All -> stringResource(R.string.filter_all)
-    ConversationFilter.Active -> stringResource(R.string.filter_active)
-    ConversationFilter.Pinned -> stringResource(R.string.filter_pinned)
-    is ConversationFilter.Node -> filter.name
+private fun EmptyLine(text: String) {
+    Text(
+        text,
+        color = RivetTheme.colors.inkDim,
+        style = RivetType.xs,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+    )
+}
+
+@Composable
+private fun rowStatus(row: LocatedChatItem): RowStatus = when {
+    isActiveStatus(row.item.status) -> RowStatus.InFlight
+    row.item.status?.equals("idle", ignoreCase = true) == true -> RowStatus.Alive
+    else -> RowStatus.None
 }
 
 @Composable
@@ -344,8 +430,8 @@ internal fun HubDiscoveringLine(done: Int, total: Int) {
     Text(
         stringResource(R.string.discovering_progress, done, total),
         color = colors.inkDim,
-        style = RivetType.meta,
-        modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf),
+        style = RivetType.mono10,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
     )
 }
 
@@ -363,91 +449,20 @@ internal fun HubErrorLine(error: String?, kind: EnrollErrorKind?, onRetry: (() -
     Text(
         text,
         color = colors.red,
-        style = RivetType.meta,
+        style = RivetType.xs,
         modifier = Modifier
-            .padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
             .then(if (onRetry != null) Modifier.clickable(onClick = onRetry) else Modifier),
     )
 }
 
-internal fun AccentToken.color(c: RivetColors) = when (this) {
-    AccentToken.Em -> c.em
-    AccentToken.Link -> c.link
-    AccentToken.Warn -> c.warn
-    AccentToken.Red -> c.red
-    AccentToken.InkDim -> c.inkDim
-}
-
-@Composable
-internal fun TopIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    desc: String,
-    onClick: () -> Unit,
-) {
-    Box(
-        Modifier.size(Dimens.touchTarget).clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, contentDescription = desc, tint = RivetTheme.colors.ink, modifier = Modifier.size(22.dp))
-    }
-}
-
-@Composable
-private fun InboxSheet(items: List<HubViewModel.InboxItem>, onDismiss: () -> Unit) {
-    val colors = RivetTheme.colors
-    androidx.compose.material3.ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = colors.panel,
-        contentColor = colors.ink,
-        tonalElevation = 0.dp,
-    ) {
-        Text(
-            stringResource(R.string.inbox_title),
-            color = colors.ink,
-            style = RivetType.title,
-            modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.grid),
+private fun Modifier.drawArchivedBorder(color: androidx.compose.ui.graphics.Color): Modifier =
+    drawBehind {
+        val stroke = 1.dp.toPx()
+        drawLine(
+            color,
+            Offset(0f, stroke / 2f),
+            Offset(size.width, stroke / 2f),
+            stroke,
         )
-        if (items.isEmpty()) {
-            Text(
-                stringResource(R.string.empty_inbox),
-                color = colors.inkDim,
-                style = RivetType.meta,
-                modifier = Modifier.padding(Dimens.grid2),
-            )
-        } else {
-            items.forEach { item ->
-                Text(item.text, color = colors.ink, style = RivetType.body, modifier = Modifier.padding(Dimens.grid2))
-            }
-        }
-        Spacer(Modifier.height(Dimens.grid2))
     }
-}
-
-@Composable
-private fun RenameDialog(
-    title: String,
-    value: String,
-    onValue: (String) -> Unit,
-    onSave: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val colors = RivetTheme.colors
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = colors.panel,
-        title = { Text(title, color = colors.ink, style = RivetType.title) },
-        text = {
-            RivetField(value = value, onValueChange = onValue, placeholder = stringResource(R.string.rename_hint))
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(onClick = onSave) {
-                Text(stringResource(R.string.action_save), color = colors.em, style = RivetType.meta)
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.action_cancel), color = colors.inkDim, style = RivetType.meta)
-            }
-        },
-    )
-}

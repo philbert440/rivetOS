@@ -10,6 +10,7 @@ import io.rivethub.app.gateway.HarnessSessionSummary
 import io.rivethub.app.gateway.LegacyHarnessSession
 import io.rivethub.app.gateway.AgentPreset
 import io.rivethub.app.gateway.CatalogAgent
+import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentNodeHint
 import io.rivethub.app.plane.AgentOpen
@@ -28,17 +29,14 @@ import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.finishRefresh
 import io.rivethub.app.plane.listableHarnesses
 import io.rivethub.app.plane.locate
-import io.rivethub.app.plane.newDraftId
 import io.rivethub.app.plane.openAgent
 import io.rivethub.app.plane.pinChatItems
-import io.rivethub.app.plane.pointerSessionKeys
 import io.rivethub.app.plane.rekeyPinnedDraft
 import io.rivethub.app.plane.requestRefresh
 import io.rivethub.app.plane.sortLocatedByRecency
 import io.rivethub.app.plane.supersedeRefresh
 import io.rivethub.app.plane.RefreshLatch
 import io.rivethub.app.transport.NodeRef
-import io.rivethub.app.transport.hostOfUrl
 import io.rivethub.app.plane.NODE_BUNDLE_TIMEOUT_MS
 import io.rivethub.app.plane.fetchAfterHealthz
 import io.rivethub.app.plane.fetchBundlesProgressively
@@ -54,7 +52,7 @@ import kotlinx.coroutines.launch
 import java.io.Closeable
 
 class HubViewModel(private val c: AppContainer) : ViewModel() {
-    enum class Tab { Conversations, Agents, Nodes, Settings }
+    enum class Tab { Conversations, Settings }
 
     data class DraftRow(
         val id: String,
@@ -74,7 +72,6 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val agents: List<AgentRow> = emptyList(),
         val filter: ConversationFilter = ConversationFilter.All,
         val query: String = "",
-        val searchOpen: Boolean = false,
         val archived: Set<String> = emptySet(),
         val titleOverrides: Map<String, String> = emptyMap(),
         val loading: Boolean = false,
@@ -84,9 +81,9 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val discoveringDone: Int = 0,
         val discoveringTotal: Int = 0,
         val inbox: List<InboxItem> = emptyList(),
-        val inboxOpen: Boolean = false,
         val prefs: Prefs = Prefs(),
         val identityGen: Int = 0,
+        val registryOpen: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -99,6 +96,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     private val legacy = HashMap<String, Result<List<LegacyHarnessSession>>>()
     private val descriptors = HashMap<String, List<HarnessDescriptor>>()
     private val watches = HashMap<String, Closeable>()
+    private val watchStatus = java.util.concurrent.ConcurrentHashMap<String, WsStatus>()
     private var refreshLatch = RefreshLatch()
     private var refreshJob: Job? = null
     private val registryFrames = Channel<RegistryMail>(Channel.UNLIMITED)
@@ -146,12 +144,42 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         viewModelScope.launch { c.settings.setViewNodeId(nodeId) }
     }
     fun setQuery(q: String) = _state.update { it.copy(query = q) }
-    fun setSearchOpen(open: Boolean) = _state.update { it.copy(searchOpen = open, query = if (open) it.query else "") }
-    fun setInboxOpen(open: Boolean) = _state.update { it.copy(inboxOpen = open) }
 
-    fun selectViewNode(node: NodeRef) {
-        _state.update { it.copy(filter = ConversationFilter.Node(node.id, node.name.ifBlank { node.id }), tab = Tab.Conversations) }
-        viewModelScope.launch { c.settings.setViewNodeId(node.id) }
+    fun selectViewNode(nodeId: String, nodeName: String) {
+        val already = _state.value.prefs.viewNodeId == nodeId
+        if (already) {
+            _state.update { it.copy(filter = ConversationFilter.All, tab = Tab.Conversations) }
+            viewModelScope.launch { c.settings.setViewNodeId("") }
+        } else {
+            _state.update {
+                it.copy(
+                    filter = ConversationFilter.Node(nodeId, nodeName),
+                    tab = Tab.Conversations,
+                )
+            }
+            viewModelScope.launch { c.settings.setViewNodeId(nodeId) }
+        }
+    }
+
+    fun setAgentsCollapsed(collapsed: Boolean) {
+        viewModelScope.launch { c.settings.setAgentsCollapsed(collapsed) }
+    }
+
+    fun removeSavedNode(url: String) {
+        viewModelScope.launch {
+            c.settings.removeExtraNode(url)
+            val st = _state.value
+            val hit = st.nodes.find { it.denUrl.trimEnd('/') == url.trim().trimEnd('/') }
+            if (hit != null && st.prefs.viewNodeId == hit.id) c.settings.setViewNodeId("")
+            refresh()
+        }
+    }
+
+    fun addSavedNode(url: String) {
+        viewModelScope.launch {
+            c.settings.addExtraNode(url.trim().trimEnd('/'))
+            refresh()
+        }
     }
 
     fun archive(key: String) {
@@ -172,32 +200,12 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         rebuildItems()
     }
 
-    fun pinnedKeys(): Set<String> = pointerSessionKeys(pointers)
-
     fun agentForSession(sessionId: String): String? = pointers.agentForSession(sessionId)
 
     fun adoptChatPointer(agentId: String?, from: String, canonical: String, nodeDenUrl: String) {
         if (!rekeyPinnedDraft(pointers, agentId, from, canonical, nodeDenUrl)) return
         viewModelScope.launch { persistPointers() }
         rebuildItems()
-    }
-
-    fun newConversation(): AgentOpen {
-        val st = _state.value
-        val agent = st.agents.find { it.agentId == st.prefs.currentAgentId } ?: st.agents.firstOrNull()
-        if (agent != null) {
-            val open = openAgent(pointers, agent.agentId, agent.nodeDenUrl, agent.harnessId, AgentAction.Plus)
-                .copy(model = agent.model, effort = agent.effort)
-            if (open.draft) addDraft(open, agent.nodeId, agent.nodeName)
-            viewModelScope.launch { persistPointers() }
-            return open
-        }
-        val node = st.nodes.firstOrNull { it.denUrl == st.prefs.entryUrl } ?: st.nodes.firstOrNull()
-            ?: NodeRef(hostOfUrl(st.prefs.entryUrl), hostOfUrl(st.prefs.entryUrl), st.prefs.entryUrl, true)
-        val id = newDraftId()
-        val open = AgentOpen(id, node.denUrl, null, draft = true, pinMoved = false)
-        addDraft(open, node.id, node.name)
-        return open
     }
 
     fun openAgentAction(row: AgentRow, action: AgentAction): AgentOpen {
@@ -433,15 +441,23 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
 
     private fun startWatches(nodes: List<NodeRef>, identityGen: Int) {
         val live = nodes.map { it.denUrl.trimEnd('/') }.toSet()
-        (watches.keys - live).forEach { watches.remove(it)?.close() }
+        (watches.keys - live).forEach { url ->
+            watches.remove(url)?.close()
+            watchStatus.remove(url)
+        }
         for (node in nodes) {
             val url = node.denUrl.trimEnd('/')
             if (watches.containsKey(url)) continue
             val hg = c.harness(url)
             watches[url] = hg.watchRegistry(
                 onEvent = { event -> registryFrames.trySend(RegistryMail(url, event, identityGen)) },
+                onStatus = { status ->
+                    watchStatus[url] = status
+                    _state.update { it.copy(registryOpen = watchStatus.values.any { s -> s == WsStatus.OPEN }) }
+                },
             )
         }
+        _state.update { it.copy(registryOpen = watchStatus.values.any { it == WsStatus.OPEN }) }
     }
 
     private fun onRegistry(nodeUrl: String, event: HarnessEvent, identityGen: Int) {
@@ -532,6 +548,8 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     private fun closeWatches() {
         watches.values.forEach { it.close() }
         watches.clear()
+        watchStatus.clear()
+        _state.update { it.copy(registryOpen = false) }
     }
 
     private data class NodeBundle(
