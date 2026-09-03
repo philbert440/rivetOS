@@ -186,6 +186,7 @@ class HarnessChatViewModel(
                 publishMachine()
                 viewModelScope.launch {
                     runCatching { pump.pump() }.onFailure { e ->
+                        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
                         _state.update {
                             it.copy(
                                 error = e.message ?: e.javaClass.simpleName,
@@ -464,7 +465,8 @@ class HarnessChatViewModel(
     }
 
     private suspend fun actuallySend(text: String) {
-        if (c.identity.generation() != identityGen) return
+        if (c.identity.generation() != identityGen) { io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send dropped: identity generation changed", null); return }
+        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send: draft=${_state.value.draft} session=${_state.value.sessionId} node=$nodeDenUrl", null)
         val st = _state.value
         when (val action = chatSendAction(st.draft, st.sessionId, text)) {
             is ChatSendAction.Inject -> injectDraft(action)
@@ -488,6 +490,7 @@ class HarnessChatViewModel(
         while (true) {
             try {
                 withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
+                io.rivethub.app.data.AndroidLogger.warn("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
                 return
             } catch (e: Exception) {
                 if (nextInjectTry(failed = true, alreadyRetried = retried) == null) throw e
@@ -526,8 +529,10 @@ class HarnessChatViewModel(
                         )
                     }
                     ptyId = spawned.id
+                    io.rivethub.app.data.AndroidLogger.warn("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
                     return spawned.id
                 } catch (e: Exception) {
+                    io.rivethub.app.data.AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
                     last = e
                 }
             }
