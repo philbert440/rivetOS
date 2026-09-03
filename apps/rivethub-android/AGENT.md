@@ -63,7 +63,9 @@ chat → M4 terminal mode → M5a nodes filter → M5b turn-complete notificatio
 - Deferred to M1.5 on purpose: `Theme.RivetBots` / `RivetBotsTheme` identifiers (theme is replaced
   wholesale there). `package.json` version tracks the monorepo release train, not `versionName`.
 - Debug builds are `io.rivethub.app.debug`; release is `io.rivethub.app`. Both are fresh ids on the
-  Pixel — import the device p12 once per build type.
+  Pixel — import the device p12 once per build type. Note the session ring is keyed by the cert CN
+  (`deviceTag()` = SHA-256 of the CN), so two installs sharing one p12 share one gateway session ring;
+  give the debug install its own device cert if you need them independent.
 
 - Never cache a `Network` handle into anything long-lived; never freeze `Network.socketFactory` onto a client.
 - No private IPs anywhere in this tree (CI secret-scan + private-net rule); placeholders use 192.0.2.x.

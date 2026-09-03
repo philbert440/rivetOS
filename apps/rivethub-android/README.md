@@ -8,7 +8,7 @@ Plan and slice status: see `AGENT.md`. Build: `./gradlew :app:assembleDebug :app
 
 ## First run (until QR enrollment exists)
 
-1. On the CA host: `scripts/rivet-ca.sh issue-client device:<your-device-id>` and export a PKCS#12
+1. On the CA host: `scripts/rivet-ca.sh issue-client <your-device-id>` (the script prefixes `device:` itself` and export a PKCS#12
    that includes the chain (`openssl pkcs12 -export -in <crt> -inkey <key> -certfile <chain> -out <id>.p12`).
 2. Ask the mesh operator to add `<your-device-id>` to the users registry (the gateway fails closed on an
    unknown device).
