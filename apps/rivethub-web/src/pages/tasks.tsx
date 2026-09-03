@@ -314,8 +314,7 @@ export function TaskDetailPage(): JSX.Element {
       <div className="mb-1 font-mono text-[11px] text-ink-dim">{t.id}</div>
       <h1 className="mb-4 text-lg">{t.goal}</h1>
 
-      <div className="mb-6 overflow-x-auto">
-      <div className="grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 font-mono text-xs sm:grid-cols-3">
+      <div className="mb-6 grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 font-mono text-xs sm:grid-cols-3">
         <Cell k="status" v={t.status} className={STATUS_COLORS[t.status]} />
         <Cell k="agent" v={t.agentId} />
         <Cell k="executor" v={`${t.executor}${t.executorTarget ? `/${t.executorTarget}` : ''}`} />
@@ -329,7 +328,6 @@ export function TaskDetailPage(): JSX.Element {
           <Cell k="eval" v="pending" className="text-ink-dim" />
         )}
         {t.evalAttempt > 0 && <Cell k="retries" v={String(t.evalAttempt)} />}
-      </div>
       </div>
 
       {t.result && (

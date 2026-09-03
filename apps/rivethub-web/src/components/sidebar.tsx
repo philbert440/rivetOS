@@ -2,7 +2,9 @@ import type { JSX } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
+import { useChat } from '../stores/chat.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
@@ -45,6 +47,7 @@ function NavLink(props: {
 }): JSX.Element {
   const Icon = props.icon
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const narrow = useIsNarrow()
   const active =
     props.to === '/'
       ? pathname === '/'
@@ -56,6 +59,11 @@ function NavLink(props: {
         aria-label={props.label}
         className={navClass(active, props.collapsed)}
         activeOptions={{ exact: props.to === '/' }}
+        onClick={() => {
+          if (shouldCloseDrawerOnSelection(narrow)) {
+            useSidebarPrefs.getState().setDrawerOpen(false)
+          }
+        }}
       >
         <Icon className={cn('size-4 shrink-0', !props.collapsed && 'mr-2')} aria-hidden />
         {!props.collapsed && props.label}
@@ -77,12 +85,16 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
       <button
         type="button"
         aria-label="Conversations"
-        aria-expanded={onChat ? !paneHidden : undefined}
-        aria-controls={onChat ? 'conversations-pane' : undefined}
+        aria-expanded={!narrow && onChat ? !paneHidden : undefined}
+        aria-controls={!narrow && onChat ? 'conversations-pane' : undefined}
         className={navClass(onChat, props.collapsed)}
         onClick={() => {
           if (narrow) {
-            if (!onChat) useSidebarPrefs.getState().openConversation()
+            useSidebarPrefs.getState().openConversation()
+            if (shouldCloseDrawerOnSelection(narrow)) {
+              useSidebarPrefs.getState().setDrawerOpen(false)
+            }
+            useChat.getState().setActive(undefined)
             void navigate({ to: '/', search: {} })
             return
           }
@@ -107,6 +119,7 @@ export function MobileTopBar(): JSX.Element {
   const markAllRead = useNotifications((s) => s.markAllRead)
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
   const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
 
   return (
@@ -114,10 +127,12 @@ export function MobileTopBar(): JSX.Element {
       <Button
         variant="ghost"
         size="icon"
+        id="hub-rail-toggle"
         aria-label="Open sidebar"
         aria-controls="hub-rail"
+        aria-expanded={drawerOpen}
         onClick={() => setDrawerOpen(true)}
-        className="size-7 shrink-0 p-0"
+        className="size-11 shrink-0 p-0"
       >
         <DenBot className="size-7 shrink-0" decorative />
       </Button>
@@ -131,7 +146,10 @@ export function MobileTopBar(): JSX.Element {
               void navigate({ to: '/tasks' })
             }}
             aria-label={`${String(unread)} unread notifications`}
-            className="flex items-center gap-1 rounded-full border border-red/50 bg-red/10 px-2 py-0.5 font-mono text-[11px] text-red hover:bg-red/20"
+            className={cn(
+              'relative flex items-center gap-1 rounded-full border border-red/50 bg-red/10 px-2 py-0.5',
+              "font-mono text-[11px] text-red hover:bg-red/20 after:absolute after:-inset-2 after:content-['']",
+            )}
           >
             <Bell className="size-3" />
             {unread > 99 ? '99+' : unread}
@@ -160,7 +178,10 @@ export function Sidebar(): JSX.Element {
   return (
     <aside
       id="hub-rail"
+      role={narrow ? 'dialog' : undefined}
       aria-modal={narrow && drawerOpen ? true : undefined}
+      aria-label={narrow ? 'Navigation' : undefined}
+      tabIndex={narrow ? -1 : undefined}
       inert={narrow && !drawerOpen ? true : undefined}
       className={
         narrow
@@ -187,7 +208,7 @@ export function Sidebar(): JSX.Element {
               if (narrow) setDrawerOpen(!drawerOpen)
               else setRailCollapsed(!railCollapsed)
             }}
-            className="size-7 shrink-0 p-0"
+            className={cn('shrink-0 p-0', narrow ? 'size-11' : 'size-7')}
           >
             <DenBot className="size-7 shrink-0" decorative />
           </Button>
@@ -204,12 +225,18 @@ export function Sidebar(): JSX.Element {
                 type="button"
                 onClick={() => {
                   markAllRead()
+                  if (shouldCloseDrawerOnSelection(narrow)) {
+                    useSidebarPrefs.getState().setDrawerOpen(false)
+                  }
                   void navigate({ to: '/tasks' })
                 }}
                 aria-label={`${String(unread)} unread notifications`}
                 className={cn(
-                  'flex items-center gap-1 rounded-full border border-red/50 bg-red/10 font-mono text-[11px] text-red hover:bg-red/20',
-                  collapsed ? 'size-4 justify-center px-0' : 'px-2 py-0.5',
+                  'relative flex items-center gap-1 rounded-full border border-red/50',
+                  'bg-red/10 font-mono text-[11px] text-red hover:bg-red/20',
+                  collapsed
+                    ? 'size-4 justify-center px-0'
+                    : "px-2 py-0.5 after:absolute after:-inset-2 after:content-['']",
                 )}
               >
                 <Bell className="size-3" />

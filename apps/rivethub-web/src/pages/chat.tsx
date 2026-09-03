@@ -1514,7 +1514,7 @@ function ActiveSession(props: {
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
+      <div className="flex max-md:flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
         {props.onBack && (
           <Button
             variant="ghost"

@@ -81,7 +81,11 @@ export function EffortPicker(props: {
           size="sm"
           disabled={props.disabled}
           title="reasoning effort"
-          className="h-8 rounded-full px-2.5 font-normal"
+          aria-label={`reasoning effort: ${current.label}`}
+          className={cn(
+            'relative h-8 rounded-full px-2.5 font-normal',
+            "after:absolute after:-inset-2 after:content-['']",
+          )}
         >
           <CurrentIcon className="size-3.5" />
           <span className="hidden sm:inline">{current.label}</span>

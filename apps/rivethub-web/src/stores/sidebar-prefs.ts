@@ -62,6 +62,11 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
           railCollapsed: state.railCollapsed ?? false,
         }
       },
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as Partial<SidebarPrefsState>),
+        drawerOpen: false,
+      }),
     },
   ),
 )

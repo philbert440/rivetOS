@@ -4,7 +4,7 @@
  * becomes the persistent sidebar; pages land in 4d-4h.
  */
 
-import { useEffect, type JSX } from 'react'
+import { useEffect, useLayoutEffect, useRef, type JSX } from 'react'
 import {
   Outlet,
   createRootRoute,
@@ -27,6 +27,7 @@ import {
   WorkflowsHubPage,
   WorkflowTriggerPage,
 } from './pages/workflows-hub.js'
+import { useChat } from './stores/chat.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
 
@@ -40,9 +41,11 @@ function RootLayout(): JSX.Element {
   const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
   const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
   const narrow = useIsNarrow()
+  const active = useChat((s) => s.active)
   const locKey = useRouterState({
     select: (s) => s.location.href,
   })
+  const wasDrawerOpen = useRef(drawerOpen)
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
   // toasts fire on any page.
@@ -51,10 +54,22 @@ function RootLayout(): JSX.Element {
     return () => useNotifications.getState().disconnect()
   }, [baseUrl, transportEpoch, connectNotifications])
 
-  // Off-canvas rail: close on every route or session-search change.
+  // Off-canvas rail: close on route change AND on session change. Draft
+  // sessions never write the URL, so href alone misses agent taps and
+  // Conversations-from-draft.
   useEffect(() => {
     useSidebarPrefs.getState().setDrawerOpen(false)
-  }, [locKey])
+  }, [locKey, active])
+
+  useLayoutEffect(() => {
+    const wasOpen = wasDrawerOpen.current
+    wasDrawerOpen.current = drawerOpen
+    if (drawerOpen && !wasOpen) {
+      document.getElementById('hub-rail')?.focus()
+    } else if (!drawerOpen && wasOpen) {
+      document.getElementById('hub-rail-toggle')?.focus()
+    }
+  }, [drawerOpen])
 
   useEffect(() => {
     if (!drawerOpen) return
@@ -78,17 +93,19 @@ function RootLayout(): JSX.Element {
       {narrow && drawerOpen && (
         <button
           type="button"
+          tabIndex={-1}
+          aria-hidden={true}
           aria-label="Close sidebar"
           className="fixed inset-0 z-30 bg-bg/70"
           onClick={() => setDrawerOpen(false)}
         />
       )}
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        className="flex min-h-0 min-w-0 flex-1 flex-col"
+        inert={narrow && drawerOpen ? true : undefined}
+      >
         {narrow && <MobileTopBar />}
-        <main
-          className="min-h-0 min-w-0 flex-1 overflow-y-auto"
-          inert={narrow && drawerOpen ? true : undefined}
-        >
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>
       </div>

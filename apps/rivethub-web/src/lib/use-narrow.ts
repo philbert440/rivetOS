@@ -27,10 +27,25 @@ export function subscribeIsNarrow(onStoreChange: () => void, maxPx = NARROW_MAX_
   return () => mql.removeEventListener('change', onStoreChange)
 }
 
+const subscribeByMaxPx = new Map<number, (onStoreChange: () => void) => () => void>()
+
+function subscribeForMaxPx(maxPx: number): (onStoreChange: () => void) => () => void {
+  let subscribe = subscribeByMaxPx.get(maxPx)
+  if (!subscribe) {
+    subscribe = (onStoreChange) => subscribeIsNarrow(onStoreChange, maxPx)
+    subscribeByMaxPx.set(maxPx, subscribe)
+  }
+  return subscribe
+}
+
+function getServerSnapshot(): boolean {
+  return false
+}
+
 export function useIsNarrow(maxPx = NARROW_MAX_PX): boolean {
   return useSyncExternalStore(
-    (onStoreChange) => subscribeIsNarrow(onStoreChange, maxPx),
+    subscribeForMaxPx(maxPx),
     () => readIsNarrow(maxPx),
-    () => false,
+    getServerSnapshot,
   )
 }

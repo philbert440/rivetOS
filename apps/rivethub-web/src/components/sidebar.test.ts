@@ -75,6 +75,8 @@ describe('rail header toggle', () => {
     const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
     expect(src).toContain('inert={narrow && !drawerOpen')
     expect(src).toContain('aria-modal={narrow && drawerOpen')
+    expect(src).toContain("role={narrow ? 'dialog'")
+    expect(src).toContain("aria-label={narrow ? 'Navigation'")
     expect(src).toContain("drawerOpen ? 'translate-x-0' : '-translate-x-full'")
   })
 

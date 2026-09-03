@@ -684,56 +684,56 @@ function ArticleBody(props: {
             <div className="border-b border-line bg-em/5 px-3 py-2 font-semibold">{p.title}</div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-xs">
-              <tbody>
-                <tr>
-                  <th className="w-24 px-3 py-1.5 text-left font-medium text-ink-dim">Status</th>
-                  <td className="py-1.5 pr-3">
-                    <Badge lastVerified={p.lastVerified} />
-                  </td>
-                </tr>
-                <tr>
-                  <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Verified</th>
-                  <td className="py-1.5 pr-3 font-mono">{fmtDate(p.lastVerified)}</td>
-                </tr>
-                <tr>
-                  <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Updated</th>
-                  <td className="py-1.5 pr-3 font-mono">{fmtDate(p.updatedAt)}</td>
-                </tr>
-                {p.aliases.length > 0 && (
+                <tbody>
                   <tr>
-                    <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Aliases</th>
+                    <th className="w-24 px-3 py-1.5 text-left font-medium text-ink-dim">Status</th>
                     <td className="py-1.5 pr-3">
-                      {p.aliases.map((a) => (
-                        <div key={a}>{a}</div>
-                      ))}
+                      <Badge lastVerified={p.lastVerified} />
                     </td>
                   </tr>
-                )}
-                {p.entities.length > 0 && (
                   <tr>
-                    <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Entities</th>
-                    <td className="py-1.5 pr-3 font-mono text-[11px]">
-                      {p.entities.map((e) => (
-                        <div key={e}>
-                          <code className="rounded bg-bg px-1">{e}</code>
-                        </div>
-                      ))}
+                    <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Verified</th>
+                    <td className="py-1.5 pr-3 font-mono">{fmtDate(p.lastVerified)}</td>
+                  </tr>
+                  <tr>
+                    <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Updated</th>
+                    <td className="py-1.5 pr-3 font-mono">{fmtDate(p.updatedAt)}</td>
+                  </tr>
+                  {p.aliases.length > 0 && (
+                    <tr>
+                      <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Aliases</th>
+                      <td className="py-1.5 pr-3">
+                        {p.aliases.map((a) => (
+                          <div key={a}>{a}</div>
+                        ))}
+                      </td>
+                    </tr>
+                  )}
+                  {p.entities.length > 0 && (
+                    <tr>
+                      <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Entities</th>
+                      <td className="py-1.5 pr-3 font-mono text-[11px]">
+                        {p.entities.map((e) => (
+                          <div key={e}>
+                            <code className="rounded bg-bg px-1">{e}</code>
+                          </div>
+                        ))}
+                      </td>
+                    </tr>
+                  )}
+                  <tr>
+                    <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Sources</th>
+                    <td className="py-1.5 pr-3 font-mono">
+                      {String(p.sources.reduce((n, s) => n + s.ids.length, 0))} linked
                     </td>
                   </tr>
-                )}
-                <tr>
-                  <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Sources</th>
-                  <td className="py-1.5 pr-3 font-mono">
-                    {String(p.sources.reduce((n, s) => n + s.ids.length, 0))} linked
-                  </td>
-                </tr>
-                {p.gitSha && (
-                  <tr>
-                    <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Git</th>
-                    <td className="py-1.5 pr-3 font-mono">{p.gitSha.slice(0, 7)}</td>
-                  </tr>
-                )}
-              </tbody>
+                  {p.gitSha && (
+                    <tr>
+                      <th className="px-3 py-1.5 text-left font-medium text-ink-dim">Git</th>
+                      <td className="py-1.5 pr-3 font-mono">{p.gitSha.slice(0, 7)}</td>
+                    </tr>
+                  )}
+                </tbody>
               </table>
             </div>
           </aside>
