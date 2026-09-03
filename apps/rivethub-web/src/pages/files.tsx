@@ -457,6 +457,7 @@ export function FilesPage(): JSX.Element {
               {filter ? 'No matches.' : 'Empty directory — drop files here or use Upload.'}
             </div>
           ) : (
+            <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="border-b border-line text-left font-mono text-[10px] text-ink-dim">
@@ -609,6 +610,7 @@ export function FilesPage(): JSX.Element {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 

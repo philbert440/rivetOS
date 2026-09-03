@@ -41,15 +41,18 @@ export const ContextBar = memo(function ContextBar(props: {
         props.model ? ` · ${props.model}` : ''
       }${est ? ' (estimated from transcript — harness did not report usage)' : ''}`}
     >
-      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-panel-2">
+      <div className="hidden h-1.5 w-24 overflow-hidden rounded-full bg-panel-2 sm:block">
         <div
           className={cn('h-full rounded-full transition-all', hot ? 'bg-red' : 'bg-em')}
           style={{ width: `${pct}%` }}
         />
       </div>
       <span className="font-mono text-[10px] text-ink-dim">
-        {est ? '~' : ''}
-        {compactTokens(tokens)}/{compactTokens(max)} · {pct}%{est ? ' est.' : ''}
+        <span className="hidden sm:inline">
+          {est ? '~' : ''}
+          {compactTokens(tokens)}/{compactTokens(max)} ·{' '}
+        </span>
+        {pct}%<span className="hidden sm:inline">{est ? ' est.' : ''}</span>
       </span>
     </div>
   )

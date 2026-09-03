@@ -84,7 +84,7 @@ export function WorkflowsHubPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
       </div>
@@ -302,7 +302,7 @@ export function WorkflowTriggerPage(): JSX.Element {
   return (
     <div
       className={
-        runWithCanvas ? '' : `mx-auto px-6 py-8 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
+        runWithCanvas ? '' : `mx-auto px-4 py-8 md:px-6 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
       }
     >
       {discardDialog.element}
@@ -636,7 +636,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
       {killDialog.element}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link

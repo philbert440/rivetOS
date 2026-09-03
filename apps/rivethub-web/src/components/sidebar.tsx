@@ -3,8 +3,9 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
-import { railHeaderClass, railToggle } from './sidebar-chrome.js'
+import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { DenBot } from './den-bot.js'
 import { AgentsSection } from './agents-section.js'
@@ -69,6 +70,7 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   const onChat = pathname === '/'
   const paneHidden = useSidebarPrefs((s) => s.conversationsCollapsed)
   const setConversationsCollapsed = useSidebarPrefs((s) => s.setConversationsCollapsed)
+  const narrow = useIsNarrow()
 
   return (
     <Tooltip label="Conversations" disabled={!props.collapsed} block>
@@ -79,6 +81,11 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
         aria-controls={onChat ? 'conversations-pane' : undefined}
         className={navClass(onChat, props.collapsed)}
         onClick={() => {
+          if (narrow) {
+            if (!onChat) useSidebarPrefs.getState().openConversation()
+            void navigate({ to: '/', search: {} })
+            return
+          }
           if (!onChat) {
             useSidebarPrefs.getState().openConversation()
             void navigate({ to: '/' })
@@ -94,44 +101,105 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   )
 }
 
+/** Narrow top bar — DenBot opens the rail drawer (same affordance as desktop). */
+export function MobileTopBar(): JSX.Element {
+  const unread = useNotifications((s) => s.unread)
+  const markAllRead = useNotifications((s) => s.markAllRead)
+  const navigate = useNavigate()
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
+
+  return (
+    <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel/80 px-3">
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Open sidebar"
+        aria-controls="hub-rail"
+        onClick={() => setDrawerOpen(true)}
+        className="size-7 shrink-0 p-0"
+      >
+        <DenBot className="size-7 shrink-0" decorative />
+      </Button>
+      <span className="min-w-0 truncate font-mono text-sm text-em">{hubPageTitle(pathname)}</span>
+      {unread > 0 && (
+        <span className="ml-auto">
+          <button
+            type="button"
+            onClick={() => {
+              markAllRead()
+              void navigate({ to: '/tasks' })
+            }}
+            aria-label={`${String(unread)} unread notifications`}
+            className="flex items-center gap-1 rounded-full border border-red/50 bg-red/10 px-2 py-0.5 font-mono text-[11px] text-red hover:bg-red/20"
+          >
+            <Bell className="size-3" />
+            {unread > 99 ? '99+' : unread}
+          </button>
+        </span>
+      )}
+    </div>
+  )
+}
+
 export function Sidebar(): JSX.Element {
   const unread = useNotifications((s) => s.unread)
   const markAllRead = useNotifications((s) => s.markAllRead)
   const navigate = useNavigate()
+  const narrow = useIsNarrow()
   const railCollapsed = useSidebarPrefs((s) => s.railCollapsed)
   const setRailCollapsed = useSidebarPrefs((s) => s.setRailCollapsed)
-  const toggle = railToggle(railCollapsed)
+  const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
+  const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
+  // Narrow always uses the expanded rail — never the 48px icon strip.
+  const collapsed = narrow ? false : railCollapsed
+  const toggle = railToggle(collapsed)
+  const logoLabel = narrow ? (drawerOpen ? 'Close sidebar' : 'Open sidebar') : toggle.label
+  const logoExpanded = narrow ? drawerOpen : toggle.ariaExpanded
 
   return (
     <aside
       id="hub-rail"
-      className={cn(
-        'relative z-20 flex shrink-0 flex-col border-r border-line bg-panel/80 transition-[width] duration-150',
-        railCollapsed ? 'w-12' : 'w-56',
-      )}
+      aria-modal={narrow && drawerOpen ? true : undefined}
+      inert={narrow && !drawerOpen ? true : undefined}
+      className={
+        narrow
+          ? cn(
+              'fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line bg-panel/80',
+              'transition-transform duration-150 motion-reduce:transition-none',
+              drawerOpen ? 'translate-x-0' : '-translate-x-full',
+            )
+          : cn(
+              'relative z-20 flex shrink-0 flex-col border-r border-line bg-panel/80 transition-[width] duration-150',
+              collapsed ? 'w-12' : 'w-56',
+            )
+      }
     >
-      <div className={railHeaderClass(railCollapsed)}>
-        <Tooltip label={toggle.label}>
+      <div className={railHeaderClass(collapsed)}>
+        <Tooltip label={logoLabel}>
           <Button
             variant="ghost"
             size="icon"
-            aria-label={toggle.label}
-            aria-expanded={toggle.ariaExpanded}
+            aria-label={logoLabel}
+            aria-expanded={logoExpanded}
             aria-controls="hub-rail-nav"
-            onClick={() => setRailCollapsed(!railCollapsed)}
+            onClick={() => {
+              if (narrow) setDrawerOpen(!drawerOpen)
+              else setRailCollapsed(!railCollapsed)
+            }}
             className="size-7 shrink-0 p-0"
           >
             <DenBot className="size-7 shrink-0" decorative />
           </Button>
         </Tooltip>
-        {!railCollapsed && (
+        {!collapsed && (
           <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
         )}
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.
             Click = jump to Tasks (the durable record) and mark read. */}
         {unread > 0 && (
-          <span className={railCollapsed ? 'absolute left-7 top-3' : 'ml-auto'}>
-            <Tooltip label={`${String(unread)} unread notifications`} disabled={!railCollapsed}>
+          <span className={collapsed ? 'absolute left-7 top-3' : 'ml-auto'}>
+            <Tooltip label={`${String(unread)} unread notifications`} disabled={!collapsed}>
               <button
                 type="button"
                 onClick={() => {
@@ -141,37 +209,37 @@ export function Sidebar(): JSX.Element {
                 aria-label={`${String(unread)} unread notifications`}
                 className={cn(
                   'flex items-center gap-1 rounded-full border border-red/50 bg-red/10 font-mono text-[11px] text-red hover:bg-red/20',
-                  railCollapsed ? 'size-4 justify-center px-0' : 'px-2 py-0.5',
+                  collapsed ? 'size-4 justify-center px-0' : 'px-2 py-0.5',
                 )}
               >
                 <Bell className="size-3" />
-                {!railCollapsed && (unread > 99 ? '99+' : unread)}
+                {!collapsed && (unread > 99 ? '99+' : unread)}
               </button>
             </Tooltip>
           </span>
         )}
       </div>
 
-      <nav id="hub-rail-nav" className={cn('flex flex-col gap-1', railCollapsed ? 'px-1' : 'px-2')}>
-        <ConversationsNav collapsed={railCollapsed} />
+      <nav id="hub-rail-nav" className={cn('flex flex-col gap-1', collapsed ? 'px-1' : 'px-2')}>
+        <ConversationsNav collapsed={collapsed} />
         {PRIMARY_NAV.map((item) => (
-          <NavLink key={item.to} {...item} collapsed={railCollapsed} />
+          <NavLink key={item.to} {...item} collapsed={collapsed} />
         ))}
 
         <div className="my-2 border-t border-line" role="separator" />
 
         {SECONDARY_NAV.map((item) => (
-          <NavLink key={item.to} {...item} collapsed={railCollapsed} />
+          <NavLink key={item.to} {...item} collapsed={collapsed} />
         ))}
       </nav>
 
-      <AgentsSection compact={railCollapsed} />
+      <AgentsSection compact={collapsed} />
 
       <div className="mt-auto flex flex-col">
-        <div className={cn('flex flex-col gap-1 pb-1', railCollapsed ? 'px-1' : 'px-2')}>
-          <NavLink {...SETTINGS} collapsed={railCollapsed} />
+        <div className={cn('flex flex-col gap-1 pb-1', collapsed ? 'px-1' : 'px-2')}>
+          <NavLink {...SETTINGS} collapsed={collapsed} />
         </div>
-        <NodeSwitcher compact={railCollapsed} />
+        <NodeSwitcher compact={collapsed} />
       </div>
     </aside>
   )

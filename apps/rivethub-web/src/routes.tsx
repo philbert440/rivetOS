@@ -5,9 +5,16 @@
  */
 
 import { useEffect, type JSX } from 'react'
-import { Outlet, createRootRoute, createRoute, redirect } from '@tanstack/react-router'
-import { Sidebar } from './components/sidebar.js'
+import {
+  Outlet,
+  createRootRoute,
+  createRoute,
+  redirect,
+  useRouterState,
+} from '@tanstack/react-router'
+import { MobileTopBar, Sidebar } from './components/sidebar.js'
 import { Toasts } from './components/toasts.js'
+import { useIsNarrow } from './lib/use-narrow.js'
 import { useSidebarPrefs } from './stores/sidebar-prefs.js'
 import { ChatPage } from './pages/chat.js'
 import { FilesPage } from './pages/files.js'
@@ -30,6 +37,12 @@ function RootLayout(): JSX.Element {
   const transportEpoch = useConnection((s) => s.transportEpoch)
   const connectNotifications = useNotifications((s) => s.connect)
   const railCollapsed = useSidebarPrefs((s) => s.railCollapsed)
+  const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
+  const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
+  const narrow = useIsNarrow()
+  const locKey = useRouterState({
+    select: (s) => s.location.href,
+  })
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
   // toasts fire on any page.
@@ -38,15 +51,47 @@ function RootLayout(): JSX.Element {
     return () => useNotifications.getState().disconnect()
   }, [baseUrl, transportEpoch, connectNotifications])
 
+  // Off-canvas rail: close on every route or session-search change.
+  useEffect(() => {
+    useSidebarPrefs.getState().setDrawerOpen(false)
+  }, [locKey])
+
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerOpen, setDrawerOpen])
+
   return (
     <div
       className="flex h-full"
-      style={{ ['--hub-rail' as string]: railCollapsed ? '3rem' : '14rem' }}
+      style={{
+        ['--hub-rail' as string]: narrow ? '0rem' : railCollapsed ? '3rem' : '14rem',
+      }}
     >
       <Sidebar />
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        <Outlet />
-      </main>
+      {narrow && drawerOpen && (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          className="fixed inset-0 z-30 bg-bg/70"
+          onClick={() => setDrawerOpen(false)}
+        />
+      )}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {narrow && <MobileTopBar />}
+        <main
+          className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+          inert={narrow && drawerOpen ? true : undefined}
+        >
+          <Outlet />
+        </main>
+      </div>
       <Toasts />
     </div>
   )

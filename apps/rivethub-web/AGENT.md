@@ -127,6 +127,16 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   flows canvas via `canvasSceneColors(theme)` in `lib/workflow-runs/flow-overlay.ts`.
   Settings has the Light / Dark / System toggle.
 
+### Responsive
+
+Below 768px (`md`) the left rail is an off-canvas drawer (`w-64`, never the
+collapsed 48px strip). A 48px top bar (DenBot + page title + unread bell)
+opens it. Chat shows either the conversation list or the session, full width
+— back in the session header clears selection (same path as the error
+boundary). Other pages only change container padding (`px-4 md:px-6`) and
+add `overflow-x-auto` on wide tables/grids. Desktop ≥768px is unchanged,
+including `railCollapsed`. Viewport hook: `src/lib/use-narrow.ts`.
+
 ## How to run / build
 
 ```sh

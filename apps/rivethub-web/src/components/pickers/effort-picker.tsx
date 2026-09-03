@@ -84,7 +84,7 @@ export function EffortPicker(props: {
           className="h-8 rounded-full px-2.5 font-normal"
         >
           <CurrentIcon className="size-3.5" />
-          <span>{current.label}</span>
+          <span className="hidden sm:inline">{current.label}</span>
           <ChevronDown className="size-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>

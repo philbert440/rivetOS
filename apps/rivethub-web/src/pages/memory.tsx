@@ -191,7 +191,7 @@ export function MemoryPage(): JSX.Element {
       onSearchSubmit={() => setDebounced(q.trim())}
       total={total}
     >
-      <div className="mx-auto max-w-4xl px-6 py-8 lg:px-10">
+      <div className="mx-auto max-w-4xl px-4 py-8 md:px-6 lg:px-10">
         {index.isError && (
           <div className="mb-4 font-mono text-sm text-red">{index.error.message}</div>
         )}
@@ -543,7 +543,7 @@ export function MemoryTopicPage(): JSX.Element {
     const notFound = err instanceof GatewayError && err.status === 404
     return wrap(
       <WikiShell {...shellProps}>
-        <div className="mx-auto max-w-3xl px-6 py-8">
+        <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
           <Link to="/memory" search={{ tab: 'wiki' }} className="text-sm text-em hover:underline">
             ← Main page
           </Link>
@@ -606,7 +606,7 @@ function ArticleBody(props: {
   const toc = tocFromMarkdown(bodyMd)
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8 lg:px-10">
+    <div className="mx-auto max-w-5xl px-4 py-8 md:px-6 lg:px-10">
       <Link to="/memory" search={{ tab: 'wiki' }} className="text-sm text-ink-dim hover:text-em">
         ← Main page
       </Link>
@@ -682,7 +682,8 @@ function ArticleBody(props: {
         <div className="mt-6">
           <aside className="mb-6 w-full rounded-lg border border-line bg-panel text-sm lg:float-right lg:mb-4 lg:ml-6 lg:w-72">
             <div className="border-b border-line bg-em/5 px-3 py-2 font-semibold">{p.title}</div>
-            <table className="w-full border-collapse text-xs">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
               <tbody>
                 <tr>
                   <th className="w-24 px-3 py-1.5 text-left font-medium text-ink-dim">Status</th>
@@ -733,7 +734,8 @@ function ArticleBody(props: {
                   </tr>
                 )}
               </tbody>
-            </table>
+              </table>
+            </div>
           </aside>
 
           {toc.length > 1 && (

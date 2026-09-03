@@ -118,7 +118,7 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
           className="h-8 rounded-full px-2.5 font-normal"
         >
           <Server className="size-3.5" />
-          <span className="max-w-40 truncate">{currentName}</span>
+          <span className="hidden max-w-40 truncate sm:inline">{currentName}</span>
           <ChevronDown className="size-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>

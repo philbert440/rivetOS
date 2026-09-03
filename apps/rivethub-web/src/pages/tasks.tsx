@@ -66,7 +66,7 @@ export function TasksPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Tasks</h1>
         <div className="flex items-center gap-2">
@@ -309,12 +309,13 @@ export function TaskDetailPage(): JSX.Element {
   if (!t) return <div className="p-8 text-sm text-ink-dim">loading…</div>
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
       {killDialog.element}
       <div className="mb-1 font-mono text-[11px] text-ink-dim">{t.id}</div>
       <h1 className="mb-4 text-lg">{t.goal}</h1>
 
-      <div className="mb-6 grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 font-mono text-xs sm:grid-cols-3">
+      <div className="mb-6 overflow-x-auto">
+      <div className="grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 font-mono text-xs sm:grid-cols-3">
         <Cell k="status" v={t.status} className={STATUS_COLORS[t.status]} />
         <Cell k="agent" v={t.agentId} />
         <Cell k="executor" v={`${t.executor}${t.executorTarget ? `/${t.executorTarget}` : ''}`} />
@@ -328,6 +329,7 @@ export function TaskDetailPage(): JSX.Element {
           <Cell k="eval" v="pending" className="text-ink-dim" />
         )}
         {t.evalAttempt > 0 && <Cell k="retries" v={String(t.evalAttempt)} />}
+      </div>
       </div>
 
       {t.result && (

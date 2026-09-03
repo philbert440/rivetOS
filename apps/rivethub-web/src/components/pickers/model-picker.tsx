@@ -43,7 +43,7 @@ export function ModelPicker(props: {
           className="h-8 rounded-full px-2.5 font-normal"
         >
           <Cpu className="size-3.5" />
-          <span className="max-w-40 truncate">
+          <span className="hidden max-w-40 truncate sm:inline">
             {props.unavailable ? 'catalog unavailable' : (current?.label ?? 'model')}
           </span>
           <ChevronDown className="size-3.5 opacity-60" />
