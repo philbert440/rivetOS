@@ -98,6 +98,7 @@ fun TerminalPane(
     val followTail = remember { mutableStateOf(true) }
     val firstLine = remember { mutableIntStateOf(0) }
     var ime by remember { mutableStateOf(TextFieldValue(IME_SENTINEL)) }
+    var imeSeen by remember { mutableStateOf(IME_SENTINEL) }
     var pendingGeo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     val measurer = rememberTextMeasurer()
     val mono = TextStyle(
@@ -199,18 +200,26 @@ fun TerminalPane(
         BasicTextField(
             value = ime,
             onValueChange = { next ->
-                val t = next.text
-                when {
-                    t.isEmpty() -> onBytes(TermKeys.BACKSPACE)
-                    t.startsWith(IME_SENTINEL) -> {
-                        val typed = t.removePrefix(IME_SENTINEL)
-                        if (typed.isNotEmpty()) onBytes(TermKeys.ime(typed, ctrl))
-                    }
-                    else -> {
-                        if (t.isNotEmpty()) onBytes(TermKeys.ime(t, ctrl))
-                    }
+                // Diff against the last value WE saw, not against the sentinel: rapid IME commits
+                // (autocorrect, paste, `input text`) arrive before the previous reset recomposes,
+                // so resetting-and-resending duplicated characters. Send only the delta, once.
+                val prev = imeSeen
+                val cur = next.text
+                val base = if (cur.startsWith(IME_SENTINEL)) IME_SENTINEL.length else 0
+                var p = 0
+                val max = minOf(prev.length, cur.length)
+                while (p < max && prev[p] == cur[p]) p++
+                val removed = (prev.length - p).coerceAtLeast(0)
+                val added = if (p < cur.length) cur.substring(maxOf(p, base)) else ""
+                repeat(removed.coerceAtMost(prev.length - base)) { onBytes(TermKeys.BACKSPACE) }
+                if (added.isNotEmpty()) onBytes(TermKeys.ime(added.replace("\n", "\r"), ctrl))
+                if (cur.length > 256 || !cur.startsWith(IME_SENTINEL)) {
+                    imeSeen = IME_SENTINEL
+                    ime = TextFieldValue(IME_SENTINEL)
+                } else {
+                    imeSeen = cur
+                    ime = next
                 }
-                ime = TextFieldValue(IME_SENTINEL)
             },
             modifier = Modifier
                 .size(1.dp)
