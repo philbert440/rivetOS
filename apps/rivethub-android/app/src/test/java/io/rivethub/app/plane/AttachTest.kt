@@ -91,6 +91,19 @@ class AttachTest {
         assertTrue(m.idleTimedOut())
     }
 
+    @Test fun `rearmIdle extends the deadline after adoption`() {
+        val clock = Clock(0)
+        val m = TranscriptMachine(clock::now)
+        m.beginTurn()
+        clock.advance(IDLE_DEADLINE_MS - 1)
+        assertFalse(m.idleTimedOut())
+        m.rearmIdle()
+        clock.advance(IDLE_DEADLINE_MS - 1)
+        assertFalse(m.idleTimedOut())
+        clock.advance(1)
+        assertTrue(m.idleTimedOut())
+    }
+
     @Test fun `tool frames re-arm without appending text`() {
         val clock = Clock(0)
         val m = TranscriptMachine(clock::now)

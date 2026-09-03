@@ -23,6 +23,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import io.rivethub.app.plane.ChatItemKind
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.findChatItem
+import io.rivethub.app.plane.isDraftSessionId
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.Nav
@@ -132,6 +133,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                             draft = open.draft,
                             model = open.model,
                             effort = open.effort,
+                            agentId = open.agentId,
                         ),
                     )
                 },
@@ -142,8 +144,9 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                             nodeDenUrl = row.nodeDenUrl,
                             harnessId = row.item.harnessId,
                             title = displayTitle(row.item, hubVm.state.value.titleOverrides),
-                            draft = row.item.kind == ChatItemKind.DRAFT,
+                            draft = row.item.kind == ChatItemKind.DRAFT || isDraftSessionId(row.item.key),
                             model = row.item.model.orEmpty(),
+                            agentId = hubVm.agentForSession(row.item.key).orEmpty(),
                         ),
                     )
                 },
@@ -161,6 +164,10 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                     HarnessChatViewModel(
                         c, s.sessionKey, s.nodeDenUrl, s.harnessId, s.title, s.draft,
                         presetModel = s.model, presetEffort = s.effort, openStream = openStream,
+                        agentId = s.agentId,
+                        onAdoptPointer = { from, canonical ->
+                            hubVm.adoptChatPointer(s.agentId, from, canonical, s.nodeDenUrl)
+                        },
                     )
                 }
                 HarnessChatScreen(vm, onBack = { nav.pop() })

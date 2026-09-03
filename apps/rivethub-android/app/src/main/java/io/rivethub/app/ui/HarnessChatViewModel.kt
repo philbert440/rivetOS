@@ -12,6 +12,7 @@ import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.AttachmentStatus
+import io.rivethub.app.plane.BARE_SUBMIT_AFTER_MS
 import io.rivethub.app.plane.CLOSED_GATE
 import io.rivethub.app.plane.ChatSendAction
 import io.rivethub.app.plane.EnqueueResult
@@ -19,11 +20,16 @@ import io.rivethub.app.plane.HarnessGate
 import io.rivethub.app.plane.HarnessSheet
 import io.rivethub.app.plane.LiveTool
 import io.rivethub.app.plane.OutboundPump
+import io.rivethub.app.plane.PTY_READY_BOUND_MS
 import io.rivethub.app.plane.PendingAttachment
+import io.rivethub.app.plane.PtyReadyGate
+import io.rivethub.app.plane.SESSION_POLL_BOUND_MS
+import io.rivethub.app.plane.SESSION_POLL_EVERY_MS
 import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TranscriptMachine
 import io.rivethub.app.plane.anyUploading
+import io.rivethub.app.plane.canonicalFromSessions
 import io.rivethub.app.plane.cardFromLiveTools
 import io.rivethub.app.plane.chatItemForGate
 import io.rivethub.app.plane.chatSendAction
@@ -37,8 +43,12 @@ import io.rivethub.app.plane.harnessGate
 import io.rivethub.app.plane.nextInjectTry
 import io.rivethub.app.plane.parseSessionMode
 import io.rivethub.app.plane.persistSessionMode
+import io.rivethub.app.plane.ptySpawnIsFresh
 import io.rivethub.app.plane.readyUris
 import io.rivethub.app.plane.rosterCommandFor
+import io.rivethub.app.plane.sessionMatchesNative
+import io.rivethub.app.plane.shouldBareSubmit
+import io.rivethub.app.plane.shouldPollSessions
 import io.rivethub.app.plane.spawnAttempts
 import io.rivethub.app.plane.spawnModelEffort
 import io.rivethub.app.plane.toSheet
@@ -49,6 +59,7 @@ import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,6 +68,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.Closeable
 import java.util.UUID
 
@@ -70,6 +82,8 @@ class HarnessChatViewModel(
     private val presetModel: String = "",
     private val presetEffort: String = "",
     private val openStream: (Uri) -> java.io.InputStream? = { null },
+    private val agentId: String = "",
+    private val onAdoptPointer: ((from: String, canonical: String) -> Unit)? = null,
 ) : ViewModel() {
     data class UiState(
         val title: String,
@@ -132,6 +146,7 @@ class HarnessChatViewModel(
     )
 
     private var tick: Job? = null
+    private var adoptWatch: Job? = null
 
     init {
         viewModelScope.launch { boot() }
@@ -312,6 +327,7 @@ class HarnessChatViewModel(
 
     override fun onCleared() {
         tick?.cancel()
+        adoptWatch?.cancel()
         frameJob?.cancel()
         frames.close()
         sessionWatch?.close()
@@ -361,13 +377,21 @@ class HarnessChatViewModel(
         when (event) {
             is HarnessEvent.SessionCreated -> {
                 val sid = event.summary.sessionId
-                if (sid == native || sid.endsWith(":$native") || event.supersedes == native) {
+                if (
+                    sessionMatchesNative(sid, native) ||
+                    sessionMatchesNative(event.supersedes, native) ||
+                    sessionMatchesNative(event.summary.redirectedTo, native)
+                ) {
                     adoptCanonical(sid)
                 }
             }
             is HarnessEvent.SessionUpdated -> {
-                val prev = event.previousSessionId
-                if (prev == native || event.sessionId == native) adoptCanonical(event.sessionId)
+                if (
+                    sessionMatchesNative(event.previousSessionId, native) ||
+                    sessionMatchesNative(event.sessionId, native)
+                ) {
+                    adoptCanonical(event.sessionId)
+                }
             }
             else -> Unit
         }
@@ -375,16 +399,21 @@ class HarnessChatViewModel(
 
     private fun adoptCanonical(canonical: String) {
         val from = _state.value.sessionId
-        if (canonical.isBlank() || canonical == from) {
-            if (_state.value.draft) {
+        if (canonical.isBlank()) return
+        val wasDraft = _state.value.draft
+        if (canonical == from) {
+            if (wasDraft) {
                 _state.update { it.copy(draft = false) }
                 recomputeGate()
+                machine.rearmIdle()
+                startAttach(canonical)
             }
             return
         }
-        val wasDraft = _state.value.draft
         _state.update { it.copy(sessionId = canonical, draft = false) }
         recomputeGate()
+        machine.rearmIdle()
+        if (agentId.isNotBlank()) onAdoptPointer?.invoke(from, canonical)
         viewModelScope.launch { c.settings.rekeySessionMode(from, canonical) }
         if (wasDraft || from != canonical) {
             startAttach(canonical)
@@ -461,7 +490,11 @@ class HarnessChatViewModel(
             is HarnessEvent.SessionCreated -> event.summary.redirectedTo ?: event.sessionId
             else -> null
         }
-        if (redirected != null) adoptCanonical(redirected)
+        if (redirected != null && (
+            !_state.value.draft || sessionMatchesNative(redirected, _state.value.sessionId)
+        )) {
+            adoptCanonical(redirected)
+        }
     }
 
     private suspend fun actuallySend(text: String) {
@@ -484,32 +517,35 @@ class HarnessChatViewModel(
     }
 
     private suspend fun injectDraft(action: ChatSendAction.Inject) {
-        ensurePty()
         val gw = gateway()
         var retried = false
         while (true) {
+            val pty = ensurePty()
+            if (pty.fresh) waitUntilPtyReady(pty.id)
             try {
                 withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
                 io.rivethub.app.data.AndroidLogger.warn("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
+                startAdoptWatch(action.sessionId)
                 return
             } catch (e: Exception) {
                 if (nextInjectTry(failed = true, alreadyRetried = retried) == null) throw e
                 retried = true
                 ptyId = null
-                ensurePty()
             }
         }
     }
 
-    private suspend fun ensurePty(): String {
-        ptyId?.let { return it }
+    private data class PtySlot(val id: String, val fresh: Boolean)
+
+    private suspend fun ensurePty(): PtySlot {
+        ptyId?.let { return PtySlot(it, fresh = false) }
         if (spawnInFlight) {
             while (spawnInFlight) delay(50)
-            ptyId?.let { return it }
+            ptyId?.let { return PtySlot(it, fresh = false) }
         }
         spawnInFlight = true
         try {
-            ptyId?.let { return it }
+            ptyId?.let { return PtySlot(it, fresh = false) }
             val st = _state.value
             val command = rosterCommandFor(harnessId)
             val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
@@ -528,9 +564,10 @@ class HarnessChatViewModel(
                             effort = attempt.effort,
                         )
                     }
+                    val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
                     ptyId = spawned.id
                     io.rivethub.app.data.AndroidLogger.warn("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
-                    return spawned.id
+                    return PtySlot(spawned.id, fresh)
                 } catch (e: Exception) {
                     io.rivethub.app.data.AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
                     last = e
@@ -539,6 +576,59 @@ class HarnessChatViewModel(
             throw last ?: IllegalStateException("termSpawn failed")
         } finally {
             spawnInFlight = false
+        }
+    }
+
+    private suspend fun waitUntilPtyReady(ptyId: String) {
+        val gate = PtyReadyGate({ System.currentTimeMillis() })
+        val watch = gateway().watchTerm(
+            ptyId = ptyId,
+            sessionId = _state.value.sessionId,
+            onText = { if (it.isNotEmpty()) gate.onOutput() },
+            onBinary = { if (it.isNotEmpty()) gate.onOutput() },
+        )
+        try {
+            withTimeout(PTY_READY_BOUND_MS + 250) {
+                while (!gate.isReady()) delay(50)
+            }
+        } catch (_: TimeoutCancellationException) {
+            // bounded — inject anyway
+        } finally {
+            watch.close()
+        }
+    }
+
+    private fun startAdoptWatch(native: String) {
+        adoptWatch?.cancel()
+        adoptWatch = viewModelScope.launch {
+            val t0 = System.currentTimeMillis()
+            var bare = false
+            while (_state.value.draft) {
+                if (c.identity.generation() != identityGen) return@launch
+                val elapsed = System.currentTimeMillis() - t0
+                val hid = harnessId
+                if (hid != null && shouldPollSessions(elapsed)) {
+                    val rows = runCatching {
+                        withContext(Dispatchers.IO) { c.harness(nodeDenUrl).listSessions(hid) }
+                    }.getOrDefault(emptyList())
+                    val canon = canonicalFromSessions(rows, native)
+                    if (canon != null) {
+                        adoptCanonical(canon)
+                        return@launch
+                    }
+                }
+                if (shouldBareSubmit(!_state.value.draft, elapsed, bare)) {
+                    bare = true
+                    runCatching {
+                        withContext(Dispatchers.IO) {
+                            gateway().termInject(session = native, text = "", submit = true)
+                        }
+                    }
+                    io.rivethub.app.data.AndroidLogger.warn("RivetHub", "bare submit retry: session=$native", null)
+                }
+                if (elapsed >= SESSION_POLL_BOUND_MS && (bare || elapsed >= BARE_SUBMIT_AFTER_MS)) return@launch
+                delay(SESSION_POLL_EVERY_MS)
+            }
         }
     }
 

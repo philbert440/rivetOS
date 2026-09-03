@@ -13,6 +13,7 @@ sealed interface Screen {
         val draft: Boolean,
         val model: String = "",
         val effort: String = "",
+        val agentId: String = "",
     ) : Screen
     data object Gallery : Screen
 }

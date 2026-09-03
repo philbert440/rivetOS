@@ -184,6 +184,7 @@ data class TermSpawnResponse(
     val command: String = "",
     val pid: Int = 0,
     val createdAt: Long = 0,
+    val reattached: Boolean = false,
 )
 
 @Serializable

@@ -55,6 +55,11 @@ class TranscriptMachine(
         liveReasoning = ""
     }
 
+    /** Re-arm the idle deadline without clearing the live slot (adoption). */
+    fun rearmIdle() {
+        lastFrameTs = nowMs()
+    }
+
     /** Hard replace — never merge. Clears the live slot (reconnect = missed tail). */
     fun onOpen(fullTranscript: List<HarnessTranscriptTurn>) {
         transcript = fullTranscript.toList()

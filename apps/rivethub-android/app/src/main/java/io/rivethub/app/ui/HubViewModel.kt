@@ -32,6 +32,7 @@ import io.rivethub.app.plane.newDraftId
 import io.rivethub.app.plane.openAgent
 import io.rivethub.app.plane.pinChatItems
 import io.rivethub.app.plane.pointerSessionKeys
+import io.rivethub.app.plane.rekeyPinnedDraft
 import io.rivethub.app.plane.requestRefresh
 import io.rivethub.app.plane.sortLocatedByRecency
 import io.rivethub.app.plane.supersedeRefresh
@@ -172,6 +173,14 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     fun pinnedKeys(): Set<String> = pointerSessionKeys(pointers)
+
+    fun agentForSession(sessionId: String): String? = pointers.agentForSession(sessionId)
+
+    fun adoptChatPointer(agentId: String?, from: String, canonical: String, nodeDenUrl: String) {
+        if (!rekeyPinnedDraft(pointers, agentId, from, canonical, nodeDenUrl)) return
+        viewModelScope.launch { persistPointers() }
+        rebuildItems()
+    }
 
     fun newConversation(): AgentOpen {
         val st = _state.value

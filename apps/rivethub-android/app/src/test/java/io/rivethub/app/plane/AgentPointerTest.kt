@@ -77,4 +77,23 @@ class AgentPointerTest {
         store.rekey("s1", "s1")
         assertEquals("s1", store.get("a1")!!.sessionId)
     }
+
+    @Test fun `adopt rekeys a pinned draft onto the canonical id`() {
+        val store = AgentPointers { 8 }
+        val draft = "a1b2c3d4-1111-4222-8333-444455556666"
+        store.set("claude", draft, nodeA, replace = true)
+        assertTrue(rekeyPinnedDraft(store, "claude", draft, "claude-code:$draft", nodeA))
+        assertEquals("claude-code:$draft", store.get("claude")!!.sessionId)
+        assertEquals("claude", store.agentForSession("claude-code:$draft"))
+        assertNull(store.agentForSession(draft))
+    }
+
+    @Test fun `adopt does not steal a pin held by another session`() {
+        val store = AgentPointers { 9 }
+        store.set("claude", "claude-code:existing", nodeA, replace = true)
+        assertFalse(rekeyPinnedDraft(store, "claude", "new-draft", "claude-code:new-draft", nodeA))
+        assertEquals("claude-code:existing", store.get("claude")!!.sessionId)
+        assertFalse(rekeyPinnedDraft(store, "", "a", "b", nodeA))
+        assertFalse(rekeyPinnedDraft(store, "missing", "a", "b", nodeA))
+    }
 }

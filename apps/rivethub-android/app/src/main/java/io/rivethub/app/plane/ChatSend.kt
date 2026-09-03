@@ -5,8 +5,9 @@ import io.rivethub.app.gateway.WsStatus
 /**
  * Draft first-send mirrors rivethub-web `injectOne`: a draft injects into
  * the PTY (after spawn); an adopted session uses the harness control plane.
- * Never wait for `session-created` before sending — claude's store row is
- * created by the first turn.
+ * A fresh spawn waits for TUI readiness before inject (see [PtyReadyGate]);
+ * do not wait for `session-created` before sending — claude's store row is
+ * created by the first turn. After inject, poll listSessions / bare-submit.
  */
 sealed interface ChatSendAction {
     data class Inject(val sessionId: String, val text: String, val interrupt: Boolean = false) : ChatSendAction

@@ -10,6 +10,7 @@ data class AgentOpen(
     val pinMoved: Boolean,
     val model: String = "",
     val effort: String = "",
+    val agentId: String = "",
 )
 
 /**
@@ -32,20 +33,21 @@ fun openAgent(
                 sessionId = pin.sessionId,
                 nodeDenUrl = pin.nodeBaseUrl,
                 harnessId = harnessId,
-                draft = false,
+                draft = isDraftSessionId(pin.sessionId),
                 pinMoved = false,
+                agentId = agentId,
             )
         }
         val draft = newId()
         pointers.set(agentId, draft, nodeDenUrl, replace = false)
-        return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = true)
+        return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = true, agentId = agentId)
     }
     val draft = newId()
     if (action == AgentAction.Plus) {
-        return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = false)
+        return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = false, agentId = agentId)
     }
     val moved = pointers.set(agentId, draft, nodeDenUrl, replace = true)
-    return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = moved)
+    return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = moved, agentId = agentId)
 }
 
 fun pointerSessionKeys(pointers: AgentPointers): Set<String> =
