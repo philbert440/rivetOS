@@ -2,7 +2,7 @@ package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +46,7 @@ fun KeyToolbar(
     keys: List<ToolbarKey>,
     onKey: (ToolbarKey) -> Unit,
     latched: Set<String> = emptySet(),
+    onLongKey: ((ToolbarKey) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
@@ -67,7 +68,11 @@ fun KeyToolbar(
                     .clip(shape)
                     .background(if (pressed) colors.panel2 else colors.panel, shape)
                     .border(Dimens.line, if (pressed) colors.em else colors.line, shape)
-                    .clickable(role = Role.Button, onClick = { onKey(key) })
+                    .combinedClickable(
+                        role = Role.Button,
+                        onClick = { onKey(key) },
+                        onLongClick = onLongKey?.let { handler -> { handler(key) } },
+                    )
                     .padding(horizontal = 12.dp),
                 contentAlignment = Alignment.Center,
             ) {

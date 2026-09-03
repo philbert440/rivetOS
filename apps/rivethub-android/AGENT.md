@@ -9,8 +9,9 @@ phone-shaped — same look/feel, same den backend, same harness-session model, d
 runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 `/rivet-shared/plans/rivethub-android-2026-09-02.md` (v2, reviewed); read it before changing anything.
 
-M3b replaced the Grok-Bot UI. `MainActivity.App()` routes Enroll → Hub (Conversations / Agents / Nodes /
-Settings) → Chat. Grok-Bot screens/VMs are gone from the tree (removed in the M3b commit).
+M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. `MainActivity.App()`
+routes Enroll → Hub (Conversations / Agents / Nodes / Settings) → Chat. Grok-Bot screens/VMs are
+gone from the tree (removed in the M3b commit).
 
 ## Where this tree came from (slice M1a, 2026-09-03)
 
@@ -23,14 +24,15 @@ What survives into the real app (plan §2): `data/DeviceIdentity.kt` (p12 vault)
 OkHttp split), `gateway/Wire.kt` (gateway twins — not reused by the plane), `gateway/HarnessWire.kt`
 + `gateway/HarnessGateway.kt` (M3a), `plane/` (M3a + M3b reducers), `transport/NodeTransport` +
 `DirectTransport` (screens obtain gateways only through this seam), `HermesReasoning.kt`,
-`ui/term/AnsiTerminal.kt` + the OSC colour-query filter, `ui/theme` + `ui/components` (M1.5).
+`ui/term/AnsiTerminal.kt` + `ui/term/TerminalPane.kt` + the OSC colour-query / OSC 52 filter,
+`ui/theme` + `ui/components` (M1.5).
 
 ## Slices (plan §6)
 
 M1a rename + M6 CI ✔ → M1b `NodeTransport` seam + android-free `gateway/transport` + nx
 `project.json` ✔ → M2a p12 import in Settings ✔ (folded into M3b Settings) → M1.5 design system ✔
 (`ui/theme` + `ui/components`, gallery behind Settings-title long-press) → M3a pure-Kotlin plane
-layer (tests only) ✔ → **M3b Compose conversations + chat ✔ (this)** → M4 terminal mode → M5a nodes
+layer (tests only) ✔ → M3b Compose conversations + chat ✔ → **M4 terminal mode ✔ (this)** → M5a nodes
 filter polish → M5b turn-complete notification → M7 cutover.
 
 ## Screens
@@ -45,7 +47,7 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 | Agents | `ui/screens/AgentsScreen.kt` | HubViewModel | `/api/agents` from every discovered node (catalog if every node returns empty); tap / ↺ / + pointer semantics |
 | Nodes | `ui/screens/NodesScreen.kt` | HubViewModel | view filter only; never rebinds an open chat; error badge is timeout/5xx only (404 harness = plane-less, no badge) |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | identity, theme, terminal font; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe, VT attach |
 | Gallery | `ui/components/ComponentGallery.kt` | none | M1.5 preview |
 
 Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `themeMode`
@@ -102,12 +104,44 @@ echo) is a no-op. Attachments are `[attached: uri]` lines after streaming
 params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 `data/HermesReasoning.kt`.
 
+## Terminal mode (M4)
+
+Attach protocol (den-server `term/ws.ts`, rivethub-web `xterm-attach.tsx`):
+
+1. `POST /api/terminal` spawn-or-get joined to the chat's canonical/native session id. The PTY
+   is the same one chat already spawns via `ensurePty` — Terminal does not open a second PTY.
+   A draft Terminal tab goes through `spawnAndAdopt()` (`ensurePty` + wait for the
+   registry watch to adopt) before attach, never a second unsynchronised spawn.
+2. WS `/api/terminal/ws?id=` — hello JSON, one binary ring frame, live binary, exit JSON.
+3. The server replays the ring unconditionally after hello (`term/ws.ts` attach), including
+   `mux:'tmux'`. Reset the local VT on hello / reconnect, then write every binary frame. An empty
+   ring writes nothing. Never skip replay.
+4. Client sends binary keystrokes and JSON `{type:resize,cols,rows}` / `{type:detach}`.
+5. **Never send `{type:kill}`.** Leave, background, and the Detach menu send detach then close.
+   The manager TTL owns the PTY; reattach replays.
+6. OSC 10/11/12 colour queries are stripped and never answered. OSC 52 writes go to the clipboard
+   (flagged sensitive on API 33+); OSC 52 reads (`?`) are refused.
+7. "Open in your terminal" copies `ssh <sshUser>@<host> -t tmux -L <socket> attach -t <session>`
+   rendered from the server `attach` descriptor. Hidden when `attach` is absent — never guess a
+   socket name.
+
+Attach lives in `TermAttachController` (driven by `HarnessChatViewModel`) so Chat↔Terminal swipe
+does not drop the socket. Inbound PTY frames share one `Channel` consumer (hello → ring order is
+structural). Session WS stays on the existing per-attach Channel (M3b). Detach only when leaving
+the screen (VM cleared) or the app backgrounds (`ON_STOP`); reattach on return if Terminal was
+wanted. Identity `generation()` bump drops the attach. Font size is Settings Small/Medium/Large →
+11/13/16 sp; cols/rows use a measured "M" and `fontScale`. Ctrl is one-shot (long-press locks).
+Two-finger scroll is local `AnsiScreen` scrollback, pinned to an absolute line while scrolled
+back; tmux copy-mode history paging is out of scope. DECCKM (`CSI ?1 h/l`) selects SS3 vs CSI
+arrows. `{type:detach}` is ahead of `@rivetos/types` and a no-op on today's server — the close
+is the detach.
+
 ## Build / test / install
 
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 255.
+  (`.github/workflows/android.yml`) enforces a floor of 296 (255 + 41 M4 terminal tests).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -145,8 +179,9 @@ params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 - Never cache a `Network` handle into anything long-lived; never freeze `Network.socketFactory` onto a client.
 - No private IPs anywhere in this tree (CI secret-scan + private-net rule); placeholders use 192.0.2.x.
 - `EncryptedSharedPreferences` is deprecated upstream; keep it until a Keystore-wrapped blob exists.
-- Never send `{type:kill}` on terminal leave — detach only.
-- M4 terminal: start from `git show 03682119:apps/rivethub-android/app/src/main/java/io/rivethub/app/ui/components/TerminalView.kt` rather than reinventing IME handling, resize maths, and OSC 52. `ui/term/AnsiTerminal.kt`, `gateway/TermWs.kt`, `data/TermClient.kt`, `ui/components/KeyToolbar.kt` are still in the tree. `DesktopView.kt` (noVNC) was a plan §1 non-goal; correct to stay deleted.
+- Never send `{type:kill}` on terminal leave — detach only. `ui/term/AnsiTerminal.kt`,
+  `ui/term/TerminalPane.kt`, `gateway/TermWs.kt`, `data/TermClient.kt`, `ui/components/KeyToolbar.kt`
+  are the attach surface. `DesktopView.kt` (noVNC) was a plan §1 non-goal; correct to stay deleted.
 - ComponentGallery is still missing `statusBarsPadding()` (M1.5 emulator pass).
 - `archived` / `sessionModes` / `titleOverrides` / `agentPointers` maps are not pruned when a session
   ends. Do not GC them on a partial discover.
