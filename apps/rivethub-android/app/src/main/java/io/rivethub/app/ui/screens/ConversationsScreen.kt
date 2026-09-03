@@ -3,6 +3,8 @@ package io.rivethub.app.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -27,6 +30,7 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentAction
@@ -50,21 +55,26 @@ import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NewConversationAction
 import io.rivethub.app.plane.accentForConversation
 import io.rivethub.app.plane.conversationEmptyKind
+import io.rivethub.app.plane.discoveringLineVisible
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.filterConversations
 import io.rivethub.app.plane.isActiveStatus
 import io.rivethub.app.plane.newConversationAction
+import io.rivethub.app.plane.paneRows
 import io.rivethub.app.plane.rowPillText
 import io.rivethub.app.plane.showConversationFilter
+import io.rivethub.app.plane.topBarTitle
+import io.rivethub.app.plane.HubTab
+import io.rivethub.app.plane.TopBarTitle
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.ConversationRowChrome
 import io.rivethub.app.ui.components.ConversationRowStatus as RowStatus
-import io.rivethub.app.ui.components.PageHeader
 import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.RivetModalSheet
 import io.rivethub.app.ui.components.SheetTextRow
+import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.components.rivetHexColor
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
@@ -104,13 +114,25 @@ fun ConversationsScreen(
         st.query,
     )
     val ptr = rememberPullToRefreshState()
+    // D2-8: no circular spinner floats over the rows on auto-refresh — the pull
+    // indicator only answers a user pull; progress is the `discovering… n/m` line.
+    var pulled by remember { mutableStateOf(false) }
+    LaunchedEffect(st.loading) { if (!st.loading) pulled = false }
 
     Column(
         Modifier
             .fillMaxSize()
             .background(colors.panel.copy(alpha = 0.4f)),
     ) {
-        PageHeader(onOpenDrawer = onOpenDrawer)
+        TopBar(
+            title = stringResource(
+                when (topBarTitle(HubTab.Conversations)) {
+                    TopBarTitle.Wordmark -> R.string.brand_rivethub
+                    TopBarTitle.Settings -> R.string.title_settings
+                },
+            ),
+            onOpenDrawer = onOpenDrawer,
+        )
         Row(
             Modifier
                 .fillMaxWidth()
@@ -170,16 +192,19 @@ fun ConversationsScreen(
             )
         }
         HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
-        Column(Modifier.weight(1f).fillMaxWidth()) {
+        Column(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 PullToRefreshBox(
-                    isRefreshing = st.loading,
-                    onRefresh = { vm.refresh() },
+                    isRefreshing = pulled && st.loading,
+                    onRefresh = {
+                        pulled = true
+                        vm.refresh()
+                    },
                     state = ptr,
                     indicator = {
                         PullToRefreshDefaults.Indicator(
                             modifier = Modifier.align(Alignment.TopCenter),
-                            isRefreshing = st.loading,
+                            isRefreshing = pulled && st.loading,
                             containerColor = colors.panel2,
                             color = colors.em,
                             state = ptr,
@@ -199,7 +224,7 @@ fun ConversationsScreen(
                             }
                             ConversationEmptyKind.None -> Unit
                         }
-                        items(lists.live, key = { it.item.key }) { row ->
+                        items(paneRows(lists.live), key = { it.item.key }) { row ->
                             val title = displayTitle(row.item, st.titleOverrides)
                             val agentId = vm.agentForSession(row.item.key)
                             val preset = st.agents.find { it.agentId == agentId }?.color
@@ -216,7 +241,7 @@ fun ConversationsScreen(
                             )
                         }
                         if (archivedOpen) {
-                            items(lists.archived, key = { "arch-${it.item.key}" }) { row ->
+                            items(paneRows(lists.archived), key = { "arch-${it.item.key}" }) { row ->
                                 val title = displayTitle(row.item, st.titleOverrides)
                                 val agentId = vm.agentForSession(row.item.key)
                                 val preset = st.agents.find { it.agentId == agentId }?.color
@@ -396,13 +421,32 @@ private fun ConversationMenuSheet(
     }
 }
 
+/**
+ * chat.tsx:808-817 — `+ new` is NOT a `ui/button.tsx` Button on the web; it is
+ * a raw `rounded border border-line px-2 py-1 text-xs text-ink-dim` button
+ * (hover → `border-em text-em`, mapped to pressed).
+ */
 @Composable
 private fun NewConversationButton(onClick: () -> Unit) {
-    io.rivethub.app.ui.components.RivetButton(
-        text = stringResource(R.string.action_new_plus),
-        onClick = onClick,
-        variant = io.rivethub.app.ui.components.RivetButtonVariant.Outline,
-        size = io.rivethub.app.ui.components.RivetButtonSize.Sm,
+    val colors = RivetTheme.colors
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val shape = RoundedCornerShape(Radius.sm)
+    Text(
+        stringResource(R.string.action_new_plus),
+        color = if (pressed) colors.em else colors.inkDim,
+        style = RivetType.xs,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(shape)
+            .border(1.dp, if (pressed) colors.em else colors.line, shape)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .padding(horizontal = 8.dp, vertical = 4.dp),
     )
 }
 
@@ -425,7 +469,7 @@ private fun rowStatus(row: LocatedChatItem): RowStatus = when {
 
 @Composable
 internal fun HubDiscoveringLine(done: Int, total: Int) {
-    if (total <= 0 || done >= total) return
+    if (!discoveringLineVisible(done, total)) return
     val colors = RivetTheme.colors
     Text(
         stringResource(R.string.discovering_progress, done, total),

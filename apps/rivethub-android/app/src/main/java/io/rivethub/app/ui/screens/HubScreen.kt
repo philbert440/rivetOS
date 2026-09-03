@@ -5,10 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
@@ -32,12 +30,12 @@ import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
+import io.rivethub.app.plane.drawerWidthDp
 import io.rivethub.app.plane.hubTabOf
 import io.rivethub.app.plane.hubTabOnBack
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.RivetDrawerContent
 import io.rivethub.app.ui.components.RivetModalSheet
-import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.launch
@@ -95,7 +93,7 @@ fun HubScreen(
     val currentName = currentNode?.name?.ifBlank { currentNode.id } ?: st.prefs.entryUrl.ifBlank { "—" }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val drawerWidth = if (maxWidth < 360.dp) maxWidth * 0.85f else Dimens.drawerWidth
+        val drawerWidth = drawerWidthDp(maxWidth.value).dp
         ModalNavigationDrawer(
             drawerState = drawerState,
             scrimColor = colors.bg.copy(alpha = 0.7f),
@@ -149,16 +147,10 @@ fun HubScreen(
                     },
                     onRemoveNode = { row -> vm.removeSavedNode(row.denUrl) },
                     onSaveDiscovered = { row -> vm.addSavedNode(row.denUrl) },
-                    modifier = Modifier.statusBarsPadding().navigationBarsPadding(),
                 )
             },
         ) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding(),
-            ) {
+            Column(Modifier.fillMaxSize()) {
                 when (st.tab) {
                     HubViewModel.Tab.Conversations -> ConversationsScreen(
                         vm = vm,

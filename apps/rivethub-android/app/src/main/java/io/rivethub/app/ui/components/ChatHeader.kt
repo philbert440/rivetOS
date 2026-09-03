@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -99,17 +100,32 @@ fun ChatSessionHeader(
                 modifier = Modifier.weight(1f),
             )
         }
-        if (context != null) {
-            ContextBar(view = context)
+        // Second header line: web is `justify-between` (chat.tsx:1517), so the
+        // context bar pins left and Stop + Terminal|Chat pin right.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (context != null) {
+                ContextBar(view = context)
+            } else {
+                Spacer(Modifier)
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (showStop) {
+                    HeaderStopButton(onClick = onStop)
+                }
+                SegmentedControl(
+                    options = modeOptions,
+                    selected = selectedMode,
+                    onSelect = onSelectMode,
+                )
+            }
         }
-        if (showStop) {
-            HeaderStopButton(onClick = onStop)
-        }
-        SegmentedControl(
-            options = modeOptions,
-            selected = selectedMode,
-            onSelect = onSelectMode,
-        )
     }
 }
 

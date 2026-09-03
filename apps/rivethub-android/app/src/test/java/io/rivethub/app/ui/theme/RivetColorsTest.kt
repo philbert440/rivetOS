@@ -57,6 +57,7 @@ class RivetColorsTest {
             "warn" to (RivetPalette.DarkWarn to RivetPalette.LightWarn),
             "link" to (RivetPalette.DarkLink to RivetPalette.LightLink),
             "assistant" to (RivetPalette.DarkAssistant to RivetPalette.LightAssistant),
+            "gridLine" to (RivetPalette.DarkGridLine to RivetPalette.LightGridLine),
         )
         for ((name, pair) in pairs) {
             if (name == "emDim") {

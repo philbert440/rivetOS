@@ -15,9 +15,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -50,6 +50,7 @@ import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.TimeFmt
+import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -91,9 +92,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .statusBarsPadding()
             .imePadding(),
     ) {
+        TopBar(title = stringResource(R.string.brand_rivethub), onOpenDrawer = null)
         if (onBack != null) {
             Box(
                 Modifier
@@ -119,6 +120,7 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                     .widthIn(max = 576.dp)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
                     .padding(horizontal = hPad, vertical = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Top,

@@ -77,6 +77,11 @@ object RivetType {
         fontSize = 14.sp,
         fontWeight = FontWeight.Normal,
     )
+    val mono12 = TextStyle(
+        fontFamily = RivetFonts.Mono,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Normal,
+    )
     val monoSmSemibold = TextStyle(
         fontFamily = RivetFonts.Mono,
         fontSize = 14.sp,

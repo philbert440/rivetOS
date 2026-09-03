@@ -68,9 +68,15 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 .blueprintGrid(colors.gridLine)
                 .padding(bottom = Dimens.grid2),
         ) {
-            PageHeader(onOpenDrawer = {}) {
-                Text("RivetHub · $label", color = colors.em, style = RivetType.brand)
+            TopBar(title = "RivetHub · $label", onOpenDrawer = {}, padStatusBar = false)
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                GalleryH("Top bar · $label")
             }
+            TopBar(title = "RivetHub", onOpenDrawer = {}, padStatusBar = false)
+            Spacer(Modifier.height(8.dp))
+            TopBar(title = "Settings", onOpenDrawer = {}, padStatusBar = false)
+            Spacer(Modifier.height(8.dp))
+            TopBar(title = "RivetHub", onOpenDrawer = null, padStatusBar = false)
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Drawer nav · $label")
                 NavRow("Conversations", R.drawable.lucide_message_square, active = true, onClick = {})
@@ -81,12 +87,30 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 GalleryH("Conversation rows")
             }
             ConversationRowChrome(
+                title = "idle thread",
+                accent = rivetHexColor("#CC785C"),
+                onOpen = {},
+                onArchive = {},
+                onLong = {},
+                harness = "Claude Code",
+                swipeEnabled = false,
+            )
+            ConversationRowChrome(
                 title = "active thread",
                 accent = colors.em,
                 onOpen = {},
                 onArchive = {},
                 onLong = {},
                 active = true,
+                harness = "Claude Code",
+                swipeEnabled = false,
+            )
+            ConversationRowChrome(
+                title = "in-flight thread",
+                accent = colors.em,
+                onOpen = {},
+                onArchive = {},
+                onLong = {},
                 status = ConversationRowStatus.InFlight,
                 harness = "Claude Code",
                 swipeEnabled = false,
@@ -150,6 +174,30 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     onLong = {},
                     activityActive = true,
                 )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Settings rhythm")
+                SettingsH2("Identity")
+                FieldLabel("Subject")
+                Text("device:pixel", color = colors.ink, style = RivetType.mono12)
+                Spacer(Modifier.height(8.dp))
+                FieldLabel("Entry URL")
+                RivetField(
+                    value = field,
+                    onValueChange = { field = it },
+                    placeholder = "https://192.0.2.10:5174",
+                    size = RivetFieldSize.Settings,
+                )
+                Text(
+                    "Auth is the device client certificate, imported below as a .p12.",
+                    color = colors.inkDim,
+                    style = RivetType.xs,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    RivetButton(text = "Test connection", onClick = {}, variant = RivetButtonVariant.Outline)
+                    RivetButton(text = "Save", onClick = {})
+                }
                 Spacer(Modifier.height(12.dp))
                 GalleryH("Confirm")
                 RivetButton(

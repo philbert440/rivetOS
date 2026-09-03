@@ -78,7 +78,9 @@ fun TranscriptUserTurn(
                             onLongClick = { onCopy(text) },
                         )
                         .padding(horizontal = 16.dp, vertical = 10.dp)
-                        .padding(end = 8.dp),
+                        // N19: reserve the same 44dp the CopyGlyph occupies, like
+                        // the assistant side, so short messages clear the glyph.
+                        .padding(end = 28.dp),
                 )
                 CopyGlyph(
                     copied = false,
@@ -315,6 +317,7 @@ fun CopyGlyph(
     Box(
         modifier
             .size(Dimens.touchTarget)
+            .clip(shape)
             .semantics {
                 contentDescription = cd
                 role = Role.Button

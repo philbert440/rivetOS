@@ -6,15 +6,18 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
@@ -48,6 +51,20 @@ class MainActivity : ComponentActivity() {
                 "light" -> ThemeMode.Light
                 "dark" -> ThemeMode.Dark
                 else -> ThemeMode.System
+            }
+            // D2-1: status/nav bar icon colour follows the in-app theme, not
+            // just the OS mode (light icons on the dark theme and vice versa).
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (mode) {
+                ThemeMode.Light -> false
+                ThemeMode.Dark -> true
+                ThemeMode.System -> systemDark
+            }
+            SideEffect {
+                WindowInsetsControllerCompat(window, window.decorView).run {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
             }
             RivetTheme(mode) { App(container, openStream = { uri -> contentResolver.openInputStream(uri) }) }
         }

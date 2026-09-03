@@ -14,10 +14,12 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 enum class ThemeMode { System, Light, Dark }
@@ -137,8 +139,11 @@ object RivetTheme {
 val OnEm = Color(RivetPalette.OnEm)
 
 /**
- * Desktop body blueprint grid: two 1px line grids every 32dp.
+ * Desktop body blueprint grid: two 1px line grids every 32dp (theme.css:63-67).
  * Apply on the app root over `bg`; surfaces above it use `panel`/`panel2` with alpha.
+ * Lines are 1dp rects (1 CSS px == 1dp at any density): a 1px `drawLine` stroke is
+ * centred on the coordinate and anti-aliases to half coverage, which halves the
+ * already-faint line alpha against the desktop capture.
  */
 fun Modifier.blueprintGrid(
     line: Color,
@@ -146,15 +151,15 @@ fun Modifier.blueprintGrid(
 ): Modifier = drawBehind {
     val s = step.toPx()
     if (s <= 0f) return@drawBehind
-    val stroke = 1f
+    val w = 1.dp.toPx()
     var x = 0f
     while (x <= size.width) {
-        drawLine(line, Offset(x, 0f), Offset(x, size.height), strokeWidth = stroke)
+        drawRect(line, Offset(x, 0f), Size(w, size.height))
         x += s
     }
     var y = 0f
     while (y <= size.height) {
-        drawLine(line, Offset(0f, y), Offset(size.width, y), strokeWidth = stroke)
+        drawRect(line, Offset(0f, y), Size(size.width, w))
         y += s
     }
 }

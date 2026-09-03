@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -224,6 +226,7 @@ private fun FencedCode(lang: String, code: String) {
                 color = if (copied) colors.em else colors.inkDim,
                 style = RivetType.mono10,
                 modifier = Modifier
+                    .sizeIn(minWidth = 44.dp, minHeight = 32.dp)
                     .semantics {
                         contentDescription = if (copied) copiedCd else copyCd
                         role = Role.Button
@@ -235,7 +238,8 @@ private fun FencedCode(lang: String, code: String) {
                             delay(1500)
                             copied = false
                         }
-                    }),
+                    })
+                    .wrapContentSize(Alignment.Center),
             )
         }
         Text(

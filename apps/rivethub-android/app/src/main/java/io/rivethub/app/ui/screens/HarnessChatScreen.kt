@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -34,6 +33,7 @@ import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.TopBarTitle
 import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
@@ -41,6 +41,7 @@ import io.rivethub.app.plane.contextBarView
 import io.rivethub.app.plane.humanToolTitle
 import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.plane.toolArgStrings
+import io.rivethub.app.plane.topBarTitle
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.components.AskUserCardView
 import io.rivethub.app.ui.components.ChatSessionHeader
@@ -51,6 +52,7 @@ import io.rivethub.app.ui.components.ModePager
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
 import io.rivethub.app.ui.components.ToolRow
+import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.components.TranscriptAssistantTurn
 import io.rivethub.app.ui.components.TranscriptUserTurn
 import io.rivethub.app.ui.components.rivetHexColor
@@ -127,10 +129,20 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
             .imePadding(),
     ) {
+        // D2-1: the web mobile top bar stays above the session back row
+        // (routes.tsx:107 mounts MobileTopBar above <main>); no drawer here,
+        // so the DenBot is decorative.
+        TopBar(
+            title = stringResource(
+                when (topBarTitle(null)) {
+                    TopBarTitle.Wordmark -> R.string.brand_rivethub
+                    TopBarTitle.Settings -> R.string.title_settings
+                },
+            ),
+            onOpenDrawer = null,
+        )
         ChatSessionHeader(
             sessionLabel = sessionLabel,
             context = context,
@@ -193,6 +205,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
                     copyText(ctx, cmd)
                 },
                 onDetach = vm::userDetachTerminal,
+                modifier = Modifier.navigationBarsPadding(),
             )
         } else {
             Composer(
@@ -222,6 +235,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
                 },
                 attachments = st.attachments,
                 onRemoveAttachment = vm::removeAttachment,
+                modifier = Modifier.navigationBarsPadding(),
                 pickers = { compact ->
                     ComposerPicker(
                         icon = R.drawable.lucide_server,

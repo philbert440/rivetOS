@@ -152,6 +152,7 @@ fun Composer(
                     Box(
                         Modifier
                             .size(Dimens.touchTarget)
+                            .clip(CircleShape)
                             .semantics {
                                 contentDescription = attachCd
                                 role = Role.Button
@@ -177,6 +178,7 @@ fun Composer(
                     Box(
                         Modifier
                             .size(Dimens.touchTarget)
+                            .clip(CircleShape)
                             .semantics {
                                 contentDescription = sendCd
                                 role = Role.Button
@@ -322,7 +324,8 @@ private fun AttachmentChip(a: PendingAttachment, onRemove: () -> Unit) {
         val remove = stringResource(R.string.cd_remove_attachment, a.name)
         Box(
             Modifier
-                .size(Dimens.touchTarget)
+                .size(32.dp)
+                .clip(CircleShape)
                 .semantics {
                     contentDescription = remove
                     role = Role.Button
