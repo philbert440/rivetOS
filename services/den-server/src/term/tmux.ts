@@ -394,10 +394,11 @@ export type TmuxExec = (
 
 /** TmuxCtl backed by the real tmux binary (absolute path from findOnPath —
  *  never a bare name resolved per-call). Every call is execFileSync with a
- *  250ms timeout, no shell, `-u -L <socket> -f <conf>` on EVERY argv (–u forces UTF-8 so -F tab
- *  separators survive LANG=C — see run()) (a ctl call
- *  is what starts the server on first use — without our conf the server would
- *  come up with `exit-empty on` and the persistence contract is lost), and
+ *  250ms timeout, no shell, and `-u -L <socket> -f <conf>` on EVERY argv.
+ *  `-u` forces UTF-8 so the `-F` tab separators survive LANG=C (see run()).
+ *  `-f <conf>` matters because a ctl call is what starts the server on first
+ *  use — without our conf the server would come up with `exit-empty on` and
+ *  the persistence contract is lost. Uses
  *  `-t =<name>` targets (`=` forces an exact match; a bare `-t name` is a
  *  prefix/fnmatch target, so `has-session -t a` would match `ab`).
  *
