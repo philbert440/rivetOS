@@ -31,15 +31,6 @@ class ContextWindowTest {
     }
 
     @Test
-    fun `compactTokens formats k and M`() {
-        assertEquals("500", compactTokens(500))
-        assertEquals("18.4k", compactTokens(18_400))
-        assertEquals("262k", compactTokens(262_144))
-        assertEquals("500k", compactTokens(500_000))
-        assertEquals("1M", compactTokens(1_000_000))
-    }
-
-    @Test
     fun `estimatePromptTokens uses chars div 4 plus framing`() {
         assertEquals(5, estimatePromptTokens(listOf("abcd")))
         assertEquals(4 + 0 + 4 + 2, estimatePromptTokens(listOf("", "abcdefgh")))

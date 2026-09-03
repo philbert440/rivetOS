@@ -20,10 +20,9 @@ fun topBarTitle(tab: HubTab?): TopBarTitle = when (tab) {
 
 /**
  * Mobile drawer width — sidebar.tsx:189 fixes the phone sheet at `w-64`
- * (256dp); under 360dp the sheet takes 85% of the screen (D1a rule).
+ * (256dp), never wider than 85% of a narrow screen.
  */
-fun drawerWidthDp(maxWidthDp: Float): Float =
-    if (maxWidthDp < 360f) maxWidthDp * 0.85f else 256f
+fun drawerWidthDp(maxWidthDp: Float): Float = minOf(256f, maxWidthDp * 0.85f)
 
 /**
  * Conversation pane rows — chat.tsx:833 maps the recency list 1:1 into rows.

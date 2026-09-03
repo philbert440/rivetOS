@@ -11,25 +11,17 @@ const val PICKER_COMPACT_MAX_DP = 380f
 
 fun formatCount(n: Int): String = String.format(Locale.US, "%,d", n)
 
+/**
+ * Phone context bar model. The desktop caption (`50.2k/1M · 5%`) and the hot
+ * colour live on the track that is `hidden sm:block` (context-bar.tsx:44-56),
+ * so the phone view carries only what it renders: the percentage.
+ */
 data class ContextBarView(
     val tokens: Int,
     val max: Int,
     val pct: Int,
-    val hot: Boolean,
     val estimated: Boolean,
-) {
-    val caption: String
-        get() = buildString {
-            if (estimated) append('~')
-            append(compactTokens(tokens))
-            append('/')
-            append(compactTokens(max))
-            append(" · ")
-            append(pct)
-            append('%')
-            if (estimated) append(" est.")
-        }
-}
+)
 
 /**
  * Prefers harness-reported prompt tokens; estimates from transcript texts
@@ -42,7 +34,7 @@ fun contextBarView(reported: Int?, model: String?, texts: List<String>): Context
     if (tokens <= 0) return null
     val max = contextWindowFor(model)
     val pct = min(100, ((tokens.toDouble() / max) * 100.0).roundToInt())
-    return ContextBarView(tokens = tokens, max = max, pct = pct, hot = pct >= 85, estimated = estimated)
+    return ContextBarView(tokens = tokens, max = max, pct = pct, estimated = estimated)
 }
 
 data class StatsLine(

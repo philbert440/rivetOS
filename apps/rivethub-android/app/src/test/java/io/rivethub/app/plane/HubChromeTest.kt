@@ -44,6 +44,7 @@ class HubChromeTest {
     fun `drawer width follows the sidebar w-64 rule with the narrow-screen fallback`() {
         assertEquals(256f, drawerWidthDp(412f), 0.001f)
         assertEquals(256f, drawerWidthDp(360f), 0.001f)
-        assertEquals(272f, drawerWidthDp(320f), 0.001f)
+        assertEquals(256f, drawerWidthDp(320f), 0.001f)
+        assertEquals(238f, drawerWidthDp(280f), 0.001f)
     }
 }

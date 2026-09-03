@@ -76,6 +76,7 @@ import io.rivethub.app.ui.components.RivetModalSheet
 import io.rivethub.app.ui.components.SheetTextRow
 import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.components.rivetHexColor
+import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -432,22 +433,29 @@ private fun NewConversationButton(onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val shape = RoundedCornerShape(Radius.sm)
-    Text(
-        stringResource(R.string.action_new_plus),
-        color = if (pressed) colors.em else colors.inkDim,
-        style = RivetType.xs,
-        maxLines = 1,
+    // 44dp hit box around the source-sized bordered label (button.tsx look, phone target).
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
-            .clip(shape)
-            .border(1.dp, if (pressed) colors.em else colors.line, shape)
+            .sizeIn(minWidth = Dimens.touchTarget, minHeight = Dimens.touchTarget)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
                 onClick = onClick,
-            )
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    )
+            ),
+    ) {
+        Text(
+            stringResource(R.string.action_new_plus),
+            color = if (pressed) colors.em else colors.inkDim,
+            style = RivetType.xs,
+            maxLines = 1,
+            modifier = Modifier
+                .clip(shape)
+                .border(1.dp, if (pressed) colors.em else colors.line, shape)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    }
 }
 
 @Composable

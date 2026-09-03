@@ -265,9 +265,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             )
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Context bar")
-                ContextBar(ContextBarView(50_202, 1_000_000, 5, hot = false, estimated = false))
-                Spacer(Modifier.height(8.dp))
-                ContextBar(ContextBarView(900_000, 1_000_000, 90, hot = true, estimated = false))
+                ContextBar(ContextBarView(50_202, 1_000_000, 5, estimated = false))
                 Spacer(Modifier.height(8.dp))
                 ContextBar(contextBarView(null, "grok", listOf("abcd"))!!)
                 Spacer(Modifier.height(12.dp))

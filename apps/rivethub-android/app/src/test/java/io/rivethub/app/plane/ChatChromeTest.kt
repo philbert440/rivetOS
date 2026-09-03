@@ -17,9 +17,7 @@ class ChatChromeTest {
         assertEquals(50_202, view!!.tokens)
         assertEquals(1_000_000, view.max)
         assertEquals(5, view.pct)
-        assertFalse(view.hot)
         assertFalse(view.estimated)
-        assertEquals("50.2k/1M · 5%", view.caption)
     }
 
     @Test
@@ -29,18 +27,14 @@ class ChatChromeTest {
         assertTrue(view!!.estimated)
         assertEquals(5, view.tokens)
         assertEquals(500_000, view.max)
-        assertTrue(view.caption.startsWith("~"))
-        assertTrue(view.caption.endsWith(" est."))
+        assertEquals(0, view.pct)
     }
 
     @Test
-    fun `context bar is hot at 85 percent`() {
-        val hot = contextBarView(850_000, "claude", emptyList())
-        assertNotNull(hot)
-        assertEquals(85, hot!!.pct)
-        assertTrue(hot.hot)
-        val cool = contextBarView(840_000, "claude", emptyList())
-        assertFalse(cool!!.hot)
+    fun `context bar pct rounds and caps at 100`() {
+        assertEquals(85, contextBarView(850_000, "claude", emptyList())!!.pct)
+        assertEquals(84, contextBarView(844_999, "claude", emptyList())!!.pct)
+        assertEquals(100, contextBarView(2_000_000, "claude", emptyList())!!.pct)
     }
 
     @Test

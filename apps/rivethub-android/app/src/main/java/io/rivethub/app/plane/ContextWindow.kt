@@ -1,6 +1,5 @@
 package io.rivethub.app.plane
 
-import java.util.Locale
 import kotlin.math.ceil
 
 /**
@@ -23,19 +22,6 @@ fun contextWindowFor(model: String?): Int {
     if (model.isNullOrBlank()) return DEFAULT_CONTEXT_WINDOW
     for (w in WINDOWS) if (w.match.containsMatchIn(model)) return w.tokens
     return DEFAULT_CONTEXT_WINDOW
-}
-
-/** Compact token count: 18_432 → "18.4k", 1_000_000 → "1M", 262_144 → "262k". */
-fun compactTokens(n: Int): String {
-    if (n >= 1_000_000) {
-        return if (n % 1_000_000 == 0) "${n / 1_000_000}M"
-        else String.format(Locale.US, "%.1fM", n / 1_000_000.0)
-    }
-    if (n >= 1_000) {
-        return if (n >= 100_000) String.format(Locale.US, "%.0fk", n / 1_000.0)
-        else String.format(Locale.US, "%.1fk", n / 1_000.0)
-    }
-    return n.toString()
 }
 
 /**

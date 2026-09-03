@@ -49,11 +49,8 @@ fun ConversationRowChrome(
     val colors = RivetTheme.colors
     // chat.tsx:642-644 — idle rows are `text-ink-dim` (`group-hover:text-ink`
     // has no phone analog; the ripple covers press), active rows `text-em`.
-    val titleColor = when {
-        archived -> colors.inkDim
-        active -> colors.em
-        else -> colors.inkDim
-    }
+    // Archived rows share the idle colour: the source distinguishes them only by section.
+    val titleColor = if (active && !archived) colors.em else colors.inkDim
     val row: @Composable () -> Unit = {
         Row(
             Modifier
