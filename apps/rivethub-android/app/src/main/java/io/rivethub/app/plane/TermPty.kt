@@ -148,3 +148,17 @@ class TermPtyClient(private val sink: TermSink) {
         sink.close()
     }
 }
+
+/**
+ * Characters ADDED to the hidden IME field since the last value we saw: the tail after the
+ * longest common prefix. Append-only by design — a shrinking value never yields backspaces
+ * (deletion arrives as a hardware key event on the password-type field), the sentinel is
+ * never forwarded, and CRLF / LF both become a single CR for the PTY.
+ */
+fun imeDelta(prev: String, cur: String, sentinel: String): String {
+    var p = 0
+    val max = minOf(prev.length, cur.length)
+    while (p < max && prev[p] == cur[p]) p++
+    val added = if (cur.length > p) cur.substring(p) else ""
+    return added.replace(sentinel, "").replace("\r\n", "\r").replace("\n", "\r")
+}

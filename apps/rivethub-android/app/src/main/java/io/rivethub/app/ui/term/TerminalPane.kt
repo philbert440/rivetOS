@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
+import io.rivethub.app.plane.imeDelta
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -54,7 +55,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
@@ -202,23 +203,16 @@ fun TerminalPane(
         BasicTextField(
             value = ime,
             onValueChange = { next ->
-                // Diff against the last value WE saw, not against the sentinel: rapid IME commits
-                // (autocorrect, paste, `input text`) arrive before the previous reset recomposes,
-                // so resetting-and-resending duplicated characters. Send only the delta, once.
-                val prev = imeSeen
+                // Append-only: send the characters that were ADDED since the last value we saw.
+                // Never synthesize backspaces from a shrinking value — Compose state can lag a
+                // fast key stream and a stale value would delete real characters in the TUI.
+                // Deletion reaches the PTY as a hardware Backspace key event (password-type field).
                 val cur = next.text
-                val base = if (cur.startsWith(IME_SENTINEL)) IME_SENTINEL.length else 0
-                var p = 0
-                val max = minOf(prev.length, cur.length)
-                while (p < max && prev[p] == cur[p]) p++
-                val removed = (prev.length - p).coerceAtLeast(0)
-                val added = if (p < cur.length) cur.substring(maxOf(p, base)) else ""
-                repeat(removed.coerceAtMost(prev.length - base)) { onBytes(TermKeys.BACKSPACE) }
-                val clean = added.replace(IME_SENTINEL, "").replace("\n", "\r")
+                val clean = imeDelta(imeSeen, cur, IME_SENTINEL)
                 if (clean.isNotEmpty()) onBytes(TermKeys.ime(clean, ctrl))
                 if (cur.length > 256 || !cur.startsWith(IME_SENTINEL)) {
                     imeSeen = IME_SENTINEL
-                    ime = TextFieldValue(IME_SENTINEL)
+                    ime = TextFieldValue(IME_SENTINEL, selection = TextRange(IME_SENTINEL.length))
                 } else {
                     imeSeen = cur
                     ime = next

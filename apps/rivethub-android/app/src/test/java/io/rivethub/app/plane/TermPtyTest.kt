@@ -228,4 +228,16 @@ class RecordingTermSink : TermSink {
     override fun close() {
         closed = true
     }
+
+    @Test fun `imeDelta is append-only, strips the sentinel, and folds newlines to CR`() {
+        val z = "\u200B"
+        assertEquals("o", imeDelta(z + "N", z + "No", z))
+        assertEquals("", imeDelta(z + "No", z + "N", z))          // shrink → no backspaces
+        assertEquals("w", imeDelta(z + "No", z + "Nw", z))        // replacement → only the new tail
+        assertEquals("abc", imeDelta(z, z + "abc", z))            // paste
+        assertEquals("abc", imeDelta(z, "abc", z))                // sentinel gone → tail still sent once
+        assertEquals("\r", imeDelta(z, z + "\n", z))              // soft Enter
+        assertEquals("a\rb\r", imeDelta(z, z + "a\r\nb\n", z))     // CRLF collapses
+        assertEquals("", imeDelta(z + "x", z + "x" + z, z))       // a re-inserted sentinel is never sent
+    }
 }
