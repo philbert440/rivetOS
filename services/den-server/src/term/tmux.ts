@@ -394,7 +394,8 @@ export type TmuxExec = (
 
 /** TmuxCtl backed by the real tmux binary (absolute path from findOnPath —
  *  never a bare name resolved per-call). Every call is execFileSync with a
- *  250ms timeout, no shell, `-L <socket> -f <conf>` on EVERY argv (a ctl call
+ *  250ms timeout, no shell, `-u -L <socket> -f <conf>` on EVERY argv (–u forces UTF-8 so -F tab
+ *  separators survive LANG=C — see run()) (a ctl call
  *  is what starts the server on first use — without our conf the server would
  *  come up with `exit-empty on` and the persistence contract is lost), and
  *  `-t =<name>` targets (`=` forces an exact match; a bare `-t name` is a
@@ -411,7 +412,15 @@ export function createRealTmuxCtl(
 ): TmuxCtl {
   const run = (args: string[]): string | null => {
     try {
-      return execFn(binary, ['-L', socket, '-f', confPath, ...args], {
+      // `-u` forces UTF-8, exactly as the new-session spawn argv does. Without
+      // it, a den running under LANG=C (systemd sets no UTF-8 locale) makes
+      // tmux render the TAB field separator in `-F` output as `_`, so every
+      // list-sessions row parses as one field: name = the whole mangled line,
+      // command = '' → /term/list drops the row (needs a command) and
+      // spawn-or-get's `find(name === tmuxName)` never matches, wrongly
+      // throwing "session exists but is not listable" for a live session while
+      // has-session (a boolean, no -F output) stays truthful. (2026-09-03)
+      return execFn(binary, ['-u', '-L', socket, '-f', confPath, ...args], {
         encoding: 'utf8',
         timeout: TMUX_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'ignore'],

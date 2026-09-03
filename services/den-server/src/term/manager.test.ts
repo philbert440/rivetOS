@@ -2004,7 +2004,7 @@ describe('real tmux ctl (scripted exec)', () => {
     expect(() => ctl.killSession('abc')).not.toThrow()
     expect(calls).toHaveLength(3)
     for (const c of calls) {
-      expect(c.slice(0, 4)).toEqual(['-L', 'rivet-abcd1234', '-f', '/tmp/den/tmux.conf'])
+      expect(c.slice(0, 5)).toEqual(['-u', '-L', 'rivet-abcd1234', '-f', '/tmp/den/tmux.conf'])
     }
     expect(calls[0][calls[0].indexOf('-t') + 1]).toBe('=abc')
     expect(calls[2][calls[2].indexOf('-t') + 1]).toBe('=abc')

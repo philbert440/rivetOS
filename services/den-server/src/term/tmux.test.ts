@@ -141,6 +141,7 @@ describe('tmux argv builders', () => {
     expect(calls).toHaveLength(1)
     ctl.setOption?.('chat-f', '@rivet_command', 'claude')
     expect(calls.at(-1)).toEqual([
+      '-u',
       '-L',
       's',
       '-f',
@@ -153,6 +154,26 @@ describe('tmux argv builders', () => {
     ])
     ctl.listSessions()
     expect(calls.filter((c) => c.includes('list-sessions'))).toHaveLength(2)
+  })
+
+  it('every ctl argv is prefixed with -u so LANG=C cannot mangle the -F tab separators (regression)', () => {
+    // 2026-09-03: a den under LANG=C served an empty/garbled session list —
+    // tmux rendered the TAB in `-F` output as `_`, so rows parsed with name =
+    // the whole line and command = '' (dropped by /term/list; unmatched by
+    // spawn-or-get → "session exists but is not listable"). `-u` (as the spawn
+    // path already uses) forces UTF-8 and keeps the tabs.
+    const calls: string[][] = []
+    const exec: TmuxExec = (_bin, args) => {
+      calls.push(args)
+      return args.includes('list-sessions') ? 'a\t1\t1\t1\tclaude\towner\n' : ''
+    }
+    const ctl = createRealTmuxCtl('/usr/bin/tmux', 'sock', 'conf', exec)
+    ctl.listSessions()
+    ctl.hasSession('a')
+    ctl.killSession('a')
+    ctl.setOption?.('a', '@rivet_command', 'claude')
+    expect(calls.length).toBeGreaterThan(0)
+    for (const c of calls) expect(c[0]).toBe('-u')
   })
 })
 
