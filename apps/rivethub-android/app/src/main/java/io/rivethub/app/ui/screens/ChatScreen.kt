@@ -54,9 +54,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.rivethub.app.data.SessionMessage
-import io.rivethub.app.data.WsStatus
 import io.rivethub.app.data.visibleAssistantText
+import io.rivethub.app.gateway.SessionMessage
+import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.domain.Bot
 import io.rivethub.app.ui.ChatViewModel
 import io.rivethub.app.ui.components.BotPill

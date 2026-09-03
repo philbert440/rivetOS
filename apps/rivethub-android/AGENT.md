@@ -19,16 +19,24 @@ the harness control plane) — do not invest in it.
 
 What survives into the real app (plan §2): `data/DeviceIdentity.kt` (p12 vault), `data/HttpFactory.kt`
 + `data/LanNetwork.kt` + `LiveLanSocketFactory` (dual-path networking, `ACCESS_LOCAL_NETWORK`),
-`data/Gateway.kt` (reconnecting WS), `data/Wire.kt` (gateway twins — harness-plane twins are ADDED in M3a,
-these are not reused), the turn state machine in `ui/ChatViewModel.kt`, `HermesReasoning.kt`,
+`gateway/Gateway.kt` (reconnecting WS), `gateway/Wire.kt` (gateway twins — harness-plane twins are ADDED
+in M3a, these are not reused), `transport/NodeTransport` + `DirectTransport` (screens obtain gateways
+only through this seam), the turn state machine in `ui/ChatViewModel.kt`, `HermesReasoning.kt`,
 `ui/term/AnsiTerminal.kt` + the OSC colour-query filter, theme plumbing.
 
 ## Slices (plan §6)
 
-M1a rename + M6 CI ✔ (this) → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
-`project.json` → M2a p12 import in Settings → M1.5 design system (desktop tokens + components, Claude
+M1a rename + M6 CI ✔ → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
+`project.json` ✔ (this) → M2a p12 import in Settings → M1.5 design system (desktop tokens + components, Claude
 Design canvas = acceptance) → M3a pure-Kotlin plane layer (tests only) → M3b Compose conversations +
 chat → M4 terminal mode → M5a nodes filter → M5b turn-complete notification → M7 cutover.
+
+## Core packages
+
+`domain/`, `gateway/`, and `transport/` stay free of `android.*` / `androidx.*` / `com.android.*`
+imports so an iOS port can share them behind a later Ktor swap. Enforced by
+`CorePackagesAreAndroidFreeTest`. Screens talk to nodes only through `NodeTransport`
+(`DirectTransport` today; `IngressTransport` is a later drop-in). No KMP now.
 
 ## Build / test / install
 

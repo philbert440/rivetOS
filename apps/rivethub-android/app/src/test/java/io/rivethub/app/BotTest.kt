@@ -1,8 +1,8 @@
 package io.rivethub.app
 
 import io.rivethub.app.data.BotEdit
-import io.rivethub.app.data.SessionMessage
 import io.rivethub.app.data.effective
+import io.rivethub.app.gateway.SessionMessage
 import io.rivethub.app.domain.BlobShape
 import io.rivethub.app.domain.Bot
 import io.rivethub.app.domain.BotLooks

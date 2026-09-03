@@ -1,4 +1,4 @@
-package io.rivethub.app.data
+package io.rivethub.app.gateway
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json

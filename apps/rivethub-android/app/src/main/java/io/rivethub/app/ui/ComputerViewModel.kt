@@ -4,23 +4,24 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
 import io.rivethub.app.data.BotRepository
-import io.rivethub.app.data.DenFrame
-import io.rivethub.app.data.DenSessionInfo
-import io.rivethub.app.data.Gateway
-import io.rivethub.app.data.GatewayException
 import io.rivethub.app.data.NodeSession
 import io.rivethub.app.data.OscFilter
-import io.rivethub.app.data.RoomState
-import io.rivethub.app.data.SessionFrame
 import io.rivethub.app.data.SessionResolver
-import io.rivethub.app.data.SessionSummary
-import io.rivethub.app.data.TermFrame
-import io.rivethub.app.data.TermResizeFrame
-import io.rivethub.app.data.TermWs
-import io.rivethub.app.data.WsStatus
-import io.rivethub.app.data.parseTermFrame
-import io.rivethub.app.data.wireJson
 import io.rivethub.app.domain.Bot
+import io.rivethub.app.gateway.DenFrame
+import io.rivethub.app.gateway.DenSessionInfo
+import io.rivethub.app.gateway.Gateway
+import io.rivethub.app.gateway.GatewayException
+import io.rivethub.app.gateway.RoomState
+import io.rivethub.app.gateway.SessionFrame
+import io.rivethub.app.gateway.SessionSummary
+import io.rivethub.app.gateway.TermFrame
+import io.rivethub.app.gateway.TermResizeFrame
+import io.rivethub.app.gateway.TermWs
+import io.rivethub.app.gateway.WsStatus
+import io.rivethub.app.gateway.parseTermFrame
+import io.rivethub.app.gateway.wireJson
+import io.rivethub.app.transport.toNodeRef
 import io.rivethub.app.ui.term.AnsiScreen
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -250,7 +251,7 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, initialSessio
                 sessionReady = true,
             )
         }
-        val gw = try { c.gateways.get(bot.denUrl) } catch (e: Exception) {
+        val gw = try { c.transport.gateway(bot.toNodeRef()) } catch (e: Exception) {
             _state.update {
                 it.copy(
                     loaded = true,
@@ -397,7 +398,7 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, initialSessio
     }
 
     private fun gateway(): Gateway? = try {
-        c.gateways.get(bot.denUrl)
+        c.transport.gateway(bot.toNodeRef())
     } catch (e: Exception) {
         _state.update { it.copy(termStatus = TermAttach.Error, termError = BotRepository.friendly(e)) }
         null
@@ -406,7 +407,7 @@ class ComputerViewModel(private val c: AppContainer, val bot: Bot, initialSessio
     private fun load(sessionId: String, gen: Int) {
         viewModelScope.launch {
             try {
-                val room = c.gateways.get(bot.denUrl).denState(sessionId)
+                val room = c.transport.gateway(bot.toNodeRef()).denState(sessionId)
                 if (gen != bindGen) return@launch
                 _state.update { it.copy(room = room ?: it.room, loaded = true, error = null) }
             } catch (e: GatewayException) {

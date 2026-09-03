@@ -5,14 +5,16 @@ import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
 import io.rivethub.app.data.BotEdit
 import io.rivethub.app.data.BotRepository
-import io.rivethub.app.data.SessionFrame
-import io.rivethub.app.data.SessionMessage
 import io.rivethub.app.data.SessionResolver
-import io.rivethub.app.data.WsStatus
 import io.rivethub.app.data.effective
 import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.data.visibleAssistantText
 import io.rivethub.app.domain.Bot
+import io.rivethub.app.gateway.Gateway
+import io.rivethub.app.gateway.SessionFrame
+import io.rivethub.app.gateway.SessionMessage
+import io.rivethub.app.gateway.WsStatus
+import io.rivethub.app.transport.toNodeRef
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -90,8 +92,8 @@ class ChatViewModel(private val c: AppContainer, val bot: Bot, initialSessionId:
     }
 
     /** The node's gateway, or null (with the error surfaced) when the device identity won't load. */
-    private fun gateway(): io.rivethub.app.data.Gateway? = try {
-        c.gateways.get(bot.denUrl)
+    private fun gateway(): Gateway? = try {
+        c.transport.gateway(bot.toNodeRef())
     } catch (e: Exception) {
         _state.update { it.copy(error = BotRepository.friendly(e), loading = false, working = null, inFlight = false) }
         null

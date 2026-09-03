@@ -1,5 +1,7 @@
 package io.rivethub.app.data
 
+import io.rivethub.app.gateway.DenSessionInfo
+import io.rivethub.app.gateway.SessionSummary
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 

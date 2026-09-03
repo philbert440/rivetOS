@@ -1,12 +1,12 @@
 package io.rivethub.app
 
-import io.rivethub.app.data.DenFrame
-import io.rivethub.app.data.SessionFrame
-import io.rivethub.app.data.parseDenFrame
-import io.rivethub.app.data.parseSessionFrame
-import io.rivethub.app.data.wireJson
-import io.rivethub.app.data.CatalogAgentsResponse
-import io.rivethub.app.data.MeshOverview
+import io.rivethub.app.gateway.CatalogAgentsResponse
+import io.rivethub.app.gateway.DenFrame
+import io.rivethub.app.gateway.MeshOverview
+import io.rivethub.app.gateway.SessionFrame
+import io.rivethub.app.gateway.parseDenFrame
+import io.rivethub.app.gateway.parseSessionFrame
+import io.rivethub.app.gateway.wireJson
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue

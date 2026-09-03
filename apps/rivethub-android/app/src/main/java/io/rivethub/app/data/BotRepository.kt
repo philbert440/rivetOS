@@ -2,6 +2,12 @@ package io.rivethub.app.data
 
 import io.rivethub.app.domain.Bot
 import io.rivethub.app.domain.BotPreview
+import io.rivethub.app.gateway.GatewayException
+import io.rivethub.app.gateway.SessionSummary
+import io.rivethub.app.transport.NodeRef
+import io.rivethub.app.transport.NodeTransport
+import io.rivethub.app.transport.hostOfUrl
+import io.rivethub.app.transport.toNodeRef
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
@@ -14,14 +20,14 @@ import kotlin.coroutines.cancellation.CancellationException
  * node) pair becomes a bot. Extra nodes the user added by URL are folded in
  * from their own local catalog.
  */
-class BotRepository(private val gateways: GatewayPool) {
+class BotRepository(private val transport: NodeTransport) {
 
     class DiscoveryFailed(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     suspend fun discover(entryUrl: String, extraNodes: Set<String>): List<Bot> = coroutineScope {
-        val entry = gateways.get(entryUrl)
-        val mesh = try {
-            entry.mesh()
+        transport.retarget(entryUrl, extraNodes)
+        val nodeList = try {
+            transport.discover()
         } catch (e: GatewayException) {
             throw DiscoveryFailed(
                 when (e.status) {
@@ -32,8 +38,9 @@ class BotRepository(private val gateways: GatewayPool) {
         } catch (e: Exception) {
             throw DiscoveryFailed(friendly(e), e)
         }
-        val nodes = mesh.nodes.associateBy { it.id }
-        val catalog = runCatching { entry.catalogAgents().agents }.getOrDefault(emptyList())
+        val meshNodes = nodeList.filter { it.fromMesh }
+        val nodes = meshNodes.associateBy { it.id }
+        val catalog = runCatching { transport.entry().catalogAgents().agents }.getOrDefault(emptyList())
 
         val bots = LinkedHashMap<String, Bot>()
         fun put(b: Bot) { bots.putIfAbsent(b.id, b) }
@@ -51,17 +58,21 @@ class BotRepository(private val gateways: GatewayPool) {
         }
 
         // Nodes the entry catalog didn't cover (older peers): ask each one for its own agents.
-        val uncovered = mesh.nodes.filter { n -> n.denUrl.isNotBlank() && n.online && bots.values.none { it.nodeId == n.id } }
-        val extra = extraNodes.filter { u -> nodes.values.none { it.denUrl.trimEnd('/') == u.trimEnd('/') } }
-        val probes = uncovered.map { n -> async { probeNode(n.denUrl, n.id, n.name, n.online, n.sessions) } } +
-            extra.map { u -> async { probeNode(u, hostOf(u), hostOf(u), true, null) } }
+        val uncovered = meshNodes.filter { n -> n.denUrl.isNotBlank() && n.online && bots.values.none { it.nodeId == n.id } }
+        // Extra nodes are always probed on their own (never folded into the mesh map).
+        val probes = (uncovered + nodeList.filterNot { it.fromMesh }).map { n -> async { probeNode(n) } }
         probes.forEach { d -> d.await().forEach(::put) }
 
         bots.values.sortedWith(compareByDescending<Bot> { it.online }.thenBy { it.displayName }.thenBy { it.nodeLabel })
     }
 
-    private suspend fun probeNode(denUrl: String, id: String, name: String, online: Boolean, sessions: Int?): List<Bot> {
-        val gw = gateways.get(denUrl)
+    private suspend fun probeNode(node: NodeRef): List<Bot> {
+        val gw = transport.gateway(node)
+        val denUrl = node.denUrl
+        val id = node.id
+        val name = node.name
+        val online = node.online
+        val sessions = node.sessions
         val agents = withTimeoutOrNull(6_000) { runCatching { gw.catalogAgents().agents.filter { it.local } }.getOrNull() }
         val health = withTimeoutOrNull(4_000) { runCatching { gw.healthz() }.getOrNull() }
         val nodeName = health?.name?.ifBlank { null } ?: name
@@ -78,7 +89,7 @@ class BotRepository(private val gateways: GatewayPool) {
 
     /** Last line of a bot's thread, or null when the node is unreachable / thread empty. */
     suspend fun preview(bot: Bot, sessionId: String): BotPreview? = withTimeoutOrNull(8_000) {
-        runCatching { gateways.get(bot.denUrl).messages(sessionId) }.getOrNull()
+        runCatching { transport.gateway(bot.toNodeRef()).messages(sessionId) }.getOrNull()
             ?.lastOrNull()?.let {
                 val text = if (it.role == "assistant") visibleAssistantText(it.text) else it.text
                 BotPreview(text.ifBlank { "…" }, it.ts, it.role)
@@ -95,7 +106,7 @@ class BotRepository(private val gateways: GatewayPool) {
         if (o.isNotEmpty()) return SessionResolver.adopt(o, null, minted)
         val fetched = withTimeoutOrNull(8_000) {
             try {
-                gateways.get(bot.denUrl).sessions().sessions
+                transport.gateway(bot.toNodeRef()).sessions().sessions
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -107,13 +118,13 @@ class BotRepository(private val gateways: GatewayPool) {
 
     /** Gateway session list for the node that hosts [bot]. Throws on transport/auth errors. */
     suspend fun nodeSessions(bot: Bot): List<SessionSummary> =
-        gateways.get(bot.denUrl).sessions().sessions
+        transport.gateway(bot.toNodeRef()).sessions().sessions
 
     companion object {
-        fun hostOf(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)
+        fun hostOf(url: String): String = hostOfUrl(url)
 
         fun friendly(e: Throwable): String {
-            android.util.Log.w("RivetHub", "request failed", e) // logcat ground truth for field debugging
+            AndroidLogger.warn("RivetHub", "request failed", e) // logcat ground truth for field debugging
             return when (e) {
             is javax.net.ssl.SSLHandshakeException -> "TLS handshake failed — check the device certificate and CA chain."
             is javax.net.ssl.SSLPeerUnverifiedException -> "Node certificate doesn't match its address (try relaxed hostname check)."
@@ -124,23 +135,5 @@ class BotRepository(private val gateways: GatewayPool) {
             else -> e.message ?: e.javaClass.simpleName
         }
         }
-    }
-}
-
-/** One Gateway per base URL, rebuilt when the identity or TLS posture changes. */
-class GatewayPool(private val http: HttpFactory, private val strict: () -> Boolean, private val identity: DeviceIdentityStore) {
-    private val cache = HashMap<String, Pair<String, Gateway>>()
-
-    @Synchronized
-    fun clear() = cache.clear()
-
-    @Synchronized
-    fun get(baseUrl: String): Gateway {
-        val key = http.cacheKey(strict())
-        val norm = baseUrl.trim().trimEnd('/')
-        cache[norm]?.let { (k, g) -> if (k == key) return g }
-        val g = Gateway(http.client(strict()), norm, http.fallbackClient(strict()))
-        cache[norm] = key to g
-        return g
     }
 }
