@@ -3,6 +3,8 @@ package io.rivethub.app.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,11 +31,11 @@ fun MessageBubble(
     val shape = RoundedCornerShape(Dimens.radius8)
     val border = if (kind == Bubble.User) colors.em else colors.line
     val align = if (kind == Bubble.User) Alignment.CenterEnd else Alignment.CenterStart
-    Box(modifier.fillMaxWidth()) {
+    BoxWithConstraints(modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .align(align)
-                .fillMaxWidth(Dimens.bubbleMaxWidthFraction)
+                .widthIn(max = maxWidth * Dimens.bubbleMaxWidthFraction)
                 .border(Dimens.line, border, shape)
                 .background(colors.panel, shape)
                 .padding(horizontal = Dimens.bubblePadH, vertical = Dimens.bubblePadV),

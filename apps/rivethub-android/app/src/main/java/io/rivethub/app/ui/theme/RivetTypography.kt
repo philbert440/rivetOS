@@ -1,5 +1,3 @@
-@file:OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
-
 package io.rivethub.app.ui.theme
 
 import androidx.compose.ui.text.TextStyle
