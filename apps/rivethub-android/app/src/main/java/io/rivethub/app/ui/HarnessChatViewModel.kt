@@ -5,9 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
 import io.rivethub.app.data.AndroidLogger
+import io.rivethub.app.data.OscFilter
 import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
+import io.rivethub.app.gateway.TermSpawnResponse
 import io.rivethub.app.gateway.UserTurn
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.sessionKeyEnc
@@ -68,10 +70,17 @@ import io.rivethub.app.plane.shouldBareSubmit
 import io.rivethub.app.plane.shouldPollSessions
 import io.rivethub.app.plane.spawnAttempts
 import io.rivethub.app.plane.spawnModelEffort
+import io.rivethub.app.plane.TermAttachController
+import io.rivethub.app.plane.TermScreenPort
+import io.rivethub.app.plane.TermSocket
+import io.rivethub.app.plane.TermSpawnPort
+import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.TermWatchFactory
 import io.rivethub.app.plane.toSheet
 import io.rivethub.app.plane.uploadBaseUrl
 import io.rivethub.app.plane.uploadTooLarge
 import io.rivethub.app.plane.withAttachmentText
+import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +95,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.util.UUID
 
@@ -124,6 +134,12 @@ class HarnessChatViewModel(
         val errorCode: String? = null,
         val ws: WsStatus = WsStatus.CONNECTING,
         val moreOpen: Boolean = false,
+        val termStatus: TermStatus = TermStatus.Closed,
+        val termRev: Int = 0,
+        val termFontSp: Int = 13,
+        val termCtrl: Boolean = false,
+        val attachCommand: String? = null,
+        val termClipboard: String? = null,
     )
 
     private val _state = MutableStateFlow(
@@ -147,6 +163,7 @@ class HarnessChatViewModel(
     private val identityGen = c.identity.generation()
     private var spawnInFlight = false
     private var ptyId: String? = null
+    private var lastSpawn: TermSpawnResponse? = null
     private var descriptors: List<HarnessDescriptor> = emptyList()
     private var frames = Channel<Frame>(Channel.UNLIMITED)
     private var frameJob: Job? = null
@@ -170,12 +187,77 @@ class HarnessChatViewModel(
     /** True after inject ok / sendTurn landed — a fetch before this cannot complete the turn. */
     private var injectCompleted: Boolean = false
 
+    private val termScreen = AnsiScreen()
+    private val termCtl = TermAttachController(
+        scope = viewModelScope,
+        spawn = TermSpawnPort { _, _, _, _, _, _ ->
+            val slot = ensurePty()
+            lastSpawn?.takeIf { it.id == slot.id } ?: TermSpawnResponse(id = slot.id)
+        },
+        watch = TermWatchFactory { ptyId, onText, onBinary, onStatus ->
+            val ws = gateway().watchTerm(
+                ptyId = ptyId,
+                sessionId = _state.value.sessionId,
+                onText = onText,
+                onBinary = onBinary,
+                onStatus = onStatus,
+            )
+            object : TermSocket {
+                override var reconnectOnClose: Boolean
+                    get() = ws.reconnectOnClose
+                    set(v) { ws.reconnectOnClose = v }
+                override fun sendText(text: String) = ws.sendText(text)
+                override fun sendBinary(bytes: ByteArray) = ws.sendBinary(bytes)
+                override fun close() = ws.close()
+            }
+        },
+        screen = object : TermScreenPort {
+            override fun reset(cols: Int, rows: Int) { termScreen.reset(cols, rows) }
+            override fun resize(cols: Int, rows: Int) { termScreen.resize(cols, rows) }
+            override fun feed(bytes: ByteArray) { termScreen.feed(bytes) }
+            override fun drainOsc52() = termScreen.drainOsc52()
+            override val generation get() = termScreen.generation
+        },
+        attachedGen = identityGen,
+        currentGen = { c.identity.generation() },
+        sessionId = { _state.value.sessionId },
+        isDraft = { _state.value.draft },
+        spawnAndAdopt = { spawnAndAdopt() },
+        command = { rosterCommandFor(harnessId) },
+        flags = {
+            val st = _state.value
+            spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
+        },
+        onPublish = { v ->
+            _state.update {
+                it.copy(
+                    termStatus = v.status,
+                    termRev = v.rev,
+                    termCtrl = v.ctrl,
+                    attachCommand = v.attachCommand,
+                    termClipboard = v.clipboard,
+                    error = v.error ?: it.error,
+                )
+            }
+        },
+    )
+
+    fun terminalScreen(): AnsiScreen = termScreen
+
     init {
         viewModelScope.launch { boot() }
+        viewModelScope.launch {
+            c.settings.prefs.collect { p ->
+                _state.update { it.copy(termFontSp = p.terminalFontSp) }
+            }
+        }
         tick = viewModelScope.launch {
             while (true) {
                 delay(15_000)
-                if (c.identity.generation() != identityGen) return@launch
+                if (c.identity.generation() != identityGen) {
+                    termCtl.drop()
+                    return@launch
+                }
                 if (machine.idleTimedOut()) {
                     machine.onFrame(HarnessEvent.Error(_state.value.sessionId, "idle_timeout", "turn timed out"))
                     publishMachine()
@@ -368,13 +450,40 @@ class HarnessChatViewModel(
         sessionWatch?.close()
         registryWatch?.close()
         attach?.detach()
+        termCtl.close()
         super.onCleared()
     }
+
+    fun ensureTerminal() {
+        AndroidLogger.debug("RivetHub", "term ensure: draft=${_state.value.draft} session=${_state.value.sessionId} pty=$ptyId", null)
+        termCtl.ensure()
+    }
+
+    fun onAppBackground() = termCtl.onBackground()
+
+    fun onAppForeground() = termCtl.onForeground()
+
+    fun userDetachTerminal() = termCtl.userDetach()
+
+    fun resizeTerminal(cols: Int, rows: Int) = termCtl.resize(cols, rows)
+
+    fun sendTermBytes(bytes: ByteArray) = termCtl.sendBytes(bytes)
+
+    fun sendTermText(text: String) {
+        if (text.isEmpty() || OscFilter.isColorReport(text)) return
+        termCtl.sendText(text)
+    }
+
+    fun toggleTermCtrl() = termCtl.toggleCtrl()
+
+    fun lockTermCtrl() = termCtl.lockCtrl()
+
+    fun consumeTermClipboard() = termCtl.consumeClipboard()
 
     private suspend fun boot() {
         val prefs = c.settings.snapshot()
         val mode = parseSessionMode(prefs.sessionModes[_state.value.sessionId])
-        _state.update { it.copy(mode = mode) }
+        _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp) }
         if (c.identity.generation() != identityGen) return
         try {
             val hg = c.harness(nodeDenUrl)
@@ -665,6 +774,7 @@ class HarnessChatViewModel(
                     }
                     val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
                     ptyId = spawned.id
+                    lastSpawn = spawned
                     AndroidLogger.debug("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
                     return PtySlot(spawned.id, fresh)
                 } catch (e: Exception) {
@@ -734,6 +844,20 @@ class HarnessChatViewModel(
     private fun gateway() = c.transport.gateway(
         NodeRef(_state.value.nodeName, _state.value.nodeName, nodeDenUrl, true),
     )
+
+    /**
+     * Draft Terminal tab: share [ensurePty] (the chat spawn path), then wait
+     * for the existing registry watch to adopt. Does not inject and does not
+     * start the first-send adopt poll (that path's bare submit is inject-only).
+     * Un-adopted drafts do not open a watch — [TermAttachController] gates that.
+     */
+    private suspend fun spawnAndAdopt() {
+        AndroidLogger.debug("RivetHub", "term spawnAndAdopt: draft=${_state.value.draft} session=${_state.value.sessionId}", null)
+        ensurePty()
+        withTimeoutOrNull(60_000) {
+            while (_state.value.draft) delay(150)
+        }
+    }
 
     private fun armSilentPoll() {
         silentPoll?.cancel()

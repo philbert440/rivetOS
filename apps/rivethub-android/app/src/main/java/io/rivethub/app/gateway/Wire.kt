@@ -178,13 +178,24 @@ data class TermSpawnRequest(
 )
 
 @Serializable
+data class TermAttachInfo(
+    val socket: String,
+    val session: String,
+    val host: String,
+    val sshUser: String,
+    val local: Boolean = false,
+)
+
+@Serializable
 data class TermSpawnResponse(
     val id: String,
     val denSession: String = "",
     val command: String = "",
     val pid: Int = 0,
     val createdAt: Long = 0,
+    val mux: String? = null,
     val reattached: Boolean = false,
+    val attach: TermAttachInfo? = null,
 )
 
 @Serializable
@@ -200,6 +211,8 @@ data class PtyInfo(
     val lastOutputTs: Long? = null,
     val cols: Int = 80,
     val rows: Int = 24,
+    val mux: String? = null,
+    val attach: TermAttachInfo? = null,
 )
 
 @Serializable
@@ -216,6 +229,7 @@ data class TermHelloFrame(
     val rows: Int = 24,
     val state: String = "running",
     val exitCode: Int? = null,
+    val mux: String? = null,
 )
 
 @Serializable
@@ -228,8 +242,13 @@ data class TermExitFrame(
 @Serializable
 data class TermResizeFrame(val type: String = "resize", val cols: Int, val rows: Int)
 
+/**
+ * Deliberately ahead of `@rivetos/types` `TermControlFrame` (`resize | kill`
+ * only). den-server `term/ws.ts` currently ignores it; the TCP close is the
+ * detach. Harmless no-op on today's server, never `{type:kill}`.
+ */
 @Serializable
-data class TermKillFrame(val type: String = "kill")
+data class TermDetachFrame(val type: String = "detach")
 
 @Serializable
 data class TermInjectRequest(

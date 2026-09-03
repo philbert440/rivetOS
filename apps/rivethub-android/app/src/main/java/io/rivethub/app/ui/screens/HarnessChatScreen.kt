@@ -6,7 +6,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +33,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import io.rivethub.app.R
 import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.WsStatus
@@ -54,6 +55,10 @@ import io.rivethub.app.ui.components.SegmentedControl
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.StreamChip
 import io.rivethub.app.ui.components.TopBar
+import io.rivethub.app.ui.term.TerminalKeyBar
+import io.rivethub.app.ui.term.TerminalPane
+import io.rivethub.app.ui.term.clipboardText
+import io.rivethub.app.ui.term.copyText
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -67,6 +72,16 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     val termLabel = stringResource(R.string.mode_terminal)
     val pages = listOf(chatLabel, termLabel)
     val selected = if (st.mode == SessionMode.Terminal) termLabel else chatLabel
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.onAppBackground() }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.onAppForeground() }
+    LaunchedEffect(st.mode) {
+        if (st.mode == SessionMode.Terminal) vm.ensureTerminal()
+    }
+    LaunchedEffect(st.termClipboard) {
+        val clip = st.termClipboard ?: return@LaunchedEffect
+        copyText(ctx, clip, sensitive = true)
+        vm.consumeTermClipboard()
+    }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri ?: return@rememberLauncherForActivityResult
         var name = uri.lastPathSegment ?: "file"
@@ -147,14 +162,40 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             modifier = Modifier.weight(1f),
         ) { page ->
             if (page == termLabel) {
-                Box(Modifier.fillMaxSize().padding(Dimens.grid2)) {
-                    Text(stringResource(R.string.terminal_placeholder), color = colors.inkDim, style = RivetType.body)
-                }
+                TerminalPane(
+                    screen = vm.terminalScreen(),
+                    rev = st.termRev,
+                    fontSp = st.termFontSp,
+                    status = st.termStatus,
+                    onResize = vm::resizeTerminal,
+                    onBytes = vm::sendTermBytes,
+                    ctrl = st.termCtrl,
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else {
                 ChatTranscript(vm)
             }
         }
-        Composer(
+        if (st.mode == SessionMode.Terminal) {
+            TerminalKeyBar(
+                ctrl = st.termCtrl,
+                onCtrl = vm::toggleTermCtrl,
+                onCtrlLock = vm::lockTermCtrl,
+                onBytes = vm::sendTermBytes,
+                onPaste = {
+                    val text = clipboardText(ctx) ?: return@TerminalKeyBar
+                    vm.sendTermText(text)
+                },
+                applicationCursor = vm.terminalScreen().applicationCursor,
+                attachCommand = st.attachCommand,
+                onOpenInTerminal = {
+                    val cmd = st.attachCommand ?: return@TerminalKeyBar
+                    copyText(ctx, cmd)
+                },
+                onDetach = vm::userDetachTerminal,
+            )
+        } else {
+            Composer(
             value = st.composer,
             onValueChange = vm::setComposer,
             placeholder = stringResource(R.string.composer_placeholder),
@@ -198,7 +239,8 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             onStop = vm::stop,
             enabled = composerEnabled,
             canStop = st.gate.canInterrupt,
-        )
+            )
+        }
     }
 }
 
