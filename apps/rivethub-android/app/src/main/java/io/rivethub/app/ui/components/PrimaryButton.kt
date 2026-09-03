@@ -17,9 +17,11 @@ fun PrimaryButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Button(
         onClick = onClick,
+        enabled = enabled,
         modifier = modifier.heightIn(min = Dimens.primaryButton),
         shape = RoundedCornerShape(Dimens.radius6),
         colors = ButtonDefaults.buttonColors(

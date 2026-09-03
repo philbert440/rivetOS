@@ -13,29 +13,26 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
-import io.rivethub.app.ui.ChatViewModel
-import io.rivethub.app.ui.ComputerViewModel
-import io.rivethub.app.ui.HomeViewModel
-import io.rivethub.app.ui.LocalBotEdits
+import io.rivethub.app.plane.displayTitle
+import io.rivethub.app.ui.HarnessChatViewModel
+import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.Nav
 import io.rivethub.app.ui.Screen
 import io.rivethub.app.ui.components.ComponentGallery
-import io.rivethub.app.ui.screens.ChatScreen
-import io.rivethub.app.ui.screens.ComputerScreen
-import io.rivethub.app.ui.screens.EditBotScreen
 import io.rivethub.app.ui.screens.EnrollScreen
-import io.rivethub.app.ui.screens.HomeScreen
-import io.rivethub.app.ui.screens.ProfileScreen
-import io.rivethub.app.ui.screens.SettingsScreen
-import io.rivethub.app.ui.screens.SignInScreen
-import io.rivethub.app.ui.theme.RivetBotsTheme
+import io.rivethub.app.ui.screens.HarnessChatScreen
+import io.rivethub.app.ui.screens.HubScreen
+import io.rivethub.app.ui.theme.RivetTheme
+import io.rivethub.app.ui.theme.ThemeMode
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,7 +40,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestLocalNetworkAccess()
         val container = (application as BotsApp).container
-        setContent { RivetBotsTheme { App(container) } }
+        setContent {
+            val prefs by container.settings.prefs.collectAsState(initial = null)
+            val mode = when (prefs?.themeMode) {
+                "light" -> ThemeMode.Light
+                "dark" -> ThemeMode.Dark
+                else -> ThemeMode.System
+            }
+            RivetTheme(mode) { App(container) }
+        }
     }
 
     /**
@@ -64,14 +69,11 @@ class MainActivity : ComponentActivity() {
 /**
  * ViewModel stores scoped to back-stack entries, held by an activity-scoped
  * ViewModel so they survive configuration changes and are cleared — sockets
- * and all — exactly when the activity is finished. Chat/Computer VMs own a
- * live WebSocket each; the plain activity store would keep every visited
- * bot's socket alive for the process lifetime.
+ * and all — exactly when the activity is finished.
  */
 internal class ScreenStores : ViewModel() {
     private class Owner : ViewModelStoreOwner { override val viewModelStore = ViewModelStore() }
     private val owners = HashMap<String, Owner>()
-    /** Stable per key, so the CompositionLocal compares equal across recompositions. */
     fun owner(key: String): ViewModelStoreOwner = owners.getOrPut(key) { Owner() }
     fun retainOnly(keys: Set<String>) {
         (owners.keys - keys).forEach { owners.remove(it)?.viewModelStore?.clear() }
@@ -81,8 +83,7 @@ internal class ScreenStores : ViewModel() {
 }
 
 private fun Screen.storeKey(): String? = when (this) {
-    is Screen.Chat -> "chat:${bot.id}"
-    is Screen.Computer -> "computer:${bot.id}:$sessionId"
+    is Screen.Chat -> "chat:${nodeDenUrl}:$sessionKey"
     else -> null
 }
 
@@ -95,91 +96,65 @@ fun App(c: AppContainer) {
         return
     }
     val nav = remember {
-        Nav(if (c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) Screen.Home else Screen.SignIn)
+        Nav(if (c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) Screen.Hub else Screen.Enroll)
     }
     val stores: ScreenStores = viewModel(key = "screen-stores")
+    var hubGen by remember { mutableIntStateOf(0) }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
-    // Drop VM stores (and their sockets) for entries that left the stack.
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
     LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
 
-    CompositionLocalProvider(LocalBotEdits provides p.botEdits) {
     when (val s = nav.current) {
-        Screen.SignIn -> SignInScreen(onJoin = { nav.push(Screen.Enroll) })
-        Screen.Enroll -> {
-            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
-            EnrollScreen(c, onBack = { nav.pop() }, onDone = { nav.replaceAll(Screen.Home); homeVm.refresh() })
-        }
-        Screen.Home -> {
-            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
-            HomeScreen(
-                homeVm,
-                onOpenChat = { nav.push(Screen.Chat(it)) },
-                onOpenProfile = { nav.push(Screen.Profile(it)) },
-                onSettings = { nav.push(Screen.Settings) },
+        Screen.Enroll -> EnrollScreen(
+            c,
+            onBack = if (nav.stack.size > 1) ({ nav.pop() }) else null,
+            onDone = { nav.replaceAll(Screen.Hub) },
+        )
+        Screen.Hub -> {
+            val hubVm: HubViewModel = viewModel(key = "hub-$hubGen") { HubViewModel(c) }
+            val newTitle = androidx.compose.ui.res.stringResource(R.string.new_conversation)
+            HubScreen(
+                vm = hubVm,
+                c = c,
+                onOpenChat = { open ->
+                    nav.push(
+                        Screen.Chat(
+                            sessionKey = open.sessionId,
+                            nodeDenUrl = open.nodeDenUrl,
+                            harnessId = open.harnessId,
+                            title = if (open.draft) newTitle else open.sessionId,
+                            draft = open.draft,
+                        ),
+                    )
+                },
+                onOpenRow = { row ->
+                    nav.push(
+                        Screen.Chat(
+                            sessionKey = row.item.key,
+                            nodeDenUrl = row.nodeDenUrl,
+                            harnessId = row.item.harnessId,
+                            title = displayTitle(row.item, hubVm.state.value.titleOverrides),
+                            draft = row.item.kind == io.rivethub.app.plane.ChatItemKind.DRAFT,
+                        ),
+                    )
+                },
+                onOpenGallery = { nav.push(Screen.Gallery) },
+                onForget = {
+                    stores.clearAll()
+                    hubVm.shutdown()
+                    hubGen++
+                    nav.replaceAll(Screen.Enroll)
+                },
             )
         }
         is Screen.Chat -> {
-            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
-                // `p` is the persisted prefs snapshot App is composed from — no in-memory copy, no async hop.
-                val override = p.sessionOverrides[s.bot.id]
-                val sid = override ?: s.bot.defaultSessionId(c.identity.deviceTag())
-                val vm: ChatViewModel = viewModel { ChatViewModel(c, s.bot, sid) }
-                // Follow a persisted pick (Computer list / New session). Skip the minted
-                // fallback so we don't yank a first-open adopt back onto a phone-minted id.
-                LaunchedEffect(override) { if (override != null) vm.open(override) }
-                val cs by vm.state.collectAsState()
-                ChatScreen(
-                    vm, s.bot,
-                    onBack = { homeVm.refreshPreview(s.bot); nav.pop() },
-                    onProfile = { nav.push(Screen.Profile(s.bot)) },
-                    // Pass the thread the chat is actually on, not whatever prefs has committed so far.
-                    onComputer = { nav.push(Screen.Computer(s.bot, cs.sessionId)) },
-                )
+                val vm: HarnessChatViewModel = viewModel {
+                    HarnessChatViewModel(c, s.sessionKey, s.nodeDenUrl, s.harnessId, s.title, s.draft)
+                }
+                HarnessChatScreen(vm, onBack = { nav.pop() })
             }
-        }
-        is Screen.Computer -> {
-            CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
-                val vm: ComputerViewModel = viewModel(key = s.sessionId) { ComputerViewModel(c, s.bot, s.sessionId) }
-                ComputerScreen(vm, s.bot, onBack = { nav.pop() }, onProfile = { nav.push(Screen.Profile(s.bot)) })
-            }
-        }
-        is Screen.Profile -> {
-            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
-            val hs by homeVm.state.collectAsState()
-            ProfileScreen(
-                bot = s.bot,
-                sessionId = p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag()),
-                pinned = s.bot.id in hs.prefs.pinned,
-                hidden = s.bot.id in hs.prefs.hidden,
-                onBack = { nav.pop() },
-                onMessage = {
-                    nav.popTo { (it is Screen.Chat && it.bot.id == s.bot.id) || it is Screen.Home }
-                    if (nav.current !is Screen.Chat) nav.push(Screen.Chat(s.bot))
-                },
-                onComputer = { nav.push(Screen.Computer(s.bot, p.sessionOverrides[s.bot.id] ?: s.bot.defaultSessionId(c.identity.deviceTag()))) },
-                onTogglePin = { homeVm.togglePin(s.bot) },
-                onToggleHide = { homeVm.setHidden(s.bot, s.bot.id !in hs.prefs.hidden) },
-                onEdit = { nav.push(Screen.EditBot(s.bot)) },
-            )
-        }
-        is Screen.EditBot -> {
-            EditBotScreen(bot = s.bot, settings = c.settings, onBack = { nav.pop() })
-        }
-        Screen.Settings -> {
-            val homeVm: HomeViewModel = viewModel(key = "home") { HomeViewModel(c) }
-            SettingsScreen(
-                c,
-                onBack = { nav.pop() },
-                // Close screen sockets before the pool/client they were built on is dropped.
-                onForget = { stores.clearAll(); homeVm.shutdown(); nav.replaceAll(Screen.SignIn) },
-                onRosterChanged = { homeVm.refresh() },
-                onOpenGallery = { nav.push(Screen.Gallery) },
-            )
         }
         Screen.Gallery -> ComponentGallery()
     }
-    }
 }
-

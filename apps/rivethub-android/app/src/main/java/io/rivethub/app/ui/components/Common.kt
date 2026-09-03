@@ -30,8 +30,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import io.rivethub.app.domain.Bot
-import io.rivethub.app.ui.rememberEffective
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -62,30 +60,6 @@ fun CircleIconButton(
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, contentDescription, tint = tint, modifier = Modifier.size((size * 0.5).dp))
-    }
-}
-
-/** Header pill: tiny face + bot name, tappable → profile. `dark` pins the Computer room's always-dark look. */
-@Composable
-fun BotPill(bot: Bot, onClick: () -> Unit, dark: Boolean = false) {
-    val shown = rememberEffective(bot)
-    Row(
-        Modifier
-            .minimumInteractiveComponentSize()
-            .clip(CircleShape)
-            .background(if (dark) Color(0xFF26262A) else MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(onClick = onClick)
-            .padding(start = 8.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BlobAvatar(shown.look, 24.dp, eyes = true)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            shown.displayName,
-            color = if (dark) Color.White else MaterialTheme.colorScheme.onSurface,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Medium,
-        )
     }
 }
 

@@ -140,15 +140,26 @@ class Gateway(
      * Spawn-or-get a PTY. Passing [session] joins it to this conversation
      * (chat / den / terminal = three views of one session).
      */
-    suspend fun termSpawn(session: String, cols: Int, rows: Int, command: String? = null): TermSpawnResponse =
+    suspend fun termSpawn(
+        session: String,
+        cols: Int,
+        rows: Int,
+        command: String? = null,
+        resume: String? = null,
+        model: String? = null,
+        effort: String? = null,
+    ): TermSpawnResponse =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(
                 TermSpawnRequest.serializer(),
                 TermSpawnRequest(
                     command = command,
                     session = session,
+                    resume = resume,
                     cols = cols.coerceIn(20, 500),
                     rows = rows.coerceIn(5, 200),
+                    model = model,
+                    effort = effort,
                 ),
             ).toRequestBody("application/json".toMediaType())
             val req = Request.Builder().url(url(listOf("api", "terminal"))).post(body).build()

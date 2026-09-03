@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -28,7 +29,14 @@ data class Prefs(
     val lastSeen: Map<String, Long> = emptyMap(),
     val onboarded: Boolean = false,
     val desktopUrl: String = "",
-    val botEdits: Map<String, BotEdit> = emptyMap(),
+    val themeMode: String = "system",
+    val sessionModes: Map<String, String> = emptyMap(),
+    val archived: Set<String> = emptySet(),
+    val titleOverrides: Map<String, String> = emptyMap(),
+    val agentPointers: Map<String, String> = emptyMap(),
+    val terminalFontSp: Int = 13,
+    val viewNodeId: String = "",
+    val currentAgentId: String = "",
 )
 
 class Settings(context: Context) {
@@ -46,7 +54,14 @@ class Settings(context: Context) {
             lastSeen = decodeLongMap(p[LAST_SEEN]),
             onboarded = p[ONBOARDED] ?: false,
             desktopUrl = p[DESKTOP_URL] ?: "",
-            botEdits = decodeEdits(p[BOT_EDITS]),
+            themeMode = p[THEME] ?: "system",
+            sessionModes = decodeMap(p[SESSION_MODES]),
+            archived = p[ARCHIVED] ?: emptySet(),
+            titleOverrides = decodeMap(p[TITLES]),
+            agentPointers = decodeMap(p[POINTERS]),
+            terminalFontSp = p[TERM_FONT] ?: 13,
+            viewNodeId = p[VIEW_NODE] ?: "",
+            currentAgentId = p[CURRENT_AGENT] ?: "",
         )
     }
 
@@ -80,11 +95,34 @@ class Settings(context: Context) {
 
     suspend fun setDesktopUrl(url: String) = ds.edit { it[DESKTOP_URL] = url.trim() }
 
-    suspend fun setBotEdit(botId: String, edit: BotEdit) = ds.edit {
-        it[BOT_EDITS] = encodeEdits(decodeEdits(it[BOT_EDITS]) + (botId to edit))
+
+    suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
+    suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
+    suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
+    suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
+
+    suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
+        it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
     }
-    suspend fun clearBotEdit(botId: String) = ds.edit {
-        it[BOT_EDITS] = encodeEdits(decodeEdits(it[BOT_EDITS]) - botId)
+    suspend fun rekeySessionMode(from: String, to: String) = ds.edit {
+        val cur = decodeMap(it[SESSION_MODES])
+        val moved = cur[from] ?: return@edit
+        val next = if (cur[to] != null) cur - from else cur - from + (to to moved)
+        it[SESSION_MODES] = encodeMap(next)
+    }
+
+    suspend fun setArchived(keys: Set<String>) = ds.edit { it[ARCHIVED] = keys }
+    suspend fun archive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) + key }
+    suspend fun unarchive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) - key }
+
+    suspend fun setTitleOverride(key: String, title: String) = ds.edit {
+        val cur = decodeMap(it[TITLES])
+        val next = if (title.isBlank()) cur - key else cur + (key to title.trim())
+        it[TITLES] = encodeMap(next)
+    }
+
+    suspend fun setAgentPointers(encoded: Map<String, String>) = ds.edit {
+        it[POINTERS] = encodeMap(encoded)
     }
 
     suspend fun clearAll() = ds.edit { it.clear() }
@@ -100,19 +138,22 @@ class Settings(context: Context) {
         private val LAST_SEEN = stringPreferencesKey("lastSeen")
         private val ONBOARDED = booleanPreferencesKey("onboarded")
         private val DESKTOP_URL = stringPreferencesKey("desktopUrl")
-        private val BOT_EDITS = stringPreferencesKey("botEdits")
+        private val THEME = stringPreferencesKey("themeMode")
+        private val SESSION_MODES = stringPreferencesKey("sessionModes")
+        private val ARCHIVED = stringSetPreferencesKey("archived")
+        private val TITLES = stringPreferencesKey("titleOverrides")
+        private val POINTERS = stringPreferencesKey("agentPointers")
+        private val TERM_FONT = intPreferencesKey("terminalFontSp")
+        private val VIEW_NODE = stringPreferencesKey("viewNodeId")
+        private val CURRENT_AGENT = stringPreferencesKey("currentAgentId")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
-        private val editMapSer = MapSerializer(String.serializer(), BotEdit.serializer())
         private fun decodeMap(s: String?): Map<String, String> =
             s?.let { runCatching { wireJson.decodeFromString(mapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeMap(m: Map<String, String>): String = wireJson.encodeToString(mapSer, m)
         private fun decodeLongMap(s: String?): Map<String, Long> =
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeLongMap(m: Map<String, Long>): String = wireJson.encodeToString(longMapSer, m)
-        private fun decodeEdits(s: String?): Map<String, BotEdit> =
-            s?.let { runCatching { wireJson.decodeFromString(editMapSer, it) }.getOrNull() } ?: emptyMap()
-        private fun encodeEdits(m: Map<String, BotEdit>): String = wireJson.encodeToString(editMapSer, m)
     }
 }

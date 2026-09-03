@@ -1,17 +1,17 @@
 package io.rivethub.app.ui
 
 import androidx.compose.runtime.mutableStateListOf
-import io.rivethub.app.domain.Bot
 
 sealed interface Screen {
-    data object SignIn : Screen
     data object Enroll : Screen
-    data object Home : Screen
-    data class Chat(val bot: Bot) : Screen
-    data class Computer(val bot: Bot, val sessionId: String) : Screen
-    data class Profile(val bot: Bot) : Screen
-    data class EditBot(val bot: Bot) : Screen
-    data object Settings : Screen
+    data object Hub : Screen
+    data class Chat(
+        val sessionKey: String,
+        val nodeDenUrl: String,
+        val harnessId: String?,
+        val title: String,
+        val draft: Boolean,
+    ) : Screen
     data object Gallery : Screen
 }
 

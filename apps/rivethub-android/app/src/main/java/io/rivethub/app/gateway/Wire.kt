@@ -173,6 +173,8 @@ data class TermSpawnRequest(
     val resume: String? = null,
     val cols: Int? = null,
     val rows: Int? = null,
+    val model: String? = null,
+    val effort: String? = null,
 )
 
 @Serializable
