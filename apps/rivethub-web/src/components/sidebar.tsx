@@ -148,7 +148,7 @@ export function MobileTopBar(): JSX.Element {
             aria-label={`${String(unread)} unread notifications`}
             className={cn(
               'relative flex items-center gap-1 rounded-full border border-red/50 bg-red/10 px-2 py-0.5',
-              "font-mono text-[11px] text-red hover:bg-red/20 after:absolute after:-inset-2 after:content-['']",
+              "font-mono text-[11px] text-red hover:bg-red/20 after:absolute after:-inset-y-2 after:content-['']",
             )}
           >
             <Bell className="size-3" />
@@ -186,7 +186,7 @@ export function Sidebar(): JSX.Element {
       className={
         narrow
           ? cn(
-              'fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line bg-panel/80',
+              'fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line bg-panel',
               'transition-transform duration-150 motion-reduce:transition-none',
               drawerOpen ? 'translate-x-0' : '-translate-x-full',
             )
@@ -236,7 +236,7 @@ export function Sidebar(): JSX.Element {
                   'bg-red/10 font-mono text-[11px] text-red hover:bg-red/20',
                   collapsed
                     ? 'size-4 justify-center px-0'
-                    : "px-2 py-0.5 after:absolute after:-inset-2 after:content-['']",
+                    : "px-2 py-0.5 after:absolute after:-inset-y-2 after:content-['']",
                 )}
               >
                 <Bell className="size-3" />

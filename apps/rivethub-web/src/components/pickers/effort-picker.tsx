@@ -84,7 +84,7 @@ export function EffortPicker(props: {
           aria-label={`reasoning effort: ${current.label}`}
           className={cn(
             'relative h-8 rounded-full px-2.5 font-normal',
-            "after:absolute after:-inset-2 after:content-['']",
+            "after:absolute after:-inset-y-2 after:content-['']",
           )}
         >
           <CurrentIcon className="size-3.5" />
