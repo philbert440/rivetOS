@@ -46,7 +46,7 @@
     <string name="search_conversations">Search conversations</string>
     <string name="empty_conversations">No conversations yet</string>
     <string name="empty_search">No matches</string>
-    <string name="empty_agents">No agents on the entry node</string>
+    <string name="empty_agents">No agents yet</string>
     <string name="empty_nodes">No nodes discovered</string>
     <string name="empty_inbox">No notifications</string>
     <string name="inbox_title">Notifications</string>

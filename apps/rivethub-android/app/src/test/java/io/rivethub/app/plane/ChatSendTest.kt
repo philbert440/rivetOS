@@ -1,6 +1,8 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.WsStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -52,5 +54,23 @@ class ChatSendTest {
         )
         assertTrue(!harnessGate(draft, desc).canInterrupt)
         assertTrue(harnessGate(live, desc).canInterrupt)
+    }
+
+    @Test fun `composer stays enabled when error is set`() {
+        assertTrue(composerIsEnabled(WsStatus.OPEN, "timed out"))
+        assertTrue(composerIsEnabled(WsStatus.CONNECTING, "boom"))
+    }
+
+    @Test fun `composer disables only when the socket is closed`() {
+        assertFalse(composerIsEnabled(WsStatus.CLOSED, null))
+        assertFalse(composerIsEnabled(WsStatus.CLOSED, "boom"))
+        assertTrue(composerIsEnabled(WsStatus.OPEN, null))
+    }
+
+    @Test fun `error clears on input`() {
+        val edit = composerOnInput("hello")
+        assertEquals("hello", edit.value)
+        assertNull(edit.error)
+        assertNull(composerOnSendAttempt())
     }
 }

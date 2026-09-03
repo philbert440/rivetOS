@@ -1,5 +1,7 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.WsStatus
+
 /**
  * Draft first-send mirrors rivethub-web `injectOne`: a draft injects into
  * the PTY (after spawn); an adopted session uses the harness control plane.
@@ -50,6 +52,20 @@ fun nextInjectTry(failed: Boolean, alreadyRetried: Boolean): InjectTry? {
     if (alreadyRetried) return null
     return InjectTry.RetryAfterEviction
 }
+
+/**
+ * Composer stays usable after a transient error. Only a closed socket
+ * bricks send/attach; [error] is advisory and is not part of the gate.
+ */
+fun composerIsEnabled(ws: WsStatus, error: String?): Boolean = ws != WsStatus.CLOSED
+
+data class ComposerInput(val value: String, val error: String?)
+
+/** Next keystroke drops a transient error so the field cannot brick. */
+fun composerOnInput(value: String): ComposerInput = ComposerInput(value, error = null)
+
+/** Next send attempt also drops a transient error (same exit as input). */
+fun composerOnSendAttempt(): String? = null
 
 fun chatItemForGate(
     sessionId: String,

@@ -39,6 +39,7 @@ import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.SessionMode
+import io.rivethub.app.plane.composerIsEnabled
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.components.Bubble
 import io.rivethub.app.ui.components.Composer
@@ -88,7 +89,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
         vm.stageUri(uri, name, mime, size)
     }
 
-    val composerEnabled = st.ws != WsStatus.CLOSED && st.error == null
+    val composerEnabled = composerIsEnabled(st.ws, st.error)
     Column(
         Modifier
             .fillMaxSize()
@@ -115,7 +116,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
                     )
                     if (st.model.isNotBlank()) Pill(st.model)
                     Pill(st.nodeName)
-                    if (st.ws == WsStatus.CONNECTING) Pill(stringResource(R.string.ws_reconnecting), tone = PillTone.Warn)
+                    if (!st.draft && st.ws == WsStatus.CONNECTING) Pill(stringResource(R.string.ws_reconnecting), tone = PillTone.Warn)
                     if (st.ws == WsStatus.CLOSED) Pill(stringResource(R.string.ws_disconnected), tone = PillTone.Warn)
                 }
             },

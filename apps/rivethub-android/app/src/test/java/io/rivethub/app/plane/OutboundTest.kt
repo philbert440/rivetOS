@@ -86,7 +86,7 @@ class OutboundTest {
         }
     }
 
-    @Test fun `non-409 failure marks the item failed`() = runBlocking {
+    @Test fun `non-409 failure drops the item`() = runBlocking {
         withTimeout(1_000) {
             val pump = OutboundPump(send = { error("boom") }, newId = { "x" })
             pump.tryEnqueue("nope")
@@ -96,7 +96,7 @@ class OutboundTest {
             } catch (e: IllegalStateException) {
                 assertEquals("boom", e.message)
             }
-            assertEquals(OutboundItem.Status.FAILED, pump.queued.single().status)
+            assertTrue(pump.queued.isEmpty())
             assertFalse(pump.awaitingTurnComplete)
         }
     }

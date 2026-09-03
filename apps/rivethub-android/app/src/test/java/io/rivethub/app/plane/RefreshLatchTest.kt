@@ -50,4 +50,15 @@ class RefreshLatchTest {
         assertEquals(5, b.latch.gen)
         assertTrue(b.latch.loading)
     }
+
+    @Test fun `throw before try can't latch`() {
+        val started = requestRefresh(RefreshLatch())
+        val stuck = requestRefresh(started.latch)
+        assertFalse(stuck.start)
+        assertTrue(started.latch.jobActive)
+        val end = finishRefresh(started.latch, started.latch.gen)
+        assertFalse(end.latch.jobActive)
+        assertFalse(end.latch.loading)
+        assertTrue(requestRefresh(end.latch).start)
+    }
 }

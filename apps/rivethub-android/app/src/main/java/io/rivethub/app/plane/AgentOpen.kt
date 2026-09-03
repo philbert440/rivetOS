@@ -62,6 +62,7 @@ data class AgentRow(
     val color: String = "",
     val model: String = "",
     val effort: String = "",
+    val online: Boolean = true,
 )
 
 fun agentRow(
@@ -75,6 +76,7 @@ fun agentRow(
     color: String = "",
     model: String = "",
     effort: String = "",
+    online: Boolean = true,
 ): AgentRow = AgentRow(
     agentId = agentId,
     name = name,
@@ -86,4 +88,5 @@ fun agentRow(
     color = color,
     model = model,
     effort = effort,
+    online = online,
 )

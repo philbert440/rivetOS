@@ -27,6 +27,8 @@ import io.rivethub.app.plane.anyUploading
 import io.rivethub.app.plane.cardFromLiveTools
 import io.rivethub.app.plane.chatItemForGate
 import io.rivethub.app.plane.chatSendAction
+import io.rivethub.app.plane.composerOnInput
+import io.rivethub.app.plane.composerOnSendAttempt
 import io.rivethub.app.plane.composeAskAnswer
 import io.rivethub.app.plane.defaultEffort
 import io.rivethub.app.plane.defaultModel
@@ -146,7 +148,10 @@ class HarnessChatViewModel(
         }
     }
 
-    fun setComposer(v: String) = _state.update { it.copy(composer = v) }
+    fun setComposer(v: String) {
+        val edit = composerOnInput(v)
+        _state.update { it.copy(composer = edit.value, error = edit.error) }
+    }
     fun setMoreOpen(v: Boolean) = _state.update { it.copy(moreOpen = v) }
 
     fun setMode(mode: SessionMode) {
@@ -165,13 +170,13 @@ class HarnessChatViewModel(
     fun send() {
         val st = _state.value
         if (anyUploading(st.attachments)) {
-            _state.update { it.copy(errorCode = ERR_UPLOADING) }
+            _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_UPLOADING) }
             return
         }
         val text = withAttachmentText(st.composer.trim(), readyUris(st.attachments))
         if (text.isBlank()) return
         val keptComposer = st.composer
-        _state.update { it.copy(composer = "", attachments = emptyList(), error = null, errorCode = null) }
+        _state.update { it.copy(composer = "", attachments = emptyList(), error = composerOnSendAttempt(), errorCode = null) }
         when (pump.tryEnqueue(text)) {
             is EnqueueResult.Uploading -> {
                 _state.update { it.copy(composer = keptComposer, attachments = st.attachments, errorCode = ERR_UPLOADING) }
@@ -479,13 +484,17 @@ class HarnessChatViewModel(
     private suspend fun injectDraft(action: ChatSendAction.Inject) {
         ensurePty()
         val gw = gateway()
-        try {
-            withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
-        } catch (e: Exception) {
-            if (nextInjectTry(failed = true, alreadyRetried = false) == null) throw e
-            ptyId = null
-            ensurePty()
-            withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
+        var retried = false
+        while (true) {
+            try {
+                withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
+                return
+            } catch (e: Exception) {
+                if (nextInjectTry(failed = true, alreadyRetried = retried) == null) throw e
+                retried = true
+                ptyId = null
+                ensurePty()
+            }
         }
     }
 

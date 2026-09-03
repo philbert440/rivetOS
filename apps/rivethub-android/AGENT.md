@@ -42,7 +42,7 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 | Enroll | `ui/screens/EnrollScreen.kt` | none (container) | p12 + entry URL; 401 → cert refused; `https://` only |
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | BottomRail tabs; Forget calls `shutdown()` on the same instance |
 | Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | recency list, pull-to-refresh, archive swipe, FAB draft |
-| Agents | `ui/screens/AgentsScreen.kt` | HubViewModel | `/api/agents` presets (catalog fallback); tap / ↺ / + pointer semantics |
+| Agents | `ui/screens/AgentsScreen.kt` | HubViewModel | `/api/agents` from every discovered node (catalog if every node returns empty); tap / ↺ / + pointer semantics |
 | Nodes | `ui/screens/NodesScreen.kt` | HubViewModel | view filter only; never rebinds an open chat; per-node error badge |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | identity, theme, terminal font; title long-press → gallery |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe |
@@ -88,7 +88,7 @@ params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 204.
+  (`.github/workflows/android.yml`) enforces a floor of 214.
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

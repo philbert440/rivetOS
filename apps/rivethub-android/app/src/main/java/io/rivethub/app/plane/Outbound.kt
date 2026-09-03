@@ -81,7 +81,7 @@ class OutboundPump(
                 awaitSince = nowMs()
                 return
             }
-            replace(next, next.copy(status = OutboundItem.Status.FAILED))
+            q.removeAll { it.id == next.id }
             throw e
         }
     }

@@ -8,22 +8,24 @@ import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.HarnessSessionSummary
 import io.rivethub.app.gateway.LegacyHarnessSession
+import io.rivethub.app.gateway.AgentPreset
+import io.rivethub.app.gateway.CatalogAgent
 import io.rivethub.app.plane.AgentAction
+import io.rivethub.app.plane.AgentNodeHint
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentPointers
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.ConversationFilter
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.LocatedChatItem
-import io.rivethub.app.plane.agentRow
 import io.rivethub.app.plane.applyRegistryEvent
 import io.rivethub.app.plane.adopt
+import io.rivethub.app.plane.buildAgents
 import io.rivethub.app.plane.chatItems
 import io.rivethub.app.plane.decodePointers
 import io.rivethub.app.plane.encodePointers
 import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.finishRefresh
-import io.rivethub.app.plane.harnessIdForAgent
 import io.rivethub.app.plane.listableHarnesses
 import io.rivethub.app.plane.locate
 import io.rivethub.app.plane.newDraftId
@@ -251,9 +253,9 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     }
 
     private suspend fun refreshOnce(gen: Int) {
-        val identityGen = c.identity.generation()
-        _state.update { it.copy(loading = true, error = null, errorKind = null) }
         try {
+            val identityGen = c.identity.generation()
+            _state.update { it.copy(loading = true, error = null, errorKind = null) }
             val prefs = c.settings.snapshot()
             if (prefs.entryUrl.isBlank()) {
                 _state.update { it.copy(nodes = emptyList(), items = emptyList(), agents = emptyList()) }
@@ -267,9 +269,10 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                     throw e
                 }
                 if (c.identity.generation() != identityGen) return@withContext null
-                val presets = runCatching { c.transport.entry().agents() }.getOrNull()
-                val catalog = runCatching { c.transport.entry().catalogAgents().agents }.getOrDefault(emptyList())
                 coroutineScope {
+                    val catalogDef = async {
+                        runCatching { c.transport.entry().catalogAgents().agents }.getOrDefault(emptyList())
+                    }
                     val listed = nodes.map { node ->
                         async {
                             val hg = c.harness(node.denUrl)
@@ -284,15 +287,16 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                             val err = desc.exceptionOrNull()?.message
                                 ?: planeRows.values.firstNotNullOfOrNull { it.exceptionOrNull()?.message }
                                 ?: legacyRows.exceptionOrNull()?.message
-                            NodeBundle(node, desc.getOrDefault(emptyList()), planeRows, legacyRows, ok, err)
+                            val presets = runCatching { gw.agents() }
+                            NodeBundle(node, desc.getOrDefault(emptyList()), planeRows, legacyRows, ok, err, presets)
                         }
                     }.awaitAll()
-                    Discovered(presets, catalog, listed)
+                    Discovered(catalogDef.await(), listed)
                 }
             }
             if (gen != refreshLatch.gen) return
             if (result == null) return
-            val (presets, catalog, listed) = result
+            val (catalog, listed) = result
             plane.clear()
             legacy.clear()
             descriptors.clear()
@@ -307,7 +311,12 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                 legacy[url] = b.legacyRows
                 if (b.error != null) nodeErrors[b.node.id] = b.error
             }
-            val agents = buildAgents(healthy, presets, catalog)
+            val agents = buildAgents(
+                healthy.map { AgentNodeHint(it.id, it.name.ifBlank { it.id }, it.denUrl, it.online) },
+                listed.map { it.node.denUrl to it.presets },
+                catalog,
+                pointers,
+            )
             _state.update {
                 it.copy(
                     nodes = healthy,
@@ -335,31 +344,6 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
             refreshLatch = end.latch
             _state.update { it.copy(loading = end.latch.loading) }
             if (end.rerun) refresh()
-        }
-    }
-
-    private fun buildAgents(
-        healthy: List<NodeRef>,
-        presets: List<io.rivethub.app.gateway.AgentPreset>?,
-        catalog: List<io.rivethub.app.gateway.CatalogAgent>,
-    ): List<AgentRow> {
-        if (presets != null) {
-            return presets.mapNotNull { p ->
-                val node = healthy.find { it.denUrl.trimEnd('/') == p.nodeBaseUrl.trimEnd('/') }
-                    ?: healthy.find { it.id == p.id }
-                    ?: healthy.firstOrNull()
-                    ?: return@mapNotNull null
-                val hid = p.harnessId?.takeIf { it.isNotBlank() } ?: harnessIdForAgent(p.id, null)
-                agentRow(
-                    p.id, p.name.ifBlank { p.id }, hid, node.id, node.name.ifBlank { node.id }, node.denUrl,
-                    pointers, color = p.color, model = p.model, effort = p.effort,
-                )
-            }
-        }
-        return catalog.mapNotNull { a ->
-            val node = healthy.find { it.id == a.node } ?: return@mapNotNull null
-            val hid = harnessIdForAgent(a.id, a.provider)
-            agentRow(a.id, a.id, hid, node.id, node.name.ifBlank { node.id }, node.denUrl, pointers)
         }
     }
 
@@ -473,11 +457,11 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val legacyRows: Result<List<LegacyHarnessSession>>,
         val ok: Boolean,
         val error: String?,
+        val presets: Result<List<AgentPreset>>,
     )
 
     private data class Discovered(
-        val presets: List<io.rivethub.app.gateway.AgentPreset>?,
-        val catalog: List<io.rivethub.app.gateway.CatalogAgent>,
+        val catalog: List<CatalogAgent>,
         val listed: List<NodeBundle>,
     )
 }

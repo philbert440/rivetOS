@@ -35,6 +35,7 @@ import io.rivethub.app.plane.harnessAccentToken
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.ListRow
 import io.rivethub.app.ui.components.Pill
+import io.rivethub.app.ui.components.PillTone
 import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
@@ -72,6 +73,10 @@ fun AgentsScreen(
                                 Spacer(Modifier.width(6.dp))
                             }
                             Pill(row.nodeName)
+                            if (!row.online) {
+                                Spacer(Modifier.width(6.dp))
+                                Pill(stringResource(R.string.health_offline), tone = PillTone.Warn)
+                            }
                         },
                         trailing = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
