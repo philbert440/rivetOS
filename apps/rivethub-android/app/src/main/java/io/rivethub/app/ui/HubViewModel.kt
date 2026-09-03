@@ -38,10 +38,11 @@ import io.rivethub.app.plane.supersedeRefresh
 import io.rivethub.app.plane.RefreshLatch
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
-import kotlinx.coroutines.Dispatchers
+import io.rivethub.app.plane.NODE_BUNDLE_TIMEOUT_MS
+import io.rivethub.app.plane.fetchAfterHealthz
+import io.rivethub.app.plane.fetchBundlesProgressively
+import io.rivethub.app.plane.nodeErrorBadge
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,7 +50,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.Closeable
 
 class HubViewModel(private val c: AppContainer) : ViewModel() {
@@ -80,6 +80,8 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val error: String? = null,
         val errorKind: EnrollErrorKind? = null,
         val nodeErrors: Map<String, String> = emptyMap(),
+        val discoveringDone: Int = 0,
+        val discoveringTotal: Int = 0,
         val inbox: List<InboxItem> = emptyList(),
         val inboxOpen: Boolean = false,
         val prefs: Prefs = Prefs(),
@@ -255,80 +257,74 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     private suspend fun refreshOnce(gen: Int) {
         try {
             val identityGen = c.identity.generation()
-            _state.update { it.copy(loading = true, error = null, errorKind = null) }
+            _state.update {
+                it.copy(
+                    loading = true,
+                    error = null,
+                    errorKind = null,
+                    discoveringDone = 0,
+                    discoveringTotal = 0,
+                )
+            }
             val prefs = c.settings.snapshot()
             if (prefs.entryUrl.isBlank()) {
                 _state.update { it.copy(nodes = emptyList(), items = emptyList(), agents = emptyList()) }
                 return
             }
-            val result = withContext(Dispatchers.IO) {
-                c.transport.retarget(prefs.entryUrl, prefs.extraNodes)
-                val nodes = try {
-                    c.transport.discover()
-                } catch (e: Exception) {
-                    throw e
-                }
-                if (c.identity.generation() != identityGen) return@withContext null
-                coroutineScope {
-                    val catalogDef = async {
-                        runCatching { c.transport.entry().catalogAgents().agents }.getOrDefault(emptyList())
-                    }
-                    val listed = nodes.map { node ->
-                        async {
-                            val hg = c.harness(node.denUrl)
-                            val gw = c.transport.gateway(node)
-                            val desc = runCatching { hg.listHarnesses() }
-                            val planeRows = HashMap<String, Result<List<HarnessSessionSummary>>>()
-                            for (hid in listableHarnesses(desc.getOrDefault(emptyList()))) {
-                                planeRows[hid] = runCatching { hg.listSessions(hid) }
-                            }
-                            val legacyRows = runCatching { hg.legacySessions() }
-                            val ok = runCatching { gw.healthz().ok }.getOrDefault(node.online)
-                            val err = desc.exceptionOrNull()?.message
-                                ?: planeRows.values.firstNotNullOfOrNull { it.exceptionOrNull()?.message }
-                                ?: legacyRows.exceptionOrNull()?.message
-                            val presets = runCatching { gw.agents() }
-                            NodeBundle(node, desc.getOrDefault(emptyList()), planeRows, legacyRows, ok, err, presets)
-                        }
-                    }.awaitAll()
-                    Discovered(catalogDef.await(), listed)
-                }
-            }
+            c.transport.retarget(prefs.entryUrl, prefs.extraNodes)
+            val nodes = c.transport.discover()
+            if (c.identity.generation() != identityGen) return
             if (gen != refreshLatch.gen) return
-            if (result == null) return
-            val (catalog, listed) = result
-            plane.clear()
-            legacy.clear()
-            descriptors.clear()
-            val healthy = listed.map { b ->
-                if (b.ok) b.node else b.node.copy(online = false)
-            }
-            val nodeErrors = LinkedHashMap<String, String>()
-            for (b in listed) {
-                val url = b.node.denUrl.trimEnd('/')
-                descriptors[url] = b.desc
-                plane[url] = HashMap(b.planeRows)
-                legacy[url] = b.legacyRows
-                if (b.error != null) nodeErrors[b.node.id] = b.error
-            }
-            val agents = buildAgents(
-                healthy.map { AgentNodeHint(it.id, it.name.ifBlank { it.id }, it.denUrl, it.online) },
-                listed.map { it.node.denUrl to it.presets },
-                catalog,
-                pointers,
-            )
+            val live = nodes.map { it.denUrl.trimEnd('/') }.toSet()
+            descriptors.keys.filter { it !in live }.forEach { descriptors.remove(it) }
+            plane.keys.filter { it !in live }.forEach { plane.remove(it) }
+            legacy.keys.filter { it !in live }.forEach { legacy.remove(it) }
             _state.update {
                 it.copy(
-                    nodes = healthy,
-                    agents = agents,
-                    error = null,
-                    errorKind = null,
-                    nodeErrors = nodeErrors,
+                    nodes = nodes,
+                    discoveringDone = 0,
+                    discoveringTotal = nodes.size,
+                    nodeErrors = emptyMap(),
                     identityGen = identityGen,
                 )
             }
             rebuildItems()
-            startWatches(healthy, identityGen)
+            val presetsAcc = LinkedHashMap<String, Result<List<AgentPreset>>>()
+            var catalog: List<CatalogAgent> = emptyList()
+            fun publishAgents() {
+                val current = _state.value.nodes
+                val agents = buildAgents(
+                    current.map { AgentNodeHint(it.id, it.name.ifBlank { it.id }, it.denUrl, it.online) },
+                    presetsAcc.toList(),
+                    catalog,
+                    pointers,
+                )
+                _state.update { it.copy(agents = agents) }
+            }
+            coroutineScope {
+                launch {
+                    catalog = runCatching { c.transport.entry().catalogAgents().agents }.getOrDefault(emptyList())
+                    if (gen != refreshLatch.gen) return@launch
+                    publishAgents()
+                }
+                fetchBundlesProgressively(
+                    nodes = nodes,
+                    timeoutMs = NODE_BUNDLE_TIMEOUT_MS,
+                    fetch = { fetchNodeBundle(it) },
+                    onEach = { node, result ->
+                        if (gen == refreshLatch.gen) {
+                            applyNodeBundle(node, result, presetsAcc)
+                            publishAgents()
+                            rebuildItems()
+                        }
+                    },
+                )
+            }
+            if (gen != refreshLatch.gen) return
+            if (c.identity.generation() != identityGen) return
+            publishAgents()
+            rebuildItems()
+            startWatches(_state.value.nodes, identityGen)
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             if (gen != refreshLatch.gen) return
@@ -342,8 +338,87 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         } finally {
             val end = finishRefresh(refreshLatch, gen)
             refreshLatch = end.latch
-            _state.update { it.copy(loading = end.latch.loading) }
+            _state.update { it.copy(loading = end.latch.loading, discoveringDone = 0, discoveringTotal = 0) }
             if (end.rerun) refresh()
+        }
+    }
+
+    private suspend fun fetchNodeBundle(node: NodeRef): NodeBundle {
+        val hg = c.harness(node.denUrl)
+        val gw = c.transport.gateway(node)
+        return fetchAfterHealthz(
+            healthz = { gw.healthz().ok },
+            rest = {
+                val desc = runCatching { hg.listHarnesses() }
+                val planeRows = HashMap<String, Result<List<HarnessSessionSummary>>>()
+                for (hid in listableHarnesses(desc.getOrDefault(emptyList()))) {
+                    planeRows[hid] = runCatching { hg.listSessions(hid) }
+                }
+                val legacyRows = runCatching { hg.legacySessions() }
+                val presets = runCatching { gw.agents() }
+                val errors = buildList {
+                    add(desc.exceptionOrNull())
+                    planeRows.values.forEach { add(it.exceptionOrNull()) }
+                    add(legacyRows.exceptionOrNull())
+                }
+                NodeBundle(
+                    node = node.copy(online = true),
+                    desc = desc.getOrDefault(emptyList()),
+                    planeRows = planeRows,
+                    legacyRows = legacyRows,
+                    ok = true,
+                    error = nodeErrorBadge(errors),
+                    presets = presets,
+                )
+            },
+            skipped = { _, _ ->
+                NodeBundle(
+                    node = node.copy(online = false),
+                    desc = emptyList(),
+                    planeRows = emptyMap(),
+                    legacyRows = Result.success(emptyList()),
+                    ok = false,
+                    error = null,
+                    presets = Result.success(emptyList()),
+                )
+            },
+        )
+    }
+
+    private fun applyNodeBundle(
+        node: NodeRef,
+        result: Result<NodeBundle>,
+        presetsAcc: MutableMap<String, Result<List<AgentPreset>>>,
+    ) {
+        val url = node.denUrl.trimEnd('/')
+        val bundle = result.getOrNull()
+        if (bundle == null) {
+            val badge = nodeErrorBadge(listOf(result.exceptionOrNull())) ?: "timed out"
+            _state.update { st ->
+                st.copy(
+                    nodes = st.nodes.map { if (it.id == node.id) it.copy(online = false) else it },
+                    nodeErrors = st.nodeErrors + (node.id to badge),
+                    discoveringDone = st.discoveringDone + 1,
+                )
+            }
+            return
+        }
+        if (bundle.ok) {
+            descriptors[url] = bundle.desc
+            plane[url] = HashMap(bundle.planeRows)
+            legacy[url] = bundle.legacyRows
+        }
+        presetsAcc[url] = bundle.presets
+        _state.update { st ->
+            val nextErrors = st.nodeErrors.toMutableMap()
+            if (bundle.error != null) nextErrors[node.id] = bundle.error else nextErrors.remove(node.id)
+            st.copy(
+                nodes = st.nodes.map { n ->
+                    if (n.id == node.id) n.copy(online = bundle.ok) else n
+                },
+                nodeErrors = nextErrors,
+                discoveringDone = st.discoveringDone + 1,
+            )
         }
     }
 
@@ -460,8 +535,4 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val presets: Result<List<AgentPreset>>,
     )
 
-    private data class Discovered(
-        val catalog: List<CatalogAgent>,
-        val listed: List<NodeBundle>,
-    )
 }

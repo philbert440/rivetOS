@@ -51,6 +51,7 @@ fun AgentsScreen(
     Column(Modifier.fillMaxSize().background(colors.bg)) {
         TopBar(title = stringResource(R.string.title_agents))
         HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
+        HubDiscoveringLine(st.discoveringDone, st.discoveringTotal)
         if (st.agents.isEmpty()) {
             Text(
                 stringResource(R.string.empty_agents),

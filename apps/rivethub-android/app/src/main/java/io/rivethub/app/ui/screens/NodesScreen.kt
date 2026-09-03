@@ -18,6 +18,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.ui.HubViewModel
@@ -36,6 +39,7 @@ fun NodesScreen(vm: HubViewModel) {
     Column(Modifier.fillMaxSize().background(colors.bg)) {
         TopBar(title = stringResource(R.string.title_nodes))
         HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
+        HubDiscoveringLine(st.discoveringDone, st.discoveringTotal)
         Text(
             stringResource(R.string.node_filter_hint),
             color = colors.inkDim,
@@ -66,7 +70,20 @@ fun NodesScreen(vm: HubViewModel) {
                         onClick = { vm.selectViewNode(node) },
                         meta = {
                             if (nodeErr != null) {
-                                Pill(stringResource(R.string.node_error_badge), tone = io.rivethub.app.ui.components.PillTone.Warn)
+                                Pill(
+                                    stringResource(R.string.node_error_badge),
+                                    tone = io.rivethub.app.ui.components.PillTone.Warn,
+                                    modifier = Modifier.semantics { contentDescription = nodeErr },
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    nodeErr,
+                                    color = colors.inkDim,
+                                    style = RivetType.meta,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
                             }
                         },
                         trailing = {

@@ -68,7 +68,7 @@ fun HubScreen(
                 HubViewModel.Tab.Conversations -> ConversationsScreen(
                     vm = vm,
                     onOpenRow = onOpenRow,
-                    onNew = { onOpenChat(vm.newConversation()) },
+                    onOpenChat = onOpenChat,
                 )
                 HubViewModel.Tab.Agents -> AgentsScreen(
                     vm = vm,

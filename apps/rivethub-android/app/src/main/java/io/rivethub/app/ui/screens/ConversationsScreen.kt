@@ -19,6 +19,9 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
@@ -30,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,11 +41,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AccentToken
+import io.rivethub.app.plane.AgentAction
+import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.ChatItemKind
 import io.rivethub.app.plane.ConversationFilter
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeChip
+import io.rivethub.app.plane.conversationsEmptyVisible
 import io.rivethub.app.plane.conversationsFilterChips
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.filterConversations
@@ -53,6 +60,8 @@ import io.rivethub.app.ui.components.FilterChipRow
 import io.rivethub.app.ui.components.ListRow
 import io.rivethub.app.ui.components.Pill
 import io.rivethub.app.ui.components.RivetConfirmDialog
+import io.rivethub.app.ui.components.RivetSelectSheet
+import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.OnEm
@@ -60,13 +69,14 @@ import io.rivethub.app.ui.theme.RivetColors
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationsScreen(
     vm: HubViewModel,
     onOpenRow: (LocatedChatItem) -> Unit,
-    onNew: () -> Unit,
+    onOpenChat: (AgentOpen) -> Unit,
 ) {
     val st by vm.state.collectAsState()
     val colors = RivetTheme.colors
@@ -91,6 +101,10 @@ fun ConversationsScreen(
     var renameTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var discardTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var pickerOpen by remember { mutableStateOf(false) }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val noAgentsHint = stringResource(R.string.no_agents_hint)
 
     Column(Modifier.fillMaxSize().background(colors.bg)) {
         TopBar(
@@ -115,10 +129,11 @@ fun ConversationsScreen(
             modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.grid),
         )
         HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
+        HubDiscoveringLine(st.discoveringDone, st.discoveringTotal)
         Box(Modifier.weight(1f).fillMaxWidth()) {
             PullToRefreshBox(isRefreshing = st.loading, onRefresh = { vm.refresh() }) {
             LazyColumn(Modifier.fillMaxSize()) {
-                if (lists.live.isEmpty() && lists.archived.isEmpty()) {
+                if (conversationsEmptyVisible(st.loading, lists.live.isNotEmpty(), lists.archived.isNotEmpty())) {
                     item {
                         Text(
                             if (st.query.isNotBlank()) stringResource(R.string.empty_search) else stringResource(R.string.empty_conversations),
@@ -184,15 +199,40 @@ fun ConversationsScreen(
             }
             }
             FloatingActionButton(
-                onClick = onNew,
+                onClick = {
+                    if (st.agents.isEmpty()) {
+                        scope.launch { snackbar.showSnackbar(noAgentsHint) }
+                    } else {
+                        pickerOpen = true
+                    }
+                },
                 containerColor = colors.em,
                 contentColor = OnEm,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(Dimens.grid2),
             ) {
                 Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.action_new))
             }
+            SnackbarHost(
+                hostState = snackbar,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 88.dp),
+            ) { data ->
+                Snackbar(snackbarData = data, containerColor = colors.panel, contentColor = colors.ink)
+            }
         }
     }
+
+    RivetSelectSheet(
+        visible = pickerOpen,
+        onDismiss = { pickerOpen = false },
+        title = stringResource(R.string.pick_agent),
+        options = st.agents.map { SelectOption(it.agentId, "${it.name} · ${it.nodeName}") },
+        value = st.prefs.currentAgentId,
+        onChange = { id ->
+            pickerOpen = false
+            val row = st.agents.find { it.agentId == id }
+            if (row != null) onOpenChat(vm.openAgentAction(row, AgentAction.Plus))
+        },
+    )
 
     if (st.inboxOpen) {
         InboxSheet(st.inbox, onDismiss = { vm.setInboxOpen(false) })
@@ -295,6 +335,18 @@ internal fun filterLabel(filter: ConversationFilter): String = when (filter) {
     ConversationFilter.Active -> stringResource(R.string.filter_active)
     ConversationFilter.Pinned -> stringResource(R.string.filter_pinned)
     is ConversationFilter.Node -> filter.name
+}
+
+@Composable
+internal fun HubDiscoveringLine(done: Int, total: Int) {
+    if (total <= 0 || done >= total) return
+    val colors = RivetTheme.colors
+    Text(
+        stringResource(R.string.discovering_progress, done, total),
+        color = colors.inkDim,
+        style = RivetType.meta,
+        modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf),
+    )
 }
 
 @Composable

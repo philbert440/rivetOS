@@ -90,3 +90,7 @@ fun filterConversations(
     }
     return ConversationLists(live, archivedRows)
 }
+
+/** Empty-state copy only when the list is idle — never over a spinner. */
+fun conversationsEmptyVisible(loading: Boolean, hasLive: Boolean, hasArchived: Boolean): Boolean =
+    !loading && !hasLive && !hasArchived

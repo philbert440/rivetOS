@@ -41,9 +41,9 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 |---|---|---|---|
 | Enroll | `ui/screens/EnrollScreen.kt` | none (container) | p12 + entry URL; 401 → cert refused; `https://` only |
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | BottomRail tabs; Forget calls `shutdown()` on the same instance |
-| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | recency list, pull-to-refresh, archive swipe, FAB draft |
+| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | recency list, pull-to-refresh, archive swipe, FAB agent picker (snackbar if none) |
 | Agents | `ui/screens/AgentsScreen.kt` | HubViewModel | `/api/agents` from every discovered node (catalog if every node returns empty); tap / ↺ / + pointer semantics |
-| Nodes | `ui/screens/NodesScreen.kt` | HubViewModel | view filter only; never rebinds an open chat; per-node error badge |
+| Nodes | `ui/screens/NodesScreen.kt` | HubViewModel | view filter only; never rebinds an open chat; error badge is timeout/5xx only (404 harness = plane-less, no badge) |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | identity, theme, terminal font; title long-press → gallery |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe |
 | Gallery | `ui/components/ComponentGallery.kt` | none | M1.5 preview |
@@ -59,6 +59,9 @@ Registry watches live in HubViewModel (one unlimited Channel, sequential consume
 lives in the chat VM; WS frames are marshalled onto one Channel per attach (never `launch` per
 frame). Turn-complete settle is deferred so it does not block frame intake. Network stays on
 `Dispatchers.IO`. Identity `generation()` is sampled at start; a bump drops cached clients.
+Refresh publishes the mesh roster as soon as `discover()` returns, then merges each per-node
+bundle as it completes (`healthz` first, `withTimeout(8s)`). A "discovering… n/m" line tracks
+pending bundles so an offline peer cannot hide the healthy ones.
 
 ## Core packages
 
@@ -88,7 +91,7 @@ params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 214.
+  (`.github/workflows/android.yml`) enforces a floor of 219.
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

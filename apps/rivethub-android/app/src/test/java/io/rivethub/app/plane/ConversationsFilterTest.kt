@@ -130,4 +130,11 @@ class ConversationsFilterTest {
         assertFalse(matchesQuery("hello", "xyz"))
         assertTrue(matchesQuery("Hello World", "world"))
     }
+
+    @Test fun `empty conversations hidden while loading`() {
+        assertFalse(conversationsEmptyVisible(loading = true, hasLive = false, hasArchived = false))
+        assertTrue(conversationsEmptyVisible(loading = false, hasLive = false, hasArchived = false))
+        assertFalse(conversationsEmptyVisible(loading = false, hasLive = true, hasArchived = false))
+        assertFalse(conversationsEmptyVisible(loading = false, hasLive = false, hasArchived = true))
+    }
 }

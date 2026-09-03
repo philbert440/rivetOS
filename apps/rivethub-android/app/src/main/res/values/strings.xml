@@ -45,6 +45,9 @@
     <string name="archived_section">Archived (%d)</string>
     <string name="search_conversations">Search conversations</string>
     <string name="empty_conversations">No conversations yet</string>
+    <string name="no_agents_hint">No agents yet — pull to refresh</string>
+    <string name="pick_agent">Choose an agent</string>
+    <string name="discovering_progress">discovering… %1$d/%2$d</string>
     <string name="empty_search">No matches</string>
     <string name="empty_agents">No agents yet</string>
     <string name="empty_nodes">No nodes discovered</string>

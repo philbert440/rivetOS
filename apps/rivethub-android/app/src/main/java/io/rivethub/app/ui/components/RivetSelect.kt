@@ -74,53 +74,74 @@ fun RivetSelect(
             modifier = Modifier.size(14.dp),
         )
     }
-    if (open) {
-        ModalBottomSheet(
-            onDismissRequest = { open = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = colors.panel,
-            contentColor = colors.ink,
-            tonalElevation = 0.dp,
-        ) {
-            val heading = title
-            if (heading != null) {
+    RivetSelectSheet(
+        visible = open,
+        onDismiss = { open = false },
+        options = options,
+        value = value,
+        onChange = {
+            onChange(it)
+            open = false
+        },
+        title = title,
+    )
+}
+
+/** Bottom sheet used by [RivetSelect] and by callers that open it without a trigger. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RivetSelectSheet(
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    options: List<SelectOption>,
+    value: String,
+    onChange: (String) -> Unit,
+    title: String? = null,
+) {
+    if (!visible) return
+    val colors = RivetTheme.colors
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = colors.panel,
+        contentColor = colors.ink,
+        tonalElevation = 0.dp,
+    ) {
+        val heading = title
+        if (heading != null) {
+            Text(
+                heading,
+                color = colors.inkDim,
+                style = RivetType.monoPill,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+        options.forEach { option ->
+            val active = option.value == value
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = Dimens.touchTarget)
+                    .clickable(role = Role.Button, onClick = { onChange(option.value) })
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(
-                    heading,
-                    color = colors.inkDim,
+                    option.label,
+                    color = if (active) colors.ink else colors.inkDim,
                     style = RivetType.monoPill,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-            }
-            options.forEach { option ->
-                val active = option.value == value
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = Dimens.touchTarget)
-                        .clickable(role = Role.Button, onClick = {
-                            onChange(option.value)
-                            open = false
-                        })
-                        .padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        option.label,
-                        color = if (active) colors.ink else colors.inkDim,
-                        style = RivetType.monoPill,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                if (active) {
+                    Icon(
+                        Icons.Outlined.Check,
+                        contentDescription = "Selected",
+                        tint = colors.em,
+                        modifier = Modifier.size(16.dp),
                     )
-                    if (active) {
-                        Icon(
-                            Icons.Outlined.Check,
-                            contentDescription = "Selected",
-                            tint = colors.em,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
                 }
             }
         }
