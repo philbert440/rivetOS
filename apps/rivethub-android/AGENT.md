@@ -84,30 +84,37 @@ unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays `data/Herm
 Attach protocol (den-server `term/ws.ts`, rivethub-web `xterm-attach.tsx`):
 
 1. `POST /api/terminal` spawn-or-get joined to the chat's canonical/native session id (same
-   session as draft first-send — the PTY is that harness TUI).
+   session as draft first-send — the PTY is that harness TUI). A draft Terminal tab goes through
+   `spawnAndAdopt()` before attach, never a second unsynchronised spawn.
 2. WS `/api/terminal/ws?id=` — hello JSON, one binary ring frame, live binary, exit JSON.
-3. Hello `mux:'tmux'` → clear the local VT, skip ring replay (tmux redraws). Absent / `none` → replay.
+3. The server replays the ring unconditionally after hello (`term/ws.ts` attach), including
+   `mux:'tmux'`. Reset the local VT on hello / reconnect, then write every binary frame. An empty
+   ring writes nothing. Never skip replay.
 4. Client sends binary keystrokes and JSON `{type:resize,cols,rows}` / `{type:detach}`.
 5. **Never send `{type:kill}`.** Leave, background, and the Detach menu send detach then close.
-   The manager TTL owns the PTY; reattach replays (or tmux redraws).
-6. OSC 10/11/12 colour queries are stripped and never answered. OSC 52 writes go to the clipboard;
-   OSC 52 reads (`?`) are refused.
+   The manager TTL owns the PTY; reattach replays.
+6. OSC 10/11/12 colour queries are stripped and never answered. OSC 52 writes go to the clipboard
+   (flagged sensitive on API 33+); OSC 52 reads (`?`) are refused.
 7. "Open in your terminal" copies `ssh <sshUser>@<host> -t tmux -L <socket> attach -t <session>`
    rendered from the server `attach` descriptor. Hidden when `attach` is absent — never guess a
    socket name.
 
-Attach lives in `HarnessChatViewModel` so Chat↔Terminal swipe does not drop the socket. Detach
-only when leaving the screen (VM cleared) or the app backgrounds (`ON_STOP`); reattach on return
-if Terminal was wanted. Identity `generation()` bump drops the attach. Font size is Settings
-Small/Medium/Large → 11/13/16 sp. Two-finger scroll is local `AnsiScreen` scrollback; tmux
-copy-mode history paging is out of scope.
+Attach lives in `TermAttachController` (driven by `HarnessChatViewModel`) so Chat↔Terminal swipe
+does not drop the socket. Inbound frames share one `Channel` consumer (hello → ring order is
+structural). Detach only when leaving the screen (VM cleared) or the app backgrounds (`ON_STOP`);
+reattach on return if Terminal was wanted. Identity `generation()` bump drops the attach. Font size
+is Settings Small/Medium/Large → 11/13/16 sp; cols/rows use a measured "M" and `fontScale`. Ctrl is
+one-shot (long-press locks). Two-finger scroll is local `AnsiScreen` scrollback, pinned to an
+absolute line while scrolled back; tmux copy-mode history paging is out of scope. DECCKM (`CSI ?1
+h/l`) selects SS3 vs CSI arrows. `{type:detach}` is ahead of `@rivetos/types` and a no-op on today's
+server — the close is the detach.
 
 ## Build / test / install
 
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 214 (190 + 24 M4 terminal tests).
+  (`.github/workflows/android.yml`) enforces a floor of 231 (190 + 41 M4 terminal tests).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

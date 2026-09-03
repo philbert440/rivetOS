@@ -1,5 +1,7 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.TermAttachInfo
+
 /**
  * PTY attach protocol helpers — hello/mux, geometry, keys, the attach
  * command, detach-not-kill. Twin of den-server `term/ws.ts` client framing
@@ -7,6 +9,9 @@ package io.rivethub.app.plane
  *
  * Client sends binary keystrokes and JSON `{type:resize,cols,rows}` /
  * `{type:detach}`. Never `{type:kill}` — the manager TTL owns the PTY.
+ *
+ * den-server `term/ws.ts` replays the scrollback ring unconditionally after
+ * hello (including `mux:tmux`). The client never skips that frame.
  */
 
 const val TERM_MIN_COLS = 20
@@ -14,7 +19,7 @@ const val TERM_MAX_COLS = 500
 const val TERM_MIN_ROWS = 5
 const val TERM_MAX_ROWS = 200
 
-/** JetBrains Mono aspect (em width) and line-height used for cols/rows. */
+/** Fallback JetBrains Mono aspect / line-height when a real glyph is not measured. */
 const val TERM_MONO_ASPECT = 0.6f
 const val TERM_LINE_HEIGHT = 1.2f
 
@@ -23,45 +28,36 @@ const val TERM_DETACH_JSON = """{"type":"detach"}"""
 fun termResizeJson(cols: Int, rows: Int): String =
     """{"type":"resize","cols":$cols,"rows":$rows}"""
 
-fun skipRingReplay(mux: String?): Boolean =
-    mux?.equals("tmux", ignoreCase = true) == true
-
 /**
- * First hello, then one binary ring frame, then live bytes.
- * `mux:tmux` → clear the local buffer and drop the ring; absent/`none` → replay.
+ * Hello-then-binary ordering pin. Binary before hello is dropped; every
+ * binary after hello is written, including the ring.
  */
 class TermReplayGate {
-    enum class Phase { Hello, Ring, Live }
+    enum class Phase { Hello, Live }
 
     var phase: Phase = Phase.Hello
         private set
-    var skipRing: Boolean = false
-        private set
 
-    fun onHello(mux: String?) {
-        skipRing = skipRingReplay(mux)
-        phase = Phase.Ring
+    fun onHello() {
+        phase = Phase.Live
     }
 
     /** True when this binary frame should be written to the VT. */
-    fun acceptBinary(): Boolean = when (phase) {
-        Phase.Hello -> false
-        Phase.Ring -> {
-            phase = Phase.Live
-            !skipRing
-        }
-        Phase.Live -> true
-    }
+    fun acceptBinary(): Boolean = phase == Phase.Live
 
     fun reset() {
         phase = Phase.Hello
-        skipRing = false
     }
 }
 
-fun termCellSizePx(fontSp: Float, density: Float): Pair<Float, Float> {
-    val h = fontSp * density * TERM_LINE_HEIGHT
-    val w = fontSp * density * TERM_MONO_ASPECT
+/**
+ * Fallback cell size. [fontScale] is Android's font scale (sp, not dp).
+ * The pane prefers a measured "M" advance over this guess.
+ */
+fun termCellSizePx(fontSp: Float, density: Float, fontScale: Float): Pair<Float, Float> {
+    val px = fontSp * density * fontScale
+    val h = px * TERM_LINE_HEIGHT
+    val w = px * TERM_MONO_ASPECT
     return w to h
 }
 
@@ -81,34 +77,54 @@ object TermKeys {
     val BACKSPACE: ByteArray = byteArrayOf(0x7f)
     val ESC: ByteArray = byteArrayOf(0x1b)
     val TAB: ByteArray = byteArrayOf(0x09)
-    val UP: ByteArray = byteArrayOf(0x1b, '['.code.toByte(), 'A'.code.toByte())
-    val DOWN: ByteArray = byteArrayOf(0x1b, '['.code.toByte(), 'B'.code.toByte())
-    val RIGHT: ByteArray = byteArrayOf(0x1b, '['.code.toByte(), 'C'.code.toByte())
-    val LEFT: ByteArray = byteArrayOf(0x1b, '['.code.toByte(), 'D'.code.toByte())
+    val UP: ByteArray = arrow('A', false)
+    val DOWN: ByteArray = arrow('B', false)
+    val RIGHT: ByteArray = arrow('C', false)
+    val LEFT: ByteArray = arrow('D', false)
 
     fun utf8(text: String): ByteArray = text.toByteArray(Charsets.UTF_8)
 
     fun ctrl(ch: Char): ByteArray = byteArrayOf((ch.code and 0x1f).toByte())
 
-    /** IME / paste: Ctrl latched → each codepoint becomes a control byte. */
+    fun arrow(dir: Char, applicationCursor: Boolean): ByteArray {
+        val intro = if (applicationCursor) 'O' else '['
+        return byteArrayOf(0x1b, intro.code.toByte(), dir.code.toByte())
+    }
+
+    fun up(applicationCursor: Boolean = false): ByteArray = arrow('A', applicationCursor)
+    fun down(applicationCursor: Boolean = false): ByteArray = arrow('B', applicationCursor)
+    fun right(applicationCursor: Boolean = false): ByteArray = arrow('C', applicationCursor)
+    fun left(applicationCursor: Boolean = false): ByteArray = arrow('D', applicationCursor)
+
+    /**
+     * IME / paste. Ctrl applies to the first ASCII character only
+     * (`?`..`DEL`); the rest of the commit is literal UTF-8.
+     */
     fun ime(text: String, ctrl: Boolean): ByteArray {
         if (!ctrl) return utf8(text)
-        val out = ByteArray(text.length)
-        for (i in text.indices) out[i] = (text[i].code and 0x1f).toByte()
-        return out
+        val c = text.firstOrNull() ?: return ByteArray(0)
+        if (c.code !in 0x3f..0x7f) return utf8(text)
+        return byteArrayOf((c.code and 0x1f).toByte()) + utf8(text.drop(1))
     }
 }
 
 /**
  * Render the desktop "Open in your terminal" command from the server
- * attach descriptor. Returns null when any field is missing — the
- * affordance is hidden, never a guessed tmux line.
+ * attach descriptor. Returns null when any required field is missing —
+ * the affordance is hidden, never a guessed tmux line.
+ *
+ * [TermAttachInfo.local] is true only for loopback peers (never the
+ * phone); the no-ssh form is still rendered so the field is not dropped.
  */
-fun renderAttachCommand(socket: String?, session: String?, host: String?, sshUser: String?): String? {
-    if (socket.isNullOrBlank() || session.isNullOrBlank() || host.isNullOrBlank() || sshUser.isNullOrBlank()) {
-        return null
+fun renderAttachCommand(info: TermAttachInfo?): String? {
+    if (info == null) return null
+    if (info.socket.isBlank() || info.session.isBlank()) return null
+    return if (info.local) {
+        "tmux -L ${info.socket} attach -t ${info.session}"
+    } else {
+        if (info.host.isBlank() || info.sshUser.isBlank()) return null
+        "ssh ${info.sshUser}@${info.host} -t tmux -L ${info.socket} attach -t ${info.session}"
     }
-    return "ssh $sshUser@$host -t tmux -L $socket attach -t $session"
 }
 
 interface TermSink {
@@ -119,8 +135,6 @@ interface TermSink {
 
 /** Outbound side of one attach. [leave] detaches; it never sends kill. */
 class TermPtyClient(private val sink: TermSink) {
-    val replay = TermReplayGate()
-
     fun sendKeys(bytes: ByteArray): Boolean {
         if (bytes.isEmpty()) return true
         return sink.sendBinary(bytes)
@@ -132,26 +146,5 @@ class TermPtyClient(private val sink: TermSink) {
     fun leave() {
         sink.sendText(TERM_DETACH_JSON)
         sink.close()
-    }
-}
-
-class RecordingTermSink : TermSink {
-    val texts = ArrayList<String>()
-    val binaries = ArrayList<ByteArray>()
-    var closed: Boolean = false
-        private set
-
-    override fun sendText(text: String): Boolean {
-        texts += text
-        return true
-    }
-
-    override fun sendBinary(bytes: ByteArray): Boolean {
-        binaries += bytes
-        return true
-    }
-
-    override fun close() {
-        closed = true
     }
 }

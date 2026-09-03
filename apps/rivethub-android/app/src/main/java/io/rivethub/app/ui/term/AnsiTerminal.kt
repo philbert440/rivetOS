@@ -51,6 +51,7 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     private var underline = false
     private var dim = false
     private var cursorVisible = true
+    private var appCursor = false
     private val osc52Out = ArrayList<String>()
 
     private var state = State.GROUND
@@ -62,6 +63,7 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
 
     val generation: Int get() = synchronized(this) { rev }
     val lineCount: Int get() = synchronized(this) { scrollback.size + rows }
+    val applicationCursor: Boolean get() = synchronized(this) { appCursor }
 
     fun reset(newCols: Int = cols, newRows: Int = rows) = synchronized(this) {
         cols = newCols.coerceIn(MIN_COLS, MAX_COLS)
@@ -71,6 +73,7 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         cx = 0; cy = 0; savedX = 0; savedY = 0
         fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false; underline = false; dim = false
         cursorVisible = true
+        appCursor = false
         state = State.GROUND
         csi.clear(); osc.clear()
         osc52Out.clear()
@@ -116,7 +119,14 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         else osc52Out.toList().also { osc52Out.clear() }
     }
 
-    fun lineAt(index: Int): TermLine = synchronized(this) {
+    fun lineAt(index: Int): TermLine = synchronized(this) { lineAtLocked(index) }
+
+    /** One lock, [count] rows starting at [first] — paint path must not lock per row. */
+    fun snapshot(first: Int, count: Int): List<TermLine> = synchronized(this) {
+        List(count) { lineAtLocked(first + it) }
+    }
+
+    private fun lineAtLocked(index: Int): TermLine {
         val sb = scrollback.size
         val cells: Array<TermCell> = when {
             index < 0 -> blankLine(cols)
@@ -239,9 +249,15 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         val body = if (priv) raw.drop(1) else raw
         val ps = parseParams(body)
         if (priv) {
-            // DEC private modes — consume. ?25 h/l is cursor visibility.
+            // DEC private modes. ?25 h/l cursor visibility; ?1 h/l DECCKM.
             if (final == 'h' || final == 'l') {
-                if (ps.firstOrNull() == 25) cursorVisible = final == 'h'
+                val on = final == 'h'
+                for (p in ps) {
+                    when (p) {
+                        1 -> appCursor = on
+                        25 -> cursorVisible = on
+                    }
+                }
             }
             return
         }

@@ -242,11 +242,13 @@ data class TermExitFrame(
 @Serializable
 data class TermResizeFrame(val type: String = "resize", val cols: Int, val rows: Int)
 
+/**
+ * Deliberately ahead of `@rivetos/types` `TermControlFrame` (`resize | kill`
+ * only). den-server `term/ws.ts` currently ignores it; the TCP close is the
+ * detach. Harmless no-op on today's server, never `{type:kill}`.
+ */
 @Serializable
 data class TermDetachFrame(val type: String = "detach")
-
-@Serializable
-data class TermKillFrame(val type: String = "kill")
 
 /** JSON text frames on WS /api/terminal/ws (binary frames are raw PTY bytes). */
 sealed interface TermFrame {

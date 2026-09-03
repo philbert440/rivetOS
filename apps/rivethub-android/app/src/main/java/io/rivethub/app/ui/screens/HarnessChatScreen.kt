@@ -68,7 +68,6 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     val termLabel = stringResource(R.string.mode_terminal)
     val pages = listOf(chatLabel, termLabel)
     val selected = if (st.mode == SessionMode.Terminal) termLabel else chatLabel
-    var ctrl by remember { mutableStateOf(false) }
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.onAppBackground() }
     LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.onAppForeground() }
     LaunchedEffect(st.mode) {
@@ -76,7 +75,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     }
     LaunchedEffect(st.termClipboard) {
         val clip = st.termClipboard ?: return@LaunchedEffect
-        copyText(ctx, clip)
+        copyText(ctx, clip, sensitive = true)
         vm.consumeTermClipboard()
     }
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -138,7 +137,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
                     status = st.termStatus,
                     onResize = vm::resizeTerminal,
                     onBytes = vm::sendTermBytes,
-                    ctrl = ctrl,
+                    ctrl = st.termCtrl,
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -147,13 +146,15 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
         }
         if (st.mode == SessionMode.Terminal) {
             TerminalKeyBar(
-                ctrl = ctrl,
-                onCtrl = { ctrl = !ctrl },
+                ctrl = st.termCtrl,
+                onCtrl = vm::toggleTermCtrl,
+                onCtrlLock = vm::lockTermCtrl,
                 onBytes = vm::sendTermBytes,
                 onPaste = {
                     val text = clipboardText(ctx) ?: return@TerminalKeyBar
-                    vm.sendTermText(text, ctrl)
+                    vm.sendTermText(text)
                 },
+                applicationCursor = vm.terminalScreen().applicationCursor,
                 attachCommand = st.attachCommand,
                 onOpenInTerminal = {
                     val cmd = st.attachCommand ?: return@TerminalKeyBar

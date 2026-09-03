@@ -3,15 +3,12 @@ package io.rivethub.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
-import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.data.OscFilter
+import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.HarnessTranscriptTurn
-import io.rivethub.app.gateway.TermFrame
-import io.rivethub.app.gateway.TermWs
 import io.rivethub.app.gateway.UserTurn
 import io.rivethub.app.gateway.WsStatus
-import io.rivethub.app.gateway.parseTermFrame
 import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.AttachmentStatus
@@ -36,11 +33,13 @@ import io.rivethub.app.plane.effortListFor
 import io.rivethub.app.plane.harnessGate
 import io.rivethub.app.plane.parseSessionMode
 import io.rivethub.app.plane.persistSessionMode
-import io.rivethub.app.plane.TermKeys
-import io.rivethub.app.plane.TermPtyClient
-import io.rivethub.app.plane.TermSink
+import io.rivethub.app.plane.TermAttachController
+import io.rivethub.app.plane.TermScreenPort
+import io.rivethub.app.plane.TermSocket
+import io.rivethub.app.plane.TermSpawnPort
+import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.TermWatchFactory
 import io.rivethub.app.plane.readyUris
-import io.rivethub.app.plane.renderAttachCommand
 import io.rivethub.app.plane.rosterCommandFor
 import io.rivethub.app.plane.spawnModelEffort
 import io.rivethub.app.plane.toSheet
@@ -49,7 +48,6 @@ import io.rivethub.app.plane.withAttachmentText
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -93,9 +91,10 @@ class HarnessChatViewModel(
         val error: String? = null,
         val ws: WsStatus = WsStatus.CONNECTING,
         val moreOpen: Boolean = false,
-        val termStatus: String = "closed",
+        val termStatus: TermStatus = TermStatus.Closed,
         val termRev: Int = 0,
         val termFontSp: Int = 13,
+        val termCtrl: Boolean = false,
         val attachCommand: String? = null,
         val termClipboard: String? = null,
     )
@@ -120,12 +119,61 @@ class HarnessChatViewModel(
     private var spawnInFlight = false
 
     private val termScreen = AnsiScreen()
-    private var termWs: TermWs? = null
-    private var termClient: TermPtyClient? = null
-    private var termAttachJob: Job? = null
-    private var termWanted = false
-    private var lastTermCols = 80
-    private var lastTermRows = 24
+    private val termCtl = TermAttachController(
+        scope = viewModelScope,
+        spawn = TermSpawnPort { session, cols, rows, command, model, effort ->
+            val st = _state.value
+            val node = NodeRef(st.nodeName, st.nodeName, nodeDenUrl, true)
+            c.transport.gateway(node).termSpawn(session, cols, rows, command, model, effort)
+        },
+        watch = TermWatchFactory { ptyId, onText, onBinary, onStatus ->
+            val st = _state.value
+            val node = NodeRef(st.nodeName, st.nodeName, nodeDenUrl, true)
+            val ws = c.transport.gateway(node).watchTerm(
+                ptyId,
+                onText = onText,
+                onBinary = onBinary,
+                onStatus = onStatus,
+            )
+            object : TermSocket {
+                override var reconnectOnClose: Boolean
+                    get() = ws.reconnectOnClose
+                    set(v) { ws.reconnectOnClose = v }
+                override fun sendText(text: String) = ws.sendText(text)
+                override fun sendBinary(bytes: ByteArray) = ws.sendBinary(bytes)
+                override fun close() = ws.close()
+            }
+        },
+        screen = object : TermScreenPort {
+            override fun reset(cols: Int, rows: Int) { termScreen.reset(cols, rows) }
+            override fun resize(cols: Int, rows: Int) { termScreen.resize(cols, rows) }
+            override fun feed(bytes: ByteArray) { termScreen.feed(bytes) }
+            override fun drainOsc52() = termScreen.drainOsc52()
+            override val generation get() = termScreen.generation
+        },
+        attachedGen = identityGen,
+        currentGen = { c.identity.generation() },
+        sessionId = { _state.value.sessionId },
+        isDraft = { _state.value.draft },
+        spawnAndAdopt = { spawnAndAdopt() },
+        command = { rosterCommandFor(harnessId) },
+        flags = {
+            val st = _state.value
+            spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
+        },
+        onPublish = { v ->
+            _state.update {
+                it.copy(
+                    termStatus = v.status,
+                    termRev = v.rev,
+                    termCtrl = v.ctrl,
+                    attachCommand = v.attachCommand,
+                    termClipboard = v.clipboard,
+                    error = v.error ?: it.error,
+                )
+            }
+        },
+    )
 
     fun terminalScreen(): AnsiScreen = termScreen
 
@@ -147,7 +195,7 @@ class HarnessChatViewModel(
             while (true) {
                 delay(15_000)
                 if (c.identity.generation() != identityGen) {
-                    detachTerminal(keepWanted = false)
+                    termCtl.drop()
                     return@launch
                 }
                 if (machine.idleTimedOut()) {
@@ -259,172 +307,32 @@ class HarnessChatViewModel(
         sessionWatch?.close()
         registryWatch?.close()
         attach?.stop("leave")
-        detachTerminal(keepWanted = false)
+        termCtl.close()
         super.onCleared()
     }
 
-    fun ensureTerminal() {
-        termWanted = true
-        if (c.identity.generation() != identityGen) return
-        if (termWs != null) return
-        if (termAttachJob?.isActive == true) return
-        termAttachJob = viewModelScope.launch { attachTerminal() }
-    }
+    fun ensureTerminal() = termCtl.ensure()
 
-    fun onAppBackground() {
-        detachTerminal(keepWanted = termWanted)
-    }
+    fun onAppBackground() = termCtl.onBackground()
 
-    fun onAppForeground() {
-        if (termWanted) ensureTerminal()
-    }
+    fun onAppForeground() = termCtl.onForeground()
 
-    fun userDetachTerminal() {
-        detachTerminal(keepWanted = false)
-    }
+    fun userDetachTerminal() = termCtl.userDetach()
 
-    fun resizeTerminal(cols: Int, rows: Int) {
-        if (cols == lastTermCols && rows == lastTermRows) return
-        lastTermCols = cols
-        lastTermRows = rows
-        termScreen.resize(cols, rows)
-        termClient?.resize(cols, rows)
-        publishTerm()
-    }
+    fun resizeTerminal(cols: Int, rows: Int) = termCtl.resize(cols, rows)
 
-    fun sendTermBytes(bytes: ByteArray) {
-        if (bytes.isEmpty()) return
-        val asText = runCatching { String(bytes, Charsets.UTF_8) }.getOrNull()
-        if (asText != null && OscFilter.isColorReport(asText)) return
-        termClient?.sendKeys(bytes)
-    }
+    fun sendTermBytes(bytes: ByteArray) = termCtl.sendBytes(bytes)
 
-    fun sendTermText(text: String, ctrl: Boolean) {
+    fun sendTermText(text: String) {
         if (text.isEmpty() || OscFilter.isColorReport(text)) return
-        sendTermBytes(TermKeys.ime(text, ctrl))
+        termCtl.sendText(text)
     }
 
-    fun consumeTermClipboard() {
-        _state.update { it.copy(termClipboard = null) }
-    }
+    fun toggleTermCtrl() = termCtl.toggleCtrl()
 
-    private fun detachTerminal(keepWanted: Boolean) {
-        if (!keepWanted) termWanted = false
-        val client = termClient
-        termClient = null
-        termWs = null
-        termAttachJob?.cancel()
-        termAttachJob = null
-        client?.leave()
-        _state.update { it.copy(termStatus = "closed") }
-    }
+    fun lockTermCtrl() = termCtl.lockCtrl()
 
-    private suspend fun attachTerminal() {
-        if (c.identity.generation() != identityGen) return
-        _state.update { it.copy(termStatus = "connecting") }
-        val st = _state.value
-        val node = NodeRef(st.nodeName, st.nodeName, nodeDenUrl, true)
-        val gw = c.transport.gateway(node)
-        val command = rosterCommandFor(harnessId)
-        val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
-        val spawned = try {
-            withContext(Dispatchers.IO) {
-                gw.termSpawn(
-                    session = st.sessionId,
-                    cols = lastTermCols,
-                    rows = lastTermRows,
-                    command = command,
-                    model = flags.model,
-                    effort = flags.effort,
-                )
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            _state.update { it.copy(termStatus = "closed", error = e.message ?: e.javaClass.simpleName) }
-            return
-        }
-        if (c.identity.generation() != identityGen) return
-        val cmd = renderAttachCommand(
-            spawned.attach?.socket,
-            spawned.attach?.session,
-            spawned.attach?.host,
-            spawned.attach?.sshUser,
-        )
-        _state.update { it.copy(attachCommand = cmd) }
-        termScreen.reset(lastTermCols, lastTermRows)
-        var ws: TermWs? = null
-        termClient = TermPtyClient(
-            object : TermSink {
-                override fun sendText(text: String): Boolean = ws?.sendText(text) ?: false
-                override fun sendBinary(bytes: ByteArray): Boolean = ws?.sendBinary(bytes) ?: false
-                override fun close() { ws?.close() }
-            },
-        )
-        termClient!!.replay.reset()
-        ws = gw.watchTerm(
-            spawned.id,
-            onText = { text -> viewModelScope.launch { onTermText(text) } },
-            onBinary = { bytes -> viewModelScope.launch { onTermBinary(bytes) } },
-            onStatus = { s -> viewModelScope.launch { onTermStatus(s) } },
-        )
-        termWs = ws
-        publishTerm()
-    }
-
-    private fun onTermText(text: String) {
-        when (val frame = parseTermFrame(text)) {
-            is TermFrame.Hello -> {
-                termClient?.replay?.onHello(frame.frame.mux)
-                termScreen.reset(lastTermCols, lastTermRows)
-                if (frame.frame.state == "exited") {
-                    termWs?.reconnectOnClose = false
-                    _state.update { it.copy(termStatus = "exited") }
-                } else {
-                    _state.update { it.copy(termStatus = "attached") }
-                }
-                termClient?.resize(lastTermCols, lastTermRows)
-                publishTerm()
-            }
-            is TermFrame.Exit -> {
-                termWs?.reconnectOnClose = false
-                _state.update { it.copy(termStatus = "exited") }
-            }
-            null -> Unit
-        }
-    }
-
-    private fun onTermBinary(bytes: ByteArray) {
-        val client = termClient ?: return
-        if (!client.replay.acceptBinary()) return
-        termScreen.feed(bytes)
-        val clips = termScreen.drainOsc52()
-        _state.update {
-            it.copy(
-                termRev = termScreen.generation,
-                termClipboard = clips.lastOrNull() ?: it.termClipboard,
-            )
-        }
-    }
-
-    private fun onTermStatus(s: WsStatus) {
-        when (s) {
-            WsStatus.CONNECTING -> _state.update { it.copy(termStatus = "connecting") }
-            WsStatus.OPEN -> {
-                termClient?.replay?.reset()
-                termScreen.reset(lastTermCols, lastTermRows)
-                termClient?.resize(lastTermCols, lastTermRows)
-                _state.update { it.copy(termStatus = "attached", termRev = termScreen.generation) }
-            }
-            WsStatus.CLOSED -> _state.update { st ->
-                if (st.termStatus == "exited") st else st.copy(termStatus = "closed")
-            }
-        }
-    }
-
-    private fun publishTerm() {
-        _state.update { it.copy(termRev = termScreen.generation) }
-    }
+    fun consumeTermClipboard() = termCtl.consumeClipboard()
 
     private suspend fun boot() {
         val prefs = c.settings.snapshot()

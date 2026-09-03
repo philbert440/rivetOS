@@ -1,11 +1,14 @@
 package io.rivethub.app.ui.term
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Build
+import android.os.PersistableBundle
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
@@ -19,8 +22,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +34,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
@@ -43,18 +48,20 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.rivethub.app.R
 import io.rivethub.app.plane.TermKeys
+import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.termCellSizePx
 import io.rivethub.app.plane.termColsRows
 import io.rivethub.app.ui.components.KeyToolbar
@@ -63,9 +70,11 @@ import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 private const val IME_SENTINEL = "\u200B"
+private const val RESIZE_DEBOUNCE_MS = 150L
 
 /**
  * Full-bleed VT surface. Tap focuses and opens the IME; two-finger scroll
@@ -76,28 +85,47 @@ fun TerminalPane(
     screen: AnsiScreen,
     rev: Int,
     fontSp: Int,
-    status: String,
+    status: TermStatus,
     onResize: (Int, Int) -> Unit,
     onBytes: (ByteArray) -> Unit,
     ctrl: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
-    val density = LocalDensity.current.density
+    val density = LocalDensity.current
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    var scrollLines by remember { mutableIntStateOf(0) }
+    val followTail = remember { mutableStateOf(true) }
+    val firstLine = remember { mutableIntStateOf(0) }
     var ime by remember { mutableStateOf(TextFieldValue(IME_SENTINEL)) }
-    val cellH = remember(fontSp, density) { termCellSizePx(fontSp.toFloat(), density).second }
+    var pendingGeo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    val measurer = rememberTextMeasurer()
+    val mono = TextStyle(
+        fontFamily = RivetFonts.Mono,
+        fontSize = fontSp.sp,
+        fontWeight = FontWeight.Normal,
+    )
+    val measured = remember(fontSp, density.density, density.fontScale, measurer) {
+        measurer.measure(AnnotatedString("M"), style = mono).size
+    }
+    val fallback = termCellSizePx(fontSp.toFloat(), density.density, density.fontScale)
+    val cellW = measured.width.toFloat().takeIf { it > 1f } ?: fallback.first
+    val cellH = measured.height.toFloat().takeIf { it > 1f } ?: fallback.second
+    val appCursor = remember(rev) { screen.applicationCursor }
+
+    LaunchedEffect(pendingGeo) {
+        val g = pendingGeo ?: return@LaunchedEffect
+        delay(RESIZE_DEBOUNCE_MS)
+        onResize(g.first, g.second)
+    }
 
     Box(
         modifier
             .fillMaxSize()
             .background(colors.codeBg)
             .onSizeChanged { size ->
-                val (cw, ch) = termCellSizePx(fontSp.toFloat(), density)
-                val geo = termColsRows(size.width.toFloat(), size.height.toFloat(), cw, ch)
-                if (geo != null) onResize(geo.first, geo.second)
+                val geo = termColsRows(size.width.toFloat(), size.height.toFloat(), cellW, cellH)
+                if (geo != null) pendingGeo = geo
             }
             .pointerInput(cellH) {
                 awaitEachGesture {
@@ -118,8 +146,11 @@ fun TerminalPane(
                                 moved = true
                                 val delta = (dy / cellH).roundToInt()
                                 if (delta != 0) {
-                                    val maxOff = (screen.lineCount - screen.rows).coerceAtLeast(0)
-                                    scrollLines = (scrollLines + delta).coerceIn(0, maxOff)
+                                    val maxFirst = (screen.lineCount - screen.rows).coerceAtLeast(0)
+                                    val cur = if (followTail.value) maxFirst else firstLine.intValue.coerceIn(0, maxFirst)
+                                    val next = (cur + delta).coerceIn(0, maxFirst)
+                                    firstLine.intValue = next
+                                    followTail.value = next >= maxFirst
                                 }
                                 lastY = y
                             }
@@ -134,18 +165,35 @@ fun TerminalPane(
                 }
             },
     ) {
-        val maxOff = (screen.lineCount - screen.rows).coerceAtLeast(0)
-        val off = scrollLines.coerceIn(0, maxOff)
-        val first = (screen.lineCount - screen.rows - off).coerceAtLeast(0)
-        Column(Modifier.fillMaxSize()) {
-            repeat(screen.rows) { i ->
-                key(rev, i) {
-                    TermLineRow(
-                        line = screen.lineAt(first + i),
-                        fontSp = fontSp,
-                        modifier = Modifier.fillMaxWidth(),
+        val maxFirst = remember(rev) { (screen.lineCount - screen.rows).coerceAtLeast(0) }
+        val first = if (followTail.value) maxFirst else firstLine.intValue.coerceIn(0, maxFirst)
+        val lines = remember(rev, first, screen.rows) { screen.snapshot(first, screen.rows) }
+        Canvas(Modifier.fillMaxSize()) {
+            var y = 0f
+            for (line in lines) {
+                var x = 0f
+                for (span in line.spans) {
+                    val fg = spanFg(span, colors)
+                    val bg = spanBg(span, colors)
+                    val layout = measurer.measure(
+                        AnnotatedString(span.text),
+                        style = mono.copy(
+                            color = fg,
+                            fontWeight = if (span.bold) FontWeight.W700 else FontWeight.Normal,
+                            textDecoration = if (span.underline) TextDecoration.Underline else TextDecoration.None,
+                        ),
                     )
+                    if (span.bg != AnsiScreen.DEFAULT_BG) {
+                        drawRect(
+                            color = bg,
+                            topLeft = Offset(x, y),
+                            size = Size(layout.size.width.toFloat(), cellH),
+                        )
+                    }
+                    drawText(layout, topLeft = Offset(x, y))
+                    x += layout.size.width
                 }
+                y += cellH
             }
         }
         BasicTextField(
@@ -175,10 +223,10 @@ fun TerminalPane(
                         Key.Backspace -> TermKeys.BACKSPACE
                         Key.Tab -> TermKeys.TAB
                         Key.Escape -> TermKeys.ESC
-                        Key.DirectionUp -> TermKeys.UP
-                        Key.DirectionDown -> TermKeys.DOWN
-                        Key.DirectionLeft -> TermKeys.LEFT
-                        Key.DirectionRight -> TermKeys.RIGHT
+                        Key.DirectionUp -> TermKeys.up(appCursor)
+                        Key.DirectionDown -> TermKeys.down(appCursor)
+                        Key.DirectionLeft -> TermKeys.left(appCursor)
+                        Key.DirectionRight -> TermKeys.right(appCursor)
                         else -> null
                     }
                     if (bytes != null) {
@@ -192,12 +240,14 @@ fun TerminalPane(
             cursorBrush = SolidColor(Color.Transparent),
             textStyle = RivetType.monoTerminal.copy(color = Color.Transparent, fontSize = 1.sp),
         )
-        if (status != "attached") {
-            val label = when (status) {
-                "connecting" -> stringResource(R.string.term_status_connecting)
-                "exited" -> stringResource(R.string.term_status_exited)
-                else -> stringResource(R.string.term_status_closed)
-            }
+        val attachedLabel = stringResource(R.string.term_status_attached)
+        val label = when (status) {
+            TermStatus.Connecting -> stringResource(R.string.term_status_connecting)
+            TermStatus.Attached -> attachedLabel
+            TermStatus.Exited -> stringResource(R.string.term_status_exited)
+            TermStatus.Closed -> stringResource(R.string.term_status_closed)
+        }
+        if (status != TermStatus.Attached) {
             Text(
                 label,
                 color = colors.inkDim,
@@ -209,36 +259,6 @@ fun TerminalPane(
             )
         }
     }
-}
-
-@Composable
-private fun TermLineRow(line: TermLine, fontSp: Int, modifier: Modifier = Modifier) {
-    val colors = RivetTheme.colors
-    val annotated = buildAnnotatedString {
-        for (span in line.spans) {
-            val fg = spanFg(span, colors)
-            val bg = spanBg(span, colors)
-            withStyle(
-                SpanStyle(
-                    color = fg,
-                    background = bg,
-                    fontWeight = if (span.bold) FontWeight.W700 else FontWeight.Normal,
-                    textDecoration = if (span.underline) TextDecoration.Underline else TextDecoration.None,
-                    fontFamily = RivetFonts.Mono,
-                    fontSize = fontSp.sp,
-                ),
-            ) { append(span.text) }
-        }
-    }
-    Text(
-        annotated,
-        modifier = modifier,
-        fontFamily = RivetFonts.Mono,
-        fontSize = fontSp.sp,
-        lineHeight = (fontSp * 1.2f).sp,
-        maxLines = 1,
-        softWrap = false,
-    )
 }
 
 private fun spanFg(span: TermSpan, colors: io.rivethub.app.ui.theme.RivetColors): Color {
@@ -266,11 +286,13 @@ private fun spanBg(span: TermSpan, colors: io.rivethub.app.ui.theme.RivetColors)
 fun TerminalKeyBar(
     ctrl: Boolean,
     onCtrl: () -> Unit,
+    onCtrlLock: () -> Unit,
     onBytes: (ByteArray) -> Unit,
     onPaste: () -> Unit,
     attachCommand: String?,
     onOpenInTerminal: () -> Unit,
     onDetach: () -> Unit,
+    applicationCursor: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -296,13 +318,16 @@ fun TerminalKeyBar(
                     "esc" -> onBytes(TermKeys.ESC)
                     "tab" -> onBytes(TermKeys.TAB)
                     "ctrl" -> onCtrl()
-                    "up" -> onBytes(TermKeys.UP)
-                    "down" -> onBytes(TermKeys.DOWN)
-                    "left" -> onBytes(TermKeys.LEFT)
-                    "right" -> onBytes(TermKeys.RIGHT)
+                    "up" -> onBytes(TermKeys.up(applicationCursor))
+                    "down" -> onBytes(TermKeys.down(applicationCursor))
+                    "left" -> onBytes(TermKeys.left(applicationCursor))
+                    "right" -> onBytes(TermKeys.right(applicationCursor))
                     "paste" -> onPaste()
                     "menu" -> menu = true
                 }
+            },
+            onLongKey = { key ->
+                if (key.id == "ctrl") onCtrlLock()
             },
         )
         DropdownMenu(
@@ -349,7 +374,13 @@ fun clipboardText(context: Context): String? {
     return clip.getItemAt(0).coerceToText(context)?.toString()
 }
 
-fun copyText(context: Context, text: String) {
+fun copyText(context: Context, text: String, sensitive: Boolean = false) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("terminal", text))
+    val clip = ClipData.newPlainText("terminal", text)
+    if (sensitive && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    cm.setPrimaryClip(clip)
 }
