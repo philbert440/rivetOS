@@ -98,7 +98,7 @@ fun RivetDrawerContent(
         modifier
             .width(width)
             .fillMaxHeight()
-            .background(colors.panel.copy(alpha = 0.8f))
+            .background(colors.panel)
             .then(Modifier.drawEndBorder(colors.line)),
     ) {
         DrawerHeader(
@@ -138,7 +138,7 @@ fun RivetDrawerContent(
                 onLong = { agentSheet = it },
             )
         }
-        Column(Modifier.drawTopBorder(colors.line)) {
+        Column {
             Box(Modifier.padding(horizontal = 8.dp)) {
                 DrawerNavItem(DrawerDest.Settings, tab, onNav)
             }
