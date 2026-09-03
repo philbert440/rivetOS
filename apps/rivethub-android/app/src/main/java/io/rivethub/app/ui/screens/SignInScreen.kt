@@ -1,5 +1,6 @@
 package io.rivethub.app.ui.screens
 
+import androidx.compose.ui.res.stringResource
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -25,6 +26,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.rivethub.app.R
 import io.rivethub.app.domain.BlobShape
 import io.rivethub.app.domain.BotLook
 import io.rivethub.app.domain.BotLooks
@@ -62,7 +64,7 @@ fun SignInScreen(onJoin: () -> Unit) {
             )
         }
         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Rivet Bots", color = c.onBackground, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.app_name), color = c.onBackground, fontSize = 34.sp, fontWeight = FontWeight.SemiBold)
             VSpace(8)
             Text(
                 "Your mesh of always-on\nagents that finish the work.",

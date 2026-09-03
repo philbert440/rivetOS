@@ -113,7 +113,7 @@ class BotRepository(private val gateways: GatewayPool) {
         fun hostOf(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)
 
         fun friendly(e: Throwable): String {
-            android.util.Log.w("RivetBots", "request failed", e) // logcat ground truth for field debugging
+            android.util.Log.w("RivetHub", "request failed", e) // logcat ground truth for field debugging
             return when (e) {
             is javax.net.ssl.SSLHandshakeException -> "TLS handshake failed — check the device certificate and CA chain."
             is javax.net.ssl.SSLPeerUnverifiedException -> "Node certificate doesn't match its address (try relaxed hostname check)."

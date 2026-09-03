@@ -11,16 +11,19 @@ on:
       - 'apps/rivethub-android/**'
       - '.github/workflows/android.yml'
   pull_request:
+    branches: [main]
     paths:
       - 'apps/rivethub-android/**'
       - '.github/workflows/android.yml'
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
   group: android-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Only PR runs are cancellable: pushes to main are the sole Gradle-cache writer.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -43,11 +46,15 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
         with:
+          # The wrapper jar is a checked-in binary in a public repo: verify its checksum.
+          validate-wrappers: true
           # Cache is the lever for keeping this ~5 min, not a bigger runner.
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
 
       # Full suite only. A `--tests` filter can match zero tests and still exit 0
       # (rivet-android bit us with that), so per-class runs are never the gate.
+      # Three Gradle invocations on purpose: failure attribution per step beats
+      # the ~two configuration phases a single invocation would save.
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --console=plain --no-daemon
 
@@ -61,13 +68,18 @@ jobs:
         if: always()
         run: |
           python3 - <<'EOF'
-          import glob, xml.etree.ElementTree as ET
+          import glob, os, xml.etree.ElementTree as ET
+          FLOOR = 29  # bump deliberately when the suite grows; never lower it silently
           t = f = e = 0
           for p in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
               r = ET.parse(p).getroot()
               t += int(r.get('tests')); f += int(r.get('failures')); e += int(r.get('errors'))
-          print(f'tests={t} failures={f} errors={e}')
-          assert t > 0, 'zero tests ran — the suite is not wired'
+          line = f'tests={t} failures={f} errors={e} (floor {FLOOR})'
+          print(line)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as fh:
+              fh.write(line + '\n')
+          assert t >= FLOOR, f'only {t} tests ran, expected >= {FLOOR} - the suite lost cases'
+          assert f == 0 and e == 0, 'test failures'
           EOF
 
       - uses: actions/upload-artifact@v4

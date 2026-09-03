@@ -25,16 +25,17 @@ these are not reused), the turn state machine in `ui/ChatViewModel.kt`, `HermesR
 
 ## Slices (plan §6)
 
-M1a rename ✔ (this) → M6 CI → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
+M1a rename + M6 CI ✔ (this) → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
 `project.json` → M2a p12 import in Settings → M1.5 design system (desktop tokens + components, Claude
 Design canvas = acceptance) → M3a pure-Kotlin plane layer (tests only) → M3b Compose conversations +
 chat → M4 terminal mode → M5a nodes filter → M5b turn-complete notification → M7 cutover.
 
 ## Build / test / install
 
-- Build host: pve3 `/opt/work/rivethub-android-build/` (rsync this dir; `JAVA_HOME=/usr
-  ANDROID_HOME=/opt/android-sdk ./gradlew :app:assembleDebug :app:testDebugUnitTest`). Full-suite test
-  counts only — a `--tests` filter can match nothing and still print green.
+- Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
+  paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
+  Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI enforces
+  a floor of 29 (bump it deliberately when the suite grows).
 - Emulator smoke (API 36, swiftshader) and wireless-adb install from the adb host: ops notes live in
   Rivet's memory, not here. The emulator does NOT enforce Android 16 Local Network Protection — device
   smoke is mandatory for anything touching networking.
@@ -54,6 +55,15 @@ chat → M4 terminal mode → M5a nodes filter → M5b turn-complete notificatio
 - "Open in your terminal" renders the server's `attach` descriptor; never compose the tmux command.
 
 ## Gotchas
+
+- Harness canonical ids contain `:`; the surviving **gateway** ring ids (`Bot.defaultSessionId`) still
+  must NOT, until M3a deletes that path.
+- `usesCleartextTraffic=true` exists only for the noVNC Desktop tab (a non-goal, plan §1); flip it to
+  false when `ui/components/DesktopView.kt` is deleted in M3b.
+- Deferred to M1.5 on purpose: `Theme.RivetBots` / `RivetBotsTheme` identifiers (theme is replaced
+  wholesale there). `package.json` version tracks the monorepo release train, not `versionName`.
+- Debug builds are `io.rivethub.app.debug`; release is `io.rivethub.app`. Both are fresh ids on the
+  Pixel — import the device p12 once per build type.
 
 - Never cache a `Network` handle into anything long-lived; never freeze `Network.socketFactory` onto a client.
 - No private IPs anywhere in this tree (CI secret-scan + private-net rule); placeholders use 192.0.2.x.
