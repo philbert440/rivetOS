@@ -412,7 +412,7 @@ export function Composer(props: {
         />
         {/* Picker row (node · model · effort) + attach/mic/speak + send —
             Claude-app style, in the input shell, persisted per-conversation. */}
-        <div className="flex items-center gap-1">
+        <div className="flex max-md:flex-wrap items-center gap-1">
           <NodePicker />
           <ModelPicker
             value={props.agent ?? ''}

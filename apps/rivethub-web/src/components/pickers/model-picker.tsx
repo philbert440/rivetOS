@@ -40,10 +40,16 @@ export function ModelPicker(props: {
           size="sm"
           disabled={props.disabled}
           title="model / harness"
-          className="h-8 rounded-full px-2.5 font-normal"
+          aria-label={`model: ${
+            props.unavailable ? 'catalog unavailable' : (current?.label ?? 'model')
+          }`}
+          className={cn(
+            'relative h-8 rounded-full px-2.5 font-normal',
+            "after:absolute after:-inset-y-2 after:content-['']",
+          )}
         >
           <Cpu className="size-3.5" />
-          <span className="max-w-40 truncate">
+          <span className="hidden max-w-40 truncate sm:inline">
             {props.unavailable ? 'catalog unavailable' : (current?.label ?? 'model')}
           </span>
           <ChevronDown className="size-3.5 opacity-60" />

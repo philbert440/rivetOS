@@ -115,10 +115,14 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
           size="sm"
           disabled={props.disabled}
           title="node"
-          className="h-8 rounded-full px-2.5 font-normal"
+          aria-label={`node: ${currentName}`}
+          className={cn(
+            'relative h-8 rounded-full px-2.5 font-normal',
+            "after:absolute after:-inset-y-2 after:content-['']",
+          )}
         >
           <Server className="size-3.5" />
-          <span className="max-w-40 truncate">{currentName}</span>
+          <span className="hidden max-w-40 truncate sm:inline">{currentName}</span>
           <ChevronDown className="size-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>

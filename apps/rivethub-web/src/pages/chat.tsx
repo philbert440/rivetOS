@@ -61,6 +61,8 @@ import {
   wasSystemPromptSent,
 } from '../lib/system-prompt-sent.js'
 import { uuidv4 } from '../lib/uuid.js'
+import { cn } from '../lib/utils.js'
+import { useIsNarrow } from '../lib/use-narrow.js'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
@@ -107,7 +109,8 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import { Archive, ArchiveRestore, Pencil, Square, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, ChevronLeft, Pencil, Square, Trash2 } from 'lucide-react'
+import { Button } from '../components/ui/button.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
@@ -418,6 +421,7 @@ export function ChatPage(): JSX.Element {
   const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
   const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
+  const narrow = useIsNarrow()
   // Bidirectional ?session= sync. One effect, one direction at a time,
   // arbitrated by lastUrlRef so the two never fight:
   //   - URL changed (first load, deep link, back/forward) → URL wins. A
@@ -513,19 +517,23 @@ export function ChatPage(): JSX.Element {
     )
   }
 
+  const showList = narrow ? !active : !conversationsCollapsed
+  const showEmpty = !narrow && !active
+
   return (
-    <div className="flex h-full">
-      {conversationsCollapsed ? (
-        <div id="conversations-pane" hidden />
-      ) : (
+    <div className="flex h-full min-h-0">
+      {showList ? (
         <SessionDrawer
           items={items}
           active={active}
           width={drawerWidth}
+          fullWidth={narrow}
           error={harnessQuery.isError ? harnessQuery.error.message : undefined}
         />
+      ) : (
+        !narrow && <div id="conversations-pane" hidden />
       )}
-      {!conversationsCollapsed && (
+      {!narrow && !conversationsCollapsed && (
         <SplitHandle
           width={drawerWidth}
           onResize={resizeDrawer}
@@ -547,10 +555,11 @@ export function ChatPage(): JSX.Element {
             item={activeItem}
             gate={gate}
             harnessCommand={activeItem?.command}
+            onBack={narrow ? () => setActive(undefined) : undefined}
           />
         </SessionErrorBoundary>
       ) : (
-        <EmptyState />
+        showEmpty && <EmptyState />
       )}
     </div>
   )
@@ -727,6 +736,7 @@ function SessionDrawer(props: {
   active?: string
   width: number
   error?: string
+  fullWidth?: boolean
 }): JSX.Element {
   const setActive = useChat((s) => s.setActive)
   const addDraft = useChat((s) => s.addDraft)
@@ -781,8 +791,11 @@ function SessionDrawer(props: {
   return (
     <div
       id="conversations-pane"
-      style={{ width: props.width }}
-      className="flex shrink-0 flex-col border-r border-line bg-panel/40"
+      style={props.fullWidth ? undefined : { width: props.width }}
+      className={cn(
+        'flex min-h-0 flex-col bg-panel/40',
+        props.fullWidth ? 'w-full flex-1' : 'shrink-0 border-r border-line',
+      )}
     >
       <div className="flex items-center justify-between px-3 py-3">
         <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
@@ -848,6 +861,8 @@ function ActiveSession(props: {
   /** Which control-plane affordances this session's driver actually has. */
   gate: HarnessGate
   harnessCommand?: string
+  /** Narrow back control — same path as the error-boundary close. */
+  onBack?: () => void
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const roster = useConnection((s) => s.roster)
@@ -1499,10 +1514,22 @@ function ActiveSession(props: {
 
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
-      <div className="flex items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
+      <div className="flex max-md:flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
+        {props.onBack && (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="back to conversations"
+            onClick={props.onBack}
+            className="size-8 shrink-0"
+          >
+            <ChevronLeft className="size-4" aria-hidden />
+          </Button>
+        )}
         {/* Canonical `<harness-id>:<native>` once the control plane owns the
-            session; the bare den join key until then. */}
-        <span className="truncate font-mono text-xs text-ink-dim">
+            session; the bare den join key until then. Session id truncates
+            first when the header wraps. */}
+        <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
           {canonicalId ?? props.sessionId}
         </span>
         {isRemote && (
