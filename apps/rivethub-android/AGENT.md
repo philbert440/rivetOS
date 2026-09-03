@@ -85,7 +85,11 @@ before sending — claude's store row is created by the first turn. After inject
 `listSessions` every 3s (≤ 30s) and adopt by native id; if still a draft at 15s, one-shot bare
 submit (`text:""`, `submit:true`). After adopt, `sendTurn`. LRU-evicted PTY: drop the pty ref,
 respawn, wait-ready, inject once more. API-only agent: commanded spawn then `{ session }` fallback.
-A pinned id without `:` is still a draft (do not `startAttach`). Attachments are `[attached: uri]` lines after streaming
+A pinned id without `:` is still a draft (do not `startAttach`). PTY-driven sessions often
+deliver no live-tail frames: optimistic user turn on send, registry `SessionUpdated`
+idle/ended (or `updatedAt` change) hard-resyncs the transcript, and a 5s silent poll
+(bounded to the 3 min idle deadline) fetches until an assistant turn appears or a session
+frame arrives. Attachments are `[attached: uri]` lines after streaming
 `POST /api/uploads` on the session's node (1 GiB cap, den-server). Canonical ids contain `:`; path
 params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 `data/HermesReasoning.kt`.
@@ -95,7 +99,7 @@ params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 232.
+  (`.github/workflows/android.yml`) enforces a floor of 241.
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

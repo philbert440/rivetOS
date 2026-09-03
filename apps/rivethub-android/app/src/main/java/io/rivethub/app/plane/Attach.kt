@@ -9,6 +9,12 @@ import io.rivethub.app.gateway.isFatalTranscriptError
 const val IDLE_DEADLINE_MS: Long = 3 * 60_000L
 
 /**
+ * While a turn is in flight and the session WS is silent, poll the
+ * committed transcript on this cadence until [IDLE_DEADLINE_MS].
+ */
+const val TRANSCRIPT_POLL_EVERY_MS: Long = 5_000L
+
+/**
  * Grace before the post-turn transcript fetch: the harness store is written
  * as the turn commits, and `turn-complete` can beat the last flush to disk.
  * Twin of `DEFAULT_SETTLE_MS` in rivethub-web `harness-attach.ts`.
@@ -33,8 +39,12 @@ class TranscriptMachine(
     private val nowMs: () -> Long,
     private val idleDeadlineMs: Long = IDLE_DEADLINE_MS,
 ) {
-    var transcript: List<HarnessTranscriptTurn> = emptyList()
-        private set
+    private var committed: List<HarnessTranscriptTurn> = emptyList()
+    private val optimistic = ArrayList<HarnessTranscriptTurn>()
+
+    /** Committed turns plus any unmatched optimistic user bubbles. */
+    val transcript: List<HarnessTranscriptTurn>
+        get() = if (optimistic.isEmpty()) committed else committed + optimistic
     var liveText: String = ""
         private set
     var liveReasoning: String = ""
@@ -45,6 +55,12 @@ class TranscriptMachine(
         private set
     var lastFrameTs: Long? = null
         private set
+    /** True once any session-WS frame arrived this turn (cancels silent poll). */
+    var sawSessionFrame: Boolean = false
+        private set
+    /** Committed size at [beginTurn] — poll looks for an assistant past this. */
+    var committedAtTurnStart: Int = 0
+        private set
 
     fun beginTurn() {
         val t = nowMs()
@@ -53,6 +69,27 @@ class TranscriptMachine(
         lastFrameTs = t
         liveText = ""
         liveReasoning = ""
+        sawSessionFrame = false
+        committedAtTurnStart = committed.size
+    }
+
+    /** Desktop `addOptimisticUser` — show the send immediately. */
+    fun appendOptimisticUser(text: String) {
+        if (text.isBlank()) return
+        optimistic.add(HarnessTranscriptTurn(role = "user", text = text))
+    }
+
+    /** Send failed before inject/sendTurn landed — drop that bubble. */
+    fun revertOptimisticUser(text: String) {
+        val i = optimistic.indexOfLast { it.role.equals("user", ignoreCase = true) && it.text == text }
+        if (i >= 0) optimistic.removeAt(i)
+    }
+
+    fun abortTurn() {
+        inFlight = false
+        liveText = ""
+        liveReasoning = ""
+        turnStartTs = null
     }
 
     /** Re-arm the idle deadline without clearing the live slot (adoption). */
@@ -62,13 +99,15 @@ class TranscriptMachine(
 
     /** Hard replace — never merge. Clears the live slot (reconnect = missed tail). */
     fun onOpen(fullTranscript: List<HarnessTranscriptTurn>) {
-        transcript = fullTranscript.toList()
+        committed = fullTranscript.toList()
+        consumeOptimistic(fullTranscript)
         liveText = ""
         liveReasoning = ""
     }
 
     fun onFrame(event: HarnessEvent): FrameVerdict {
         lastFrameTs = nowMs()
+        sawSessionFrame = true
         if (isFatalHarnessEvent(event)) {
             inFlight = false
             return FrameVerdict.Fatal
@@ -107,7 +146,8 @@ class TranscriptMachine(
 
     /** Hard replace with the committed transcript. */
     fun onTurnComplete(fullTranscript: List<HarnessTranscriptTurn>) {
-        transcript = fullTranscript.toList()
+        committed = fullTranscript.toList()
+        consumeOptimistic(fullTranscript)
         liveText = ""
         liveReasoning = ""
         inFlight = false
@@ -115,11 +155,114 @@ class TranscriptMachine(
         lastFrameTs = nowMs()
     }
 
+    /**
+     * Apply a silent-poll fetch. [complete] is turn-complete (assistant is
+     * on disk); otherwise keep inFlight and only fold committed + optimistic.
+     */
+    fun applyFetched(turns: List<HarnessTranscriptTurn>, complete: Boolean) {
+        if (complete) onTurnComplete(turns)
+        else {
+            committed = turns.toList()
+            consumeOptimistic(turns)
+        }
+    }
+
     fun idleTimedOut(): Boolean {
         if (!inFlight) return false
         val last = lastFrameTs ?: turnStartTs ?: return false
         return nowMs() - last >= idleDeadlineMs
     }
+
+    /**
+     * Newest-match consume (desktop `transcriptPatch`): a committed user
+     * turn retires one optimistic bubble of the same text.
+     */
+    private fun consumeOptimistic(fetched: List<HarnessTranscriptTurn>) {
+        if (optimistic.isEmpty()) return
+        val remainingUser = fetched.mapNotNull { t ->
+            t.text.takeIf { t.role.equals("user", ignoreCase = true) }
+        }.toMutableList()
+        val kept = ArrayList<HarnessTranscriptTurn>(optimistic.size)
+        for (bubble in optimistic) {
+            val hit = remainingUser.lastIndexOf(bubble.text)
+            if (hit >= 0) remainingUser.removeAt(hit)
+            else kept.add(bubble)
+        }
+        optimistic.clear()
+        optimistic.addAll(kept)
+    }
+}
+
+/** Quiet statuses: the driver has no turn in flight. */
+fun registryStatusIsQuiet(status: String?): Boolean =
+    status == "idle" || status == "ended"
+
+data class RegistryStamp(val status: String?, val updatedAt: String?)
+
+fun registryStamp(event: HarnessEvent): RegistryStamp? = when (event) {
+    is HarnessEvent.SessionCreated -> RegistryStamp(event.summary.status, event.summary.updatedAt)
+    is HarnessEvent.SessionUpdated -> RegistryStamp(event.status, event.updatedAt)
+    else -> null
+}
+
+fun registryEventMatchesOpen(event: HarnessEvent, openSessionId: String): Boolean = when (event) {
+    is HarnessEvent.SessionCreated ->
+        sessionMatchesNative(event.summary.sessionId, openSessionId) ||
+            sessionMatchesNative(event.sessionId, openSessionId) ||
+            sessionMatchesNative(event.supersedes, openSessionId) ||
+            sessionMatchesNative(event.summary.redirectedTo, openSessionId)
+    is HarnessEvent.SessionUpdated ->
+        sessionMatchesNative(event.previousSessionId, openSessionId) ||
+            sessionMatchesNative(event.sessionId, openSessionId)
+    else -> false
+}
+
+/**
+ * Registry `session-updated` / `session-created` for the open session, while
+ * a turn is in flight, should hard-resync when status becomes idle/ended
+ * **or** `updatedAt` moves. The first sight of a stamp (SessionCreated
+ * active) is not a change — that would end the turn while Claude is still
+ * working.
+ */
+fun shouldResyncFromRegistry(
+    inFlight: Boolean,
+    matchesOpenSession: Boolean,
+    status: String?,
+    updatedAt: String?,
+    lastStatus: String?,
+    lastUpdatedAt: String?,
+): Boolean {
+    if (!inFlight || !matchesOpenSession) return false
+    if (registryStatusIsQuiet(status) && status != lastStatus) return true
+    if (!updatedAt.isNullOrBlank() && lastUpdatedAt != null && updatedAt != lastUpdatedAt) return true
+    return false
+}
+
+/**
+ * Silent poll: every [everyMs] after send, until a session frame arrives
+ * or [boundMs] (the idle deadline). [elapsedSincePollMs] is null before
+ * the first poll.
+ */
+fun transcriptPollDue(
+    inFlight: Boolean,
+    sawSessionFrame: Boolean,
+    elapsedSinceTurnMs: Long,
+    elapsedSincePollMs: Long? = null,
+    everyMs: Long = TRANSCRIPT_POLL_EVERY_MS,
+    boundMs: Long = IDLE_DEADLINE_MS,
+): Boolean {
+    if (!inFlight || sawSessionFrame) return false
+    if (elapsedSinceTurnMs < everyMs) return false
+    if (elapsedSinceTurnMs >= boundMs) return false
+    if (elapsedSincePollMs != null && elapsedSincePollMs < everyMs) return false
+    return true
+}
+
+/** Assistant past the prefix captured at [TranscriptMachine.beginTurn]. */
+fun fetchedHasNewAssistant(fetched: List<HarnessTranscriptTurn>, committedPrefix: Int): Boolean {
+    val from = committedPrefix.coerceAtLeast(0)
+    if (fetched.size <= from) return false
+    return fetched.drop(from).any { it.role.equals("assistant", ignoreCase = true) }
 }
 
 /**
@@ -153,6 +296,34 @@ class SessionAttach(
         generation++
         settling = false
         duringSettle.clear()
+    }
+
+    /**
+     * Drop an in-flight attach fetch so a later poll/registry resync cannot
+     * be overwritten by a stale empty open.
+     */
+    fun bumpGeneration() {
+        generation++
+        settling = false
+        duringSettle.clear()
+    }
+
+    /** Peek the transcript route without applying. Errors are swallowed. */
+    suspend fun fetchTranscriptNow(): List<HarnessTranscriptTurn>? {
+        if (stopped) return null
+        return try {
+            fetchTranscript()
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** Hard-resync as if `turn-complete` fired (registry idle / silent poll). */
+    suspend fun resyncCommitted() {
+        if (stopped) return
+        settling = true
+        duringSettle.clear()
+        flushCommittedResync()
     }
 
     suspend fun onWatchOpen() {

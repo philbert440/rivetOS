@@ -18,6 +18,7 @@ import io.rivethub.app.plane.ChatSendAction
 import io.rivethub.app.plane.EnqueueResult
 import io.rivethub.app.plane.HarnessGate
 import io.rivethub.app.plane.HarnessSheet
+import io.rivethub.app.plane.IDLE_DEADLINE_MS
 import io.rivethub.app.plane.LiveTool
 import io.rivethub.app.plane.OutboundPump
 import io.rivethub.app.plane.PTY_READY_BOUND_MS
@@ -27,7 +28,13 @@ import io.rivethub.app.plane.SESSION_POLL_BOUND_MS
 import io.rivethub.app.plane.SESSION_POLL_EVERY_MS
 import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
+import io.rivethub.app.plane.TRANSCRIPT_POLL_EVERY_MS
 import io.rivethub.app.plane.TranscriptMachine
+import io.rivethub.app.plane.fetchedHasNewAssistant
+import io.rivethub.app.plane.registryEventMatchesOpen
+import io.rivethub.app.plane.registryStamp
+import io.rivethub.app.plane.shouldResyncFromRegistry
+import io.rivethub.app.plane.transcriptPollDue
 import io.rivethub.app.plane.anyUploading
 import io.rivethub.app.plane.canonicalFromSessions
 import io.rivethub.app.plane.cardFromLiveTools
@@ -147,6 +154,9 @@ class HarnessChatViewModel(
 
     private var tick: Job? = null
     private var adoptWatch: Job? = null
+    private var silentPoll: Job? = null
+    private var lastRegistryStatus: String? = null
+    private var lastRegistryUpdatedAt: String? = null
 
     init {
         viewModelScope.launch { boot() }
@@ -197,11 +207,17 @@ class HarnessChatViewModel(
                 _state.update { it.copy(composer = keptComposer, attachments = st.attachments, errorCode = ERR_UPLOADING) }
             }
             is EnqueueResult.Accepted -> {
+                machine.appendOptimisticUser(text)
                 machine.beginTurn()
                 publishMachine()
+                armSilentPoll()
                 viewModelScope.launch {
                     runCatching { pump.pump() }.onFailure { e ->
                         io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                        machine.revertOptimisticUser(text)
+                        if (!pump.awaitingTurnComplete) machine.abortTurn()
+                        silentPoll?.cancel()
+                        publishMachine()
                         _state.update {
                             it.copy(
                                 error = e.message ?: e.javaClass.simpleName,
@@ -328,6 +344,7 @@ class HarnessChatViewModel(
     override fun onCleared() {
         tick?.cancel()
         adoptWatch?.cancel()
+        silentPoll?.cancel()
         frameJob?.cancel()
         frames.close()
         sessionWatch?.close()
@@ -384,6 +401,7 @@ class HarnessChatViewModel(
                     sessionMatchesNative(event.summary.redirectedTo, native)
                 ) {
                     adoptCanonical(sid)
+                    maybeRegistryResync(event)
                 }
             }
             is HarnessEvent.SessionUpdated -> {
@@ -392,10 +410,33 @@ class HarnessChatViewModel(
                     sessionMatchesNative(event.sessionId, native)
                 ) {
                     adoptCanonical(event.sessionId)
+                    maybeRegistryResync(event)
                 }
             }
             else -> Unit
         }
+    }
+
+    private fun maybeRegistryResync(event: HarnessEvent) {
+        val stamp = registryStamp(event) ?: return
+        val open = _state.value.sessionId
+        val should = shouldResyncFromRegistry(
+            inFlight = machine.inFlight,
+            matchesOpenSession = registryEventMatchesOpen(event, open),
+            status = stamp.status,
+            updatedAt = stamp.updatedAt,
+            lastStatus = lastRegistryStatus,
+            lastUpdatedAt = lastRegistryUpdatedAt,
+        )
+        lastRegistryStatus = stamp.status ?: lastRegistryStatus
+        lastRegistryUpdatedAt = stamp.updatedAt ?: lastRegistryUpdatedAt
+        if (!should) return
+        io.rivethub.app.data.AndroidLogger.warn(
+            "RivetHub",
+            "registry resync: status=${stamp.status} session=$open",
+            null,
+        )
+        viewModelScope.launch { resyncTranscript(endTurn = true) }
     }
 
     private fun adoptCanonical(canonical: String) {
@@ -409,6 +450,7 @@ class HarnessChatViewModel(
                 recomputeGate()
                 machine.rearmIdle()
                 startAttach(canonical)
+                if (machine.inFlight) armSilentPoll()
             }
             return
         }
@@ -419,6 +461,7 @@ class HarnessChatViewModel(
         viewModelScope.launch { c.settings.rekeySessionMode(from, canonical) }
         if (wasDraft || from != canonical) {
             startAttach(canonical)
+            if (machine.inFlight) armSilentPoll()
         }
     }
 
@@ -447,6 +490,7 @@ class HarnessChatViewModel(
                 io.rivethub.app.data.AndroidLogger.warn("RivetHub", "session frame: ${f.javaClass.simpleName}", null)
                 when (f) {
                     is Frame.Ev -> {
+                        silentPoll?.cancel()
                         onSessionEvent(f.e)
                         machineAttach.onFrame(f.e)
                         publishMachine()
@@ -638,6 +682,64 @@ class HarnessChatViewModel(
     private fun gateway() = c.transport.gateway(
         NodeRef(_state.value.nodeName, _state.value.nodeName, nodeDenUrl, true),
     )
+
+    private fun armSilentPoll() {
+        silentPoll?.cancel()
+        if (!machine.inFlight) return
+        val started = System.currentTimeMillis()
+        var lastPollAt: Long? = null
+        silentPoll = viewModelScope.launch {
+            while (true) {
+                delay(TRANSCRIPT_POLL_EVERY_MS)
+                if (c.identity.generation() != identityGen) return@launch
+                if (!machine.inFlight || machine.sawSessionFrame) return@launch
+                val now = System.currentTimeMillis()
+                val elapsed = now - started
+                if (!transcriptPollDue(
+                        inFlight = true,
+                        sawSessionFrame = machine.sawSessionFrame,
+                        elapsedSinceTurnMs = elapsed,
+                        elapsedSincePollMs = lastPollAt?.let { now - it },
+                    )
+                ) {
+                    if (elapsed >= IDLE_DEADLINE_MS) return@launch
+                    continue
+                }
+                lastPollAt = now
+                runCatching { resyncTranscript(endTurn = false) }
+            }
+        }
+    }
+
+    private suspend fun resyncTranscript(endTurn: Boolean) {
+        if (c.identity.generation() != identityGen) return
+        val st = _state.value
+        if (st.draft) return
+        val current = attach
+        val turns = if (current != null) {
+            current.fetchTranscriptNow() ?: return
+        } else {
+            val enc = sessionKeyEnc(st.sessionId)
+            withContext(Dispatchers.IO) {
+                runCatching { c.harness(nodeDenUrl).transcript(enc).turns }.getOrNull()
+            } ?: return
+        }
+        val complete = endTurn || fetchedHasNewAssistant(turns, machine.committedAtTurnStart)
+        io.rivethub.app.data.AndroidLogger.warn(
+            "RivetHub",
+            "transcript resync: ${turns.size} turns complete=$complete",
+            null,
+        )
+        current?.bumpGeneration()
+        if (complete) {
+            machine.onTurnComplete(turns)
+            silentPoll?.cancel()
+            runCatching { pump.onTurnComplete() }
+        } else {
+            machine.applyFetched(turns, complete = false)
+        }
+        publishMachine()
+    }
 
     private fun publishMachine() {
         val thinking = machine.liveReasoning.ifBlank {

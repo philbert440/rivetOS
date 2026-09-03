@@ -197,6 +197,7 @@ sealed class HarnessEvent {
         val status: String,
         val previousSessionId: String? = null,
         val supersedes: String? = null,
+        val updatedAt: String? = null,
     ) : HarnessEvent()
     data class Error(
         val sessionId: String,
@@ -305,6 +306,7 @@ fun parseHarnessEvent(el: JsonObject): HarnessEvent {
             status = el.str("status") ?: "idle",
             previousSessionId = el.str("previousSessionId"),
             supersedes = el.str("supersedes"),
+            updatedAt = el.str("updatedAt"),
         )
         "error" -> HarnessEvent.Error(
             sessionId = sessionId,
