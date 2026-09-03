@@ -78,7 +78,8 @@ class ChatSendTest {
         val u = io.rivethub.app.gateway.HarnessTranscriptTurn(role = "user", text = "hi")
         val a = io.rivethub.app.gateway.HarnessTranscriptTurn(role = "assistant", text = "PONG")
         assertTrue(serverInFlightIsStale(listOf(u, a)))
-        assertFalse(serverInFlightIsStale(listOf(u, a, u)))
+        assertTrue(serverInFlightIsStale(listOf(u, a, u))) // trailing optimistic user turn
+        assertFalse(serverInFlightIsStale(listOf(u, u)))   // previous turn not answered yet
         assertFalse(serverInFlightIsStale(emptyList()))
     }
 }

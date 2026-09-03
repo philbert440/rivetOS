@@ -88,5 +88,8 @@ fun chatItemForGate(
  * answer to our previous turn — the den still holds the turn only because its hook events
  * never arrived. The desktop's legacy path for that is the PTY inject; so is ours.
  */
-fun serverInFlightIsStale(transcript: List<HarnessTranscriptTurn>): Boolean =
-    transcript.lastOrNull()?.role == "assistant"
+fun serverInFlightIsStale(transcript: List<HarnessTranscriptTurn>): Boolean {
+    // Our own not-yet-delivered (optimistic) user turns sit at the tail; look past them.
+    val settled = transcript.dropLastWhile { it.role == "user" }
+    return settled.lastOrNull()?.role == "assistant"
+}

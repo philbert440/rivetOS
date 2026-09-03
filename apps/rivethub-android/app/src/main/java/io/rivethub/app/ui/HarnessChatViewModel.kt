@@ -14,6 +14,7 @@ import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.TurnInFlight
+import io.rivethub.app.gateway.isTurnInFlight
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.BARE_SUBMIT_AFTER_MS
@@ -590,11 +591,11 @@ class HarnessChatViewModel(
             withContext(Dispatchers.IO) {
                 hg.sendTurn(sessionKeyEnc(action.sessionId), UserTurn(action.text))
             }
-        } catch (e: TurnInFlight) {
+        } catch (e: Exception) {
             // The den holds a turn "in flight" for up to 5 min when its hook events are
             // missing. If our previous turn is already answered on disk, that hold is stale:
             // deliver this turn through the PTY like the draft path does (desktop legacy path).
-            if (!serverInFlightIsStale(machine.transcript)) throw e
+            if (!isTurnInFlight(e) || !serverInFlightIsStale(machine.transcript)) throw e
             val native = nativeIdOf(action.sessionId) ?: throw e
             AndroidLogger.warn("RivetHub", "409 with a finished previous turn: injecting via PTY session=$native", null)
             val pty = ensurePty(sessionOverride = native)
