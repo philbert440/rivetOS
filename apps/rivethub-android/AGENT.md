@@ -89,9 +89,11 @@ A pinned id without `:` is still a draft (do not `startAttach`). PTY-driven sess
 deliver no live-tail frames: optimistic user turn on send, registry `SessionUpdated`
 idle/ended (or `updatedAt` change) fetches the transcript but does **not** end the turn
 unless an assistant is on disk after the pending user (spawn-time idle is not complete),
-and a 5s silent poll (armed after inject ok, not cancelled by a premature resync, bounded
-to the 3 min idle deadline) fetches until an assistant turn appears, a session frame
-arrives, or the idle deadline. Attachments are `[attached: uri]` lines after streaming
+and a 5s silent poll (armed after inject ok and after sendTurn accepted, not cancelled by a
+premature resync or a status/accepted frame, bounded to the 3 min idle deadline) fetches
+until an assistant turn appears, a content session frame (assistant-delta, reasoning-delta,
+tool-use, turn-complete, error) arrives, or the idle deadline. Same-id adopt (redirectedTo
+echo) is a no-op. Attachments are `[attached: uri]` lines after streaming
 `POST /api/uploads` on the session's node (1 GiB cap, den-server). Canonical ids contain `:`; path
 params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 `data/HermesReasoning.kt`.
@@ -101,7 +103,7 @@ params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 244.
+  (`.github/workflows/android.yml`) enforces a floor of 248.
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

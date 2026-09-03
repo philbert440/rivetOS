@@ -32,7 +32,9 @@ import io.rivethub.app.plane.TRANSCRIPT_POLL_EVERY_MS
 import io.rivethub.app.plane.TranscriptMachine
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
+import io.rivethub.app.plane.adoptCanonicalIsNoOp
 import io.rivethub.app.plane.resyncCompletesTurn
+import io.rivethub.app.plane.sessionFrameCancelsPoll
 import io.rivethub.app.plane.shouldResyncFromRegistry
 import io.rivethub.app.plane.transcriptPollDue
 import io.rivethub.app.plane.anyUploading
@@ -447,6 +449,8 @@ class HarnessChatViewModel(
         val from = _state.value.sessionId
         if (canonical.isBlank()) return
         val wasDraft = _state.value.draft
+        // redirectedTo echo of the id we already hold: no re-attach, no poll reset.
+        if (adoptCanonicalIsNoOp(canonical, from, wasDraft)) return
         if (canonical == from) {
             if (wasDraft) {
                 _state.update { it.copy(draft = false) }
@@ -493,10 +497,14 @@ class HarnessChatViewModel(
                 io.rivethub.app.data.AndroidLogger.warn("RivetHub", "session frame: ${f.javaClass.simpleName}", null)
                 when (f) {
                     is Frame.Ev -> {
-                        silentPoll?.cancel()
+                        val content = sessionFrameCancelsPoll(f.e)
+                        if (content) silentPoll?.cancel()
                         onSessionEvent(f.e)
                         machineAttach.onFrame(f.e)
                         publishMachine()
+                        if (!content && machine.inFlight && silentPoll?.isActive != true) {
+                            armSilentPoll()
+                        }
                         if (f.e is HarnessEvent.TurnComplete) {
                             runCatching { pump.onTurnComplete() }
                             launch {

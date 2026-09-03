@@ -563,4 +563,108 @@ class AttachTest {
             ),
         )
     }
+
+    @Test fun `accepted frame keeps the poll`() {
+        val m = TranscriptMachine({ 0 })
+        m.appendOptimisticUser("PONG2")
+        m.beginTurn()
+        assertFalse(sessionFrameCancelsPoll(HarnessEvent.SessionUpdated("s", "active")))
+        assertFalse(sessionFrameCancelsPoll(HarnessEvent.Unknown("accepted", kotlinx.serialization.json.buildJsonObject {})))
+        m.onFrame(HarnessEvent.SessionUpdated("s", "active"))
+        assertFalse(m.sawSessionFrame)
+        assertTrue(m.inFlight)
+        assertTrue(
+            transcriptPollDue(
+                inFlight = true,
+                sawSessionFrame = m.sawSessionFrame,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+        m.onFrame(HarnessEvent.Unknown("accepted", kotlinx.serialization.json.buildJsonObject {}))
+        assertFalse(m.sawSessionFrame)
+        assertTrue(
+            silentPollShouldRemainArmed(
+                inFlight = m.inFlight,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = false,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+    }
+
+    @Test fun `delta frame cancels the poll`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        assertTrue(sessionFrameCancelsPoll(HarnessEvent.AssistantDelta("s", "x")))
+        assertTrue(sessionFrameCancelsPoll(HarnessEvent.ReasoningDelta("s", "think")))
+        assertTrue(sessionFrameCancelsPoll(HarnessEvent.ToolUse("s", "c1", "Bash")))
+        assertTrue(sessionFrameCancelsPoll(HarnessEvent.TurnComplete("s", "t1", "end-turn")))
+        assertTrue(sessionFrameCancelsPoll(HarnessEvent.Error("s", "upstream", "tmp")))
+        m.onFrame(HarnessEvent.AssistantDelta("s", "x"))
+        assertTrue(m.sawSessionFrame)
+        assertFalse(
+            transcriptPollDue(
+                inFlight = true,
+                sawSessionFrame = m.sawSessionFrame,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+        assertFalse(
+            silentPollShouldRemainArmed(
+                inFlight = true,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = false,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+    }
+
+    @Test fun `PONG2-style second turn renders via poll`() {
+        val m = TranscriptMachine({ 0 })
+        m.onOpen(
+            listOf(
+                HarnessTranscriptTurn(role = "user", text = "PING"),
+                HarnessTranscriptTurn(role = "assistant", text = "PONG"),
+            ),
+        )
+        m.appendOptimisticUser("PONG2")
+        m.beginTurn()
+        m.onFrame(HarnessEvent.SessionUpdated("claude-code:s", "active"))
+        assertFalse(m.sawSessionFrame)
+        assertTrue(m.inFlight)
+        assertTrue(
+            silentPollShouldRemainArmed(
+                inFlight = m.inFlight,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = false,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+        val fetched = listOf(
+            HarnessTranscriptTurn(role = "user", text = "PING"),
+            HarnessTranscriptTurn(role = "assistant", text = "PONG"),
+            HarnessTranscriptTurn(role = "user", text = "PONG2"),
+            HarnessTranscriptTurn(role = "assistant", text = "ok"),
+        )
+        val complete = resyncCompletesTurn(
+            fetched = fetched,
+            pendingUserText = m.pendingUserText,
+            committedPrefix = m.committedAtTurnStart,
+            injectCompleted = true,
+        )
+        assertTrue(complete)
+        m.applyFetched(fetched, complete = true)
+        assertFalse(m.inFlight)
+        assertEquals(listOf("PING", "PONG", "PONG2", "ok"), m.transcript.map { it.text })
+        assertEquals(listOf("user", "assistant", "user", "assistant"), m.transcript.map { it.role })
+    }
+
+    @Test fun `idempotent adopt of the same canonical id is a no-op`() {
+        val sid = "claude-code:a1b2c3d4-1111-4222-8333-444455556666"
+        assertTrue(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = sid, draft = false))
+        assertTrue(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = sid, draft = false))
+        assertTrue(adoptCanonicalIsNoOp(canonical = "", currentSessionId = sid, draft = false))
+        assertFalse(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = "draft-uuid", draft = true))
+        assertFalse(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = sid, draft = true))
+    }
 }

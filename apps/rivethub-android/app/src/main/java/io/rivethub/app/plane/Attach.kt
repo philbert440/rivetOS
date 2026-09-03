@@ -55,7 +55,7 @@ class TranscriptMachine(
         private set
     var lastFrameTs: Long? = null
         private set
-    /** True once any session-WS frame arrived this turn (cancels silent poll). */
+    /** True once a content session-WS frame arrived this turn (cancels silent poll). */
     var sawSessionFrame: Boolean = false
         private set
     /** Committed size at [beginTurn] — poll looks for an assistant past this. */
@@ -112,7 +112,7 @@ class TranscriptMachine(
 
     fun onFrame(event: HarnessEvent): FrameVerdict {
         lastFrameTs = nowMs()
-        sawSessionFrame = true
+        if (sessionFrameCancelsPoll(event)) sawSessionFrame = true
         if (isFatalHarnessEvent(event)) {
             inFlight = false
             return FrameVerdict.Fatal
@@ -247,9 +247,9 @@ fun shouldResyncFromRegistry(
 }
 
 /**
- * Silent poll: every [everyMs] after send, until a session frame arrives
- * or [boundMs] (the idle deadline). [elapsedSincePollMs] is null before
- * the first poll.
+ * Silent poll: every [everyMs] after send, until a content session frame
+ * arrives or [boundMs] (the idle deadline). [elapsedSincePollMs] is null
+ * before the first poll. Status/accepted frames do not count.
  */
 fun transcriptPollDue(
     inFlight: Boolean,
@@ -300,9 +300,32 @@ fun resyncCompletesTurn(
 }
 
 /**
+ * Live-tail content: these cancel/replace the silent poll. Status, accepted,
+ * session-updated, and other non-content frames must not.
+ */
+fun sessionFrameCancelsPoll(event: HarnessEvent): Boolean = when (event) {
+    is HarnessEvent.AssistantDelta,
+    is HarnessEvent.ReasoningDelta,
+    is HarnessEvent.ToolUse,
+    is HarnessEvent.TurnComplete,
+    is HarnessEvent.Error -> true
+    else -> false
+}
+
+/**
+ * redirectedTo echo of the id we already hold: no re-attach, no poll reset.
+ * A blank id is also a no-op. Leaving a draft still applies even if the
+ * string matches, so we can attach.
+ */
+fun adoptCanonicalIsNoOp(canonical: String, currentSessionId: String, draft: Boolean): Boolean {
+    if (canonical.isBlank()) return true
+    return canonical == currentSessionId && !draft
+}
+
+/**
  * Silent poll stays armed across an incomplete registry resync. Cancel only
- * when the turn completed, a session frame arrived, inFlight dropped, or
- * the idle deadline elapsed.
+ * when the turn completed, a content session frame arrived, inFlight dropped,
+ * or the idle deadline elapsed.
  */
 fun silentPollShouldRemainArmed(
     inFlight: Boolean,
