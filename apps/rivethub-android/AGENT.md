@@ -10,7 +10,8 @@ runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 `/rivet-shared/plans/rivethub-android-2026-09-02.md` (v2, reviewed); read it before changing anything.
 
 M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. D1a is desktop-parity
-chrome (drawer · conversations · settings · enroll). `MainActivity.App()` routes Enroll → Hub
+chrome (drawer · conversations · settings · enroll). D1b is desktop-parity chat (header ·
+transcript · composer · terminal chrome). `MainActivity.App()` routes Enroll → Hub
 (drawer + Conversations / Settings) → Chat. Grok-Bot screens/VMs are gone from the tree
 (removed in the M3b commit).
 
@@ -46,8 +47,8 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Modal left drawer + Conversations (home) or Settings; Forget calls `shutdown()` on the same instance |
 | Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | desktop ConversationsPane: recency list, filter after 8, archive swipe, `+ new`, no FAB / no bottom rail |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | transcript, ask-user, composer, Chat\|Terminal swipe, VT attach (header is D1b) |
-| Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome preview (dark + light) |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | D1b header / transcript / composer, Terminal\|Chat swipe, VT attach |
+| Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat preview (dark + light) |
 
 Agents live in the drawer (tap / long-press ↺ / + pointer semantics). Nodes live in the
 drawer footer sheet (view filter only; never rebinds an open chat; error badge is
@@ -71,9 +72,22 @@ Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13s
 `text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (DM Sans), mono =
 `RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: `rounded` 4 /
 `rounded-md` 6 / `rounded-lg` 8 / `rounded-xl` 12 / `rounded-full` 999. Icons: `size-4` 16dp
-· `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a
+· `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a/D1b
 surfaces — no `Icons.*`. App root is `bg` + `Modifier.blueprintGrid()` (1px `--grid-line`
 every 32dp). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
+
+Chat mapping (phone session view ← rivethub-web):
+
+| desktop | phone file |
+|---|---|
+| `pages/chat.tsx` ActiveSession header | `ui/components/ChatHeader.kt` + `HarnessChatScreen` |
+| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) |
+| `components/segmented-control.tsx` Terminal \| Chat | existing `SegmentedControl` |
+| `components/transcript.tsx` | `ui/components/Transcript.kt` |
+| `components/markdown.tsx` | `ui/components/MarkdownBody.kt` (`plane/Markdown.kt`) |
+| `components/ask-user-card.tsx` | `ui/components/AskUserCard.kt` |
+| `components/composer.tsx` + pickers | `ui/components/Composer.kt` |
+| `components/xterm-attach.tsx` chrome | `ui/term/TerminalPane.kt` host + `KeyToolbar.kt` |
 
 Chat VM is keyed `chat:<nodeDenUrl>:<sessionKey>` and torn down when that back-stack entry leaves.
 Registry watches live in HubViewModel (one unlimited Channel, sequential consumer). SessionAttach
@@ -160,7 +174,7 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 321 (297 + D1a chrome model tests).
+  (`.github/workflows/android.yml`) enforces a floor of 354 (D1b fix1: markdown + tool titles + hub-back − dead stamp/tps tests).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -185,14 +199,14 @@ is the detach.
 
 ## Gotchas
 
-- Deferred from M1.5 (recorded here, not only in the fix notes): snackbar/toast host, `Composer.enabled=false` also disables Stop, `SelectOption.group` for grouped selects, `RivetSelect` `sheetState.hide()` before dismiss, `lint-android` not yet run in CI. Composer / chat transcript / terminal key bar still use Material `Icons.*` (D1b).
+- Deferred from M1.5 (recorded here, not only in the fix notes): snackbar/toast host, `SelectOption.group` for grouped selects, `RivetSelect` `sheetState.hide()` before dismiss, `lint-android` not yet run in CI.
 - `usesCleartextTraffic=false` (manifest). Enroll and Settings refuse non-`https://` entry URLs. A mesh
   node advertising `http://` still fails; that maps to `EnrollErrorKind.Cleartext`.
 - Debug builds are `io.rivethub.app.debug`; release is `io.rivethub.app`. Both are fresh ids on the
   Pixel — import the device p12 once per build type. Note the session ring is keyed by the cert CN
   (`deviceTag()` = SHA-256 of the CN), so two installs sharing one p12 share one gateway session ring;
   give the debug install its own device cert if you need them independent.
-- Transcript is raw `Text` (no markdown). Port `components/markdown.tsx` in M4/phase-2.
+- Assistant bodies render through `MarkdownBody` (ATX headings, bold/italic, blockquote, pipe tables, nested lists, inline/fenced code, http(s) links). Not a full GFM port.
 - Drafts are in-memory only (`HubViewModel` drafts list). A background-killed app loses unsent drafts
   and composer text. `+ new` is cheap; composer `rememberSaveable` is still open.
 - Never cache a `Network` handle into anything long-lived; never freeze `Network.socketFactory` onto a client.

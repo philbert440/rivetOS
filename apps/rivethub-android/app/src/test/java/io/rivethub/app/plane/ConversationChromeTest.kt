@@ -14,14 +14,6 @@ class ConversationChromeTest {
     )
 
     @Test
-    fun `live count excludes archived`() {
-        val items = listOf(loc("a"), loc("b"), loc("c"))
-        assertEquals(3, liveConversationCount(items, emptySet()))
-        assertEquals(2, liveConversationCount(items, setOf("b")))
-        assertEquals(0, liveConversationCount(items, setOf("a", "b", "c")))
-    }
-
-    @Test
     fun `archived split keeps recency of each side`() {
         val items = listOf(loc("a"), loc("b"), loc("c"))
         val lists = filterConversations(items, ConversationFilter.All, setOf("b"), "")

@@ -50,9 +50,6 @@ fun openAgent(
     return AgentOpen(draft, nodeDenUrl, harnessId, draft = true, pinMoved = moved, agentId = agentId)
 }
 
-fun pointerSessionKeys(pointers: AgentPointers): Set<String> =
-    pointers.all().values.map { it.sessionId }.toSet()
-
 data class AgentRow(
     val agentId: String,
     val name: String,

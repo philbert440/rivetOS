@@ -18,9 +18,6 @@ import io.rivethub.app.plane.imeDelta
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ContentPaste
-import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
@@ -315,8 +312,8 @@ fun TerminalKeyBar(
         ToolbarKey.Label("down", stringResource(R.string.term_down)),
         ToolbarKey.Label("left", stringResource(R.string.term_left)),
         ToolbarKey.Label("right", stringResource(R.string.term_right)),
-        ToolbarKey.IconAction("paste", Icons.Outlined.ContentPaste, pasteCd),
-        ToolbarKey.IconAction("menu", Icons.Outlined.MoreHoriz, menuCd),
+        ToolbarKey.Label("paste", pasteCd),
+        ToolbarKey.IconAction("menu", R.drawable.lucide_ellipsis, menuCd),
     )
     Box(modifier.fillMaxWidth()) {
         KeyToolbar(

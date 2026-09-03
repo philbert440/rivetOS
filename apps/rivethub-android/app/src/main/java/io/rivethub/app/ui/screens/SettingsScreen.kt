@@ -216,6 +216,10 @@ fun SettingsScreen(
                 if (summary == null) {
                     Text(stringResource(R.string.no_identity), color = colors.red, style = RivetType.xs)
                 } else {
+                    FieldLabel(stringResource(R.string.label_subject))
+                    Text(summary.cn, color = colors.ink, style = RivetType.mono11)
+                    Spacer(Modifier.height(8.dp))
+                    FieldLabel(stringResource(R.string.label_fingerprint))
                     Text(c.identity.deviceTag(), color = colors.ink, style = RivetType.mono11)
                 }
                 Spacer(Modifier.height(8.dp))

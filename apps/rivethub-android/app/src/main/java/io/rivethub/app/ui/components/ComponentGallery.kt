@@ -24,10 +24,15 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
+import io.rivethub.app.plane.AttachmentStatus
+import io.rivethub.app.plane.ContextBarView
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
+import io.rivethub.app.plane.PendingAttachment
 import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.contextBarView
+import io.rivethub.app.plane.statsLine
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.theme.Dimens
@@ -176,23 +181,169 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     Pill("thinking", PillTone.Warn)
                 }
                 Spacer(Modifier.height(12.dp))
-                GalleryH("Transcript / MessageBubble")
-                MessageBubble(Bubble.User) { Text("hello from the phone") }
+                GalleryH("Chat header · idle")
+            }
+            ChatSessionHeader(
+                sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
+                context = contextBarView(50_202, "claude", emptyList()),
+                modeOptions = listOf("Terminal", "Chat"),
+                selectedMode = "Chat",
+                onSelectMode = {},
+                onBack = {},
+                showStop = false,
+                onStop = {},
+            )
+            GalleryH("Chat header · in-flight")
+            ChatSessionHeader(
+                sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
+                context = contextBarView(50_202, "claude", emptyList()),
+                modeOptions = listOf("Terminal", "Chat"),
+                selectedMode = "Chat",
+                onSelectMode = {},
+                onBack = {},
+                showStop = true,
+                onStop = {},
+            )
+            GalleryH("Chat header · draft")
+            ChatSessionHeader(
+                sessionLabel = "new conversation",
+                context = null,
+                modeOptions = listOf("Terminal", "Chat"),
+                selectedMode = "Chat",
+                onSelectMode = {},
+                onBack = {},
+                showStop = false,
+                onStop = {},
+            )
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                GalleryH("Context bar")
+                ContextBar(ContextBarView(50_202, 1_000_000, 5, hot = false, estimated = false))
                 Spacer(Modifier.height(8.dp))
-                MessageBubble(Bubble.Assistant) { Text("hello from the den") }
+                ContextBar(ContextBarView(900_000, 1_000_000, 90, hot = true, estimated = false))
+                Spacer(Modifier.height(8.dp))
+                ContextBar(contextBarView(null, "grok", listOf("abcd"))!!)
                 Spacer(Modifier.height(12.dp))
-                GalleryH("Composer")
+                GalleryH("Transcript")
+                TranscriptUserTurn(
+                    text = "Reply with exactly the word PONG and nothing else.",
+                    time = "07:00 PM",
+                    onCopy = {},
+                )
+                Spacer(Modifier.height(12.dp))
+                TranscriptAssistantTurn(
+                    text = "PONG with `code` and a [link](https://example.com).",
+                    thinking = "the user wants a one-word reply",
+                    model = "claude-fable-5-1",
+                    time = "07:00 PM",
+                    accent = rivetHexColor("#CC785C"),
+                    tools = listOf(ToolRow("Read", "done"), ToolRow("Bash", "running")),
+                    stats = statsLine(50_202, 5, 30_032),
+                    onCopy = {},
+                    thinkingOpenDefault = true,
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Composer · idle")
                 var composer by remember { mutableStateOf("") }
                 Composer(
                     value = composer,
                     onValueChange = { composer = it },
-                    placeholder = "Message",
-                    live = false,
-                    pickers = {},
-                    chips = { HarnessChip("Claude Code") },
+                    placeholder = "Message Rivet…",
+                    connected = true,
+                    sending = false,
+                    sendEnabled = composer.isNotBlank(),
+                    canStop = false,
                     onAttach = {},
                     onSend = {},
                     onStop = {},
+                    pickers = { compact ->
+                        ComposerPicker(
+                            icon = R.drawable.lucide_server,
+                            label = "ct115",
+                            compact = compact,
+                            options = listOf(SelectOption("n", "ct115")),
+                            value = "n",
+                            onChange = {},
+                            title = "Node",
+                        )
+                        ComposerPicker(
+                            icon = R.drawable.lucide_bot,
+                            label = "Claude Code",
+                            compact = compact,
+                            options = listOf(SelectOption("claude", "Claude Code")),
+                            value = "claude",
+                            onChange = {},
+                            title = "Model",
+                        )
+                        ComposerPicker(
+                            icon = R.drawable.lucide_lightbulb,
+                            label = "Medium",
+                            compact = compact,
+                            options = listOf(SelectOption("medium", "Medium")),
+                            value = "medium",
+                            onChange = {},
+                            title = "Effort",
+                        )
+                    },
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Composer · attachments")
+                Composer(
+                    value = "",
+                    onValueChange = {},
+                    placeholder = "Message Rivet…",
+                    connected = true,
+                    sending = false,
+                    sendEnabled = true,
+                    canStop = false,
+                    onAttach = {},
+                    onSend = {},
+                    onStop = {},
+                    attachments = listOf(
+                        PendingAttachment("1", "notes.md", AttachmentStatus.READY),
+                        PendingAttachment("2", "shot.png", AttachmentStatus.UPLOADING),
+                        PendingAttachment("3", "bad.bin", AttachmentStatus.FAILED),
+                    ),
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Composer · disconnected")
+                Composer(
+                    value = "",
+                    onValueChange = {},
+                    placeholder = "reconnecting…",
+                    connected = false,
+                    sending = false,
+                    sendEnabled = false,
+                    canStop = false,
+                    onAttach = {},
+                    onSend = {},
+                    onStop = {},
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Composer · sending")
+                Composer(
+                    value = "hello",
+                    onValueChange = {},
+                    placeholder = "Message Rivet…",
+                    connected = true,
+                    sending = true,
+                    sendEnabled = false,
+                    canStop = true,
+                    onAttach = {},
+                    onSend = {},
+                    onStop = {},
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Picker sheet")
+                var sel by remember { mutableStateOf("medium") }
+                RivetSelect(
+                    value = sel,
+                    options = listOf(
+                        SelectOption("low", "Low"),
+                        SelectOption("medium", "Medium"),
+                        SelectOption("high", "High"),
+                    ),
+                    onChange = { sel = it },
+                    title = "Effort",
                 )
                 Spacer(Modifier.height(12.dp))
                 GalleryH("Terminal pane")
@@ -211,7 +362,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                GalleryH("Terminal keys")
+                GalleryH("Key toolbar")
                 KeyToolbar(
                     keys = listOf(
                         ToolbarKey.Label("esc", "Esc"),
@@ -225,15 +376,6 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 GalleryH("RivetToggle")
                 var tog by remember { mutableStateOf(true) }
                 RivetToggle(checked = tog, onChange = { tog = it })
-                Spacer(Modifier.height(12.dp))
-                GalleryH("RivetSelect")
-                var sel by remember { mutableStateOf("sm") }
-                RivetSelect(
-                    value = sel,
-                    options = listOf(SelectOption("sm", "Small"), SelectOption("md", "Medium")),
-                    onChange = { sel = it },
-                    title = "Font size",
-                )
                 Spacer(Modifier.height(12.dp))
                 GalleryH("Drawer")
             }

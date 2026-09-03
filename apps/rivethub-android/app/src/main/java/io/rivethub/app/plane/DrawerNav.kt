@@ -35,6 +35,15 @@ fun hubTabOf(dest: DrawerDest): HubTab? = when (dest) {
     else -> null
 }
 
+/**
+ * System Back on the Settings tab returns to Conversations.
+ * Conversations yields null so the activity can finish as normal.
+ */
+fun hubTabOnBack(tab: HubTab): HubTab? = when (tab) {
+    HubTab.Settings -> HubTab.Conversations
+    HubTab.Conversations -> null
+}
+
 /** Desktop unread pill: blank when 0, capped at `99+`. */
 fun formatUnreadBadge(unread: Int): String? = when {
     unread <= 0 -> null
