@@ -372,6 +372,7 @@ class HarnessChatViewModel(
     }
 
     private fun onRegistry(event: HarnessEvent) {
+        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "registry event: ${event.javaClass.simpleName} ${(event as? io.rivethub.app.gateway.HarnessEvent.SessionCreated)?.sessionId ?: ""}", null)
         if (c.identity.generation() != identityGen) return
         val native = _state.value.sessionId
         when (event) {
@@ -398,6 +399,7 @@ class HarnessChatViewModel(
     }
 
     private fun adoptCanonical(canonical: String) {
+        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "adopt: canonical=$canonical draft=${_state.value.draft} prev=${_state.value.sessionId}", null)
         val from = _state.value.sessionId
         if (canonical.isBlank()) return
         val wasDraft = _state.value.draft
@@ -433,15 +435,16 @@ class HarnessChatViewModel(
         val machineAttach = SessionAttach(
             machine = machine,
             fetchTranscript = {
-                withContext(Dispatchers.IO) { hg.transcript(enc).turns }
+                withContext(Dispatchers.IO) { hg.transcript(enc).turns }.also { io.rivethub.app.data.AndroidLogger.warn("RivetHub", "transcript fetched: ${it.size} turns for $sessionId", null) }
             },
-            onFatal = { msg -> _state.update { it.copy(error = msg, ws = WsStatus.CLOSED) } },
+            onFatal = { msg -> io.rivethub.app.data.AndroidLogger.warn("RivetHub", "attach fatal: $msg", null); _state.update { it.copy(error = msg, ws = WsStatus.CLOSED) } },
             closeWatch = { myWatch[0]?.close() },
         )
         attach = machineAttach
         val mailbox = frames
         frameJob = viewModelScope.launch {
             for (f in mailbox) {
+                io.rivethub.app.data.AndroidLogger.warn("RivetHub", "session frame: ${f.javaClass.simpleName}", null)
                 when (f) {
                     is Frame.Ev -> {
                         onSessionEvent(f.e)
@@ -470,7 +473,7 @@ class HarnessChatViewModel(
         sessionWatch = hg.watchSession(
             enc,
             onEvent = { event -> mailbox.trySend(Frame.Ev(event)) },
-            onStatus = { s -> mailbox.trySend(Frame.St(s)) },
+            onStatus = { s -> io.rivethub.app.data.AndroidLogger.warn("RivetHub", "session ws status: $s", null); mailbox.trySend(Frame.St(s)) },
         )
         myWatch[0] = sessionWatch
     }
