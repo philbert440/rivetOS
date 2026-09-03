@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.MoreHoriz
@@ -212,7 +214,8 @@ fun TerminalPane(
                 val removed = (prev.length - p).coerceAtLeast(0)
                 val added = if (p < cur.length) cur.substring(maxOf(p, base)) else ""
                 repeat(removed.coerceAtMost(prev.length - base)) { onBytes(TermKeys.BACKSPACE) }
-                if (added.isNotEmpty()) onBytes(TermKeys.ime(added.replace("\n", "\r"), ctrl))
+                val clean = added.replace(IME_SENTINEL, "").replace("\n", "\r")
+                if (clean.isNotEmpty()) onBytes(TermKeys.ime(clean, ctrl))
                 if (cur.length > 256 || !cur.startsWith(IME_SENTINEL)) {
                     imeSeen = IME_SENTINEL
                     ime = TextFieldValue(IME_SENTINEL)
@@ -244,7 +247,10 @@ fun TerminalPane(
                     } else false
                 },
             keyboardOptions = KeyboardOptions(
-                capitalization = KeyboardCapitalization.None,
+                // Password-type: no composition, no suggestions, no autocorrect — the terminal is the line editor.
+                keyboardType = KeyboardType.Password,
+                autoCorrect = false,
+                imeAction = ImeAction.None,
             ),
             cursorBrush = SolidColor(Color.Transparent),
             textStyle = RivetType.monoTerminal.copy(color = Color.Transparent, fontSize = 1.sp),
