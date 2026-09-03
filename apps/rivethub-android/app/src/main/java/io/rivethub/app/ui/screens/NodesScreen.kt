@@ -35,6 +35,7 @@ fun NodesScreen(vm: HubViewModel) {
     val colors = RivetTheme.colors
     Column(Modifier.fillMaxSize().background(colors.bg)) {
         TopBar(title = stringResource(R.string.title_nodes))
+        HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
         Text(
             stringResource(R.string.node_filter_hint),
             color = colors.inkDim,
@@ -57,10 +58,17 @@ fun NodesScreen(vm: HubViewModel) {
                     )
                 }
                 items(st.nodes, key = { it.id }) { node ->
-                    val selected = st.prefs.viewNodeId == node.id || st.filter == node.name
+                    val selected = st.prefs.viewNodeId == node.id ||
+                        (st.filter as? io.rivethub.app.plane.ConversationFilter.Node)?.id == node.id
+                    val nodeErr = st.nodeErrors[node.id]
                     ListRow(
                         title = node.name.ifBlank { node.id },
                         onClick = { vm.selectViewNode(node) },
+                        meta = {
+                            if (nodeErr != null) {
+                                Pill(stringResource(R.string.node_error_badge), tone = io.rivethub.app.ui.components.PillTone.Warn)
+                            }
+                        },
                         trailing = {
                             Box(
                                 Modifier

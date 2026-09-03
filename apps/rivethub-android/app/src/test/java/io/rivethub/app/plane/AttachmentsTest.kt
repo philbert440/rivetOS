@@ -66,4 +66,10 @@ class AttachmentsTest {
             withAttachmentText("hi", readyUris(atts)),
         )
     }
+
+    @Test fun `upload cap matches the den 1 GiB limit`() {
+        assertFalse(uploadTooLarge(-1))
+        assertFalse(uploadTooLarge(MAX_UPLOAD_BYTES))
+        assertTrue(uploadTooLarge(MAX_UPLOAD_BYTES + 1))
+    }
 }

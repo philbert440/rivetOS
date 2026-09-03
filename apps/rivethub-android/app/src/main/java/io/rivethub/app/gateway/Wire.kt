@@ -230,6 +230,37 @@ data class TermResizeFrame(val type: String = "resize", val cols: Int, val rows:
 @Serializable
 data class TermKillFrame(val type: String = "kill")
 
+@Serializable
+data class TermInjectRequest(
+    val session: String,
+    val text: String,
+    val submit: Boolean? = null,
+    val interrupt: Boolean? = null,
+)
+
+@Serializable
+data class TermInjectResponse(
+    val ok: Boolean = false,
+    val ptyId: String = "",
+)
+
+@Serializable
+data class AgentPreset(
+    val id: String,
+    val name: String = "",
+    val color: String = "",
+    val harnessId: String? = null,
+    val model: String = "",
+    val effort: String = "",
+    val systemPrompt: String = "",
+    val nodeBaseUrl: String = "",
+    val createdAt: Long = 0,
+    val updatedAt: Long = 0,
+)
+
+@Serializable
+data class AgentsListResponse(val agents: List<AgentPreset> = emptyList())
+
 /** JSON text frames on WS /api/terminal/ws (binary frames are raw PTY bytes). */
 sealed interface TermFrame {
     data class Hello(val frame: TermHelloFrame) : TermFrame

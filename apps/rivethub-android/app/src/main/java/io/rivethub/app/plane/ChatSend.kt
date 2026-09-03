@@ -1,0 +1,65 @@
+package io.rivethub.app.plane
+
+/**
+ * Draft first-send mirrors rivethub-web `injectOne`: a draft injects into
+ * the PTY (after spawn); an adopted session uses the harness control plane.
+ * Never wait for `session-created` before sending — claude's store row is
+ * created by the first turn.
+ */
+sealed interface ChatSendAction {
+    data class Inject(val sessionId: String, val text: String, val interrupt: Boolean = false) : ChatSendAction
+    data class SendTurn(val sessionId: String, val text: String) : ChatSendAction
+}
+
+fun chatSendAction(draft: Boolean, sessionId: String, text: String, interrupt: Boolean = false): ChatSendAction =
+    if (draft) ChatSendAction.Inject(sessionId, text, interrupt)
+    else ChatSendAction.SendTurn(sessionId, text)
+
+data class SpawnAttempt(
+    val session: String,
+    val command: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
+)
+
+/**
+ * API-only agents have no roster command. Try the commanded spawn, then
+ * fall back to `{ session }` so a 404 on an unknown command still pins
+ * the join key (desktop `chat.tsx` `spawnPty`).
+ */
+fun spawnAttempts(
+    session: String,
+    command: String?,
+    model: String? = null,
+    effort: String? = null,
+): List<SpawnAttempt> {
+    if (command.isNullOrBlank()) {
+        return listOf(SpawnAttempt(session))
+    }
+    return listOf(
+        SpawnAttempt(session, command, model, effort),
+        SpawnAttempt(session),
+    )
+}
+
+/** LRU-evicted PTY: drop the ref and retry inject once, without Esc. */
+enum class InjectTry { First, RetryAfterEviction }
+
+fun nextInjectTry(failed: Boolean, alreadyRetried: Boolean): InjectTry? {
+    if (!failed) return null
+    if (alreadyRetried) return null
+    return InjectTry.RetryAfterEviction
+}
+
+fun chatItemForGate(
+    sessionId: String,
+    draft: Boolean,
+    harnessId: String?,
+    title: String,
+): ChatItem = ChatItem(
+    key = sessionId,
+    kind = if (draft) ChatItemKind.DRAFT else ChatItemKind.HARNESS,
+    title = title,
+    sessionId = sessionId.takeIf { !draft },
+    harnessId = harnessId,
+)

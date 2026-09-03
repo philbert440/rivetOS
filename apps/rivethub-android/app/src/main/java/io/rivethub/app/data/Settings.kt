@@ -68,33 +68,11 @@ class Settings(context: Context) {
     suspend fun snapshot(): Prefs = prefs.first()
 
     suspend fun setEntryUrl(url: String) = ds.edit { it[ENTRY_URL] = url.trim().trimEnd('/') }
-    suspend fun setHandle(h: String) = ds.edit { it[HANDLE] = h.trim().ifBlank { "you" } }
     suspend fun setStrictHostnames(v: Boolean) = ds.edit { it[STRICT] = v }
     suspend fun setOnboarded(v: Boolean) = ds.edit { it[ONBOARDED] = v }
 
     suspend fun addExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) + url.trim().trimEnd('/') }
     suspend fun removeExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) - url }
-
-    suspend fun togglePin(botId: String) = ds.edit {
-        val cur = it[PINNED] ?: emptySet()
-        it[PINNED] = if (botId in cur) cur - botId else cur + botId
-    }
-    suspend fun setHidden(botId: String, hidden: Boolean) = ds.edit {
-        val cur = it[HIDDEN] ?: emptySet()
-        it[HIDDEN] = if (hidden) cur + botId else cur - botId
-    }
-    suspend fun unhideAll() = ds.edit { it[HIDDEN] = emptySet() }
-
-    suspend fun setSessionOverride(botId: String, sessionId: String) = ds.edit {
-        it[SESSIONS] = encodeMap(decodeMap(it[SESSIONS]) + (botId to sessionId))
-    }
-    suspend fun markSeen(botId: String, ts: Long) = ds.edit {
-        val cur = decodeLongMap(it[LAST_SEEN])
-        if ((cur[botId] ?: 0L) < ts) it[LAST_SEEN] = encodeLongMap(cur + (botId to ts))
-    }
-
-    suspend fun setDesktopUrl(url: String) = ds.edit { it[DESKTOP_URL] = url.trim() }
-
 
     suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
@@ -154,6 +132,5 @@ class Settings(context: Context) {
         private fun encodeMap(m: Map<String, String>): String = wireJson.encodeToString(mapSer, m)
         private fun decodeLongMap(s: String?): Map<String, Long> =
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
-        private fun encodeLongMap(m: Map<String, Long>): String = wireJson.encodeToString(longMapSer, m)
     }
 }

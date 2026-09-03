@@ -11,6 +11,8 @@ sealed interface Screen {
         val harnessId: String?,
         val title: String,
         val draft: Boolean,
+        val model: String = "",
+        val effort: String = "",
     ) : Screen
     data object Gallery : Screen
 }

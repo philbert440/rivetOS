@@ -13,9 +13,6 @@ fun persistSessionMode(mode: SessionMode): String = when (mode) {
     SessionMode.Terminal -> MODE_TERMINAL
 }
 
-/** Prefs map key for a conversation's Chat|Terminal mode. */
-fun sessionModeKey(sessionId: String): String = sessionId
-
 /**
  * After adopt/rekey, copy the mode from the retired id onto the canonical
  * one. The canonical entry wins if both exist.

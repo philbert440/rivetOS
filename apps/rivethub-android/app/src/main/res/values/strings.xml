@@ -114,4 +114,15 @@
     <string name="node_filter_hint">Selecting a node filters Conversations. Open chats stay on their node.</string>
     <string name="entry_saved">Entry URL saved.</string>
     <string name="new_conversation">new conversation</string>
+    <string name="action_submit">Submit</string>
+    <string name="action_retry">Retry</string>
+    <string name="error_upload_in_progress">Wait for the attachment to finish uploading.</string>
+    <string name="error_upload_too_large">That file is larger than the 1 GiB upload limit.</string>
+    <string name="chip_uploading">%1$s · uploading</string>
+    <string name="chip_failed">%1$s · failed</string>
+    <string name="ws_reconnecting">reconnecting</string>
+    <string name="ws_disconnected">disconnected</string>
+    <string name="ask_user_free">Or type a reply</string>
+    <string name="ask_user_selected">selected</string>
+    <string name="node_error_badge">error</string>
 </resources>

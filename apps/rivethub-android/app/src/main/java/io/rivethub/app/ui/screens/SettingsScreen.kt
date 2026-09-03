@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.BuildConfig
 import io.rivethub.app.R
+import io.rivethub.app.plane.EntryUrlError
+import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.PrimaryButton
 import io.rivethub.app.ui.components.RivetConfirmDialog
@@ -64,15 +66,14 @@ fun SettingsScreen(
     var identityGen by remember { mutableStateOf(0) }
     val summary = remember(identityGen) { c.identity.summary() }
     var entry by remember { mutableStateOf(prefs.entryUrl) }
-    var pendingP12 by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingP12 by remember { mutableStateOf<Uri?>(null) }
     var pass by remember { mutableStateOf("") }
     var msg by remember { mutableStateOf<String?>(null) }
     var confirmForget by remember { mutableStateOf(false) }
     LaunchedEffect(prefs.entryUrl) { if (entry.isBlank()) entry = prefs.entryUrl }
 
-    fun bytes(uri: Uri): ByteArray? = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
     val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { pendingP12 = bytes(it) }
+        uri?.let { pendingP12 = it }
     }
 
     val appearSystem = stringResource(R.string.appearance_system)
@@ -120,10 +121,15 @@ fun SettingsScreen(
             PrimaryButton(
                 text = stringResource(R.string.action_save),
                 onClick = {
-                    scope.launch {
-                        c.settings.setEntryUrl(entry)
-                        msg = ctx.getString(R.string.entry_saved)
-                        vm.refresh()
+                    when (validateEntryUrl(entry)) {
+                        EntryUrlError.Blank, EntryUrlError.NotHttps -> {
+                            msg = ctx.getString(R.string.error_https_required)
+                        }
+                        null -> scope.launch {
+                            c.settings.setEntryUrl(entry.trim().trimEnd('/'))
+                            msg = ctx.getString(R.string.entry_saved)
+                            vm.refresh()
+                        }
                     }
                 },
             )
@@ -176,10 +182,16 @@ fun SettingsScreen(
                 PrimaryButton(
                     text = stringResource(R.string.action_install_cert),
                     onClick = {
-                        val bytesToImport = pendingP12 ?: return@PrimaryButton
+                        val uriToImport = pendingP12 ?: return@PrimaryButton
                         val pw = pass
                         scope.launch {
-                            withContext(Dispatchers.IO) { runCatching { c.identity.importPkcs12(bytesToImport, pw) } }
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val bytes = ctx.contentResolver.openInputStream(uriToImport)?.use { it.readBytes() }
+                                        ?: error("could not read p12")
+                                    c.identity.importPkcs12(bytes, pw)
+                                }
+                            }
                                 .onSuccess {
                                     msg = it.cn
                                     pendingP12 = null

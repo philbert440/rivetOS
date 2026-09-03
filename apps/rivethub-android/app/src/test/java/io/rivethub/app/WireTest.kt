@@ -47,4 +47,26 @@ class WireTest {
         val cat = wireJson.decodeFromString(CatalogAgentsResponse.serializer(), """{"agents":[{"id":"claude","provider":"claude-cli","node":"n1","local":true},{"id":"kimi","node":"n2","local":false}]}""")
         assertEquals(2, cat.agents.size); assertNull(cat.agents[1].provider)
     }
+
+    @Test fun `agent preset and term inject shapes match the gateway`() {
+        val agents = wireJson.decodeFromString(
+            io.rivethub.app.gateway.AgentsListResponse.serializer(),
+            """{"agents":[{"id":"a1","name":"Claude","color":"#3b82f6","harnessId":"claude-code","model":"opus","effort":"high","systemPrompt":"","nodeBaseUrl":"https://192.0.2.10:5174","createdAt":1,"updatedAt":2}]}""",
+        )
+        assertEquals("Claude", agents.agents.single().name)
+        assertEquals("claude-code", agents.agents.single().harnessId)
+        val inj = wireJson.decodeFromString(
+            io.rivethub.app.gateway.TermInjectRequest.serializer(),
+            """{"session":"draft-1","text":"hi"}""",
+        )
+        assertEquals("draft-1", inj.session)
+        assertEquals("hi", inj.text)
+        assertNull(inj.submit)
+        val encoded = wireJson.encodeToString(
+            io.rivethub.app.gateway.TermInjectRequest.serializer(),
+            io.rivethub.app.gateway.TermInjectRequest("s", "hello", interrupt = true),
+        )
+        assertTrue(encoded.contains("\"interrupt\":true"))
+        assertTrue(!encoded.contains("\\r"))
+    }
 }

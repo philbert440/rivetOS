@@ -23,10 +23,6 @@ class SessionModeTest {
         assertEquals(SessionMode.Terminal, parseSessionMode(persistSessionMode(SessionMode.Terminal)))
     }
 
-    @Test fun `sessionModeKey is the session id`() {
-        assertEquals("claude-code:abc", sessionModeKey("claude-code:abc"))
-    }
-
     @Test fun `rekey copies the mode onto the canonical id`() {
         val next = rekeySessionModes(mapOf("draft" to MODE_TERMINAL), "draft", "claude-code:draft")
         assertEquals(MODE_TERMINAL, next["claude-code:draft"])

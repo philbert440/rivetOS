@@ -160,7 +160,6 @@ class AttachTest {
     @Test fun `attach fetches transcript on turn-complete after settle`() = runBlocking {
         withTimeout(1_000) {
             var fetches = 0
-            var delayed = 0L
             val m = TranscriptMachine({ 0 })
             val attach = SessionAttach(
                 machine = m,
@@ -169,13 +168,54 @@ class AttachTest {
                     turns("after")
                 },
                 settleMs = 400,
-                delayMs = { delayed = it },
             )
             attach.onFrame(HarnessEvent.TurnComplete("s", "t1", "end-turn"))
-            assertEquals(400L, delayed)
+            assertEquals(0, fetches)
+            attach.flushCommittedResync()
             assertEquals(1, fetches)
             assertEquals(listOf("after"), m.transcript.map { it.text })
             assertFalse(m.inFlight)
+        }
+    }
+
+    @Test fun `three frames during settle are applied in order and none is lost`() = runBlocking {
+        withTimeout(1_000) {
+            val m = TranscriptMachine({ 0 })
+            val attach = SessionAttach(
+                machine = m,
+                fetchTranscript = { turns("committed") },
+                settleMs = 400,
+            )
+            attach.onFrame(HarnessEvent.TurnComplete("s", "t1", "end-turn"))
+            attach.onFrame(HarnessEvent.AssistantDelta("s", "a"))
+            attach.onFrame(HarnessEvent.AssistantDelta("s", "b"))
+            attach.onFrame(HarnessEvent.AssistantDelta("s", "c"))
+            assertEquals("abc", m.liveText)
+            attach.flushCommittedResync()
+            assertEquals(listOf("committed"), m.transcript.map { it.text })
+            assertEquals("abc", m.liveText)
+        }
+    }
+
+    @Test fun `detach stops without firing onFatal or closeWatch`() = runBlocking {
+        withTimeout(1_000) {
+            var closed = 0
+            var fatal: String? = null
+            val m = TranscriptMachine({ 0 })
+            val attach = SessionAttach(
+                machine = m,
+                fetchTranscript = { turns("stale") },
+                onFatal = { fatal = it },
+                closeWatch = { closed++ },
+            )
+            attach.detach()
+            assertTrue(attach.stopped)
+            assertEquals(0, closed)
+            assertNull(fatal)
+            attach.onFrame(HarnessEvent.AssistantDelta("s", "nope"))
+            attach.flushCommittedResync()
+            assertEquals("", m.liveText)
+            assertEquals(emptyList<String>(), m.transcript.map { it.text })
         }
     }
 

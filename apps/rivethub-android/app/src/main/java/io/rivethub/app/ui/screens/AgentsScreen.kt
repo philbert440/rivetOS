@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -48,6 +49,7 @@ fun AgentsScreen(
     val colors = RivetTheme.colors
     Column(Modifier.fillMaxSize().background(colors.bg)) {
         TopBar(title = stringResource(R.string.title_agents))
+        HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
         if (st.agents.isEmpty()) {
             Text(
                 stringResource(R.string.empty_agents),
@@ -58,7 +60,7 @@ fun AgentsScreen(
         } else {
             LazyColumn(Modifier.fillMaxSize()) {
                 items(st.agents, key = { "${it.agentId}:${it.nodeId}" }) { row ->
-                    val accent = harnessAccentToken(row.harnessId, row.agentId).color(colors)
+                    val accent = presetColor(row.color) ?: harnessAccentToken(row.harnessId, row.agentId).color(colors)
                     ListRow(
                         title = row.name,
                         onClick = { onOpen(row, AgentAction.Tap) },
@@ -86,6 +88,12 @@ fun AgentsScreen(
             }
         }
     }
+}
+
+private fun presetColor(hex: String): Color? {
+    val h = hex.trim()
+    if (!h.startsWith("#") || h.length !in 7..9) return null
+    return runCatching { Color(android.graphics.Color.parseColor(h)) }.getOrNull()
 }
 
 @Composable

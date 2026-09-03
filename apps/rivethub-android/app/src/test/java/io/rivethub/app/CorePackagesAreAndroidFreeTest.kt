@@ -9,9 +9,10 @@ class CorePackagesAreAndroidFreeTest {
     fun `domain gateway transport and plane have no android imports`() {
         val base = File("src/main/java/io/rivethub/app")
         assertTrue("core packages dir missing: $base", base.isDirectory)
-        val pkgs = listOf("domain", "gateway", "transport", "plane")
+        val pkgs = listOf("gateway", "transport", "plane")
         for (pkg in pkgs) {
-            // (a missing core dir is tolerated; the >=3-files floor still guards an empty walk)
+            val dir = File(base, pkg)
+            assertTrue("core package missing: $dir", dir.isDirectory)
         }
         val files = pkgs.flatMap { pkg ->
             File(base, pkg).walkTopDown().filter { it.isFile && it.extension == "kt" }.toList()

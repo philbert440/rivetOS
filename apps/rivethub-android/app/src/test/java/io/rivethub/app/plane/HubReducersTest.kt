@@ -2,8 +2,6 @@ package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.GatewayException
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -55,19 +53,6 @@ class HubReducersTest {
         assertEquals("boom", e.detail)
     }
 
-    @Test fun `drafts need spawn, harness rows do not`() {
-        assertTrue(needsSpawn(ChatItemKind.DRAFT))
-        assertFalse(needsSpawn(ChatItemKind.HARNESS))
-        assertFalse(needsSpawn(ChatItemKind.LEGACY))
-    }
-
-    @Test fun `appearance pref defaults to system`() {
-        assertEquals("system", appearanceFromPref(null))
-        assertEquals("system", appearanceFromPref("nope"))
-        assertEquals("light", appearanceFromPref("Light"))
-        assertEquals("dark", appearanceFromPref("DARK"))
-    }
-
     @Test fun `pointer persist round-trips`() {
         val pointers = AgentPointers { 9 }
         pointers.set("a", "sess", "https://192.0.2.10:5174")
@@ -82,14 +67,27 @@ class HubReducersTest {
         assertEquals(setOf("c"), decoded.keys)
     }
 
-    @Test fun `title override encode drops blanks`() {
-        assertEquals(mapOf("a" to "hi"), encodeTitleOverrides(mapOf("a" to "hi", "b" to "  ", "c" to "")))
+    @Test fun `https entry URL is accepted and http is not`() {
+        assertEquals(null, validateEntryUrl("https://192.0.2.10:5174"))
+        assertEquals(null, validateEntryUrl("  HTTPS://192.0.2.10:5174/  "))
+        assertEquals(EntryUrlError.NotHttps, validateEntryUrl("http://192.0.2.10:5174"))
+        assertEquals(EntryUrlError.Blank, validateEntryUrl("  "))
     }
 
-    @Test fun `changing the view node does not clear an open session key`() {
-        assertTrue(viewFilterLeavesOpenChat("claude-code:abc", "ct115", "ct119"))
-        assertTrue(viewFilterLeavesOpenChat("claude-code:abc", null, "ct119"))
-        assertFalse(viewFilterLeavesOpenChat("", "ct115", "ct119"))
+    @Test fun `cleartext IOException is a typed enroll error`() {
+        val e = enrollError(java.io.IOException("Cleartext HTTP traffic to 192.0.2.10 not permitted"))
+        assertEquals(EnrollErrorKind.Cleartext, e.kind)
+    }
+
+    @Test fun `Screen Chat carries nodeDenUrl independently of the view node`() {
+        val chat = io.rivethub.app.ui.Screen.Chat(
+            sessionKey = "s",
+            nodeDenUrl = "https://192.0.2.10:5174",
+            harnessId = "claude-code",
+            title = "t",
+            draft = false,
+        )
+        assertEquals("https://192.0.2.10:5174", chat.nodeDenUrl)
     }
 
     @Test fun `locate tags the node without rewriting the item key`() {

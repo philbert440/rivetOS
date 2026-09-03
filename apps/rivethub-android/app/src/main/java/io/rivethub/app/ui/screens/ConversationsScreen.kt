@@ -16,16 +16,19 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.NotificationsNone
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -35,8 +38,10 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AccentToken
 import io.rivethub.app.plane.ChatItemKind
-import io.rivethub.app.plane.FILTER_ALL
+import io.rivethub.app.plane.ConversationFilter
+import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.LocatedChatItem
+import io.rivethub.app.plane.NodeChip
 import io.rivethub.app.plane.conversationsFilterChips
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.filterConversations
@@ -54,7 +59,9 @@ import io.rivethub.app.ui.theme.OnEm
 import io.rivethub.app.ui.theme.RivetColors
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationsScreen(
     vm: HubViewModel,
@@ -63,16 +70,23 @@ fun ConversationsScreen(
 ) {
     val st by vm.state.collectAsState()
     val colors = RivetTheme.colors
-    val nodeNames = st.nodes.map { it.name.ifBlank { it.id } }.distinct()
-    val chips = conversationsFilterChips(nodeNames)
+    val chips = conversationsFilterChips(st.nodes.map { NodeChip(it.id, it.name.ifBlank { it.id }) })
+    val chipLabels = chips.map { filterLabel(it) }
+    val selectedIndex = chips.indexOf(st.filter).coerceAtLeast(0)
     val lists = filterConversations(
         items = st.items,
-        filter = st.filter.ifBlank { FILTER_ALL },
+        filter = st.filter,
         archived = st.archived,
         pinnedKeys = vm.pinnedKeys(),
         query = st.query,
         titleOverrides = st.titleOverrides,
     )
+    val now by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            delay(60_000)
+            value = System.currentTimeMillis()
+        }
+    }
     var archivedOpen by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var discardTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
@@ -95,15 +109,14 @@ fun ConversationsScreen(
             )
         }
         FilterChipRow(
-            options = chips,
-            selected = st.filter.ifBlank { FILTER_ALL },
-            onSelect = vm::setFilter,
+            options = chipLabels,
+            selectedIndex = selectedIndex,
+            onSelectIndex = { i -> chips.getOrNull(i)?.let(vm::setFilter) },
             modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.grid),
         )
-        st.error?.let {
-            Text(it, color = colors.red, style = RivetType.meta, modifier = Modifier.padding(horizontal = Dimens.grid2))
-        }
+        HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            PullToRefreshBox(isRefreshing = st.loading, onRefresh = { vm.refresh() }) {
             LazyColumn(Modifier.fillMaxSize()) {
                 if (lists.live.isEmpty() && lists.archived.isEmpty()) {
                     item {
@@ -129,6 +142,7 @@ fun ConversationsScreen(
                     ConversationRow(
                         row = row,
                         title = displayTitle(row.item, st.titleOverrides),
+                        now = now,
                         onOpen = { onOpenRow(row) },
                         onArchive = { vm.archive(row.item.key) },
                         onLong = {
@@ -157,6 +171,7 @@ fun ConversationsScreen(
                             ConversationRow(
                                 row = row,
                                 title = displayTitle(row.item, st.titleOverrides),
+                                now = now,
                                 dim = true,
                                 onOpen = { vm.unarchive(row.item.key); onOpenRow(row) },
                                 onArchive = { vm.unarchive(row.item.key) },
@@ -166,6 +181,7 @@ fun ConversationsScreen(
                     }
                 }
                 item { Spacer(Modifier.height(72.dp)) }
+            }
             }
             FloatingActionButton(
                 onClick = onNew,
@@ -213,6 +229,7 @@ fun ConversationsScreen(
 private fun ConversationRow(
     row: LocatedChatItem,
     title: String,
+    now: Long,
     onOpen: () -> Unit,
     onArchive: () -> Unit,
     onLong: () -> Unit,
@@ -229,7 +246,7 @@ private fun ConversationRow(
     )
     val accent = harnessAccentToken(row.item.harnessId, row.item.command).color(colors)
     val pill = rowPillText(row.item.model, null, row.item.harnessId)
-    val age = relativeAge(row.item.updatedAt, System.currentTimeMillis())
+    val age = relativeAge(row.item.updatedAt, now)
     SwipeToDismissBox(
         state = state,
         enableDismissFromStartToEnd = false,
@@ -270,6 +287,35 @@ internal fun ageLabel(age: io.rivethub.app.plane.RelativeAge): String = when (ag
     is io.rivethub.app.plane.RelativeAge.Hours -> stringResource(R.string.time_hours, age.n)
     is io.rivethub.app.plane.RelativeAge.Days -> stringResource(R.string.time_days, age.n)
     is io.rivethub.app.plane.RelativeAge.Weeks -> stringResource(R.string.time_weeks, age.n)
+}
+
+@Composable
+internal fun filterLabel(filter: ConversationFilter): String = when (filter) {
+    ConversationFilter.All -> stringResource(R.string.filter_all)
+    ConversationFilter.Active -> stringResource(R.string.filter_active)
+    ConversationFilter.Pinned -> stringResource(R.string.filter_pinned)
+    is ConversationFilter.Node -> filter.name
+}
+
+@Composable
+internal fun HubErrorLine(error: String?, kind: EnrollErrorKind?, onRetry: (() -> Unit)? = null) {
+    if (error == null && kind == null) return
+    val colors = RivetTheme.colors
+    val text = when (kind) {
+        EnrollErrorKind.Cleartext -> stringResource(R.string.error_https_required)
+        EnrollErrorKind.Timeout -> stringResource(R.string.error_timeout)
+        EnrollErrorKind.Unreachable -> stringResource(R.string.error_unreachable)
+        EnrollErrorKind.CertRefused -> stringResource(R.string.error_cert_required)
+        EnrollErrorKind.Other, null -> error ?: return
+    }
+    Text(
+        text,
+        color = colors.red,
+        style = RivetType.meta,
+        modifier = Modifier
+            .padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf)
+            .then(if (onRetry != null) Modifier.clickable(onClick = onRetry) else Modifier),
+    )
 }
 
 internal fun AccentToken.color(c: RivetColors) = when (this) {

@@ -8,6 +8,8 @@ data class AgentOpen(
     val harnessId: String?,
     val draft: Boolean,
     val pinMoved: Boolean,
+    val model: String = "",
+    val effort: String = "",
 )
 
 /**
@@ -57,6 +59,9 @@ data class AgentRow(
     val nodeName: String,
     val nodeDenUrl: String,
     val pointerSessionId: String?,
+    val color: String = "",
+    val model: String = "",
+    val effort: String = "",
 )
 
 fun agentRow(
@@ -67,6 +72,9 @@ fun agentRow(
     nodeName: String,
     nodeDenUrl: String,
     pointers: AgentPointers,
+    color: String = "",
+    model: String = "",
+    effort: String = "",
 ): AgentRow = AgentRow(
     agentId = agentId,
     name = name,
@@ -75,4 +83,7 @@ fun agentRow(
     nodeName = nodeName,
     nodeDenUrl = nodeDenUrl,
     pointerSessionId = pointers.get(agentId)?.sessionId,
+    color = color,
+    model = model,
+    effort = effort,
 )

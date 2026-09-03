@@ -13,16 +13,16 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.rivethub.app.plane.ChatItemKind
 import io.rivethub.app.plane.displayTitle
+import io.rivethub.app.plane.findChatItem
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.Nav
@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
                 "dark" -> ThemeMode.Dark
                 else -> ThemeMode.System
             }
-            RivetTheme(mode) { App(container) }
+            RivetTheme(mode) { App(container, openStream = { uri -> contentResolver.openInputStream(uri) }) }
         }
     }
 
@@ -88,7 +88,7 @@ private fun Screen.storeKey(): String? = when (this) {
 }
 
 @Composable
-fun App(c: AppContainer) {
+fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? = { null }) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
     val p = prefs
     if (p == null) {
@@ -99,7 +99,7 @@ fun App(c: AppContainer) {
         Nav(if (c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) Screen.Hub else Screen.Enroll)
     }
     val stores: ScreenStores = viewModel(key = "screen-stores")
-    var hubGen by remember { mutableIntStateOf(0) }
+    val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c) }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
     LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
@@ -111,19 +111,27 @@ fun App(c: AppContainer) {
             onDone = { nav.replaceAll(Screen.Hub) },
         )
         Screen.Hub -> {
-            val hubVm: HubViewModel = viewModel(key = "hub-$hubGen") { HubViewModel(c) }
             val newTitle = androidx.compose.ui.res.stringResource(R.string.new_conversation)
             HubScreen(
                 vm = hubVm,
                 c = c,
                 onOpenChat = { open ->
+                    val located = hubVm.state.value.items
+                    val hit = findChatItem(located.map { it.item }, open.sessionId)
+                    val title = when {
+                        open.draft -> newTitle
+                        hit != null -> displayTitle(hit, hubVm.state.value.titleOverrides)
+                        else -> open.sessionId
+                    }
                     nav.push(
                         Screen.Chat(
                             sessionKey = open.sessionId,
                             nodeDenUrl = open.nodeDenUrl,
                             harnessId = open.harnessId,
-                            title = if (open.draft) newTitle else open.sessionId,
+                            title = title,
                             draft = open.draft,
+                            model = open.model,
+                            effort = open.effort,
                         ),
                     )
                 },
@@ -134,7 +142,8 @@ fun App(c: AppContainer) {
                             nodeDenUrl = row.nodeDenUrl,
                             harnessId = row.item.harnessId,
                             title = displayTitle(row.item, hubVm.state.value.titleOverrides),
-                            draft = row.item.kind == io.rivethub.app.plane.ChatItemKind.DRAFT,
+                            draft = row.item.kind == ChatItemKind.DRAFT,
+                            model = row.item.model.orEmpty(),
                         ),
                     )
                 },
@@ -142,7 +151,6 @@ fun App(c: AppContainer) {
                 onForget = {
                     stores.clearAll()
                     hubVm.shutdown()
-                    hubGen++
                     nav.replaceAll(Screen.Enroll)
                 },
             )
@@ -150,7 +158,10 @@ fun App(c: AppContainer) {
         is Screen.Chat -> {
             CompositionLocalProvider(LocalViewModelStoreOwner provides stores.owner(s.storeKey()!!)) {
                 val vm: HarnessChatViewModel = viewModel {
-                    HarnessChatViewModel(c, s.sessionKey, s.nodeDenUrl, s.harnessId, s.title, s.draft)
+                    HarnessChatViewModel(
+                        c, s.sessionKey, s.nodeDenUrl, s.harnessId, s.title, s.draft,
+                        presetModel = s.model, presetEffort = s.effort, openStream = openStream,
+                    )
                 }
                 HarnessChatScreen(vm, onBack = { nav.pop() })
             }

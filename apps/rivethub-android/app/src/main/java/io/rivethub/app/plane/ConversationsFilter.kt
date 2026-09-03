@@ -1,18 +1,35 @@
 package io.rivethub.app.plane
 
-const val FILTER_ALL = "All"
-const val FILTER_ACTIVE = "Active"
-const val FILTER_PINNED = "Pinned"
+/**
+ * Filter identity is a sealed type so a node named "All" cannot collide with
+ * the All chip. Labels are resolved in the composable from string resources.
+ */
+sealed interface ConversationFilter {
+    data object All : ConversationFilter
+    data object Active : ConversationFilter
+    data object Pinned : ConversationFilter
+    data class Node(val id: String, val name: String) : ConversationFilter
+}
 
-fun conversationsFilterChips(nodeNames: List<String>): List<String> =
-    listOf(FILTER_ALL, FILTER_ACTIVE, FILTER_PINNED) + nodeNames.filter { it.isNotBlank() }
+fun ConversationFilter.chipId(): String = when (this) {
+    ConversationFilter.All -> "all"
+    ConversationFilter.Active -> "active"
+    ConversationFilter.Pinned -> "pinned"
+    is ConversationFilter.Node -> "node:$id"
+}
+
+data class NodeChip(val id: String, val name: String)
+
+fun conversationsFilterChips(nodes: List<NodeChip>): List<ConversationFilter> =
+    listOf(ConversationFilter.All, ConversationFilter.Active, ConversationFilter.Pinned) +
+        nodes.filter { it.name.isNotBlank() || it.id.isNotBlank() }.map {
+            ConversationFilter.Node(it.id, it.name.ifBlank { it.id })
+        }
 
 fun isActiveStatus(status: String?): Boolean {
     val s = status?.trim()?.lowercase().orEmpty()
     return s == "active" || s == "running" || s == "busy"
 }
-
-fun archiveKey(item: ChatItem): String = item.key
 
 fun isArchived(item: ChatItem, archived: Set<String>): Boolean {
     if (item.key in archived) return true
@@ -43,11 +60,11 @@ data class ConversationLists(
 /**
  * Split + filter the recency-ordered list. Archived rows always drop out of
  * [ConversationLists.live] and land in [ConversationLists.archived] (still
- * recency-ordered). A node chip filters both sides to that node name.
+ * recency-ordered). A node chip filters both sides to that node id/name.
  */
 fun filterConversations(
     items: List<LocatedChatItem>,
-    filter: String,
+    filter: ConversationFilter,
     archived: Set<String>,
     pinnedKeys: Set<String>,
     query: String,
@@ -57,10 +74,10 @@ fun filterConversations(
         it.item.pin || it.item.key in pinnedKeys || (it.item.sessionId != null && it.item.sessionId in pinnedKeys)
 
     fun passesFilter(it: LocatedChatItem): Boolean = when (filter) {
-        FILTER_ALL -> true
-        FILTER_ACTIVE -> isActiveStatus(it.item.status)
-        FILTER_PINNED -> pinned(it)
-        else -> it.nodeName == filter || it.nodeId == filter
+        ConversationFilter.All -> true
+        ConversationFilter.Active -> isActiveStatus(it.item.status)
+        ConversationFilter.Pinned -> pinned(it)
+        is ConversationFilter.Node -> it.nodeName == filter.name || it.nodeId == filter.id
     }
 
     val live = ArrayList<LocatedChatItem>()
@@ -73,5 +90,3 @@ fun filterConversations(
     }
     return ConversationLists(live, archivedRows)
 }
-
-fun archivedSectionLabel(count: Int): String = "Archived ($count)"

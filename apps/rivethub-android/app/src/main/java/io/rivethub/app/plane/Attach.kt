@@ -130,18 +130,36 @@ class SessionAttach(
     private val fetchTranscript: suspend () -> List<HarnessTranscriptTurn>,
     private val onFatal: (String) -> Unit = {},
     private val closeWatch: () -> Unit = {},
-    private val settleMs: Long = RESYNC_SETTLE_MS,
-    private val delayMs: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+    val settleMs: Long = RESYNC_SETTLE_MS,
 ) {
     var stopped: Boolean = false
         private set
     private var generation: Int = 0
+    private var settling: Boolean = false
+    private val duringSettle = ArrayList<HarnessEvent>()
+
+    /**
+     * Retire this attach without closing the live watch or firing [onFatal].
+     * A replacement attach owns the socket; a stale settle must not wipe it.
+     */
+    fun detach() {
+        if (stopped) return
+        stopped = true
+        generation++
+        settling = false
+        duringSettle.clear()
+    }
 
     suspend fun onWatchOpen() {
         if (stopped) return
         resync(committed = false)
     }
 
+    /**
+     * Apply [event] immediately. Turn-complete does **not** delay here —
+     * the owner defers [flushCommittedResync] so later frames are not
+     * queued behind the 400 ms settle.
+     */
     suspend fun onFrame(event: HarnessEvent) {
         if (stopped) return
         val verdict = machine.onFrame(event)
@@ -150,11 +168,26 @@ class SessionAttach(
             stop(err.message.ifBlank { err.code })
             return
         }
-        if (event is HarnessEvent.TurnComplete) {
-            if (settleMs > 0) delayMs(settleMs)
-            if (stopped) return
-            resync(committed = true)
+        if (settling && event !is HarnessEvent.TurnComplete) {
+            duringSettle += event
         }
+        if (event is HarnessEvent.TurnComplete) {
+            settling = true
+            duringSettle.clear()
+        }
+    }
+
+    /** After settleMs: hard-replace, then replay frames that arrived during settle. */
+    suspend fun flushCommittedResync() {
+        if (stopped || !settling) return
+        resync(committed = true)
+        if (stopped) return
+        for (e in duringSettle.toList()) {
+            if (stopped) return
+            machine.onFrame(e)
+        }
+        duringSettle.clear()
+        settling = false
     }
 
     private suspend fun resync(committed: Boolean) {

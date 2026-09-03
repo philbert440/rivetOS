@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -35,6 +36,7 @@ fun HubScreen(
     onForget: () -> Unit,
 ) {
     val st by vm.state.collectAsState()
+    LaunchedEffect(Unit) { vm.refresh() }
     val colors = RivetTheme.colors
     val chats = stringResource(R.string.rail_chats)
     val agents = stringResource(R.string.rail_agents)

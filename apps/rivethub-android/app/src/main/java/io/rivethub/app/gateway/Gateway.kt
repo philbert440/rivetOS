@@ -93,6 +93,8 @@ class Gateway(
     suspend fun healthz(): Healthz = get(listOf("healthz"), Healthz.serializer())
     suspend fun mesh(): MeshOverview = get(listOf("api", "mesh"), MeshOverview.serializer())
     suspend fun catalogAgents(): CatalogAgentsResponse = get(listOf("api", "catalog", "agents"), CatalogAgentsResponse.serializer())
+    suspend fun agents(): List<AgentPreset> =
+        get(listOf("api", "agents"), AgentsListResponse.serializer()).agents
     suspend fun sessions(): SessionsListResponse = get(listOf("api", "sessions"), SessionsListResponse.serializer())
 
     suspend fun messages(sessionId: String): List<SessionMessage> =
@@ -168,6 +170,27 @@ class Gateway(
                     val text = res.body.string()
                     if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
                     wireJson.decodeFromString(TermSpawnResponse.serializer(), text)
+                }
+            }
+        }
+
+    /**
+     * Inject a chat turn into the session's live PTY stdin. Server-side
+     * `submit` (default true) appends CR as a separate write after the paste;
+     * the client must not append `\r` itself.
+     */
+    suspend fun termInject(session: String, text: String, interrupt: Boolean? = null, submit: Boolean? = null): TermInjectResponse =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(
+                TermInjectRequest.serializer(),
+                TermInjectRequest(session = session, text = text, submit = submit, interrupt = interrupt),
+            ).toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "terminal", "inject"))).post(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text2 = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text2))
+                    wireJson.decodeFromString(TermInjectResponse.serializer(), text2)
                 }
             }
         }

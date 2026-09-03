@@ -39,7 +39,9 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
 import io.rivethub.app.plane.EnrollErrorKind
+import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.enrollError
+import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.components.PrimaryButton
 import io.rivethub.app.ui.components.SectionHeader
 import io.rivethub.app.ui.components.TimeFmt
@@ -60,21 +62,20 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     var url by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { if (url.isBlank()) url = c.settings.snapshot().entryUrl }
     var pass by remember { mutableStateOf("") }
-    var p12 by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
+    var p12Uri by remember { mutableStateOf<Uri?>(null) }
+    var p12Name by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val existing = remember { c.identity.summary() }
 
-    fun readUri(uri: Uri): Pair<String, ByteArray>? {
-        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
+    val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
         var name = uri.lastPathSegment ?: "file"
         ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cur ->
             if (cur.moveToFirst()) name = cur.getString(0) ?: name
         }
-        return name to bytes
-    }
-    val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { p12 = readUri(it) }
+        p12Uri = uri
+        p12Name = name
     }
 
     val certRefused = stringResource(R.string.error_cert_required)
@@ -112,7 +113,7 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
 
             SectionHeader(stringResource(R.string.label_p12))
             Spacer(Modifier.height(Dimens.gridHalf))
-            if (existing != null && p12 == null) {
+            if (existing != null && p12Uri == null) {
                 Text(
                     stringResource(R.string.using_existing_cert, existing.cn, TimeFmt.date(existing.notAfter)),
                     color = colors.inkDim,
@@ -121,15 +122,15 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 Spacer(Modifier.height(Dimens.gridHalf))
             }
             PrimaryButton(
-                text = stringResource(if (existing != null && p12 == null) R.string.action_replace_p12 else R.string.action_choose_p12),
+                text = stringResource(if (existing != null && p12Uri == null) R.string.action_replace_p12 else R.string.action_choose_p12),
                 onClick = { pickP12.launch(arrayOf("*/*")) },
             )
-            val chosen = p12?.first ?: if (existing != null) "" else stringResource(R.string.p12_none)
+            val chosen = p12Name ?: if (existing != null) "" else stringResource(R.string.p12_none)
             if (chosen.isNotEmpty()) {
                 Spacer(Modifier.height(Dimens.gridHalf))
                 Text(chosen, color = colors.inkDim, style = RivetType.meta)
             }
-            if (p12 != null || existing == null) {
+            if (p12Uri != null || existing == null) {
                 Spacer(Modifier.height(Dimens.grid))
                 SectionHeader(stringResource(R.string.label_passphrase))
                 Spacer(Modifier.height(Dimens.gridHalf))
@@ -152,18 +153,26 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                     if (busy) return@PrimaryButton
                     error = null
                     val entry = url.trim().trimEnd('/')
-                    if (!entry.startsWith("https://")) {
-                        error = httpsRequired
-                        return@PrimaryButton
+                    when (validateEntryUrl(entry)) {
+                        EntryUrlError.Blank, EntryUrlError.NotHttps -> {
+                            error = httpsRequired
+                            return@PrimaryButton
+                        }
+                        null -> Unit
                     }
                     scope.launch {
                         busy = true
                         try {
                             withContext(Dispatchers.IO) {
-                                p12?.let { c.identity.importPkcs12(it.second, pass) }
+                                p12Uri?.let { uri ->
+                                    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                        ?: throw IllegalStateException(pickCert)
+                                    c.identity.importPkcs12(bytes, pass)
+                                }
                             }
                             pass = ""
-                            p12 = null
+                            p12Uri = null
+                            p12Name = null
                             if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
                             c.settings.setEntryUrl(entry)
                             c.dropClients()
@@ -177,6 +186,7 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                                 EnrollErrorKind.CertRefused -> certRefused
                                 EnrollErrorKind.Timeout -> timeout
                                 EnrollErrorKind.Unreachable -> unreachable
+                                EnrollErrorKind.Cleartext -> httpsRequired
                                 EnrollErrorKind.Other -> {
                                     if (c.identity.hasIdentity() && c.identity.summary() == null) {
                                         ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")

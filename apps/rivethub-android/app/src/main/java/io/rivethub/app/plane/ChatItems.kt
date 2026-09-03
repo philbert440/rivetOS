@@ -62,6 +62,7 @@ fun chatItems(
     legacyRows: List<LegacyHarnessSession>,
     drafts: List<String> = emptyList(),
     draftCreatedAt: Map<String, Long> = emptyMap(),
+    pins: List<ChatItem> = emptyList(),
 ): List<ChatItem> {
     val harnessSessions = planeRows.values.flatMap { it.getOrDefault(emptyList()) }
     val legacyByKey = legacyRows.associateBy { it.id }
@@ -103,7 +104,29 @@ fun chatItems(
             updatedAt = draftCreatedAt[id] ?: 0L,
         )
     }
-    return sortByRecency(items.values.toList() + draftItems)
+    return sortByRecency(items.values.toList() + draftItems, pins)
+}
+
+/** Synthesize pin rows for [nodeDenUrl] from agent pointers (desktop pinIds). */
+fun pinChatItems(
+    pointers: Map<String, AgentPointer>,
+    agents: List<AgentRow>,
+    nodeDenUrl: String,
+): List<ChatItem> {
+    val url = nodeDenUrl.trimEnd('/')
+    return pointers.mapNotNull { (agentId, ptr) ->
+        if (ptr.nodeBaseUrl.trimEnd('/') != url) return@mapNotNull null
+        val agent = agents.find { it.agentId == agentId }
+        ChatItem(
+            key = ptr.sessionId,
+            kind = ChatItemKind.HARNESS,
+            title = agent?.name?.takeIf { it.isNotBlank() } ?: ptr.sessionId,
+            sessionId = ptr.sessionId,
+            harnessId = agent?.harnessId,
+            model = agent?.model?.takeIf { it.isNotBlank() },
+            updatedAt = ptr.updatedAt,
+        )
+    }
 }
 
 /**
