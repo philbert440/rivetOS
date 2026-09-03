@@ -2,6 +2,7 @@ package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +24,12 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
+import io.rivethub.app.plane.HubTab
+import io.rivethub.app.plane.NodeSheetModel
+import io.rivethub.app.plane.NodeSheetRow
+import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.ui.term.AnsiScreen
+import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -161,6 +168,157 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 DenBot(size = 28.dp)
                 Spacer(Modifier.height(8.dp))
                 SegmentedControl(listOf("Chat", "Terminal"), "Chat", onSelect = {})
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Pills")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Pill("idle", PillTone.Dim)
+                    Pill("streaming", PillTone.Em)
+                    Pill("thinking", PillTone.Warn)
+                }
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Transcript / MessageBubble")
+                MessageBubble(Bubble.User) { Text("hello from the phone") }
+                Spacer(Modifier.height(8.dp))
+                MessageBubble(Bubble.Assistant) { Text("hello from the den") }
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Composer")
+                var composer by remember { mutableStateOf("") }
+                Composer(
+                    value = composer,
+                    onValueChange = { composer = it },
+                    placeholder = "Message",
+                    live = false,
+                    pickers = {},
+                    chips = { HarnessChip("Claude Code") },
+                    onAttach = {},
+                    onSend = {},
+                    onStop = {},
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Terminal pane")
+                val termScreen = remember {
+                    AnsiScreen(40, 8).also { it.feed("rivet@node:~$ ls\n".toByteArray()) }
+                }
+                Box(Modifier.height(120.dp).fillMaxWidth()) {
+                    TerminalPane(
+                        screen = termScreen,
+                        rev = 0,
+                        fontSp = 13,
+                        status = TermStatus.Attached,
+                        onResize = { _, _ -> },
+                        onBytes = {},
+                        ctrl = false,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Terminal keys")
+                KeyToolbar(
+                    keys = listOf(
+                        ToolbarKey.Label("esc", "Esc"),
+                        ToolbarKey.Label("tab", "Tab"),
+                        ToolbarKey.Sticky("ctrl", "Ctrl"),
+                    ),
+                    onKey = {},
+                    latched = setOf("ctrl"),
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("RivetToggle")
+                var tog by remember { mutableStateOf(true) }
+                RivetToggle(checked = tog, onChange = { tog = it })
+                Spacer(Modifier.height(12.dp))
+                GalleryH("RivetSelect")
+                var sel by remember { mutableStateOf("sm") }
+                RivetSelect(
+                    value = sel,
+                    options = listOf(SelectOption("sm", "Small"), SelectOption("md", "Medium")),
+                    onChange = { sel = it },
+                    title = "Font size",
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Drawer")
+            }
+            Box(Modifier.height(420.dp).fillMaxWidth()) {
+                RivetDrawerContent(
+                    width = Dimens.drawerWidth,
+                    tab = HubTab.Conversations,
+                    unread = 2,
+                    agents = listOf(
+                        AgentRow(
+                            agentId = "a1",
+                            name = "rivet",
+                            harnessId = "claude-code",
+                            nodeId = "n",
+                            nodeName = "ct115",
+                            nodeDenUrl = "https://192.0.2.10:5174",
+                            pointerSessionId = "s",
+                            color = "#CC785C",
+                            model = "claude",
+                            online = true,
+                        ),
+                        AgentRow(
+                            agentId = "a2",
+                            name = "offline bot",
+                            harnessId = "grok-build",
+                            nodeId = "gone",
+                            nodeName = "gone",
+                            nodeDenUrl = "https://192.0.2.99:5174",
+                            pointerSessionId = null,
+                            online = false,
+                        ),
+                    ),
+                    agentsCollapsed = false,
+                    currentNodeName = "ct115",
+                    nodeSheet = NodeSheetModel(
+                        saved = listOf(
+                            NodeSheetRow(
+                                id = "ct115",
+                                name = "ct115",
+                                denUrl = "https://192.0.2.10:5174",
+                                current = true,
+                                saved = true,
+                                marker = "●",
+                                sessions = 3,
+                                removable = false,
+                                online = true,
+                                selectable = true,
+                            ),
+                        ),
+                        discovered = listOf(
+                            NodeSheetRow(
+                                id = "peer",
+                                name = "peer",
+                                denUrl = "https://192.0.2.12:5174",
+                                current = false,
+                                saved = false,
+                                marker = "○",
+                                sessions = 4,
+                                removable = false,
+                                online = true,
+                                selectable = true,
+                            ),
+                        ),
+                        meshUnavailable = false,
+                    ),
+                    onClose = {},
+                    onNav = {},
+                    onUnread = {},
+                    onToggleAgents = {},
+                    onAddAgent = {},
+                    onAgentTap = {},
+                    onAgentStartOver = {},
+                    onAgentNew = {},
+                    onSelectNode = {},
+                    onRemoveNode = {},
+                    onSaveDiscovered = {},
+                )
+            }
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                GalleryH("Node sheet")
+                Text("NODES", color = colors.inkDim, style = RivetType.mono10)
+                Text("● ct115", color = colors.em, style = RivetType.xs)
+                Text("○ ct119  offline", color = colors.inkDim, style = RivetType.xs)
+                Text("ON THE MESH", color = colors.inkDim, style = RivetType.mono10, modifier = Modifier.padding(top = 8.dp))
+                Text("+ peer (4 sessions)", color = colors.inkDim, style = RivetType.xs)
             }
         }
     }

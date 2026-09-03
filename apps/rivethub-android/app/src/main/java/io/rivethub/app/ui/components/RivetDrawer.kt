@@ -40,8 +40,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -53,7 +57,7 @@ import io.rivethub.app.plane.DrawerDest
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
-import io.rivethub.app.plane.accentFor
+import io.rivethub.app.plane.accentForDrawer
 import io.rivethub.app.plane.discoveredNodeLabel
 import io.rivethub.app.plane.drawerDestEnabled
 import io.rivethub.app.plane.drawerItemActive
@@ -95,10 +99,7 @@ fun RivetDrawerContent(
             .width(width)
             .fillMaxHeight()
             .background(colors.panel.copy(alpha = 0.8f))
-            .border(width = 0.dp, color = Color.Transparent)
-            .then(
-                Modifier.drawEndBorder(colors.line),
-            ),
+            .then(Modifier.drawEndBorder(colors.line)),
     ) {
         DrawerHeader(
             unread = unread,
@@ -108,22 +109,25 @@ fun RivetDrawerContent(
         Column(
             Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+                .verticalScroll(rememberScrollState()),
         ) {
-            drawerPrimaryNav().forEach { dest ->
-                DrawerNavItem(dest, tab, onNav)
-            }
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp)
-                    .height(1.dp)
-                    .background(colors.line),
-            )
-            drawerSecondaryNav().forEach { dest ->
-                DrawerNavItem(dest, tab, onNav)
+            Column(
+                Modifier.padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                drawerPrimaryNav().forEach { dest ->
+                    DrawerNavItem(dest, tab, onNav)
+                }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                        .height(1.dp)
+                        .background(colors.line),
+                )
+                drawerSecondaryNav().forEach { dest ->
+                    DrawerNavItem(dest, tab, onNav)
+                }
             }
             AgentsBlock(
                 agents = agents,
@@ -134,7 +138,7 @@ fun RivetDrawerContent(
                 onLong = { agentSheet = it },
             )
         }
-        Column {
+        Column(Modifier.drawTopBorder(colors.line)) {
             Box(Modifier.padding(horizontal = 8.dp)) {
                 DrawerNavItem(DrawerDest.Settings, tab, onNav)
             }
@@ -222,9 +226,14 @@ private fun DrawerHeader(unread: Int, onToggle: () -> Unit, onUnread: () -> Unit
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        val closeMenu = stringResource(R.string.cd_close_drawer)
         Box(
             Modifier
                 .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
+                .semantics {
+                    contentDescription = closeMenu
+                    this.role = Role.Button
+                }
                 .clickable(role = Role.Button, onClick = onToggle),
             contentAlignment = Alignment.Center,
         ) {
@@ -271,57 +280,64 @@ private fun AgentsBlock(
     onLong: (AgentRow) -> Unit,
 ) {
     val colors = RivetTheme.colors
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .drawTopBorder(colors.line)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
     ) {
         Row(
-            Modifier
-                .weight(1f)
-                .sizeIn(minHeight = 44.dp)
-                .clip(RoundedCornerShape(Radius.sm))
-                .clickable(role = Role.Button, onClick = onToggle)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+            Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Lucide(R.drawable.lucide_bot, null, tint = colors.inkDim, modifier = Modifier.size(16.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(stringResource(R.string.agents_section), color = colors.inkDim, style = RivetType.sm)
-            Spacer(Modifier.width(4.dp))
-            Lucide(
-                if (collapsed) R.drawable.lucide_chevron_right else R.drawable.lucide_chevron_down,
-                contentDescription = null,
-                tint = colors.inkDim,
-                modifier = Modifier.size(12.dp),
-            )
-        }
-        if (!collapsed) {
-            Box(
+            Row(
                 Modifier
-                    .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-                    .clickable(role = Role.Button, onClick = onAdd),
-                contentAlignment = Alignment.Center,
+                    .weight(1f)
+                    .sizeIn(minHeight = 44.dp)
+                    .clip(RoundedCornerShape(Radius.sm))
+                    .clickable(role = Role.Button, onClick = onToggle)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
+                Lucide(R.drawable.lucide_bot, null, tint = colors.inkDim, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(R.string.agents_section), color = colors.inkDim, style = RivetType.sm)
+                Spacer(Modifier.width(4.dp))
                 Lucide(
-                    R.drawable.lucide_plus,
-                    contentDescription = stringResource(R.string.add_agent),
+                    if (collapsed) R.drawable.lucide_chevron_right else R.drawable.lucide_chevron_down,
+                    contentDescription = null,
                     tint = colors.inkDim,
-                    modifier = Modifier.size(16.dp),
+                    modifier = Modifier.size(12.dp),
                 )
             }
+            if (!collapsed) {
+                Box(
+                    Modifier
+                        .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
+                        .clickable(role = Role.Button, onClick = onAdd),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Lucide(
+                        R.drawable.lucide_plus,
+                        contentDescription = stringResource(R.string.add_agent),
+                        tint = colors.inkDim,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
         }
-    }
-    if (!collapsed) {
-        if (agents.isEmpty()) {
-            Text(
-                stringResource(R.string.empty_agents),
-                color = colors.inkDim,
-                style = RivetType.xs,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-        } else {
-            agents.forEach { row ->
-                AgentRowChrome(row = row, onTap = { onTap(row) }, onLong = { onLong(row) })
+        if (!collapsed) {
+            if (agents.isEmpty()) {
+                Text(
+                    stringResource(R.string.empty_agents),
+                    color = colors.inkDim,
+                    style = RivetType.xs,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            } else {
+                agents.forEach { row ->
+                    AgentRowChrome(row = row, onTap = { onTap(row) }, onLong = { onLong(row) })
+                }
             }
         }
     }
@@ -337,13 +353,15 @@ fun AgentRowChrome(
     activityIdle: Boolean = row.pointerSessionId != null && !row.online,
 ) {
     val colors = RivetTheme.colors
-    val hex = accentFor(row.color, row.harnessId, row.agentId)
+    val hex = accentForDrawer(row.color, row.harnessId, row.model)
+    val enabled = row.online
     Row(
         modifier
             .fillMaxWidth()
             .sizeIn(minHeight = 44.dp)
+            .alpha(if (enabled) 1f else 0.5f)
             .clip(RoundedCornerShape(Radius.sm))
-            .combinedClickable(onClick = onTap, onLongClick = onLong)
+            .combinedClickable(enabled = enabled, onClick = onTap, onLongClick = onLong)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -377,7 +395,7 @@ fun AgentRowChrome(
 @Composable
 fun PulseDot(color: Color, modifier: Modifier = Modifier) {
     val t = rememberInfiniteTransition(label = "pulse")
-    val a by t.animateFloat(
+    val a = t.animateFloat(
         initialValue = 0.35f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
@@ -386,7 +404,7 @@ fun PulseDot(color: Color, modifier: Modifier = Modifier) {
     Box(
         modifier
             .size(6.dp)
-            .alpha(a)
+            .graphicsLayer { alpha = a.value }
             .clip(CircleShape)
             .background(color),
     )
@@ -401,12 +419,16 @@ private fun NodeSwitcherFooter(
     val colors = RivetTheme.colors
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
+    val switchLabel = stringResource(R.string.current_node, currentName)
     Row(
         Modifier
             .fillMaxWidth()
-            .border(width = 0.dp, color = Color.Transparent)
-            .then(Modifier.drawTopBorder(colors.line))
             .background(if (pressed) colors.panel2 else Color.Transparent)
+            .then(Modifier.drawTopBorder(colors.line))
+            .semantics {
+                contentDescription = switchLabel
+                this.role = Role.Button
+            }
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -511,23 +533,36 @@ private fun NodeSheetSavedRow(row: NodeSheetRow, onSelect: () -> Unit, onRemove:
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .weight(1f)
+                .alpha(if (row.selectable) 1f else 0.5f)
                 .clip(RoundedCornerShape(Radius.sm))
-                .clickable(role = Role.Button, onClick = onSelect)
+                .clickable(enabled = row.selectable, role = Role.Button, onClick = onSelect)
                 .padding(horizontal = 8.dp, vertical = 6.dp),
+        )
+        val health = stringResource(if (row.online) R.string.health_online else R.string.health_offline)
+        Box(
+            Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(if (row.online) colors.em else colors.inkDim)
+                .semantics { contentDescription = health },
         )
         if (row.error != null) {
             Text(row.error, color = colors.red, style = RivetType.mono10, maxLines = 1)
         }
         if (row.removable) {
-            Text(
-                "✕",
-                color = colors.inkDim,
-                style = RivetType.sm,
-                modifier = Modifier
+            val removeLabel = stringResource(R.string.remove_node, row.name)
+            Box(
+                Modifier
                     .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-                    .clickable(role = Role.Button, onClick = onRemove)
-                    .padding(4.dp),
-            )
+                    .semantics {
+                        contentDescription = removeLabel
+                        this.role = Role.Button
+                    }
+                    .clickable(role = Role.Button, onClick = onRemove),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("✕", color = colors.inkDim, style = RivetType.sm)
+            }
         }
     }
 }

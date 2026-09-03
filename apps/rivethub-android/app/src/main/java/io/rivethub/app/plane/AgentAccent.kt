@@ -15,7 +15,7 @@ const val ACCENT_GROK = "#9ca3af"
 const val ACCENT_LOCAL = "#34d399"
 
 fun harnessAccentHex(harnessId: String?, command: String? = null): String {
-    val c = "${harnessId.orEmpty()} ${command.orEmpty()}".lowercase()
+    val c = (harnessId ?: command).orEmpty().lowercase()
     if ("claude" in c) return ACCENT_CLAUDE
     if ("grok" in c) return ACCENT_GROK
     return ACCENT_LOCAL
@@ -26,6 +26,14 @@ fun accentFor(presetColor: String? = null, harnessId: String? = null, command: S
     if (preset.isNotEmpty() && HEX.matches(preset)) return preset
     return harnessAccentHex(harnessId, command)
 }
+
+/** Drawer swatch: desktop `rosterCommandFor(harnessId) ?? agent.model`. */
+fun accentForDrawer(presetColor: String?, harnessId: String?, model: String?): String =
+    accentFor(presetColor, harnessId, rosterCommandFor(harnessId) ?: model)
+
+/** Conversation-row stripe: desktop passes the session `command`. */
+fun accentForConversation(presetColor: String?, harnessId: String?, command: String?): String =
+    accentFor(presetColor, harnessId, command)
 
 /** ARGB long for Compose `Color(...)` / JVM tests. Null when [hex] is not 3- or 6-digit. */
 fun parseAccentArgb(hex: String): Long? {

@@ -3,18 +3,14 @@ package io.rivethub.app.ui.screens
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,7 +18,6 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -35,7 +30,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
@@ -43,7 +37,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
-import io.rivethub.app.BuildConfig
 import io.rivethub.app.R
 import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.validateEntryUrl
@@ -56,7 +49,6 @@ import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.SegmentedControl
 import io.rivethub.app.ui.components.ThemeGroup
-import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.Dispatchers
@@ -124,11 +116,12 @@ fun SettingsScreen(
             val hPad = if (maxWidth < 400.dp) 16.dp else 24.dp
             Column(
                 Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = hPad, vertical = 32.dp)
+                    .align(Alignment.TopCenter)
+                    .fillMaxHeight()
                     .widthIn(max = 576.dp)
-                    .align(Alignment.TopCenter),
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = hPad, vertical = 32.dp),
             ) {
                 Text(
                     stringResource(R.string.title_settings),
@@ -302,17 +295,6 @@ fun SettingsScreen(
                     },
                 )
 
-                SettingsH2(stringResource(R.string.section_about))
-                Text(
-                    "${stringResource(R.string.about_version)} ${BuildConfig.VERSION_NAME}",
-                    color = colors.inkDim,
-                    style = RivetType.mono11,
-                )
-                Text(
-                    BuildConfig.APPLICATION_ID,
-                    color = colors.inkDim,
-                    style = RivetType.mono11,
-                )
                 Spacer(Modifier.height(32.dp))
             }
         }
@@ -363,20 +345,11 @@ private fun FieldLabel(text: String) {
 
 @Composable
 private fun ForgetButton(onClick: () -> Unit) {
-    val colors = RivetTheme.colors
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val shape = RoundedCornerShape(Radius.sm)
-    Text(
-        stringResource(R.string.action_forget_device),
-        color = if (pressed) colors.red else colors.ink,
-        style = RivetType.sm,
-        modifier = Modifier
-            .clip(shape)
-            .border(1.dp, colors.line, shape)
-            .background(colors.panel2, shape)
-            .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+    RivetButton(
+        text = stringResource(R.string.action_forget_device),
+        onClick = onClick,
+        variant = RivetButtonVariant.Outline,
+        textColor = RivetTheme.colors.ink,
     )
 }
 

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,7 +52,7 @@ fun RivetModalSheet(
                 .height(1.dp)
                 .background(colors.line),
         )
-        Column(Modifier.padding(8.dp), content = content)
+        Column(Modifier.padding(8.dp).imePadding(), content = content)
     }
 }
 

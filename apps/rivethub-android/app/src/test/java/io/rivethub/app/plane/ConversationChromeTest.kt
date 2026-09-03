@@ -24,7 +24,7 @@ class ConversationChromeTest {
     @Test
     fun `archived split keeps recency of each side`() {
         val items = listOf(loc("a"), loc("b"), loc("c"))
-        val lists = filterConversations(items, ConversationFilter.All, setOf("b"), emptySet(), "")
+        val lists = filterConversations(items, ConversationFilter.All, setOf("b"), "")
         assertEquals(listOf("a", "c"), lists.live.map { it.item.key })
         assertEquals(listOf("b"), lists.archived.map { it.item.key })
     }
@@ -51,6 +51,29 @@ class ConversationChromeTest {
         assertEquals(ConversationEmptyKind.NoMatches, conversationEmptyKind(4, 0, 0, "zzz"))
         assertEquals(ConversationEmptyKind.AllArchived, conversationEmptyKind(2, 0, 2, ""))
         assertEquals(ConversationEmptyKind.None, conversationEmptyKind(2, 1, 1, ""))
+    }
+
+    @Test
+    fun `node-filtered empty uses the filtered list not the global total`() {
+        val items = listOf(loc("a"), loc("b"))
+        val other = filterConversations(
+            items,
+            ConversationFilter.Node("gone", "gone"),
+            emptySet(),
+            "",
+        )
+        assertEquals(0, other.live.size)
+        assertEquals(0, other.archived.size)
+        assertEquals(
+            ConversationEmptyKind.NoConversations,
+            conversationEmptyKind(other.live.size + other.archived.size, other.live.size, other.archived.size, ""),
+        )
+        val here = filterConversations(items, ConversationFilter.Node("n", "n"), emptySet(), "")
+        assertEquals(2, here.live.size)
+        assertEquals(
+            ConversationEmptyKind.None,
+            conversationEmptyKind(here.live.size + here.archived.size, here.live.size, here.archived.size, ""),
+        )
     }
 
     @Test

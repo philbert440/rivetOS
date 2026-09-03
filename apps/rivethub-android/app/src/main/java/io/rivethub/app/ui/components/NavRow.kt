@@ -22,8 +22,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
@@ -62,7 +62,7 @@ fun NavRow(
             .clip(RoundedCornerShape(Radius.sm))
             .background(bg)
             .then(
-                if (comingSoon != null) Modifier.semantics { contentDescription = comingSoon }
+                if (comingSoon != null) Modifier.semantics { stateDescription = comingSoon }
                 else Modifier,
             )
             .clickable(

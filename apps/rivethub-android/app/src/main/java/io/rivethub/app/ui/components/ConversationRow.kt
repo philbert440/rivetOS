@@ -17,6 +17,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,6 +40,7 @@ fun ConversationRowChrome(
     onArchive: () -> Unit,
     onLong: () -> Unit,
     modifier: Modifier = Modifier,
+    rowKey: String = "",
     active: Boolean = false,
     archived: Boolean = false,
     status: ConversationRowStatus = ConversationRowStatus.None,
@@ -97,33 +99,37 @@ fun ConversationRowChrome(
         Box(wrap) { row() }
         return
     }
-    val state = rememberSwipeToDismissBoxState(
-        confirmValueChange = { v ->
-            if (v == SwipeToDismissBoxValue.EndToStart) {
-                onArchive()
-                true
-            } else false
-        },
-    )
-    SwipeToDismissBox(
-        state = state,
-        enableDismissFromStartToEnd = false,
-        backgroundContent = {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(colors.panel2)
-                    .padding(horizontal = 12.dp),
-                contentAlignment = Alignment.CenterEnd,
-            ) {
-                Lucide(
-                    R.drawable.lucide_archive,
-                    contentDescription = stringResource(R.string.action_archive),
-                    tint = colors.inkDim,
-                    modifier = Modifier.size(12.dp),
-                )
-            }
-        },
-        modifier = wrap,
-    ) { row() }
+    key(rowKey) {
+        val state = rememberSwipeToDismissBoxState(
+            confirmValueChange = { v ->
+                if (v == SwipeToDismissBoxValue.EndToStart) {
+                    onArchive()
+                    false
+                } else false
+            },
+        )
+        SwipeToDismissBox(
+            state = state,
+            enableDismissFromStartToEnd = false,
+            backgroundContent = {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(colors.panel2)
+                        .padding(horizontal = 12.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Lucide(
+                        if (archived) R.drawable.lucide_archive_restore else R.drawable.lucide_archive,
+                        contentDescription = stringResource(
+                            if (archived) R.string.action_unarchive else R.string.action_archive,
+                        ),
+                        tint = colors.inkDim,
+                        modifier = Modifier.size(12.dp),
+                    )
+                }
+            },
+            modifier = wrap,
+        ) { row() }
+    }
 }

@@ -5,6 +5,7 @@ data class NodeSheetInput(
     val name: String,
     val denUrl: String,
     val sessions: Int? = null,
+    val online: Boolean = true,
 )
 
 data class NodeSheetRow(
@@ -17,6 +18,8 @@ data class NodeSheetRow(
     val sessions: Int? = null,
     val error: String? = null,
     val removable: Boolean,
+    val online: Boolean = true,
+    val selectable: Boolean = true,
 )
 
 data class NodeSheetModel(
@@ -70,11 +73,14 @@ fun buildNodeSheet(
             sessions = input?.sessions,
             error = nodeErrors[id],
             removable = saved && url != entry,
+            online = input?.online ?: false,
+            selectable = input != null,
         )
     }
 
     val saved = savedUrls.map { url -> row(url, saved = true, byUrl[url]) }
     val discovered = nodes
+        .filter { it.online && it.denUrl.isNotBlank() }
         .map { normUrl(it.denUrl) to it }
         .filter { (url, _) -> url.isNotEmpty() && url !in savedUrls }
         .map { (url, input) -> row(url, saved = false, input) }

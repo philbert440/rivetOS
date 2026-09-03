@@ -10,11 +10,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -96,7 +98,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
             Box(
                 Modifier
                     .padding(12.dp)
+                    .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
                     .clickable(onClick = onBack),
+                contentAlignment = Alignment.Center,
             ) {
                 Lucide(
                     R.drawable.lucide_arrow_left,
@@ -110,11 +114,12 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
             val hPad = if (maxWidth < 400.dp) 16.dp else 24.dp
             Column(
                 Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = hPad, vertical = 32.dp)
+                    .align(Alignment.TopCenter)
+                    .fillMaxHeight()
                     .widthIn(max = 576.dp)
-                    .align(Alignment.TopCenter),
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = hPad, vertical = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Top,
             ) {

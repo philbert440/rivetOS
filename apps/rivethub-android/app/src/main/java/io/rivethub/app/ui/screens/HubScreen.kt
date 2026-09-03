@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
@@ -61,14 +62,25 @@ fun HubScreen(
     fun openDrawer() { scope.launch { drawerState.open() } }
     fun closeDrawer() { scope.launch { drawerState.close() } }
     val colors = RivetTheme.colors
-    val nodeSheet = buildNodeSheet(
-        entryUrl = st.prefs.entryUrl,
-        extraUrls = st.prefs.extraNodes,
-        nodes = st.nodes.map { NodeSheetInput(it.id, it.name.ifBlank { it.id }, it.denUrl, it.sessions) },
-        viewNodeId = st.prefs.viewNodeId,
-        nodeErrors = st.nodeErrors,
-        meshUnavailable = st.errorKind != null && st.nodes.isEmpty(),
-    )
+    val nodeSheet = remember(
+        st.prefs.entryUrl,
+        st.prefs.extraNodes,
+        st.nodes,
+        st.prefs.viewNodeId,
+        st.nodeErrors,
+        st.errorKind,
+    ) {
+        buildNodeSheet(
+            entryUrl = st.prefs.entryUrl,
+            extraUrls = st.prefs.extraNodes,
+            nodes = st.nodes.map {
+                NodeSheetInput(it.id, it.name.ifBlank { it.id }, it.denUrl, it.sessions, it.online)
+            },
+            viewNodeId = st.prefs.viewNodeId,
+            nodeErrors = st.nodeErrors,
+            meshUnavailable = st.errorKind != null && st.nodes.isEmpty(),
+        )
+    }
     val currentNode = st.nodes.find { it.id == st.prefs.viewNodeId }
         ?: st.nodes.find { it.denUrl.trimEnd('/') == st.prefs.entryUrl.trim().trimEnd('/') }
         ?: st.nodes.firstOrNull()
@@ -122,12 +134,14 @@ fun HubScreen(
                         onOpenChat(vm.openAgentAction(row, AgentAction.Plus))
                     },
                     onSelectNode = { row ->
-                        vm.selectViewNode(row.id, row.name)
-                        closeDrawer()
+                        if (row.selectable) {
+                            vm.selectViewNode(row.id, row.name)
+                            closeDrawer()
+                        }
                     },
                     onRemoveNode = { row -> vm.removeSavedNode(row.denUrl) },
                     onSaveDiscovered = { row -> vm.addSavedNode(row.denUrl) },
-                    modifier = Modifier.statusBarsPadding(),
+                    modifier = Modifier.statusBarsPadding().navigationBarsPadding(),
                 )
             },
         ) {
@@ -178,6 +192,7 @@ fun HubScreen(
                         color = colors.ink,
                         style = RivetType.xs,
                         modifier = Modifier
+                            .sizeIn(minHeight = 44.dp)
                             .clickable {
                                 addAgentOpen = false
                                 onOpenChat(vm.openAgentAction(agent, AgentAction.Plus))

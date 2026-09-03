@@ -67,4 +67,24 @@ class NodeSheetTest {
         )
         assertEquals("timed out", model.saved.find { it.id == "ct115" }?.error)
     }
+
+    @Test
+    fun `offline discovered nodes are not offered`() {
+        val mixed = listOf(
+            NodeSheetInput("ct115", "ct115", entry, sessions = 3, online = true),
+            NodeSheetInput("down", "down", "https://192.0.2.99:5174", sessions = 1, online = false),
+        )
+        val model = buildNodeSheet(entry, emptySet(), mixed, viewNodeId = "ct115")
+        assertTrue(model.discovered.none { it.id == "down" })
+    }
+
+    @Test
+    fun `saved but undiscovered nodes are not selectable`() {
+        val model = buildNodeSheet(entry, setOf(extra), emptyList(), viewNodeId = "")
+        val extraRow = model.saved.find { it.denUrl == extra }!!
+        assertFalse(extraRow.selectable)
+        assertFalse(extraRow.online)
+        val entryRow = model.saved.find { it.denUrl == entry }!!
+        assertFalse(entryRow.selectable)
+    }
 }

@@ -24,6 +24,7 @@ class AgentAccentTest {
         assertEquals(ACCENT_GROK, harnessAccentHex("grok-build", null))
         assertEquals(ACCENT_LOCAL, harnessAccentHex("hermes", null))
         assertEquals(ACCENT_CLAUDE, harnessAccentHex(null, "claude"))
+        assertEquals(ACCENT_GROK, harnessAccentHex("grok-build", "claude"))
     }
 
     @Test
@@ -34,6 +35,21 @@ class AgentAccentTest {
         assertEquals(
             accentFor(null, "grok-build", "grok"),
             harnessAccentHex("grok-build", "grok"),
+        )
+    }
+
+    @Test
+    fun `drawer and conversation dots match for the same agent`() {
+        val harnessId = "grok-build"
+        val model = "claude-opus"
+        val sessionCommand = "claude"
+        val drawer = accentForDrawer(null, harnessId, model)
+        val convo = accentForConversation(null, harnessId, sessionCommand)
+        assertEquals(drawer, convo)
+        assertEquals(ACCENT_GROK, drawer)
+        assertEquals(
+            accentForDrawer("#3b82f6", harnessId, model),
+            accentForConversation("#3b82f6", harnessId, sessionCommand),
         )
     }
 

@@ -7,16 +7,6 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
 class HubReducersTest {
-    @Test fun `claude grok kimi hermes map onto brief tokens`() {
-        assertEquals(AccentToken.Em, harnessAccentToken("claude-code"))
-        assertEquals(AccentToken.Link, harnessAccentToken("grok-build"))
-        assertEquals(AccentToken.Warn, harnessAccentToken("kimi-code"))
-        assertEquals(AccentToken.Red, harnessAccentToken("hermes"))
-        assertEquals(AccentToken.InkDim, harnessAccentToken("deepseek-harness"))
-        assertEquals(AccentToken.Em, harnessAccentToken(null, "claude"))
-        assertEquals(AccentToken.InkDim, harnessAccentToken(null, null))
-    }
-
     @Test fun `harnessIdForAgent maps catalog ids`() {
         assertEquals("claude-code", harnessIdForAgent("claude", "claude-cli"))
         assertEquals("grok-build", harnessIdForAgent("grok", null))
