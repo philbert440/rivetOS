@@ -1,5 +1,6 @@
 package io.rivethub.app.plane
 
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -90,6 +91,41 @@ class AskUserTest {
         assertEquals(emptyList<AskQuestion>(), extractAskUserQuestions(obj {
             putJsonArray("questions") { add(obj { put("question", "no options") }) }
         }))
+    }
+
+    @Test fun `never throws on non-primitive fields arrays of objects or nulls`() {
+        val qs = extractAskUserQuestions(obj {
+            putJsonArray("options") { add("A"); add("B") }
+            put("header", buildJsonObject { put("nested", true) })
+            putJsonArray("multiSelect") { add(true) }
+            put("question", JsonNull)
+        })
+        assertEquals(1, qs.size)
+        assertNull(qs[0].header)
+        assertNull(qs[0].question)
+        assertFalse(qs[0].multiSelect)
+        assertEquals(listOf("A", "B"), qs[0].options.map { it.label })
+
+        val fromObjectLabel = extractAskUserQuestions(obj {
+            putJsonArray("options") {
+                add(obj { put("label", buildJsonObject { put("x", 1) }) })
+                add("Keep")
+            }
+        })
+        assertEquals(listOf("Keep"), fromObjectLabel.single().options.map { it.label })
+
+        val nestedNull = extractAskUserQuestions(obj {
+            putJsonArray("questions") {
+                add(obj {
+                    putJsonArray("options") { add("A"); add("B") }
+                    put("header", JsonNull)
+                    put("multiSelect", JsonNull)
+                })
+            }
+        })
+        assertEquals(1, nestedNull.size)
+        assertNull(nestedNull[0].header)
+        assertFalse(nestedNull[0].multiSelect)
     }
 
     @Test fun `parses JSON string args`() {

@@ -63,8 +63,11 @@ class HarnessGateway(
     fun sessionWatchUrl(enc: String): String =
         url(listOf("api", "harness-sessions", "ws"), mapOf("session" to enc)).toString()
 
-    fun registryWatchUrl(): String =
-        url(listOf("api", "harnesses", "ws")).toString()
+    fun registryWatchUrl(harnessId: String? = null): String =
+        url(
+            listOf("api", "harnesses", "ws"),
+            mapOf("harness" to harnessId?.takeIf { it.isNotBlank() }),
+        ).toString()
 
     private suspend fun <T> get(segments: List<String>, ser: KSerializer<T>, query: Map<String, String?> = emptyMap()): T =
         withContext(Dispatchers.IO) {
@@ -137,13 +140,22 @@ class HarnessGateway(
      * Live tail for one session (`WS /api/harness-sessions/ws?session=`). Same
      * reconnecting, generation-guarded, at-most-once shape as Gateway.watchSessions.
      * Every OPEN is a fresh attach — the caller hard-replaces the transcript.
+     * A fatal error frame closes the socket so we do not reconnect into the
+     * same refusal forever.
      */
     fun watchSession(
         enc: String,
         onEvent: (HarnessEvent) -> Unit,
         onStatus: (WsStatus) -> Unit = {},
-    ): Closeable = WsSubscription(clients(), sessionWatchUrl(enc), onStatus) { text ->
-        parseHarnessEvent(text)?.let(onEvent)
+    ): Closeable {
+        val box = arrayOfNulls<Closeable>(1)
+        val sub = WsSubscription(clients(), sessionWatchUrl(enc), onStatus) { text ->
+            val event = parseHarnessEvent(text) ?: return@WsSubscription
+            if (isFatalHarnessEvent(event)) box[0]?.close()
+            onEvent(event)
+        }
+        box[0] = sub
+        return sub
     }
 
     /** Driver-level registry stream across every session. */
@@ -154,12 +166,34 @@ class HarnessGateway(
         parseHarnessEvent(text)?.let(onEvent)
     }
 
-    /** POST /api/uploads — stage bytes on THIS node (the session's node). */
-    suspend fun stageUpload(bytes: ByteArray, name: String): StagedUploadResponse =
+    /** GET /api/harness-sessions/{enc}/transcript — hard-resync source of truth. */
+    suspend fun transcript(enc: String): HarnessSessionTranscriptResponse =
+        get(listOf("api", "harness-sessions", enc, "transcript"), HarnessSessionTranscriptResponse.serializer())
+
+    /** POST /api/harness-sessions/{enc}/interrupt — stop the in-flight turn. */
+    suspend fun interrupt(enc: String): HarnessTurnAccepted =
         withContext(Dispatchers.IO) {
-            val body = bytes.toRequestBody("application/octet-stream".toMediaType())
             val req = Request.Builder()
-                .url(url(listOf("api", "uploads"), mapOf("name" to name)))
+                .url(url(listOf("api", "harness-sessions", enc, "interrupt")))
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    runCatching { wireJson.decodeFromString(HarnessTurnAccepted.serializer(), text) }
+                        .getOrDefault(HarnessTurnAccepted(true))
+                }
+            }
+        }
+
+    /** POST /api/uploads — stage bytes on THIS node (the session's node). */
+    suspend fun stageUpload(bytes: ByteArray, name: String, mime: String? = null): StagedUploadResponse =
+        withContext(Dispatchers.IO) {
+            val media = (mime ?: "application/octet-stream").toMediaType()
+            val body = bytes.toRequestBody(media)
+            val req = Request.Builder()
+                .url(url(listOf("api", "uploads"), mapOf("name" to name, "mime" to mime)))
                 .post(body)
                 .build()
             withClients { c ->

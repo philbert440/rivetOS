@@ -24,9 +24,10 @@ class CorePackagesAreAndroidFreeTest {
         for (f in files) {
             f.readLines().forEachIndexed { i, line ->
                 val trimmed = line.trimStart()
+                val isComment = trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")
                 if (androidImport.containsMatchIn(line) || comAndroidImport.containsMatchIn(line)) {
                     violations += "${f.path}:${i + 1}: $line"
-                } else if (!trimmed.startsWith("import ") && fqAndroid.containsMatchIn(line)) {
+                } else if (!trimmed.startsWith("import ") && !isComment && fqAndroid.containsMatchIn(line)) {
                     violations += "${f.path}:${i + 1}: $line"
                 }
             }

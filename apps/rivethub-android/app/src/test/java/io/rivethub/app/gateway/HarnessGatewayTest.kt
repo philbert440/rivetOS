@@ -152,31 +152,91 @@ class HarnessGatewayTest {
             val gw = HarnessGateway(
                 client { req ->
                     seen += "${req.method} ${req.url.encodedPath}?${req.url.query}"
-                    json(req, 200, """{"uri":"/tmp/uploads/shot.png","name":"shot.png","mime":"image/png","size":4,"expiresAt":1}""")
+                    json(req, 201, """{"uri":"/tmp/uploads/x.png","name":"x.png","mime":"image/png","size":4,"expiresAt":"2026-09-02T18:00:00.000Z"}""")
                 },
                 base,
             )
-            val staged = gw.stageUpload(byteArrayOf(1, 2, 3, 4), "shot.png")
-            assertEquals("/tmp/uploads/shot.png", staged.uri)
+            val staged = gw.stageUpload(byteArrayOf(1, 2, 3, 4), "x.png", "image/png")
+            assertEquals("/tmp/uploads/x.png", staged.uri)
+            assertEquals("2026-09-02T18:00:00.000Z", staged.expiresAt)
             assertTrue(seen.single().startsWith("POST "))
             assertTrue(seen.single().contains("/api/uploads"))
-            assertTrue(seen.single().contains("name=shot.png"))
+            assertTrue(seen.single().contains("name=x.png"))
+            assertTrue(seen.single().contains("mime=image/png"))
+        }
+    }
+
+    @Test fun `transcript hits GET harness-sessions enc transcript`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath}"
+                    json(req, 200, """{"sessionId":"$sid","harnessId":"claude-code","turns":[{"role":"assistant","text":"hi","tools":[{"name":"Bash","status":"done","args":{"command":"ls"}}],"usage":{"promptTokens":10,"completionTokens":4,"cachedTokens":0}}]}""")
+                },
+                base,
+            )
+            val body = gw.transcript(enc)
+            assertEquals(sid, body.sessionId)
+            assertEquals("hi", body.turns.single().text)
+            assertEquals("Bash", body.turns.single().tools!!.single().name)
+            assertTrue(seen.single().startsWith("GET "))
+            assertTrue(seen.single().endsWith("/api/harness-sessions/$enc/transcript"))
+        }
+    }
+
+    @Test fun `transcript 404 is a GatewayException`() = runBlocking {
+        withTimeout(2_000) {
+            val gw = HarnessGateway(
+                client { req -> json(req, 404, """{"error":"unknown session"}""") },
+                base,
+            )
+            try {
+                gw.transcript(enc)
+                org.junit.Assert.fail("expected GatewayException")
+            } catch (e: GatewayException) {
+                assertEquals(404, e.status)
+                assertTrue(isFatalTranscriptError(e))
+            }
+        }
+    }
+
+    @Test fun `interrupt posts under the enc path`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath}"
+                    json(req, 202, """{"ok":true,"sessionId":"$sid"}""")
+                },
+                base,
+            )
+            val accepted = gw.interrupt(enc)
+            assertTrue(accepted.ok)
+            assertTrue(seen.single().startsWith("POST "))
+            assertTrue(seen.single().endsWith("/api/harness-sessions/$enc/interrupt"))
         }
     }
 
     @Test fun `watch URLs carry the enc and registry path`() {
         val gw = HarnessGateway(client { error("no net") }, base)
         assertTrue(gw.sessionWatchUrl(enc).contains("/api/harness-sessions/ws"))
-        assertTrue(gw.sessionWatchUrl(enc).contains("session=$enc") || gw.sessionWatchUrl(enc).contains(enc))
+        assertTrue(gw.sessionWatchUrl(enc).contains("session=$enc"))
         assertTrue(gw.registryWatchUrl().contains("/api/harnesses/ws"))
-        assertFalse(gw.registryWatchUrl().contains("startSession"))
+        assertFalse(gw.registryWatchUrl().contains("harness="))
+        assertTrue(gw.registryWatchUrl("claude-code").contains("harness=claude-code"))
+    }
+
+    @Test fun `HarnessGateway has no startSession member`() {
+        val names = HarnessGateway::class.java.methods.map { it.name }
+        assertTrue(names.none { it.contains("start", ignoreCase = true) })
     }
 
     @Test fun `enc of an id containing colon is used as the path segment`() {
-        assertTrue(":" in sid)
         val pathEnc = sessionKeyEnc(sid)
         assertFalse(pathEnc.contains(":"))
+        assertEquals(sid, sessionKeyDec(pathEnc))
         val gw = HarnessGateway(client { error("no") }, base)
-        assertTrue(gw.sessionWatchUrl(pathEnc).contains(pathEnc))
+        assertTrue(gw.sessionWatchUrl(pathEnc).contains("session=$pathEnc"))
     }
 }

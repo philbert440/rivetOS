@@ -7,7 +7,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
 
 data class AskOption(val label: String, val description: String? = null)
 
@@ -20,7 +19,7 @@ data class AskQuestion(
 
 data class AskUserCard(val questions: List<AskQuestion>)
 
-data class LiveTool(val name: String, val args: Any? = null, val status: String = "running")
+data class LiveTool(val name: String, val args: JsonElement? = null, val status: String = "running")
 
 private val ASK_JSON = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -74,7 +73,7 @@ private fun questionFrom(q: JsonElement): AskQuestion? {
     return AskQuestion(
         question = q.str("question"),
         header = q.str("header"),
-        multiSelect = q["multiSelect"]?.jsonPrimitive?.booleanOrNull == true,
+        multiSelect = (q["multiSelect"] as? JsonPrimitive)?.booleanOrNull == true,
         options = options,
     )
 }
@@ -154,4 +153,4 @@ private fun toJson(args: Any?): JsonElement? {
 }
 
 private fun JsonObject.str(key: String): String? =
-    this[key]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+    (this[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }

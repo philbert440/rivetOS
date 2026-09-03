@@ -118,7 +118,43 @@ class HarnessWireTest {
         assertFalse(enc.contains("+"))
         assertFalse(enc.contains("/"))
         assertEquals(sid, sessionKeyDec(enc))
-        assertTrue(":" in sid)
+        assertFalse(enc.contains(":"))
+    }
+
+    @Test fun `StagedUploadResponse round-trips ISO expiresAt`() {
+        val json = """{"uri":"/tmp/uploads/x.png","name":"x.png","mime":"image/png","size":4,"expiresAt":"2026-09-02T18:00:00.000Z"}"""
+        val staged = wireJson.decodeFromString(StagedUploadResponse.serializer(), json)
+        assertEquals("/tmp/uploads/x.png", staged.uri)
+        assertEquals("image/png", staged.mime)
+        assertEquals(4L, staged.size)
+        assertEquals("2026-09-02T18:00:00.000Z", staged.expiresAt)
+        val absent = wireJson.decodeFromString(StagedUploadResponse.serializer(), """{"uri":"/tmp/uploads/x.png"}""")
+        assertNull(absent.expiresAt)
+    }
+
+    @Test fun `transcript turn round-trips tools and usage`() {
+        val json = """{"sessionId":"$sid","harnessId":"claude-code","turns":[{"role":"assistant","text":"done","thinking":"hmm","model":"fable","tools":[{"name":"Bash","status":"done","args":{"command":"ls"}}],"usage":{"promptTokens":10,"completionTokens":4,"cachedTokens":0}}]}"""
+        val body = wireJson.decodeFromString(HarnessSessionTranscriptResponse.serializer(), json)
+        val turn = body.turns.single()
+        assertEquals("done", turn.text)
+        assertEquals("Bash", turn.tools!!.single().name)
+        assertEquals("done", turn.tools!!.single().status)
+        assertEquals("ls", turn.tools!!.single().args?.get("command")?.jsonPrimitiveContent())
+        assertEquals(10, turn.usage!!.promptTokens)
+        assertEquals(4, turn.usage!!.completionTokens)
+        val back = wireJson.decodeFromString(
+            HarnessSessionTranscriptResponse.serializer(),
+            wireJson.encodeToString(HarnessSessionTranscriptResponse.serializer(), body),
+        )
+        assertEquals(body, back)
+    }
+
+    @Test fun `parse harness-capabilities registry frame`() {
+        val e = parseHarnessEvent("""{"type":"harness-capabilities","harnessId":"claude-code","capabilities":{"interrupt":true,"resume":true,"approvals":false,"liveStream":true,"listSessions":true},"changed":{"interrupt":true},"reason":"pty loaded"}""") as HarnessEvent.CapabilitiesChanged
+        assertEquals("claude-code", e.harnessId)
+        assertTrue(e.capabilities.interrupt)
+        assertEquals("pty loaded", e.reason)
+        assertEquals("true", e.changed?.get("interrupt")?.jsonPrimitiveContent())
     }
 
     @Test fun `nativeIdOf splits on the first colon only`() {

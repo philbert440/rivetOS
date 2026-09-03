@@ -128,13 +128,45 @@ class ChatItemsTest {
         assertTrue(sortByRecency(items, pins).find { it.key == "p" }!!.pin)
     }
 
-    @Test fun `existing row marked pin rather than duplicated`() {
+    @Test fun `existing row is not duplicated when a pin matches`() {
         val items = listOf(ChatItem("a", ChatItemKind.HARNESS, "a", updatedAt = 9))
-        val pins = listOf(ChatItem("a", ChatItemKind.DRAFT, "pin", updatedAt = 1))
+        val pins = listOf(ChatItem("a", ChatItemKind.DRAFT, "pin", updatedAt = 1, model = "fable", harnessId = "claude-code"))
+        val out = sortByRecency(items, pins)
+        assertEquals(1, out.size)
+        assertFalse(out[0].pin)
+        assertEquals(9L, out[0].updatedAt)
+        assertEquals("a", out[0].title)
+        assertEquals("fable", out[0].model)
+        assertEquals("claude-code", out[0].harnessId)
+    }
+
+    @Test fun `matched harness row is not pin true`() {
+        val items = listOf(
+            ChatItem("a", ChatItemKind.HARNESS, "live", sessionId = "a", harnessId = "hermes", updatedAt = 9),
+        )
+        val pins = listOf(ChatItem("a", ChatItemKind.HARNESS, "pin title", updatedAt = 1))
+        val out = sortByRecency(items, pins)
+        assertEquals(1, out.size)
+        assertFalse(out[0].pin)
+        assertEquals("live", out[0].title)
+    }
+
+    @Test fun `draft whose key is a pin is dropped so the pin supplies title`() {
+        val items = listOf(ChatItem("a", ChatItemKind.DRAFT, "new conversation", updatedAt = 0))
+        val pins = listOf(ChatItem("a", ChatItemKind.DRAFT, "Hermes", updatedAt = 5))
         val out = sortByRecency(items, pins)
         assertEquals(1, out.size)
         assertTrue(out[0].pin)
-        assertEquals(9L, out[0].updatedAt)
+        assertEquals("Hermes", out[0].title)
+        assertEquals(5L, out[0].updatedAt)
+    }
+
+    @Test fun `parseIsoMillis accepts offset timestamps`() {
+        assertTrue(parseIsoMillis("2026-08-08T00:05:00.000Z") > 0L)
+        val offset = parseIsoMillis("2026-08-08T02:05:00.000+02:00")
+        val zulu = parseIsoMillis("2026-08-08T00:05:00.000Z")
+        assertEquals(zulu, offset)
+        assertEquals(0L, parseIsoMillis("not-a-date"))
     }
 
     @Test fun `sortByRecency newest first and stable on ties`() {

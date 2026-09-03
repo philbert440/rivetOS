@@ -117,6 +117,20 @@ class OptionsTest {
         )
     }
 
+    @Test fun `unlisted model is dropped even when the flag is set`() {
+        assertEquals(
+            SpawnFlags(model = null, effort = "high"),
+            spawnModelEffort(claude, "claude-code", "not-a-model", "high"),
+        )
+    }
+
+    @Test fun `unlisted effort is dropped even when the flag is set`() {
+        assertEquals(
+            SpawnFlags(model = "fable", effort = null),
+            spawnModelEffort(claude, "claude-code", "fable", "not-an-effort"),
+        )
+    }
+
     @Test fun `defaultModel and defaultEffort follow the sheet`() {
         assertEquals("fable", defaultModel(claude))
         assertEquals("max", defaultEffort(claude, "opus"))

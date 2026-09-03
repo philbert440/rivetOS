@@ -15,6 +15,11 @@ fun newDraftId(): String = UUID.randomUUID().toString()
  * `previousSessionId`: a canonical predecessor is only retired when the
  * control plane names it. A foreign canonical that merely shares the native
  * half is left alone.
+ *
+ * M3b should drive rekey from `session-updated.previousSessionId` and treat
+ * `supersedes` as display-only lineage until W1: `supersedes` is append-only
+ * and "does NOT alias, re-key subscriptions, or retire anything" — both ids
+ * can be live. The retire here is `tracked`-gated so the blast radius is small.
  */
 fun adopt(draftId: String, summary: HarnessSessionSummary): Rekey? =
     adoptSessionKey(summary.sessionId, summary.supersedes, listOf(draftId)).firstOrNull()

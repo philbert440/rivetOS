@@ -4,6 +4,9 @@ package io.rivethub.app.plane
  * Sticky per-agent session pointer. Set-once unless [replace] is true —
  * `+ new` never steals the pin (call set with replace=false). In-memory
  * for this slice; M3b persists it.
+ *
+ * [AgentPointers] is not thread-safe; confine to a single dispatcher
+ * (the ViewModel's).
  */
 data class AgentPointer(
     val sessionId: String,

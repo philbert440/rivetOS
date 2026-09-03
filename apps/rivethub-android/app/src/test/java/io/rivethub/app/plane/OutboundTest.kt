@@ -1,12 +1,17 @@
 package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.TurnInFlight
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 
 class OutboundTest {
     @Test fun `refuses a send while an attachment chip is uploading`() = runBlocking {
@@ -106,6 +111,59 @@ class OutboundTest {
             pump.pump()
             assertEquals(0, sent)
             assertEquals(1, pump.queued.size)
+        }
+    }
+
+    @Test fun `concurrent pumps send exactly one turn`() = runBlocking {
+        withTimeout(2_000) {
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val sends = AtomicInteger(0)
+            var n = 0
+            val pump = OutboundPump(
+                send = {
+                    sends.incrementAndGet()
+                    entered.complete(Unit)
+                    release.await()
+                },
+                newId = { "id-${n++}" },
+            )
+            pump.tryEnqueue("one")
+            pump.tryEnqueue("two")
+            coroutineScope {
+                launch { pump.pump() }
+                launch { pump.pump() }
+                entered.await()
+                delay(50)
+                assertEquals(1, sends.get())
+                release.complete(Unit)
+            }
+            assertEquals(1, sends.get())
+        }
+    }
+
+    @Test fun `stalled await releases after the deadline and drains`() = runBlocking {
+        withTimeout(1_000) {
+            var t = 0L
+            val seen = mutableListOf<String>()
+            var n = 0
+            val pump = OutboundPump(
+                send = { seen += it },
+                newId = { "id-${n++}" },
+                nowMs = { t },
+                idleDeadlineMs = 100,
+            )
+            pump.tryEnqueue("one")
+            pump.tryEnqueue("two")
+            pump.pump()
+            assertEquals(listOf("one"), seen)
+            assertTrue(pump.awaitingTurnComplete)
+            assertFalse(pump.isStalled(t))
+            t = 101
+            assertTrue(pump.isStalled(t))
+            pump.onTurnComplete()
+            assertEquals(listOf("one", "two"), seen)
+            assertTrue(pump.queued.isEmpty())
         }
     }
 }

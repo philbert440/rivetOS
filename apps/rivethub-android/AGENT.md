@@ -13,7 +13,7 @@ runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 
 `git mv` of `apps/rivet-bots-android` (the Grok-Bot-style client, package `dev.rivetos.bots`) with the
 package renamed to `io.rivethub.app`, label "RivetHub", DataStore file "rivethub". **Zero behaviour
-change**: the Grok-Bot screens still compile and the 146 JVM tests still mean something. Everything
+change**: the Grok-Bot screens still compile and the 172 JVM tests still mean something. Everything
 `Bot*`-named in `domain/` and `ui/` is scheduled for deletion in M3b (desktop-mirroring screens on
 the harness control plane) — do not invest in it.
 
@@ -57,7 +57,7 @@ Hermes display/live strip stays `data/HermesReasoning.kt`.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 146 (bump it deliberately when the suite grows; M3a added 113 plane/wire tests).
+  (`.github/workflows/android.yml`) enforces a floor of 172 (bump it deliberately when the suite grows; M3a added 113 plane/wire tests, M3a-fix2 added 21).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

@@ -46,10 +46,15 @@ data class SpawnFlags(val model: String? = null, val effort: String? = null) {
 /**
  * Flags to send on spawn. Empty without a harnessId (catalog chat-loop
  * threads must not inherit `--effort medium`). Model/effort are included
- * only when the sheet declares the matching flag — unknown harness or a
- * sheet with neither flag → empty. Matches den-server sheetForHarness
- * spawn, slightly stricter than the web helper which always forwards
- * model/effort when harnessId is set.
+ * only when the sheet declares the matching flag AND the value is a listed
+ * id — unknown harness, unlisted id, or a sheet with neither flag → empty.
+ * Matches den-server `spawnArgv` (flag present AND listed).
+ *
+ * Effort precedence is a call-site concern for M3b: web takes
+ * `harnessEffort?.trim() || (effort !== 'off' ? effort : undefined)` —
+ * the `off` sentinel applies only to the legacy `effort` field, not to
+ * `harnessEffort`. This helper receives a single already-resolved [effort]
+ * and drops `off`.
  */
 fun spawnModelEffort(
     sheet: HarnessSheet?,
@@ -58,9 +63,13 @@ fun spawnModelEffort(
     effort: String? = null,
 ): SpawnFlags {
     if (harnessId.isNullOrBlank() || sheet == null) return SpawnFlags()
-    val modelOut = model?.trim()?.takeIf { it.isNotEmpty() }?.takeIf { !sheet.modelFlag.isNullOrBlank() }
+    val modelOut = model?.trim()?.takeIf { it.isNotEmpty() }
+        ?.takeIf { !sheet.modelFlag.isNullOrBlank() }
+        ?.takeIf { m -> sheet.models?.any { it.id == m } == true }
     val effortRaw = effort?.trim()?.takeIf { it.isNotEmpty() && it != "off" }
-    val effortOut = effortRaw?.takeIf { !sheet.effortFlag.isNullOrBlank() }
+    val effortOut = effortRaw
+        ?.takeIf { !sheet.effortFlag.isNullOrBlank() }
+        ?.takeIf { e -> effortListFor(sheet, modelOut ?: "").any { it.id == e } }
     return SpawnFlags(model = modelOut, effort = effortOut)
 }
 

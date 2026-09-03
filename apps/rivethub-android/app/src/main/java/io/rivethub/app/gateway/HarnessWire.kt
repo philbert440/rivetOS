@@ -70,6 +70,12 @@ data class HarnessSessionSummary(
     val status: String = "idle",
     val supersedes: String? = null,
     val model: String? = null,
+    /**
+     * Present when the request id was superseded; [sessionId] is already the
+     * canonical. A request under a bare id answers with the canonical — the
+     * adoption signal M3b looks for.
+     */
+    val redirectedTo: String? = null,
 )
 
 @Serializable
@@ -102,6 +108,20 @@ data class UserTurn(
 data class HarnessTurnAccepted(
     val ok: Boolean = true,
     val sessionId: String = "",
+    /**
+     * Canonical id when the request used a superseded or bare id. The 202's
+     * [sessionId] already carries the canonical, so this is the same adoption
+     * signal — modelled so M3b can read it without rediscovering ignoreUnknownKeys.
+     */
+    val redirectedTo: String? = null,
+)
+
+/** One tool invocation recorded on an assistant transcript turn. */
+@Serializable
+data class HarnessTranscriptTool(
+    val name: String,
+    val status: String = "running",
+    val args: JsonObject? = null,
 )
 
 @Serializable
@@ -110,6 +130,8 @@ data class HarnessTranscriptTurn(
     val text: String = "",
     val thinking: String? = null,
     val model: String? = null,
+    val tools: List<HarnessTranscriptTool>? = null,
+    val usage: MessageUsage? = null,
 )
 
 @Serializable
@@ -117,15 +139,25 @@ data class HarnessSessionTranscriptResponse(
     val sessionId: String = "",
     val harnessId: String = "",
     val turns: List<HarnessTranscriptTurn> = emptyList(),
+    /**
+     * Canonical id when the request used a superseded id. [sessionId] is
+     * already the canonical; this is the same adoption signal as the 202.
+     */
+    val redirectedTo: String? = null,
 )
 
+/**
+ * POST /api/uploads 201 body. [expiresAt] is an ISO-8601 string when the den
+ * set a TTL, and absent when ttlMs is 0 — never a Long (the desktop type at
+ * gateway-api.ts:889 is wrong; the server writes `new Date(...).toISOString()`).
+ */
 @Serializable
 data class StagedUploadResponse(
     val uri: String,
     val name: String = "",
     val mime: String = "",
     val size: Long = 0,
-    val expiresAt: Long = 0,
+    val expiresAt: String? = null,
 )
 
 /**
@@ -172,8 +204,35 @@ sealed class HarnessEvent {
         val message: String,
         val retryable: Boolean? = null,
     ) : HarnessEvent()
+    /** Den-level registry frame — not session-scoped. Full sheet replace. */
+    data class CapabilitiesChanged(
+        val harnessId: String,
+        val capabilities: HarnessCapabilities,
+        val changed: JsonObject? = null,
+        val reason: String = "",
+    ) : HarnessEvent()
     data class Unknown(val type: String, val raw: JsonObject) : HarnessEvent()
 }
+
+/**
+ * Attach-failure codes: the den sends the error frame and closes. Reconnecting
+ * loops forever. `forbidden` is the tenancy refusal (routes.ts) — a third
+ * fatal the desktop set does not list.
+ */
+val FATAL_EVENT_CODES: Set<String> = setOf(
+    "invalid_session_id",
+    "capability_unsupported",
+    "forbidden",
+)
+
+fun isFatalHarnessEvent(event: HarnessEvent): Boolean =
+    event is HarnessEvent.Error && event.code in FATAL_EVENT_CODES
+
+/** Transcript GET statuses that mean the session is gone, not transient. */
+val FATAL_TRANSCRIPT_STATUS: Set<Int> = setOf(400, 404, 410, 501)
+
+fun isFatalTranscriptError(err: Throwable): Boolean =
+    err is GatewayException && err.status in FATAL_TRANSCRIPT_STATUS
 
 /**
  * Unpadded base64url of the UTF-8 canonical id. Canonical ids contain `:`,
@@ -253,6 +312,17 @@ fun parseHarnessEvent(el: JsonObject): HarnessEvent {
             message = el.str("message") ?: "",
             retryable = el["retryable"]?.jsonPrimitive?.booleanOrNull,
         )
+        "harness-capabilities" -> {
+            val caps = el["capabilities"]?.let {
+                runCatching { wireJson.decodeFromJsonElement(HarnessCapabilities.serializer(), it) }.getOrNull()
+            } ?: HarnessCapabilities()
+            HarnessEvent.CapabilitiesChanged(
+                harnessId = el.str("harnessId") ?: "",
+                capabilities = caps,
+                changed = el["changed"] as? JsonObject,
+                reason = el.str("reason") ?: "",
+            )
+        }
         else -> HarnessEvent.Unknown(rawType, el)
     }
 }

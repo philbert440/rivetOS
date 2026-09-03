@@ -7,6 +7,7 @@ import io.rivethub.app.gateway.LegacyHarnessSession
 import io.rivethub.app.gateway.denRoomKey
 import io.rivethub.app.gateway.nativeIdOf
 import java.time.Instant
+import java.time.OffsetDateTime
 
 /** How a conversation row is driven — mirrors rivethub-web ChatItemKind. */
 enum class ChatItemKind { DRAFT, HARNESS, LEGACY }
@@ -107,17 +108,26 @@ fun chatItems(
 
 /**
  * Newest-first, pins mingled in ONE recency order (desktop 0.5.14). Pins
- * that are not already in [items] are appended as extra rows; matching keys
- * are marked `pin=true`. Stable on ties.
+ * that are not already in [items] are appended as extra rows with `pin=true`.
+ * A matching existing row is enriched (model / harnessId) and keeps `pin`
+ * unset — `pin` means "synthesized pin row; hide discard". Draft rows whose
+ * key is a pin are dropped so the pin supplies title/updatedAt. Stable on ties.
  */
 fun sortByRecency(items: List<ChatItem>, pins: List<ChatItem> = emptyList()): List<ChatItem> {
     if (pins.isEmpty()) return items.sortedByDescending { it.updatedAt }
-    val existing = items.map { it.key }.toHashSet()
-    val marked = items.map { item ->
-        if (pins.any { it.key == item.key }) item.copy(pin = true) else item
+    val pinKeys = pins.map { it.key }.toHashSet()
+    val pinByKey = pins.associateBy { it.key }
+    val withoutAgentDrafts = items.filter { !(it.kind == ChatItemKind.DRAFT && it.key in pinKeys) }
+    val enriched = withoutAgentDrafts.map { item ->
+        val pin = pinByKey[item.key] ?: return@map item
+        item.copy(
+            model = item.model ?: pin.model,
+            harnessId = item.harnessId ?: pin.harnessId,
+        )
     }
+    val existing = enriched.map { it.key }.toHashSet()
     val extra = pins.filter { it.key !in existing }.map { it.copy(pin = true) }
-    return (extra + marked).sortedByDescending { it.updatedAt }
+    return (extra + enriched).sortedByDescending { it.updatedAt }
 }
 
 fun findChatItem(items: List<ChatItem>, key: String?): ChatItem? {
@@ -149,4 +159,6 @@ fun listableHarnesses(descriptors: List<HarnessDescriptor>?): List<String> =
     (descriptors ?: emptyList()).filter { it.capabilities.listSessions }.map { it.harnessId }
 
 fun parseIsoMillis(iso: String): Long =
-    runCatching { Instant.parse(iso).toEpochMilli() }.getOrDefault(0L)
+    runCatching { Instant.parse(iso).toEpochMilli() }
+        .recoverCatching { OffsetDateTime.parse(iso).toInstant().toEpochMilli() }
+        .getOrDefault(0L)
