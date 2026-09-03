@@ -11,6 +11,9 @@ import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.UserTurn
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.sessionKeyEnc
+import io.rivethub.app.plane.serverInFlightIsStale
+import io.rivethub.app.gateway.nativeIdOf
+import io.rivethub.app.gateway.TurnInFlight
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.BARE_SUBMIT_AFTER_MS
@@ -583,8 +586,23 @@ class HarnessChatViewModel(
 
     private suspend fun sendAdopted(action: ChatSendAction.SendTurn) {
         val hg = c.harness(nodeDenUrl)
-        val accepted = withContext(Dispatchers.IO) {
-            hg.sendTurn(sessionKeyEnc(action.sessionId), UserTurn(action.text))
+        val accepted = try {
+            withContext(Dispatchers.IO) {
+                hg.sendTurn(sessionKeyEnc(action.sessionId), UserTurn(action.text))
+            }
+        } catch (e: TurnInFlight) {
+            // The den holds a turn "in flight" for up to 5 min when its hook events are
+            // missing. If our previous turn is already answered on disk, that hold is stale:
+            // deliver this turn through the PTY like the draft path does (desktop legacy path).
+            if (!serverInFlightIsStale(machine.transcript)) throw e
+            val native = nativeIdOf(action.sessionId) ?: throw e
+            AndroidLogger.warn("RivetHub", "409 with a finished previous turn: injecting via PTY session=$native", null)
+            val pty = ensurePty(sessionOverride = native)
+            if (pty.fresh) waitUntilPtyReady(pty.id)
+            withContext(Dispatchers.IO) { gateway().termInject(session = native, text = action.text) }
+            injectCompleted = true
+            armSilentPoll()
+            return
         }
         val canon = canonicalFromSendTurn(accepted.redirectedTo, accepted.sessionId, action.sessionId)
         if (canon != null) adoptCanonical(canon)
@@ -615,7 +633,7 @@ class HarnessChatViewModel(
 
     private data class PtySlot(val id: String, val fresh: Boolean)
 
-    private suspend fun ensurePty(): PtySlot {
+    private suspend fun ensurePty(sessionOverride: String? = null): PtySlot {
         ptyId?.let { return PtySlot(it, fresh = false) }
         if (spawnInFlight) {
             while (spawnInFlight) delay(50)
@@ -628,7 +646,7 @@ class HarnessChatViewModel(
             val command = rosterCommandFor(harnessId)
             val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
             val gw = gateway()
-            val attempts = spawnAttempts(st.sessionId, command, flags.model, flags.effort)
+            val attempts = spawnAttempts(sessionOverride ?: st.sessionId, command, flags.model, flags.effort)
             var last: Exception? = null
             for (attempt in attempts) {
                 try {

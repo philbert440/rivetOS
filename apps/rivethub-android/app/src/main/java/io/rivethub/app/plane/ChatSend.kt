@@ -1,5 +1,7 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.HarnessTranscriptTurn
+
 import io.rivethub.app.gateway.WsStatus
 
 /**
@@ -80,3 +82,11 @@ fun chatItemForGate(
     sessionId = sessionId.takeIf { !draft },
     harnessId = harnessId,
 )
+
+/**
+ * A 409 `turn_in_flight` is stale when the transcript already ends with the assistant's
+ * answer to our previous turn — the den still holds the turn only because its hook events
+ * never arrived. The desktop's legacy path for that is the PTY inject; so is ours.
+ */
+fun serverInFlightIsStale(transcript: List<HarnessTranscriptTurn>): Boolean =
+    transcript.lastOrNull()?.role == "assistant"

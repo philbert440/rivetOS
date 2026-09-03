@@ -73,4 +73,12 @@ class ChatSendTest {
         assertNull(edit.error)
         assertNull(composerOnSendAttempt())
     }
+
+    @Test fun `409 is stale only when the transcript ends with an assistant turn`() {
+        val u = io.rivethub.app.gateway.HarnessTranscriptTurn(role = "user", text = "hi")
+        val a = io.rivethub.app.gateway.HarnessTranscriptTurn(role = "assistant", text = "PONG")
+        assertTrue(serverInFlightIsStale(listOf(u, a)))
+        assertFalse(serverInFlightIsStale(listOf(u, a, u)))
+        assertFalse(serverInFlightIsStale(emptyList()))
+    }
 }
