@@ -274,6 +274,14 @@ fun fetchedHasNewAssistant(fetched: List<HarnessTranscriptTurn>, committedPrefix
 }
 
 /**
+ * A 409 `turn_in_flight` means the den holds the turn (up to 5 min without
+ * hooks). Treat it like an accepted send so a later transcript with our
+ * assistant can complete; a hard failure must not.
+ */
+fun injectCompletedAfterSend(ok: Boolean, turnInFlight409: Boolean): Boolean =
+    ok || turnInFlight409
+
+/**
  * "Complete" for a poll/registry fetch: the transcript has an assistant
  * turn newer than our pending user turn. A fetch that runs before inject
  * landed, or that only echoes the user turn (or 0 turns), is not complete.
@@ -311,6 +319,18 @@ fun sessionFrameCancelsPoll(event: HarnessEvent): Boolean = when (event) {
     is HarnessEvent.Error -> true
     else -> false
 }
+
+/**
+ * Drop a poll/registry fetch that raced an adopt: the turns belong to the
+ * session id we started the fetch with, and only if that attach is still live.
+ */
+fun resyncStillApplies(
+    fetchedForSessionId: String,
+    openSessionId: String,
+    attachUnchanged: Boolean,
+): Boolean = fetchedForSessionId.isNotBlank() &&
+    fetchedForSessionId == openSessionId &&
+    attachUnchanged
 
 /**
  * redirectedTo echo of the id we already hold: no re-attach, no poll reset.

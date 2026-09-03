@@ -86,6 +86,16 @@ class InjectTest {
         assertEquals(canonical, canonicalFromSessions(listOf(row), uuid))
     }
 
+    @Test fun `sendTurn adopt only when sessionMatchesNative`() {
+        assertEquals(canonical, canonicalFromSendTurn(canonical, canonical, uuid))
+        assertEquals(canonical, canonicalFromSendTurn(null, canonical, uuid))
+        assertEquals(canonical, canonicalFromSendTurn(canonical, "other", uuid))
+        assertNull(canonicalFromSendTurn("claude-code:other", "claude-code:other", uuid))
+        assertNull(canonicalFromSendTurn(null, "claude-code:other", uuid))
+        assertNull(canonicalFromSendTurn(null, null, uuid))
+        assertNull(canonicalFromSendTurn("", "", uuid))
+    }
+
     @Test fun `listSessions row whose native id matches the draft is adopted`() {
         val miss = summary("claude-code:bbbbbbbb-2222-4333-8444-555566667777")
         val hit = summary(canonical)

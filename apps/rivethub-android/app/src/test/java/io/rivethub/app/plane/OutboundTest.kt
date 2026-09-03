@@ -142,6 +142,57 @@ class OutboundTest {
         }
     }
 
+    @Test fun `409 pending acknowledge drops the item so poll complete does not resend`() = runBlocking {
+        withTimeout(1_000) {
+            var calls = 0
+            val pump = OutboundPump(
+                send = {
+                    calls++
+                    throw TurnInFlight()
+                },
+                newId = { "q1" },
+            )
+            pump.tryEnqueue("hi")
+            pump.pump()
+            assertEquals(1, calls)
+            assertTrue(pump.pendingOnServer)
+            pump.acknowledgePending()
+            assertFalse(pump.pendingOnServer)
+            assertTrue(pump.queued.isEmpty())
+            pump.onTurnComplete()
+            assertEquals(1, calls)
+        }
+    }
+
+    @Test fun `409 then success retries on pending cadence`() = runBlocking {
+        withTimeout(1_000) {
+            var t = 0L
+            var calls = 0
+            val pump = OutboundPump(
+                send = {
+                    calls++
+                    if (calls == 1) throw TurnInFlight()
+                },
+                newId = { "q1" },
+                nowMs = { t },
+            )
+            pump.tryEnqueue("hi")
+            pump.pump()
+            assertEquals(1, calls)
+            assertTrue(pump.pendingOnServer)
+            assertEquals(1, pump.queued.size)
+            t = PENDING_RETRY_MS - 1
+            assertFalse(pump.pendingRetryDue())
+            t = PENDING_RETRY_MS
+            assertTrue(pump.pendingRetryDue())
+            pump.onTurnComplete()
+            assertEquals(2, calls)
+            assertFalse(pump.pendingOnServer)
+            assertTrue(pump.queued.isEmpty())
+            assertTrue(pump.awaitingTurnComplete)
+        }
+    }
+
     @Test fun `stalled await releases after the deadline and drains`() = runBlocking {
         withTimeout(1_000) {
             var t = 0L

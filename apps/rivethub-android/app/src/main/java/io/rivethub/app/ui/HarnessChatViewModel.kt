@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
+import io.rivethub.app.data.AndroidLogger
 import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
@@ -33,7 +34,10 @@ import io.rivethub.app.plane.TranscriptMachine
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
 import io.rivethub.app.plane.adoptCanonicalIsNoOp
+import io.rivethub.app.plane.canonicalFromSendTurn
+import io.rivethub.app.plane.injectCompletedAfterSend
 import io.rivethub.app.plane.resyncCompletesTurn
+import io.rivethub.app.plane.resyncStillApplies
 import io.rivethub.app.plane.sessionFrameCancelsPoll
 import io.rivethub.app.plane.shouldResyncFromRegistry
 import io.rivethub.app.plane.transcriptPollDue
@@ -172,7 +176,7 @@ class HarnessChatViewModel(
                     machine.onFrame(HarnessEvent.Error(_state.value.sessionId, "idle_timeout", "turn timed out"))
                     publishMachine()
                 }
-                if (pump.isStalled()) runCatching { pump.onTurnComplete() }
+                if (pump.pendingRetryDue() || pump.isStalled()) runCatching { pump.onTurnComplete() }
             }
         }
     }
@@ -217,8 +221,13 @@ class HarnessChatViewModel(
                 publishMachine()
                 armSilentPoll()
                 viewModelScope.launch {
-                    runCatching { pump.pump() }.onFailure { e ->
-                        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                    runCatching { pump.pump() }.onSuccess {
+                        if (pump.pendingOnServer) {
+                            injectCompleted = injectCompletedAfterSend(ok = false, turnInFlight409 = true)
+                        }
+                        if (machine.inFlight) armSilentPoll()
+                    }.onFailure { e ->
+                        AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
                         machine.revertOptimisticUser(text)
                         if (!pump.awaitingTurnComplete) machine.abortTurn()
                         silentPoll?.cancel()
@@ -394,7 +403,7 @@ class HarnessChatViewModel(
     }
 
     private fun onRegistry(event: HarnessEvent) {
-        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "registry event: ${event.javaClass.simpleName} ${(event as? io.rivethub.app.gateway.HarnessEvent.SessionCreated)?.sessionId ?: ""}", null)
+        AndroidLogger.debug("RivetHub", "registry event: ${event.javaClass.simpleName} ${(event as? io.rivethub.app.gateway.HarnessEvent.SessionCreated)?.sessionId ?: ""}", null)
         if (c.identity.generation() != identityGen) return
         val native = _state.value.sessionId
         when (event) {
@@ -436,16 +445,12 @@ class HarnessChatViewModel(
         lastRegistryStatus = stamp.status ?: lastRegistryStatus
         lastRegistryUpdatedAt = stamp.updatedAt ?: lastRegistryUpdatedAt
         if (!should) return
-        io.rivethub.app.data.AndroidLogger.warn(
-            "RivetHub",
-            "registry resync: status=${stamp.status} session=$open",
-            null,
-        )
+        AndroidLogger.debug("RivetHub", "registry resync: status=${stamp.status} session=$open", null)
         viewModelScope.launch { resyncTranscript() }
     }
 
     private fun adoptCanonical(canonical: String) {
-        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "adopt: canonical=$canonical draft=${_state.value.draft} prev=${_state.value.sessionId}", null)
+        AndroidLogger.debug("RivetHub", "adopt: canonical=$canonical draft=${_state.value.draft} prev=${_state.value.sessionId}", null)
         val from = _state.value.sessionId
         if (canonical.isBlank()) return
         val wasDraft = _state.value.draft
@@ -485,16 +490,21 @@ class HarnessChatViewModel(
         val machineAttach = SessionAttach(
             machine = machine,
             fetchTranscript = {
-                withContext(Dispatchers.IO) { hg.transcript(enc).turns }.also { io.rivethub.app.data.AndroidLogger.warn("RivetHub", "transcript fetched: ${it.size} turns for $sessionId", null) }
+                val turns = withContext(Dispatchers.IO) { hg.transcript(enc).turns }
+                AndroidLogger.debug("RivetHub", "transcript fetched: ${turns.size} turns for $sessionId", null)
+                turns
             },
-            onFatal = { msg -> io.rivethub.app.data.AndroidLogger.warn("RivetHub", "attach fatal: $msg", null); _state.update { it.copy(error = msg, ws = WsStatus.CLOSED) } },
+            onFatal = { msg ->
+                AndroidLogger.warn("RivetHub", "attach fatal: $msg", null)
+                _state.update { it.copy(error = msg, ws = WsStatus.CLOSED) }
+            },
             closeWatch = { myWatch[0]?.close() },
         )
         attach = machineAttach
         val mailbox = frames
         frameJob = viewModelScope.launch {
             for (f in mailbox) {
-                io.rivethub.app.data.AndroidLogger.warn("RivetHub", "session frame: ${f.javaClass.simpleName}", null)
+                AndroidLogger.debug("RivetHub", "session frame: ${f.javaClass.simpleName}", null)
                 when (f) {
                     is Frame.Ev -> {
                         val content = sessionFrameCancelsPoll(f.e)
@@ -528,7 +538,10 @@ class HarnessChatViewModel(
         sessionWatch = hg.watchSession(
             enc,
             onEvent = { event -> mailbox.trySend(Frame.Ev(event)) },
-            onStatus = { s -> io.rivethub.app.data.AndroidLogger.warn("RivetHub", "session ws status: $s", null); mailbox.trySend(Frame.St(s)) },
+            onStatus = { s ->
+                AndroidLogger.debug("RivetHub", "session ws status: $s", null)
+                mailbox.trySend(Frame.St(s))
+            },
         )
         myWatch[0] = sessionWatch
     }
@@ -556,8 +569,11 @@ class HarnessChatViewModel(
     }
 
     private suspend fun actuallySend(text: String) {
-        if (c.identity.generation() != identityGen) { io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send dropped: identity generation changed", null); return }
-        io.rivethub.app.data.AndroidLogger.warn("RivetHub", "send: draft=${_state.value.draft} session=${_state.value.sessionId} node=$nodeDenUrl", null)
+        if (c.identity.generation() != identityGen) {
+            AndroidLogger.debug("RivetHub", "send dropped: identity generation changed", null)
+            return
+        }
+        AndroidLogger.debug("RivetHub", "send: draft=${_state.value.draft} session=${_state.value.sessionId} node=$nodeDenUrl", null)
         val st = _state.value
         when (val action = chatSendAction(st.draft, st.sessionId, text)) {
             is ChatSendAction.Inject -> injectDraft(action)
@@ -570,9 +586,9 @@ class HarnessChatViewModel(
         val accepted = withContext(Dispatchers.IO) {
             hg.sendTurn(sessionKeyEnc(action.sessionId), UserTurn(action.text))
         }
-        val canon = accepted.redirectedTo?.takeIf { it.isNotBlank() } ?: accepted.sessionId.takeIf { it.isNotBlank() }
+        val canon = canonicalFromSendTurn(accepted.redirectedTo, accepted.sessionId, action.sessionId)
         if (canon != null) adoptCanonical(canon)
-        injectCompleted = true
+        injectCompleted = injectCompletedAfterSend(ok = true, turnInFlight409 = false)
         armSilentPoll()
     }
 
@@ -580,11 +596,11 @@ class HarnessChatViewModel(
         val gw = gateway()
         var retried = false
         while (true) {
-            val pty = ensurePty()
-            if (pty.fresh) waitUntilPtyReady(pty.id)
             try {
+                val pty = ensurePty()
+                if (pty.fresh) waitUntilPtyReady(pty.id)
                 withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
-                io.rivethub.app.data.AndroidLogger.warn("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
+                AndroidLogger.debug("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
                 injectCompleted = true
                 armSilentPoll()
                 startAdoptWatch(action.sessionId)
@@ -628,10 +644,10 @@ class HarnessChatViewModel(
                     }
                     val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
                     ptyId = spawned.id
-                    io.rivethub.app.data.AndroidLogger.warn("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
+                    AndroidLogger.debug("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
                     return PtySlot(spawned.id, fresh)
                 } catch (e: Exception) {
-                    io.rivethub.app.data.AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
+                    AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
                     last = e
                 }
             }
@@ -686,7 +702,7 @@ class HarnessChatViewModel(
                             gateway().termInject(session = native, text = "", submit = true)
                         }
                     }
-                    io.rivethub.app.data.AndroidLogger.warn("RivetHub", "bare submit retry: session=$native", null)
+                    AndroidLogger.debug("RivetHub", "bare submit retry: session=$native", null)
                 }
                 if (elapsed >= SESSION_POLL_BOUND_MS && (bare || elapsed >= BARE_SUBMIT_AFTER_MS)) return@launch
                 delay(SESSION_POLL_EVERY_MS)
@@ -721,11 +737,7 @@ class HarnessChatViewModel(
                     continue
                 }
                 lastPollAt = now
-                io.rivethub.app.data.AndroidLogger.warn(
-                    "RivetHub",
-                    "transcript poll: elapsed=${elapsed}ms inFlight=${machine.inFlight}",
-                    null,
-                )
+                AndroidLogger.debug("RivetHub", "transcript poll: elapsed=${elapsed}ms inFlight=${machine.inFlight}", null)
                 runCatching { resyncTranscript(reason = "poll") }
             }
         }
@@ -735,15 +747,17 @@ class HarnessChatViewModel(
         if (c.identity.generation() != identityGen) return
         val st = _state.value
         if (st.draft) return
+        val sid = st.sessionId
         val current = attach
         val turns = if (current != null) {
             current.fetchTranscriptNow() ?: return
         } else {
-            val enc = sessionKeyEnc(st.sessionId)
+            val enc = sessionKeyEnc(sid)
             withContext(Dispatchers.IO) {
                 runCatching { c.harness(nodeDenUrl).transcript(enc).turns }.getOrNull()
             } ?: return
         }
+        if (!resyncStillApplies(sid, _state.value.sessionId, attach === current)) return
         val complete = resyncCompletesTurn(
             fetched = turns,
             pendingUserText = machine.pendingUserText,
@@ -751,15 +765,12 @@ class HarnessChatViewModel(
             injectCompleted = injectCompleted,
         )
         val label = if (reason == "poll") "transcript poll" else "transcript resync"
-        io.rivethub.app.data.AndroidLogger.warn(
-            "RivetHub",
-            "$label: ${turns.size} turns complete=$complete",
-            null,
-        )
+        AndroidLogger.debug("RivetHub", "$label: ${turns.size} turns complete=$complete", null)
         current?.bumpGeneration()
         if (complete) {
             machine.onTurnComplete(turns)
             silentPoll?.cancel()
+            runCatching { pump.acknowledgePending() }
             runCatching { pump.onTurnComplete() }
         } else {
             machine.applyFetched(turns, complete = false)

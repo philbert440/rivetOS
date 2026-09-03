@@ -59,6 +59,22 @@ fun sessionMatchesNative(sessionId: String?, native: String): Boolean {
     return localNative != null && (eventNative == localNative || sessionId == localNative)
 }
 
+/**
+ * sendTurn 202 may echo redirectedTo / sessionId. Adopt only when that id
+ * is this conversation — an unrelated id would re-attach and 400 the
+ * transcript into a fatal closed socket.
+ */
+fun canonicalFromSendTurn(
+    redirectedTo: String?,
+    responseSessionId: String?,
+    openSessionId: String,
+): String? {
+    val canon = redirectedTo?.takeIf { it.isNotBlank() }
+        ?: responseSessionId?.takeIf { it.isNotBlank() }
+        ?: return null
+    return canon.takeIf { sessionMatchesNative(it, openSessionId) }
+}
+
 /** First listSessions row whose native id (or redirectedTo) is [native]. */
 fun canonicalFromSessions(rows: List<HarnessSessionSummary>, native: String): String? {
     for (row in rows) {

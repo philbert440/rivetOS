@@ -659,6 +659,63 @@ class AttachTest {
         assertEquals(listOf("user", "assistant", "user", "assistant"), m.transcript.map { it.role })
     }
 
+    @Test fun `SessionUpdated driven through onFrame does not cancel the poll`() {
+        val m = TranscriptMachine({ 0 })
+        m.appendOptimisticUser("hello")
+        m.beginTurn()
+        assertFalse(sessionFrameCancelsPoll(HarnessEvent.SessionUpdated("s", "active")))
+        m.onFrame(HarnessEvent.SessionUpdated("s", "active"))
+        assertFalse(m.sawSessionFrame)
+        assertTrue(m.inFlight)
+        assertTrue(
+            transcriptPollDue(
+                inFlight = true,
+                sawSessionFrame = m.sawSessionFrame,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+        assertTrue(
+            silentPollShouldRemainArmed(
+                inFlight = m.inFlight,
+                sawSessionFrame = m.sawSessionFrame,
+                complete = false,
+                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            ),
+        )
+    }
+
+    @Test fun `409 pending-on-server poll finding assistant completes the turn`() {
+        val m = TranscriptMachine({ 0 })
+        m.appendOptimisticUser("hello")
+        m.beginTurn()
+        val injectCompleted = injectCompletedAfterSend(ok = false, turnInFlight409 = true)
+        assertTrue(injectCompleted)
+        assertFalse(injectCompletedAfterSend(ok = false, turnInFlight409 = false))
+        val fetched = listOf(
+            HarnessTranscriptTurn(role = "user", text = "hello"),
+            HarnessTranscriptTurn(role = "assistant", text = "yo"),
+        )
+        val complete = resyncCompletesTurn(
+            fetched = fetched,
+            pendingUserText = m.pendingUserText,
+            committedPrefix = m.committedAtTurnStart,
+            injectCompleted = injectCompleted,
+        )
+        assertTrue(complete)
+        m.applyFetched(fetched, complete = true)
+        assertFalse(m.inFlight)
+        assertEquals(listOf("hello", "yo"), m.transcript.map { it.text })
+    }
+
+    @Test fun `resync is discarded if the open session changed mid-fetch`() {
+        val old = "claude-code:aaaa"
+        val next = "claude-code:bbbb"
+        assertTrue(resyncStillApplies(old, old, attachUnchanged = true))
+        assertFalse(resyncStillApplies(old, next, attachUnchanged = true))
+        assertFalse(resyncStillApplies(old, old, attachUnchanged = false))
+        assertFalse(resyncStillApplies("", old, attachUnchanged = true))
+    }
+
     @Test fun `idempotent adopt of the same canonical id is a no-op`() {
         val sid = "claude-code:a1b2c3d4-1111-4222-8333-444455556666"
         assertTrue(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = sid, draft = false))
