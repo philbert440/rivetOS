@@ -104,6 +104,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── grok-bot/                # Cursor Grok Bot: MCP recall + gated sidecar write tools (no auto-capture yet)
 │   ├── kimi/                    # Kimi Code CLI: TOML hooks, payload capture worker, backfill + rivet-den
 │   ├── shared/                  # rivet-paths.sh — install-root discovery sourced by every bin/rivet-memory-mcp.sh
+│                                #   launchers fall back to $RIVETOS_ROOT / /opt/rivetos when copied out of tree (Claude Code plugin cache)
 │   └── hermes/                  # Hermes: in-process Python provider (capture + prefetch injection)
 │
 ├── infra/                       # Container Dockerfiles + Compose + provisioning scripts
