@@ -4,9 +4,9 @@ import io.rivethub.app.domain.Bot
 import io.rivethub.app.domain.BotPreview
 import io.rivethub.app.gateway.GatewayException
 import io.rivethub.app.gateway.SessionSummary
-import io.rivethub.app.transport.DirectTransport
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.NodeTransport
+import io.rivethub.app.transport.hostOfUrl
 import io.rivethub.app.transport.toNodeRef
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -25,10 +25,7 @@ class BotRepository(private val transport: NodeTransport) {
     class DiscoveryFailed(message: String, cause: Throwable? = null) : Exception(message, cause)
 
     suspend fun discover(entryUrl: String, extraNodes: Set<String>): List<Bot> = coroutineScope {
-        (transport as? DirectTransport)?.let {
-            it.entryUrl = entryUrl
-            it.extraNodes = extraNodes
-        }
+        transport.retarget(entryUrl, extraNodes)
         val nodeList = try {
             transport.discover()
         } catch (e: GatewayException) {
@@ -41,7 +38,8 @@ class BotRepository(private val transport: NodeTransport) {
         } catch (e: Exception) {
             throw DiscoveryFailed(friendly(e), e)
         }
-        val nodes = nodeList.associateBy { it.id }
+        val meshNodes = nodeList.filter { it.fromMesh }
+        val nodes = meshNodes.associateBy { it.id }
         val catalog = runCatching { transport.entry().catalogAgents().agents }.getOrDefault(emptyList())
 
         val bots = LinkedHashMap<String, Bot>()
@@ -60,8 +58,9 @@ class BotRepository(private val transport: NodeTransport) {
         }
 
         // Nodes the entry catalog didn't cover (older peers): ask each one for its own agents.
-        val uncovered = nodeList.filter { n -> n.denUrl.isNotBlank() && n.online && bots.values.none { it.nodeId == n.id } }
-        val probes = uncovered.map { n -> async { probeNode(n) } }
+        val uncovered = meshNodes.filter { n -> n.denUrl.isNotBlank() && n.online && bots.values.none { it.nodeId == n.id } }
+        // Extra nodes are always probed on their own (never folded into the mesh map).
+        val probes = (uncovered + nodeList.filterNot { it.fromMesh }).map { n -> async { probeNode(n) } }
         probes.forEach { d -> d.await().forEach(::put) }
 
         bots.values.sortedWith(compareByDescending<Bot> { it.online }.thenBy { it.displayName }.thenBy { it.nodeLabel })
@@ -122,7 +121,7 @@ class BotRepository(private val transport: NodeTransport) {
         transport.gateway(bot.toNodeRef()).sessions().sessions
 
     companion object {
-        fun hostOf(url: String): String = DirectTransport.hostOf(url)
+        fun hostOf(url: String): String = hostOfUrl(url)
 
         fun friendly(e: Throwable): String {
             AndroidLogger.warn("RivetHub", "request failed", e) // logcat ground truth for field debugging

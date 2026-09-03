@@ -7,14 +7,23 @@ import io.rivethub.app.gateway.GatewayClients
  * Per-node `denUrl` transport. IngressTransport (the `/api/nodes/:id/...` relay) is a later drop-in.
  */
 class DirectTransport(
-    var entryUrl: String,
-    var extraNodes: Set<String>,
+    entryUrl: String,
+    extraNodes: Set<String>,
     private val clients: GatewayClients,
 ) : NodeTransport {
     private val cache = HashMap<String, Pair<String, Gateway>>()
 
+    @Volatile private var entryUrl: String = entryUrl
+    @Volatile private var extraNodes: Set<String> = extraNodes
+
     @Synchronized
-    fun clear() = cache.clear()
+    override fun retarget(entryUrl: String, extraNodes: Set<String>) {
+        this.entryUrl = entryUrl
+        this.extraNodes = extraNodes
+    }
+
+    @Synchronized
+    override fun clear() = cache.clear()
 
     override suspend fun discover(): List<NodeRef> {
         val mesh = entry().mesh()
@@ -26,7 +35,7 @@ class DirectTransport(
         }
         return fromMesh + extra.map { u ->
             val host = hostOf(u)
-            NodeRef(id = host, name = host, denUrl = u, online = true)
+            NodeRef(id = host, name = host, denUrl = u, online = true, fromMesh = false)
         }
     }
 
@@ -45,6 +54,6 @@ class DirectTransport(
     }
 
     companion object {
-        fun hostOf(url: String): String = runCatching { java.net.URI(url).host ?: url }.getOrDefault(url)
+        fun hostOf(url: String): String = hostOfUrl(url)
     }
 }

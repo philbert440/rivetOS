@@ -8,6 +8,7 @@ import io.rivethub.app.data.HttpGatewayClients
 import io.rivethub.app.data.LanNetwork
 import io.rivethub.app.data.Settings
 import io.rivethub.app.transport.DirectTransport
+import io.rivethub.app.transport.NodeTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,7 +26,7 @@ class AppContainer(app: Application) {
     @Volatile var strictHostnames: Boolean = true
         private set
 
-    val transport = DirectTransport("", emptySet(), HttpGatewayClients(http, { strictHostnames }))
+    val transport: NodeTransport = DirectTransport("", emptySet(), HttpGatewayClients(http, { strictHostnames }))
     val bots = BotRepository(transport)
 
     init {
