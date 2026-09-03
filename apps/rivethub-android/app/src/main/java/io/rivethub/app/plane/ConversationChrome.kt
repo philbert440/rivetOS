@@ -10,9 +10,6 @@ sealed interface NewConversationAction {
     data object PickAgent : NewConversationAction
 }
 
-fun liveConversationCount(items: List<LocatedChatItem>, archived: Set<String>): Int =
-    items.count { !isArchived(it.item, archived) }
-
 fun showConversationFilter(itemCount: Int, query: String): Boolean =
     itemCount > CONVERSATION_FILTER_MIN || query.trim().isNotEmpty()
 

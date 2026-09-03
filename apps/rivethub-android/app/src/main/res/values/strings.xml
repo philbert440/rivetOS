@@ -10,11 +10,7 @@
     <string name="nav_workflows">Workflows</string>
     <string name="nav_settings">Settings</string>
 
-    <string name="title_conversations">Conversations</string>
     <string name="title_settings">Settings</string>
-    <string name="title_enroll">Join the mesh</string>
-    <string name="title_chat">Chat</string>
-    <string name="title_gallery">Gallery</string>
 
     <string name="cd_open_drawer">Open menu</string>
     <string name="cd_close_drawer">Close menu</string>
@@ -48,9 +44,6 @@
     <string name="action_import_p12">Import p12</string>
     <string name="label_strict_pair">strict hostnames</string>
 
-    <string name="action_search">Search</string>
-    <string name="action_notifications">Notifications</string>
-    <string name="action_more">More</string>
     <string name="action_back">Back</string>
     <string name="action_new">New</string>
     <string name="action_connect">Connect</string>
@@ -60,10 +53,6 @@
     <string name="action_discard">Discard draft</string>
     <string name="action_archive">Archive</string>
     <string name="action_unarchive">Unarchive</string>
-    <string name="action_replace_pin">Replace pin</string>
-    <string name="action_new_draft">New draft</string>
-    <string name="action_choose_p12">Choose a .p12</string>
-    <string name="action_import_identity">Import identity (.p12)</string>
     <string name="action_forget_device">Forget this device</string>
     <string name="action_install_cert">Install certificate</string>
     <string name="action_replace_p12">Replace…</string>
@@ -98,22 +87,30 @@
     <string name="term_status_attached">attached</string>
     <string name="term_status_exited">exited</string>
     <string name="term_status_closed">closed</string>
-    <string name="composer_placeholder">Message</string>
-    <string name="stream_chip">streaming</string>
+    <string name="composer_placeholder">Message Rivet…</string>
+    <string name="composer_reconnecting">reconnecting…</string>
     <string name="thinking_chip">thinking</string>
-    <string name="ask_user_title">Question</string>
-
-    <string name="time_now">now</string>
-    <string name="time_minutes">%dm</string>
-    <string name="time_hours">%dh</string>
-    <string name="time_days">%dd</string>
-    <string name="time_weeks">%dw</string>
+    <string name="empty_pick_conversation">Pick a conversation or start a new one.</string>
+    <string name="label_you">You</string>
+    <string name="label_rivet">Rivet</string>
+    <string name="status_queued">queued</string>
+    <string name="status_sending">sending…</string>
+    <string name="action_inject">inject</string>
+    <string name="action_cancel_queue">cancel</string>
+    <string name="tap_terminal_retry">tap Terminal to retry</string>
+    <string name="ws_reconnecting_ellipsis">reconnecting…</string>
+    <string name="cd_copy_message">copy message</string>
+    <string name="cd_copy_code">copy code</string>
+    <string name="cd_copied">copied</string>
+    <string name="cd_remove_attachment">remove %1$s</string>
+    <string name="node_picker">Node</string>
+    <string name="action_stop">Stop</string>
+    <string name="ask_rivet_asking">Rivet is asking</string>
 
     <string name="enroll_blurb">Point at the datahub gateway and hand the phone its device certificate.</string>
     <string name="label_entry_url">Entry URL</string>
     <string name="hint_entry_url">https://192.0.2.10:5174</string>
     <string name="label_passphrase">Passphrase</string>
-    <string name="label_p12">Device certificate (.p12)</string>
     <string name="p12_none">none selected</string>
     <string name="using_existing_cert">Using %1$s (expires %2$s)</string>
     <string name="error_https_required">Entry node must be an https:// URL.</string>
@@ -127,9 +124,6 @@
     <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>
     <string name="section_terminal">Terminal</string>
-    <string name="label_strict_hostname">Strict hostname</string>
-    <string name="strict_hostname_on">Node certs must match the address you dial.</string>
-    <string name="strict_hostname_off">Relaxed: any Rivet-CA-issued cert is accepted for any host.</string>
     <string name="label_fingerprint">Fingerprint</string>
     <string name="label_subject">Subject</string>
     <string name="no_identity">No device certificate imported.</string>
@@ -139,7 +133,6 @@
     <string name="appearance_system">System</string>
     <string name="appearance_light">Light</string>
     <string name="appearance_dark">Dark</string>
-    <string name="label_font_size">Font size</string>
     <string name="font_small">Small</string>
     <string name="font_medium">Medium</string>
     <string name="font_large">Large</string>
@@ -151,15 +144,11 @@
     <string name="effort_picker">Effort</string>
     <string name="health_online">online</string>
     <string name="health_offline">offline</string>
-    <string name="entry_saved">Entry URL saved.</string>
     <string name="new_conversation">new conversation</string>
     <string name="action_submit">Submit</string>
     <string name="action_retry">Retry</string>
     <string name="error_upload_in_progress">Wait for the attachment to finish uploading.</string>
     <string name="error_upload_too_large">That file is larger than the 1 GiB upload limit.</string>
-    <string name="chip_uploading">%1$s · uploading</string>
-    <string name="chip_failed">%1$s · failed</string>
-    <string name="ws_reconnecting">reconnecting</string>
     <string name="ws_disconnected">disconnected</string>
     <string name="ask_user_free">Or type a reply</string>
     <string name="ask_user_selected">selected</string>

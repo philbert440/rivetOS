@@ -4,14 +4,11 @@ import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -20,15 +17,11 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -41,29 +34,32 @@ import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.SessionMode
+import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.accentFor
+import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
+import io.rivethub.app.plane.contextBarView
+import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.ui.HarnessChatViewModel
-import io.rivethub.app.ui.components.Bubble
+import io.rivethub.app.ui.components.AskUserCardView
+import io.rivethub.app.ui.components.ChatSessionHeader
+import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.Composer
-import io.rivethub.app.ui.components.FoldChip
-import io.rivethub.app.ui.components.MessageBubble
+import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.ModePager
-import io.rivethub.app.ui.components.Pill
-import io.rivethub.app.ui.components.PillTone
-import io.rivethub.app.ui.components.Lucide
-import io.rivethub.app.ui.components.RivetButton
-import io.rivethub.app.ui.components.RivetField
-import io.rivethub.app.ui.components.RivetSelect
-import io.rivethub.app.ui.components.SegmentedControl
+import io.rivethub.app.ui.components.OutboundChip
 import io.rivethub.app.ui.components.SelectOption
-import io.rivethub.app.ui.components.StreamChip
+import io.rivethub.app.ui.components.TerminalRetryState
+import io.rivethub.app.ui.components.ToolRow
+import io.rivethub.app.ui.components.TranscriptAssistantTurn
+import io.rivethub.app.ui.components.TranscriptUserTurn
+import io.rivethub.app.ui.components.rivetHexColor
 import io.rivethub.app.ui.term.TerminalKeyBar
 import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.term.clipboardText
 import io.rivethub.app.ui.term.copyText
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
-import io.rivethub.app.ui.theme.RivetType
 
 @Composable
 fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
@@ -72,7 +68,7 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     val ctx = LocalContext.current
     val chatLabel = stringResource(R.string.mode_chat)
     val termLabel = stringResource(R.string.mode_terminal)
-    val pages = listOf(chatLabel, termLabel)
+    val pages = listOf(termLabel, chatLabel)
     val selected = if (st.mode == SessionMode.Terminal) termLabel else chatLabel
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.onAppBackground() }
     LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.onAppForeground() }
@@ -107,6 +103,29 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
     }
 
     val composerEnabled = composerIsEnabled(st.ws, st.error)
+    val connected = st.ws == WsStatus.OPEN
+    val sendEnabled = composerCanSend(
+        st.ws,
+        st.composer,
+        st.attachments.any { it.status == AttachmentStatus.READY },
+    )
+    val sessionLabel = if (st.draft) stringResource(R.string.new_conversation) else st.sessionId
+    val reported = st.turns.mapNotNull { it.usage?.promptTokens }.lastOrNull()
+    val barModel = st.turns.mapNotNull { it.model }.lastOrNull() ?: st.model
+    val context = remember(st.turns, st.model) {
+        contextBarView(reported, barModel, st.turns.map { it.text })
+    }
+    val accentHex = accentFor(
+        command = st.sessionId.substringBefore(':').takeIf { st.sessionId.contains(':') } ?: st.model,
+    )
+    val accent = rivetHexColor(accentHex)
+    val stripError = when (st.errorCode) {
+        HarnessChatViewModel.ERR_UPLOADING -> stringResource(R.string.error_upload_in_progress)
+        HarnessChatViewModel.ERR_TOO_LARGE -> stringResource(R.string.error_upload_too_large)
+        else -> st.error
+    }
+    val reconnecting = stringResource(R.string.ws_reconnecting_ellipsis)
+
     Column(
         Modifier
             .fillMaxSize()
@@ -115,44 +134,22 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        ChatHeader(
-            title = st.title,
+        ChatSessionHeader(
+            sessionLabel = sessionLabel,
+            context = context,
+            modeOptions = pages,
+            selectedMode = selected,
+            onSelectMode = { vm.setMode(if (it == termLabel) SessionMode.Terminal else SessionMode.Chat) },
             onBack = onBack,
-            onMore = { vm.setMoreOpen(!st.moreOpen) },
-            subRow = {
-                Row(
-                    Modifier.padding(start = Dimens.touchTarget, end = Dimens.grid, bottom = Dimens.gridHalf),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    SegmentedControl(
-                        options = pages,
-                        selected = selected,
-                        onSelect = { vm.setMode(if (it == termLabel) SessionMode.Terminal else SessionMode.Chat) },
-                    )
-                    if (st.model.isNotBlank()) Pill(st.model)
-                    Pill(st.nodeName)
-                    if (!st.draft && st.ws == WsStatus.CONNECTING) Pill(stringResource(R.string.ws_reconnecting), tone = PillTone.Warn)
-                    if (st.ws == WsStatus.CLOSED) Pill(stringResource(R.string.ws_disconnected), tone = PillTone.Warn)
-                }
-            },
+            showStop = st.inFlight && st.gate.canInterrupt && !st.draft,
+            onStop = vm::stop,
         )
-        st.error?.let {
-            Text(it, color = colors.red, style = RivetType.meta, modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf))
+        if (st.ws == WsStatus.CONNECTING) {
+            ChatStatusStrip(reconnecting, error = false)
+        } else if (st.ws == WsStatus.CLOSED) {
+            ChatStatusStrip(stringResource(R.string.ws_disconnected), error = true)
         }
-        when (st.errorCode) {
-            HarnessChatViewModel.ERR_UPLOADING -> Text(
-                stringResource(R.string.error_upload_in_progress),
-                color = colors.red,
-                style = RivetType.meta,
-                modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf),
-            )
-            HarnessChatViewModel.ERR_TOO_LARGE -> Text(
-                stringResource(R.string.error_upload_too_large),
-                color = colors.red,
-                style = RivetType.meta,
-                modifier = Modifier.padding(horizontal = Dimens.grid2, vertical = Dimens.gridHalf),
-            )
-        }
+        stripError?.let { ChatStatusStrip("✗ $it", error = true) }
         ModePager(
             pages = pages,
             selected = selected,
@@ -162,18 +159,24 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             modifier = Modifier.weight(1f),
         ) { page ->
             if (page == termLabel) {
-                TerminalPane(
-                    screen = vm.terminalScreen(),
-                    rev = st.termRev,
-                    fontSp = st.termFontSp,
-                    status = st.termStatus,
-                    onResize = vm::resizeTerminal,
-                    onBytes = vm::sendTermBytes,
-                    ctrl = st.termCtrl,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                if (st.termStatus == TermStatus.Exited) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        TerminalRetryState(st.error ?: stringResource(R.string.term_status_exited))
+                    }
+                } else {
+                    TerminalPane(
+                        screen = vm.terminalScreen(),
+                        rev = st.termRev,
+                        fontSp = st.termFontSp,
+                        status = st.termStatus,
+                        onResize = vm::resizeTerminal,
+                        onBytes = vm::sendTermBytes,
+                        ctrl = st.termCtrl,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             } else {
-                ChatTranscript(vm)
+                ChatTranscript(vm, accent)
             }
         }
         if (st.mode == SessionMode.Terminal) {
@@ -196,60 +199,80 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             )
         } else {
             Composer(
-            value = st.composer,
-            onValueChange = vm::setComposer,
-            placeholder = stringResource(R.string.composer_placeholder),
-            live = st.inFlight,
-            pickers = {
-                val models = st.sheet?.models.orEmpty().map { SelectOption(it.id, it.label) }
-                if (models.isNotEmpty()) {
-                    RivetSelect(
-                        value = st.model,
-                        options = models,
-                        onChange = vm::setModel,
-                        title = stringResource(R.string.model_picker),
-                    )
-                }
-                val efforts = vm.effortOptions().map { SelectOption(it.first, it.second) }
-                if (efforts.isNotEmpty()) {
-                    RivetSelect(
-                        value = st.effort,
-                        options = efforts,
-                        onChange = vm::setEffort,
-                        title = stringResource(R.string.effort_picker),
-                    )
-                }
-            },
-            chips = {
-                st.attachments.forEach { a ->
-                    val label = when (a.status) {
-                        AttachmentStatus.UPLOADING -> stringResource(R.string.chip_uploading, a.name)
-                        AttachmentStatus.FAILED -> stringResource(R.string.chip_failed, a.name)
-                        AttachmentStatus.READY -> a.name
+                value = st.composer,
+                onValueChange = vm::setComposer,
+                placeholder = if (connected) {
+                    stringResource(R.string.composer_placeholder)
+                } else {
+                    stringResource(R.string.composer_reconnecting)
+                },
+                connected = connected,
+                sending = st.inFlight,
+                sendEnabled = sendEnabled,
+                canStop = st.gate.canInterrupt,
+                error = null,
+                onAttach = { pick.launch(arrayOf("*/*")) },
+                onSend = vm::send,
+                onStop = vm::stop,
+                enabled = composerEnabled,
+                ask = {
+                    st.ask?.let { card ->
+                        AskUserCardView(
+                            card = card,
+                            onSubmit = { picked, free -> vm.answerAsk(picked, free) },
+                            onDismiss = vm::dismissAsk,
+                        )
                     }
-                    Pill(
-                        text = label,
-                        tone = if (a.status == AttachmentStatus.FAILED) PillTone.Warn else PillTone.Dim,
-                        modifier = Modifier.clickable { vm.removeAttachment(a.id) },
+                },
+                attachments = st.attachments,
+                onRemoveAttachment = vm::removeAttachment,
+                pickers = { compact ->
+                    ComposerPicker(
+                        icon = R.drawable.lucide_server,
+                        label = st.nodeName,
+                        compact = compact,
+                        options = listOf(SelectOption(st.nodeDenUrl, st.nodeName)),
+                        value = st.nodeDenUrl,
+                        onChange = {},
+                        title = stringResource(R.string.node_picker),
                     )
-                }
-            },
-            onAttach = { pick.launch(arrayOf("*/*")) },
-            onSend = vm::send,
-            onStop = vm::stop,
-            enabled = composerEnabled,
-            canStop = st.gate.canInterrupt,
+                    val models = st.sheet?.models.orEmpty().map { SelectOption(it.id, it.label) }
+                    if (models.isNotEmpty()) {
+                        val modelLabel = models.find { it.value == st.model }?.label ?: st.model
+                        ComposerPicker(
+                            icon = R.drawable.lucide_bot,
+                            label = modelLabel.ifBlank { stringResource(R.string.model_picker) },
+                            compact = compact,
+                            options = models,
+                            value = st.model,
+                            onChange = vm::setModel,
+                            title = stringResource(R.string.model_picker),
+                        )
+                    }
+                    val efforts = vm.effortOptions().map { SelectOption(it.first, it.second) }
+                    if (efforts.isNotEmpty()) {
+                        val effortLabel = efforts.find { it.value == st.effort }?.label ?: st.effort
+                        ComposerPicker(
+                            icon = R.drawable.lucide_lightbulb,
+                            label = effortLabel.ifBlank { stringResource(R.string.effort_picker) },
+                            compact = compact,
+                            options = efforts,
+                            value = st.effort,
+                            onChange = vm::setEffort,
+                            title = stringResource(R.string.effort_picker),
+                        )
+                    }
+                },
             )
         }
     }
 }
 
 @Composable
-private fun ChatTranscript(vm: HarnessChatViewModel) {
+private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui.graphics.Color) {
     val st by vm.state.collectAsState()
-    val colors = RivetTheme.colors
+    val ctx = LocalContext.current
     val list = rememberLazyListState()
-    var folds by remember { mutableStateOf(setOf<String>()) }
     val last = st.turns.size + if (st.inFlight || st.liveText.isNotBlank()) 1 else 0
     LaunchedEffect(st.turns.size, st.inFlight) {
         if (last > 0) runCatching { list.animateScrollToItem(last) }
@@ -262,49 +285,47 @@ private fun ChatTranscript(vm: HarnessChatViewModel) {
     }
     LazyColumn(
         state = list,
-        modifier = Modifier.fillMaxSize().padding(horizontal = Dimens.grid2),
-        verticalArrangement = Arrangement.spacedBy(Dimens.grid),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        item { Spacer(Modifier.height(Dimens.grid)) }
         itemsIndexed(st.turns, key = { i, turn -> "$i:${turnKey(turn)}" }) { _, turn ->
-            val kind = if (turn.role == "user") Bubble.User else Bubble.Assistant
-            val split = if (kind == Bubble.Assistant) splitHermesReasoning(turn.text) else null
+            val split = if (turn.role != "user") splitHermesReasoning(turn.text) else null
             val thinking = turn.thinking?.takeIf { it.isNotBlank() } ?: split?.reasoning.orEmpty()
             val body = split?.text ?: turn.text
-            val key = turnKey(turn)
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (thinking.isNotBlank()) {
-                    val open = key in folds
-                    FoldChip(
-                        text = stringResource(R.string.thinking_chip),
-                        expanded = open,
-                        onClick = { folds = if (open) folds - key else folds + key },
-                    )
-                    if (open) {
-                        Text(thinking, color = colors.inkDim, style = RivetType.meta)
-                    }
-                }
-                if (body.isNotBlank()) {
-                    MessageBubble(kind) { Text(body) }
-                }
+            if (turn.role == "user") {
+                TranscriptUserTurn(
+                    text = body,
+                    time = null,
+                    outbound = OutboundChip.None,
+                    onCopy = { copyText(ctx, it) },
+                )
+            } else {
+                TranscriptAssistantTurn(
+                    text = body,
+                    thinking = thinking.takeIf { it.isNotBlank() },
+                    model = turn.model,
+                    time = null,
+                    accent = accent,
+                    tools = turn.tools.orEmpty().map { ToolRow(it.name, it.status) },
+                    stats = statsLineOrNull(turn.usage, null),
+                    onCopy = { copyText(ctx, it) },
+                )
             }
         }
         if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank()) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (st.liveReasoning.isNotBlank()) {
-                        FoldChip(text = stringResource(R.string.thinking_chip), expanded = true)
-                        Text(st.liveReasoning, color = colors.inkDim, style = RivetType.meta)
-                    }
-                    if (st.liveText.isNotBlank()) {
-                        MessageBubble(Bubble.Assistant) { Text(st.liveText) }
-                    }
-                    if (st.inFlight) StreamChip(stringResource(R.string.stream_chip))
-                }
+                TranscriptAssistantTurn(
+                    text = st.liveText,
+                    thinking = st.liveReasoning.takeIf { it.isNotBlank() },
+                    model = st.model.takeIf { it.isNotBlank() },
+                    time = null,
+                    accent = accent,
+                    tools = emptyList(),
+                    stats = null,
+                    onCopy = { copyText(ctx, it) },
+                    thinkingOpenDefault = st.liveReasoning.isNotBlank() && st.liveText.isBlank(),
+                )
             }
-        }
-        st.ask?.let { card ->
-            item { AskCard(card, onSubmit = { picked, free -> vm.answerAsk(picked, free) }, onDismiss = vm::dismissAsk) }
         }
         item { Spacer(Modifier.height(Dimens.grid2)) }
     }
@@ -312,119 +333,3 @@ private fun ChatTranscript(vm: HarnessChatViewModel) {
 
 private fun turnKey(turn: io.rivethub.app.gateway.HarnessTranscriptTurn): String =
     "${turn.role}\n${turn.text}\n${turn.thinking.orEmpty()}\n${turn.model.orEmpty()}"
-
-@Composable
-private fun AskCard(
-    card: io.rivethub.app.plane.AskUserCard,
-    onSubmit: (Map<Int, List<String>>, String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val colors = RivetTheme.colors
-    var picked by remember { mutableStateOf(mapOf<Int, List<String>>()) }
-    var free by remember { mutableStateOf("") }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(colors.panel)
-            .padding(Dimens.grid2),
-        verticalArrangement = Arrangement.spacedBy(Dimens.grid),
-    ) {
-        Text(stringResource(R.string.ask_user_title), color = colors.ink, style = RivetType.title)
-        card.questions.forEachIndexed { qi, q ->
-            Text(q.header ?: q.question ?: "", color = colors.ink, style = RivetType.body)
-            q.options.forEach { opt ->
-                val selected = picked[qi].orEmpty().contains(opt.label)
-                RivetButton(
-                    text = opt.label,
-                    onClick = {
-                        picked = picked.toMutableMap().apply {
-                            val cur = this[qi].orEmpty()
-                            this[qi] = if (q.multiSelect) {
-                                if (opt.label in cur) cur - opt.label else cur + opt.label
-                            } else {
-                                listOf(opt.label)
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = true,
-                )
-                if (selected) {
-                    Text(stringResource(R.string.ask_user_selected), color = colors.em, style = RivetType.meta)
-                }
-                opt.description?.let { Text(it, color = colors.inkDim, style = RivetType.meta) }
-            }
-        }
-        RivetField(
-            value = free,
-            onValueChange = { free = it },
-            placeholder = stringResource(R.string.ask_user_free),
-        )
-        RivetButton(
-            text = stringResource(R.string.action_submit),
-            onClick = { onSubmit(picked, free) },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Text(
-            stringResource(R.string.action_cancel),
-            color = colors.inkDim,
-            style = RivetType.meta,
-            modifier = Modifier.clickable(onClick = onDismiss).padding(vertical = Dimens.grid),
-        )
-    }
-}
-
-@Composable
-private fun ChatHeader(
-    title: String,
-    onBack: () -> Unit,
-    onMore: () -> Unit,
-    subRow: @Composable () -> Unit,
-) {
-    val colors = RivetTheme.colors
-    Column(Modifier.fillMaxWidth()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(Dimens.pageHeader),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier
-                    .size(Dimens.touchTarget)
-                    .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center,
-            ) {
-                Lucide(
-                    R.drawable.lucide_arrow_left,
-                    contentDescription = stringResource(R.string.action_back),
-                    tint = colors.ink,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Text(
-                title,
-                color = colors.ink,
-                style = RivetType.title,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Box(
-                Modifier
-                    .size(Dimens.touchTarget)
-                    .clickable(onClick = onMore),
-                contentAlignment = Alignment.Center,
-            ) {
-                Lucide(
-                    R.drawable.lucide_ellipsis,
-                    contentDescription = stringResource(R.string.action_more),
-                    tint = colors.ink,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-        }
-        subRow()
-        Box(Modifier.fillMaxWidth().height(Dimens.line).background(colors.line))
-    }
-}

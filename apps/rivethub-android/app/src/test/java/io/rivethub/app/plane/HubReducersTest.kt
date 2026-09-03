@@ -16,16 +16,6 @@ class HubReducersTest {
         assertEquals(null, harnessIdForAgent("wiki", "local"))
     }
 
-    @Test fun `relativeAge buckets`() {
-        val now = 1_700_000_000_000L
-        assertEquals(RelativeAge.Empty, relativeAge(0, now))
-        assertEquals(RelativeAge.Now, relativeAge(now - 10_000, now))
-        assertEquals(RelativeAge.Minutes(3), relativeAge(now - 3 * 60_000, now))
-        assertEquals(RelativeAge.Hours(2), relativeAge(now - 2 * 3_600_000, now))
-        assertEquals(RelativeAge.Days(3), relativeAge(now - 3 * 86_400_000, now))
-        assertEquals(RelativeAge.Weeks(2), relativeAge(now - 14 * 86_400_000, now))
-    }
-
     @Test fun `401 and 403 are cert refused`() {
         assertEquals(EnrollErrorKind.CertRefused, enrollError(GatewayException(401, "no")).kind)
         assertEquals(EnrollErrorKind.CertRefused, enrollError(GatewayException(403, "no")).kind)

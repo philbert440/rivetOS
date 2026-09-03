@@ -1,8 +1,6 @@
 package io.rivethub.app.plane
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ConversationsFilterTest {
@@ -92,12 +90,5 @@ class ConversationsFilterTest {
         val sorted = sortLocatedByRecency(listOf(b, a, c))
         assertEquals("c", sorted[0].item.key)
         assertEquals(listOf("a", "b"), sorted.drop(1).map { it.item.key })
-    }
-
-    @Test fun `empty conversations hidden while loading`() {
-        assertFalse(conversationsEmptyVisible(loading = true, hasLive = false, hasArchived = false))
-        assertTrue(conversationsEmptyVisible(loading = false, hasLive = false, hasArchived = false))
-        assertFalse(conversationsEmptyVisible(loading = false, hasLive = true, hasArchived = false))
-        assertFalse(conversationsEmptyVisible(loading = false, hasLive = false, hasArchived = true))
     }
 }
