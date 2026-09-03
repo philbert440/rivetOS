@@ -3,10 +3,11 @@ package io.rivethub.app
 import android.app.Application
 import io.rivethub.app.data.BotRepository
 import io.rivethub.app.data.DeviceIdentityStore
-import io.rivethub.app.data.GatewayPool
 import io.rivethub.app.data.HttpFactory
+import io.rivethub.app.data.HttpGatewayClients
 import io.rivethub.app.data.LanNetwork
 import io.rivethub.app.data.Settings
+import io.rivethub.app.transport.DirectTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,8 +25,8 @@ class AppContainer(app: Application) {
     @Volatile var strictHostnames: Boolean = true
         private set
 
-    val gateways = GatewayPool(http, { strictHostnames }, identity)
-    val bots = BotRepository(gateways)
+    val transport = DirectTransport("", emptySet(), HttpGatewayClients(http, { strictHostnames }))
+    val bots = BotRepository(transport)
 
     init {
         // Seed the TLS posture synchronously so the first request honours it.

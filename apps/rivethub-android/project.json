@@ -1,0 +1,42 @@
+{
+  "name": "@rivetos/rivethub-android",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/rivethub-android",
+  "tags": ["scope:app", "type:app", "domain:interfaces"],
+  "targets": {
+    "apk": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "./gradlew :app:assembleDebug",
+        "cwd": "apps/rivethub-android"
+      },
+      "cache": false
+    },
+    "apk-release": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "./gradlew :app:assembleRelease",
+        "cwd": "apps/rivethub-android"
+      },
+      "cache": false
+    },
+    "check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "./gradlew :app:testDebugUnitTest",
+        "cwd": "apps/rivethub-android"
+      },
+      "cache": false
+    },
+    "verify": {
+      "executor": "nx:run-commands",
+      "dependsOn": ["check", "apk"],
+      "options": {
+        "command": "true",
+        "cwd": "apps/rivethub-android"
+      },
+      "cache": false
+    }
+  }
+}

@@ -1,8 +1,8 @@
 package io.rivethub.app
 
-import io.rivethub.app.data.DenSessionInfo
 import io.rivethub.app.data.SessionResolver
-import io.rivethub.app.data.SessionSummary
+import io.rivethub.app.gateway.DenSessionInfo
+import io.rivethub.app.gateway.SessionSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

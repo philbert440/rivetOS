@@ -51,8 +51,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.rivethub.app.data.NodeSession
-import io.rivethub.app.data.RoomState
-import io.rivethub.app.data.WsStatus
+import io.rivethub.app.gateway.RoomState
+import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.domain.Bot
 import io.rivethub.app.ui.ComputerTab
 import io.rivethub.app.ui.rememberEffective

@@ -5,11 +5,12 @@ import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
 import io.rivethub.app.data.BotRepository
 import io.rivethub.app.data.Prefs
-import io.rivethub.app.data.SessionFrame
 import io.rivethub.app.data.effective
 import io.rivethub.app.data.visibleAssistantText
 import io.rivethub.app.domain.Bot
 import io.rivethub.app.domain.BotPreview
+import io.rivethub.app.gateway.SessionFrame
+import io.rivethub.app.transport.toNodeRef
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -119,12 +120,13 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     /** One all-sessions WS per online node keeps the list live without polling. */
     private fun openWatches(bots: List<Bot>, p: Prefs, gen: Int) {
         if (gen != refreshGen) return // signed out between the scan and here
-        val wanted = bots.filter { it.online }.map { it.denUrl }.toSet()
-            .associateBy { url -> "$url|${c.identity.generation()}|${p.strictHostnames}" }
+        val wanted = bots.filter { it.online }.distinctBy { it.denUrl }
+            .associate { b -> "${b.denUrl}|${c.identity.generation()}|${p.strictHostnames}" to b.toNodeRef() }
         (watches.keys - wanted.keys).forEach { watches.remove(it)?.close() }
-        for ((key, url) in wanted) {
+        for ((key, node) in wanted) {
             if (key in watches) continue
-            watches[key] = c.gateways.get(url).watchSessions(null, onFrame = { f ->
+            val url = node.denUrl
+            watches[key] = c.transport.gateway(node).watchSessions(null, onFrame = { f ->
                 if (f is SessionFrame.Message) {
                     val m = f.message
                     val prefs = _state.value.prefs
@@ -142,7 +144,7 @@ class HomeViewModel(private val c: AppContainer) : ViewModel() {
     fun shutdown() {
         refreshGen++
         closeWatches()
-        c.gateways.clear()
+        c.transport.clear()
         c.http.clear()
         _state.update { UiState(prefs = it.prefs) }
     }
