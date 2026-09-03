@@ -1,0 +1,80 @@
+name: android
+
+# RivetHub Android gate. Runs ONLY when the app tree (or this file) changes, on a
+# standard ubuntu-latest runner — public repo, so Actions minutes are free. No
+# larger runners, no macOS: keep it that way (Phil's condition for having this job).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/rivethub-android/**'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'apps/rivethub-android/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: unit tests + debug + release (R8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/rivethub-android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Accepts SDK licenses; AGP fetches the exact platform/build-tools it needs.
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # Cache is the lever for keeping this ~5 min, not a bigger runner.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # Full suite only. A `--tests` filter can match zero tests and still exit 0
+      # (rivet-android bit us with that), so per-class runs are never the gate.
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest --console=plain --no-daemon
+
+      - name: Debug build
+        run: ./gradlew :app:assembleDebug --console=plain --no-daemon
+
+      - name: Release build (R8, unsigned)
+        run: ./gradlew :app:assembleRelease --console=plain --no-daemon
+
+      - name: Test report
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          t = f = e = 0
+          for p in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
+              r = ET.parse(p).getroot()
+              t += int(r.get('tests')); f += int(r.get('failures')); e += int(r.get('errors'))
+          print(f'tests={t} failures={f} errors={e}')
+          assert t > 0, 'zero tests ran — the suite is not wired'
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rivethub-android-apks
+          path: |
+            apps/rivethub-android/app/build/outputs/apk/debug/*.apk
+            apps/rivethub-android/app/build/outputs/apk/release/*.apk
+          retention-days: 7
