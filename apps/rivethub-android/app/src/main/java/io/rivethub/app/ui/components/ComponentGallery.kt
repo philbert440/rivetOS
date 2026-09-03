@@ -2,7 +2,7 @@ package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -67,8 +67,9 @@ fun ComponentGallery(modifier: Modifier = Modifier) {
     Column(
         modifier
             .fillMaxSize()
-            .statusBarsPadding().verticalScroll(rememberScrollState())
-            .systemBarsPadding(),
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding()
+            .verticalScroll(rememberScrollState()),
     ) {
         GalleryThemeBlock("Dark", ThemeMode.Dark)
         GalleryThemeBlock("Light", ThemeMode.Light)
