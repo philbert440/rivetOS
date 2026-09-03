@@ -27,8 +27,8 @@ only through this seam), the turn state machine in `ui/ChatViewModel.kt`, `Herme
 ## Slices (plan §6)
 
 M1a rename + M6 CI ✔ → M1b `NodeTransport` seam + android-free `domain/gateway/transport` + nx
-`project.json` ✔ (this) → M2a p12 import in Settings → M1.5 design system (desktop tokens + components, Claude
-Design canvas = acceptance) → M3a pure-Kotlin plane layer (tests only) → M3b Compose conversations +
+`project.json` ✔ → M2a p12 import in Settings → M1.5 design system ✔ (this; `ui/theme` + `ui/components`,
+gallery behind Settings-title long-press) → M3a pure-Kotlin plane layer (tests only) → M3b Compose conversations +
 chat → M4 terminal mode → M5a nodes filter → M5b turn-complete notification → M7 cutover.
 
 ## Core packages

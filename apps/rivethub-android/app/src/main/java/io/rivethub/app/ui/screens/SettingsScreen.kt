@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -57,7 +59,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, onRosterChanged: () -> Unit) {
+fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, onRosterChanged: () -> Unit, onOpenGallery: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val prefs by c.settings.prefs.collectAsState(initial = Prefs())
@@ -94,7 +96,15 @@ fun SettingsScreen(c: AppContainer, onBack: () -> Unit, onForget: () -> Unit, on
         Row(verticalAlignment = Alignment.CenterVertically) {
             CircleIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
             Spacer(Modifier.width(12.dp))
-            Text("Settings", color = cs.onBackground, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+            Text(
+                "Settings",
+                color = cs.onBackground,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.pointerInput(onOpenGallery) {
+                    detectTapGestures(onLongPress = { onOpenGallery() })
+                },
+            )
         }
         VSpace(20)
         msg?.let { Text(it, color = cs.onSurfaceVariant, fontSize = 13.sp); VSpace(12) }
