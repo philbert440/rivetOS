@@ -159,10 +159,9 @@ class HarnessGateway(
     }
 
     /** Driver-level registry stream across every session. */
-    fun watchRegistry(
-        onEvent: (HarnessEvent) -> Unit,
+    fun watchRegistry(harnessId: String? = null, onEvent: (HarnessEvent) -> Unit,
         onStatus: (WsStatus) -> Unit = {},
-    ): Closeable = WsSubscription(clients(), registryWatchUrl(), onStatus) { text ->
+    ): Closeable = WsSubscription(clients(), registryWatchUrl(harnessId), onStatus) { text ->
         parseHarnessEvent(text)?.let(onEvent)
     }
 
