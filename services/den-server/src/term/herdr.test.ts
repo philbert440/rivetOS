@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync, existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -562,6 +562,12 @@ describe('round-2 re-review fixes (B6 + orphan risks)', () => {
     expect(rpcs.map((r) => r.method)).not.toContain('agent.start')
     expect(rpcs.map((r) => r.method)).toContain('pane.send_text')
   })
+  it('B6: a PATH-less pinned binary (`/opt/…/grok`) is not routed through agent.start (herdr would swap the executable)', async () => {
+    const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
+    await mkCtl(rpcs).create({ name: 'dr2b6c', denKey: 'k', argv: ['/opt/grok-1.0.13/bin/grok', '--no-plan'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' })
+    expect(rpcs.map((r) => r.method)).not.toContain('agent.start')
+    expect(rpcs.map((r) => r.method)).toContain('pane.send_text')
+  })
   it('meta (pid + denKey) is written before workspace/agent setup so a mid-create crash stays visible', async () => {
     const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
     const { readFileSync, rmSync } = await import('node:fs')
@@ -569,8 +575,13 @@ describe('round-2 re-review fixes (B6 + orphan risks)', () => {
     await expect(
       mkCtl(rpcs, (req) => { if (req.method === 'agent.start') throw new Error('boom') }).create({ name: 'dr2meta', denKey: 'key-x', argv: ['grok'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' }),
     ).rejects.toThrow('boom')
-    // the throw path tears the server down, but the early meta write must have happened before agent.start
+    // the throw path tears the server down, but the early meta write must have happened before agent.start:
+    // rivet.json (pid + denKey) exists even though agent.start blew up
+    const metaPath = '/tmp/herdr-cfg-r2/herdr/sessions/dr2meta/rivet.json'
+    expect(existsSync(metaPath)).toBe(true)
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as { pid?: number; denKey?: string }
+    expect(meta.denKey).toBe('key-x')
+    expect(meta.pid).toBe(4242)
     expect(rpcs.map((r) => r.method)).toContain('workspace.create')
-    void readFileSync
   })
 })

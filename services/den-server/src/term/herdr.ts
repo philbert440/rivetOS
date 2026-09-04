@@ -1043,7 +1043,7 @@ export function createRealHerdrCtl(
         }
       }
       const meta = readMeta(configHome, name)
-      if (meta.pid && pidAlive(meta.pid)) {
+      if (meta.pid && pidIsHerdrServer(meta.pid, name)) {
         // stop did not take — keep the dir so the orphan stays addressable
         throw new HerdrUnavailableError(
           `herdr server stop failed for ${name} (pid ${meta.pid} still alive); not removing session dir`,
@@ -1139,8 +1139,12 @@ export function createRealHerdrCtl(
         // roster whose argv[0] IS that executable goes through agent.start —
         // anything else (wrapper scripts, custom binaries) runs verbatim in a
         // plain pane (no status detection, but no surprises).
-        const exe = (opts.argv[0] ?? '').split('/').pop() ?? ''
-        const useAgent = Boolean(opts.kind) && exe === opts.kind
+        // A bare argv[0] equal to the kind: herdr launches that kind's binary
+        // from PATH. A PATH-less roster (`/opt/grok-1.0.13/bin/grok`) pins a
+        // build herdr would silently replace, so it runs verbatim in a plain
+        // pane instead (no status detection — the honest trade).
+        const argv0 = opts.argv[0] ?? ''
+        const useAgent = Boolean(opts.kind) && !argv0.includes('/') && argv0 === opts.kind
         if (useAgent) {
           const startReq = {
             id: 'den-agent-start',
