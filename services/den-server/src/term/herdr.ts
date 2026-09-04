@@ -213,6 +213,37 @@ export function herdrMetaPath(configHome: string, name: string): string {
   return join(configHome, 'herdr', 'sessions', name, 'rivet.json')
 }
 
+/** Per-den herdr `config.toml`, owned by den the way `tmux.conf` is: the
+ *  herdr client is a wrapper around ONE agent pane, so herdr's own chrome —
+ *  the sidebar ("spaces"/"agents" panels), the tab row, outer borders, the
+ *  scrollbar column, tab-name prompts — is turned off and the pane gets the
+ *  whole terminal (tmux `status off` parity). Rewritten on every den start;
+ *  the herdr server and client both read it via `XDG_CONFIG_HOME`. */
+export function herdrConfigPath(configHome: string): string {
+  return join(configHome, 'herdr', 'config.toml')
+}
+
+export function herdrConfigContent(): string {
+  const lines = [
+    '# written by rivetos den-server on every start — edits here are overwritten',
+    '[ui]',
+    '# no sidebar (spaces/agents panels): the den pane IS the terminal',
+    'sidebar_start_collapsed = true',
+    'sidebar_collapsed_mode = "hidden"',
+    '# no tab row — den sessions are single-pane, single-tab',
+    'hide_tab_bar_when_single_tab = true',
+    'prompt_new_tab_name = false',
+    'confirm_close = false',
+    '# no frame around the pane, no scrollbar column',
+    'pane_outer_borders = false',
+    'pane_scrollbars = false',
+    'pane_gaps = false',
+    '# pass the agent\'s own title through instead of "{hostname}: {workspace}"',
+    'window_title = "{terminal_title}"',
+  ]
+  return lines.join('\n') + '\n'
+}
+
 export function assertHerdrSocketPath(configHome: string, name: string): void {
   const client = herdrClientSocketPath(configHome, name)
   const n = Buffer.byteLength(client, 'utf8')

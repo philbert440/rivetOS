@@ -21,6 +21,9 @@ import {
   type TmuxSessionInfo,
 } from './tmux.js'
 import {
+  herdrConfigContent,
+  herdrConfigHome,
+  herdrConfigPath,
   herdrSessionName,
   type HerdrCtl,
   type HerdrCreateOpts,
@@ -2248,6 +2251,15 @@ describe('term manager (herdr mux)', () => {
     expect(ctl.creates[0].env.COLORTERM).toBe('truecolor')
     expect(manager.list().some((r) => r.id === pty.id && r.mux === 'herdr')).toBe(true)
     expect(ctl.subscribes).toBe(1)
+  })
+
+  it('writes the chrome-off config.toml into the herdr config home at construct (like tmux.conf)', () => {
+    const ctl = new FakeHerdrCtl()
+    const { stateDir } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl, port: 4321 })
+    const path = herdrConfigPath(herdrConfigHome(stateDir, 4321))
+    expect(readFileSync(path, 'utf8')).toBe(herdrConfigContent())
+    expect(readFileSync(path, 'utf8')).toContain('sidebar_collapsed_mode = "hidden"')
+    expect(statSync(path).mode & 0o777).toBe(0o600)
   })
 
   it('plain shell create has no herdr kind and does not subscribe to agent status', () => {

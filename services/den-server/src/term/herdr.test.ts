@@ -13,6 +13,8 @@ import {
   createRealHerdrCtl,
   herdrAgentStartArgv,
   herdrAttachArgv,
+  herdrConfigContent,
+  herdrConfigPath,
   herdrClientSocketPath,
   herdrConfigHome,
   herdrEventsSubscribeRequest,
@@ -583,5 +585,28 @@ describe('round-2 re-review fixes (B6 + orphan risks)', () => {
     expect(meta.denKey).toBe('key-x')
     expect(meta.pid).toBe(4242)
     expect(rpcs.map((r) => r.method)).toContain('workspace.create')
+  })
+})
+
+describe('herdr config.toml (den-owned, chrome off)', () => {
+  it('lives at <configHome>/herdr/config.toml', () => {
+    expect(herdrConfigPath('/run/user/2000/rivet-den-abcd1234')).toBe(
+      '/run/user/2000/rivet-den-abcd1234/herdr/config.toml',
+    )
+  })
+
+  it('hides the sidebar, the tab row, the frame and the scrollbar — the pane is the whole terminal', () => {
+    const conf = herdrConfigContent()
+    expect(conf).toMatch(/^\[ui\]$/m)
+    expect(conf).toContain('sidebar_start_collapsed = true')
+    expect(conf).toContain('sidebar_collapsed_mode = "hidden"')
+    expect(conf).toContain('hide_tab_bar_when_single_tab = true')
+    expect(conf).toContain('prompt_new_tab_name = false')
+    expect(conf).toContain('pane_outer_borders = false')
+    expect(conf).toContain('pane_scrollbars = false')
+    expect(conf).toContain('window_title = "{terminal_title}"')
+    // never re-enable chrome by accident
+    expect(conf).not.toMatch(/sidebar_collapsed_mode = "compact"/)
+    expect(conf.endsWith('\n')).toBe(true)
   })
 })
