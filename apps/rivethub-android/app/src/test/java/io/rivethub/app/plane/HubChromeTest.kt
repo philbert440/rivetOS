@@ -2,6 +2,7 @@ package io.rivethub.app.plane
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,10 +13,19 @@ class HubChromeTest {
     }
 
     @Test
-    fun `top bar shows the page title on settings and the wordmark on a session`() {
+    fun `top bar shows the page title on settings`() {
         assertEquals(TopBarTitle.Settings, topBarTitle(HubTab.Settings))
-        // session / enroll screens have no hub tab — the bar keeps the wordmark
-        assertEquals(TopBarTitle.Wordmark, topBarTitle(null))
+    }
+
+    @Test
+    fun `the wordmark bar is a hub-tab bar only — a session owns its own one-row header`() {
+        // lib/session-header.ts showMobileTopBar: the bar shows on every
+        // narrow screen EXCEPT an open session, so topBarTitle takes a real
+        // hub tab — there is no session (null) input anymore. Pin both
+        // mappings so the rule cannot silently flip.
+        assertEquals(TopBarTitle.Wordmark, topBarTitle(HubTab.Conversations))
+        assertEquals(TopBarTitle.Settings, topBarTitle(HubTab.Settings))
+        assertNotEquals(topBarTitle(HubTab.Conversations), topBarTitle(HubTab.Settings))
     }
 
     @Test

@@ -36,6 +36,15 @@ fun hubTabOf(dest: DrawerDest): HubTab? = when (dest) {
 }
 
 /**
+ * Drawer nav resolves to the same hub tab from EVERY origin — the hub itself
+ * or an open session (session-header slice: the session screen lives inside
+ * the same left drawer; from a session the UI additionally pops back to the
+ * hub, but the tab rule is identical). Phase-2 rows stay inert (null) from
+ * every origin. MainActivity routes both origins through this one function.
+ */
+fun drawerTabRoute(dest: DrawerDest): HubTab? = hubTabOf(dest)
+
+/**
  * System Back on the Settings tab returns to Conversations.
  * Conversations yields null so the activity can finish as normal.
  */

@@ -92,4 +92,43 @@ class ChatChromeTest {
         assertFalse(pickerRowCompact(380f))
         assertFalse(pickerRowCompact(412f))
     }
+
+    @Test
+    fun `narrow session header is menu title context segmented history in one row`() {
+        // lib/session-header.ts narrowHeaderItems (chat.tsx:1645-1674)
+        assertEquals(
+            listOf(
+                NarrowHeaderItem.Menu,
+                NarrowHeaderItem.Title,
+                NarrowHeaderItem.Context,
+                NarrowHeaderItem.Segmented,
+                NarrowHeaderItem.History,
+            ),
+            narrowHeaderItems(running = false, remote = false),
+        )
+    }
+
+    @Test
+    fun `narrow session header shows stop only while running and remote only cross-node`() {
+        val items = narrowHeaderItems(running = true, remote = true)
+        assertEquals(
+            listOf(
+                NarrowHeaderItem.Menu,
+                NarrowHeaderItem.Title,
+                NarrowHeaderItem.Remote,
+                NarrowHeaderItem.Context,
+                NarrowHeaderItem.Stop,
+                NarrowHeaderItem.Segmented,
+                NarrowHeaderItem.History,
+            ),
+            items,
+        )
+        assertFalse(narrowHeaderItems(running = false, remote = false).contains(NarrowHeaderItem.Stop))
+        assertFalse(narrowHeaderItems(running = false, remote = false).contains(NarrowHeaderItem.Remote))
+        // Stop slots between the context bar and the segmented control
+        // (chat.tsx headerTail: remote · ContextBar · Stop · Terminal|Chat)
+        assertTrue(items.indexOf(NarrowHeaderItem.Stop) > items.indexOf(NarrowHeaderItem.Context))
+        assertTrue(items.indexOf(NarrowHeaderItem.Stop) < items.indexOf(NarrowHeaderItem.Segmented))
+        assertTrue(items.indexOf(NarrowHeaderItem.Remote) < items.indexOf(NarrowHeaderItem.Context))
+    }
 }

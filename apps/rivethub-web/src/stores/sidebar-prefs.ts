@@ -26,6 +26,10 @@ interface SidebarPrefsState {
   /** Narrow off-canvas rail. Session state — not persisted. */
   drawerOpen: boolean
   setDrawerOpen: (open: boolean) => void
+  /** Narrow right-side history (conversations) drawer. Session state — not
+   *  persisted. */
+  historyOpen: boolean
+  setHistoryOpen: (open: boolean) => void
 }
 
 type PersistedSidebarPrefs = Pick<SidebarPrefsState, 'conversationsCollapsed' | 'railCollapsed'>
@@ -40,6 +44,8 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
       openConversation: () => set({ conversationsCollapsed: false }),
       drawerOpen: false,
       setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
+      historyOpen: false,
+      setHistoryOpen: (historyOpen) => set({ historyOpen }),
     }),
     {
       name: KEY,
@@ -66,6 +72,7 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
         ...current,
         ...(persisted as Partial<SidebarPrefsState>),
         drawerOpen: false,
+        historyOpen: false,
       }),
     },
   ),

@@ -14,6 +14,7 @@
 
     <string name="cd_open_drawer">Open menu</string>
     <string name="cd_close_drawer">Close menu</string>
+    <string name="cd_conversations">Conversations</string>
     <string name="cd_coming_soon">coming soon</string>
     <string name="cd_den_bot">Rivet den bot</string>
     <string name="unread_notifications">%d unread notifications</string>
@@ -143,6 +144,7 @@
     <string name="error_upload_in_progress">Wait for the attachment to finish uploading.</string>
     <string name="error_upload_too_large">That file is larger than the 1 GiB upload limit.</string>
     <string name="ws_disconnected">disconnected</string>
+    <string name="jump_latest">latest</string>
     <string name="ask_user_free">Or type a reply</string>
     <string name="ask_user_selected">selected</string>
 </resources>

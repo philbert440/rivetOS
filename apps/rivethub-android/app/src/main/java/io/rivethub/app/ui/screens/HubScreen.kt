@@ -1,17 +1,22 @@
 package io.rivethub.app.ui.screens
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -20,7 +25,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
@@ -30,8 +40,8 @@ import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
+import io.rivethub.app.plane.drawerTabRoute
 import io.rivethub.app.plane.drawerWidthDp
-import io.rivethub.app.plane.hubTabOf
 import io.rivethub.app.plane.hubTabOnBack
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.RivetDrawerContent
@@ -40,17 +50,24 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.launch
 
+/**
+ * The ONE left navigation drawer (session-header slice: lifted out of the hub
+ * content so MainActivity can host BOTH the hub and a chat session inside the
+ * same ModalNavigationDrawer — the rail is reachable by ☰ or left-edge swipe
+ * from every screen, Phil 2026-09-03). `gesturesEnabled = true` gives the
+ * edge swipe (web lib/edge-swipe.ts; Compose covers it natively). Drawer nav
+ * routes through `drawerTabRoute` identically from the hub and from a
+ * session; [onNavTab] applies the tab and (from a session) pops back to the
+ * hub. [content] receives the ☰ opener.
+ */
 @Composable
-fun HubScreen(
+fun HubDrawer(
     vm: HubViewModel,
-    c: AppContainer,
     onOpenChat: (AgentOpen) -> Unit,
-    onOpenRow: (LocatedChatItem) -> Unit,
-    onOpenGallery: () -> Unit,
-    onForget: () -> Unit,
+    onNavTab: (HubTab) -> Unit,
+    content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
-    LaunchedEffect(Unit) { vm.refresh() }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var inboxOpen by remember { mutableStateOf(false) }
@@ -58,12 +75,6 @@ fun HubScreen(
     val tab = when (st.tab) {
         HubViewModel.Tab.Settings -> HubTab.Settings
         HubViewModel.Tab.Conversations -> HubTab.Conversations
-    }
-    BackHandler(enabled = hubTabOnBack(tab) != null) {
-        when (hubTabOnBack(tab)) {
-            HubTab.Conversations -> vm.setTab(HubViewModel.Tab.Conversations)
-            HubTab.Settings, null -> Unit
-        }
     }
     fun openDrawer() { scope.launch { drawerState.open() } }
     fun closeDrawer() { scope.launch { drawerState.close() } }
@@ -96,6 +107,7 @@ fun HubScreen(
         val drawerWidth = drawerWidthDp(maxWidth.value).dp
         ModalNavigationDrawer(
             drawerState = drawerState,
+            gesturesEnabled = true,
             scrimColor = colors.bg.copy(alpha = 0.7f),
             drawerContent = {
                 RivetDrawerContent(
@@ -108,14 +120,7 @@ fun HubScreen(
                     nodeSheet = nodeSheet,
                     onClose = { closeDrawer() },
                     onNav = { dest ->
-                        hubTabOf(dest)?.let { next ->
-                            vm.setTab(
-                                when (next) {
-                                    HubTab.Conversations -> HubViewModel.Tab.Conversations
-                                    HubTab.Settings -> HubViewModel.Tab.Settings
-                                },
-                            )
-                        }
+                        drawerTabRoute(dest)?.let { onNavTab(it) }
                         closeDrawer()
                     },
                     onUnread = {
@@ -150,23 +155,7 @@ fun HubScreen(
                 )
             },
         ) {
-            Column(Modifier.fillMaxSize()) {
-                when (st.tab) {
-                    HubViewModel.Tab.Conversations -> ConversationsScreen(
-                        vm = vm,
-                        onOpenRow = onOpenRow,
-                        onOpenChat = onOpenChat,
-                        onOpenDrawer = { openDrawer() },
-                    )
-                    HubViewModel.Tab.Settings -> SettingsScreen(
-                        c = c,
-                        vm = vm,
-                        onForget = onForget,
-                        onOpenGallery = onOpenGallery,
-                        onOpenDrawer = { openDrawer() },
-                    )
-                }
-            }
+            content { openDrawer() }
         }
     }
 
@@ -227,3 +216,116 @@ fun HubScreen(
         }
     }
 }
+
+/**
+ * The RIGHT history drawer in a session (web chat.tsx:585-626): an end-side
+ * ModalNavigationDrawer — the RTL wrap is the standard Compose end-drawer
+ * pattern — whose content is the same D1a [ConversationsPane] the hub shows
+ * (filter · rows · `+ new`), at the left rail's width rule (`drawerWidthDp`;
+ * web `w-64`, sidebar.tsx:186-197) with `border-l border-line bg-panel`
+ * (chat.tsx:612) and the `bg-bg/70` scrim (chat.tsx:600). Right-edge swipe
+ * opens it (`gesturesEnabled`); the history button in the session header
+ * opens it via the [content] opener. Row tap / `+ new` close it; MainActivity
+ * switches the session.
+ */
+@Composable
+fun HistoryDrawer(
+    vm: HubViewModel,
+    onOpenRow: (LocatedChatItem) -> Unit,
+    onOpenChat: (AgentOpen) -> Unit,
+    content: @Composable (openHistory: () -> Unit) -> Unit,
+) {
+    val historyState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    fun openHistory() { scope.launch { historyState.open() } }
+    fun closeHistory() { scope.launch { historyState.close() } }
+    val colors = RivetTheme.colors
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val drawerWidth = drawerWidthDp(maxWidth.value).dp
+            ModalNavigationDrawer(
+                drawerState = historyState,
+                gesturesEnabled = true,
+                scrimColor = colors.bg.copy(alpha = 0.7f),
+                drawerContent = {
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        Column(
+                            Modifier
+                                .width(drawerWidth)
+                                .fillMaxHeight()
+                                .background(colors.panel)
+                                .drawStartBorder(colors.line),
+                        ) {
+                            ConversationsPane(
+                                vm = vm,
+                                onOpenRow = { row ->
+                                    closeHistory()
+                                    onOpenRow(row)
+                                },
+                                onOpenChat = { open ->
+                                    closeHistory()
+                                    onOpenChat(open)
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .statusBarsPadding(),
+                            )
+                        }
+                    }
+                },
+            ) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    content { openHistory() }
+                }
+            }
+        }
+    }
+}
+
+/** The hub content — Conversations (home) or Settings — inside [HubDrawer]. */
+@Composable
+fun HubScreen(
+    vm: HubViewModel,
+    c: AppContainer,
+    onOpenChat: (AgentOpen) -> Unit,
+    onOpenRow: (LocatedChatItem) -> Unit,
+    onOpenGallery: () -> Unit,
+    onForget: () -> Unit,
+    onOpenDrawer: () -> Unit,
+) {
+    val st by vm.state.collectAsState()
+    LaunchedEffect(Unit) { vm.refresh() }
+    val tab = when (st.tab) {
+        HubViewModel.Tab.Settings -> HubTab.Settings
+        HubViewModel.Tab.Conversations -> HubTab.Conversations
+    }
+    BackHandler(enabled = hubTabOnBack(tab) != null) {
+        when (hubTabOnBack(tab)) {
+            HubTab.Conversations -> vm.setTab(HubViewModel.Tab.Conversations)
+            HubTab.Settings, null -> Unit
+        }
+    }
+    Column(Modifier.fillMaxSize()) {
+        when (st.tab) {
+            HubViewModel.Tab.Conversations -> ConversationsScreen(
+                vm = vm,
+                onOpenRow = onOpenRow,
+                onOpenChat = onOpenChat,
+                onOpenDrawer = onOpenDrawer,
+            )
+            HubViewModel.Tab.Settings -> SettingsScreen(
+                c = c,
+                vm = vm,
+                onForget = onForget,
+                onOpenGallery = onOpenGallery,
+                onOpenDrawer = onOpenDrawer,
+            )
+        }
+    }
+}
+
+private fun Modifier.drawStartBorder(color: Color): Modifier =
+    drawBehind {
+        val stroke = 1.dp.toPx()
+        drawLine(color, Offset(stroke / 2f, 0f), Offset(stroke / 2f, size.height), stroke)
+    }

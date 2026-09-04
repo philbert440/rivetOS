@@ -61,4 +61,23 @@ class DrawerNavTest {
         assertEquals(HubTab.Conversations, hubTabOnBack(HubTab.Settings))
         assertNull(hubTabOnBack(HubTab.Conversations))
     }
+
+    @Test
+    fun `drawer nav from a session resolves the same hub tab as from the hub`() {
+        // Session-header slice: the session screen lives inside the same left
+        // drawer, and MainActivity routes BOTH origins through drawerTabRoute —
+        // the session pop back to the hub is the UI's only extra step.
+        for (dest in DrawerDest.entries) {
+            assertEquals(hubTabOf(dest), drawerTabRoute(dest))
+        }
+    }
+
+    @Test
+    fun `session drawer nav maps enabled rows to their tabs and leaves phase-two rows inert`() {
+        assertEquals(HubTab.Conversations, drawerTabRoute(DrawerDest.Conversations))
+        assertEquals(HubTab.Settings, drawerTabRoute(DrawerDest.Settings))
+        for (dest in listOf(DrawerDest.Memory, DrawerDest.Files, DrawerDest.Tasks, DrawerDest.Workflows)) {
+            assertNull(drawerTabRoute(dest))
+        }
+    }
 }

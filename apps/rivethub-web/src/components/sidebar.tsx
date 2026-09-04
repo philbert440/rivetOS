@@ -1,6 +1,15 @@
 import type { JSX } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
-import { Bell, Folder, Library, ListChecks, MessageSquare, Settings, Workflow } from 'lucide-react'
+import {
+  Bell,
+  Folder,
+  Library,
+  ListChecks,
+  Menu,
+  MessageSquare,
+  Settings,
+  Workflow,
+} from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
 import { useChat } from '../stores/chat.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
@@ -113,7 +122,7 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   )
 }
 
-/** Narrow top bar — DenBot opens the rail drawer (same affordance as desktop). */
+/** Narrow top bar — ☰ opens the rail drawer; DenBot stays as brand. */
 export function MobileTopBar(): JSX.Element {
   const unread = useNotifications((s) => s.unread)
   const markAllRead = useNotifications((s) => s.markAllRead)
@@ -128,14 +137,15 @@ export function MobileTopBar(): JSX.Element {
         variant="ghost"
         size="icon"
         id="hub-rail-toggle"
-        aria-label="Open sidebar"
+        aria-label="Open menu"
         aria-controls="hub-rail"
         aria-expanded={drawerOpen}
         onClick={() => setDrawerOpen(true)}
         className="size-11 shrink-0 p-0"
       >
-        <DenBot className="size-7 shrink-0" decorative />
+        <Menu className="size-5 shrink-0" aria-hidden />
       </Button>
+      <DenBot className="size-7 shrink-0" decorative />
       <span className="min-w-0 truncate font-mono text-sm text-em">{hubPageTitle(pathname)}</span>
       {unread > 0 && (
         <span className="ml-auto">

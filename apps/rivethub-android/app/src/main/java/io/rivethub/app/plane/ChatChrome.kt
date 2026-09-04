@@ -77,3 +77,24 @@ fun composerShowsStop(inFlight: Boolean, canInterrupt: Boolean): Boolean =
     inFlight && canInterrupt
 
 fun pickerRowCompact(widthDp: Float): Boolean = widthDp < PICKER_COMPACT_MAX_DP
+
+/**
+ * Ordered items of the one-row narrow session header — rivethub-web
+ * lib/session-header.ts:17-29 (rendered at chat.tsx:1645-1674):
+ * menu · title · remote? · context · stop? · segmented · history. Stop rides
+ * only while a turn is interruptible; the remote badge only for cross-node
+ * threads. The web proxies cross-node sessions through the hub — Android
+ * opens every session against its own node, so it passes `remote = false`
+ * today; the slot exists for parity.
+ */
+enum class NarrowHeaderItem { Menu, Title, Remote, Context, Stop, Segmented, History }
+
+fun narrowHeaderItems(running: Boolean, remote: Boolean): List<NarrowHeaderItem> = buildList {
+    add(NarrowHeaderItem.Menu)
+    add(NarrowHeaderItem.Title)
+    if (remote) add(NarrowHeaderItem.Remote)
+    add(NarrowHeaderItem.Context)
+    if (running) add(NarrowHeaderItem.Stop)
+    add(NarrowHeaderItem.Segmented)
+    add(NarrowHeaderItem.History)
+}

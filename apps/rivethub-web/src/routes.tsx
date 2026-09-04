@@ -14,6 +14,8 @@ import {
 } from '@tanstack/react-router'
 import { MobileTopBar, Sidebar } from './components/sidebar.js'
 import { Toasts } from './components/toasts.js'
+import { EdgeSwipeTracker } from './lib/edge-swipe.js'
+import { showMobileTopBar } from './lib/session-header.js'
 import { useIsNarrow } from './lib/use-narrow.js'
 import { useSidebarPrefs } from './stores/sidebar-prefs.js'
 import { ChatPage } from './pages/chat.js'
@@ -40,12 +42,21 @@ function RootLayout(): JSX.Element {
   const railCollapsed = useSidebarPrefs((s) => s.railCollapsed)
   const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
   const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
+  const historyOpen = useSidebarPrefs((s) => s.historyOpen)
+  const setHistoryOpen = useSidebarPrefs((s) => s.setHistoryOpen)
   const narrow = useIsNarrow()
   const active = useChat((s) => s.active)
+  const pathname = useRouterState({
+    select: (s) => s.location.pathname,
+  })
   const locKey = useRouterState({
     select: (s) => s.location.href,
   })
   const wasDrawerOpen = useRef(drawerOpen)
+  const wasHistoryOpen = useRef(historyOpen)
+  // Narrow with a session open: the one-row session header owns the top of
+  // the screen — the wordmark bar is not shown (Phil 2026-09-03).
+  const sessionOpen = pathname === '/' && active !== undefined
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
   // toasts fire on any page.
@@ -56,9 +67,12 @@ function RootLayout(): JSX.Element {
 
   // Off-canvas rail: close on route change AND on session change. Draft
   // sessions never write the URL, so href alone misses agent taps and
-  // Conversations-from-draft.
+  // Conversations-from-draft. The history drawer rides the same rule (a
+  // session switch from its own rows closes it via shouldCloseHistoryOnSelect
+  // before this fires; this catches every other path).
   useEffect(() => {
     useSidebarPrefs.getState().setDrawerOpen(false)
+    useSidebarPrefs.getState().setHistoryOpen(false)
   }, [locKey, active])
 
   useLayoutEffect(() => {
@@ -71,16 +85,52 @@ function RootLayout(): JSX.Element {
     }
   }, [drawerOpen])
 
+  useLayoutEffect(() => {
+    const wasOpen = wasHistoryOpen.current
+    wasHistoryOpen.current = historyOpen
+    if (historyOpen && !wasOpen) {
+      document.getElementById('hub-history')?.focus()
+    } else if (!historyOpen && wasOpen) {
+      document.getElementById('hub-history-toggle')?.focus()
+    }
+  }, [historyOpen])
+
   useEffect(() => {
-    if (!drawerOpen) return
+    if (!drawerOpen && !historyOpen) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape') return
       e.preventDefault()
       setDrawerOpen(false)
+      setHistoryOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [drawerOpen, setDrawerOpen])
+  }, [drawerOpen, historyOpen, setDrawerOpen, setHistoryOpen])
+
+  // Edge swipes own horizontal gestures on narrow (Phil 2026-09-03): left
+  // bezel → navigation drawer from EVERY screen; right bezel → history
+  // (conversations) drawer while a session is open.
+  useEffect(() => {
+    if (!narrow) return
+    const tracker = new EdgeSwipeTracker()
+    const onDown = (e: PointerEvent): void => tracker.down(e.clientX, e.clientY, window.innerWidth)
+    const onMove = (e: PointerEvent): void => {
+      const side = tracker.move(e.clientX, e.clientY)
+      if (side === 'left') useSidebarPrefs.getState().setDrawerOpen(true)
+      else if (side === 'right' && sessionOpen) useSidebarPrefs.getState().setHistoryOpen(true)
+    }
+    const onUp = (): void => tracker.up()
+    window.addEventListener('pointerdown', onDown)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
+    return () => {
+      window.removeEventListener('pointerdown', onDown)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
+    }
+  }, [narrow, sessionOpen])
 
   return (
     <div
@@ -104,7 +154,7 @@ function RootLayout(): JSX.Element {
         className="flex min-h-0 min-w-0 flex-1 flex-col"
         inert={narrow && drawerOpen ? true : undefined}
       >
-        {narrow && <MobileTopBar />}
+        {showMobileTopBar(narrow, sessionOpen) && <MobileTopBar />}
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>
