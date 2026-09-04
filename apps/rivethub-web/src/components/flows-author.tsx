@@ -69,7 +69,7 @@ export function FlowsAuthor(props: {
   // wiped unsaved edits. While dirty, a later run of this effect (def switch
   // is the only trigger) still resets; we never clear dirty on a no-op re-hydrate.
   useEffect(() => {
-    let cancelled = false
+    const cancelRef = { cancelled: false }
     setLoaded(false)
     setSaveMsg(undefined)
     setSelectedId(null)
@@ -80,7 +80,7 @@ export function FlowsAuthor(props: {
       if (path) {
         try {
           const text = await gw.filesReadText(path)
-          if (!cancelled) {
+          if (!cancelRef.cancelled) {
             hadFlowsJson.current = true
             setGraph(parseFlowsFile(text))
             setLoaded(true)
@@ -88,18 +88,18 @@ export function FlowsAuthor(props: {
           }
         } catch (err) {
           if (!(err instanceof GatewayError && err.status === 404)) {
-            if (!cancelled) setSaveMsg(err instanceof Error ? err.message : String(err))
+            if (!cancelRef.cancelled) setSaveMsg(err instanceof Error ? err.message : String(err))
           }
         }
       }
-      if (!cancelled) {
+      if (!cancelRef.cancelled) {
         hadFlowsJson.current = false
         setGraph(authorGraphFromOutline(outlineRef.current))
         setLoaded(true)
       }
     })()
     return () => {
-      cancelled = true
+      cancelRef.cancelled = true
     }
   }, [props.editPath, props.workflowId])
 

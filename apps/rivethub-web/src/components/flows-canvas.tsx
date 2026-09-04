@@ -148,7 +148,6 @@ function hitEdge(graph: FlowAuthorGraph, x: number, y: number): FlowAuthorEdge |
 function hitNode(nodes: FlowAuthorNode[], x: number, y: number): FlowAuthorNode | undefined {
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i]
-    if (!n) continue
     if (x >= n.x && x <= n.x + FLOW_NODE_SIZE && y >= n.y && y <= n.y + FLOW_NODE_SIZE) return n
   }
   return undefined

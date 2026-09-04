@@ -479,10 +479,7 @@ function AgentRow({
                 clearAgentSessionPointer(agent.id, p.nodeBaseUrl, p.sessionId)
                 return null
               } catch (scanErr) {
-                if (
-                  signal.aborted ||
-                  (scanErr instanceof DOMException && scanErr.name === 'AbortError')
-                ) {
+                if (scanErr instanceof DOMException && scanErr.name === 'AbortError') {
                   throw scanErr
                 }
                 return { nodeBaseUrl: p.nodeBaseUrl, status: undefined }
@@ -855,7 +852,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     const gen = bumpGen(agent.id)
     void (async () => {
       collapseAgentSlots(agent.id, agent.nodeBaseUrl)
-      const pin = listAgentSessions(agent.id)[0]
+      const pin = listAgentSessions(agent.id).at(0)
       if (!pin) {
         openFresh(agent)
         return

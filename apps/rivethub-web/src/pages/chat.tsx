@@ -1087,7 +1087,7 @@ function ActiveSession(props: {
       setListedRemoteId(undefined)
       return
     }
-    let cancelled = false
+    const cancelRef = { cancelled: false }
     void (async () => {
       try {
         const gw = await gatewayFor(sessionBase)
@@ -1095,7 +1095,7 @@ function ActiveSession(props: {
         const match = listed.sessions.find((se) =>
           sessionPointerMatches(props.sessionId, se.id, nativeIdOf),
         )
-        if (cancelled) return
+        if (cancelRef.cancelled) return
         if (match && match.id !== props.sessionId) {
           setListedRemoteId(match.id)
           if (useChat.getState().rekey(props.sessionId, match.id)) {
@@ -1117,11 +1117,11 @@ function ActiveSession(props: {
         }
         setListedRemoteId(match ? match.id : null)
       } catch {
-        if (!cancelled) setListedRemoteId(undefined)
+        if (!cancelRef.cancelled) setListedRemoteId(undefined)
       }
     })()
     return () => {
-      cancelled = true
+      cancelRef.cancelled = true
     }
   }, [remote404, isDraft, sessionBase, props.sessionId, baseUrl, rosterUrls])
   const remoteDead = remote404 && !isDraft && listedRemoteId === null

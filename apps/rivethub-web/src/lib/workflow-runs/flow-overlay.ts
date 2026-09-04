@@ -145,7 +145,7 @@ export function statusByIdForCanvas(
   projection: GraphNode[],
 ): Record<string, GraphNodeStatus> {
   const map = statusByIdFromProjection(projection)
-  const doneStatus = map.done
+  const doneStatus = Object.hasOwn(map, 'done') ? map.done : undefined
   if (doneStatus) {
     for (const n of author.nodes) {
       if (n.kind === 'done') map[n.id] = doneStatus

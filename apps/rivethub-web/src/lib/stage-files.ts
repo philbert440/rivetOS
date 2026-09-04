@@ -110,7 +110,7 @@ export function filesFrom(
   const out: File[] = []
   for (let i = 0; i < items.length; i++) {
     const item = items[i]
-    if (item && item.kind === 'file') {
+    if (item.kind === 'file') {
       const f = item.getAsFile()
       if (f) out.push(f)
     }
