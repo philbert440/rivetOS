@@ -120,12 +120,53 @@ export function resolveAsset(
   return { file, mime }
 }
 
+/**
+ * Every file under `distDir`, keyed by normalized absolute path. The packaged
+ * dist is a few MB and immutable for the life of the process, so holding it
+ * in memory costs nothing — and it is the only thing that keeps NEW windows
+ * working when the directory disappears underneath a running app. That is
+ * not hypothetical: under `APPIMAGE_EXTRACT_AND_RUN` the AppImage runtime
+ * extracts into `/tmp/appimage_extracted_<md5 of the image PATH>` — shared by
+ * every launch of the same file — and `rm -rf`s it when ITS payload exits.
+ * A second launch (Plasma/GNOME/Hyprland "open new window" re-runs Exec)
+ * loses the single-instance lock, exits, and takes the first instance's
+ * resources with it; the already-loaded windows keep running, every later
+ * window 404s on index.html ("not found"). Reproduced on 0.5.16.
+ */
+export async function snapshotDist(distDir: string): Promise<Map<string, Buffer>> {
+  const root = path.normalize(distDir)
+  const files = new Map<string, Buffer>()
+  const entries = await fs.readdir(root, { recursive: true, withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isFile()) continue
+    const file = path.normalize(path.join(entry.parentPath, entry.name))
+    files.set(file, await fs.readFile(file))
+  }
+  return files
+}
+
+export interface ServeDistOptions {
+  /** Serve from an in-memory snapshot taken now (packaged builds — see
+   *  snapshotDist). Off, every request reads the disk, so a dev rebuild of
+   *  the web dist shows on reload. */
+  snapshot?: boolean
+  /** Snapshot failure is logged, never fatal: disk serving still works. */
+  onError?: (err: unknown) => void
+}
+
 /** Register the app:// handler on the given protocol module (post-ready). */
 export function serveDist(
   protocol: { handle: (scheme: string, handler: (req: Request) => Promise<Response>) => void },
   distDir: string,
+  opts: ServeDistOptions = {},
 ): void {
   const root = path.normalize(distDir)
+  const snapshot: Promise<Map<string, Buffer>> = opts.snapshot
+    ? snapshotDist(root).catch((err: unknown) => {
+        opts.onError?.(err)
+        return new Map<string, Buffer>()
+      })
+    : Promise.resolve(new Map<string, Buffer>())
   // Error responses carry the CSP too — constant bodies, but "every app://
   // response carries the policy" should be true without exceptions.
   const errorHeaders = { 'content-type': 'text/plain', 'content-security-policy': CSP }
@@ -144,7 +185,9 @@ export function serveDist(
     const asset = resolveAsset(root, url.pathname)
     if (!asset) return new Response('forbidden', { status: 403, headers: errorHeaders })
     try {
-      const body = await fs.readFile(asset.file)
+      // Snapshot first: a file missing from it (dev, or a snapshot that
+      // failed to load) still falls through to the disk.
+      const body = (await snapshot).get(asset.file) ?? (await fs.readFile(asset.file))
       return new Response(body, {
         headers: { 'content-type': asset.mime, 'content-security-policy': CSP },
       })

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import * as fsp from 'node:fs/promises'
+import * as os from 'node:os'
 import * as path from 'node:path'
-import { resolveAsset } from './serve-dist.js'
+import { CSP, resolveAsset, serveDist, snapshotDist } from './serve-dist.js'
 
 const DIST = path.normalize('/srv/web/dist')
 
@@ -101,5 +103,83 @@ describe('media permission fences', () => {
     // the frame check is what keeps the twins in agreement (#576 review)
     expect(allowMediaCheck('app://bundle', { isMainFrame: false, mediaType: 'audio' })).toBe(false)
     expect(allowMediaCheck('app://bundle', { mediaType: 'audio' })).toBe(false) // fail closed
+  })
+})
+
+describe('serveDist — the dist directory vanishing under a running app', () => {
+  // A second launch of the same AppImage under APPIMAGE_EXTRACT_AND_RUN
+  // deletes the shared extraction dir on exit (reproduced on 0.5.16: every
+  // window opened afterwards read "not found"). Real files, real deletion.
+  const { mkdtemp, mkdir, writeFile, rm } = fsp
+  type Handler = (req: Request) => Promise<Response>
+
+  async function makeDist(): Promise<string> {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'rh-dist-'))
+    await mkdir(path.join(dir, 'assets'))
+    await writeFile(path.join(dir, 'index.html'), '<html>hub</html>')
+    await writeFile(path.join(dir, 'assets', 'app.js'), 'console.log(1)')
+    return dir
+  }
+
+  function register(dir: string, opts?: Parameters<typeof serveDist>[2]): Handler {
+    let handler: Handler | undefined
+    serveDist({ handle: (_scheme, h) => (handler = h) }, dir, opts)
+    if (!handler) throw new Error('handler not registered')
+    return handler
+  }
+
+  it('snapshot: serves index.html and assets after the directory is deleted', async () => {
+    const dir = await makeDist()
+    const handler = register(dir, { snapshot: true })
+    await rm(dir, { recursive: true, force: true })
+
+    const index = await handler(new Request('app://bundle/'))
+    expect(index.status).toBe(200)
+    expect(await index.text()).toBe('<html>hub</html>')
+    expect(index.headers.get('content-type')).toBe('text/html; charset=utf-8')
+    expect(index.headers.get('content-security-policy')).toBe(CSP)
+
+    const js = await handler(new Request('app://bundle/assets/app.js'))
+    expect(js.status).toBe(200)
+    expect(await js.text()).toBe('console.log(1)')
+    expect(js.headers.get('content-type')).toBe('text/javascript')
+
+    // A hashed asset that never existed still 404s — the snapshot is not a
+    // soft-serve-index fallback (stale-tab semantics unchanged).
+    const missing = await handler(new Request('app://bundle/assets/gone.js'))
+    expect(missing.status).toBe(404)
+  })
+
+  it('no snapshot (dev): reads the disk, so the deletion is visible', async () => {
+    const dir = await makeDist()
+    const handler = register(dir)
+    expect((await handler(new Request('app://bundle/'))).status).toBe(200)
+    await rm(dir, { recursive: true, force: true })
+    expect((await handler(new Request('app://bundle/'))).status).toBe(404)
+  })
+
+  it('snapshot failure is reported and falls back to the disk', async () => {
+    const dir = await makeDist()
+    const errors: unknown[] = []
+    const handler = register(path.join(dir, 'does-not-exist'), {
+      snapshot: true,
+      onError: (e) => errors.push(e),
+    })
+    expect((await handler(new Request('app://bundle/'))).status).toBe(404)
+    expect(errors).toHaveLength(1)
+    // ...and a dist that exists on disk but failed to snapshot still serves.
+    const ok = register(dir, { snapshot: true })
+    expect((await ok(new Request('app://bundle/'))).status).toBe(200)
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('snapshotDist keys every file by normalized absolute path', async () => {
+    const dir = await makeDist()
+    const files = await snapshotDist(dir)
+    expect([...files.keys()].sort()).toEqual([
+      path.join(dir, 'assets', 'app.js'),
+      path.join(dir, 'index.html'),
+    ])
+    await rm(dir, { recursive: true, force: true })
   })
 })
