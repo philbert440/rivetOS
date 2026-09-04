@@ -43,12 +43,12 @@ export function effortOptionsFor(sheet: HarnessSheet | undefined, modelId: strin
 
 export function defaultModel(sheet: HarnessSheet | undefined): string {
   const models = sheet?.models ?? []
-  return models.find((m) => m.default)?.id ?? models[0]?.id ?? ''
+  return models.find((m) => m.default)?.id ?? models.at(0)?.id ?? ''
 }
 
 export function defaultEffort(sheet: HarnessSheet | undefined, modelId: string): string {
   const efforts = effortListFor(sheet, modelId)
-  return efforts.find((e) => e.default)?.id ?? efforts[0]?.id ?? ''
+  return efforts.find((e) => e.default)?.id ?? efforts.at(0)?.id ?? ''
 }
 
 /**

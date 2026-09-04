@@ -93,7 +93,7 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
 
   const name = baseName(path)
   const kind =
-    size !== undefined ? previewKind(name, size) : previewKind(name, Math.min(size ?? 0, TEXT_MAX))
+    size !== undefined ? previewKind(name, size) : previewKind(name, Math.min(0, TEXT_MAX))
   // When size unknown, treat text-like extensions as editable; confirm after load.
   const looksText = size === undefined ? previewKind(name, 1) === 'text' : kind === 'text'
   const readOnly = Boolean(forceReadOnly || readOnlyReason || !looksText)

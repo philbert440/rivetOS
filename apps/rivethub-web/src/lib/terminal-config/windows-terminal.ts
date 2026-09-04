@@ -97,7 +97,7 @@ function activeProfile(root: Obj): Obj {
   const list = Array.isArray(profiles.list) ? profiles.list.filter(isObj) : []
   const guid = root.defaultProfile
   const listed =
-    (typeof guid === 'string' ? list.find((p) => p.guid === guid) : undefined) ?? list[0] ?? {}
+    (typeof guid === 'string' ? list.find((p) => p.guid === guid) : undefined) ?? list.at(0) ?? {}
   return mergeProfile(defaults, listed)
 }
 

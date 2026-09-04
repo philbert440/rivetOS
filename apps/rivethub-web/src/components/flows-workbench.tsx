@@ -238,7 +238,7 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
   const add = (kind: Exclude<FlowAuthorKind, 'start'>): void => {
     if (!props.editable || !props.onChange) return
     const next = addFlowNode(props.graph, kind)
-    const created = next.nodes[next.nodes.length - 1]
+    const created = next.nodes.at(-1)
     props.onChange(next)
     if (created) props.onSelect(created.id)
   }

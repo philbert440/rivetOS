@@ -187,8 +187,10 @@ function RunListRow(props: { run: WorkflowRunSummary; onClick: () => void }): JS
 
 function StatusChip(props: { status: string }): JSX.Element {
   const status = props.status as WorkflowRunStatus
-  const color = RUN_STATUS_COLORS[status] ?? 'text-ink-dim'
-  const label = RUN_STATUS_LABELS[status] ?? props.status
+  const color =
+    (RUN_STATUS_COLORS as Partial<Record<WorkflowRunStatus, string>>)[status] ?? 'text-ink-dim'
+  const label =
+    (RUN_STATUS_LABELS as Partial<Record<WorkflowRunStatus, string>>)[status] ?? props.status
   return <span className={`shrink-0 font-mono text-xs ${color}`}>{label}</span>
 }
 
@@ -534,7 +536,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
     enabled: connected && Boolean(runId),
     queryFn: ({ signal }) => useConnection.getState().gateway.getWorkflowRun(runId, signal),
     refetchInterval: (q) => {
-      const status = q.state.data?.run?.run?.status
+      const status = q.state.data?.run.run.status
       if (isLiveRunStatus(status)) return DETAIL_POLL_MS
       // Detached start: the caseDir materializes a beat after the 202, so a
       // fresh detail page can 404. Keep polling through early errors for a
@@ -553,7 +555,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
   // Reset the recovery latch when the run leaves paused_human — plus a
   // failsafe unlatch: if a detached resume dies silently server-side after
   // its 202, the run stays paused and the latch must not brick the page.
-  const detailStatus = detail.data?.run?.run?.status
+  const detailStatus = detail.data?.run.run.status
   useEffect(() => {
     if (detailStatus !== 'paused_human') setRecovering(false)
   }, [detailStatus])
@@ -669,7 +671,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
       {detail.isLoading && <p className="text-sm text-ink-dim">loading run…</p>}
       {actionError && <p className="mb-3 font-mono text-sm text-red">{actionError}</p>}
 
-      {run && payload && (
+      {run && (
         <>
           <header className="mb-6 flex flex-wrap items-start justify-between gap-3 border-b border-line pb-4">
             <div className="min-w-0">

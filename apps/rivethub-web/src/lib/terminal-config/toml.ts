@@ -72,7 +72,7 @@ function readString(c: Cursor): string {
     // Literal strings ('…') take no escapes — that's the whole point of them.
     if (ch === '\\' && quote === '"') {
       c.i++
-      if (c.done) c.fail('unterminated string')
+      if (c.i >= c.s.length) c.fail('unterminated string')
       const esc = c.s[c.i]
       if (esc === 'u' || esc === 'U') {
         c.i++
@@ -93,7 +93,7 @@ function readString(c: Cursor): string {
         c.i += len
         continue
       }
-      const simple: Record<string, string> = {
+      const simple: Record<string, string | undefined> = {
         n: '\n',
         t: '\t',
         r: '\r',
@@ -102,8 +102,9 @@ function readString(c: Cursor): string {
         b: '\b',
         f: '\f',
       }
-      if (simple[esc] === undefined) c.fail(`unknown escape \\${esc}`)
-      out += simple[esc]
+      const rep = simple[esc]
+      if (rep === undefined) c.fail(`unknown escape \\${esc}`)
+      out += rep
       c.i++
       continue
     }
@@ -212,7 +213,7 @@ function assign(root: TomlTable, path: string[], value: TomlValue, c: Cursor): v
       const created = newTable()
       node[part] = created
       node = created
-    } else if (typeof next === 'object' && next !== null && !Array.isArray(next)) {
+    } else if (typeof next === 'object' && !Array.isArray(next)) {
       node = next
     } else {
       c.fail(`\`${path.join('.')}\` redefines a non-table`)
@@ -237,7 +238,7 @@ function tableAt(root: TomlTable, path: string[], arrayOfTables: boolean, c: Cur
       const created = newTable()
       node[part] = created
       node = created
-    } else if (typeof next === 'object' && next !== null && !Array.isArray(next)) {
+    } else if (typeof next === 'object' && !Array.isArray(next)) {
       node = next
     } else {
       c.fail(`\`${path.join('.')}\` redefines a non-table`)
@@ -259,7 +260,7 @@ function tableAt(root: TomlTable, path: string[], arrayOfTables: boolean, c: Cur
   if (Array.isArray(existing)) {
     c.fail(`\`[${path.join('.')}]\` redefines an array of tables`)
   }
-  if (existing !== undefined && typeof existing === 'object' && existing !== null) {
+  if (existing !== undefined && typeof existing === 'object') {
     return existing
   }
   const created = newTable()

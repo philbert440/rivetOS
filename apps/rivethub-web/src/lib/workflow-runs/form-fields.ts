@@ -117,7 +117,9 @@ export function issuesFromGatewayError(err: unknown): FieldIssues {
   const issues = (body as WorkflowContractErrorResponse).issues
   if (!Array.isArray(issues)) return {}
   const out: FieldIssues = {}
-  for (const i of issues) {
+  for (const i of issues as Array<
+    WorkflowContractErrorResponse['issues'][number] | null | undefined
+  >) {
     if (typeof i?.field === 'string' && i.field) {
       out[i.field] = typeof i.message === 'string' && i.message ? i.message : i.reason || 'invalid'
     }
