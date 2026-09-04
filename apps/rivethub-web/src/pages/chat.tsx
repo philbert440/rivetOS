@@ -66,7 +66,7 @@ import { useIsNarrow } from '../lib/use-narrow.js'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
-import { useChat, type LiveToolEntry, type OutboundItem } from '../stores/chat.js'
+import { lastActiveFor, useChat, type LiveToolEntry, type OutboundItem } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { Composer, type ComposerHandle } from '../components/composer.js'
@@ -116,7 +116,7 @@ import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
-import { pickLaunchSession } from '../lib/launch-session.js'
+import { narrowLaunchTarget } from '../lib/launch-session.js'
 import {
   getSessionMode,
   hasSessionMode,
@@ -341,13 +341,23 @@ export function ChatPage(): JSX.Element {
     [queryClient],
   )
   const pinVersion = useSyncExternalStore(subscribeAgentSessions, getAgentSessionsVersion)
+  // The rows the session SOURCES carry (plane scan + legacy scan + drafts),
+  // before pin synthesis. Shared by the drawer memo and the launch effect —
+  // the launch staleness check must NOT use `items`, which keeps a
+  // placeholder row for the open conversation and so could never report a
+  // resumed key as dead.
+  const baseItems = useMemo(
+    () =>
+      chatItems({
+        drafts,
+        harnessSessions: planeQuery.data ?? [],
+        legacySessions: harnessQuery.data?.sessions ?? [],
+        draftCreatedAt,
+      }),
+    [drafts, planeQuery.data, harnessQuery.data?.sessions, draftCreatedAt],
+  )
   const items = useMemo(() => {
-    const base = chatItems({
-      drafts,
-      harnessSessions: planeQuery.data ?? [],
-      legacySessions: harnessQuery.data?.sessions ?? [],
-      draftCreatedAt,
-    })
+    const base = baseItems
     const pins = listAllAgentPins()
     const pinIds = new Set(pins.map((p) => p.sessionId))
     const withoutAgentDrafts = base.filter((it) => !(it.kind === 'draft' && pinIds.has(it.key)))
@@ -409,17 +419,11 @@ export function ChatPage(): JSX.Element {
       listed.push({ key: active, kind: 'legacy', title: active, updatedAt: Date.now() })
     }
     return sortByRecency(listed)
-  }, [
-    drafts,
-    draftCreatedAt,
-    planeQuery.data,
-    harnessQuery.data?.sessions,
-    pinVersion,
-    houseTick,
-    active,
-    queryClient,
-  ])
+  }, [baseItems, drafts, pinVersion, houseTick, active, queryClient])
   const setActive = useChat((s) => s.setActive)
+  const addDraft = useChat((s) => s.addDraft)
+  const clearLastActive = useChat((s) => s.clearLastActive)
+  const lastActive = useChat((s) => s.lastActive)
   const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
   const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
@@ -455,33 +459,84 @@ export function ChatPage(): JSX.Element {
       void navigate({ to: '/', search: urlTarget ? { session: urlTarget } : {}, replace: true })
     }
   }, [sessionFromUrl, active, drafts, setActive, navigate])
-  // Chat-first launch on narrow (Phil 2026-09-03): land in the most recent
-  // session — current node preferred, any node as fallback, a draft wins —
-  // instead of the list. `pickLaunchSession` (lib/launch-session.ts) shares
-  // its rule with Android. Latched: once any session has been established
-  // (deep link, restore, or this pick), explicit list visits (rail
-  // Conversations, the history drawer) must not be bounced back into a thread.
+  // Chat home on narrow (Phil 2026-09-04): the conversations list is NOT an
+  // app screen — the surface IS a session, so `active` must always resolve.
+  // Order (narrowLaunchTarget, lib/launch-session.ts):
+  //   resume — the persisted last-opened session, IMMEDIATELY, before the
+  //            mesh loads (the surface shows its loading placeholder while
+  //            the transcript/nodes populate);
+  //   pick   — the most recent session once the load settles
+  //            (pickLaunchSession: node-preference → any-node);
+  //   new    — an empty account gets the compose state (a minted draft),
+  //            never the list.
+  // No latch: with the list gone there is no "stay on the list" state to
+  // protect, so every path that clears the selection (stale resume, draft
+  // discard, error-boundary close) re-resolves through the same order.
   //
-  // Divergence from Android (MainActivity, which debounces the multi-node load
-  // and mints a new draft when there are zero sessions): here the effect
-  // re-runs on every `items` change and latches on the FIRST successful pick,
-  // so a session that streams in from a slow node after the pick is not
-  // preferred, and a hub with NO sessions stays on the list rather than
-  // minting a draft. Acceptable on web (desktop-first; the phone is the native
-  // app); revisit if web becomes a primary phone surface.
-  const launchLatch = useRef(false)
+  // A resumed key is validated once the load lands: no source row → the
+  // session is gone (404) — forget the pointer and fall back to the pick.
+  // resumedKeyRef marks WHICH active came from instant resume so a session
+  // the user opened deliberately (deep link, drawer row) is never
+  // second-guessed here.
+  const resumedKeyRef = useRef<string | undefined>(undefined)
+  const sessionsLoaded = harnessQuery.isFetched && (!hasDrivers || planeQuery.isFetched)
+  const launchSourceKeys = useMemo(
+    // baseItems + agent pins: the keys the sources actually carry (the
+    // staleness oracle — see baseItems above).
+    () => [...baseItems.map((it) => it.key), ...listAllAgentPins().map((p) => p.sessionId)],
+    [baseItems, pinVersion],
+  )
+  const lastActiveKey = lastActiveFor(lastActive, baseUrl)
   useEffect(() => {
-    if (!narrow || launchLatch.current) return
-    if (active !== undefined || sessionFromUrl !== undefined) {
-      launchLatch.current = true
+    if (!narrow) return
+    if (sessionFromUrl !== undefined) return // the URL owns the selection
+    if (active !== undefined) {
+      if (
+        resumedKeyRef.current === active &&
+        sessionsLoaded &&
+        !launchSourceKeys.includes(active)
+      ) {
+        resumedKeyRef.current = undefined
+        clearLastActive()
+        setActive(undefined) // the next run resolves pick/new
+      }
       return
     }
-    const pick = pickLaunchSession(items, baseUrl)
-    if (pick !== undefined) {
-      launchLatch.current = true
-      setActive(pick)
+    const target = narrowLaunchTarget({
+      lastActiveKey,
+      loaded: sessionsLoaded,
+      sourceKeys: launchSourceKeys,
+      items,
+      baseUrl,
+    })
+    if (target.kind === 'resume') {
+      resumedKeyRef.current = target.key
+      setActive(target.key)
+    } else if (target.kind === 'pick') {
+      setActive(target.key)
+    } else if (target.kind === 'new') {
+      // Guard against a StrictMode double-invoke minting two drafts: the
+      // second run still sees the stale `active === undefined` closure.
+      if (useChat.getState().active === undefined) {
+        const id = newSessionId()
+        addDraft(id)
+        setActive(id)
+      }
     }
-  }, [narrow, active, sessionFromUrl, items, baseUrl, setActive])
+    // 'loading' → the surface keeps its placeholder until the sources settle.
+  }, [
+    narrow,
+    active,
+    sessionFromUrl,
+    sessionsLoaded,
+    launchSourceKeys,
+    lastActiveKey,
+    items,
+    baseUrl,
+    setActive,
+    addDraft,
+    clearLastActive,
+  ])
   // Tolerant lookup: the open thread's key changes under the selection when
   // the plane adopts a draft (bare uuid → canonical) or a driver rotates the
   // native id. The rekey effect below moves the conversation onto the new
@@ -548,7 +603,11 @@ export function ChatPage(): JSX.Element {
     )
   }
 
-  const showList = narrow ? !active : !conversationsCollapsed
+  // The conversations list is a screen only on wide, where it is a side
+  // COLUMN (a pane), not a landing — narrow never renders it full-screen
+  // (Phil 2026-09-04: on the phone the list lives only in the right history
+  // drawer; the home is the chat surface).
+  const showList = !narrow && !conversationsCollapsed
   const showEmpty = !narrow && !active
 
   return (
@@ -558,7 +617,6 @@ export function ChatPage(): JSX.Element {
           items={items}
           active={active}
           width={drawerWidth}
-          fullWidth={narrow}
           error={harnessQuery.isError ? harnessQuery.error.message : undefined}
         />
       ) : (
@@ -588,6 +646,12 @@ export function ChatPage(): JSX.Element {
             harnessCommand={activeItem?.command}
           />
         </SessionErrorBoundary>
+      ) : narrow ? (
+        // Narrow with no resolved session: the chat surface's LOADING state
+        // while instant resume / the mesh load is in flight — never the
+        // list, never a blank. An empty account resolves to a minted draft
+        // (the compose state) from the launch effect a tick later.
+        <ChatLaunchLoading />
       ) : (
         showEmpty && <EmptyState />
       )}
@@ -1769,6 +1833,38 @@ function EmptyState(): JSX.Element {
     <div className="flex flex-1 flex-col items-center justify-center gap-2">
       <DenBot className="size-16 opacity-90" />
       <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
+    </div>
+  )
+}
+
+/** Narrow launch surface (Phil 2026-09-04): the same centered layout as the
+ *  empty state, but the copy reads "Loading most recent conversation." with a
+ *  New-conversation button that opens a fresh thread INSTANTLY — bypassing the
+ *  most-recent resolve so the user never has to wait. Never a bare spinner,
+ *  never the list. */
+function ChatLaunchLoading(): JSX.Element {
+  const addDraft = useChat((s) => s.addDraft)
+  const setActive = useChat((s) => s.setActive)
+  const startNew = (): void => {
+    const id = newSessionId()
+    addDraft(id)
+    setActive(id)
+  }
+  return (
+    <div
+      className="flex flex-1 flex-col items-center justify-center gap-3"
+      role="status"
+      aria-label="Loading most recent conversation"
+    >
+      <DenBot className="size-16 opacity-90" />
+      <div className="text-sm text-ink-dim">Loading most recent conversation…</div>
+      <button
+        type="button"
+        onClick={startNew}
+        className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em"
+      >
+        New conversation
+      </button>
     </div>
   )
 }

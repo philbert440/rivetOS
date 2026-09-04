@@ -22,6 +22,7 @@
     <string name="add_agent">add agent</string>
     <string name="agent_start_over">Start over</string>
     <string name="agent_new_conversation">New conversation</string>
+    <string name="loading_recent_conversation">Loading most recent conversation…</string>
     <string name="conversations_label">conversations</string>
     <string name="action_new_plus">+ new</string>
     <string name="filter_placeholder">filter…</string>

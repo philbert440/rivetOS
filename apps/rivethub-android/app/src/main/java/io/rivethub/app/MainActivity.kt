@@ -17,6 +17,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -30,14 +32,19 @@ import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.NewConversationAction
 import io.rivethub.app.plane.newConversationAction
+import io.rivethub.app.plane.ChatHomeNav
 import io.rivethub.app.plane.ChatItemKind
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.LaunchCandidate
 import io.rivethub.app.plane.LocatedChatItem
+import io.rivethub.app.plane.NarrowLaunchTarget
+import io.rivethub.app.plane.chatHomeNav
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.findChatItem
 import io.rivethub.app.plane.isDraftSessionId
-import io.rivethub.app.plane.pickLaunchSession
+import io.rivethub.app.plane.narrowLaunchTarget
+import io.rivethub.app.plane.persistableLastSession
+import io.rivethub.app.plane.resumedSessionStale
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.Nav
@@ -132,9 +139,34 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
         Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine))
         return
     }
+    // Home IS the chat surface (Phil 2026-09-04: the conversations list is
+    // not an app screen; it lives only in the right history drawer). Instant
+    // resume: a persisted last session (plane/LaunchSession.kt LastSession,
+    // written by openChat) starts the nav stack straight on Screen.Chat —
+    // before the mesh loads; the session screen's own loading covers the
+    // transcript. No pointer → Screen.Hub, whose Conversations tab is the
+    // launch SURFACE (ChatLaunchScreen) until the pick/new resolution below
+    // opens a session.
     val nav = remember {
-        Nav(if (c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) Screen.Hub else Screen.Enroll)
+        Nav(
+            when {
+                !(c.identity.hasIdentity() && p.entryUrl.isNotBlank() && p.onboarded) -> Screen.Enroll
+                p.lastSessionKey.isNotBlank() && p.lastSessionNode.isNotBlank() -> Screen.Chat(
+                    sessionKey = p.lastSessionKey,
+                    nodeDenUrl = p.lastSessionNode,
+                    harnessId = null,
+                    title = p.lastSessionKey,
+                    draft = isDraftSessionId(p.lastSessionKey),
+                )
+                else -> Screen.Hub
+            },
+        )
     }
+    // The session key the stack root was instant-resumed from (null when the
+    // launch went through the surface). Used by the stale-resume fallback
+    // below — only a root Chat can have come from the pointer.
+    var resumedKey by remember { mutableStateOf((nav.stack.firstOrNull() as? Screen.Chat)?.sessionKey) }
+    val scope = rememberCoroutineScope()
     val stores: ScreenStores = viewModel(key = "screen-stores")
     val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c) }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
@@ -143,15 +175,24 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
 
     val newTitle = stringResource(R.string.new_conversation)
 
-    // Opening a chat from the hub PUSHES; from inside a session (the right
-    // history drawer, or a drawer agent row) it REPLACES the open session —
-    // web row tap switches the active session in place (chat.tsx:585-626) —
-    // so system Back from a session always lands on the hub list.
-    fun openChat(chat: Screen.Chat) {
+    // Opening a chat from the hub/launch surface PUSHES (replaceAll at launch
+    // resolution, so the home session IS the stack root); from inside a
+    // session (the right history drawer, or a drawer agent row) it REPLACES
+    // the open session — web row tap switches the active session in place.
+    // Every open persists the instant-resume pointer (drafts excepted —
+    // plane/LaunchSession.kt persistableLastSession).
+    fun openChat(chat: Screen.Chat, replaceAll: Boolean = false) {
+        persistableLastSession(chat.sessionKey, chat.nodeDenUrl, chat.draft)?.let { last ->
+            scope.launch { c.settings.setLastSession(last.key, last.nodeDenUrl) }
+        }
+        if (replaceAll) {
+            nav.replaceAll(chat)
+            return
+        }
         if (nav.current is Screen.Chat) nav.pop()
         nav.push(chat)
     }
-    fun openChatScreen(open: AgentOpen) {
+    fun openChatScreen(open: AgentOpen, replaceAll: Boolean = false) {
         val located = hubVm.state.value.items
         val hit = findChatItem(located.map { it.item }, open.sessionId)
         val title = when {
@@ -170,9 +211,10 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                 effort = open.effort,
                 agentId = open.agentId,
             ),
+            replaceAll,
         )
     }
-    fun openRowScreen(row: LocatedChatItem) {
+    fun openRowScreen(row: LocatedChatItem, replaceAll: Boolean = false) {
         openChat(
             Screen.Chat(
                 sessionKey = row.item.key,
@@ -183,82 +225,132 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                 model = row.item.model.orEmpty(),
                 agentId = hubVm.agentForSession(row.item.key).orEmpty(),
             ),
+            replaceAll,
         )
     }
-    // Drawer nav routes identically from the hub and from a session
-    // (plane/DrawerNav.kt drawerTabRoute): apply the tab, then make sure the
-    // hub is showing (pops an open session; a no-op on the hub itself).
-    fun routeToTab(tab: HubTab) {
-        hubVm.setTab(
-            when (tab) {
-                HubTab.Conversations -> HubViewModel.Tab.Conversations
-                HubTab.Settings -> HubViewModel.Tab.Settings
-            },
-        )
-        nav.popTo { it == Screen.Hub }
+    // Open the current agent's thread as the compose surface (never a list).
+    // Tap, not Plus: Tap resumes the agent's pinned draft if one exists (a
+    // pinned draft is excluded from the pick, so Plus would mint a duplicate)
+    // and otherwise mints one. Needs a current agent; with none the launch
+    // surface keeps showing until one can be chosen. Shared by the launch
+    // resolution below and the launch surface's New-conversation button.
+    fun openNewDraft() {
+        val st = hubVm.state.value
+        when (val act = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId })) {
+            is NewConversationAction.ForAgent -> {
+                val agent = st.agents.find { it.agentId == act.agentId } ?: return
+                openChatScreen(hubVm.openAgentAction(agent, AgentAction.Tap), replaceAll = true)
+            }
+            NewConversationAction.PickAgent -> Unit
+        }
+    }
+    // Left-nav Conversations → the chat home, never a list screen (Phil
+    // 2026-09-04): the ACTIVE session when one is on the stack; otherwise the
+    // launch surface, whose effect below resolves the pick/new.
+    fun routeChatHome() {
+        when (chatHomeNav(nav.current is Screen.Chat, nav.stack.any { it is Screen.Chat })) {
+            ChatHomeNav.AlreadyHome -> Unit
+            ChatHomeNav.PopToSession -> nav.popTo { it is Screen.Chat }
+            ChatHomeNav.Resolve -> {
+                hubVm.setTab(HubViewModel.Tab.Conversations)
+                if (nav.current != Screen.Hub) nav.push(Screen.Hub)
+            }
+        }
+    }
+    // Drawer nav (plane/DrawerNav.kt drawerTabRoute → chatHomeNav): Settings
+    // stays a real destination (pushed over the session so Back returns to
+    // it); Conversations returns to the chat home.
+    fun onNavTab(tab: HubTab) {
+        when (tab) {
+            HubTab.Conversations -> routeChatHome()
+            HubTab.Settings -> {
+                hubVm.setTab(HubViewModel.Tab.Settings)
+                if (nav.current != Screen.Hub) nav.push(Screen.Hub)
+            }
+        }
     }
 
-    // Chat-first launch (web lib/launch-session.ts + chat.tsx:463-475): the
-    // hub auto-opens the most recent session for the current node — an
-    // in-progress draft wins. Latched: once any session has been established,
-    // an explicit return to the list must not bounce back into a thread.
     val hubSt by hubVm.state.collectAsState()
-    var launchLatched by remember { mutableStateOf(false) }
     val launchNode = hubSt.nodes.find { it.id == hubSt.prefs.viewNodeId }
         ?: hubSt.nodes.find { it.denUrl.trimEnd('/') == hubSt.prefs.entryUrl.trim().trimEnd('/') }
         ?: hubSt.nodes.firstOrNull()
     val launchBaseUrl = launchNode?.denUrl?.trimEnd('/')
-    LaunchedEffect(hubSt.items, hubSt.agents, launchBaseUrl, launchLatched, nav.current) {
-        if (launchLatched) return@LaunchedEffect
-        when (nav.current) {
-            // A session was already established (user action or this pick).
-            is Screen.Chat -> {
-                launchLatched = true
-                return@LaunchedEffect
-            }
-            Screen.Hub -> Unit
-            // Enroll / Gallery: not the hub — wait for the hub to show.
-            else -> return@LaunchedEffect
+
+    // Launch resolution (2026-09-04 — replaces the session-header launch
+    // latch): with no persisted pointer, the Hub Conversations tab is the
+    // launch SURFACE (ChatLaunchScreen, the chat-surface loading state); once
+    // the multi-node load settles, narrowLaunchTarget resolves pick →
+    // new-draft compose. NOT latched: the surface re-resolves whenever it is
+    // showing (drawer Conversations and Back-from-Settings land here by
+    // design); an open session or the Settings tab never triggers it.
+    LaunchedEffect(hubSt.items, hubSt.agents, launchBaseUrl, nav.current, hubSt.tab) {
+        if (nav.current != Screen.Hub || hubSt.tab != HubViewModel.Tab.Conversations) {
+            return@LaunchedEffect
         }
         val base = launchBaseUrl ?: return@LaunchedEffect
         if (hubSt.nodes.isEmpty()) return@LaunchedEffect
-        // Debounce the progressive multi-node load: the mesh reports node by
-        // node, and `loading` never reliably settles (refreshes coalesce and
-        // re-run), so we can't wait on it. Instead we wait for a quiet window
-        // — no new items/agents for LAUNCH_SETTLE_MS — which means the visible
-        // set is stable enough to pick the genuinely most recent session. Any
-        // change to items/agents restarts this effect (and the delay).
+        // Debounce the progressive multi-node load (unchanged): the mesh
+        // reports node by node and `loading` never reliably settles, so wait
+        // for a quiet window before picking the genuinely most recent session.
         kotlinx.coroutines.delay(LAUNCH_SETTLE_MS)
-        launchLatched = true
-        val pick = pickLaunchSession(
-            hubSt.items.map {
-                LaunchCandidate(
-                    it.item.key,
-                    it.item.updatedAt,
-                    it.item.kind,
-                    it.nodeDenUrl.trimEnd('/'),
-                    it.item.pin,
-                )
-            },
-            base,
-        )
-        if (pick != null) {
-            val row = hubSt.items.firstOrNull { it.item.key == pick } ?: return@LaunchedEffect
-            openRowScreen(row)
+        if (nav.current != Screen.Hub || hubVm.state.value.tab != HubViewModel.Tab.Conversations) {
             return@LaunchedEffect
         }
-        // No resumable session anywhere → open the current agent's thread
-        // (never the list). Tap, not Plus: Tap resumes the agent's pinned
-        // draft if one exists (a pinned draft is excluded from the pick above,
-        // so Plus would mint a duplicate) and otherwise mints one. Needs a
-        // current agent; if none can be chosen, the list stays so the user can
-        // pick one.
-        when (val act = newConversationAction(hubSt.prefs.currentAgentId, hubSt.agents.map { it.agentId })) {
-            is NewConversationAction.ForAgent -> {
-                val agent = hubSt.agents.find { it.agentId == act.agentId } ?: return@LaunchedEffect
-                openChatScreen(hubVm.openAgentAction(agent, AgentAction.Tap))
+        when (
+            val target = narrowLaunchTarget(
+                // A persisted pointer resumes at nav init, before this runs.
+                lastActiveKey = null,
+                loaded = true,
+                sourceKeys = hubSt.items.map { it.item.key }.toSet(),
+                items = hubSt.items.map {
+                    LaunchCandidate(
+                        it.item.key,
+                        it.item.updatedAt,
+                        it.item.kind,
+                        it.nodeDenUrl.trimEnd('/'),
+                        it.item.pin,
+                    )
+                },
+                baseUrl = base,
+            )
+        ) {
+            is NarrowLaunchTarget.Pick -> {
+                val row = hubSt.items.firstOrNull { it.item.key == target.key } ?: return@LaunchedEffect
+                openRowScreen(row, replaceAll = true)
             }
-            NewConversationAction.PickAgent -> Unit
+            NarrowLaunchTarget.New -> {
+                // No resumable session anywhere → the new-conversation
+                // compose surface (see openNewDraft).
+                openNewDraft()
+            }
+            else -> Unit // Loading/Resume are unreachable here (loaded, no pointer)
+        }
+    }
+
+    // Stale instant-resume fallback: the persisted last session is gone (its
+    // row never arrives once the mesh settles — the session 404'd). Only the
+    // session the stack was RESUMED into is checked, and only when its node
+    // is online to judge (plane/LaunchSession.kt resumedSessionStale); then
+    // forget the pointer and re-resolve through the launch surface.
+    LaunchedEffect(hubSt.items, hubSt.nodes, resumedKey, nav.current) {
+        val key = resumedKey ?: return@LaunchedEffect
+        val cur = nav.current as? Screen.Chat
+        if (cur?.sessionKey != key) {
+            resumedKey = null // the user moved on (or never resumed) — nothing to police
+            return@LaunchedEffect
+        }
+        if (hubSt.nodes.isEmpty()) return@LaunchedEffect
+        kotlinx.coroutines.delay(LAUNCH_SETTLE_MS)
+        val st = hubVm.state.value
+        val nodeOnline = st.nodes.any { it.denUrl.trimEnd('/') == cur.nodeDenUrl.trimEnd('/') && it.online }
+        if (resumedSessionStale(key, nodeOnline, st.items.map { it.item.key }.toSet())) {
+            resumedKey = null
+            c.settings.clearLastSession()
+            nav.replaceAll(Screen.Hub) // the launch surface resolves pick/new
+        } else if (nodeOnline) {
+            // Validated (or unjudgeable no more): stop policing — a later id
+            // rotation is the open session's own business, not a stale resume.
+            resumedKey = null
         }
     }
 
@@ -275,13 +367,12 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
         Screen.Hub -> HubDrawer(
             vm = hubVm,
             onOpenChat = { openChatScreen(it) },
-            onNavTab = { routeToTab(it) },
+            onNavTab = { onNavTab(it) },
         ) { openDrawer ->
             HubScreen(
                 vm = hubVm,
                 c = c,
-                onOpenChat = { openChatScreen(it) },
-                onOpenRow = { openRowScreen(it) },
+                onNew = { openNewDraft() },
                 onOpenGallery = { nav.push(Screen.Gallery) },
                 onForget = {
                     stores.clearAll()
@@ -306,7 +397,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                 HubDrawer(
                     vm = hubVm,
                     onOpenChat = { openChatScreen(it) },
-                    onNavTab = { routeToTab(it) },
+                    onNavTab = { onNavTab(it) },
                 ) { openDrawer ->
                     HistoryDrawer(
                         vm = hubVm,
