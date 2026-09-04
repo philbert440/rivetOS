@@ -127,11 +127,14 @@ fun TerminalPane(
         // glyph rows and the cursor rect share the same grid.
         val ten = measurer.measure(AnnotatedString("M".repeat(10)), style = mono)
         val one = measurer.measure(AnnotatedString("M"), style = mono)
-        ten.size.width / 10f to one.size.height.toFloat()
+        Triple(ten.size.width / 10f, one.size.height.toFloat(), one.firstBaseline)
     }
     val fallback = termCellSizePx(fontSp.toFloat(), density.density, density.fontScale)
     val cellW = measured.first.takeIf { it > 1f } ?: fallback.first
     val cellH = measured.second.takeIf { it > 1f } ?: fallback.second
+    // Baseline of the mono "M" line; every run is drawn so its first baseline lands here,
+    // so fallback-font glyphs (emoji, CJK) share the row's baseline instead of being centered.
+    val cellBaseline = measured.third.takeIf { measured.second > 1f } ?: (cellH * 0.8f)
     val appCursor = remember(rev) { screen.applicationCursor }
 
     if (lastRev.intValue != rev) {
@@ -167,8 +170,11 @@ fun TerminalPane(
             }
             .pointerInput(cellH) {
                 awaitEachGesture {
-                    flingJob.value?.cancel()
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    // Cancel a running fling only once a NEW touch lands: awaitEachGesture
+                    // re-enters before the fling coroutine has run, so cancelling above
+                    // awaitFirstDown killed every fling before its first frame.
+                    flingJob.value?.cancel()
                     val tracker = VelocityTracker()
                     tracker.addPosition(down.uptimeMillis, down.position)
                     var two = false
@@ -267,7 +273,7 @@ fun TerminalPane(
                             size = Size(span.text.length * cellW, cellH),
                         )
                     }
-                    val textY = y + (cellH - layout.size.height) / 2f
+                    val textY = y + (cellBaseline - layout.firstBaseline)
                     drawText(layout, topLeft = Offset(x, textY))
                 }
                 y += cellH

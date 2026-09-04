@@ -36,13 +36,16 @@ class TermScroll(
         if (cellH <= 0f || px == 0f) return
         remainder += -px / cellH // finger down (+px) → older lines (lower index)
         val step = truncate(remainder).toInt()
+        // A sub-cell drag moves nothing on screen, so it must not change follow state
+        // either (touch slop makes a few px the normal first movement of every drag).
+        if (step == 0) return
         remainder -= step
         val cur = if (followTail) maxFirst else firstLine.coerceIn(0, maxFirst)
         val unclamped = cur + step
         val next = unclamped.coerceIn(0, maxFirst)
         if (next != unclamped) remainder = 0f
         firstLine = next
-        followTail = next >= maxFirst && remainder >= 0f
+        followTail = next >= maxFirst
     }
 
     fun onLinesAppended(n: Int, dropped: Int) {

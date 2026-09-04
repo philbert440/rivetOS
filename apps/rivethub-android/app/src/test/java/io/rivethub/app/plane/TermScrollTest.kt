@@ -62,4 +62,30 @@ class TermScrollTest {
         assertTrue(s.followTail)
         assertEquals(16, s.firstLine)
     }
+
+    @Test
+    fun `sub-cell drag from the tail keeps following and moves nothing`() {
+        val s = TermScroll(lineCount = 100, rows = 24)
+        s.dragBy(5f, 10f)
+        assertTrue(s.followTail)
+        assertEquals(76, s.visibleFirst(100, 24))
+        s.onLinesAppended(3, 0)
+        assertTrue(s.followTail)
+        assertEquals(79, s.visibleFirst(s.lineCount, s.rows))
+    }
+
+    @Test
+    fun `sub-cell drags accumulate across events into whole lines`() {
+        val s = TermScroll(lineCount = 100, rows = 24)
+        s.dragBy(6f, 10f)
+        assertTrue(s.followTail)
+        s.dragBy(6f, 10f)
+        assertFalse(s.followTail)
+        assertEquals(75, s.firstLine)
+        s.dragBy(-4f, 10f)
+        assertFalse(s.followTail)
+        s.dragBy(-8f, 10f)
+        assertTrue(s.followTail)
+        assertEquals(76, s.visibleFirst(100, 24))
+    }
 }
