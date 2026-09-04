@@ -217,6 +217,17 @@ describe('readDotEnvValue (systemd EnvironmentFile semantics)', () => {
     expect(readDotEnvValue('A', 'A=first\nB=2\nA=last\n')).toBe('last')
   })
 
+  it('handles = inside the value, CRLF, trailing spaces, inline comments, and # inside quotes', () => {
+    expect(readDotEnvValue('A', 'A="a=b"\n')).toBe('a=b')
+    expect(readDotEnvValue('A', 'A=a=b\n')).toBe('a=b')
+    expect(readDotEnvValue('A', 'A=herdr\r\nB=2\r\n')).toBe('herdr')
+    expect(readDotEnvValue('A', 'A=herdr   \n')).toBe('herdr')
+    expect(readDotEnvValue('A', 'A=herdr # the mux\n')).toBe('herdr')
+    expect(readDotEnvValue('A', 'A="herdr" # the mux\n')).toBe('herdr')
+    expect(readDotEnvValue('A', 'A="b#c"\n')).toBe('b#c')
+    expect(readDotEnvValue('A', "A='b # c'\n")).toBe('b # c')
+  })
+
   it('ignores comments, other keys, and missing input', () => {
     expect(readDotEnvValue('A', '# A=1\nAB=2\n')).toBeUndefined()
     expect(readDotEnvValue('A', null)).toBeUndefined()
@@ -237,8 +248,12 @@ describe('resolveHerdrMux / herdrOptedIn — env → ~/.rivetos/.env → YAML', 
 
   it('reads the EnvironmentFile when the process env is silent (shell-launched update/doctor)', () => {
     expect(resolveHerdrMux({}, 'XAI_API_KEY=x\nRIVETOS_DEN_TERM_MUX=herdr\n', null)).toBe('herdr')
-    expect(herdrOptedIn({}, null, 'RIVETOS_DEN_TERM_MUX=herdr\n')).toBe(true)
-    expect(herdrOptedIn({}, null, 'RIVETOS_DEN_TERM_MUX=tmux\n')).toBe(false)
+    expect(herdrOptedIn({}, 'RIVETOS_DEN_TERM_MUX=herdr\n', null)).toBe(true)
+    expect(herdrOptedIn({}, 'RIVETOS_DEN_TERM_MUX=tmux\n', null)).toBe(false)
+    // same argument order as resolveHerdrMux: a .env of tmux must not be read as YAML and fail open
+    expect(
+      herdrOptedIn({}, 'RIVETOS_DEN_TERM_MUX=tmux\n', 'den:\n  terminal:\n    mux: herdr\n'),
+    ).toBe(false)
   })
 
   it('falls back to the scoped YAML key, never a whole-file mux: match', () => {

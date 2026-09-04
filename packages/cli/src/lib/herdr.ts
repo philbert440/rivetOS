@@ -319,8 +319,9 @@ export function rivetosDotEnvPath(home: string = homedir()): string {
 
 /** Look up ONE key in EnvironmentFile-style contents: `KEY=VALUE` per line,
  *  optional `export ` prefix, optional matching single/double quotes around
- *  the value, `#` comment lines. Last assignment wins (systemd semantics).
- *  Never throws. */
+ *  the value (anything after the closing quote is ignored), an unquoted
+ *  value ends at ` #` (inline comment), `#` comment lines. Last assignment
+ *  wins (systemd semantics). Never throws. */
 export function readDotEnvValue(name: string, contents: string | null): string | undefined {
   if (!contents) return undefined
   let found: string | undefined
@@ -329,14 +330,10 @@ export function readDotEnvValue(name: string, contents: string | null): string |
     if (!line || line.startsWith('#')) continue
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
     if (!m || m[1] !== name) continue
-    let v = m[2].trim()
-    if (
-      v.length >= 2 &&
-      ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
-    ) {
-      v = v.slice(1, -1)
-    }
-    found = v
+    const rest = m[2]
+    const quoted = /^(["'])(.*?)\1/.exec(rest)
+    // `#` inside quotes is literal; an unquoted value stops at ` #`.
+    found = quoted ? quoted[2] : rest.replace(/\s+#.*$/, '').trim()
   }
   return found
 }
@@ -379,11 +376,12 @@ export function readRivetosDotEnv(home: string = homedir()): string | null {
 /** Has this node opted into the herdr mux? `rivetos update` provisions herdr
  *  ONLY when this is true — the staged binary lives on /rivet-shared, which
  *  every fleet node mounts, so "staged" is not a signal of intent. See
- *  resolveHerdrMux for the lookup order (env → ~/.rivetos/.env → YAML). */
+ *  resolveHerdrMux for the lookup order (env → ~/.rivetos/.env → YAML); the
+ *  argument order is the same as resolveHerdrMux on purpose. */
 export function herdrOptedIn(
   env: NodeJS.ProcessEnv = process.env,
-  rawConfigYaml: string | null = null,
   dotEnvContents: string | null = null,
+  rawConfigYaml: string | null = null,
 ): boolean {
   return resolveHerdrMux(env, dotEnvContents, rawConfigYaml) === 'herdr'
 }
