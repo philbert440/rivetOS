@@ -487,6 +487,15 @@ function loadRegistry(file: string): Registry {
   }
 }
 
+/** Friendly name for an enrolled device id, if the mesh roster has one. */
+export function lookupDeviceName(rosterPath: string, deviceId: string): string | undefined {
+  if (!rosterPath || !deviceId) return undefined
+  const name = loadRegistry(rosterPath)
+    .devices.find((d) => d.id === deviceId)
+    ?.name.trim()
+  return name || undefined
+}
+
 function saveRegistry(file: string, reg: Registry): void {
   // Registry holds live enrollment tokens in the clear; keep it owner-only.
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })

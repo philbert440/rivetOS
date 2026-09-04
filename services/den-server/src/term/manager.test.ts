@@ -247,7 +247,8 @@ describe('term manager', () => {
   it('spawn-or-get on a running record does not treat POST cols/rows as a resize', () => {
     // Chat-only viewer: Android hardcodes 80×24 on POST /term. A live
     // desktop at 200×50 must keep that size — spawn-or-get returns the
-    // existing record unchanged (no spawn, no proc.resize).
+    // existing record unchanged (no spawn, no proc.resize). Ownership lives
+    // on the WS group, so this path also cannot steal the terminal owner.
     const { manager, procs, spawns } = makeManager({})
     const a = manager.spawn('claude', 200, 50, '', 'chat-live')
     expect(spawns[0].opts.cols).toBe(200)

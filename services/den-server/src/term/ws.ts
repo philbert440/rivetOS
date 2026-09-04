@@ -2,14 +2,17 @@
 //
 // Server → client framing:
 //   1. one JSON text frame   {type:'hello', v:1, id, denSession, command,
-//      cols, rows, state:'running'|'exited', exitCode?, mux?:'tmux'}
+//      cols, rows, state:'running'|'exited', exitCode?, mux?:'tmux',
+//      owner?: {device, self}}
 //   2. one binary frame      scrollback replay (possibly empty). Under
 //      mux:'tmux' a NON-empty ring is replayed as usual (the tmux client
 //      already attached at POST /term, so its redraw is in the ring before
 //      the browser WS connects). An empty ring yields an empty frame —
 //      tmux will redraw the client.
 //   3. live PTY output       binary frames
-//   4. on child exit         {type:'exit', code, signal?} then close(1000)
+//   4. ownership changes     {type:'owner', device, self, since?} to every
+//      attached client (`self` is per-recipient)
+//   5. on child exit         {type:'exit', code, signal?} then close(1000)
 //      after a short grace so trailing output frames flush first
 // Late attach to an exited-but-lingering record replays the whole story:
 // hello(state:'exited') + scrollback + exit frame + close.
@@ -18,7 +21,12 @@
 //   binary frames            raw keystrokes → pty write (every attached
 //                            client may type — this is a single-operator
 //                            system, not a collaboration protocol)
-//   {type:'resize',cols,rows}  clamped to 20-500 / 5-200 (same as POST /term)
+//   {type:'resize',cols,rows}  clamped to 20-500 / 5-200 (same as POST /term).
+//                            Only the session owner applies this to the PTY;
+//                            a non-owner records it for a later claim. A
+//                            resize while the session has no owner auto-claims.
+//   {type:'claim', cols?, rows?}  take ownership; optional size (else last
+//                            known resize on this client). Broadcasts owner.
 //   {type:'kill'}            same semantics as DELETE /term
 //   anything else            ignored (forward compatibility)
 //
@@ -66,7 +74,10 @@ export interface TermWsDeps {
   /** Tenancy gate: may this request attach to a PTY owned by this den
    *  session? Absent = tenancy off. False destroys the upgrade. */
   authorize?: (req: IncomingMessage, denSession: string) => boolean
-  /** Optional; defaults to console.info. Restore-on-detach logs one line. */
+  /** Viewer identity for ownership labels. Tests inject a fake. Absent or
+   *  null / empty → `'another device'` (loopback / no client cert). */
+  identity?: (req: IncomingMessage) => { device: string } | null
+  /** Optional; defaults to console.info. Ownership changes log one line. */
   log?: (msg: string) => void
 }
 
@@ -75,8 +86,9 @@ export interface TermWs {
    *  (server.ts) has already authorized the request pre-handshake. */
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, url: URL): void
   /** Wire a handshaken socket to a PTY — the protocol core, exposed so tests
-   *  can drive it with a scripted socket. */
-  attach(manager: TermManager, ptyId: string, ws: TermSocket): void
+   *  can drive it with a scripted socket. `opts.device` is the ownership
+   *  label (default `'another device'`). */
+  attach(manager: TermManager, ptyId: string, ws: TermSocket, opts?: { device?: string }): void
   /** Ping/terminate sweep — folded into the server's shared 30s heartbeat. */
   heartbeat(): void
   close(): void
@@ -110,11 +122,21 @@ interface TermClient {
   /** Heartbeat flag — set on pong, cleared on ping; dead = terminate. */
   alive: boolean
   cleanup: () => void
-  /** Last size this viewer sent via `{type:'resize'}`. Absent until then. */
+  /** Stable id for this attachment (ownership). */
+  id: string
+  /** Friendly device label shown to other viewers. */
+  device: string
+  /** Last size this viewer sent via `{type:'resize'}` (or a sized claim). */
   cols?: number
   rows?: number
   /** Monotonic seq of this client's last resize; 0 = never resized. */
   resizeSeq: number
+}
+
+interface TermOwner {
+  clientId: string
+  device: string
+  since: number
 }
 
 /** All clients attached to one PTY — the unit pause/resume reasons about. */
@@ -124,6 +146,15 @@ interface PtyGroup {
   drainTimer?: NodeJS.Timeout
   /** Incremented on every resize from any client in this group. */
   resizeSeq: number
+  /** Exactly one owner, or none (until the first auto-claim resize). */
+  owner?: TermOwner
+}
+
+const FALLBACK_DEVICE = 'another device'
+
+const deviceLabel = (raw: { device?: string } | null | undefined): string => {
+  const d = raw?.device?.trim()
+  return d || FALLBACK_DEVICE
 }
 
 export function createTermWs(deps: TermWsDeps): TermWs {
@@ -131,6 +162,7 @@ export function createTermWs(deps: TermWsDeps): TermWs {
   const clients = new Set<TermClient>()
   const groups = new Map<string, PtyGroup>()
   const log = deps.log ?? ((msg: string) => console.info(msg))
+  let nextClientId = 0
 
   const resume = (manager: TermManager, ptyId: string, group: PtyGroup): void => {
     if (!group.paused) return
@@ -153,10 +185,63 @@ export function createTermWs(deps: TermWsDeps): TermWs {
     group.paused = true
     manager.pause(ptyId)
     group.drainTimer = setInterval(() => checkDrained(manager, ptyId, group), DRAIN_POLL_MS)
-    group.drainTimer.unref?.()
+    group.drainTimer.unref()
   }
 
-  const attach = (manager: TermManager, ptyId: string, ws: TermSocket): void => {
+  const sendTo = (c: TermClient, obj: Record<string, unknown>): void => {
+    if (c.ws.readyState === 1) c.ws.send(JSON.stringify(obj))
+  }
+
+  const broadcastOwner = (group: PtyGroup): void => {
+    const o = group.owner
+    for (const c of group.clients) {
+      const frame: Record<string, unknown> = {
+        type: 'owner',
+        device: o ? o.device : null,
+        self: o ? o.clientId === c.id : false,
+      }
+      if (o) frame.since = o.since
+      sendTo(c, frame)
+    }
+  }
+
+  const setOwner = (
+    group: PtyGroup,
+    ptyId: string,
+    next: { clientId: string; device: string } | undefined,
+    reason: string,
+  ): void => {
+    if (group.owner?.clientId === next?.clientId) return
+    const prev = group.owner?.device ?? 'none'
+    const nextDev = next?.device ?? 'none'
+    group.owner = next
+      ? { clientId: next.clientId, device: next.device, since: Date.now() }
+      : undefined
+    log(`term: owner ${prev} → ${nextDev} for ${ptyId} (${reason})`)
+    broadcastOwner(group)
+  }
+
+  const applySize = (manager: TermManager, ptyId: string, cols: number, rows: number): void => {
+    const cur = manager.get(ptyId)
+    if (cur && cur.cols === cols && cur.rows === rows) return
+    manager.resize(ptyId, cols, rows)
+  }
+
+  const mostRecentResizer = (group: PtyGroup): TermClient | undefined => {
+    let best: TermClient | undefined
+    for (const c of group.clients) {
+      if (c.resizeSeq === 0) continue
+      if (!best || c.resizeSeq > best.resizeSeq) best = c
+    }
+    return best
+  }
+
+  const attach = (
+    manager: TermManager,
+    ptyId: string,
+    ws: TermSocket,
+    opts?: { device?: string },
+  ): void => {
     // the record can be reaped between the upgrade check and the handshake
     // completing — close post-handshake instead of destroying mid-frame
     const info = manager.get(ptyId)
@@ -188,24 +273,35 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         // leaves the PTY size alone (reaper / next attach owns it).
         resume(manager, ptyId, g)
         groups.delete(ptyId)
+        return
+      }
+      if (g.owner?.clientId !== client.id) return
+      // Owner left: one remaining viewer becomes owner (its last size applied);
+      // several remaining → most recent resizer; none of those resized → none.
+      if (g.clients.size === 1) {
+        const only = [...g.clients][0]
+        setOwner(g, ptyId, { clientId: only.id, device: only.device }, 'detach')
+        if (only.cols !== undefined && only.rows !== undefined)
+          applySize(manager, ptyId, only.cols, only.rows)
+        return
+      }
+      const best = mostRecentResizer(g)
+      if (best) {
+        setOwner(g, ptyId, { clientId: best.id, device: best.device }, 'detach')
+        if (best.cols !== undefined && best.rows !== undefined)
+          applySize(manager, ptyId, best.cols, best.rows)
       } else {
-        // Window follows the most recent resize; a remaining viewer's last
-        // size is restored so a phone close gives the desktop its cols back.
-        let best: TermClient | undefined
-        for (const c of g.clients) {
-          if (c.resizeSeq === 0) continue
-          if (!best || c.resizeSeq > best.resizeSeq) best = c
-        }
-        if (best && best.cols !== undefined && best.rows !== undefined) {
-          const cur = manager.get(ptyId)
-          if (!cur || cur.cols !== best.cols || cur.rows !== best.rows) {
-            if (manager.resize(ptyId, best.cols, best.rows))
-              log(`term: restored ${best.cols}x${best.rows} for ${ptyId} after viewer detach`)
-          }
-        }
+        setOwner(g, ptyId, undefined, 'detach')
       }
     }
-    const client: TermClient = { ws, alive: true, cleanup, resizeSeq: 0 }
+    const client: TermClient = {
+      ws,
+      alive: true,
+      cleanup,
+      id: `t${++nextClientId}`,
+      device: deviceLabel(opts),
+      resizeSeq: 0,
+    }
     clients.add(client)
     g.clients.add(client)
 
@@ -215,7 +311,7 @@ export function createTermWs(deps: TermWsDeps): TermWs {
     const closeSoon = (): void => {
       if (graceTimer || done) return
       graceTimer = setTimeout(() => ws.close(1000), EXIT_GRACE_MS)
-      graceTimer.unref?.()
+      graceTimer.unref()
     }
 
     ws.on('close', cleanup)
@@ -246,7 +342,28 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         client.cols = cols
         client.rows = rows
         client.resizeSeq = ++g.resizeSeq
-        manager.resize(ptyId, cols, rows)
+        if (!g.owner) {
+          setOwner(g, ptyId, { clientId: client.id, device: client.device }, 'resize')
+          manager.resize(ptyId, cols, rows)
+        } else if (g.owner.clientId === client.id) {
+          manager.resize(ptyId, cols, rows)
+        }
+      } else if (m.type === 'claim') {
+        const sized =
+          typeof m.cols === 'number' &&
+          Number.isFinite(m.cols) &&
+          typeof m.rows === 'number' &&
+          Number.isFinite(m.rows)
+        if (sized) {
+          const cols = clamp(m.cols as number, 20, 500)
+          const rows = clamp(m.rows as number, 5, 200)
+          client.cols = cols
+          client.rows = rows
+          client.resizeSeq = ++g.resizeSeq
+        }
+        setOwner(g, ptyId, { clientId: client.id, device: client.device }, 'claim')
+        if (client.cols !== undefined && client.rows !== undefined)
+          applySize(manager, ptyId, client.cols, client.rows)
       } else if (m.type === 'kill') {
         manager.kill(ptyId)
       }
@@ -269,6 +386,7 @@ export function createTermWs(deps: TermWsDeps): TermWs {
     // mux is stamped only when tmux backs the PTY — under 'none' the frame
     // stays byte-identical to before T1.
     if (info.mux) hello.mux = info.mux
+    if (g.owner) hello.owner = { device: g.owner.device, self: g.owner.clientId === client.id }
     sendJson(hello)
     // Replay den's ring whenever it is NON-empty (tmux client's attach
     // redraw is already in the ring by the time the browser WS connects).
@@ -330,7 +448,8 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         socket.destroy()
         return
       }
-      wss.handleUpgrade(req, socket, head, (ws) => attach(manager, id, ws))
+      const device = deviceLabel(deps.identity?.(req))
+      wss.handleUpgrade(req, socket, head, (ws) => attach(manager, id, ws, { device }))
     })().catch(() => socket.destroy())
   }
 
