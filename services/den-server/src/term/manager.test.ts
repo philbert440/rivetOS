@@ -20,6 +20,12 @@ import {
   type TmuxExec,
   type TmuxSessionInfo,
 } from './tmux.js'
+import {
+  herdrSessionName,
+  type HerdrCtl,
+  type HerdrCreateOpts,
+  type HerdrSessionInfo,
+} from './herdr.js'
 
 class FakeProc extends EventEmitter implements PtyProc {
   writes: string[] = []
@@ -85,6 +91,11 @@ function makeManager(
     spawn?: PtySpawn
     sessionExists?: (command: string, id: string) => boolean
     tmuxCtl?: TmuxCtl
+    herdrCtl?: HerdrCtl
+    onHerdrStatus?: (
+      denSession: string,
+      frame: import('@rivetos/types').HarnessStatusFrame,
+    ) => void
     writeEnvFile?: (path: string, body: string) => void
     modelSheetFor?: (
       command: string,
@@ -149,6 +160,8 @@ function makeManager(
     roomOpen: extra.roomOpen,
     sessionExists: extra.sessionExists,
     tmuxCtl: extra.tmuxCtl,
+    herdrCtl: extra.herdrCtl,
+    onHerdrStatus: extra.onHerdrStatus,
     writeEnvFile: extra.writeEnvFile,
     modelSheetFor: extra.modelSheetFor,
     log: (m) => logs.push(m),
@@ -2151,6 +2164,168 @@ describe('real tmux ctl (scripted exec)', () => {
       },
       { name: 'foreign', activity: 1_800_000_000, created: 1_799_999_900, command: '', user: '' },
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// herdr mux: fake HerdrCtl — unit tests never spawn a real herdr.
+// ---------------------------------------------------------------------------
+
+class FakeHerdrCtl implements HerdrCtl {
+  sessions = new Map<string, HerdrSessionInfo>()
+  creates: HerdrCreateOpts[] = []
+  kills: string[] = []
+  subscribes = 0
+  unsubscribes = 0
+  emit?: (evt: unknown) => void
+  failWith?: Error
+  hasSession(name: string): boolean {
+    if (this.failWith) throw this.failWith
+    return this.sessions.has(name)
+  }
+  killSession(name: string): void {
+    if (this.failWith) throw this.failWith
+    this.kills.push(name)
+    this.sessions.delete(name)
+  }
+  listSessions(): HerdrSessionInfo[] {
+    if (this.failWith) throw this.failWith
+    return [...this.sessions.values()]
+  }
+  refresh(): void {}
+  setOption(name: string, option: string, value: string): void {
+    const s = this.sessions.get(name)
+    if (!s) return
+    if (option === '@rivet_command') s.command = value
+    if (option === '@rivet_user') s.user = value
+  }
+  windowSize(): { cols: number; rows: number } | undefined {
+    return { cols: 120, rows: 40 }
+  }
+  create(opts: HerdrCreateOpts): void {
+    if (this.failWith) throw this.failWith
+    this.creates.push(opts)
+    this.sessions.set(opts.name, {
+      name: opts.name,
+      denKey: opts.denKey,
+      activity: 1,
+      created: 1,
+      command: opts.command,
+      user: opts.user,
+      paneId: 'w1:p1',
+    })
+  }
+  attachArgv(name: string): string[] {
+    return ['herdr', '--session', name]
+  }
+  subscribeEvents(
+    _name: string,
+    _onEvent: (evt: unknown) => void,
+    _onClose?: () => void,
+  ): () => void {
+    this.subscribes += 1
+    this.emit = _onEvent
+    return () => {
+      this.unsubscribes += 1
+    }
+  }
+}
+
+describe('term manager (herdr mux)', () => {
+  const uuid = '11111111-1111-1111-1111-111111111111'
+
+  it('create → attach argv → list → exit, env never on agent argv', () => {
+    const ctl = new FakeHerdrCtl()
+    const { manager, spawns } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(pty.mux).toBe('herdr')
+    expect(spawns[0].argv).toEqual(['herdr', '--session', herdrSessionName(uuid)])
+    expect(ctl.creates).toHaveLength(1)
+    expect(ctl.creates[0].kind).toBe('claude')
+    expect(ctl.creates[0].denKey).toBe(uuid)
+    expect(ctl.creates[0].argv[0]).toBe('claude')
+    expect(JSON.stringify(ctl.creates[0].argv)).not.toMatch(/TOKEN|sekrit/)
+    expect(ctl.creates[0].env.COLORTERM).toBe('truecolor')
+    expect(manager.list().some((r) => r.id === pty.id && r.mux === 'herdr')).toBe(true)
+    expect(ctl.subscribes).toBe(1)
+  })
+
+  it('plain shell create has no herdr kind and does not subscribe to agent status', () => {
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    manager.spawn('shell', 80, 24, '', uuid)
+    expect(ctl.creates).toHaveLength(1)
+    expect(ctl.creates[0].kind).toBeUndefined()
+    expect(ctl.subscribes).toBe(0)
+  })
+
+  it('reattach uses attach argv and does not create a second agent', () => {
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+    })
+    const { manager, spawns } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(ctl.creates).toHaveLength(0)
+    expect(spawns[0].argv).toEqual(['herdr', '--session', name])
+  })
+
+  it('kill releases the status subscribe (no leak) and killSession', () => {
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(ctl.subscribes).toBe(1)
+    expect(manager.kill(pty.id)).toBe(true)
+    expect(ctl.kills).toEqual([herdrSessionName(uuid)])
+    expect(ctl.unsubscribes).toBe(1)
+  })
+
+  it('close() drops leftover subscribes', () => {
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    manager.spawn('claude', 80, 24, '', uuid)
+    expect(ctl.subscribes).toBe(1)
+    manager.close()
+    expect(ctl.unsubscribes).toBe(1)
+  })
+
+  it('herdr missing at construct falls back to tmux with one warning', () => {
+    const tmux = new FakeTmuxCtl()
+    const prevPath = process.env.PATH
+    process.env.PATH = ''
+    try {
+      const { manager, spawns, logs } = makeManager({ mux: 'herdr' }, { tmuxCtl: tmux })
+      const pty = manager.spawn('claude', 80, 24, '', uuid)
+      expect(logs.some((l) => l.includes("term.mux is 'herdr'") && l.includes('falling back to tmux'))).toBe(
+        true,
+      )
+      expect(spawns[0].argv[0]).toBe('tmux')
+      expect(pty.mux).toBe('tmux')
+    } finally {
+      process.env.PATH = prevPath
+    }
+  })
+
+  it('working status frame is forwarded on the onHerdrStatus seam', () => {
+    const ctl = new FakeHerdrCtl()
+    const frames: { denSession: string; status: string }[] = []
+    const { manager } = makeManager(
+      { mux: 'herdr' },
+      {
+        herdrCtl: ctl,
+        onHerdrStatus: (denSession, frame) => frames.push({ denSession, status: frame.status }),
+      },
+    )
+    manager.spawn('claude', 80, 24, '', uuid)
+    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    expect(frames).toEqual([{ denSession: uuid, status: 'working' }])
   })
 })
 

@@ -531,8 +531,8 @@ export interface TermSpawnResponse {
   pid: number
   /** epoch ms */
   createdAt: number
-  /** Present only when the PTY is tmux-backed. */
-  mux?: 'tmux'
+  /** Present only when the PTY is mux-backed (`tmux` or `herdr`). */
+  mux?: 'tmux' | 'herdr'
   /** Live client joined an already-running tmux session. */
   reattached?: boolean
   /** Present only when mux is tmux. Never contains argv or env. */
@@ -754,8 +754,8 @@ export interface PtyInfo {
    *  persisted rows (unknown, not 0) */
   cols?: number
   rows?: number
-  /** Mux layer under this PTY (T1). Present only when 'tmux'; absent = none. */
-  mux?: 'tmux'
+  /** Mux layer under this PTY (T1). Present only when 'tmux' or 'herdr'; absent = none. */
+  mux?: 'tmux' | 'herdr'
   /** /term/list only: the tmux session backing this row outlived its den
    *  client — there is NO live den client for it (reattach with
    *  POST /term {session}). Never set on live client rows. */
@@ -784,12 +784,12 @@ export interface TermHelloFrame {
   rows: number
   state: 'running' | 'exited'
   exitCode?: number | null
-  /** Mux layer under the PTY (T1). Absent ⇒ 'none'. Under 'tmux' the
+  /** Mux layer under the PTY (T1). Absent ⇒ 'none'. Under 'tmux'/'herdr' the
    *  following binary replay frame is empty ONLY on the first attach after
-   *  the tmux client was (re)spawned (tmux redraws the screen for a new
+   *  the mux client was (re)spawned (the mux redraws the screen for a new
    *  client; clear the local buffer instead of replaying). A reattach on the
    *  same still-live client carries den's scrollback ring as usual. */
-  mux?: 'tmux'
+  mux?: 'tmux' | 'herdr'
   /** Present when this session already has a terminal owner. Absent until
    *  the first viewer resizes (auto-claim). `self` is per-recipient. */
   owner?: { device: string; self: boolean }

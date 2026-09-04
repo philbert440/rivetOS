@@ -7,7 +7,7 @@
 // between a check and the state change it guards looks identical to correct
 // code. Concurrency pins go here.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { HarnessError, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
@@ -452,3 +452,107 @@ describe('model/effort sheet on capabilities', () => {
     expect(flips[0]?.reason).toContain('model/effort sheet changed')
   })
 })
+
+describe('pty-harness-driver herdr status mapping', () => {
+  it('prefers herdr working/blocked/idle over the activity clock and surfaces blocked', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      // no den event tap on purpose: herdr status must subscribe without hooks
+      herdrStatus: true,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: { type: string; status?: string; blocked?: boolean }[] = []
+    driver.subscribe(ClaudeCodeDriver.sessionId(UUID), (e) => {
+      seen.push({
+        type: e.type,
+        status: 'status' in e ? String((e as { status?: unknown }).status) : undefined,
+        blocked: 'blocked' in e ? Boolean((e as { blocked?: unknown }).blocked) : undefined,
+      })
+    })
+
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'working',
+      since: 1,
+    })
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId(UUID))).toMatchObject({
+      status: 'active',
+    })
+    expect(seen.some((e) => e.type === 'status' && e.status === 'working')).toBe(true)
+
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'blocked',
+      since: 2,
+    })
+    const blocked = await driver.getSession(ClaudeCodeDriver.sessionId(UUID))
+    expect(blocked).toMatchObject({ status: 'active', blocked: true })
+    expect(seen.some((e) => e.type === 'session-updated' && e.blocked)).toBe(true)
+    expect(seen.some((e) => e.type === 'status' && e.status === 'blocked')).toBe(true)
+
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'idle',
+      since: 3,
+    })
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId(UUID))).toMatchObject({
+      status: 'idle',
+    })
+  })
+
+  it('does not mint a ghost LiveState for an unknown room (N2); registry still gets the frame', async () => {
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      turnQuietMs: 0,
+      herdrStatus: true,
+    })
+    const seen: { type: string; status?: string }[] = []
+    driver.subscribeEvents((e) => {
+      seen.push({
+        type: e.type,
+        status: 'status' in e ? String((e as { status?: unknown }).status) : undefined,
+      })
+    })
+    driver.applyHerdrStatus('ghost-room', {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId('ghost-room'),
+      status: 'working',
+      since: 1,
+    })
+    expect(seen).toEqual([{ type: 'status', status: 'working' }])
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId('ghost-room'))).toBeNull()
+  })
+
+  it('clears herdrStatus in endTurn so list matches the idle stream (N3)', async () => {
+    vi.useFakeTimers()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 50,
+      herdrStatus: true,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'working',
+      since: Date.now(),
+    })
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId(UUID))).toMatchObject({
+      status: 'active',
+    })
+    vi.advanceTimersByTime(50)
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId(UUID))).toMatchObject({
+      status: 'idle',
+    })
+    vi.useRealTimers()
+  })
+})
+

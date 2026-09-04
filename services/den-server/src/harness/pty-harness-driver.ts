@@ -87,6 +87,7 @@ import {
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessEvent,
+  type HarnessStatusFrame,
   type HarnessId,
   type HarnessSessionSummary,
   type HarnessTranscriptTurn,
@@ -126,7 +127,7 @@ export interface HarnessPtyHost {
     remote: string,
     session?: string,
     resume?: string,
-  ): { id: string; denSession: string }
+  ): { id: string; denSession: string } | Promise<{ id: string; denSession: string }>
   ptyForSession(denSession: string): string | undefined
   inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
 }
@@ -155,6 +156,13 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   pty?: () => Promise<HarnessPtyHost | null>
   /** Tap on den AgentEvent ingest. Omit → `liveStream: false`. */
   events?: (sink: (ev: DenAgentEventLike) => void) => () => void
+  /**
+   * herdr status frames (`applyHerdrStatus`) reach this driver — a live
+   * source that does not depend on the den hook tap. Lets `subscribe` work
+   * on a hook-dead node whose terminals run under `term.mux: herdr`.
+   */
+  /** True, or a getter that reads the manager's *resolved* mux (N5). */
+  herdrStatus?: boolean | (() => boolean)
   /**
    * cwd the roster spawns this harness in — reported on summaries. A getter,
    * not a value: the term manager re-reads `den-term.json` on every spawn, so
@@ -205,6 +213,7 @@ export interface LiveState {
   status: 'active' | 'idle' | 'ended'
   /** Last status we emitted `session-updated` for — de-dupes the stream. */
   reported?: 'active' | 'idle' | 'ended' | 'error'
+  reportedBlocked?: boolean
   turnInFlight: boolean
   quietTimer?: NodeJS.Timeout
   /** Open tool calls, oldest-first — den carries no tool call ids. */
@@ -212,6 +221,13 @@ export interface LiveState {
   toolSeq: number
   /** First turn already prefixed the agent system prompt into the PTY. */
   systemPromptApplied?: boolean
+  /** herdr screen-manifest status, when a `status` frame has arrived. */
+  herdrStatus?: 'working' | 'blocked' | 'idle'
+  herdrSince?: number
+  /** Debounce a herdr `idle` before ending the turn (N4). */
+  herdrIdleTimer?: NodeJS.Timeout
+  /** Visible blocker: herdr `blocked` (permission prompt / stuck). */
+  blocked?: boolean
 }
 
 /**
@@ -245,6 +261,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   /** native id → live view (status, in-flight turn, open tool calls). */
   protected readonly live = new Map<string, LiveState>()
+  /** herdr status frames are pushed to this driver (see deps.herdrStatus). */
   private readonly sessionSinks = new Map<string, Set<(e: HarnessEvent) => void>>()
   private readonly registrySinks = new Set<(e: HarnessEvent) => void>()
   /** native ids we have already announced as `session-created`. */
@@ -491,7 +508,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       )
     }
 
-    pty.spawn(this.rosterCommand, SPAWN_COLS, SPAWN_ROWS, 'harness-driver', native)
+    await Promise.resolve(
+      pty.spawn(this.rosterCommand, SPAWN_COLS, SPAWN_ROWS, 'harness-driver', native),
+    )
     this.ensureLive(native).status = 'idle'
     const summary = this.liveSummary(native, 'idle')
     this.announce(native, summary)
@@ -522,7 +541,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // spawn-or-get: a live PTY for this session is returned as-is; otherwise
     // the term manager re-spawns with `--resume <native>` (store existence is
     // its ground truth, so passing `resume` is belt-and-braces).
-    this.spawnFor(pty, native, true)
+    await this.spawnFor(pty, native, true)
     return row ? this.summarize(row, this.statusFor(native)) : this.liveSummary(native)
   }
 
@@ -565,7 +584,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // cannot do turns" — false, and a 501 is not retryable. Re-spawn
         // through the same `--resume` path a fully-reaped session takes and try
         // once more.
-        ptyId = this.spawnFor(pty, native, true)
+        ptyId = await this.spawnFor(pty, native, true)
         if (!pty.inject(ptyId, injected, true)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
           // full — genuinely transient, so say so instead of 501.
@@ -628,7 +647,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * `session-updated` with `previousSessionId` — see `rotate`.
    */
   subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void {
-    if (!this.capabilities.liveStream) {
+    if (!this.capabilities.liveStream && !this.herdrStatusOn()) {
       throw this.unsupported(`${this.harnessId}: no den event tap on this node`, sessionId)
     }
     const native = this.native(sessionId)
@@ -655,6 +674,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   close(): void {
     for (const state of this.live.values()) {
       if (state.quietTimer) clearTimeout(state.quietTimer)
+      if (state.herdrIdleTimer) clearTimeout(state.herdrIdleTimer)
     }
     this.live.clear()
     this.sessionSinks.clear()
@@ -754,6 +774,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     const cwd = this.cwd()
     if (cwd) summary.cwd = cwd
+    if (this.live.get(native)?.blocked) summary.blocked = true
     return summary
   }
 
@@ -774,6 +795,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const cwd = this.cwd()
     if (cwd) summary.cwd = cwd
     if (row.model) summary.model = row.model
+    if (this.live.get(row.id)?.blocked) summary.blocked = true
     return summary
   }
 
@@ -792,7 +814,22 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const state = this.live.get(native)
     if (!state) return 'ended'
     if (state.status === 'ended') return 'ended'
+    // Prefer herdr's screen-manifest over the activity clock when present
+    // and fresh (ignore when older than turnQuietMs — N3).
+    const herdrFresh =
+      state.herdrStatus !== undefined &&
+      (this.turnQuietMs <= 0 ||
+        (state.herdrSince !== undefined && this.now() - state.herdrSince <= this.turnQuietMs))
+    if (herdrFresh) {
+      if (state.herdrStatus === 'working' || state.herdrStatus === 'blocked') return 'active'
+      if (state.herdrStatus === 'idle') return 'idle'
+    }
     return state.turnInFlight ? 'active' : 'idle'
+  }
+
+  protected herdrStatusOn(): boolean {
+    const v = this.deps.herdrStatus
+    return typeof v === 'function' ? v() : !!v
   }
 
   protected ensureLive(native: string): LiveState {
@@ -850,14 +887,16 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * still-lingering EXITED record produces a fresh pty, which is what the
    * dead-pty retry in `sendUserTurn` wants.
    */
-  protected spawnFor(pty: HarnessPtyHost, native: string, resume: boolean): string {
-    const spawned = pty.spawn(
-      this.rosterCommand,
-      SPAWN_COLS,
-      SPAWN_ROWS,
-      'harness-driver',
-      this.room(native),
-      resume ? native : undefined,
+  protected async spawnFor(pty: HarnessPtyHost, native: string, resume: boolean): Promise<string> {
+    const spawned = await Promise.resolve(
+      pty.spawn(
+        this.rosterCommand,
+        SPAWN_COLS,
+        SPAWN_ROWS,
+        'harness-driver',
+        this.room(native),
+        resume ? native : undefined,
+      ),
     )
     this.ensureLive(native)
     return spawned.id
@@ -907,11 +946,90 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected setStatus(native: string, status: 'active' | 'idle' | 'ended' | 'error'): void {
     const state = this.ensureLive(native)
     if (status !== 'error') state.status = status
-    if (state.reported === status) return
+    const blocked = status === 'active' && Boolean(state.blocked)
+    if (state.reported === status && Boolean(state.reportedBlocked) === blocked) return
     state.reported = status
+    state.reportedBlocked = blocked
     const event: HarnessEvent = { type: 'session-updated', sessionId: this.sid(native), status }
+    if (blocked) event.blocked = true
     this.emit(native, event)
     this.emitRegistry(event)
+  }
+
+  /**
+   * Apply a herdr `status` frame. `working`/`idle` replace the activity clock
+   * for active↔idle; `blocked` stays `active` and surfaces `blocked: true`
+   * so a permission prompt is not a silent no-op.
+   *
+   * `nativeOrRoom` is the harness native id, or the den room key (claude/grok
+   * pin them equal; adopting drivers look up by room).
+   */
+  applyHerdrStatus(nativeOrRoom: string, frame: HarnessStatusFrame): void {
+    let native = nativeOrRoom
+    if (!this.live.has(native)) {
+      for (const [k] of this.live) {
+        if (this.room(k) === nativeOrRoom) {
+          native = k
+          break
+        }
+      }
+    }
+    const known = this.live.has(native)
+    if (process.env.RIVETOS_HERDR_DEBUG === '1') {
+      console.error(
+        `[herdr] apply ${this.harnessId} room=${nativeOrRoom} native=${native} known=${String(known)} status=${frame.status}`,
+      )
+    }
+    const statusEvent: HarnessEvent = {
+      type: 'status',
+      sessionId: this.sid(native),
+      status: frame.status,
+      since: frame.since,
+    }
+    if (!known) {
+      // N2: do not mint a ghost LiveState for a room this driver has not
+      // adopted. Still surface the frame on the registry so a POST /term PTY
+      // that is not yet a harness session (hook-dead node) is visible.
+      this.emitRegistry(statusEvent)
+      return
+    }
+    const state = this.live.get(native)!
+    if (state.herdrIdleTimer) {
+      clearTimeout(state.herdrIdleTimer)
+      state.herdrIdleTimer = undefined
+    }
+    state.herdrStatus = frame.status
+    state.herdrSince = frame.since
+    if (frame.status === 'working') {
+      state.blocked = false
+      state.turnInFlight = true
+      this.armQuietWindow(native)
+      this.setStatus(native, 'active')
+    } else if (frame.status === 'blocked') {
+      state.blocked = true
+      state.turnInFlight = true
+      this.setStatus(native, 'active')
+    } else {
+      state.blocked = false
+      // N4: one flicker of idle must not end a live turn. Debounce unless
+      // the quiet window is disabled (tests / operator 0).
+      const idleWait = this.turnQuietMs <= 0 ? 0 : Math.min(750, this.turnQuietMs)
+      const endIdle = (): void => {
+        if (state.herdrStatus !== 'idle') return
+        if (state.turnInFlight) this.endTurn(native, 'herdr-idle')
+        else this.setStatus(native, 'idle')
+      }
+      if (idleWait <= 0) endIdle()
+      else {
+        state.herdrIdleTimer = setTimeout(() => {
+          state.herdrIdleTimer = undefined
+          endIdle()
+        }, idleWait)
+        state.herdrIdleTimer.unref?.()
+      }
+    }
+    this.emit(native, statusEvent)
+    this.emitRegistry(statusEvent)
   }
 
   /**
@@ -988,6 +1106,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     if (!state.turnInFlight && !always) return
     state.turnInFlight = false
+    state.herdrStatus = undefined
+    state.herdrSince = undefined
+    if (state.herdrIdleTimer) {
+      clearTimeout(state.herdrIdleTimer)
+      state.herdrIdleTimer = undefined
+    }
     this.emit(native, { type: 'turn-complete', sessionId: this.sid(native), stopReason })
     this.setStatus(native, 'idle')
   }

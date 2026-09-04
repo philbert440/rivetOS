@@ -1159,6 +1159,38 @@ function checkTerminalMux(rawConfig: string | null): CheckResult[] {
     results.push(check('terminal', 'mux', 'pass', 'Terminal mux: none (tmux disabled by config)'))
     return results
   }
+  if (muxRaw === 'herdr') {
+    try {
+      const out = execFileSync('herdr', ['--version'], {
+        timeout: 5000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      const m = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/.exec(out)
+      if (m?.[1] === '0.8.2') {
+        results.push(check('terminal', 'mux', 'pass', `Terminal mux: herdr found (${out})`))
+      } else {
+        results.push(
+          check(
+            'terminal',
+            'mux',
+            'warn',
+            `herdr found but not 0.8.2 (${out || 'unparseable'}) — den pins 0.8.2`,
+          ),
+        )
+      }
+    } catch {
+      results.push(
+        check(
+          'terminal',
+          'mux',
+          'warn',
+          'herdr not installed — term.mux is herdr (install herdr 0.8.2)',
+        ),
+      )
+    }
+    return results
+  }
   // Match den-server config: a garbage value fails safe to 'none' (never
   // silent "auto"). Report the effective mode, not "tmux found".
   if (muxRaw && muxRaw !== 'tmux') {

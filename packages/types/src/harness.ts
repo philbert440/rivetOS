@@ -182,7 +182,30 @@ export type HarnessEvent =
        */
       supersedes?: SessionId
       status: 'active' | 'idle' | 'ended' | 'error'
+      /**
+       * herdr screen-manifest `blocked` (permission prompt / stuck). The
+       * session is still `active` — this flag is how the silent-no-op case
+       * becomes visible. Absent when the driver has no herdr status signal.
+       */
+      blocked?: boolean
     }
+  | HarnessStatusFrame
+
+/**
+ * herdr agent-status fan-in on the harness-session WS (`/api/harness-sessions/ws`).
+ * Distinct from `session-updated` (`active`/`idle`/`ended`): this is the
+ * screen-manifest signal (`working`/`blocked`/`idle`) with a `since` stamp.
+ * Drivers still emit `session-updated` for the control-plane status; this
+ * frame rides the same socket so a client can show working/blocked without
+ * inferring it from the activity clock.
+ */
+export interface HarnessStatusFrame {
+  type: 'status'
+  sessionId: SessionId
+  status: 'working' | 'blocked' | 'idle'
+  /** epoch ms of this status sample */
+  since: number
+}
 
 /** `idle` = session alive, no turn in flight; drivers emit `session-updated`
  *  on active↔idle transitions.
@@ -198,6 +221,11 @@ export type SessionSummary = {
   createdAt: string // ISO
   updatedAt: string
   status: 'active' | 'idle' | 'ended' | 'error'
+  /**
+   * herdr `blocked` (permission prompt). Only set when a status frame said
+   * blocked; a session that is merely `active` omits this.
+   */
+  blocked?: boolean
   /**
    * Lineage field (immutable session ids, plan W1): the most recent
    * `supersedes` edge recorded for this session — the native id (as a full

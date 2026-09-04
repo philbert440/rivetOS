@@ -149,6 +149,7 @@ export type {
   HarnessCapabilities,
   ApprovalDecision,
   HarnessEvent,
+  HarnessStatusFrame,
   StartSessionOpts,
   UserTurn,
   HarnessDriver,

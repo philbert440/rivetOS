@@ -508,6 +508,13 @@ export function createHarnessRegistry(
         // registry subscriber that reacts synchronously to the fanout must
         // already see the post-rotation world.
         if (rotated && wire.type === 'session-updated') rekey(harnessId, rotated, wire)
+        if (
+          process.env.RIVETOS_HERDR_DEBUG === '1' &&
+          (wire.type === 'status' || wire.type === 'session-updated')
+        )
+          console.error(
+            `[herdr] fanout ${wire.type} ${wire.sessionId} ${'status' in wire ? wire.status : ''} sinks=${sinks.size}`,
+          )
         fanout(harnessId, wire)
         // The superseded id's lifecycle ends here. Reported once — a driver
         // that re-emits the same rotation records an idempotent alias, and

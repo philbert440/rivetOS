@@ -66,8 +66,9 @@ import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
-import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE } from './harness/model-sheets.js'
+import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE, ROSTER_TO_HARNESS } from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
+import type { HerdrCtl } from './term/herdr.js'
 import { createTermWs } from './term/ws.js'
 import { MicBridge } from './audio/bridge.js'
 import { createAudioWs } from './audio/ws.js'
@@ -296,6 +297,9 @@ export interface DenServerOptions {
    *  answers so tests never spawn a real tmux. Omitted = real execFileSync
    *  tmux on the per-den `-L rivet-<hash>` socket (when mux resolves to tmux). */
   tmuxCtl?: TmuxCtl
+  /** herdr control override for tests — scripted create/attach/list so tests
+   *  never spawn a real herdr. Omitted = pinned 0.8.2 on PATH when mux is herdr. */
+  herdrCtl?: HerdrCtl
   /** Which mesh.json node is this process — default $RIVETOS_DEN_NODE_ID,
    *  else os.hostname(). Used for attach.host / attach.sshUser. */
   localNodeId?: string
@@ -518,6 +522,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   const rosterProvider = createRosterProvider(config.term.configFile)
   let termManager: TermManager | null = null
+  let onHerdrStatusRef:
+    ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
+    undefined
   // memoized as a promise: concurrent first requests must share ONE backend
   // load + manager, and a failed node-pty import stays failed (503) for the
   // life of the process — it logs once inside loadRealPtySpawn
@@ -539,6 +546,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         },
         sessionExists: harnessSessionExists,
         tmuxCtl: opts.tmuxCtl,
+        herdrCtl: opts.herdrCtl,
+        onHerdrStatus: (denSession, frame) => onHerdrStatusRef?.(denSession, frame),
         log: console.error,
       })
       return termManager
@@ -588,6 +597,42 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // so they refuse `startSession`, adopt sessions (den stream and/or store),
   // and report a room whose session changed as a rotation.
   const harnesses = createHarnessRegistry({ log: console.error })
+  onHerdrStatusRef = (denSession, frame): void => {
+    const applyTo = (driver: HarnessDriver): boolean => {
+      const apply = (driver as { applyHerdrStatus?: (native: string, f: typeof frame) => void })
+        .applyHerdrStatus
+      if (!apply) return false
+      apply.call(driver, denSession, frame)
+      return true
+    }
+    void (async () => {
+      // 1. A room that is (or aliases) a registered harness session resolves directly.
+      try {
+        const { driver } = await harnesses.resolve(denSession)
+        if (applyTo(driver)) return
+      } catch {
+        // not a harness session id — fall through
+      }
+      // 2. A plain `POST /term` PTY (the common RivetHub terminal) is keyed by its
+      //    den room, which no driver owns as a native id. Route by the PTY's roster
+      //    command instead so herdr status still surfaces — on a hook-dead node this
+      //    is the only liveness signal there is. applyHerdrStatus maps room→native
+      //    itself once the driver has adopted the session.
+      try {
+        const m = await ensureManager()
+        const id = m?.ptyForSession(denSession)
+        const info = id ? m?.get(id) : undefined
+        const harnessId = info ? ROSTER_TO_HARNESS[info.command] : undefined
+        const driver = harnessId ? builtinDrivers.find((d) => d.harnessId === harnessId) : undefined
+        if (driver && applyTo(driver)) return
+        console.error(
+          `[den-server] herdr status for ${denSession} dropped: no harness driver for command ${info?.command ?? '?'}`,
+        )
+      } catch (e) {
+        console.error(`[den-server] herdr status dispatch failed for ${denSession}: ${String(e)}`)
+      }
+    })()
+  }
   const denEventTap = (sink: (ev: DenAgentEventLike) => void): (() => void) => {
     denEventSinks.add(sink)
     return () => denEventSinks.delete(sink)
@@ -600,6 +645,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('claude'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('claude'),
         log: console.error,
         sheetOverride: config.harnesses?.['claude-code'],
@@ -608,6 +654,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('grok'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('grok'),
         log: console.error,
         sheetOverride: config.harnesses?.['grok-build'],
@@ -616,6 +663,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('hermes'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('hermes'),
         log: console.error,
         sheetOverride: config.harnesses?.hermes,
@@ -624,6 +672,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('kimi'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('kimi'),
         log: console.error,
         sheetOverride: config.harnesses?.['kimi-code'],
@@ -635,6 +684,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // spawn. dsh itself has no hook-fed events today; liveStream then
         // reports the tap, not a fake assistant stream.
         events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('dsh'),
         log: console.error,
         sheetOverride: config.harnesses?.['deepseek-harness'],
@@ -1217,7 +1267,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 return
             }
             const userEnv = captureEnvFor(userCtx)
-            const pty = manager.spawn(
+            const pty = await manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
               clamp(p.rows, 5, 200, 24),
@@ -1265,7 +1315,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                     ? 403
                     : e.code === 'tmux-unavailable'
                       ? 503
-                      : 404,
+                      : e.code === 'herdr'
+                        ? 400
+                        : 404,
                 { error: e.message },
               )
             throw e

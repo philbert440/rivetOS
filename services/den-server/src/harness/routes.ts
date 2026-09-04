@@ -693,7 +693,15 @@ export function createHarnessRoutes(opts: {
             const offEvents = registry.subscribe(
               auth
                 ? (e) => {
-                    if ('sessionId' in e && !auth(req, e.sessionId)) return
+                    const ok = !('sessionId' in e) || auth(req, e.sessionId)
+                    if (
+                      process.env.RIVETOS_HERDR_DEBUG === '1' &&
+                      (e.type === 'status' || e.type === 'session-updated')
+                    )
+                      console.error(
+                        `[herdr] ws-registry ${e.type} ${'sessionId' in e ? e.sessionId : ''} auth=${String(ok)}`,
+                      )
+                    if (!ok) return
                     sink(e)
                   }
                 : sink,
