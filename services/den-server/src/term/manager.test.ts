@@ -1481,6 +1481,28 @@ describe('term manager (tmux mux)', () => {
     expect(spawns[0].argv).not.toContain('new-session')
   })
 
+  it('duplicate-session attach fallback sizes the client from the tmux window, not the caller', () => {
+    const ctl = new FakeTmuxCtl()
+    const name = encodeTmuxName('chat-dup-size')
+    ctl.serverCreated(name, 'claude', 'owner')
+    ctl.sizes.set(name, { cols: 200, rows: 50 })
+    const realList = ctl.listSessions.bind(ctl)
+    let lists = 0
+    ctl.listSessions = () => {
+      lists += 1
+      if (lists === 1) return []
+      return realList()
+    }
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-dup-size')
+    expect(pty.reattached).toBe(true)
+    expect(spawns[0].argv).toContain('attach-session')
+    expect(spawns[0].opts.cols).toBe(200)
+    expect(spawns[0].opts.rows).toBe(50)
+    expect(manager.get(pty.id)?.cols).toBe(200)
+    expect(manager.get(pty.id)?.rows).toBe(50)
+  })
+
   it('duplicate-session throw with empty list refuses (session exists but is not listable)', () => {
     const ctl = new FakeTmuxCtl()
     const name = encodeTmuxName('chat-dup-empty')

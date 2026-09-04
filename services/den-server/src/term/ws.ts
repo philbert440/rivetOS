@@ -199,8 +199,8 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         if (best && best.cols !== undefined && best.rows !== undefined) {
           const cur = manager.get(ptyId)
           if (!cur || cur.cols !== best.cols || cur.rows !== best.rows) {
-            manager.resize(ptyId, best.cols, best.rows)
-            log(`term: restored ${best.cols}x${best.rows} for ${ptyId} after viewer detach`)
+            if (manager.resize(ptyId, best.cols, best.rows))
+              log(`term: restored ${best.cols}x${best.rows} for ${ptyId} after viewer detach`)
           }
         }
       }

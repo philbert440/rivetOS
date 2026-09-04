@@ -172,7 +172,7 @@ describe('tmux argv builders', () => {
     ctl.hasSession('a')
     ctl.killSession('a')
     ctl.setOption?.('a', '@rivet_command', 'claude')
-    ctl.windowSize?.('a')
+    ctl.windowSize!('a')
     expect(calls.length).toBeGreaterThan(0)
     for (const c of calls) expect(c[0]).toBe('-u')
   })
@@ -184,7 +184,7 @@ describe('tmux argv builders', () => {
       return '200\t50\n'
     }
     const ctl = createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exec)
-    expect(ctl.windowSize?.('chat-f')).toEqual({ cols: 200, rows: 50 })
+    expect(ctl.windowSize!('chat-f')).toEqual({ cols: 200, rows: 50 })
     expect(calls[0]).toEqual([
       '-u',
       '-L',
@@ -203,18 +203,18 @@ describe('tmux argv builders', () => {
     const exit1: TmuxExec = () => {
       throw Object.assign(new Error('exit 1'), { status: 1 })
     }
-    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exit1).windowSize?.('a')).toBeUndefined()
+    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exit1).windowSize!('a')).toBeUndefined()
 
     const garbage: TmuxExec = () => 'not-a-size'
-    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', garbage).windowSize?.('a')).toBeUndefined()
+    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', garbage).windowSize!('a')).toBeUndefined()
 
     const zero: TmuxExec = () => '0\t24'
-    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', zero).windowSize?.('a')).toBeUndefined()
+    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', zero).windowSize!('a')).toBeUndefined()
 
     const timeout: TmuxExec = () => {
       throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })
     }
-    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', timeout).windowSize?.('a')).toBeUndefined()
+    expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', timeout).windowSize!('a')).toBeUndefined()
   })
 })
 
