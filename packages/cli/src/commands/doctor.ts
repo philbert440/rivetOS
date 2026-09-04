@@ -49,6 +49,8 @@ import {
   herdrManifestCacheDir,
   herdrRepoManifestsDir,
   readHerdrVersion,
+  readRivetosDotEnv,
+  resolveHerdrMux,
 } from '../lib/herdr.js'
 
 // ---------------------------------------------------------------------------
@@ -1251,6 +1253,9 @@ export interface HerdrDoctorProbe {
   /** `herdr --version` probe — tests stub this; default reads the real binary. */
   versionOf?: (binPath: string) => string | null
   env?: NodeJS.ProcessEnv
+  /** Contents of the unit's EnvironmentFile (~/.rivetos/.env); default reads
+   *  it from `home`. A shell-launched doctor does not inherit it. */
+  dotEnv?: string | null
 }
 
 export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {}): CheckResult[] {
@@ -1260,18 +1265,11 @@ export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {
   const versionOf = probe.versionOf ?? readHerdrVersion
   const binPath = herdrBinPath(home)
 
-  // term.mux — the runtime reads RIVETOS_DEN_TERM_MUX (there is no YAML mux
-  // key on main; the YAML peek is forward-compatible with the backend lane).
-  let mux = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase() || undefined
-  if (!mux && rawConfig) {
-    try {
-      const parsed = parseYaml(rawConfig) as { den?: { terminal?: { mux?: unknown } } }
-      const y = parsed.den?.terminal?.mux
-      if (typeof y === 'string' && y.trim()) mux = y.trim().toLowerCase()
-    } catch {
-      /* expected */
-    }
-  }
+  // term.mux — the runtime reads RIVETOS_DEN_TERM_MUX, which systemd loads
+  // from ~/.rivetos/.env; a shell-launched doctor must read that file itself
+  // (env → EnvironmentFile → forward-compatible YAML den.terminal.mux).
+  const dotEnv = probe.dotEnv === undefined ? readRivetosDotEnv(home) : probe.dotEnv
+  const mux = resolveHerdrMux(env, dotEnv, rawConfig)
 
   const version = existsSync(binPath) ? versionOf(binPath) : null
   const relevant = version !== null || mux === 'herdr'

@@ -52,8 +52,8 @@ export const CAPTURE_CHANNEL = 'grok-build'
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'grok-memory-capture.log')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
 const SESSIONS_ROOT = path.join(os.homedir(), '.grok', 'sessions')
-const MAX_CONTENT = 16000               // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
-const STATEMENT_TIMEOUT_MS = 15000      // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
+const MAX_CONTENT = 16000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
+const STATEMENT_TIMEOUT_MS = 15000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
 
 // Hint for tests: when set, enqueue() writes the spool file but skips the
 // detached worker spawn. Production never sets this.
@@ -216,7 +216,11 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
     const line = rawLine.trim()
     if (!line) continue
     let evt: any
-    try { evt = JSON.parse(line) } catch { continue }
+    try {
+      evt = JSON.parse(line)
+    } catch {
+      continue
+    }
     const promptId = evt?.params?._meta?.promptId
     if (typeof promptId === 'string' && !promptIdToTurn.has(promptId)) {
       promptIdToTurn.set(promptId, promptIdToTurn.size)
@@ -228,12 +232,15 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
   const SUB_OTHER_BASE = 10_000
   const TURN_STRIDE = 1_000_000
   const out: PendingMessage[] = []
-  const pendingTools = new Map<string, {
-    name: string | null
-    rawInput: unknown
-    eventId: string | null
-    eventTs: string | null
-  }>()
+  const pendingTools = new Map<
+    string,
+    {
+      name: string | null
+      rawInput: unknown
+      eventId: string | null
+      eventTs: string | null
+    }
+  >()
   /** Last known turn for events that lack their own promptId/promptIndex
    *  (memory_flush, the rare orphan tool_call_update). Starts at -1 ("no
    *  turn yet seen"); falls forward as we see scoped events. */
@@ -243,7 +250,11 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
     const line = lines[i].trim()
     if (!line) continue
     let evt: any
-    try { evt = JSON.parse(line) } catch { continue }
+    try {
+      evt = JSON.parse(line)
+    } catch {
+      continue
+    }
     const params = evt?.params
     const update = params?.update
     if (!update) continue
@@ -260,7 +271,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
     let subOrder: number
     if (type === 'user_message_chunk') {
       const pi = update?._meta?.promptIndex
-      turn = typeof pi === 'number' ? pi : (currentTurn < 0 ? 0 : currentTurn)
+      turn = typeof pi === 'number' ? pi : currentTurn < 0 ? 0 : currentTurn
       subOrder = SUB_USER
       currentTurn = turn
     } else {
@@ -269,7 +280,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
         turn = promptIdToTurn.get(promptId)!
         currentTurn = turn
       } else {
-        turn = currentTurn  // -1 for events before any turn is known
+        turn = currentTurn // -1 for events before any turn is known
       }
       subOrder = SUB_OTHER_BASE + i
     }
@@ -285,7 +296,11 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           eventTs,
           ordinal,
           lineIndex: i,
-          extra: { sessionUpdate: type, modelId: update._meta?.modelId, promptIndex: update._meta?.promptIndex },
+          extra: {
+            sessionUpdate: type,
+            modelId: update._meta?.modelId,
+            promptIndex: update._meta?.promptIndex,
+          },
         })
       }
     } else if (type === 'agent_message_chunk') {
@@ -328,7 +343,12 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
       const id = update.toolCallId
       const status = update.status
       if (status === 'completed' && typeof id === 'string') {
-        const initial = pendingTools.get(id) ?? { name: null, rawInput: undefined, eventId: null, eventTs: null }
+        const initial = pendingTools.get(id) ?? {
+          name: null,
+          rawInput: undefined,
+          eventId: null,
+          eventTs: null,
+        }
         // Some tool calls only show up via tool_call_update (no preceding tool_call),
         // so fall back to update.title / update.rawInput.
         const toolName = initial.name ?? update.title ?? null
@@ -405,7 +425,8 @@ function formatToolResult(update: any): string | null {
       if (typeof out.FileContent?.content === 'string') return out.FileContent.content
     } else if (t === 'SearchTool') {
       if (typeof out.content === 'string') {
-        const prefix = typeof out.result_count === 'number' ? `[result_count=${out.result_count}]\n` : ''
+        const prefix =
+          typeof out.result_count === 'number' ? `[result_count=${out.result_count}]\n` : ''
         return prefix + out.content
       }
     } else if (t === 'MCP') {
@@ -415,7 +436,9 @@ function formatToolResult(update: any): string | null {
       if (typeof o?.OkayOutput === 'string') return `${header}\n${o.OkayOutput}`
       if (typeof o?.ErrorOutput === 'string') return `${header} ERROR\n${o.ErrorOutput}`
       // Unknown MCP envelope — JSON-stringify after stripping byte arrays.
-      try { return `${header}\n${JSON.stringify(stripByteArrays(o))}` } catch {}
+      try {
+        return `${header}\n${JSON.stringify(stripByteArrays(o))}`
+      } catch {}
     } else if (t === 'ListDir') {
       if (typeof out.Content?.content === 'string') return out.Content.content
     } else if (t === 'Todo') {
@@ -425,7 +448,9 @@ function formatToolResult(update: any): string | null {
     }
     // Unknown rawOutput.type — JSON.stringify but with byte arrays decoded so
     // the row stays human-readable.
-    try { return JSON.stringify(stripByteArrays(out)) } catch {}
+    try {
+      return JSON.stringify(stripByteArrays(out))
+    } catch {}
   }
   // Final fallback: textual content payload (rare; some tool_call_updates
   // carry a content[] array instead of rawOutput).
@@ -443,8 +468,11 @@ function formatToolResult(update: any): string | null {
 
 /** Decode a numeric byte array as UTF-8, used by Bash/GrepSearch outputs. */
 function bytesToString(arr: number[]): string {
-  try { return Buffer.from(arr).toString('utf8') }
-  catch { return `[${arr.length} bytes]` }
+  try {
+    return Buffer.from(arr).toString('utf8')
+  } catch {
+    return `[${arr.length} bytes]`
+  }
 }
 
 /**
@@ -458,9 +486,9 @@ function stripByteArrays(obj: unknown, depth = 0): unknown {
   if (Array.isArray(obj)) {
     const looksLikeBytes =
       obj.length >= 16 &&
-      obj.every(v => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 255)
+      obj.every((v) => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 255)
     if (looksLikeBytes) return bytesToString(obj as number[])
-    return obj.map(v => stripByteArrays(v, depth + 1))
+    return obj.map((v) => stripByteArrays(v, depth + 1))
   }
   if (typeof obj === 'object') {
     const out: Record<string, unknown> = {}
@@ -497,11 +525,11 @@ export function readSessionSummary(sessionDir: string): SessionSummary {
 async function findOrCreateConversation(
   client: PoolClient,
   sessionKey: string,
-  init: { title: string; settings: Record<string, unknown>; active: boolean }
+  init: { title: string; settings: Record<string, unknown>; active: boolean },
 ): Promise<{ id: string; created: boolean }> {
   const existing = await client.query<{ id: string }>(
     `SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2`,
-    [sessionKey, CAPTURE_AGENT]
+    [sessionKey, CAPTURE_AGENT],
   )
   if (existing.rows.length > 0) {
     return { id: existing.rows[0].id, created: false }
@@ -517,7 +545,7 @@ async function findOrCreateConversation(
       init.title.slice(0, 120),
       JSON.stringify(init.settings),
       init.active,
-    ]
+    ],
   )
   return { id: conv.rows[0].id, created: true }
 }
@@ -525,7 +553,7 @@ async function findOrCreateConversation(
 async function countExisting(client: PoolClient, conversationId: string): Promise<number> {
   const r = await client.query<{ count: string }>(
     `SELECT count(*)::text AS count FROM ros_messages WHERE conversation_id = $1`,
-    [conversationId]
+    [conversationId],
   )
   return parseInt(r.rows[0]?.count ?? '0', 10) || 0
 }
@@ -535,16 +563,17 @@ async function insertMessage(
   conversationId: string,
   m: PendingMessage,
   sessionJsonlPath: string | null,
-  herdr?: CaptureOp['herdr']
+  herdr?: CaptureOp['herdr'],
 ): Promise<void> {
   // PendingMessage now carries un-truncated content + toolResult; trunc runs
   // here so we can record the original length and a disk-pointer back to the
   // source line in updates.jsonl when content was elided. Recall queries that
   // hit a truncated row can read the full payload from disk via that pointer.
   const contentFull = m.content ?? ''
-  const contentStored = contentFull.length > MAX_CONTENT
-    ? contentFull.slice(0, MAX_CONTENT) + '\n…[truncated]'
-    : contentFull
+  const contentStored =
+    contentFull.length > MAX_CONTENT
+      ? contentFull.slice(0, MAX_CONTENT) + '\n…[truncated]'
+      : contentFull
   const contentTruncated = contentStored.length !== contentFull.length
 
   const toolResultFull = m.toolResult ?? null
@@ -610,7 +639,7 @@ async function insertMessage(
       toolResultStored,
       JSON.stringify(meta),
       createdAt,
-    ]
+    ],
   )
 }
 
@@ -620,7 +649,10 @@ async function insertMessage(
 export function enqueue(op: CaptureOp): void {
   try {
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
-    const spoolFile = path.join(SPOOL_DIR, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`)
+    const spoolFile = path.join(
+      SPOOL_DIR,
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`,
+    )
     fs.writeFileSync(spoolFile, JSON.stringify(op))
 
     if (process.env[NO_WORKER_ENV]) return
@@ -663,7 +695,9 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     const sessionKey = deriveSessionKey(op.sessionId)
     const sessionDir = findSessionDir(op.sessionId, process.env.GROK_WORKSPACE_ROOT)
     if (!sessionDir) {
-      log(`ingest ${sessionKey}: session dir not found (workspaceRoot=${process.env.GROK_WORKSPACE_ROOT ?? 'unset'})`)
+      log(
+        `ingest ${sessionKey}: session dir not found (workspaceRoot=${process.env.GROK_WORKSPACE_ROOT ?? 'unset'})`,
+      )
       return
     }
 
@@ -708,17 +742,16 @@ async function ingestSession(op: CaptureOp): Promise<void> {
         `UPDATE ros_conversations
             SET active = false, updated_at = now()
           WHERE id = $1 AND active = true`,
-        [conv.id]
+        [conv.id],
       )
     } else if (toInsert.length > 0) {
-      await client.query(
-        `UPDATE ros_conversations SET updated_at = now() WHERE id = $1`,
-        [conv.id]
-      )
+      await client.query(`UPDATE ros_conversations SET updated_at = now() WHERE id = $1`, [conv.id])
     }
 
     await client.query('COMMIT')
-    log(`ingest ${sessionKey}: parsed=${parsed.length} stored_before=${stored} inserted=${toInsert.length}${op.finalize ? ' finalized' : ''}`)
+    log(
+      `ingest ${sessionKey}: parsed=${parsed.length} stored_before=${stored} inserted=${toInsert.length}${op.finalize ? ' finalized' : ''}`,
+    )
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
     log(`ingest ${op.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -732,7 +765,10 @@ async function runWorker(spoolFile?: string) {
   fs.mkdirSync(SPOOL_DIR, { recursive: true })
   const files = spoolFile
     ? [spoolFile]
-    : fs.readdirSync(SPOOL_DIR).filter(f => f.endsWith('.json')).map(f => path.join(SPOOL_DIR, f))
+    : fs
+        .readdirSync(SPOOL_DIR)
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => path.join(SPOOL_DIR, f))
 
   for (const file of files) {
     try {
@@ -765,7 +801,7 @@ async function main() {
     try {
       const input = await new Promise<string>((resolve) => {
         let data = ''
-        process.stdin.on('data', chunk => (data += chunk))
+        process.stdin.on('data', (chunk) => (data += chunk))
         process.stdin.on('end', () => resolve(data))
       })
       if (input.trim()) payload = JSON.parse(input)
@@ -774,7 +810,7 @@ async function main() {
     const sessionId =
       process.env.GROK_SESSION_ID ||
       (typeof payload.sessionId === 'string' ? payload.sessionId : undefined) ||
-      ('unknown-' + Date.now())
+      'unknown-' + Date.now()
 
     // SessionEnd marks the conversation inactive. Other events just trigger an
     // ingest pass; the worker is fully idempotent so extra fires are harmless.
@@ -782,13 +818,14 @@ async function main() {
 
     // herdr pane identity rides the spool (the detached worker must not
     // depend on env inheritance). Absent when the pane is not herdr-launched.
-    const herdr = process.env.HERDR_ENV === '1' && process.env.HERDR_PANE_ID
-      ? {
-          paneId: process.env.HERDR_PANE_ID,
-          workspaceId: process.env.HERDR_WORKSPACE_ID,
-          host: os.hostname(),
-        }
-      : undefined
+    const herdr =
+      process.env.HERDR_ENV === '1' && process.env.HERDR_PANE_ID
+        ? {
+            paneId: process.env.HERDR_PANE_ID,
+            workspaceId: process.env.HERDR_WORKSPACE_ID,
+            host: os.hostname(),
+          }
+        : undefined
 
     enqueue({ kind: 'ingest', sessionId, finalize, sourceEvent: event, herdr })
     process.exit(0) // always succeed fast
@@ -797,7 +834,7 @@ async function main() {
   console.log('Usage: grok-memory-capture --hook <event>  |  --worker [file]')
 }
 
-main().catch(err => {
+main().catch((err) => {
   log(`fatal: ${err}`)
   process.exit(0) // never fail the caller
 })

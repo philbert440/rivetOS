@@ -51,6 +51,14 @@ describe('checkHerdr', () => {
     expect(results[0].message).toMatch(/not installed/)
   })
 
+  it('reads term.mux=herdr from ~/.rivetos/.env when the process env is silent', () => {
+    const results = checkHerdr(null, { ...probe(null, {}), dotEnv: 'RIVETOS_DEN_TERM_MUX=herdr\n' })
+    const binary = results.find((r) => r.name === 'herdr')!
+    expect(binary.status).toBe('warn')
+    expect(binary.message).toMatch(/term\.mux=herdr/)
+    expect(results.find((r) => r.name === 'herdr-mux')!.message).toBe('term.mux: herdr')
+  })
+
   it('warns (not fails) when term.mux=herdr but the binary is missing', () => {
     const results = checkHerdr(null, probe(null, { RIVETOS_DEN_TERM_MUX: 'herdr' }))
     const binary = results.find((r) => r.name === 'herdr')!

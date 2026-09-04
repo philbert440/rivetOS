@@ -310,25 +310,78 @@ export function installHerdr(opts: InstallHerdrOptions = {}): InstallHerdrResult
   return { plan, binaryPath: binPath, version: readHerdrVersion(binPath) }
 }
 
-/** Has this node opted into the herdr mux? Same signal the den runtime and
- *  `rivetos doctor` read: `RIVETOS_DEN_TERM_MUX=herdr` in the environment, else
- *  `den.terminal.mux: herdr` in the config YAML. `rivetos update` provisions
- *  herdr ONLY when this is true — the staged binary lives on /rivet-shared,
- *  which every fleet node mounts, so "staged" is not a signal of intent. */
-export function herdrOptedIn(
+/** systemd EnvironmentFile the rivetos unit loads (`service init` writes
+ *  `EnvironmentFile=~/.rivetos/.env`). The CLI itself never loads it into
+ *  process.env, so opt-in checks must read it explicitly. */
+export function rivetosDotEnvPath(home: string = homedir()): string {
+  return join(home, '.rivetos', '.env')
+}
+
+/** Look up ONE key in EnvironmentFile-style contents: `KEY=VALUE` per line,
+ *  optional `export ` prefix, optional matching single/double quotes around
+ *  the value (anything after the closing quote is ignored), an unquoted
+ *  value ends at ` #` (inline comment), `#` comment lines. Last assignment
+ *  wins (systemd semantics). Never throws. */
+export function readDotEnvValue(name: string, contents: string | null): string | undefined {
+  if (!contents) return undefined
+  let found: string | undefined
+  for (const raw of contents.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
+    if (!m || m[1] !== name) continue
+    const rest = m[2]
+    const quoted = /^(["'])(.*?)\1/.exec(rest)
+    // `#` inside quotes is literal; an unquoted value stops at ` #`.
+    found = quoted ? quoted[2] : rest.replace(/\s+#.*$/, '').trim()
+  }
+  return found
+}
+
+/** Resolve the den terminal mux the way the RUNTIME sees it: the process
+ *  environment first (what `rivetos start` under systemd has), then the unit's
+ *  EnvironmentFile (`~/.rivetos/.env` — a shell-launched `rivetos update` /
+ *  `doctor` does not inherit it), then the forward-compatible YAML key
+ *  `den.terminal.mux`. Lower-cased; undefined when nothing sets it. */
+export function resolveHerdrMux(
   env: NodeJS.ProcessEnv = process.env,
+  dotEnvContents: string | null = null,
   rawConfigYaml: string | null = null,
-): boolean {
+): string | undefined {
   const fromEnv = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()
-  if (fromEnv) return fromEnv === 'herdr'
-  if (!rawConfigYaml) return false
+  if (fromEnv) return fromEnv
+  const fromFile = readDotEnvValue('RIVETOS_DEN_TERM_MUX', dotEnvContents)?.trim().toLowerCase()
+  if (fromFile) return fromFile
+  if (!rawConfigYaml) return undefined
   // Scoped lookup (den.terminal.mux), same as `rivetos doctor` — never a
   // whole-file `mux:` match, which would fail OPEN toward provisioning.
   try {
     const parsed = parseYaml(rawConfigYaml) as { den?: { terminal?: { mux?: unknown } } } | null
     const y = parsed?.den?.terminal?.mux
-    return typeof y === 'string' && y.trim().toLowerCase() === 'herdr'
+    return typeof y === 'string' && y.trim() ? y.trim().toLowerCase() : undefined
   } catch {
-    return false
+    return undefined
   }
+}
+
+/** Read `~/.rivetos/.env` for the opt-in check; null when absent/unreadable. */
+export function readRivetosDotEnv(home: string = homedir()): string | null {
+  try {
+    return readFileSync(rivetosDotEnvPath(home), 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/** Has this node opted into the herdr mux? `rivetos update` provisions herdr
+ *  ONLY when this is true — the staged binary lives on /rivet-shared, which
+ *  every fleet node mounts, so "staged" is not a signal of intent. See
+ *  resolveHerdrMux for the lookup order (env → ~/.rivetos/.env → YAML); the
+ *  argument order is the same as resolveHerdrMux on purpose. */
+export function herdrOptedIn(
+  env: NodeJS.ProcessEnv = process.env,
+  dotEnvContents: string | null = null,
+  rawConfigYaml: string | null = null,
+): boolean {
+  return resolveHerdrMux(env, dotEnvContents, rawConfigYaml) === 'herdr'
 }

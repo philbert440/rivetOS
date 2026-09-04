@@ -19,9 +19,7 @@ interface JsonObject {
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
-const schema = JSON.parse(
-  readFileSync(join(here, 'herdr-api.schema.json'), 'utf-8'),
-) as JsonObject
+const schema = JSON.parse(readFileSync(join(here, 'herdr-api.schema.json'), 'utf-8')) as JsonObject
 
 const requestOneOf = schema.schemas.request.oneOf as JsonObject[]
 const requestDefs = schema.schemas.request.$defs as JsonObject
