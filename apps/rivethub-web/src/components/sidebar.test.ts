@@ -80,6 +80,16 @@ describe('rail header toggle', () => {
     expect(src).toContain("drawerOpen ? 'translate-x-0' : '-translate-x-full'")
   })
 
+  it('gates Files Tasks Workflows through visibleNav and the experimental store', () => {
+    const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
+    expect(src).toContain('visibleNav(PRIMARY_NAV, experimental)')
+    expect(src).toContain('visibleNav(SECONDARY_NAV, experimental)')
+    expect(src).toContain("from '../stores/experimental.js'")
+    expect(src).toContain('secondaryItems.length > 0')
+    expect(src).not.toMatch(/PRIMARY_NAV\.map\(/)
+    expect(src).not.toMatch(/SECONDARY_NAV\.map\(/)
+  })
+
   it('does not render a ws-status dot on Conversations', () => {
     const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
     expect(src).not.toContain('wsStatus')

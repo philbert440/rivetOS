@@ -61,10 +61,11 @@ import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
 import io.rivethub.app.plane.accentForDrawer
 import io.rivethub.app.plane.discoveredNodeLabel
+import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.drawerDestEnabled
 import io.rivethub.app.plane.drawerItemActive
-import io.rivethub.app.plane.drawerPrimaryNav
-import io.rivethub.app.plane.drawerSecondaryNav
+import io.rivethub.app.plane.drawerVisiblePrimary
+import io.rivethub.app.plane.drawerVisibleSecondary
 import io.rivethub.app.plane.formatUnreadBadge
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
@@ -91,6 +92,7 @@ fun RivetDrawerContent(
     onSelectNode: (NodeSheetRow) -> Unit,
     onRemoveNode: (NodeSheetRow) -> Unit,
     onSaveDiscovered: (NodeSheetRow) -> Unit,
+    exp: ExperimentalFlags = ExperimentalFlags(),
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
@@ -118,18 +120,21 @@ fun RivetDrawerContent(
                 Modifier.padding(horizontal = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                drawerPrimaryNav().forEach { dest ->
-                    DrawerNavItem(dest, tab, onNav)
+                drawerVisiblePrimary(exp).forEach { dest ->
+                    DrawerNavItem(dest, tab, onNav, exp)
                 }
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp)
-                        .height(1.dp)
-                        .background(colors.line),
-                )
-                drawerSecondaryNav().forEach { dest ->
-                    DrawerNavItem(dest, tab, onNav)
+                val secondary = drawerVisibleSecondary(exp)
+                if (secondary.isNotEmpty()) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .height(1.dp)
+                            .background(colors.line),
+                    )
+                    secondary.forEach { dest ->
+                        DrawerNavItem(dest, tab, onNav, exp)
+                    }
                 }
             }
             AgentsBlock(
@@ -143,7 +148,7 @@ fun RivetDrawerContent(
         }
         Column(Modifier.navigationBarsPadding()) {
             Box(Modifier.padding(horizontal = 8.dp)) {
-                DrawerNavItem(DrawerDest.Settings, tab, onNav)
+                DrawerNavItem(DrawerDest.Settings, tab, onNav, exp)
             }
             NodeSwitcherFooter(
                 currentName = currentNodeName,
@@ -184,8 +189,8 @@ fun RivetDrawerContent(
 }
 
 @Composable
-private fun DrawerNavItem(dest: DrawerDest, tab: HubTab, onNav: (DrawerDest) -> Unit) {
-    val enabled = drawerDestEnabled(dest)
+private fun DrawerNavItem(dest: DrawerDest, tab: HubTab, onNav: (DrawerDest) -> Unit, exp: ExperimentalFlags) {
+    val enabled = drawerDestEnabled(dest, exp)
     val coming = if (!enabled) stringResource(R.string.cd_coming_soon) else null
     NavRow(
         label = dest.label(),

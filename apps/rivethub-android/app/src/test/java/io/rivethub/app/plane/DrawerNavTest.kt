@@ -82,6 +82,89 @@ class DrawerNavTest {
     }
 }
 
+class DrawerExperimentalTest {
+    @Test
+    fun `drawerDestVisible matrix — each flag on or off shows the matching dest`() {
+        data class Case(val files: Boolean, val tasks: Boolean, val workflows: Boolean)
+        val cases = listOf(
+            Case(false, false, false),
+            Case(true, false, false),
+            Case(false, true, false),
+            Case(false, false, true),
+            Case(true, true, false),
+            Case(true, false, true),
+            Case(false, true, true),
+            Case(true, true, true),
+        )
+        for (c in cases) {
+            val exp = ExperimentalFlags(c.files, c.tasks, c.workflows)
+            for (dest in DrawerDest.entries) {
+                val expected = when (dest) {
+                    DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Settings -> true
+                    DrawerDest.Files -> c.files
+                    DrawerDest.Tasks -> c.tasks
+                    DrawerDest.Workflows -> c.workflows
+                }
+                assertEquals("$dest files=${c.files} tasks=${c.tasks} workflows=${c.workflows}", expected, drawerDestVisible(dest, exp))
+            }
+        }
+    }
+
+    @Test
+    fun `drawerDestEnabled enables experimental dests only when their flag is on and keeps Memory disabled`() {
+        val off = ExperimentalFlags()
+        val on = ExperimentalFlags(files = true, tasks = true, workflows = true)
+        assertTrue(drawerDestEnabled(DrawerDest.Conversations, off))
+        assertTrue(drawerDestEnabled(DrawerDest.Settings, off))
+        assertFalse(drawerDestEnabled(DrawerDest.Memory, off))
+        assertFalse(drawerDestEnabled(DrawerDest.Memory, on))
+        assertFalse(drawerDestEnabled(DrawerDest.Files, off))
+        assertFalse(drawerDestEnabled(DrawerDest.Tasks, off))
+        assertFalse(drawerDestEnabled(DrawerDest.Workflows, off))
+        assertTrue(drawerDestEnabled(DrawerDest.Files, on))
+        assertTrue(drawerDestEnabled(DrawerDest.Tasks, on))
+        assertTrue(drawerDestEnabled(DrawerDest.Workflows, on))
+        // No-arg overload stays the default-off contract.
+        assertFalse(drawerDestEnabled(DrawerDest.Files))
+        assertFalse(drawerDestEnabled(DrawerDest.Memory))
+    }
+
+    @Test
+    fun `visible primary and secondary lists drop gated dests when off`() {
+        val off = ExperimentalFlags()
+        assertEquals(
+            listOf(DrawerDest.Conversations, DrawerDest.Memory),
+            drawerVisiblePrimary(off),
+        )
+        assertEquals(emptyList<DrawerDest>(), drawerVisibleSecondary(off))
+        assertEquals(
+            listOf(DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Files),
+            drawerVisiblePrimary(ExperimentalFlags(files = true)),
+        )
+        assertEquals(listOf(DrawerDest.Tasks), drawerVisibleSecondary(ExperimentalFlags(tasks = true)))
+        assertEquals(
+            listOf(DrawerDest.Workflows),
+            drawerVisibleSecondary(ExperimentalFlags(workflows = true)),
+        )
+        val all = ExperimentalFlags(files = true, tasks = true, workflows = true)
+        assertEquals(drawerPrimaryNav(), drawerVisiblePrimary(all))
+        assertEquals(drawerSecondaryNav(), drawerVisibleSecondary(all))
+    }
+
+    @Test
+    fun `stored experimental flags treat null as off`() {
+        assertEquals(ExperimentalFlags(), storedExperimentalFlags(null, null, null))
+        assertEquals(
+            ExperimentalFlags(files = true, tasks = false, workflows = false),
+            storedExperimentalFlags(true, null, false),
+        )
+        assertEquals(
+            ExperimentalFlags(files = false, tasks = true, workflows = true),
+            storedExperimentalFlags(null, true, true),
+        )
+    }
+}
+
 class ChatHomeNavTest {
     @Test
     fun `left-nav conversations on a session is already home`() {

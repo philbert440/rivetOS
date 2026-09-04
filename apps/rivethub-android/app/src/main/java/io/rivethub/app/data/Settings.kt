@@ -43,6 +43,10 @@ data class Prefs(
      *  never written (they are in-memory only). */
     val lastSessionKey: String = "",
     val lastSessionNode: String = "",
+    /** Unfinished drawer sections — off by default. Memory is not experimental. */
+    val expFiles: Boolean = false,
+    val expTasks: Boolean = false,
+    val expWorkflows: Boolean = false,
 )
 
 class Settings(context: Context) {
@@ -71,6 +75,9 @@ class Settings(context: Context) {
             agentsCollapsed = p[AGENTS_COLLAPSED] ?: false,
             lastSessionKey = p[LAST_SESSION_KEY] ?: "",
             lastSessionNode = p[LAST_SESSION_NODE] ?: "",
+            expFiles = p[EXP_FILES] ?: false,
+            expTasks = p[EXP_TASKS] ?: false,
+            expWorkflows = p[EXP_WORKFLOWS] ?: false,
         )
     }
 
@@ -84,6 +91,9 @@ class Settings(context: Context) {
     suspend fun removeExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) - url }
 
     suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
+    suspend fun setExpFiles(v: Boolean) = ds.edit { it[EXP_FILES] = v }
+    suspend fun setExpTasks(v: Boolean) = ds.edit { it[EXP_TASKS] = v }
+    suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
     suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
     suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
@@ -148,6 +158,9 @@ class Settings(context: Context) {
         private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
         private val LAST_SESSION_KEY = stringPreferencesKey("lastSessionKey")
         private val LAST_SESSION_NODE = stringPreferencesKey("lastSessionNode")
+        private val EXP_FILES = booleanPreferencesKey("expFiles")
+        private val EXP_TASKS = booleanPreferencesKey("expTasks")
+        private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

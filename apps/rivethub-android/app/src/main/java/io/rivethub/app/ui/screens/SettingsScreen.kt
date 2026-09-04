@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -49,6 +50,7 @@ import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
+import io.rivethub.app.ui.components.RivetToggle
 import io.rivethub.app.ui.components.SegmentedControl
 import io.rivethub.app.ui.components.SettingsH2
 import io.rivethub.app.ui.components.ThemeGroup
@@ -319,6 +321,29 @@ fun SettingsScreen(
                     },
                 )
 
+                SettingsH2(stringResource(R.string.section_experimental))
+                Text(
+                    stringResource(R.string.experimental_helper),
+                    color = colors.inkDim,
+                    style = RivetType.xs,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                ExperimentalToggleRow(
+                    label = stringResource(R.string.nav_files),
+                    checked = prefs.expFiles,
+                    onChange = { v -> scope.launch { c.settings.setExpFiles(v) } },
+                )
+                ExperimentalToggleRow(
+                    label = stringResource(R.string.nav_tasks),
+                    checked = prefs.expTasks,
+                    onChange = { v -> scope.launch { c.settings.setExpTasks(v) } },
+                )
+                ExperimentalToggleRow(
+                    label = stringResource(R.string.nav_workflows),
+                    checked = prefs.expWorkflows,
+                    onChange = { v -> scope.launch { c.settings.setExpWorkflows(v) } },
+                )
+
                 Spacer(Modifier.height(32.dp))
             }
         }
@@ -339,6 +364,25 @@ fun SettingsScreen(
             },
             onDismiss = { confirmForget = false },
         )
+    }
+}
+
+@Composable
+private fun ExperimentalToggleRow(
+    label: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .sizeIn(minHeight = 44.dp)
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = RivetTheme.colors.ink, style = RivetType.sm)
+        RivetToggle(checked = checked, onChange = onChange)
     }
 }
 

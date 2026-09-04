@@ -75,9 +75,13 @@ describe('draftCreatedAt', () => {
 
   it('does not restamp an existing draft', () => {
     const now = vi.spyOn(Date, 'now')
-    now.mockReturnValueOnce(100)
+    // mockReturnValue (not …Once): a single set() now makes >1 Date.now call
+    // (the lastActive/persist path), so the stamp must be pinned across all of
+    // them — the test asserts the SECOND addDraft doesn't restamp, not a call
+    // count.
+    now.mockReturnValue(100)
     useChat.getState().addDraft(KEY)
-    now.mockReturnValueOnce(200)
+    now.mockReturnValue(200)
     useChat.getState().addDraft(KEY)
     expect(useChat.getState().draftCreatedAt[KEY]).toBe(100)
     vi.restoreAllMocks()
