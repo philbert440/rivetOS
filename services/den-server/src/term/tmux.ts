@@ -60,6 +60,11 @@ export interface TmuxCtl {
    *  create stamps tags in the new-session command chain instead (no `-t`,
    *  because tmux resolves `-t =<name>` before `new-session` has created it). */
   setOption?(name: string, option: string, value: string): void
+  /** Current tmux WINDOW size for a session (`#{window_width}` ×
+   *  `#{window_height}`). Undefined when the query fails (no session, wedged
+   *  server, unparseable output) — callers fall back to their own size.
+   *  Optional: fakes that never attach don't need it. */
+  windowSize?(name: string): { cols: number; rows: number } | undefined
 }
 
 export interface TmuxSessionInfo {
@@ -479,6 +484,30 @@ export function createRealTmuxCtl(
     setOption(name, option, value) {
       run(['set-option', '-t', `=${name}:`, option, value]) // set-option takes a target-pane: `=name:` is the exact-match SESSION form (`=name` alone → "no such session")
       memo = undefined
+    },
+    windowSize(name) {
+      // Fail open to the caller's size: a wedged/missing tmux must not
+      // abort an attach that list/has-session already approved.
+      try {
+        const stdout = run([
+          'display-message',
+          '-p',
+          '-t',
+          `=${name}:`, // exact-match SESSION form: bare `=name` makes display-message print an empty format (tmux 3.4)
+          '#{window_width}\t#{window_height}',
+        ])
+        if (stdout === null) return undefined
+        const line = stdout.trim().split('\n')[0] ?? ''
+        const tab = line.indexOf('\t')
+        if (tab < 0) return undefined
+        const cols = Number(line.slice(0, tab))
+        const rows = Number(line.slice(tab + 1))
+        if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1)
+          return undefined
+        return { cols, rows }
+      } catch {
+        return undefined
+      }
     },
   }
 }

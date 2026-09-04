@@ -238,6 +238,12 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     delete env.APPIMAGE
     delete env.APPDIR
     delete env.ARGV0
+    // APPIMAGE_EXTRACT_AND_RUN is inherited on purpose: a FUSE-less host
+    // cannot launch without it. The cost: the new image extracts into the
+    // SAME /tmp/appimage_extracted_<md5 of path> this process runs from,
+    // and this process's runtime rm -rf's it on quit ~1s later. The new
+    // instance survives that because serve-dist snapshots the web dist at
+    // startup (PR #675); the asar stays readable through its open fd.
     // Release the single-instance lock BEFORE spawning: the new copy of
     // this app would otherwise lose the lock to the still-running old
     // process and exit immediately (review round 2). With the lock

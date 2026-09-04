@@ -244,6 +244,21 @@ describe('term manager', () => {
     expect(spawns.length).toBe(1)
   })
 
+  it('spawn-or-get on a running record does not treat POST cols/rows as a resize', () => {
+    // Chat-only viewer: Android hardcodes 80×24 on POST /term. A live
+    // desktop at 200×50 must keep that size — spawn-or-get returns the
+    // existing record unchanged (no spawn, no proc.resize).
+    const { manager, procs, spawns } = makeManager({})
+    const a = manager.spawn('claude', 200, 50, '', 'chat-live')
+    expect(spawns[0].opts.cols).toBe(200)
+    expect(spawns[0].opts.rows).toBe(50)
+    const b = manager.spawn('claude', 80, 24, '', 'chat-live')
+    expect(b.id).toBe(a.id)
+    expect(spawns).toHaveLength(1)
+    expect(procs[0].resizes).toEqual([])
+    expect(manager.get(a.id)).toMatchObject({ cols: 200, rows: 50 })
+  })
+
   it('rejects a malformed session id', () => {
     const { manager } = makeManager({})
     expect(() => manager.spawn('claude', 80, 24, '', 'bad session id!')).toThrow(/invalid session/)
@@ -857,6 +872,8 @@ class FakeTmuxCtl implements TmuxCtl {
   sessions = new Map<string, TmuxSessionInfo>()
   kills: string[] = []
   stamps: { name: string; option: string; value: string }[] = []
+  /** Scripted `windowSize` result per session name. Absent → undefined. */
+  sizes = new Map<string, { cols: number; rows: number }>()
   /** When set, every method throws — simulates a wedged/missing tmux. */
   failWith?: Error
   hasSession(name: string): boolean {
@@ -881,6 +898,10 @@ class FakeTmuxCtl implements TmuxCtl {
       if (option === '@rivet_command') s.command = value
       if (option === '@rivet_user') s.user = value
     }
+  }
+  windowSize(name: string): { cols: number; rows: number } | undefined {
+    if (this.failWith) throw this.failWith
+    return this.sizes.get(name)
   }
   /** Simulate the tmux server creating a session for a fresh new-session.
    *  Defaults carry den's tags. Pass '' for command to model a pre-fix
@@ -1460,6 +1481,28 @@ describe('term manager (tmux mux)', () => {
     expect(spawns[0].argv).not.toContain('new-session')
   })
 
+  it('duplicate-session attach fallback sizes the client from the tmux window, not the caller', () => {
+    const ctl = new FakeTmuxCtl()
+    const name = encodeTmuxName('chat-dup-size')
+    ctl.serverCreated(name, 'claude', 'owner')
+    ctl.sizes.set(name, { cols: 200, rows: 50 })
+    const realList = ctl.listSessions.bind(ctl)
+    let lists = 0
+    ctl.listSessions = () => {
+      lists += 1
+      if (lists === 1) return []
+      return realList()
+    }
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-dup-size')
+    expect(pty.reattached).toBe(true)
+    expect(spawns[0].argv).toContain('attach-session')
+    expect(spawns[0].opts.cols).toBe(200)
+    expect(spawns[0].opts.rows).toBe(50)
+    expect(manager.get(pty.id)?.cols).toBe(200)
+    expect(manager.get(pty.id)?.rows).toBe(50)
+  })
+
   it('duplicate-session throw with empty list refuses (session exists but is not listable)', () => {
     const ctl = new FakeTmuxCtl()
     const name = encodeTmuxName('chat-dup-empty')
@@ -1986,6 +2029,60 @@ describe('term manager (tmux mux)', () => {
     expect(spawns[0].argv).toEqual(['bash', '-l'])
     expect(pty.mux).toBeUndefined()
     expect(manager.list()[0].mux).toBeUndefined()
+  })
+
+  it('reattach sizes the attach PTY to the tmux window, not the caller', () => {
+    const ctl = new FakeTmuxCtl()
+    const name = encodeTmuxName(uuid)
+    ctl.serverCreated(name)
+    ctl.sizes.set(name, { cols: 200, rows: 50 })
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(spawns[0].argv).toContain('attach-session')
+    expect(spawns[0].opts.cols).toBe(200)
+    expect(spawns[0].opts.rows).toBe(50)
+    expect(pty.cols).toBe(200)
+    expect(pty.rows).toBe(50)
+    expect(pty.reattached).toBe(true)
+  })
+
+  it('create uses the caller size even when a windowSize is scripted', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.sizes.set(encodeTmuxName(uuid), { cols: 200, rows: 50 })
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(spawns[0].argv).toContain('new-session')
+    expect(spawns[0].opts.cols).toBe(80)
+    expect(spawns[0].opts.rows).toBe(24)
+    expect(pty.cols).toBe(80)
+    expect(pty.rows).toBe(24)
+    expect(pty.reattached).toBeUndefined()
+  })
+
+  it('reattach falls back to the caller size when windowSize fails', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName(uuid))
+    // sizes map empty → undefined (query miss)
+    const miss = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
+    const a = miss.manager.spawn('claude', 80, 24, '', uuid)
+    expect(miss.spawns[0].argv).toContain('attach-session')
+    expect(miss.spawns[0].opts.cols).toBe(80)
+    expect(miss.spawns[0].opts.rows).toBe(24)
+    expect(a.cols).toBe(80)
+    expect(a.rows).toBe(24)
+
+    const throwing = new FakeTmuxCtl()
+    throwing.serverCreated(encodeTmuxName(uuid))
+    throwing.windowSize = () => {
+      throw new TmuxUnavailableError('wedged')
+    }
+    const { manager, spawns } = makeManager({ mux: 'tmux' }, { tmuxCtl: throwing })
+    const b = manager.spawn('claude', 80, 24, '', uuid)
+    expect(spawns[0].argv).toContain('attach-session')
+    expect(spawns[0].opts.cols).toBe(80)
+    expect(spawns[0].opts.rows).toBe(24)
+    expect(b.cols).toBe(80)
+    expect(b.rows).toBe(24)
   })
 })
 
