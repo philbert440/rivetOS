@@ -19,6 +19,7 @@ import type {
 } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { useIsNarrow } from '../lib/use-narrow.js'
 import { joinRel } from '../lib/files-ui.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { SegmentedControl } from '../components/segmented-control.js'
@@ -84,7 +85,7 @@ export function WorkflowsHubPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="font-mono text-lg font-semibold text-em">Workflows</h1>
       </div>
@@ -200,6 +201,7 @@ export function WorkflowTriggerPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const navigate = useNavigate()
   const connected = useGatewayReady()
+  const narrow = useIsNarrow()
 
   const def = useQuery({
     queryKey: ['workflow', baseUrl, workflowId],
@@ -302,7 +304,9 @@ export function WorkflowTriggerPage(): JSX.Element {
   return (
     <div
       className={
-        runWithCanvas ? '' : `mx-auto px-6 py-8 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
+        runWithCanvas
+          ? ''
+          : `mx-auto px-4 py-8 md:px-6 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
       }
     >
       {discardDialog.element}
@@ -359,7 +363,11 @@ export function WorkflowTriggerPage(): JSX.Element {
 
       {def.data && pageMode === 'run' && runWithCanvas && (
         <div
-          className="fixed inset-y-0 right-0 flex flex-col bg-bg"
+          className={
+            narrow
+              ? 'fixed bottom-0 right-0 top-12 flex flex-col bg-bg'
+              : 'fixed inset-y-0 right-0 flex flex-col bg-bg'
+          }
           style={{ left: 'var(--hub-rail, 14rem)' }}
         >
           <FlowsAuthor
@@ -636,7 +644,7 @@ export function WorkflowRunDetailPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
       {killDialog.element}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link

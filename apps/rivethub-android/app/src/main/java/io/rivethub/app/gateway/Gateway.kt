@@ -22,7 +22,7 @@ import java.io.Closeable
 import java.io.IOException
 import kotlin.random.Random
 
-class GatewayException(val status: Int, message: String) : IOException(message)
+open class GatewayException(val status: Int, message: String) : IOException(message)
 
 /**
  * Typed client over one node's gateway — the Kotlin twin of
@@ -93,6 +93,8 @@ class Gateway(
     suspend fun healthz(): Healthz = get(listOf("healthz"), Healthz.serializer())
     suspend fun mesh(): MeshOverview = get(listOf("api", "mesh"), MeshOverview.serializer())
     suspend fun catalogAgents(): CatalogAgentsResponse = get(listOf("api", "catalog", "agents"), CatalogAgentsResponse.serializer())
+    suspend fun agents(): List<AgentPreset> =
+        get(listOf("api", "agents"), AgentsListResponse.serializer()).agents
     suspend fun sessions(): SessionsListResponse = get(listOf("api", "sessions"), SessionsListResponse.serializer())
 
     suspend fun messages(sessionId: String): List<SessionMessage> =
@@ -140,15 +142,26 @@ class Gateway(
      * Spawn-or-get a PTY. Passing [session] joins it to this conversation
      * (chat / den / terminal = three views of one session).
      */
-    suspend fun termSpawn(session: String, cols: Int, rows: Int, command: String? = null): TermSpawnResponse =
+    suspend fun termSpawn(
+        session: String,
+        cols: Int,
+        rows: Int,
+        command: String? = null,
+        resume: String? = null,
+        model: String? = null,
+        effort: String? = null,
+    ): TermSpawnResponse =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(
                 TermSpawnRequest.serializer(),
                 TermSpawnRequest(
                     command = command,
                     session = session,
+                    resume = resume,
                     cols = cols.coerceIn(20, 500),
                     rows = rows.coerceIn(5, 200),
+                    model = model,
+                    effort = effort,
                 ),
             ).toRequestBody("application/json".toMediaType())
             val req = Request.Builder().url(url(listOf("api", "terminal"))).post(body).build()
@@ -157,6 +170,27 @@ class Gateway(
                     val text = res.body.string()
                     if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
                     wireJson.decodeFromString(TermSpawnResponse.serializer(), text)
+                }
+            }
+        }
+
+    /**
+     * Inject a chat turn into the session's live PTY stdin. Server-side
+     * `submit` (default true) appends CR as a separate write after the paste;
+     * the client must not append `\r` itself.
+     */
+    suspend fun termInject(session: String, text: String, interrupt: Boolean? = null, submit: Boolean? = null): TermInjectResponse =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(
+                TermInjectRequest.serializer(),
+                TermInjectRequest(session = session, text = text, submit = submit, interrupt = interrupt),
+            ).toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "terminal", "inject"))).post(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text2 = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text2))
+                    wireJson.decodeFromString(TermInjectResponse.serializer(), text2)
                 }
             }
         }

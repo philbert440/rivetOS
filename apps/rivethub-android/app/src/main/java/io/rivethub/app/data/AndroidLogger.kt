@@ -8,4 +8,8 @@ object AndroidLogger : Logger {
     override fun warn(tag: String, message: String, error: Throwable?) {
         Log.w(tag, message, error)
     }
+
+    override fun debug(tag: String, message: String, error: Throwable?) {
+        Log.d(tag, message, error)
+    }
 }

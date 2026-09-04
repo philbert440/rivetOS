@@ -1,6 +1,18 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { railHeaderClass, railToggle } from './sidebar-chrome.js'
+import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
+
+describe('hubPageTitle', () => {
+  it('labels the mobile top bar from the pathname', () => {
+    expect(hubPageTitle('/')).toBe('RivetHub')
+    expect(hubPageTitle('/memory')).toBe('Memory')
+    expect(hubPageTitle('/memory/foo')).toBe('Memory')
+    expect(hubPageTitle('/files')).toBe('Files')
+    expect(hubPageTitle('/tasks')).toBe('Tasks')
+    expect(hubPageTitle('/workflows')).toBe('Workflows')
+    expect(hubPageTitle('/settings')).toBe('Settings')
+  })
+})
 
 describe('rail header toggle', () => {
   it('keeps relative positioning and the same vertical padding token in both modes', () => {
@@ -57,6 +69,15 @@ describe('rail header toggle', () => {
     expect(agents).not.toContain('openConversation(')
     expect(memory).not.toContain('openConversation(')
     expect(chat).not.toContain('openConversation(')
+  })
+
+  it('closed narrow drawer is inert so it leaves the a11y tree', () => {
+    const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
+    expect(src).toContain('inert={narrow && !drawerOpen')
+    expect(src).toContain('aria-modal={narrow && drawerOpen')
+    expect(src).toContain("role={narrow ? 'dialog'")
+    expect(src).toContain("aria-label={narrow ? 'Navigation'")
+    expect(src).toContain("drawerOpen ? 'translate-x-0' : '-translate-x-full'")
   })
 
   it('does not render a ws-status dot on Conversations', () => {

@@ -457,158 +457,165 @@ export function FilesPage(): JSX.Element {
               {filter ? 'No matches.' : 'Empty directory — drop files here or use Upload.'}
             </div>
           ) : (
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-line text-left font-mono text-[10px] text-ink-dim">
-                  <th className="w-8 py-1 pr-2">
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      onChange={() => {
-                        setSelected(allSelected ? new Set() : new Set(allNames))
-                      }}
-                      aria-label="select all"
-                    />
-                  </th>
-                  <th className="py-1">name</th>
-                  <th className="w-24 py-1 text-right">size</th>
-                  <th className="w-36 py-1 text-right">modified</th>
-                </tr>
-              </thead>
-              <tbody>
-                {path !== '' && (
-                  <tr className="border-b border-line/40">
-                    <td />
-                    <td colSpan={3} className="py-1">
-                      <button
-                        type="button"
-                        onClick={() => setPath(parentRel(path))}
-                        className="font-mono text-ink-dim hover:text-ink"
-                      >
-                        ../
-                      </button>
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-line text-left font-mono text-[10px] text-ink-dim">
+                    <th className="w-8 py-1 pr-2">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={() => {
+                          setSelected(allSelected ? new Set() : new Set(allNames))
+                        }}
+                        aria-label="select all"
+                      />
+                    </th>
+                    <th className="py-1">name</th>
+                    <th className="w-24 py-1 text-right">size</th>
+                    <th className="w-36 py-1 text-right">modified</th>
                   </tr>
-                )}
-                {entries.map((e) => {
-                  const child = joinRel(path, e.name)
-                  const isSel = selected.has(e.name)
-                  return (
-                    <tr
-                      key={e.name}
-                      className={`border-b border-line/40 hover:bg-panel-2/50 ${isSel ? 'bg-panel-2/40' : ''}`}
-                      draggable
-                      onDragStart={(ev) => {
-                        ev.dataTransfer.setData('application/x-rivet-file', e.name)
-                        ev.dataTransfer.effectAllowed = 'move'
-                      }}
-                      onDragOver={
-                        e.type === 'dir'
-                          ? (ev) => {
-                              ev.preventDefault()
-                              ev.dataTransfer.dropEffect = 'move'
-                            }
-                          : undefined
-                      }
-                      onDrop={
-                        e.type === 'dir'
-                          ? (ev) => {
-                              ev.preventDefault()
-                              ev.stopPropagation()
-                              const src = ev.dataTransfer.getData('application/x-rivet-file')
-                              if (src) void moveOntoDir(src, e.name)
-                              else if (ev.dataTransfer.files.length > 0) {
-                                // Drop OS files into this subdirectory via upload-to-path
-                                const dir = child
-                                void (async () => {
-                                  setBusy(true)
-                                  let ok = 0
-                                  for (const file of Array.from(ev.dataTransfer.files)) {
-                                    try {
-                                      await gateway.filesUpload(dir, file.name, file)
-                                      ok += 1
-                                    } catch (err) {
-                                      showNotice({ kind: 'err', text: (err as Error).message })
-                                    }
-                                  }
-                                  await refresh()
-                                  setBusy(false)
-                                  if (ok)
-                                    showNotice({
-                                      kind: 'ok',
-                                      text: `uploaded ${String(ok)} into ${e.name}/`,
-                                    })
-                                })()
-                              }
-                            }
-                          : undefined
-                      }
-                    >
-                      <td className="py-1.5 pr-2">
-                        <input
-                          type="checkbox"
-                          checked={isSel}
-                          onChange={() => {
-                            setSelected((prev) => {
-                              const n = new Set(prev)
-                              if (n.has(e.name)) n.delete(e.name)
-                              else n.add(e.name)
-                              return n
-                            })
-                          }}
-                          aria-label={`select ${e.name}`}
-                        />
-                      </td>
-                      <td className="py-1.5 pr-4">
+                </thead>
+                <tbody>
+                  {path !== '' && (
+                    <tr className="border-b border-line/40">
+                      <td />
+                      <td colSpan={3} className="py-1">
                         <button
                           type="button"
-                          onClick={() => {
-                            if (e.type === 'dir') setPath(child)
-                            else setPreviewPath(child)
-                          }}
-                          onDoubleClick={() => {
-                            if (e.type !== 'file') return
-                            const url = gateway.fileDownloadUrl(child)
-                            if (rivetShell()) {
-                              // The OS browser sits OUTSIDE the shell's mTLS
-                              // pipe — handing it a same-gateway URL fails
-                              // auth. Previewable kinds open in-app; the rest
-                              // download over the authenticated transport.
-                              if (previewKind(e.name, e.size) !== 'none') setPreviewPath(child)
-                              else
-                                void saveViaGateway(url, e.name, e.size)
-                                  .then(() => {
-                                    showNotice({ kind: 'ok', text: `download started: ${e.name}` })
-                                  })
-                                  .catch((err: unknown) => {
-                                    showNotice({ kind: 'err', text: (err as Error).message })
-                                  })
-                            } else {
-                              window.open(url, '_blank', 'noopener,noreferrer')
-                            }
-                          }}
-                          className="flex items-center gap-2 text-left"
+                          onClick={() => setPath(parentRel(path))}
+                          className="font-mono text-ink-dim hover:text-ink"
                         >
-                          <span className="w-4 text-center font-mono text-ink-dim">
-                            {e.type === 'dir' ? '▸' : '·'}
-                          </span>
-                          <span className={e.type === 'dir' ? 'text-em' : 'text-ink'}>
-                            {e.name}
-                            {e.type === 'dir' ? '/' : ''}
-                          </span>
+                          ../
                         </button>
                       </td>
-                      <td className="w-24 py-1.5 pr-4 text-right font-mono text-xs text-ink-dim">
-                        {e.type === 'file' ? fmtSize(e.size) : ''}
-                      </td>
-                      <td className="w-36 py-1.5 text-right font-mono text-xs text-ink-dim">
-                        {fmtMtime(e.mtime)}
-                      </td>
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                  )}
+                  {entries.map((e) => {
+                    const child = joinRel(path, e.name)
+                    const isSel = selected.has(e.name)
+                    return (
+                      <tr
+                        key={e.name}
+                        className={`border-b border-line/40 hover:bg-panel-2/50 ${
+                          isSel ? 'bg-panel-2/40' : ''
+                        }`}
+                        draggable
+                        onDragStart={(ev) => {
+                          ev.dataTransfer.setData('application/x-rivet-file', e.name)
+                          ev.dataTransfer.effectAllowed = 'move'
+                        }}
+                        onDragOver={
+                          e.type === 'dir'
+                            ? (ev) => {
+                                ev.preventDefault()
+                                ev.dataTransfer.dropEffect = 'move'
+                              }
+                            : undefined
+                        }
+                        onDrop={
+                          e.type === 'dir'
+                            ? (ev) => {
+                                ev.preventDefault()
+                                ev.stopPropagation()
+                                const src = ev.dataTransfer.getData('application/x-rivet-file')
+                                if (src) void moveOntoDir(src, e.name)
+                                else if (ev.dataTransfer.files.length > 0) {
+                                  // Drop OS files into this subdirectory via upload-to-path
+                                  const dir = child
+                                  void (async () => {
+                                    setBusy(true)
+                                    let ok = 0
+                                    for (const file of Array.from(ev.dataTransfer.files)) {
+                                      try {
+                                        await gateway.filesUpload(dir, file.name, file)
+                                        ok += 1
+                                      } catch (err) {
+                                        showNotice({ kind: 'err', text: (err as Error).message })
+                                      }
+                                    }
+                                    await refresh()
+                                    setBusy(false)
+                                    if (ok)
+                                      showNotice({
+                                        kind: 'ok',
+                                        text: `uploaded ${String(ok)} into ${e.name}/`,
+                                      })
+                                  })()
+                                }
+                              }
+                            : undefined
+                        }
+                      >
+                        <td className="py-1.5 pr-2">
+                          <input
+                            type="checkbox"
+                            checked={isSel}
+                            onChange={() => {
+                              setSelected((prev) => {
+                                const n = new Set(prev)
+                                if (n.has(e.name)) n.delete(e.name)
+                                else n.add(e.name)
+                                return n
+                              })
+                            }}
+                            aria-label={`select ${e.name}`}
+                          />
+                        </td>
+                        <td className="py-1.5 pr-4">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (e.type === 'dir') setPath(child)
+                              else setPreviewPath(child)
+                            }}
+                            onDoubleClick={() => {
+                              if (e.type !== 'file') return
+                              const url = gateway.fileDownloadUrl(child)
+                              if (rivetShell()) {
+                                // The OS browser sits OUTSIDE the shell's mTLS
+                                // pipe — handing it a same-gateway URL fails
+                                // auth. Previewable kinds open in-app; the rest
+                                // download over the authenticated transport.
+                                if (previewKind(e.name, e.size) !== 'none') setPreviewPath(child)
+                                else
+                                  void saveViaGateway(url, e.name, e.size)
+                                    .then(() => {
+                                      showNotice({
+                                        kind: 'ok',
+                                        text: `download started: ${e.name}`,
+                                      })
+                                    })
+                                    .catch((err: unknown) => {
+                                      showNotice({ kind: 'err', text: (err as Error).message })
+                                    })
+                              } else {
+                                window.open(url, '_blank', 'noopener,noreferrer')
+                              }
+                            }}
+                            className="flex items-center gap-2 text-left"
+                          >
+                            <span className="w-4 text-center font-mono text-ink-dim">
+                              {e.type === 'dir' ? '▸' : '·'}
+                            </span>
+                            <span className={e.type === 'dir' ? 'text-em' : 'text-ink'}>
+                              {e.name}
+                              {e.type === 'dir' ? '/' : ''}
+                            </span>
+                          </button>
+                        </td>
+                        <td className="w-24 py-1.5 pr-4 text-right font-mono text-xs text-ink-dim">
+                          {e.type === 'file' ? fmtSize(e.size) : ''}
+                        </td>
+                        <td className="w-36 py-1.5 text-right font-mono text-xs text-ink-dim">
+                          {fmtMtime(e.mtime)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 

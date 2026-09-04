@@ -23,6 +23,9 @@ interface SidebarPrefsState {
   setRailCollapsed: (collapsed: boolean) => void
   /** Re-show the conversations pane — rail Conversations button only. */
   openConversation: () => void
+  /** Narrow off-canvas rail. Session state — not persisted. */
+  drawerOpen: boolean
+  setDrawerOpen: (open: boolean) => void
 }
 
 type PersistedSidebarPrefs = Pick<SidebarPrefsState, 'conversationsCollapsed' | 'railCollapsed'>
@@ -35,6 +38,8 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
       railCollapsed: false,
       setRailCollapsed: (railCollapsed) => set({ railCollapsed }),
       openConversation: () => set({ conversationsCollapsed: false }),
+      drawerOpen: false,
+      setDrawerOpen: (drawerOpen) => set({ drawerOpen }),
     }),
     {
       name: KEY,
@@ -57,6 +62,11 @@ export const useSidebarPrefs = create<SidebarPrefsState>()(
           railCollapsed: state.railCollapsed ?? false,
         }
       },
+      merge: (persisted, current) => ({
+        ...current,
+        ...(persisted as Partial<SidebarPrefsState>),
+        drawerOpen: false,
+      }),
     },
   ),
 )

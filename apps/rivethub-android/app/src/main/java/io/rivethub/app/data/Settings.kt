@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -28,7 +29,15 @@ data class Prefs(
     val lastSeen: Map<String, Long> = emptyMap(),
     val onboarded: Boolean = false,
     val desktopUrl: String = "",
-    val botEdits: Map<String, BotEdit> = emptyMap(),
+    val themeMode: String = "system",
+    val sessionModes: Map<String, String> = emptyMap(),
+    val archived: Set<String> = emptySet(),
+    val titleOverrides: Map<String, String> = emptyMap(),
+    val agentPointers: Map<String, String> = emptyMap(),
+    val terminalFontSp: Int = 13,
+    val viewNodeId: String = "",
+    val currentAgentId: String = "",
+    val agentsCollapsed: Boolean = false,
 )
 
 class Settings(context: Context) {
@@ -46,45 +55,55 @@ class Settings(context: Context) {
             lastSeen = decodeLongMap(p[LAST_SEEN]),
             onboarded = p[ONBOARDED] ?: false,
             desktopUrl = p[DESKTOP_URL] ?: "",
-            botEdits = decodeEdits(p[BOT_EDITS]),
+            themeMode = p[THEME] ?: "system",
+            sessionModes = decodeMap(p[SESSION_MODES]),
+            archived = p[ARCHIVED] ?: emptySet(),
+            titleOverrides = decodeMap(p[TITLES]),
+            agentPointers = decodeMap(p[POINTERS]),
+            terminalFontSp = p[TERM_FONT] ?: 13,
+            viewNodeId = p[VIEW_NODE] ?: "",
+            currentAgentId = p[CURRENT_AGENT] ?: "",
+            agentsCollapsed = p[AGENTS_COLLAPSED] ?: false,
         )
     }
 
     suspend fun snapshot(): Prefs = prefs.first()
 
     suspend fun setEntryUrl(url: String) = ds.edit { it[ENTRY_URL] = url.trim().trimEnd('/') }
-    suspend fun setHandle(h: String) = ds.edit { it[HANDLE] = h.trim().ifBlank { "you" } }
     suspend fun setStrictHostnames(v: Boolean) = ds.edit { it[STRICT] = v }
     suspend fun setOnboarded(v: Boolean) = ds.edit { it[ONBOARDED] = v }
 
     suspend fun addExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) + url.trim().trimEnd('/') }
     suspend fun removeExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) - url }
 
-    suspend fun togglePin(botId: String) = ds.edit {
-        val cur = it[PINNED] ?: emptySet()
-        it[PINNED] = if (botId in cur) cur - botId else cur + botId
-    }
-    suspend fun setHidden(botId: String, hidden: Boolean) = ds.edit {
-        val cur = it[HIDDEN] ?: emptySet()
-        it[HIDDEN] = if (hidden) cur + botId else cur - botId
-    }
-    suspend fun unhideAll() = ds.edit { it[HIDDEN] = emptySet() }
+    suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
+    suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
+    suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
+    suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
+    suspend fun setAgentsCollapsed(v: Boolean) = ds.edit { it[AGENTS_COLLAPSED] = v }
 
-    suspend fun setSessionOverride(botId: String, sessionId: String) = ds.edit {
-        it[SESSIONS] = encodeMap(decodeMap(it[SESSIONS]) + (botId to sessionId))
+    suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
+        it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
     }
-    suspend fun markSeen(botId: String, ts: Long) = ds.edit {
-        val cur = decodeLongMap(it[LAST_SEEN])
-        if ((cur[botId] ?: 0L) < ts) it[LAST_SEEN] = encodeLongMap(cur + (botId to ts))
+    suspend fun rekeySessionMode(from: String, to: String) = ds.edit {
+        val cur = decodeMap(it[SESSION_MODES])
+        val moved = cur[from] ?: return@edit
+        val next = if (cur[to] != null) cur - from else cur - from + (to to moved)
+        it[SESSION_MODES] = encodeMap(next)
     }
 
-    suspend fun setDesktopUrl(url: String) = ds.edit { it[DESKTOP_URL] = url.trim() }
+    suspend fun setArchived(keys: Set<String>) = ds.edit { it[ARCHIVED] = keys }
+    suspend fun archive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) + key }
+    suspend fun unarchive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) - key }
 
-    suspend fun setBotEdit(botId: String, edit: BotEdit) = ds.edit {
-        it[BOT_EDITS] = encodeEdits(decodeEdits(it[BOT_EDITS]) + (botId to edit))
+    suspend fun setTitleOverride(key: String, title: String) = ds.edit {
+        val cur = decodeMap(it[TITLES])
+        val next = if (title.isBlank()) cur - key else cur + (key to title.trim())
+        it[TITLES] = encodeMap(next)
     }
-    suspend fun clearBotEdit(botId: String) = ds.edit {
-        it[BOT_EDITS] = encodeEdits(decodeEdits(it[BOT_EDITS]) - botId)
+
+    suspend fun setAgentPointers(encoded: Map<String, String>) = ds.edit {
+        it[POINTERS] = encodeMap(encoded)
     }
 
     suspend fun clearAll() = ds.edit { it.clear() }
@@ -100,19 +119,22 @@ class Settings(context: Context) {
         private val LAST_SEEN = stringPreferencesKey("lastSeen")
         private val ONBOARDED = booleanPreferencesKey("onboarded")
         private val DESKTOP_URL = stringPreferencesKey("desktopUrl")
-        private val BOT_EDITS = stringPreferencesKey("botEdits")
+        private val THEME = stringPreferencesKey("themeMode")
+        private val SESSION_MODES = stringPreferencesKey("sessionModes")
+        private val ARCHIVED = stringSetPreferencesKey("archived")
+        private val TITLES = stringPreferencesKey("titleOverrides")
+        private val POINTERS = stringPreferencesKey("agentPointers")
+        private val TERM_FONT = intPreferencesKey("terminalFontSp")
+        private val VIEW_NODE = stringPreferencesKey("viewNodeId")
+        private val CURRENT_AGENT = stringPreferencesKey("currentAgentId")
+        private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
-        private val editMapSer = MapSerializer(String.serializer(), BotEdit.serializer())
         private fun decodeMap(s: String?): Map<String, String> =
             s?.let { runCatching { wireJson.decodeFromString(mapSer, it) }.getOrNull() } ?: emptyMap()
         private fun encodeMap(m: Map<String, String>): String = wireJson.encodeToString(mapSer, m)
         private fun decodeLongMap(s: String?): Map<String, Long> =
             s?.let { runCatching { wireJson.decodeFromString(longMapSer, it) }.getOrNull() } ?: emptyMap()
-        private fun encodeLongMap(m: Map<String, Long>): String = wireJson.encodeToString(longMapSer, m)
-        private fun decodeEdits(s: String?): Map<String, BotEdit> =
-            s?.let { runCatching { wireJson.decodeFromString(editMapSer, it) }.getOrNull() } ?: emptyMap()
-        private fun encodeEdits(m: Map<String, BotEdit>): String = wireJson.encodeToString(editMapSer, m)
     }
 }

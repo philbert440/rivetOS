@@ -25,6 +25,7 @@ describe('sidebar prefs store', () => {
     useSidebarPrefs.setState({
       conversationsCollapsed: false,
       railCollapsed: false,
+      drawerOpen: false,
     })
     localStorage.removeItem('rivethub.sidebar')
   })
@@ -32,6 +33,31 @@ describe('sidebar prefs store', () => {
   it('defaults to both expanded', () => {
     expect(useSidebarPrefs.getState().conversationsCollapsed).toBe(false)
     expect(useSidebarPrefs.getState().railCollapsed).toBe(false)
+    expect(useSidebarPrefs.getState().drawerOpen).toBe(false)
+  })
+
+  it('sets drawerOpen without persisting it', () => {
+    useSidebarPrefs.getState().setDrawerOpen(true)
+    expect(useSidebarPrefs.getState().drawerOpen).toBe(true)
+    const raw = localStorage.getItem('rivethub.sidebar')
+    expect(raw).toBeTruthy()
+    const parsed = JSON.parse(raw ?? '') as { state: Record<string, unknown> }
+    expect(parsed.state.drawerOpen).toBeUndefined()
+    useSidebarPrefs.getState().setDrawerOpen(false)
+    expect(useSidebarPrefs.getState().drawerOpen).toBe(false)
+  })
+
+  it('rehydrate ignores drawerOpen in the blob', async () => {
+    expect(useSidebarPrefs.getState().drawerOpen).toBe(false)
+    localStorage.setItem(
+      'rivethub.sidebar',
+      JSON.stringify({
+        state: { conversationsCollapsed: false, railCollapsed: false, drawerOpen: true },
+        version: 2,
+      }),
+    )
+    await useSidebarPrefs.persist.rehydrate()
+    expect(useSidebarPrefs.getState().drawerOpen).toBe(false)
   })
 
   it('sets conversationsCollapsed', () => {

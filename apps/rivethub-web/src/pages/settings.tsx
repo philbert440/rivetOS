@@ -176,7 +176,7 @@ export function SettingsPage(): JSX.Element {
   }
 
   return (
-    <div className="mx-auto max-w-xl px-6 py-8">
+    <div className="mx-auto max-w-xl px-4 py-8 md:px-6">
       <h1 className="mb-6 font-mono text-lg font-semibold text-em">Settings</h1>
 
       <label className="mb-1 block text-xs text-ink-dim">Gateway URL (origin only)</label>
