@@ -12,13 +12,17 @@ import io.rivethub.app.gateway.AgentPreset
 import io.rivethub.app.gateway.CatalogAgent
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.plane.AgentAction
+import io.rivethub.app.plane.AgentEditFields
 import io.rivethub.app.plane.AgentNodeHint
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentPointers
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.ConversationFilter
 import io.rivethub.app.plane.EnrollErrorKind
+import io.rivethub.app.plane.HarnessSheet
 import io.rivethub.app.plane.LocatedChatItem
+import io.rivethub.app.plane.agentGoToNodeId
+import io.rivethub.app.plane.agentPatchRequest
 import io.rivethub.app.plane.applyRegistryEvent
 import io.rivethub.app.plane.adopt
 import io.rivethub.app.plane.buildAgents
@@ -35,6 +39,7 @@ import io.rivethub.app.plane.rekeyPinnedDraft
 import io.rivethub.app.plane.requestRefresh
 import io.rivethub.app.plane.sortLocatedByRecency
 import io.rivethub.app.plane.supersedeRefresh
+import io.rivethub.app.plane.toSheet
 import io.rivethub.app.plane.RefreshLatch
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.plane.NODE_BUNDLE_TIMEOUT_MS
@@ -218,6 +223,51 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         }
         rebuildItems()
         return open
+    }
+
+    /**
+     * Long-press → Go to node (2026-09-04). `selectViewNode` TOGGLES the
+     * filter off when the node is already selected, so the pure guard
+     * (`agentGoToNodeId`) vetoes that case — go-to-node never leaves the
+     * agent's node.
+     */
+    fun goToAgentNode(row: AgentRow) {
+        val target = agentGoToNodeId(_state.value.prefs.viewNodeId, row.nodeId) ?: return
+        selectViewNode(target, row.nodeName)
+    }
+
+    /**
+     * The target node's capability sheet for [harnessId] (edit-sheet model/
+     * effort options), keyed by denUrl the way `descriptors` is populated in
+     * `applyNodeBundle`. Null when the node has not reported descriptors.
+     */
+    fun sheetFor(nodeDenUrl: String, harnessId: String?): HarnessSheet? {
+        if (harnessId.isNullOrBlank()) return null
+        val desc = descriptors[nodeDenUrl.trim().trimEnd('/')] ?: return null
+        return desc.find { it.harnessId == harnessId }?.capabilities?.toSheet()
+    }
+
+    /**
+     * Long-press → Edit → Save: the SAME den PATCH the web editor sends
+     * (`PATCH /api/agents/{id}`), issued against the node the agent LIVES on
+     * (`row.nodeDenUrl`; the patch may retarget `nodeBaseUrl` elsewhere).
+     * Refreshes on success; [onDone] reports the outcome on the VM scope.
+     */
+    fun saveAgent(row: AgentRow, fields: AgentEditFields, onDone: (ok: Boolean) -> Unit) {
+        viewModelScope.launch {
+            val ok = try {
+                val home = row.nodeDenUrl.trim().trimEnd('/')
+                val node = _state.value.nodes.find { it.denUrl.trimEnd('/') == home }
+                    ?: NodeRef(id = row.nodeId, name = row.nodeName, denUrl = home, online = true, fromMesh = false)
+                c.transport.gateway(node).agentUpdate(row.agentId, agentPatchRequest(fields))
+                refresh()
+                true
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                false
+            }
+            onDone(ok)
+        }
     }
 
     fun refresh() {

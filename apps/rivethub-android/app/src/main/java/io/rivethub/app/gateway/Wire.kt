@@ -305,6 +305,26 @@ data class AgentPreset(
 @Serializable
 data class AgentsListResponse(val agents: List<AgentPreset> = emptyList())
 
+/**
+ * `PATCH /api/agents/{id}` body (@rivetos/gateway-client `AgentUpdateRequest`).
+ * Every field is optional; null fields drop out of the JSON (`wireJson` runs
+ * `explicitNulls = false` and defaults are not encoded), so a builder only
+ * sets what it means to change. `harnessId = null` would CLEAR the harness
+ * server-side — it can never be sent by this shape, which is deliberate.
+ */
+@Serializable
+data class AgentUpdateRequest(
+    val name: String? = null,
+    val color: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
+    val systemPrompt: String? = null,
+    val nodeBaseUrl: String? = null,
+)
+
+@Serializable
+data class AgentResponse(val agent: AgentPreset)
+
 /** JSON text frames on WS /api/terminal/ws (binary frames are raw PTY bytes). */
 sealed interface TermFrame {
     data class Hello(val frame: TermHelloFrame) : TermFrame

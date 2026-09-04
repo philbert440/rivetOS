@@ -515,6 +515,8 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     onAgentTap = {},
                     onAgentStartOver = {},
                     onAgentNew = {},
+                    onAgentEdit = {},
+                    onAgentGoToNode = {},
                     onSelectNode = {},
                     onRemoveNode = {},
                     onSaveDiscovered = {},

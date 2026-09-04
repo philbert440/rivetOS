@@ -55,11 +55,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
+import io.rivethub.app.plane.AgentSheetAction
 import io.rivethub.app.plane.DrawerDest
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
 import io.rivethub.app.plane.accentForDrawer
+import io.rivethub.app.plane.agentSheetActions
 import io.rivethub.app.plane.discoveredNodeLabel
 import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.drawerDestEnabled
@@ -89,6 +91,8 @@ fun RivetDrawerContent(
     onAgentTap: (AgentRow) -> Unit,
     onAgentStartOver: (AgentRow) -> Unit,
     onAgentNew: (AgentRow) -> Unit,
+    onAgentEdit: (AgentRow) -> Unit,
+    onAgentGoToNode: (AgentRow) -> Unit,
     onSelectNode: (NodeSheetRow) -> Unit,
     onRemoveNode: (NodeSheetRow) -> Unit,
     onSaveDiscovered: (NodeSheetRow) -> Unit,
@@ -176,12 +180,13 @@ fun RivetDrawerContent(
         AgentActionSheet(
             name = row.name,
             onDismiss = { agentSheet = null },
-            onStartOver = {
-                onAgentStartOver(row)
-                agentSheet = null
-            },
-            onNew = {
-                onAgentNew(row)
+            onAction = { action ->
+                when (action) {
+                    AgentSheetAction.StartOver -> onAgentStartOver(row)
+                    AgentSheetAction.New -> onAgentNew(row)
+                    AgentSheetAction.Edit -> onAgentEdit(row)
+                    AgentSheetAction.GoToNode -> onAgentGoToNode(row)
+                }
                 agentSheet = null
             },
         )
@@ -575,18 +580,44 @@ private fun NodeSheetSavedRow(row: NodeSheetRow, onSelect: () -> Unit, onRemove:
     }
 }
 
+/**
+ * Agent long-press sheet. The row set + order come from `agentSheetActions()`
+ * (2026-09-04: Edit + Go to node joined Start over / New conversation).
+ */
 @Composable
 private fun AgentActionSheet(
     name: String,
     onDismiss: () -> Unit,
-    onStartOver: () -> Unit,
-    onNew: () -> Unit,
+    onAction: (AgentSheetAction) -> Unit,
 ) {
     val colors = RivetTheme.colors
     RivetModalSheet(onDismiss = onDismiss) {
         Text(name, color = colors.em, style = RivetType.sm.copy(fontWeight = FontWeight.SemiBold), modifier = Modifier.padding(8.dp))
-        SheetAction(R.drawable.lucide_rotate_ccw, stringResource(R.string.agent_start_over), colors.ink, onStartOver)
-        SheetAction(R.drawable.lucide_plus, stringResource(R.string.agent_new_conversation), colors.ink, onNew)
+        agentSheetActions().forEach { action ->
+            when (action) {
+                AgentSheetAction.StartOver -> SheetAction(
+                    R.drawable.lucide_rotate_ccw,
+                    stringResource(R.string.agent_start_over),
+                    colors.ink,
+                ) { onAction(action) }
+                AgentSheetAction.New -> SheetAction(
+                    R.drawable.lucide_plus,
+                    stringResource(R.string.agent_new_conversation),
+                    colors.ink,
+                ) { onAction(action) }
+                AgentSheetAction.Edit -> SheetAction(
+                    R.drawable.lucide_pencil,
+                    stringResource(R.string.agent_edit),
+                    colors.ink,
+                ) { onAction(action) }
+                AgentSheetAction.GoToNode -> SheetAction(
+                    R.drawable.lucide_server,
+                    stringResource(R.string.agent_go_to_node),
+                    colors.ink,
+                    contentDescription = stringResource(R.string.agent_go_to_node),
+                ) { onAction(action) }
+            }
+        }
     }
 }
 
@@ -595,6 +626,7 @@ private fun SheetAction(
     icon: Int,
     label: String,
     tint: Color,
+    contentDescription: String? = null,
     onClick: () -> Unit,
 ) {
     Row(
@@ -607,7 +639,7 @@ private fun SheetAction(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Lucide(icon, null, tint = tint, modifier = Modifier.size(16.dp))
+        Lucide(icon, contentDescription, tint = tint, modifier = Modifier.size(16.dp))
         Text(label, color = tint, style = RivetType.sm)
     }
 }

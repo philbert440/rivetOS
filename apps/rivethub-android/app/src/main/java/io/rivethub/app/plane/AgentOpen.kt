@@ -62,6 +62,7 @@ data class AgentRow(
     val model: String = "",
     val effort: String = "",
     val online: Boolean = true,
+    val systemPrompt: String = "",
 )
 
 fun agentRow(
@@ -76,6 +77,7 @@ fun agentRow(
     model: String = "",
     effort: String = "",
     online: Boolean = true,
+    systemPrompt: String = "",
 ): AgentRow = AgentRow(
     agentId = agentId,
     name = name,
@@ -88,4 +90,5 @@ fun agentRow(
     model = model,
     effort = effort,
     online = online,
+    systemPrompt = systemPrompt,
 )
