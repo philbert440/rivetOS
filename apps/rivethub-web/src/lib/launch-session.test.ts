@@ -4,8 +4,14 @@ import { pickLaunchSession, type LaunchCandidate } from './launch-session.js'
 const HUB = 'https://hub.example'
 const OTHER = 'https://other.example'
 
-function row(key: string, updatedAt: number, kind = 'harness', pinNodeBaseUrl?: string): LaunchCandidate {
-  return { key, updatedAt, kind, ...(pinNodeBaseUrl ? { pinNodeBaseUrl } : {}) }
+function row(
+  key: string,
+  updatedAt: number,
+  kind = 'harness',
+  pinNodeBaseUrl?: string,
+  pin = false,
+): LaunchCandidate {
+  return { key, updatedAt, kind, ...(pinNodeBaseUrl ? { pinNodeBaseUrl } : {}), ...(pin ? { pin } : {}) }
 }
 
 describe('pickLaunchSession', () => {
@@ -30,23 +36,42 @@ describe('pickLaunchSession', () => {
     ).toBe('d2')
   })
 
-  it('ignores rows pinned from another node', () => {
+  it('prefers the current node over a more recent session on another node', () => {
     expect(
       pickLaunchSession(
-        [row('remote-pin', 900, 'legacy', OTHER), row('local', 100)],
+        [row('remote-newer', 900, 'harness', OTHER), row('local', 100, 'harness', HUB)],
         HUB,
       ),
     ).toBe('local')
   })
 
-  it('accepts a pin whose node IS the current node', () => {
-    expect(pickLaunchSession([row('home-pin', 900, 'legacy', HUB), row('local', 100)], HUB)).toBe(
-      'home-pin',
-    )
+  it('falls back to the most recent session on ANY node when the current node has none', () => {
+    // datahub case: the current node holds no interactive sessions → resume
+    // the genuinely most recent thread rather than stranding on the list.
+    expect(
+      pickLaunchSession(
+        [row('remote-old', 100, 'harness', OTHER), row('remote-new', 500, 'harness', OTHER)],
+        HUB,
+      ),
+    ).toBe('remote-new')
   })
 
-  it('returns undefined when the node has no sessions at all', () => {
+  it('excludes agent-pin pointer rows, even the most recent', () => {
+    expect(
+      pickLaunchSession(
+        [row('agent-pin', 900, 'harness', HUB, true), row('real', 100, 'harness', HUB)],
+        HUB,
+      ),
+    ).toBe('real')
+  })
+
+  it('returns undefined only when there is no resumable session anywhere', () => {
     expect(pickLaunchSession([], HUB)).toBeUndefined()
-    expect(pickLaunchSession([row('remote-pin', 1, 'legacy', OTHER)], HUB)).toBeUndefined()
+    expect(
+      pickLaunchSession(
+        [row('p1', 900, 'harness', HUB, true), row('p2', 800, 'harness', OTHER, true)],
+        HUB,
+      ),
+    ).toBeUndefined()
   })
 })

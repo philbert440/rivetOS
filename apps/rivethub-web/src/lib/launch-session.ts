@@ -16,20 +16,33 @@ export interface LaunchCandidate {
   updatedAt: number
   /** ChatItem kind; only 'draft' gets the in-progress priority. */
   kind: string
-  /** Agent-pin rows only: the session's home node. */
+  /** The row's home node. */
   pinNodeBaseUrl?: string
+  /** Synthesized agent-pin pointer (not a resumable session) → excluded. */
+  pin?: boolean
 }
 
+/**
+ * The session to open on launch, or undefined when there is none to resume.
+ * Prefers the current node, then any node (so a hub whose current node holds
+ * no sessions — e.g. datahub — still resumes the genuinely most recent
+ * thread rather than stranding on the list); a draft beats a finished thread
+ * within each scope. Agent-pin pointer rows are never launch targets.
+ * Mirrored in Android plane/LaunchSession.kt.
+ */
 export function pickLaunchSession(
   items: readonly LaunchCandidate[],
   baseUrl: string,
 ): string | undefined {
-  const local = items.filter(
+  const sessions = items.filter((it) => it.pin !== true)
+  const byRecency = (a: LaunchCandidate, b: LaunchCandidate): number => b.updatedAt - a.updatedAt
+  const best = (scope: LaunchCandidate[]): string | undefined => {
+    const byRecent = [...scope].sort(byRecency)
+    const draft = byRecent.find((it) => it.kind === 'draft')
+    return draft ? draft.key : byRecent[0]?.key
+  }
+  const onNode = sessions.filter(
     (it) => it.pinNodeBaseUrl === undefined || it.pinNodeBaseUrl === baseUrl,
   )
-  const byRecency = (a: LaunchCandidate, b: LaunchCandidate): number => b.updatedAt - a.updatedAt
-  const byRecent = [...local].sort(byRecency)
-  const draft = byRecent.find((it) => it.kind === 'draft')
-  if (draft) return draft.key
-  return byRecent[0]?.key
+  return best(onNode) ?? best(sessions)
 }

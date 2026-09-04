@@ -26,7 +26,10 @@ import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
+import io.rivethub.app.plane.NewConversationAction
+import io.rivethub.app.plane.newConversationAction
 import io.rivethub.app.plane.ChatItemKind
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.LaunchCandidate
@@ -110,6 +113,10 @@ internal class ScreenStores : ViewModel() {
     fun clearAll() { owners.values.forEach { it.viewModelStore.clear() }; owners.clear() }
     override fun onCleared() = clearAll()
 }
+
+/** Quiet window (ms) with no new hub items/agents before chat-first launch
+ *  fires — the mesh loads node-by-node and `loading` never cleanly settles. */
+private const val LAUNCH_SETTLE_MS = 600L
 
 private fun Screen.storeKey(): String? = when (this) {
     is Screen.Chat -> "chat:${nodeDenUrl}:$sessionKey"
@@ -201,7 +208,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
         ?: hubSt.nodes.find { it.denUrl.trimEnd('/') == hubSt.prefs.entryUrl.trim().trimEnd('/') }
         ?: hubSt.nodes.firstOrNull()
     val launchBaseUrl = launchNode?.denUrl?.trimEnd('/')
-    LaunchedEffect(hubSt.items, launchBaseUrl, launchLatched, nav.current) {
+    LaunchedEffect(hubSt.items, hubSt.agents, launchBaseUrl, launchLatched, nav.current) {
         if (launchLatched) return@LaunchedEffect
         when (nav.current) {
             // A session was already established (user action or this pick).
@@ -214,22 +221,45 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
             else -> return@LaunchedEffect
         }
         val base = launchBaseUrl ?: return@LaunchedEffect
-        if (hubSt.items.isEmpty()) {
-            // First refresh still in flight → keep waiting; a finished first
-            // load with no sessions → stay on the list and latch.
-            if (hubSt.loading || hubSt.nodes.isEmpty()) return@LaunchedEffect
-            launchLatched = true
-            return@LaunchedEffect
-        }
+        if (hubSt.nodes.isEmpty()) return@LaunchedEffect
+        // Debounce the progressive multi-node load: the mesh reports node by
+        // node, and `loading` never reliably settles (refreshes coalesce and
+        // re-run), so we can't wait on it. Instead we wait for a quiet window
+        // — no new items/agents for LAUNCH_SETTLE_MS — which means the visible
+        // set is stable enough to pick the genuinely most recent session. Any
+        // change to items/agents restarts this effect (and the delay).
+        kotlinx.coroutines.delay(LAUNCH_SETTLE_MS)
         launchLatched = true
         val pick = pickLaunchSession(
             hubSt.items.map {
-                LaunchCandidate(it.item.key, it.item.updatedAt, it.item.kind, it.nodeDenUrl.trimEnd('/'))
+                LaunchCandidate(
+                    it.item.key,
+                    it.item.updatedAt,
+                    it.item.kind,
+                    it.nodeDenUrl.trimEnd('/'),
+                    it.item.pin,
+                )
             },
             base,
-        ) ?: return@LaunchedEffect
-        val row = hubSt.items.firstOrNull { it.item.key == pick } ?: return@LaunchedEffect
-        openRowScreen(row)
+        )
+        if (pick != null) {
+            val row = hubSt.items.firstOrNull { it.item.key == pick } ?: return@LaunchedEffect
+            openRowScreen(row)
+            return@LaunchedEffect
+        }
+        // No resumable session anywhere → open the current agent's thread
+        // (never the list). Tap, not Plus: Tap resumes the agent's pinned
+        // draft if one exists (a pinned draft is excluded from the pick above,
+        // so Plus would mint a duplicate) and otherwise mints one. Needs a
+        // current agent; if none can be chosen, the list stays so the user can
+        // pick one.
+        when (val act = newConversationAction(hubSt.prefs.currentAgentId, hubSt.agents.map { it.agentId })) {
+            is NewConversationAction.ForAgent -> {
+                val agent = hubSt.agents.find { it.agentId == act.agentId } ?: return@LaunchedEffect
+                openChatScreen(hubVm.openAgentAction(agent, AgentAction.Tap))
+            }
+            NewConversationAction.PickAgent -> Unit
+        }
     }
 
     Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine)) {
