@@ -883,10 +883,26 @@ function writeMeta(configHome: string, name: string, meta: RivetMeta): void {
 function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
-    return true
   } catch {
     return false
   }
+  return true
+}
+
+/** pid identity: a live pid is only "our server" if its cmdline is a herdr
+ *  server for THIS session — pid reuse after a reboot on a /tmp config home
+ *  must not read as alive. Non-linux (no /proc): fall back to kill -0. */
+export function pidIsHerdrServer(pid: number, sessionName: string): boolean {
+  if (!pidAlive(pid)) return false
+  let cmdline: string
+  try {
+    cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8')
+  } catch {
+    return true
+  }
+  const argv = cmdline.split('\0')
+  const isHerdr = argv.some((a) => a === 'herdr' || a.endsWith('/herdr'))
+  return isHerdr && argv.includes(sessionName) && argv.includes('server')
 }
 
 function userXdgConfigHome(configHome: string): string {
@@ -958,23 +974,30 @@ export function createRealHerdrCtl(
         typeof v === 'string' || typeof v === 'number' ? String(v) : ''
       const blob = `${str(err.code)} ${str(err.message) || String(e)} ${str(err.status)}`
       if (/ECONNREFUSED|server_not_running|ENOENT|ECONNRESET/.test(blob)) return false
+      // A busy server that misses the 250 ms budget is NOT dead: ETIMEDOUT /
+      // killed-by-timeout means "unknown" — treat as alive, never reap on it.
+      if (/ETIMEDOUT|timed out/i.test(blob) || (e as { killed?: boolean }).killed === true)
+        return true
       return false
     }
+  }
+
+  /** Reap a dead session dir — ONLY from create() recovery and killSession,
+   *  never from a read path (list/has), so a transient probe miss cannot
+   *  delete a live session's directory. */
+  const reapIfDead = (name: string): void => {
+    if (existsSync(join(configHome, 'herdr', 'sessions', name)) && !isLive(name)) reapDir(name)
   }
 
   const isLive = (name: string): boolean => {
     const meta = readMeta(configHome, name)
     if (meta.pid && meta.pid > 0) {
-      if (!pidAlive(meta.pid)) {
-        reapDir(name)
-        return false
-      }
+      if (!pidIsHerdrServer(meta.pid, name)) return false
       return true
     }
     const sock = herdrSocketPath(configHome, name)
     if (!existsSync(sock)) return false
     if (!snapshotAlive(name)) {
-      reapDir(name)
       return false
     }
     return true
@@ -1049,6 +1072,7 @@ export function createRealHerdrCtl(
     },
     async create(opts) {
       assertHerdrSocketPath(configHome, opts.name)
+      reapIfDead(opts.name)
       mkdirSync(join(configHome, 'herdr', 'sessions', opts.name), { recursive: true, mode: 0o700 })
       const sock = herdrSocketPath(configHome, opts.name)
       const child = spawnFn(binary, herdrServerArgv(opts.name).slice(1), {
@@ -1061,6 +1085,16 @@ export function createRealHerdrCtl(
           `herdr server did not open ${sock} within ${HERDR_CREATE_MS}ms for ${opts.name}`,
         )
       }
+      // Record the session the moment its server is up — a crash anywhere in
+      // workspace/agent setup must not leave a running server invisible to
+      // list/resolve/GC. paneId is added below once the pane exists.
+      writeMeta(configHome, opts.name, {
+        command: opts.command,
+        user: opts.user,
+        created: Math.floor(Date.now() / 1000),
+        denKey: opts.denKey,
+        pid: child.pid,
+      })
       const agentEnv = { ...opts.env }
       if (!agentEnv.XDG_CONFIG_HOME || agentEnv.XDG_CONFIG_HOME === configHome) {
         agentEnv.XDG_CONFIG_HOME = userXdgConfigHome(configHome)
@@ -1099,7 +1133,15 @@ export function createRealHerdrCtl(
           }
           await sleep(200)
         }
-        if (opts.kind) {
+        // herdr's --kind names BOTH the agent kind and the canonical executable
+        // it prepends; passing argv[0] again launches `grok grok …` and the
+        // harness reads its own name as an initial prompt (review B6). Only a
+        // roster whose argv[0] IS that executable goes through agent.start —
+        // anything else (wrapper scripts, custom binaries) runs verbatim in a
+        // plain pane (no status detection, but no surprises).
+        const exe = (opts.argv[0] ?? '').split('/').pop() ?? ''
+        const useAgent = Boolean(opts.kind) && exe === opts.kind
+        if (useAgent) {
           const startReq = {
             id: 'den-agent-start',
             method: 'agent.start',
@@ -1109,7 +1151,7 @@ export function createRealHerdrCtl(
               name: opts.name,
               kind: opts.kind,
               pane_id: paneId,
-              args: opts.argv,
+              args: opts.argv.slice(1),
               timeout_ms: HERDR_CREATE_MS,
             },
           }

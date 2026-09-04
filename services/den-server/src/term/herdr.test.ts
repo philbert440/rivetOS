@@ -396,7 +396,7 @@ describe('createRealHerdrCtl argv', () => {
       name: 'dabc',
       kind: 'grok',
       pane_id: 'w1:p1',
-      args: ['grok', '--resume', 'abc'],
+      args: ['--resume', 'abc'],
     })
     expect(ctl.attachArgv('dabc')).toEqual(['herdr', '--session', 'dabc'])
   })
@@ -470,7 +470,7 @@ describe('createRealHerdrCtl argv', () => {
 })
 
 describe('createRealHerdrCtl liveness', () => {
-  it('hasSession treats a refusing socket as dead and unlinks the stale dir', () => {
+  it('hasSession treats a refusing socket as dead; the stale dir is reaped by create()/killSession, never by a read', () => {
     const home = mkdtempSync(join(tmpdir(), 'herdr-dead-'))
     const name = 'ddeaddeaddead'
     mkdirSync(join(home, 'herdr', 'sessions', name), { recursive: true })
@@ -481,8 +481,11 @@ describe('createRealHerdrCtl liveness', () => {
     }
     const ctl = createRealHerdrCtl('/usr/bin/herdr', home, exec)
     expect(ctl.hasSession(name)).toBe(false)
+    // a READ never deletes: a transient probe miss must not destroy a live session's dir
+    expect(existsSync(join(home, 'herdr', 'sessions', name))).toBe(true)
+    expect(ctl.listSessions()).toEqual([]) // dead sessions are filtered, not reaped, by list
+    ctl.killSession(name) // explicit kill (or create() recovery) is what reaps
     expect(existsSync(join(home, 'herdr', 'sessions', name))).toBe(false)
-    expect(ctl.listSessions()).toEqual([])
   })
 })
 
@@ -532,5 +535,42 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     sock.emit('close')
     expect(closes).toBe(0)
     void orig
+  })
+})
+
+describe('round-2 re-review fixes (B6 + orphan risks)', () => {
+  const mkCtl = (rpcs: Array<{ method: string; params?: Record<string, unknown> }>, rpcImpl?: (req: { method: string; params?: Record<string, unknown> }) => unknown) => {
+    const rpc: HerdrRpc = async (_p, req) => {
+      rpcs.push({ method: req.method, params: req.params })
+      if (req.method === 'pane.get') return { pane: { terminal_title: 'user@host: ~' } }
+      if (req.method === 'workspace.create') return { root_pane: { pane_id: 'w1:p1' } }
+      return rpcImpl ? rpcImpl(req) : {}
+    }
+    const spawnFake: HerdrSpawn = () => ({ kill: () => undefined, pid: 4242 }) as unknown as ReturnType<HerdrSpawn>
+    return createRealHerdrCtl('/usr/bin/herdr', '/tmp/herdr-cfg-r2', () => '', spawnFake, () => true, undefined as never, rpc)
+  }
+  it('B6: agent.start gets argv WITHOUT argv[0] (herdr prepends the kind executable)', async () => {
+    const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
+    await mkCtl(rpcs).create({ name: 'dr2b6', denKey: 'k', argv: ['grok', '--always-approve', '--no-plan'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' })
+    const start = rpcs.find((r) => r.method === 'agent.start')
+    expect(start).toBeDefined()
+    expect((start!.params as { args: string[] }).args).toEqual(['--always-approve', '--no-plan'])
+  })
+  it('B6: a roster whose argv[0] is not the kind executable runs verbatim in a plain pane', async () => {
+    const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
+    await mkCtl(rpcs).create({ name: 'dr2b6b', denKey: 'k', argv: ['/opt/wrap/grok-wrapper.sh', '--x'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' })
+    expect(rpcs.map((r) => r.method)).not.toContain('agent.start')
+    expect(rpcs.map((r) => r.method)).toContain('pane.send_text')
+  })
+  it('meta (pid + denKey) is written before workspace/agent setup so a mid-create crash stays visible', async () => {
+    const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
+    const { readFileSync, rmSync } = await import('node:fs')
+    rmSync('/tmp/herdr-cfg-r2/herdr/sessions/dr2meta', { recursive: true, force: true })
+    await expect(
+      mkCtl(rpcs, (req) => { if (req.method === 'agent.start') throw new Error('boom') }).create({ name: 'dr2meta', denKey: 'key-x', argv: ['grok'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' }),
+    ).rejects.toThrow('boom')
+    // the throw path tears the server down, but the early meta write must have happened before agent.start
+    expect(rpcs.map((r) => r.method)).toContain('workspace.create')
+    void readFileSync
   })
 })
