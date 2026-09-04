@@ -75,6 +75,7 @@ fun buildAgents(
             agentRow(
                 p.id, p.name.ifBlank { p.id }, hid, node.id, node.name.ifBlank { node.id }, node.denUrl,
                 pointers, color = p.color, model = p.model, effort = p.effort, online = node.online,
+                systemPrompt = p.systemPrompt,
             )
         }
     }

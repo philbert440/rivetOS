@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -394,13 +396,20 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                         },
                     )
                 }
+                // 2026-09-04: the right history drawer's state is lifted here
+                // so HubDrawer's unified edge-swipe layer can drive BOTH
+                // drawers (both run gesturesEnabled = false; the nested
+                // built-in gestures competed and the left swipe lost).
+                val historyState = rememberDrawerState(DrawerValue.Closed)
                 HubDrawer(
                     vm = hubVm,
                     onOpenChat = { openChatScreen(it) },
                     onNavTab = { onNavTab(it) },
+                    rightDrawer = historyState,
                 ) { openDrawer ->
                     HistoryDrawer(
                         vm = hubVm,
+                        state = historyState,
                         onOpenRow = { openRowScreen(it) },
                         onOpenChat = { openChatScreen(it) },
                     ) { openHistory ->

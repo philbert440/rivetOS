@@ -95,6 +95,21 @@ class Gateway(
     suspend fun catalogAgents(): CatalogAgentsResponse = get(listOf("api", "catalog", "agents"), CatalogAgentsResponse.serializer())
     suspend fun agents(): List<AgentPreset> =
         get(listOf("api", "agents"), AgentsListResponse.serializer()).agents
+
+    /** PATCH one agent preset; null patch fields are dropped from the JSON body. */
+    suspend fun agentUpdate(agentId: String, patch: AgentUpdateRequest): AgentPreset =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(AgentUpdateRequest.serializer(), patch)
+                .toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url(url(listOf("api", "agents", agentId))).patch(body).build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    wireJson.decodeFromString(AgentResponse.serializer(), text).agent
+                }
+            }
+        }
     suspend fun sessions(): SessionsListResponse = get(listOf("api", "sessions"), SessionsListResponse.serializer())
 
     suspend fun messages(sessionId: String): List<SessionMessage> =
