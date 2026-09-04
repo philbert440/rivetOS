@@ -7,6 +7,7 @@ import { type JSX } from 'react'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { NotConnected } from '../components/not-connected.js'
 import { MemoryPage } from '../pages/memory.js'
+import { cn } from '../lib/utils.js'
 import { useWikiEndpoint } from '../lib/wiki-client.js'
 import { BrowseView } from './BrowseView.js'
 import { MemoryHubNav, type MemoryTab } from './MemoryHubNav.js'
@@ -50,9 +51,11 @@ export function MemoryHubPage(): JSX.Element {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <MemoryHubNav tab={tab} gateway={endpoint.gateway} baseUrl={endpoint.baseUrl} />
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div
+        className={cn('min-h-0 flex-1 overflow-y-auto', tab === 'wiki' && 'max-md:overflow-hidden')}
+      >
         {tab === 'wiki' ? (
-          <div className="rivet-memory-surfaces min-h-full">
+          <div className="rivet-memory-surfaces min-h-full max-md:h-full max-md:min-h-0">
             <MemoryPage />
           </div>
         ) : (

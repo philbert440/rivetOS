@@ -17,10 +17,17 @@ import { WikiMarkdown } from '../components/wiki-markdown.js'
 import { SegmentedControl } from '../components/segmented-control.js'
 import { useWikiEndpoint } from '../lib/wiki-client.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
+import {
+  hubViewTabs,
+  tocMode,
+  topicRowDensity,
+  topicRowModel,
+  wikiShellMode,
+  type HubView,
+} from '../lib/memory-hub.js'
+import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { stalenessLabel, tocFromMarkdown } from '../lib/wiki-base.js'
-
-type HubView = 'main' | 'all' | 'recent' | 'gaps'
 
 function fmtDate(iso?: string): string {
   if (!iso) return '—'
@@ -73,66 +80,103 @@ function WikiShell(props: {
   onSearchSubmit: () => void
   total?: number
 }): JSX.Element {
-  const items: { id: HubView; label: string }[] = [
-    { id: 'main', label: 'Main page' },
-    {
-      id: 'all',
-      label: props.total !== undefined ? `All topics (${String(props.total)})` : 'All topics',
-    },
-    { id: 'recent', label: 'Recent changes' },
-    { id: 'gaps', label: 'Gaps' },
-  ]
+  const narrow = useIsNarrow()
+  const stacked = wikiShellMode(narrow) === 'stacked'
+  const items = hubViewTabs(props.total)
 
   return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-line bg-panel/90 px-3 py-4">
-        <Link
-          to="/memory"
-          onClick={() => props.onHubView?.('main')}
-          className="mb-3 text-base font-bold text-ink hover:text-em"
-        >
-          <span className="text-em">🔩</span> Memory wiki
-        </Link>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault()
-            props.onSearchSubmit()
-          }}
-        >
-          <input
-            type="search"
-            value={props.search}
-            onChange={(e) => props.onSearch(e.target.value)}
-            placeholder="Search memory…"
-            className="w-full rounded-md border border-line bg-bg px-2.5 py-1.5 text-sm outline-none focus:border-em"
-          />
-        </form>
-        <nav className="mt-4 flex flex-col gap-0.5">
-          <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-dim">
-            Navigate
-          </div>
-          {items.map((it) => (
-            <button
-              key={it.id}
-              type="button"
-              onClick={() => props.onHubView?.(it.id)}
-              className={cn(
-                'rounded px-2 py-1.5 text-left text-sm',
-                props.hubView === it.id
-                  ? 'bg-panel-2 text-em'
-                  : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
-              )}
+    <div className={cn('flex h-full min-h-0', stacked && 'flex-col')}>
+      {stacked ? (
+        <header className="sticky top-0 z-10 shrink-0 border-b border-line bg-panel">
+          <div className="flex h-12 flex-nowrap items-center gap-2 px-2">
+            {props.onHubView ? (
+              <span className="shrink-0 font-mono text-xs text-ink-dim">Wiki</span>
+            ) : (
+              <Link
+                to="/memory"
+                search={{ tab: 'wiki' }}
+                className="shrink-0 font-mono text-xs text-em"
+              >
+                ← Memory
+              </Link>
+            )}
+            <form
+              className="min-w-0 flex-1"
+              onSubmit={(e) => {
+                e.preventDefault()
+                props.onSearchSubmit()
+              }}
             >
-              {it.label}
-            </button>
-          ))}
-        </nav>
-        <div className="mt-auto border-t border-line pt-3 font-mono text-[10px] leading-relaxed text-ink-dim">
-          datahub · {props.endpointLabel}
-          <br />
-          distilled from conversation history
-        </div>
-      </aside>
+              <input
+                type="search"
+                value={props.search}
+                onChange={(e) => props.onSearch(e.target.value)}
+                placeholder="Search memory…"
+                className="w-full rounded-md border border-line bg-bg px-2.5 py-1.5 text-sm outline-none focus:border-em"
+              />
+            </form>
+          </div>
+          {props.onHubView && props.hubView ? (
+            <div className="overflow-x-auto px-2 pb-2">
+              <SegmentedControl
+                ariaLabel="Wiki views"
+                value={props.hubView}
+                onChange={props.onHubView}
+                options={items.map((it) => ({ value: it.id, label: it.shortLabel }))}
+              />
+            </div>
+          ) : null}
+        </header>
+      ) : (
+        <aside className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-line bg-panel/90 px-3 py-4">
+          <Link
+            to="/memory"
+            onClick={() => props.onHubView?.('main')}
+            className="mb-3 text-base font-bold text-ink hover:text-em"
+          >
+            <span className="text-em">🔩</span> Memory wiki
+          </Link>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              props.onSearchSubmit()
+            }}
+          >
+            <input
+              type="search"
+              value={props.search}
+              onChange={(e) => props.onSearch(e.target.value)}
+              placeholder="Search memory…"
+              className="w-full rounded-md border border-line bg-bg px-2.5 py-1.5 text-sm outline-none focus:border-em"
+            />
+          </form>
+          <nav className="mt-4 flex flex-col gap-0.5">
+            <div className="mb-1 font-mono text-[10px] uppercase tracking-wider text-ink-dim">
+              Navigate
+            </div>
+            {items.map((it) => (
+              <button
+                key={it.id}
+                type="button"
+                onClick={() => props.onHubView?.(it.id)}
+                className={cn(
+                  'rounded px-2 py-1.5 text-left text-sm',
+                  props.hubView === it.id
+                    ? 'bg-panel-2 text-em'
+                    : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
+                )}
+              >
+                {it.label}
+              </button>
+            ))}
+          </nav>
+          <div className="mt-auto border-t border-line pt-3 font-mono text-[10px] leading-relaxed text-ink-dim">
+            datahub · {props.endpointLabel}
+            <br />
+            distilled from conversation history
+          </div>
+        </aside>
+      )}
       <div className="min-w-0 flex-1 overflow-y-auto">{props.children}</div>
     </div>
   )
@@ -145,6 +189,7 @@ export function MemoryPage(): JSX.Element {
   const [debounced, setDebounced] = useState('')
   const [hubView, setHubView] = useState<HubView>('main')
   const navigate = useNavigate()
+  const stacked = wikiShellMode(useIsNarrow()) === 'stacked'
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q.trim()), 200)
@@ -191,7 +236,7 @@ export function MemoryPage(): JSX.Element {
       onSearchSubmit={() => setDebounced(q.trim())}
       total={total}
     >
-      <div className="mx-auto max-w-4xl px-4 py-8 md:px-6 lg:px-10">
+      <div className={cn('mx-auto max-w-4xl px-4 py-8 md:px-6 lg:px-10', stacked && 'px-3 py-4')}>
         {index.isError && (
           <div className="mb-4 font-mono text-sm text-red">{index.error.message}</div>
         )}
@@ -464,24 +509,39 @@ function TopicList(props: {
   empty: string
   onOpen: (slug: string) => void
 }): JSX.Element {
+  const narrow = useIsNarrow()
+  const compact = topicRowDensity(narrow) === 'compact'
   if (props.topics.length === 0) {
     return props.empty ? <p className="text-sm text-ink-dim">{props.empty}</p> : <></>
   }
   return (
-    <ul className="space-y-3">
-      {props.topics.map((t) => (
-        <li key={t.slug}>
-          <button
-            type="button"
-            onClick={() => props.onOpen(t.slug)}
-            className="group w-full text-left"
-          >
-            <span className="text-[15px] text-em group-hover:underline">{t.title}</span>{' '}
-            <Badge lastVerified={t.updatedAt} />
-            <div className="mt-0.5 line-clamp-2 text-sm text-ink-dim">{t.excerpt || t.slug}</div>
-          </button>
-        </li>
-      ))}
+    <ul className={compact ? 'divide-y divide-line' : 'space-y-3'}>
+      {props.topics.map((t) => {
+        const row = topicRowModel(t)
+        return (
+          <li key={row.slug}>
+            <button
+              type="button"
+              onClick={() => props.onOpen(row.slug)}
+              className={cn(
+                'group w-full text-left',
+                compact && 'flex min-h-11 items-center justify-between gap-2 py-3',
+              )}
+            >
+              <span
+                className={cn('text-[15px] text-em group-hover:underline', compact && 'min-w-0')}
+              >
+                {row.title}
+              </span>
+              {compact ? null : ' '}
+              <Badge lastVerified={t.updatedAt} />
+              {compact ? null : (
+                <div className="mt-0.5 line-clamp-2 text-sm text-ink-dim">{row.excerpt}</div>
+              )}
+            </button>
+          </li>
+        )
+      })}
     </ul>
   )
 }
@@ -592,6 +652,20 @@ export function MemoryTopicPage(): JSX.Element {
   )
 }
 
+function TocEntries(props: { toc: { id: string; text: string; level: 2 | 3 }[] }): JSX.Element {
+  return (
+    <ol className="list-decimal space-y-1 pl-4">
+      {props.toc.map((e) => (
+        <li key={e.id} className={e.level === 3 ? 'ml-3 list-none text-ink-dim' : ''}>
+          <a href={`#${e.id}`} className="text-em hover:underline">
+            {e.text}
+          </a>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 function ArticleBody(props: {
   page: WikiPageResponse
   view: 'article' | 'history' | 'raw'
@@ -604,14 +678,24 @@ function ArticleBody(props: {
   const bodyMd =
     props.view === 'article' ? (p.currentState.trim() ? p.currentState : p.markdown) : ''
   const toc = tocFromMarkdown(bodyMd)
+  const narrow = useIsNarrow()
+  const stacked = wikiShellMode(narrow) === 'stacked'
+  const contentsDisclosure = tocMode(narrow) === 'disclosure'
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8 md:px-6 lg:px-10">
-      <Link to="/memory" search={{ tab: 'wiki' }} className="text-sm text-ink-dim hover:text-em">
-        ← Main page
-      </Link>
+    <div className={cn('mx-auto max-w-5xl px-4 py-8 md:px-6 lg:px-10', stacked && 'px-3 py-4')}>
+      {stacked ? null : (
+        <Link to="/memory" search={{ tab: 'wiki' }} className="text-sm text-ink-dim hover:text-em">
+          ← Main page
+        </Link>
+      )}
 
-      <h1 className="mt-3 border-b border-line pb-2 text-3xl font-semibold tracking-tight text-ink">
+      <h1
+        className={cn(
+          'border-b border-line pb-2 text-3xl font-semibold tracking-tight text-ink',
+          stacked ? 'mt-0' : 'mt-3',
+        )}
+      >
         {p.title}
       </h1>
       <p className="mt-1 text-sm text-ink-dim">
@@ -680,6 +764,16 @@ function ArticleBody(props: {
 
       {props.view === 'article' && (
         <div className="mt-6">
+          {contentsDisclosure && toc.length > 1 ? (
+            <details className="mb-6 rounded-lg border border-line bg-panel/80 p-3 text-sm">
+              <summary className="cursor-pointer font-mono text-[10px] uppercase tracking-wide text-ink-dim">
+                Contents
+              </summary>
+              <div className="mt-2">
+                <TocEntries toc={toc} />
+              </div>
+            </details>
+          ) : null}
           <aside className="mb-6 w-full rounded-lg border border-line bg-panel text-sm lg:float-right lg:mb-4 lg:ml-6 lg:w-72">
             <div className="border-b border-line bg-em/5 px-3 py-2 font-semibold">{p.title}</div>
             <div className="overflow-x-auto">
@@ -738,22 +832,14 @@ function ArticleBody(props: {
             </div>
           </aside>
 
-          {toc.length > 1 && (
+          {!contentsDisclosure && toc.length > 1 ? (
             <nav className="mb-6 max-w-sm rounded-lg border border-line bg-panel/80 p-3 text-sm">
               <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-ink-dim">
                 Contents
               </div>
-              <ol className="list-decimal space-y-1 pl-4">
-                {toc.map((e) => (
-                  <li key={e.id} className={e.level === 3 ? 'ml-3 list-none text-ink-dim' : ''}>
-                    <a href={`#${e.id}`} className="text-em hover:underline">
-                      {e.text}
-                    </a>
-                  </li>
-                ))}
-              </ol>
+              <TocEntries toc={toc} />
             </nav>
-          )}
+          ) : null}
 
           <article className="min-w-0">
             <WikiMarkdown knownSlugs={props.knownSlugs}>
