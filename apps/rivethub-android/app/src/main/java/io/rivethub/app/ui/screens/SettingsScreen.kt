@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -30,8 +31,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -39,16 +38,21 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
 import io.rivethub.app.plane.EntryUrlError
+import io.rivethub.app.plane.HubTab
+import io.rivethub.app.plane.TopBarTitle
+import io.rivethub.app.plane.topBarTitle
 import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.HubViewModel
-import io.rivethub.app.ui.components.PageHeader
+import io.rivethub.app.ui.components.FieldLabel
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.SegmentedControl
+import io.rivethub.app.ui.components.SettingsH2
 import io.rivethub.app.ui.components.ThemeGroup
+import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.Dispatchers
@@ -110,7 +114,15 @@ fun SettingsScreen(
                 detectTapGestures(onLongPress = { onOpenGallery() })
             },
         ) {
-            PageHeader(onOpenDrawer = onOpenDrawer)
+            TopBar(
+                title = stringResource(
+                    when (topBarTitle(HubTab.Settings)) {
+                        TopBarTitle.Wordmark -> R.string.brand_rivethub
+                        TopBarTitle.Settings -> R.string.title_settings
+                    },
+                ),
+                onOpenDrawer = onOpenDrawer,
+            )
         }
         BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
             val hPad = if (maxWidth < 400.dp) 16.dp else 24.dp
@@ -121,6 +133,7 @@ fun SettingsScreen(
                     .widthIn(max = 576.dp)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
                     .padding(horizontal = hPad, vertical = 32.dp),
             ) {
                 Text(
@@ -130,7 +143,8 @@ fun SettingsScreen(
                     modifier = Modifier.padding(bottom = 24.dp),
                 )
 
-                SettingsH2(stringResource(R.string.section_connection), first = true)
+                // settings.tsx:180-193 — the entry field follows the h1 directly
+                // (no lead `h2`), then the auth helper paragraph.
                 FieldLabel(stringResource(R.string.label_entry_url))
                 RivetField(
                     value = entry,
@@ -138,7 +152,13 @@ fun SettingsScreen(
                     placeholder = stringResource(R.string.hint_entry_url),
                     size = RivetFieldSize.Settings,
                 )
-                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.settings_auth_helper),
+                    color = colors.inkDim,
+                    style = RivetType.xs,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Spacer(Modifier.height(16.dp))
                 FieldLabel(stringResource(R.string.label_strict_pair))
                 val strictOn = stringResource(R.string.strict_on)
                 val strictOff = stringResource(R.string.strict_off)
@@ -217,10 +237,10 @@ fun SettingsScreen(
                     Text(stringResource(R.string.no_identity), color = colors.red, style = RivetType.xs)
                 } else {
                     FieldLabel(stringResource(R.string.label_subject))
-                    Text(summary.cn, color = colors.ink, style = RivetType.mono11)
+                    Text(summary.cn, color = colors.ink, style = RivetType.mono12)
                     Spacer(Modifier.height(8.dp))
                     FieldLabel(stringResource(R.string.label_fingerprint))
-                    Text(c.identity.deviceTag(), color = colors.ink, style = RivetType.mono11)
+                    Text(c.identity.deviceTag(), color = colors.ink, style = RivetType.mono12)
                 }
                 Spacer(Modifier.height(8.dp))
                 RivetButton(
@@ -323,31 +343,6 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsH2(text: String, first: Boolean = false) {
-    val colors = RivetTheme.colors
-    Text(
-        text,
-        color = colors.em,
-        style = RivetType.monoSmSemibold,
-        modifier = Modifier
-            .padding(top = if (first) 0.dp else 40.dp)
-            .then(if (first) Modifier else Modifier.drawTopPad(colors.line))
-            .padding(top = if (first) 0.dp else 24.dp)
-            .padding(bottom = 12.dp),
-    )
-}
-
-@Composable
-private fun FieldLabel(text: String) {
-    Text(
-        text,
-        color = RivetTheme.colors.inkDim,
-        style = RivetType.xs,
-        modifier = Modifier.padding(bottom = 4.dp),
-    )
-}
-
-@Composable
 private fun ForgetButton(onClick: () -> Unit) {
     RivetButton(
         text = stringResource(R.string.action_forget_device),
@@ -356,14 +351,3 @@ private fun ForgetButton(onClick: () -> Unit) {
         textColor = RivetTheme.colors.ink,
     )
 }
-
-private fun Modifier.drawTopPad(color: androidx.compose.ui.graphics.Color): Modifier =
-    drawBehind {
-        val stroke = 1.dp.toPx()
-        drawLine(
-            color,
-            Offset(0f, stroke / 2f),
-            Offset(size.width, stroke / 2f),
-            stroke,
-        )
-    }

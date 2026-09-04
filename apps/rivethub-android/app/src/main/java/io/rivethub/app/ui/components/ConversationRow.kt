@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.SwipeToDismissBox
@@ -48,16 +47,14 @@ fun ConversationRowChrome(
     swipeEnabled: Boolean = true,
 ) {
     val colors = RivetTheme.colors
-    val titleColor = when {
-        archived -> colors.inkDim
-        active -> colors.em
-        else -> colors.ink
-    }
+    // chat.tsx:642-644 — idle rows are `text-ink-dim` (`group-hover:text-ink`
+    // has no phone analog; the ripple covers press), active rows `text-em`.
+    // Archived rows share the idle colour: the source distinguishes them only by section.
+    val titleColor = if (active && !archived) colors.em else colors.inkDim
     val row: @Composable () -> Unit = {
         Row(
             Modifier
                 .fillMaxWidth()
-                .sizeIn(minHeight = 44.dp)
                 .combinedClickable(onClick = onOpen, onLongClick = onLong)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -112,21 +109,27 @@ fun ConversationRowChrome(
             state = state,
             enableDismissFromStartToEnd = false,
             backgroundContent = {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(colors.panel2)
-                        .padding(horizontal = 12.dp),
-                    contentAlignment = Alignment.CenterEnd,
-                ) {
-                    Lucide(
-                        if (archived) R.drawable.lucide_archive_restore else R.drawable.lucide_archive,
-                        contentDescription = stringResource(
-                            if (archived) R.string.action_unarchive else R.string.action_archive,
-                        ),
-                        tint = colors.inkDim,
-                        modifier = Modifier.size(12.dp),
-                    )
+                // Only paint the swipe reveal while a swipe is actually in
+                // progress — an always-on panel2 background shows through the
+                // transparent idle row and turns every row into a card
+                // (chat.tsx:631-684 rows are flat).
+                if (state.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .background(colors.panel2)
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        Lucide(
+                            if (archived) R.drawable.lucide_archive_restore else R.drawable.lucide_archive,
+                            contentDescription = stringResource(
+                                if (archived) R.string.action_unarchive else R.string.action_archive,
+                            ),
+                            tint = colors.inkDim,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
                 }
             },
             modifier = wrap,

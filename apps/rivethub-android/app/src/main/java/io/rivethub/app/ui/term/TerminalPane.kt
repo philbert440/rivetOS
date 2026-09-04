@@ -302,7 +302,7 @@ fun TerminalKeyBar(
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
-    val pasteCd = stringResource(R.string.cd_paste)
+    val pasteCd = stringResource(R.string.term_paste)
     val menuCd = stringResource(R.string.cd_term_menu)
     val keys = listOf(
         ToolbarKey.Label("esc", stringResource(R.string.term_esc)),

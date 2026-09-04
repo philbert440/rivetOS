@@ -11,7 +11,9 @@ runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 
 M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. D1a is desktop-parity
 chrome (drawer · conversations · settings · enroll). D1b is desktop-parity chat (header ·
-transcript · composer · terminal chrome). `MainActivity.App()` routes Enroll → Hub
+transcript · composer · terminal chrome). D2 is visual parity with the responsive web at phone
+width (MobileTopBar on every screen, flat conversation rows, drawer/status-bar insets fixed,
+no spinners, light-theme audit). `MainActivity.App()` routes Enroll → Hub
 (drawer + Conversations / Settings) → Chat. Grok-Bot screens/VMs are gone from the tree
 (removed in the M3b commit).
 
@@ -43,12 +45,12 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 
 | Screen | File | ViewModel | Notes |
 |---|---|---|---|
-| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | DenBot + p12 + entry URL; 401 → cert refused; `https://` only |
+| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative DenBot) + p12 + entry URL; 401 → cert refused; `https://` only |
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Modal left drawer + Conversations (home) or Settings; Forget calls `shutdown()` on the same instance |
-| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | desktop ConversationsPane: recency list, filter after 8, archive swipe, `+ new`, no FAB / no bottom rail |
-| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | D1b header / transcript / composer, Terminal\|Chat swipe, VT attach |
-| Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat preview (dark + light) |
+| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | TopBar + desktop ConversationsPane: flat recency list, filter after threshold, archive swipe, `+ new`, no FAB / no bottom rail |
+| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (`Settings` title) + desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | TopBar above the D1b back row / transcript / composer, Terminal\|Chat swipe, VT attach |
+| Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
 
 Agents live in the drawer (tap / long-press ↺ / + pointer semantics). Nodes live in the
 drawer footer sheet (view filter only; never rebinds an open chat; error badge is
@@ -73,15 +75,15 @@ Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13s
 `RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: `rounded` 4 /
 `rounded-md` 6 / `rounded-lg` 8 / `rounded-xl` 12 / `rounded-full` 999. Icons: `size-4` 16dp
 · `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a/D1b
-surfaces — no `Icons.*`. App root is `bg` + `Modifier.blueprintGrid()` (1px `--grid-line`
-every 32dp). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
+surfaces — no `Icons.*`. App root is `bg` + `Modifier.blueprintGrid()` (1dp `--grid-line`
+rects every 32dp — a 1px `drawLine` stroke anti-aliases to half coverage and reads too dim). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
 
 Chat mapping (phone session view ← rivethub-web):
 
 | desktop | phone file |
 |---|---|
 | `pages/chat.tsx` ActiveSession header | `ui/components/ChatHeader.kt` + `HarnessChatScreen` |
-| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) |
+| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — phone branch only: track + token counts are `hidden sm:*`, so just `{pct}%` mono 10sp inkDim; header second line is `justify-between` (pct left, Stop + segments right) |
 | `components/segmented-control.tsx` Terminal \| Chat | existing `SegmentedControl` |
 | `components/transcript.tsx` | `ui/components/Transcript.kt` |
 | `components/markdown.tsx` | `ui/components/MarkdownBody.kt` (`plane/Markdown.kt`) |
@@ -90,6 +92,19 @@ Chat mapping (phone session view ← rivethub-web):
 | `components/xterm-attach.tsx` chrome | `ui/term/TerminalPane.kt` host + `KeyToolbar.kt` |
 
 Chat VM is keyed `chat:<nodeDenUrl>:<sessionKey>` and torn down when that back-stack entry leaves.
+
+D2 phone chrome (responsive rivethub-web ← sidebar.tsx MobileTopBar + chat.tsx SessionDrawer):
+
+| web (phone) | phone file |
+|---|---|
+| `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, DenBot `size-7` in 44dp hit, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home/session, page title on Settings); decorative DenBot where no drawer exists |
+| `chat.tsx:631` flat row (`mb-1 rounded`, `px-3 py-2 text-xs`, idle `text-ink-dim`, active `text-em bg-panel-2`, chip mono 9sp `bg-panel-2`) | `ui/components/ConversationRow.kt` — 36dp rows, no cards, no 44dp row floor (source density wins over hit area here); the `SwipeToDismissBox` panel2 reveal paints ONLY while `dismissDirection == EndToStart` (an always-on backgroundContent shows through the transparent idle row as a card) |
+| `chat.tsx:833` flat list, no node/agent group rows | `paneRows` in `plane/HubChrome.kt` (pin rows titled by agent name are desktop parity, chat.tsx:378-388) |
+| `chat.tsx:808` `+ new` raw button (`rounded border line px-2 py-1 text-xs inkDim`) | `NewConversationButton` in ConversationsScreen (NOT RivetButton) |
+| `sidebar.tsx:189` phone drawer `w-64` | `Dimens.drawerWidth` 256dp (`drawerWidthDp` rule, 85% under 360dp); drawer runs edge-to-edge: header owns status inset, footer owns nav inset |
+| `settings.tsx:189` auth helper, h2 `mt-10 border-t pt-6 mb-3 mono sm semibold em` | `ui/components/SettingsChrome.kt` (`SettingsH2` / `FieldLabel`); entry field follows the h1 directly (no lead section h2); the h2 text must be `fillMaxWidth` or the `drawBehind` border-t only spans the glyphs |
+| no spinners anywhere; pull-to-refresh only answers a user pull | discovery progress is the mono `discovering… n/m` line (`discoveringLineVisible`) |
+| system bars | `MainActivity` sets `isAppearanceLight*StatusBars` from `ThemeMode`; bottom-most content owns `navigationBarsPadding` (composer / key bar / list block / scroll column), nothing else does |
 Registry watches live in HubViewModel (one unlimited Channel, sequential consumer). SessionAttach
 lives in the chat VM; WS frames are marshalled onto one Channel per attach (never `launch` per
 frame). Turn-complete settle is deferred so it does not block frame intake. Network stays on
@@ -174,7 +189,7 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 354 (D1b fix1: markdown + tool titles + hub-back − dead stamp/tps tests).
+  (`.github/workflows/android.yml`) enforces a floor of 360 (D2: +5 HubChrome, +1 MaterialResidue guard).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -215,6 +230,6 @@ is the detach.
 - Never send `{type:kill}` on terminal leave — detach only. `ui/term/AnsiTerminal.kt`,
   `ui/term/TerminalPane.kt`, `gateway/TermWs.kt`, `data/TermClient.kt`, `ui/components/KeyToolbar.kt`
   are the attach surface. `DesktopView.kt` (noVNC) was a plan §1 non-goal; correct to stay deleted.
-- ComponentGallery is still missing `statusBarsPadding()` (M1.5 emulator pass).
+- ComponentGallery has `systemBarsPadding()` (M1.5 emulator pass, fixed in D1); gallery TopBar samples pass `padStatusBar = false` so they show the true 48dp bar mid-scroll.
 - `archived` / `sessionModes` / `titleOverrides` / `agentPointers` maps are not pruned when a session
   ends. Do not GC them on a partial discover.

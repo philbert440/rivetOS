@@ -39,13 +39,13 @@
     <string name="probe_ok_one">✓ node \"%1$s\" — 1 agent</string>
     <string name="probe_fail">✗ %1$s</string>
     <string name="appearance_helper">System follows the OS light/dark setting.</string>
+    <string name="settings_auth_helper">Auth is the device client certificate, imported below as a .p12. Bearer tokens are not used.</string>
     <string name="strict_on">on</string>
     <string name="strict_off">off</string>
     <string name="action_import_p12">Import p12</string>
     <string name="label_strict_pair">strict hostnames</string>
 
     <string name="action_back">Back</string>
-    <string name="action_new">New</string>
     <string name="action_connect">Connect</string>
     <string name="action_save">Save</string>
     <string name="action_cancel">Cancel</string>
@@ -71,7 +71,6 @@
 
     <string name="mode_chat">Chat</string>
     <string name="mode_terminal">Terminal</string>
-    <string name="terminal_placeholder">Terminal — M4</string>
     <string name="term_esc">Esc</string>
     <string name="term_tab">Tab</string>
     <string name="term_ctrl">Ctrl</string>
@@ -79,7 +78,7 @@
     <string name="term_down">↓</string>
     <string name="term_left">←</string>
     <string name="term_right">→</string>
-    <string name="cd_paste">Paste</string>
+    <string name="term_paste">Paste</string>
     <string name="cd_term_menu">Terminal menu</string>
     <string name="action_open_in_terminal">Open in your terminal</string>
     <string name="action_detach">Detach</string>
@@ -116,7 +115,6 @@
     <string name="error_pick_cert">Pick the device certificate first.</string>
     <string name="error_cert_load">Certificate didn\'t load: %1$s</string>
 
-    <string name="section_connection">Connection</string>
     <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>
     <string name="section_terminal">Terminal</string>
@@ -142,7 +140,6 @@
     <string name="health_offline">offline</string>
     <string name="new_conversation">new conversation</string>
     <string name="action_submit">Submit</string>
-    <string name="action_retry">Retry</string>
     <string name="error_upload_in_progress">Wait for the attachment to finish uploading.</string>
     <string name="error_upload_too_large">That file is larger than the 1 GiB upload limit.</string>
     <string name="ws_disconnected">disconnected</string>

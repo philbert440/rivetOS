@@ -19,9 +19,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -105,6 +107,7 @@ fun RivetDrawerContent(
             unread = unread,
             onToggle = onClose,
             onUnread = onUnread,
+            modifier = Modifier.statusBarsPadding(),
         )
         Column(
             Modifier
@@ -138,7 +141,7 @@ fun RivetDrawerContent(
                 onLong = { agentSheet = it },
             )
         }
-        Column {
+        Column(Modifier.navigationBarsPadding()) {
             Box(Modifier.padding(horizontal = 8.dp)) {
                 DrawerNavItem(DrawerDest.Settings, tab, onNav)
             }
@@ -216,11 +219,11 @@ private fun DrawerDest.icon(): Int = when (this) {
 }
 
 @Composable
-private fun DrawerHeader(unread: Int, onToggle: () -> Unit, onUnread: () -> Unit) {
+private fun DrawerHeader(unread: Int, onToggle: () -> Unit, onUnread: () -> Unit, modifier: Modifier = Modifier) {
     val colors = RivetTheme.colors
     val badge = formatUnreadBadge(unread)
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
