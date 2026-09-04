@@ -201,10 +201,10 @@ describe('herdrOptedIn (rivetos update only provisions opted-in nodes)', () => {
     const { herdrOptedIn } = await import('./herdr.js')
     expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'herdr' }, null)).toBe(true)
     expect(
-      herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'tmux' }, 'den:\n  terminal:\n    mux: herdr\n'),
+      herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'tmux' }, null, 'den:\n  terminal:\n    mux: herdr\n'),
     ).toBe(false)
-    expect(herdrOptedIn({}, 'den:\n  terminal:\n    mux: herdr\n')).toBe(true)
-    expect(herdrOptedIn({}, 'den:\n  terminal:\n    mux: tmux\n')).toBe(false)
+    expect(herdrOptedIn({}, null, 'den:\n  terminal:\n    mux: herdr\n')).toBe(true)
+    expect(herdrOptedIn({}, null, 'den:\n  terminal:\n    mux: tmux\n')).toBe(false)
     expect(herdrOptedIn({}, null)).toBe(false)
   })
 })
