@@ -31,10 +31,12 @@ data class TermLine(val spans: List<TermSpan>)
 
 /**
  * Compact VT/ANSI screen: SGR (16 + 256 + truecolor, bold/underline/dim),
- * CR/LF/BS/TAB, ED/EL, CUP/CUU/CUD/CUF/CUB (plus CHA/VPA). Unknown sequences
- * are consumed and dropped — including DSR (`CSI 6n`) so we never echo a
- * cursor report. OSC 52 writes are drained via [drainOsc52]; OSC 10/11/12
- * queries are stripped and never answered.
+ * CR/LF/BS/TAB, ED/EL, CUP/CUU/CUD/CUF/CUB (plus CHA/VPA), DECSTBM, ICH/DCH,
+ * IL/DL, ECH, SU/SD, DECAWM pending-wrap, alt screen (`?1049`/`?1047`/`?47`),
+ * Unknown sequences are consumed and dropped —
+ * including DSR (`CSI 6n`) so we never echo a cursor report. OSC 52 writes
+ * are drained via [drainOsc52]; OSC 10/11/12 queries are stripped and never
+ * answered.
  */
 class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     var cols: Int = cols.coerceIn(MIN_COLS, MAX_COLS)
@@ -55,6 +57,17 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     private var dim = false
     private var cursorVisible = true
     private var appCursor = false
+    private var autoWrap = true
+    private var wrapPending = false
+    private var scrollTop = 0
+    private var scrollBottom = this.rows - 1
+    private var altActive = false
+    private var primaryScreen: Array<Array<TermCell>>? = null
+    private var primaryCx = 0
+    private var primaryCy = 0
+    private var primaryScrollTop = 0
+    private var primaryScrollBottom = 0
+    private var primaryWrapPending = false
     private val osc52Out = ArrayList<String>()
     private var droppedTotal = 0
 
@@ -81,6 +94,12 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false; underline = false; dim = false
         cursorVisible = true
         appCursor = false
+        autoWrap = true
+        wrapPending = false
+        scrollTop = 0
+        scrollBottom = rows - 1
+        altActive = false
+        primaryScreen = null
         state = State.GROUND
         csi.clear(); osc.clear()
         osc52Out.clear()
@@ -95,7 +114,9 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         val old = screen
         val oldRows = rows
         val oldCols = cols
-        if (nr < oldRows) {
+        val oldFullRegion = scrollTop == 0 && scrollBottom == oldRows - 1
+        val oldPrimaryFull = primaryScrollTop == 0 && primaryScrollBottom == oldRows - 1
+        if (nr < oldRows && !altActive) {
             for (i in 0 until oldRows - nr) pushScrollback(old[i])
         }
         cols = nc; rows = nr
@@ -109,8 +130,32 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
             }
             line
         }
+        if (oldFullRegion) {
+            scrollTop = 0
+            scrollBottom = rows - 1
+        } else {
+            scrollBottom = scrollBottom.coerceIn(0, rows - 1)
+            scrollTop = scrollTop.coerceIn(0, scrollBottom)
+            if (scrollTop >= scrollBottom) {
+                scrollTop = 0
+                scrollBottom = rows - 1
+            }
+        }
         cx = cx.coerceIn(0, cols - 1)
         cy = cy.coerceIn(0, rows - 1)
+        wrapPending = false
+        primaryScreen?.let { buf ->
+            primaryScreen = fitBuffer(buf, nr, nc)
+            primaryCx = primaryCx.coerceIn(0, nc - 1)
+            primaryCy = primaryCy.coerceIn(0, nr - 1)
+            if (oldPrimaryFull) {
+                primaryScrollTop = 0
+                primaryScrollBottom = nr - 1
+            } else {
+                primaryScrollBottom = primaryScrollBottom.coerceIn(0, nr - 1)
+                primaryScrollTop = primaryScrollTop.coerceIn(0, primaryScrollBottom)
+            }
+        }
         rev++
     } }
 
@@ -188,13 +233,20 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     private fun ground(b: Int) {
         when (b) {
             0x00, 0x07 -> {}
-            0x08, 0x7F -> if (cx > 0) cx--
+            0x08, 0x7F -> {
+                wrapPending = false
+                if (cx > 0) cx--
+            }
             0x09 -> {
+                wrapPending = false
                 val next = ((cx / 8) + 1) * 8
                 cx = minOf(cols - 1, next)
             }
             0x0A, 0x0B, 0x0C -> lineFeed()
-            0x0D -> cx = 0
+            0x0D -> {
+                wrapPending = false
+                cx = 0
+            }
             0x1B -> {
                 utfNeed = 0
                 state = State.ESC
@@ -256,36 +308,72 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         val body = if (priv) raw.drop(1) else raw
         val ps = parseParams(body)
         if (priv) {
-            // DEC private modes. ?25 h/l cursor visibility; ?1 h/l DECCKM.
+            // DEC private: ?1 DECCKM, ?7 DECAWM, ?25 cursor, ?47/?1047/?1049 alt,
             if (final == 'h' || final == 'l') {
                 val on = final == 'h'
                 for (p in ps) {
                     when (p) {
                         1 -> appCursor = on
+                        7 -> {
+                            autoWrap = on
+                            if (!on) wrapPending = false
+                        }
                         25 -> cursorVisible = on
+                        47, 1047, 1049 -> setAltScreen(on)
                     }
                 }
             }
             return
         }
         when (final) {
-            'A' -> cy = (cy - p(ps, 0, 1)).coerceAtLeast(0)
-            'B' -> cy = (cy + p(ps, 0, 1)).coerceAtMost(rows - 1)
-            'C' -> cx = (cx + p(ps, 0, 1)).coerceAtMost(cols - 1)
-            'D' -> cx = (cx - p(ps, 0, 1)).coerceAtLeast(0)
+            'A' -> {
+                wrapPending = false
+                cy = (cy - p(ps, 0, 1)).coerceAtLeast(0)
+            }
+            'B' -> {
+                wrapPending = false
+                cy = (cy + p(ps, 0, 1)).coerceAtMost(rows - 1)
+            }
+            'C' -> {
+                wrapPending = false
+                cx = (cx + p(ps, 0, 1)).coerceAtMost(cols - 1)
+            }
+            'D' -> {
+                wrapPending = false
+                cx = (cx - p(ps, 0, 1)).coerceAtLeast(0)
+            }
             'H', 'f' -> {
+                wrapPending = false
                 val row = p(ps, 0, 1) - 1
                 val col = p(ps, 1, 1) - 1
                 cy = row.coerceIn(0, rows - 1)
                 cx = col.coerceIn(0, cols - 1)
             }
-            'G' -> cx = (p(ps, 0, 1) - 1).coerceIn(0, cols - 1)
-            'd' -> cy = (p(ps, 0, 1) - 1).coerceIn(0, rows - 1)
+            'G' -> {
+                wrapPending = false
+                cx = (p(ps, 0, 1) - 1).coerceIn(0, cols - 1)
+            }
+            'd' -> {
+                wrapPending = false
+                cy = (p(ps, 0, 1) - 1).coerceIn(0, rows - 1)
+            }
             'J' -> eraseDisplay(ps.firstOrNull() ?: 0)
             'K' -> eraseLine(ps.firstOrNull() ?: 0)
+            '@' -> insertChars(p(ps, 0, 1))
+            'P' -> deleteChars(p(ps, 0, 1))
+            'L' -> insertLines(p(ps, 0, 1))
+            'M' -> deleteLines(p(ps, 0, 1))
+            'X' -> eraseChars(p(ps, 0, 1))
+            'S' -> scrollUp(p(ps, 0, 1))
+            'T' -> if (ps.size <= 1) scrollDown(p(ps, 0, 1))
+            'r' -> setScrollRegion(ps)
             'm' -> sgr(ps)
             's' -> { savedX = cx; savedY = cy }
-            'u' -> { cx = savedX.coerceIn(0, cols - 1); cy = savedY.coerceIn(0, rows - 1) }
+            'u' -> {
+                wrapPending = false
+                cx = savedX.coerceIn(0, cols - 1)
+                cy = savedY.coerceIn(0, rows - 1)
+            }
             else -> {} // unknown CSI, including DSR `n` — never reply
         }
     }
@@ -374,35 +462,159 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     }
 
     private fun lineFeed() {
-        if (cy < rows - 1) cy++
-        else {
-            pushScrollback(screen[0])
-            for (i in 0 until rows - 1) screen[i] = screen[i + 1]
-            screen[rows - 1] = blankLine(cols)
-        }
+        wrapPending = false
+        if (cy == scrollBottom) scrollUp(1)
+        else if (cy < rows - 1) cy++
     }
 
     private fun reverseIndex() {
-        if (cy > 0) cy--
-        else {
-            for (i in rows - 1 downTo 1) screen[i] = screen[i - 1]
-            screen[0] = blankLine(cols)
-        }
+        wrapPending = false
+        if (cy == scrollTop) scrollDown(1)
+        else if (cy > 0) cy--
     }
 
     private fun put(ch: Char) {
         val w = wcwidth(ch.code)
         if (w <= 0) return
+        if (wrapPending) {
+            wrapPending = false
+            if (autoWrap) {
+                cx = 0
+                lineFeed()
+            }
+        }
         if (cx + w > cols) {
-            cx = 0
-            lineFeed()
+            if (autoWrap) {
+                cx = 0
+                lineFeed()
+            } else {
+                cx = (cols - w).coerceAtLeast(0)
+            }
         }
         screen[cy][cx] = TermCell(ch, fg, bg, bold, underline, dim)
         if (w == 2 && cx + 1 < cols) screen[cy][cx + 1] = TermCell(' ', fg, bg, bold, underline, dim)
         cx += w
         if (cx >= cols) {
+            cx = cols - 1
+            wrapPending = autoWrap
+        }
+    }
+
+    private fun setScrollRegion(ps: IntArray) {
+        val range = TermRegion.decstbm(p(ps, 0, 1), p(ps, 1, rows), rows) ?: return
+        scrollTop = range.first
+        scrollBottom = range.last
+        cx = 0
+        cy = 0
+        wrapPending = false
+    }
+
+    private fun setAltScreen(on: Boolean) {
+        if (on) {
+            if (altActive) return
+            altActive = true
+            primaryScreen = screen
+            primaryCx = cx
+            primaryCy = cy
+            primaryScrollTop = scrollTop
+            primaryScrollBottom = scrollBottom
+            primaryWrapPending = wrapPending
+            screen = Array(rows) { blankLine(cols) }
             cx = 0
-            lineFeed()
+            cy = 0
+            scrollTop = 0
+            scrollBottom = rows - 1
+            wrapPending = false
+        } else {
+            if (!altActive) return
+            val saved = primaryScreen ?: return
+            altActive = false
+            primaryScreen = null
+            screen = saved
+            cx = primaryCx.coerceIn(0, cols - 1)
+            cy = primaryCy.coerceIn(0, rows - 1)
+            scrollTop = primaryScrollTop.coerceIn(0, rows - 1)
+            scrollBottom = primaryScrollBottom.coerceIn(scrollTop, rows - 1)
+            wrapPending = primaryWrapPending
+        }
+    }
+
+    private fun insertChars(n: Int) {
+        wrapPending = false
+        val k = TermRegion.count(n, cols - cx)
+        if (k == 0) return
+        val line = screen[cy]
+        for (c in (cols - 1) downTo cx + k) line[c] = line[c - k]
+        val blank = TermCell(' ', fg, bg, bold, underline, dim)
+        for (c in cx until cx + k) line[c] = blank
+    }
+
+    private fun deleteChars(n: Int) {
+        wrapPending = false
+        val k = TermRegion.count(n, cols - cx)
+        if (k == 0) return
+        val line = screen[cy]
+        for (c in cx until cols - k) line[c] = line[c + k]
+        val blank = TermCell(' ', fg, bg, bold, underline, dim)
+        for (c in (cols - k) until cols) line[c] = blank
+    }
+
+    private fun eraseChars(n: Int) {
+        val k = TermRegion.count(n, cols - cx)
+        if (k == 0) return
+        val line = screen[cy]
+        val blank = TermCell(' ', fg, bg, bold, underline, dim)
+        for (c in cx until cx + k) line[c] = blank
+    }
+
+    private fun insertLines(n: Int) {
+        wrapPending = false
+        if (cy < scrollTop || cy > scrollBottom) return
+        cx = 0 // xterm homes the cursor to the left margin on IL
+        val k = TermRegion.count(n, scrollBottom - cy + 1)
+        if (k == 0) return
+        for (i in scrollBottom downTo cy + k) screen[i] = screen[i - k]
+        for (i in cy until cy + k) screen[i] = blankLine(cols)
+    }
+
+    private fun deleteLines(n: Int) {
+        wrapPending = false
+        if (cy < scrollTop || cy > scrollBottom) return
+        cx = 0 // xterm homes the cursor to the left margin on DL
+        val k = TermRegion.count(n, scrollBottom - cy + 1)
+        if (k == 0) return
+        for (i in cy..scrollBottom - k) screen[i] = screen[i + k]
+        for (i in (scrollBottom - k + 1)..scrollBottom) screen[i] = blankLine(cols)
+    }
+
+    private fun scrollUp(n: Int) {
+        val k = TermRegion.count(n, scrollBottom - scrollTop + 1)
+        if (k == 0) return
+        val full = !altActive && scrollTop == 0 && scrollBottom == rows - 1
+        if (full) {
+            for (i in 0 until k) pushScrollback(screen[scrollTop + i])
+        }
+        for (i in scrollTop..scrollBottom - k) screen[i] = screen[i + k]
+        for (i in (scrollBottom - k + 1)..scrollBottom) screen[i] = blankLine(cols)
+    }
+
+    private fun scrollDown(n: Int) {
+        val k = TermRegion.count(n, scrollBottom - scrollTop + 1)
+        if (k == 0) return
+        for (i in scrollBottom downTo scrollTop + k) screen[i] = screen[i - k]
+        for (i in scrollTop until scrollTop + k) screen[i] = blankLine(cols)
+    }
+
+    private fun fitBuffer(src: Array<Array<TermCell>>, nr: Int, nc: Int): Array<Array<TermCell>> {
+        val oldRows = src.size
+        val oldCols = src.firstOrNull()?.size ?: nc
+        return Array(nr) { r ->
+            val line = blankLine(nc)
+            if (r < oldRows) {
+                val copy = minOf(nc, oldCols)
+                for (c in 0 until copy) line[c] = src[r][c]
+            }
+            line
         }
     }
 
