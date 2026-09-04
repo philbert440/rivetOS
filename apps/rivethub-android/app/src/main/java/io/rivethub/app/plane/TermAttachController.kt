@@ -1,6 +1,7 @@
 package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.TermFrame
+import io.rivethub.app.gateway.TermOwner
 import io.rivethub.app.gateway.TermSpawnResponse
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.parseTermFrame
@@ -24,6 +25,8 @@ data class TermAttachView(
     val ctrl: Boolean = false,
     val ctrlLocked: Boolean = false,
     val error: String? = null,
+    /** Terminal owner (den #681) from hello + `{type:'owner'}` frames; null = nobody owns it. */
+    val owner: TermOwner? = null,
 )
 
 interface TermScreenPort {
@@ -104,6 +107,7 @@ class TermAttachController(
     private var ctrl = false
     private var ctrlLocked = false
     private var error: String? = null
+    private var owner: TermOwner? = null
 
     fun ensure() {
         wanted = true
@@ -185,6 +189,12 @@ class TermAttachController(
         publish()
     }
 
+    /** "Use terminal here": claim ownership with the current geometry. */
+    fun claimTerminal() {
+        if (currentGen() != attachedGen) return
+        client?.claim(cols, rows)
+    }
+
     private fun consumeCtrl(): Boolean {
         val was = ctrl
         if (was && !ctrlLocked) {
@@ -252,6 +262,11 @@ class TermAttachController(
     private fun detach(keepWanted: Boolean, clearCommand: Boolean) {
         if (!keepWanted) wanted = false
         seq++
+        // Clear ownership on detach so a reconnect (background→foreground, a
+        // session switch reusing this controller) doesn't flash a stale
+        // "active on <device>" banner before the fresh hello re-derives it —
+        // mirrors the web (setOwner(undefined) on a new socket).
+        owner = null
         val leaving = client
         client = null
         socket = null
@@ -316,6 +331,7 @@ class TermAttachController(
             is TermFrame.Hello -> {
                 replay.onHello()
                 screen.reset(cols, rows)
+                owner = frame.frame.owner
                 if (frame.frame.state == "exited") {
                     socket?.reconnectOnClose = false
                     status = TermStatus.Exited
@@ -328,6 +344,10 @@ class TermAttachController(
             is TermFrame.Exit -> {
                 socket?.reconnectOnClose = false
                 status = TermStatus.Exited
+                publish()
+            }
+            is TermFrame.Owner -> {
+                owner = ownerFromFrame(frame.frame)
                 publish()
             }
             null -> Unit
@@ -372,6 +392,7 @@ class TermAttachController(
                 ctrl = ctrl,
                 ctrlLocked = ctrlLocked,
                 error = error,
+                owner = owner,
             ),
         )
     }

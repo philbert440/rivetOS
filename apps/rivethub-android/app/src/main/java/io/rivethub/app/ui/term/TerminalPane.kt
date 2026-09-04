@@ -10,13 +10,18 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.DropdownMenu
@@ -32,6 +37,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -49,6 +55,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -64,16 +72,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import io.rivethub.app.R
+import io.rivethub.app.gateway.TermOwner
 import io.rivethub.app.plane.TERM_LINE_HEIGHT
 import io.rivethub.app.plane.TermKeys
 import io.rivethub.app.plane.TermScroll
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.imeDelta
+import io.rivethub.app.plane.ownerOverlay
 import io.rivethub.app.plane.termCellSizePx
 import io.rivethub.app.plane.termColsRows
+import io.rivethub.app.ui.components.DenBot
 import io.rivethub.app.ui.components.KeyToolbar
+import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.ToolbarKey
 import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -98,6 +111,8 @@ fun TerminalPane(
     onResize: (Int, Int) -> Unit,
     onBytes: (ByteArray) -> Unit,
     ctrl: Boolean,
+    owner: TermOwner? = null,
+    onClaim: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
@@ -345,6 +360,42 @@ fun TerminalPane(
                     .background(colors.panel2)
                     .offset(x = Dimens.grid, y = Dimens.gridHalf),
             )
+        }
+        // Ownership overlay (den #681): another device owns this session's
+        // terminal. The Canvas stays mounted and warm behind the scrim —
+        // only the resize/claim path changes hands, never the PTY attach.
+        val overlay = ownerOverlay(owner)
+        if (overlay.show) {
+            val useHere = stringResource(R.string.term_use_here)
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(colors.bg.copy(alpha = 0.7f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(Dimens.grid3)
+                        .clip(RoundedCornerShape(Radius.lg))
+                        .background(colors.panel)
+                        .border(Dimens.line, colors.line, RoundedCornerShape(Radius.lg))
+                        .padding(horizontal = Dimens.grid3, vertical = Dimens.grid2),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(Dimens.grid2),
+                ) {
+                    DenBot(size = 36.dp, decorative = true)
+                    Text(
+                        overlay.label,
+                        color = colors.ink,
+                        style = RivetType.mono12,
+                    )
+                    RivetButton(
+                        text = useHere,
+                        onClick = onClaim,
+                        modifier = Modifier.semantics { contentDescription = useHere },
+                    )
+                }
+            }
         }
     }
 }

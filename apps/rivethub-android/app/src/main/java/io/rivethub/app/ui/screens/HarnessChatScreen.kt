@@ -202,6 +202,8 @@ fun HarnessChatScreen(
                         onResize = vm::resizeTerminal,
                         onBytes = vm::sendTermBytes,
                         ctrl = st.termCtrl,
+                        owner = st.termOwner,
+                        onClaim = vm::claimTerminal,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
