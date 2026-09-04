@@ -592,6 +592,65 @@ describe('WS /term protocol core (scripted sockets)', () => {
     expect(manager.get(pty.id)?.attached).toBe(1)
     expect(procs[0].kills).toEqual([]) // heartbeat reaps sockets, not ptys
   })
+
+  it('detach restores the most-recent remaining viewer size; last viewer leaves the PTY alone', () => {
+    const logs: string[] = []
+    const { manager, procs } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: (m) => logs.push(m),
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    termWs.attach(manager, pty.id, a)
+    termWs.attach(manager, pty.id, b)
+
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 40, rows: 20 })), false)
+    expect(procs[0].resizes).toEqual([
+      [200, 50],
+      [40, 20],
+    ])
+
+    b.close()
+    expect(procs[0].resizes).toEqual([
+      [200, 50],
+      [40, 20],
+      [200, 50],
+    ])
+    expect(logs).toEqual([`term: restored 200x50 for ${pty.id} after viewer detach`])
+    expect(manager.get(pty.id)).toMatchObject({ cols: 200, rows: 50 })
+
+    a.close()
+    expect(procs[0].resizes).toEqual([
+      [200, 50],
+      [40, 20],
+      [200, 50],
+    ])
+    expect(logs).toHaveLength(1)
+  })
+
+  it('a client that never resized detaching does not resize the pty', () => {
+    const { manager, termWs, procs } = makeCore()
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    termWs.attach(manager, pty.id, a)
+    termWs.attach(manager, pty.id, b)
+    b.close()
+    expect(procs[0].resizes).toEqual([])
+
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+    const never = new FakeSocket()
+    termWs.attach(manager, pty.id, never)
+    never.close()
+    expect(procs[0].resizes).toEqual([[200, 50]])
+  })
 })
 
 // End-to-end through a real server AND a real child process: bytes go over a

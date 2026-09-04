@@ -66,6 +66,8 @@ export interface TermWsDeps {
   /** Tenancy gate: may this request attach to a PTY owned by this den
    *  session? Absent = tenancy off. False destroys the upgrade. */
   authorize?: (req: IncomingMessage, denSession: string) => boolean
+  /** Optional; defaults to console.info. Restore-on-detach logs one line. */
+  log?: (msg: string) => void
 }
 
 export interface TermWs {
@@ -108,6 +110,11 @@ interface TermClient {
   /** Heartbeat flag — set on pong, cleared on ping; dead = terminate. */
   alive: boolean
   cleanup: () => void
+  /** Last size this viewer sent via `{type:'resize'}`. Absent until then. */
+  cols?: number
+  rows?: number
+  /** Monotonic seq of this client's last resize; 0 = never resized. */
+  resizeSeq: number
 }
 
 /** All clients attached to one PTY — the unit pause/resume reasons about. */
@@ -115,12 +122,15 @@ interface PtyGroup {
   clients: Set<TermClient>
   paused: boolean
   drainTimer?: NodeJS.Timeout
+  /** Incremented on every resize from any client in this group. */
+  resizeSeq: number
 }
 
 export function createTermWs(deps: TermWsDeps): TermWs {
   const wss = new WebSocketServer({ noServer: true })
   const clients = new Set<TermClient>()
   const groups = new Map<string, PtyGroup>()
+  const log = deps.log ?? ((msg: string) => console.info(msg))
 
   const resume = (manager: TermManager, ptyId: string, group: PtyGroup): void => {
     if (!group.paused) return
@@ -157,7 +167,7 @@ export function createTermWs(deps: TermWsDeps): TermWs {
 
     let group = groups.get(ptyId)
     if (!group) {
-      group = { clients: new Set(), paused: false }
+      group = { clients: new Set(), paused: false, resizeSeq: 0 }
       groups.set(ptyId, group)
     }
     const g = group
@@ -174,12 +184,28 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       g.clients.delete(client)
       if (g.clients.size === 0) {
         // never leave a PTY paused with nobody reading — scrollback (and the
-        // child itself) must keep flowing while detached
+        // child itself) must keep flowing while detached. Last viewer out
+        // leaves the PTY size alone (reaper / next attach owns it).
         resume(manager, ptyId, g)
         groups.delete(ptyId)
+      } else {
+        // Window follows the most recent resize; a remaining viewer's last
+        // size is restored so a phone close gives the desktop its cols back.
+        let best: TermClient | undefined
+        for (const c of g.clients) {
+          if (c.resizeSeq === 0) continue
+          if (!best || c.resizeSeq > best.resizeSeq) best = c
+        }
+        if (best && best.cols !== undefined && best.rows !== undefined) {
+          const cur = manager.get(ptyId)
+          if (!cur || cur.cols !== best.cols || cur.rows !== best.rows) {
+            manager.resize(ptyId, best.cols, best.rows)
+            log(`term: restored ${best.cols}x${best.rows} for ${ptyId} after viewer detach`)
+          }
+        }
       }
     }
-    const client: TermClient = { ws, alive: true, cleanup }
+    const client: TermClient = { ws, alive: true, cleanup, resizeSeq: 0 }
     clients.add(client)
     g.clients.add(client)
 
@@ -215,7 +241,12 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       if (m.type === 'resize') {
         if (typeof m.cols !== 'number' || !Number.isFinite(m.cols)) return
         if (typeof m.rows !== 'number' || !Number.isFinite(m.rows)) return
-        manager.resize(ptyId, clamp(m.cols, 20, 500), clamp(m.rows, 5, 200))
+        const cols = clamp(m.cols, 20, 500)
+        const rows = clamp(m.rows, 5, 200)
+        client.cols = cols
+        client.rows = rows
+        client.resizeSeq = ++g.resizeSeq
+        manager.resize(ptyId, cols, rows)
       } else if (m.type === 'kill') {
         manager.kill(ptyId)
       }
