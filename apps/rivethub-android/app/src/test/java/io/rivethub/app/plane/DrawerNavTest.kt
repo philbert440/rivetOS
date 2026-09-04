@@ -21,12 +21,25 @@ class DrawerNavTest {
 
     @Test
     fun `phase-two rows never resolve as active`() {
-        for (dest in listOf(DrawerDest.Memory, DrawerDest.Files, DrawerDest.Tasks, DrawerDest.Workflows)) {
+        for (dest in listOf(DrawerDest.Files, DrawerDest.Tasks, DrawerDest.Workflows)) {
             assertFalse(drawerDestEnabled(dest))
             assertFalse(drawerItemActive(dest, HubTab.Conversations))
             assertFalse(drawerItemActive(dest, HubTab.Settings))
             assertNull(hubTabOf(dest))
         }
+    }
+
+    @Test
+    fun `memory is enabled and routes to its own screen, never a hub tab`() {
+        assertTrue(drawerDestEnabled(DrawerDest.Memory))
+        assertTrue(drawerDestEnabled(DrawerDest.Memory, ExperimentalFlags()))
+        assertTrue(drawerOpensMemoryScreen(DrawerDest.Memory))
+        assertFalse(drawerOpensMemoryScreen(DrawerDest.Conversations))
+        // Not a hub tab: no tab mapping and no active highlight on either tab.
+        assertNull(hubTabOf(DrawerDest.Memory))
+        assertNull(drawerTabRoute(DrawerDest.Memory))
+        assertFalse(drawerItemActive(DrawerDest.Memory, HubTab.Conversations))
+        assertFalse(drawerItemActive(DrawerDest.Memory, HubTab.Settings))
     }
 
     @Test
@@ -73,9 +86,10 @@ class DrawerNavTest {
     }
 
     @Test
-    fun `session drawer nav maps enabled rows to their tabs and leaves phase-two rows inert`() {
+    fun `session drawer nav maps tab rows to their tabs, memory and phase-two rows have no tab`() {
         assertEquals(HubTab.Conversations, drawerTabRoute(DrawerDest.Conversations))
         assertEquals(HubTab.Settings, drawerTabRoute(DrawerDest.Settings))
+        // Memory navigates (drawerOpensMemoryScreen) but never through a hub tab.
         for (dest in listOf(DrawerDest.Memory, DrawerDest.Files, DrawerDest.Tasks, DrawerDest.Workflows)) {
             assertNull(drawerTabRoute(dest))
         }
@@ -111,13 +125,14 @@ class DrawerExperimentalTest {
     }
 
     @Test
-    fun `drawerDestEnabled enables experimental dests only when their flag is on and keeps Memory disabled`() {
+    fun `drawerDestEnabled enables experimental dests only when their flag is on, memory is always on`() {
         val off = ExperimentalFlags()
         val on = ExperimentalFlags(files = true, tasks = true, workflows = true)
         assertTrue(drawerDestEnabled(DrawerDest.Conversations, off))
         assertTrue(drawerDestEnabled(DrawerDest.Settings, off))
-        assertFalse(drawerDestEnabled(DrawerDest.Memory, off))
-        assertFalse(drawerDestEnabled(DrawerDest.Memory, on))
+        // Memory is not experimental — flags never gate it.
+        assertTrue(drawerDestEnabled(DrawerDest.Memory, off))
+        assertTrue(drawerDestEnabled(DrawerDest.Memory, on))
         assertFalse(drawerDestEnabled(DrawerDest.Files, off))
         assertFalse(drawerDestEnabled(DrawerDest.Tasks, off))
         assertFalse(drawerDestEnabled(DrawerDest.Workflows, off))
@@ -126,7 +141,7 @@ class DrawerExperimentalTest {
         assertTrue(drawerDestEnabled(DrawerDest.Workflows, on))
         // No-arg overload stays the default-off contract.
         assertFalse(drawerDestEnabled(DrawerDest.Files))
-        assertFalse(drawerDestEnabled(DrawerDest.Memory))
+        assertTrue(drawerDestEnabled(DrawerDest.Memory))
     }
 
     @Test

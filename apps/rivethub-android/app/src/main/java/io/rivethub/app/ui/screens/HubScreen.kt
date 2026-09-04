@@ -53,6 +53,7 @@ import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
 import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.decideDrawerSwipe
+import io.rivethub.app.plane.drawerOpensMemoryScreen
 import io.rivethub.app.plane.drawerTabRoute
 import io.rivethub.app.plane.drawerWidthDp
 import io.rivethub.app.plane.hubTabOnBack
@@ -87,6 +88,7 @@ fun HubDrawer(
     onOpenChat: (AgentOpen) -> Unit,
     onNavTab: (HubTab) -> Unit,
     rightDrawer: DrawerState? = null,
+    onOpenMemory: (() -> Unit)? = null,
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
@@ -152,7 +154,10 @@ fun HubDrawer(
                     ),
                     onClose = { closeDrawer() },
                     onNav = { dest ->
-                        drawerTabRoute(dest)?.let { onNavTab(it) }
+                        // Memory is its own screen (plane/DrawerNav.kt
+                        // drawerOpensMemoryScreen), never a hub tab.
+                        if (drawerOpensMemoryScreen(dest)) onOpenMemory?.invoke()
+                        else drawerTabRoute(dest)?.let { onNavTab(it) }
                         closeDrawer()
                     },
                     onUnread = {

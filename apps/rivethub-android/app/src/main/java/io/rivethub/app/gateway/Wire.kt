@@ -102,6 +102,64 @@ data class DenStateResponse(val session: String = "", val state: RoomState = Roo
 @Serializable
 data class DenSessionInfo(val id: String, val name: String = "", val harness: String? = null, val lastEventTs: Long? = null)
 
+// -- /api/wiki (datahub memory wiki) — verbatim from @rivetos/types wiki.ts --
+
+@Serializable
+data class WikiIndexEntry(
+    val slug: String,
+    val title: String = "",
+    val tags: List<String> = emptyList(),
+    val entities: List<String> = emptyList(),
+    val updatedAt: String = "",
+    /** First ~200 chars of currentState. */
+    val excerpt: String = "",
+)
+
+@Serializable
+data class WikiIndexResponse(val topics: List<WikiIndexEntry> = emptyList(), val total: Int = 0)
+
+@Serializable
+data class WikiSourceRef(
+    val kind: String = "",
+    val ids: List<String> = emptyList(),
+    val conversationId: String? = null,
+)
+
+@Serializable
+data class WikiHistoryEntryWire(val date: String = "", val title: String = "", val body: String = "")
+
+@Serializable
+data class WikiCitationWire(
+    val summaryId: String = "",
+    val date: String? = null,
+    val kind: String? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class WikiPageResponse(
+    val slug: String,
+    val title: String = "",
+    val aliases: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val entities: List<String> = emptyList(),
+    /** Lead / Summary (## Summary or legacy ## Current state). */
+    val currentState: String = "",
+    /** Wikipedia-style body (## Article). */
+    val article: String? = null,
+    val seeAlso: List<String>? = null,
+    val history: List<WikiHistoryEntryWire> = emptyList(),
+    val citations: List<WikiCitationWire> = emptyList(),
+    /** Full file, verbatim. */
+    val markdown: String = "",
+    val sources: List<WikiSourceRef> = emptyList(),
+    val gitSha: String? = null,
+    val lastVerified: String? = null,
+    val updatedAt: String = "",
+    /** Related slugs (explicit + entity/link graph). */
+    val related: List<String>? = null,
+)
+
 /** Frames on WS /api/sessions/ws. The union is discriminated by `kind`. */
 sealed interface SessionFrame {
     data class Message(val message: SessionMessage) : SessionFrame

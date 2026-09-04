@@ -61,13 +61,19 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 | Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered DenBot with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; BOTH drawers `gesturesEnabled = false` — ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
+| Memory | `ui/screens/MemoryScreen.kt` | `MemoryViewModel` (activity-scoped `key=memory`) | NATIVE wiki hub over datahub `GET /api/wiki` (mirror of the merged responsive web Memory hub: MemoryHubPage + pages/memory.tsx): TopBar (☰ + `Memory`) + Search/Wiki/Browse/Stats tab row + search field + compact topic rows (title + staleness badge). Pure layer `plane/MemoryWiki.kt` (tabs, rows, stats, TOC, staleness, datahub-node pick) mirrors web `lib/memory-hub.ts` + `lib/wiki-base.ts`; wire shapes in `gateway/Wire.kt`, calls `Gateway.wikiPages/wikiSearch/wikiTopic`. Datahub = mesh node named datahub, else `transport.entry()`; load failure = the web "Point RivetHub at datahub" pointer copy, never a spinner |
+| Memory topic | `ui/screens/MemoryTopicScreen.kt` | same `MemoryViewModel` | Pushed over Memory (its slug in `Screen.MemoryTopic`); header = Back + title (session-row vocabulary, no TopBar); lead + `MarkdownBody` body (`wikiBody` = currentState else full file), collapsible full-width Contents from the parsed ##/### headings; 404 = the web red-link state. Back pops to the hub list |
 | Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
 
 Agents live in the drawer (tap / long-press ↺ / + pointer semantics; 2026-09-04 long-press
 also has Edit — `AgentEditSheet` name/color/node/model/effort/prompt via `PATCH
 /api/agents/{id}` — and Go to node, guarded so it never toggles the filter off). Nodes live in the
 drawer footer sheet (view filter only; never rebinds an open chat; error badge is
-timeout/5xx only — 404 harness = plane-less, no badge).
+timeout/5xx only — 404 harness = plane-less, no badge). The drawer Memory row is ENABLED
+(2026-09-04, native wiki hub): `drawerDestEnabled(Memory) = true`, routed by
+`plane/DrawerNav.kt drawerOpensMemoryScreen` (its own `Screen.Memory`, never a `HubTab`) through
+`HubDrawer.onOpenMemory` to MainActivity's `openMemory()` (pops back to an existing Memory
+entry, else pushes; Back returns to whatever is below).
 
 Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `themeMode`
 (`system`\|`light`\|`dark`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
@@ -212,9 +218,9 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 400 (agent-drawer-ux:
-  +7 DrawerSwipeTest, +7 AgentEditTest → 436; remove-list-screen: +7
-  narrowLaunchTarget, +3 last-session persistence/stale, +3 ChatHomeNav; session-header had 376).
+  (`.github/workflows/android.yml`) enforces a floor of 458 (memory-native: +12 MemoryWikiTest,
+  +1 DrawerNavTest memory-route; the floor tracks `grep -rc @Test app/src/test` exactly — the
+  earlier 431/436 notes had drifted from the real count).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
