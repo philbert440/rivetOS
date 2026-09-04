@@ -6,18 +6,19 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.os.PersistableBundle
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.BasicTextField
-import io.rivethub.app.plane.imeDelta
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
@@ -27,13 +28,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -44,24 +44,31 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import io.rivethub.app.R
+import io.rivethub.app.plane.TERM_LINE_HEIGHT
 import io.rivethub.app.plane.TermKeys
+import io.rivethub.app.plane.TermScroll
 import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.imeDelta
 import io.rivethub.app.plane.termCellSizePx
 import io.rivethub.app.plane.termColsRows
 import io.rivethub.app.ui.components.KeyToolbar
@@ -70,15 +77,17 @@ import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 private const val IME_SENTINEL = "\u200B"
 private const val RESIZE_DEBOUNCE_MS = 150L
 
 /**
- * Full-bleed VT surface. Tap focuses and opens the IME; two-finger scroll
- * pages the local buffer. Tmux copy-mode history is out of scope.
+ * Full-bleed VT surface. Tap focuses and opens the IME; a one-finger
+ * vertical drag (or two-finger drag) pages the local buffer. Horizontal
+ * drags are left unconsumed. Tmux copy-mode history is out of scope.
  */
 @Composable
 fun TerminalPane(
@@ -95,8 +104,13 @@ fun TerminalPane(
     val density = LocalDensity.current
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-    val followTail = remember { mutableStateOf(true) }
-    val firstLine = remember { mutableIntStateOf(0) }
+    val scroll = remember { TermScroll() }
+    val scrollTick = remember { mutableIntStateOf(0) }
+    val seenDropped = remember { mutableIntStateOf(0) }
+    val seenCount = remember { mutableIntStateOf(0) }
+    val lastRev = remember { mutableIntStateOf(Int.MIN_VALUE) }
+    val flingJob = remember { mutableStateOf<Job?>(null) }
+    val scope = rememberCoroutineScope()
     var ime by remember { mutableStateOf(TextFieldValue(IME_SENTINEL)) }
     var imeSeen by remember { mutableStateOf(IME_SENTINEL) }
     var pendingGeo by remember { mutableStateOf<Pair<Int, Int>?>(null) }
@@ -105,14 +119,37 @@ fun TerminalPane(
         fontFamily = RivetFonts.Mono,
         fontSize = fontSp.sp,
         fontWeight = FontWeight.Normal,
+        lineHeight = TERM_LINE_HEIGHT.em,
     )
     val measured = remember(fontSp, density.density, density.fontScale, measurer) {
-        measurer.measure(AnnotatedString("M"), style = mono).size
+        // cellW = mean advance of 10 "M" so hinting averages out; cellH =
+        // measured layout height of one line with lineHeight set above, so
+        // glyph rows and the cursor rect share the same grid.
+        val ten = measurer.measure(AnnotatedString("M".repeat(10)), style = mono)
+        val one = measurer.measure(AnnotatedString("M"), style = mono)
+        ten.size.width / 10f to one.size.height.toFloat()
     }
     val fallback = termCellSizePx(fontSp.toFloat(), density.density, density.fontScale)
-    val cellW = measured.width.toFloat().takeIf { it > 1f } ?: fallback.first
-    val cellH = measured.height.toFloat().takeIf { it > 1f } ?: fallback.second
+    val cellW = measured.first.takeIf { it > 1f } ?: fallback.first
+    val cellH = measured.second.takeIf { it > 1f } ?: fallback.second
     val appCursor = remember(rev) { screen.applicationCursor }
+
+    if (lastRev.intValue != rev) {
+        lastRev.intValue = rev
+        val d = (screen.scrollbackDroppedTotal - seenDropped.intValue).coerceAtLeast(0)
+        val lc = screen.lineCount
+        val grown = lc - seenCount.intValue
+        if (grown < 0) {
+            scroll.onResize(lc, screen.rows)
+        } else if (d > 0 || grown > 0) {
+            scroll.onLinesAppended(grown + d, d)
+            scroll.onResize(lc, screen.rows)
+        } else {
+            scroll.onResize(lc, screen.rows)
+        }
+        seenDropped.intValue = screen.scrollbackDroppedTotal
+        seenCount.intValue = lc
+    }
 
     LaunchedEffect(pendingGeo) {
         val g = pendingGeo ?: return@LaunchedEffect
@@ -130,50 +167,89 @@ fun TerminalPane(
             }
             .pointerInput(cellH) {
                 awaitEachGesture {
+                    flingJob.value?.cancel()
                     val down = awaitFirstDown(requireUnconsumed = false)
+                    val tracker = VelocityTracker()
+                    tracker.addPosition(down.uptimeMillis, down.position)
                     var two = false
                     var moved = false
+                    var axis = 0
                     var lastY = down.position.y
+                    val slop = viewConfiguration.touchSlop
                     while (true) {
                         val ev = awaitPointerEvent()
                         val now = ev.changes.filter { it.pressed }
                         if (now.isEmpty()) break
                         if (now.size >= 2) {
-                            two = true
                             now.forEach { it.consume() }
                             val y = now.map { it.position.y }.average().toFloat()
-                            val dy = lastY - y
-                            if (kotlin.math.abs(dy) > 1f) {
-                                moved = true
-                                val delta = (dy / cellH).roundToInt()
-                                if (delta != 0) {
-                                    val maxFirst = (screen.lineCount - screen.rows).coerceAtLeast(0)
-                                    val cur = if (followTail.value) maxFirst else firstLine.intValue.coerceIn(0, maxFirst)
-                                    val next = (cur + delta).coerceIn(0, maxFirst)
-                                    firstLine.intValue = next
-                                    followTail.value = next >= maxFirst
+                            val x = now.map { it.position.x }.average().toFloat()
+                            tracker.addPosition(now[0].uptimeMillis, Offset(x, y))
+                            if (!two) {
+                                two = true
+                                lastY = y
+                            } else {
+                                val dy = y - lastY
+                                if (dy != 0f) {
+                                    moved = true
+                                    scroll.dragBy(dy, cellH)
+                                    scrollTick.intValue++
                                 }
                                 lastY = y
                             }
-                        } else if ((now[0].position - down.position).getDistance() > 24f) {
-                            moved = true
+                        } else {
+                            val p = now[0]
+                            val fromDown = p.position - down.position
+                            if (axis == 0 && fromDown.getDistance() > slop) {
+                                moved = true
+                                axis = if (kotlin.math.abs(fromDown.y) >= kotlin.math.abs(fromDown.x)) 1 else 2
+                            }
+                            if (axis == 1) {
+                                p.consume()
+                                tracker.addPosition(p.uptimeMillis, p.position)
+                                val dy = p.position.y - lastY
+                                if (dy != 0f) {
+                                    scroll.dragBy(dy, cellH)
+                                    scrollTick.intValue++
+                                }
+                                lastY = p.position.y
+                            } else if (axis == 2) {
+                                tracker.addPosition(p.uptimeMillis, p.position)
+                            }
                         }
                     }
                     if (!two && !moved) {
                         focus.requestFocus()
                         keyboard?.show()
+                    } else if (two || axis == 1) {
+                        val vy = tracker.calculateVelocity().y
+                        if (kotlin.math.abs(vy) >= viewConfiguration.minimumFlingVelocity) {
+                            val fling = Animatable(0f)
+                            flingJob.value = scope.launch {
+                                var last = 0f
+                                fling.snapTo(0f)
+                                fling.animateDecay(vy, exponentialDecay()) {
+                                    val d = value - last
+                                    last = value
+                                    if (d != 0f) {
+                                        scroll.dragBy(d, cellH)
+                                        scrollTick.intValue++
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             },
     ) {
-        val maxFirst = remember(rev) { (screen.lineCount - screen.rows).coerceAtLeast(0) }
-        val first = if (followTail.value) maxFirst else firstLine.intValue.coerceIn(0, maxFirst)
-        val lines = remember(rev, first, screen.rows) { screen.snapshot(first, screen.rows) }
+        val tick = scrollTick.intValue
+        val first = scroll.visibleFirst(screen.lineCount, screen.rows)
+        val lines = remember(rev, first, screen.rows, tick) { screen.snapshot(first, screen.rows) }
         Canvas(Modifier.fillMaxSize()) {
             var y = 0f
             for (line in lines) {
-                var x = 0f
                 for (span in line.spans) {
+                    val x = span.startCol * cellW
                     val fg = spanFg(span, colors)
                     val bg = spanBg(span, colors)
                     val layout = measurer.measure(
@@ -188,11 +264,11 @@ fun TerminalPane(
                         drawRect(
                             color = bg,
                             topLeft = Offset(x, y),
-                            size = Size(layout.size.width.toFloat(), cellH),
+                            size = Size(span.text.length * cellW, cellH),
                         )
                     }
-                    drawText(layout, topLeft = Offset(x, y))
-                    x += layout.size.width
+                    val textY = y + (cellH - layout.size.height) / 2f
+                    drawText(layout, topLeft = Offset(x, textY))
                 }
                 y += cellH
             }

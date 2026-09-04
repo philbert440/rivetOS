@@ -2,6 +2,8 @@ package io.rivethub.app.ui.term
 
 import io.rivethub.app.data.Osc52
 import io.rivethub.app.data.OscFilter
+import io.rivethub.app.plane.TermRunCell
+import io.rivethub.app.plane.rowRuns
 import java.util.ArrayDeque
 
 /** One screen cell. [fg]/[bg] are packed ARGB; default sentinels remap through theme tokens. */
@@ -22,6 +24,7 @@ data class TermSpan(
     val bold: Boolean,
     val underline: Boolean = false,
     val dim: Boolean = false,
+    val startCol: Int = 0,
 )
 
 data class TermLine(val spans: List<TermSpan>)
@@ -53,6 +56,7 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     private var cursorVisible = true
     private var appCursor = false
     private val osc52Out = ArrayList<String>()
+    private var droppedTotal = 0
 
     private var state = State.GROUND
     private val csi = StringBuilder()
@@ -64,11 +68,14 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     val generation: Int get() = synchronized(this) { rev }
     val lineCount: Int get() = synchronized(this) { scrollback.size + rows }
     val applicationCursor: Boolean get() = synchronized(this) { appCursor }
+    /** Cumulative scrollback head drops (cap rotation). Pane samples the delta. */
+    val scrollbackDroppedTotal: Int get() = synchronized(this) { droppedTotal }
 
     fun reset(newCols: Int = cols, newRows: Int = rows) = synchronized(this) {
         cols = newCols.coerceIn(MIN_COLS, MAX_COLS)
         rows = newRows.coerceIn(MIN_ROWS, MAX_ROWS)
         scrollback.clear()
+        droppedTotal = 0
         screen = Array(rows) { blankLine(cols) }
         cx = 0; cy = 0; savedX = 0; savedY = 0
         fg = DEFAULT_FG; bg = DEFAULT_BG; bold = false; underline = false; dim = false
@@ -143,7 +150,7 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         val i = cx.coerceIn(0, out.lastIndex)
         val c = out[i]
         out[i] = TermCell(
-            ch = if (c.ch == ' ') '▌' else c.ch,
+            ch = c.ch,
             fg = DEFAULT_BG,
             bg = CURSOR,
             bold = c.bold,
@@ -350,7 +357,10 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
                 for (r in 0 until cy) screen[r] = blankLine(cols)
             }
             2 -> for (r in 0 until rows) screen[r] = blankLine(cols)
-            3 -> scrollback.clear()
+            3 -> {
+                droppedTotal = 0
+                scrollback.clear()
+            }
         }
     }
 
@@ -426,7 +436,10 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     }
 
     private fun pushScrollback(line: Array<TermCell>) {
-        if (scrollback.size >= SCROLLBACK) scrollback.removeFirst()
+        if (scrollback.size >= SCROLLBACK) {
+            scrollback.removeFirst()
+            droppedTotal++
+        }
         scrollback.addLast(line)
     }
 
@@ -479,31 +492,15 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
 
         private fun spansOf(cells: Array<TermCell>): TermLine {
             if (cells.isEmpty()) return TermLine(listOf(TermSpan(" ", DEFAULT_FG, DEFAULT_BG, false)))
-            val out = ArrayList<TermSpan>()
-            val buf = StringBuilder()
-            var fg = cells[0].fg
-            var bg = cells[0].bg
-            var bold = cells[0].bold
-            var underline = cells[0].underline
-            var dim = cells[0].dim
-            fun flush() {
-                if (buf.isEmpty()) return
-                out.add(TermSpan(buf.toString(), fg, bg, bold, underline, dim))
-                buf.clear()
-            }
-            for (cell in cells) {
-                if (cell.fg != fg || cell.bg != bg || cell.bold != bold ||
-                    cell.underline != underline || cell.dim != dim
-                ) {
-                    flush()
-                    fg = cell.fg; bg = cell.bg; bold = cell.bold
-                    underline = cell.underline; dim = cell.dim
-                }
-                buf.append(cell.ch)
-            }
-            flush()
-            if (out.isEmpty()) out.add(TermSpan(" ", DEFAULT_FG, DEFAULT_BG, false))
-            return TermLine(out)
+            val runs = rowRuns(
+                cells.map { TermRunCell(it.ch, it.fg, it.bg, it.bold, it.underline, it.dim) },
+            )
+            if (runs.isEmpty()) return TermLine(listOf(TermSpan(" ", DEFAULT_FG, DEFAULT_BG, false)))
+            return TermLine(
+                runs.map {
+                    TermSpan(it.text, it.fg, it.bg, it.bold, it.underline, it.dim, it.startCol)
+                },
+            )
         }
 
         private fun wcwidth(cp: Int): Int {
