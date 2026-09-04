@@ -121,6 +121,17 @@ describe('serveDist — the dist directory vanishing under a running app', () =>
     return dir
   }
 
+  /** Runs `body` against a fresh dist; the dir is removed even when an
+   *  expectation fails (no /tmp/rh-dist-* leak from a red run). */
+  async function withDist(body: (dir: string) => Promise<void>): Promise<void> {
+    const dir = await makeDist()
+    try {
+      await body(dir)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+
   function register(dir: string, opts?: Parameters<typeof serveDist>[2]): Handler {
     let handler: Handler | undefined
     serveDist({ handle: (_scheme, h) => (handler = h) }, dir, opts)
@@ -128,58 +139,98 @@ describe('serveDist — the dist directory vanishing under a running app', () =>
     return handler
   }
 
-  it('snapshot: serves index.html and assets after the directory is deleted', async () => {
-    const dir = await makeDist()
-    const handler = register(dir, { snapshot: true })
-    await rm(dir, { recursive: true, force: true })
+  const get = (h: Handler, p: string): Promise<Response> => h(new Request(`app://bundle${p}`))
 
-    const index = await handler(new Request('app://bundle/'))
-    expect(index.status).toBe(200)
-    expect(await index.text()).toBe('<html>hub</html>')
-    expect(index.headers.get('content-type')).toBe('text/html; charset=utf-8')
-    expect(index.headers.get('content-security-policy')).toBe(CSP)
+  it('snapshot: serves index.html and assets after the directory is deleted', () =>
+    withDist(async (dir) => {
+      const handler = register(dir, { snapshot: true })
+      // Production order: the snapshot finishes at startup, the directory
+      // vanishes LATER. One request drains the snapshot before the rm —
+      // otherwise this would only prove "readdir beat rm".
+      expect((await get(handler, '/')).status).toBe(200)
+      await rm(dir, { recursive: true, force: true })
 
-    const js = await handler(new Request('app://bundle/assets/app.js'))
-    expect(js.status).toBe(200)
-    expect(await js.text()).toBe('console.log(1)')
-    expect(js.headers.get('content-type')).toBe('text/javascript')
+      const index = await get(handler, '/')
+      expect(index.status).toBe(200)
+      expect(await index.text()).toBe('<html>hub</html>')
+      expect(index.headers.get('content-type')).toBe('text/html; charset=utf-8')
+      expect(index.headers.get('content-security-policy')).toBe(CSP)
 
-    // A hashed asset that never existed still 404s — the snapshot is not a
-    // soft-serve-index fallback (stale-tab semantics unchanged).
-    const missing = await handler(new Request('app://bundle/assets/gone.js'))
-    expect(missing.status).toBe(404)
-  })
+      const js = await get(handler, '/assets/app.js')
+      expect(js.status).toBe(200)
+      expect(await js.text()).toBe('console.log(1)')
+      expect(js.headers.get('content-type')).toBe('text/javascript')
 
-  it('no snapshot (dev): reads the disk, so the deletion is visible', async () => {
-    const dir = await makeDist()
-    const handler = register(dir)
-    expect((await handler(new Request('app://bundle/'))).status).toBe(200)
-    await rm(dir, { recursive: true, force: true })
-    expect((await handler(new Request('app://bundle/'))).status).toBe(404)
-  })
+      // A hashed asset that never existed still 404s — the snapshot is not a
+      // soft-serve-index fallback (stale-tab semantics unchanged).
+      expect((await get(handler, '/assets/gone.js')).status).toBe(404)
+    }))
 
-  it('snapshot failure is reported and falls back to the disk', async () => {
-    const dir = await makeDist()
+  it('no snapshot (dev): reads the disk, so the deletion is visible', () =>
+    withDist(async (dir) => {
+      const handler = register(dir)
+      expect((await get(handler, '/')).status).toBe(200)
+      await rm(dir, { recursive: true, force: true })
+      expect((await get(handler, '/')).status).toBe(404)
+    }))
+
+  it('a loaded snapshot answers misses itself — never the disk', () =>
+    withDist(async (dir) => {
+      const handler = register(dir, { snapshot: true })
+      expect((await get(handler, '/')).status).toBe(200)
+      // A file that appears on disk AFTER the snapshot (the other launch
+      // re-extracting in place) is invisible: no fallthrough to a possibly
+      // torn or vanishing extraction dir.
+      await writeFile(path.join(dir, 'assets', 'late.js'), 'late')
+      expect((await get(handler, '/assets/late.js')).status).toBe(404)
+    }))
+
+  it('snapshot failure is reported and the disk keeps serving', () =>
+    withDist(async (dir) => {
+      const errors: unknown[] = []
+      const handler = register(dir, {
+        snapshot: true,
+        load: () => Promise.reject(new Error('EIO')),
+        onError: (e) => errors.push(e),
+      })
+      const index = await get(handler, '/')
+      expect(index.status).toBe(200)
+      expect(await index.text()).toBe('<html>hub</html>')
+      expect(errors).toHaveLength(1)
+      expect((errors[0] as Error).message).toBe('EIO')
+      // ...and the disk really is what serves: the deletion shows.
+      await rm(dir, { recursive: true, force: true })
+      expect((await get(handler, '/')).status).toBe(404)
+    }))
+
+  it('a throwing onError does not turn "log and serve the disk" into a 404', () =>
+    withDist(async (dir) => {
+      const handler = register(dir, {
+        snapshot: true,
+        load: () => Promise.reject(new Error('EIO')),
+        onError: () => {
+          throw new Error('logger down')
+        },
+      })
+      expect((await get(handler, '/')).status).toBe(200)
+    }))
+
+  it('a missing dist dir: onError once, a Response (404), never a throw', async () => {
     const errors: unknown[] = []
-    const handler = register(path.join(dir, 'does-not-exist'), {
+    const handler = register(path.join(os.tmpdir(), 'rh-dist-does-not-exist'), {
       snapshot: true,
       onError: (e) => errors.push(e),
     })
-    expect((await handler(new Request('app://bundle/'))).status).toBe(404)
+    expect((await get(handler, '/')).status).toBe(404)
     expect(errors).toHaveLength(1)
-    // ...and a dist that exists on disk but failed to snapshot still serves.
-    const ok = register(dir, { snapshot: true })
-    expect((await ok(new Request('app://bundle/'))).status).toBe(200)
-    await rm(dir, { recursive: true, force: true })
   })
 
-  it('snapshotDist keys every file by normalized absolute path', async () => {
-    const dir = await makeDist()
-    const files = await snapshotDist(dir)
-    expect([...files.keys()].sort()).toEqual([
-      path.join(dir, 'assets', 'app.js'),
-      path.join(dir, 'index.html'),
-    ])
-    await rm(dir, { recursive: true, force: true })
-  })
+  it('snapshotDist keys every file by normalized absolute path', () =>
+    withDist(async (dir) => {
+      const files = await snapshotDist(dir)
+      expect([...files.keys()].sort()).toEqual([
+        path.join(dir, 'assets', 'app.js'),
+        path.join(dir, 'index.html'),
+      ])
+    }))
 })

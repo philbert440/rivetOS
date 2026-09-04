@@ -205,6 +205,10 @@ function createWindow(isMain: boolean): BrowserWindow {
     // (Electron docs), and Alt is a terminal modifier in den xterms. The
     // bar is fully hidden off macOS via setMenuBarVisibility(false) below;
     // application-menu accelerators work regardless (grok round 2).
+    // Both paths live in app.asar. They keep resolving after the AppImage
+    // extraction dir is deleted under a running app (see snapshotDist) only
+    // because Electron holds the asar fd open — an unpacked preload or icon
+    // would not. The web dist is the part served from memory.
     icon: path.join(__dirname, '../icons/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

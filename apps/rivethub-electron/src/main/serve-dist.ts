@@ -152,6 +152,8 @@ export interface ServeDistOptions {
   snapshot?: boolean
   /** Snapshot failure is logged, never fatal: disk serving still works. */
   onError?: (err: unknown) => void
+  /** Test seam: the loader behind `snapshot` (defaults to snapshotDist). */
+  load?: (distDir: string) => Promise<Map<string, Buffer>>
 }
 
 /** Register the app:// handler on the given protocol module (post-ready). */
@@ -161,12 +163,21 @@ export function serveDist(
   opts: ServeDistOptions = {},
 ): void {
   const root = path.normalize(distDir)
-  const snapshot: Promise<Map<string, Buffer>> = opts.snapshot
-    ? snapshotDist(root).catch((err: unknown) => {
-        opts.onError?.(err)
-        return new Map<string, Buffer>()
+  // Three states, kept apart on purpose: snapshot OFF (dev) and snapshot
+  // FAILED both serve the disk; a snapshot that LOADED is the whole truth —
+  // a miss is a 404 without touching the extraction dir, which by then may
+  // be gone, or being re-extracted in place by the other launch (a torn
+  // read is worse than a 404 for a stale hashed asset).
+  const snapshot: Promise<Map<string, Buffer> | null> = opts.snapshot
+    ? (opts.load ?? snapshotDist)(root).catch((err: unknown) => {
+        try {
+          opts.onError?.(err)
+        } catch {
+          /* a throwing logger must not turn "log and serve the disk" into a 404 */
+        }
+        return null
       })
-    : Promise.resolve(new Map<string, Buffer>())
+    : Promise.resolve(null)
   // Error responses carry the CSP too — constant bodies, but "every app://
   // response carries the policy" should be true without exceptions.
   const errorHeaders = { 'content-type': 'text/plain', 'content-security-policy': CSP }
@@ -184,10 +195,16 @@ export function serveDist(
     }
     const asset = resolveAsset(root, url.pathname)
     if (!asset) return new Response('forbidden', { status: 403, headers: errorHeaders })
+    const files = await snapshot
+    if (files) {
+      const body = files.get(asset.file)
+      if (!body) return new Response('not found', { status: 404, headers: errorHeaders })
+      return new Response(body, {
+        headers: { 'content-type': asset.mime, 'content-security-policy': CSP },
+      })
+    }
     try {
-      // Snapshot first: a file missing from it (dev, or a snapshot that
-      // failed to load) still falls through to the disk.
-      const body = (await snapshot).get(asset.file) ?? (await fs.readFile(asset.file))
+      const body = await fs.readFile(asset.file)
       return new Response(body, {
         headers: { 'content-type': asset.mime, 'content-security-policy': CSP },
       })
