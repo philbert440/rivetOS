@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:https'
 import { tmpdir } from 'node:os'
@@ -19,7 +20,28 @@ function openssl(args: string[], cwd: string): void {
   execFileSync('openssl', args, { cwd, stdio: 'ignore' })
 }
 
-describe('meshFetch — undici Agent + undici fetch over real mTLS', () => {
+function hasOpenssl(): boolean {
+  try {
+    execFileSync('openssl', ['version'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Majors of Node's bundled undici (behind global fetch) vs the npm undici the CLI imports. */
+const bundledUndiciMajor = Number(
+  (process.versions as { undici?: string }).undici?.split('.')[0] ?? '0',
+)
+const npmUndiciMajor = Number(
+  (
+    JSON.parse(
+      readFileSync(createRequire(import.meta.url).resolve('undici/package.json'), 'utf-8'),
+    ) as { version: string }
+  ).version.split('.')[0],
+)
+
+describe.skipIf(!hasOpenssl())('meshFetch — undici Agent + undici fetch over real mTLS', () => {
   let dir: string
   let server: Server
   let port: number
@@ -149,8 +171,12 @@ describe('meshFetch — undici Agent + undici fetch over real mTLS', () => {
       if (v === undefined) delete process.env[k]
       else process.env[k] = v
     }
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    rmSync(dir, { recursive: true, force: true })
+    // meshFetch's undici Agent keeps connections alive; close them or server.close() hangs.
+    if (server) {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+    if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
   it('meshFetch authenticates with the client cert and gets tls:true back', async () => {
@@ -170,26 +196,21 @@ describe('meshFetch — undici Agent + undici fetch over real mTLS', () => {
     ).rejects.toThrow()
   })
 
-  it('the buggy pairing — node_modules undici Agent + GLOBAL fetch — still fails (regression guard)', async () => {
-    const { Agent } = await import('undici')
-    const bundledMajor = Number(
-      (process.versions as { undici?: string }).undici?.split('.')[0] ?? '0',
-    )
-    const pkg = JSON.parse(
-      readFileSync(new URL('../../node_modules/undici/package.json', import.meta.url), 'utf-8'),
-    ) as { version: string }
-    const npmMajor = Number(pkg.version.split('.')[0])
-    if (bundledMajor === npmMajor) return // same undici — the pairing happens to work; nothing to guard
-    const agent = new Agent({
-      connect: {
-        ca: readFileSync(join(dir, 'ca.crt')),
-        cert: readFileSync(join(dir, 'client.crt')),
-        key: readFileSync(join(dir, 'client.key')),
-      },
-    })
-    await expect(
-      // @ts-expect-error — the exact call the CLI used to make
-      fetch(`https://127.0.0.1:${String(port)}/api/mesh/ping`, { dispatcher: agent }),
-    ).rejects.toThrow()
-  })
+  it.skipIf(bundledUndiciMajor === npmUndiciMajor)(
+    'the buggy pairing — node_modules undici Agent + GLOBAL fetch — still fails (regression guard)',
+    async () => {
+      const { Agent } = await import('undici')
+      const agent = new Agent({
+        connect: {
+          ca: readFileSync(join(dir, 'ca.crt')),
+          cert: readFileSync(join(dir, 'client.crt')),
+          key: readFileSync(join(dir, 'client.key')),
+        },
+      })
+      await expect(
+        // @ts-expect-error — the exact call the CLI used to make
+        fetch(`https://127.0.0.1:${String(port)}/api/mesh/ping`, { dispatcher: agent }),
+      ).rejects.toThrow()
+    },
+  )
 })

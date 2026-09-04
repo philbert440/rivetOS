@@ -21,7 +21,9 @@ import { resolveLocalNodeName } from './node-identity.js'
 
 /** CA chain path; RIVETOS_TLS_CA overrides (tests, off-share nodes), like RIVETOS_TLS_CERT/KEY. */
 function caPath(): string {
-  return process.env.RIVETOS_TLS_CA ?? sharedPath('rivet-ca', 'intermediate', 'ca-chain.pem')
+  // Empty string = unset (an empty override must not silently drop mTLS).
+  const override = process.env.RIVETOS_TLS_CA
+  return override ? override : sharedPath('rivet-ca', 'intermediate', 'ca-chain.pem')
 }
 
 /**
@@ -54,23 +56,6 @@ export async function buildMeshDispatcher(): Promise<unknown> {
     }
     return undefined
   }
-}
-
-/**
- * Build `fetch` options (timeout signal + optional mTLS dispatcher) for a mesh call.
- */
-export async function buildMeshFetchOptions(
-  timeoutMs = 5000,
-): Promise<RequestInit & { dispatcher?: unknown }> {
-  const options: RequestInit & { dispatcher?: unknown } = {
-    signal: AbortSignal.timeout(timeoutMs),
-  }
-  const dispatcher = await buildMeshDispatcher()
-  if (dispatcher) {
-    // @ts-expect-error — undici Agent vs undici-types Dispatcher type mismatch
-    options.dispatcher = dispatcher
-  }
-  return options
 }
 
 /** Options for meshFetch: standard fetch init plus a timeout (default 5 s). */

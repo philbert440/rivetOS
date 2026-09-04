@@ -622,10 +622,10 @@ export async function waitForHealth(
 
     // Fallback: try HTTPS health endpoint with mTLS
     try {
-      const dispatcher = await buildMeshDispatcher()
-
-      if (dispatcher) {
-        // meshFetch = undici's own fetch + this dispatcher (never global fetch — see lib/mtls.ts)
+      // Gate on cert availability (unchanged behaviour when this node has no certs);
+      // meshFetch builds its own dispatcher = undici's own fetch + this node's cert
+      // (never global fetch — see lib/mtls.ts).
+      if (await buildMeshDispatcher()) {
         const res = await meshFetch(`https://${host}:${String(_port)}/api/mesh/ping`, {
           timeoutMs: 2_000,
         })
