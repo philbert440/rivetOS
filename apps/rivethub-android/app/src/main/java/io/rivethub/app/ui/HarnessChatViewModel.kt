@@ -140,6 +140,8 @@ class HarnessChatViewModel(
         val termCtrl: Boolean = false,
         val attachCommand: String? = null,
         val termClipboard: String? = null,
+        /** Terminal owner (den #681); null = nobody owns it. Drives the ownership overlay. */
+        val termOwner: io.rivethub.app.gateway.TermOwner? = null,
     )
 
     private val _state = MutableStateFlow(
@@ -236,6 +238,7 @@ class HarnessChatViewModel(
                     termCtrl = v.ctrl,
                     attachCommand = v.attachCommand,
                     termClipboard = v.clipboard,
+                    termOwner = v.owner,
                     error = v.error ?: it.error,
                 )
             }
@@ -466,6 +469,9 @@ class HarnessChatViewModel(
     fun userDetachTerminal() = termCtl.userDetach()
 
     fun resizeTerminal(cols: Int, rows: Int) = termCtl.resize(cols, rows)
+
+    /** "Use terminal here" — claim terminal ownership from the other device. */
+    fun claimTerminal() = termCtl.claimTerminal()
 
     fun sendTermBytes(bytes: ByteArray) = termCtl.sendBytes(bytes)
 

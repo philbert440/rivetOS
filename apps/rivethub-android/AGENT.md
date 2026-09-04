@@ -186,6 +186,13 @@ Attach protocol (den-server `term/ws.ts`, rivethub-web `xterm-attach.tsx`):
 7. "Open in your terminal" copies `ssh <sshUser>@<host> -t tmux -L <socket> attach -t <session>`
    rendered from the server `attach` descriptor. Hidden when `attach` is absent — never guess a
    socket name.
+8. Terminal ownership (den #681, 2026-09-04): hello carries `owner?: {device, self}`; the server
+   broadcasts `{type:'owner', device|null, self, since?}` on every change; `{type:'claim',cols?,rows?}`
+   takes ownership. Wire shapes in `gateway/Wire.kt` (`TermOwner`/`TermOwnerFrame`/`TermClaimFrame`,
+   `TermFrame.Owner`), pure helpers in `plane/TermOwner.kt` (`ownerOverlay`, `ownerFromFrame`),
+   `termClaimJson` next to `termResizeJson` in `plane/TermPty.kt`. A non-owner sees a centered
+   overlay (DenBot + "This terminal is active on {device}." + "Use terminal here") in
+   `TerminalPane` — the Canvas stays mounted behind the scrim; chat is untouched.
 
 Attach lives in `TermAttachController` (driven by `HarnessChatViewModel`) so Chat↔Terminal swipe
 does not drop the socket. Inbound PTY frames share one `Channel` consumer (hello → ring order is

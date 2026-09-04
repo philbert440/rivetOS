@@ -219,6 +219,12 @@ data class PtyInfo(
 data class TermListResponse(val ptys: List<PtyInfo> = emptyList())
 
 @Serializable
+data class TermOwner(
+    val device: String,
+    val self: Boolean = false,
+)
+
+@Serializable
 data class TermHelloFrame(
     val type: String = "hello",
     val v: Int = 1,
@@ -230,6 +236,9 @@ data class TermHelloFrame(
     val state: String = "running",
     val exitCode: Int? = null,
     val mux: String? = null,
+    /** Present when this session already has a terminal owner (den #681).
+     *  Absent until the first viewer resizes (auto-claim). `self` is per-recipient. */
+    val owner: TermOwner? = null,
 )
 
 @Serializable
@@ -239,8 +248,23 @@ data class TermExitFrame(
     val signal: String? = null,
 )
 
+/** Server → client: ownership of the shared PTY changed (den #681).
+ *  `device` null = nobody owns it; `self` is per-recipient. */
+@Serializable
+data class TermOwnerFrame(
+    val type: String = "owner",
+    val device: String? = null,
+    val self: Boolean = false,
+    val since: Long? = null,
+)
+
 @Serializable
 data class TermResizeFrame(val type: String = "resize", val cols: Int, val rows: Int)
+
+/** Client → server: take ownership of the shared PTY. Optional size is
+ *  applied (clamped like resize); omitted → the client's last resize. */
+@Serializable
+data class TermClaimFrame(val type: String = "claim", val cols: Int? = null, val rows: Int? = null)
 
 /**
  * Deliberately ahead of `@rivetos/types` `TermControlFrame` (`resize | kill`
@@ -285,6 +309,7 @@ data class AgentsListResponse(val agents: List<AgentPreset> = emptyList())
 sealed interface TermFrame {
     data class Hello(val frame: TermHelloFrame) : TermFrame
     data class Exit(val frame: TermExitFrame) : TermFrame
+    data class Owner(val frame: TermOwnerFrame) : TermFrame
 }
 
 fun parseTermFrame(text: String): TermFrame? {
@@ -292,6 +317,7 @@ fun parseTermFrame(text: String): TermFrame? {
     return when (el["type"]?.jsonPrimitive?.content) {
         "hello" -> runCatching { TermFrame.Hello(wireJson.decodeFromJsonElement(TermHelloFrame.serializer(), el)) }.getOrNull()
         "exit" -> runCatching { TermFrame.Exit(wireJson.decodeFromJsonElement(TermExitFrame.serializer(), el)) }.getOrNull()
+        "owner" -> runCatching { TermFrame.Owner(wireJson.decodeFromJsonElement(TermOwnerFrame.serializer(), el)) }.getOrNull()
         else -> null
     }
 }

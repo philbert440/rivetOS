@@ -88,6 +88,7 @@
     <string name="term_status_attached">attached</string>
     <string name="term_status_exited">exited</string>
     <string name="term_status_closed">closed</string>
+    <string name="term_use_here">Use terminal here</string>
     <string name="composer_placeholder">Message Rivet…</string>
     <string name="composer_reconnecting">reconnecting…</string>
     <string name="thinking_chip">thinking</string>

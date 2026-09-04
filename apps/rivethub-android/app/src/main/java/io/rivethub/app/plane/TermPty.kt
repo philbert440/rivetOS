@@ -29,6 +29,14 @@ fun termResizeJson(cols: Int, rows: Int): String =
     """{"type":"resize","cols":$cols,"rows":$rows}"""
 
 /**
+ * "Use terminal here" → `{type:'claim'}` (den #681). Optional geometry is
+ * applied like a resize; omitted → the den reuses this client's last resize.
+ */
+fun termClaimJson(cols: Int? = null, rows: Int? = null): String =
+    if (cols != null && rows != null) """{"type":"claim","cols":$cols,"rows":$rows}"""
+    else """{"type":"claim"}"""
+
+/**
  * Hello-then-binary ordering pin. Binary before hello is dropped; every
  * binary after hello is written, including the ring.
  */
@@ -142,6 +150,10 @@ class TermPtyClient(private val sink: TermSink) {
 
     fun resize(cols: Int, rows: Int): Boolean =
         sink.sendText(termResizeJson(cols, rows))
+
+    /** Take ownership of the shared PTY with the current geometry. */
+    fun claim(cols: Int, rows: Int): Boolean =
+        sink.sendText(termClaimJson(cols, rows))
 
     fun leave() {
         sink.sendText(TERM_DETACH_JSON)

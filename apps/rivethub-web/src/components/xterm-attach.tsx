@@ -7,7 +7,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { ImageAddon } from '@xterm/addon-image'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import type { TermExitFrame, TermHelloFrame } from '@rivetos/types'
+import type { TermExitFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { resolvedThemeOf, useResolvedTheme, useTheme } from '../stores/theme.js'
 import { resolveXtermTheme, useTerminalSettings } from '../stores/terminal-settings.js'
@@ -17,6 +17,9 @@ import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
 import { expiresInLabel, filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
+import { buildClaimFrame, ownerBanner, reduceOwner, type TermOwner } from '../lib/owner-banner.js'
+import { DenBot } from './den-bot.js'
+import { Button } from './ui/button.js'
 
 /**
  * Attach an xterm to a PTY over WS /api/terminal/ws. Framing per den-server
@@ -188,6 +191,12 @@ export function XtermAttach(props: {
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const findOpenRef = useRef(false)
+  // Terminal ownership (den #681): who owns the shared PTY, from the hello
+  // `owner` and `{type:'owner'}` broadcasts. Non-owners get the banner;
+  // claimRef is filled by the socket effect so the banner button can send
+  // `{type:'claim'}` on the live socket.
+  const [owner, setOwner] = useState<TermOwner | undefined>(undefined)
+  const claimRef = useRef<(() => void) | undefined>(undefined)
   // Esc is stolen from the TUI only while the find INPUT is focused — an
   // open bar the user clicked away from must give Esc back to the terminal.
   const findFocusedRef = useRef(false)
@@ -709,6 +718,12 @@ export function XtermAttach(props: {
       const sock = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
       sockRef.current = sock
       sock.binaryType = 'arraybuffer'
+      // Ownership re-derives from the new socket's hello — drop stale state
+      // from a previous attach so a released owner can't linger as a banner.
+      setOwner(undefined)
+      claimRef.current = () => {
+        if (sock.readyState === 1) sock.send(buildClaimFrame(term.cols, term.rows))
+      }
 
       sock.onopen = () => {
         if (life.disposed) return
@@ -724,14 +739,19 @@ export function XtermAttach(props: {
       sock.onmessage = (event: MessageEvent) => {
         if (life.disposed) return
         if (typeof event.data === 'string') {
-          const frame = JSON.parse(event.data) as TermHelloFrame | TermExitFrame
+          const frame = JSON.parse(event.data) as TermHelloFrame | TermExitFrame | TermOwnerFrame
           if (frame.type === 'hello') {
+            setOwner(reduceOwner(undefined, frame))
             if (frame.cols !== term.cols || frame.rows !== term.rows)
               sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
             if (frame.state === 'exited') {
               setStatus('exited')
               onExitRef.current?.()
             }
+          } else if (frame.type === 'owner') {
+            // Ownership changed: a won claim arrives as self:true and clears
+            // the banner; device:null releases it (nobody owns the PTY).
+            setOwner((prev) => reduceOwner(prev, frame))
           } else {
             setStatus('exited')
             onExitRef.current?.()
@@ -747,6 +767,7 @@ export function XtermAttach(props: {
 
     return () => {
       life.disposed = true
+      claimRef.current = undefined
       if (resizeTimer) clearTimeout(resizeTimer)
       resizeObserver.disconnect()
       try {
@@ -763,6 +784,8 @@ export function XtermAttach(props: {
     // A home-only reconnect costs a remote pane one reset+replay; a missed
     // pipe swap costs it the session. Rebind.
   }, [props.ptyId, transportEpoch, props.base])
+
+  const banner = ownerBanner(owner)
 
   return (
     <div className="relative min-h-0 flex-1 p-2">
@@ -838,6 +861,18 @@ export function XtermAttach(props: {
       {status !== 'attached' && (
         <div className="absolute left-4 top-3 rounded bg-panel-2 px-2 py-1 font-mono text-[11px] text-ink-dim">
           {constructError ? `[terminal failed: ${constructError}]` : status}
+        </div>
+      )}
+      {/* Ownership banner (den #681): another device owns this session's
+          terminal. The xterm stays mounted and warm behind the scrim — only
+          the resize/claim path changes hands, never the PTY attach. */}
+      {banner.show && (
+        <div className="absolute inset-0 flex items-center justify-center bg-bg/70 p-4">
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-5">
+            <DenBot className="size-9" decorative />
+            <p className="font-mono text-xs text-ink">{banner.label}</p>
+            <Button onClick={() => claimRef.current?.()}>Use terminal here</Button>
+          </div>
         </div>
       )}
     </div>
