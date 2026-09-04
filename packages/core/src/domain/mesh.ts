@@ -277,9 +277,16 @@ export class FileMeshRegistry implements MeshRegistry {
         headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(10_000),
       }
+      // Default to Node's global fetch; switched to undici's own fetch below
+      // whenever an undici Agent is attached (see mesh-delegation.ts: the
+      // node_modules undici Agent and Node's bundled-undici global fetch are
+      // NOT interchangeable — global fetch rejects the Agent with
+      // `invalid onRequestStart method (UND_ERR_INVALID_ARG)`, which is what
+      // "Seed sync failed: fetch failed" was on every node, 2026-09-04).
+      let doFetch: (u: string, init: RequestInit) => Promise<Response> = (u, init) => fetch(u, init)
 
       if (this.config.tls) {
-        const { Agent: UndiciAgent } = await import('undici')
+        const { Agent: UndiciAgent, fetch: undiciFetch } = await import('undici')
         const tlsDispatcher = new UndiciAgent({
           connect: {
             ca: this.config.tls.ca,
@@ -290,9 +297,10 @@ export class FileMeshRegistry implements MeshRegistry {
         })
         // @ts-expect-error — undici dispatcher not in Node fetch RequestInit types
         fetchOptions = { ...fetchOptions, dispatcher: tlsDispatcher }
+        doFetch = (u, init) => undiciFetch(u, init as import('undici').RequestInit)
       }
 
-      const res = await fetch(url, fetchOptions)
+      const res = await doFetch(url, fetchOptions)
 
       if (!res.ok) {
         throw new Error(`Seed responded ${String(res.status)}: ${await res.text()}`)
