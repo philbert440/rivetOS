@@ -1194,12 +1194,37 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       let envFile: string | undefined
       let envFileBody = ''
       let envDir: string | undefined
+      // Attach form: size the new client to the existing WINDOW, not the
+      // caller's cols/rows — a phone chat POST at 80×24 must not shrink a
+      // desktop that's already looking at this session. Create keeps the
+      // caller's size (first viewer). Query failure falls back to caller.
+      let spawnCols = cols
+      let spawnRows = rows
+      const applyTmuxWindowSize = (): void => {
+        if (!tmux || !tmuxName) return
+        try {
+          const win = tmux.windowSize?.(tmuxName)
+          if (
+            win &&
+            Number.isFinite(win.cols) &&
+            Number.isFinite(win.rows) &&
+            win.cols > 0 &&
+            win.rows > 0
+          ) {
+            spawnCols = win.cols
+            spawnRows = win.rows
+          }
+        } catch {
+          // keep the caller's size
+        }
+      }
       if (tmux && tmuxName) {
         if (persisted) {
           // `-u` on the attach client fixes the visible `_` substitution for
           // sessions created before the locale fix; their pane processes
           // keep whatever LANG they started with until the harness restarts.
           spawnArgv = tmuxAttachArgv(tmuxSocket, tmuxConfPath, tmuxName)
+          applyTmuxWindowSize()
         } else {
           const envPairs: string[] = []
           const envFileLines: string[] = []
@@ -1244,7 +1269,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           }
           writeEnvFile(envFile, envFileBody)
         }
-        proc = deps.spawn(spawnArgv, { cwd, env, cols, rows })
+        proc = deps.spawn(spawnArgv, { cwd, env, cols: spawnCols, rows: spawnRows })
       } catch (e) {
         const dup =
           Boolean(tmux) &&
@@ -1280,7 +1305,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             }
           }
           spawnArgv = tmuxAttachArgv(tmuxSocket, tmuxConfPath, tmuxName)
-          proc = deps.spawn(spawnArgv, { cwd, env, cols, rows })
+          applyTmuxWindowSize()
+          proc = deps.spawn(spawnArgv, { cwd, env, cols: spawnCols, rows: spawnRows })
         } else {
           if (envFile) {
             try {
@@ -1324,8 +1350,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         attached: new Set(),
         exitWatchers: new Set(),
         createdAt: now(),
-        cols,
-        rows,
+        cols: spawnCols,
+        rows: spawnRows,
         lastOutputTs: now(),
         state: 'running',
         // An attach (session already existed) reattaches a RUNNING harness:
