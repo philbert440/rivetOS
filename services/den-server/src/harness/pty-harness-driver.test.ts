@@ -452,3 +452,58 @@ describe('model/effort sheet on capabilities', () => {
     expect(flips[0]?.reason).toContain('model/effort sheet changed')
   })
 })
+
+describe('pty-harness-driver herdr status mapping', () => {
+  it('prefers herdr working/blocked/idle over the activity clock and surfaces blocked', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      // no den event tap on purpose: herdr status must subscribe without hooks
+      herdrStatus: true,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: { type: string; status?: string; blocked?: boolean }[] = []
+    driver.subscribe(ClaudeCodeDriver.sessionId(UUID), (e) => {
+      seen.push({
+        type: e.type,
+        status: 'status' in e ? String((e as { status?: unknown }).status) : undefined,
+        blocked: 'blocked' in e ? Boolean((e as { blocked?: unknown }).blocked) : undefined,
+      })
+    })
+
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'working',
+      since: 1,
+    })
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId(UUID))).toMatchObject({
+      status: 'active',
+    })
+    expect(seen.some((e) => e.type === 'status' && e.status === 'working')).toBe(true)
+
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'blocked',
+      since: 2,
+    })
+    const blocked = await driver.getSession(ClaudeCodeDriver.sessionId(UUID))
+    expect(blocked).toMatchObject({ status: 'active', blocked: true })
+    expect(seen.some((e) => e.type === 'session-updated' && e.blocked)).toBe(true)
+    expect(seen.some((e) => e.type === 'status' && e.status === 'blocked')).toBe(true)
+
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: ClaudeCodeDriver.sessionId(UUID),
+      status: 'idle',
+      since: 3,
+    })
+    expect(await driver.getSession(ClaudeCodeDriver.sessionId(UUID))).toMatchObject({
+      status: 'idle',
+    })
+  })
+})
+

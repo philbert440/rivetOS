@@ -87,6 +87,7 @@ import {
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessEvent,
+  type HarnessStatusFrame,
   type HarnessId,
   type HarnessSessionSummary,
   type HarnessTranscriptTurn,
@@ -156,6 +157,12 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   /** Tap on den AgentEvent ingest. Omit → `liveStream: false`. */
   events?: (sink: (ev: DenAgentEventLike) => void) => () => void
   /**
+   * herdr status frames (`applyHerdrStatus`) reach this driver — a live
+   * source that does not depend on the den hook tap. Lets `subscribe` work
+   * on a hook-dead node whose terminals run under `term.mux: herdr`.
+   */
+  herdrStatus?: boolean
+  /**
    * cwd the roster spawns this harness in — reported on summaries. A getter,
    * not a value: the term manager re-reads `den-term.json` on every spawn, so
    * a snapshot taken at construction would go stale the moment an operator
@@ -205,6 +212,7 @@ export interface LiveState {
   status: 'active' | 'idle' | 'ended'
   /** Last status we emitted `session-updated` for — de-dupes the stream. */
   reported?: 'active' | 'idle' | 'ended' | 'error'
+  reportedBlocked?: boolean
   turnInFlight: boolean
   quietTimer?: NodeJS.Timeout
   /** Open tool calls, oldest-first — den carries no tool call ids. */
@@ -212,6 +220,11 @@ export interface LiveState {
   toolSeq: number
   /** First turn already prefixed the agent system prompt into the PTY. */
   systemPromptApplied?: boolean
+  /** herdr screen-manifest status, when a `status` frame has arrived. */
+  herdrStatus?: 'working' | 'blocked' | 'idle'
+  herdrSince?: number
+  /** Visible blocker: herdr `blocked` (permission prompt / stuck). */
+  blocked?: boolean
 }
 
 /**
@@ -245,6 +258,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   /** native id → live view (status, in-flight turn, open tool calls). */
   protected readonly live = new Map<string, LiveState>()
+  /** herdr status frames are pushed to this driver (see deps.herdrStatus). */
+  private readonly herdrStatus: boolean
   private readonly sessionSinks = new Map<string, Set<(e: HarnessEvent) => void>>()
   private readonly registrySinks = new Set<(e: HarnessEvent) => void>()
   /** native ids we have already announced as `session-created`. */
@@ -292,6 +307,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       liveStream: !!deps.events,
       listSessions: true,
     }
+    this.herdrStatus = !!deps.herdrStatus
     this.refreshSheet()
     if (deps.events) this.detachEvents = deps.events((ev) => this.onDenEvent(ev))
   }
@@ -628,7 +644,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * `session-updated` with `previousSessionId` — see `rotate`.
    */
   subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void {
-    if (!this.capabilities.liveStream) {
+    if (!this.capabilities.liveStream && !this.herdrStatus) {
       throw this.unsupported(`${this.harnessId}: no den event tap on this node`, sessionId)
     }
     const native = this.native(sessionId)
@@ -754,6 +770,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     const cwd = this.cwd()
     if (cwd) summary.cwd = cwd
+    if (this.live.get(native)?.blocked) summary.blocked = true
     return summary
   }
 
@@ -774,6 +791,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const cwd = this.cwd()
     if (cwd) summary.cwd = cwd
     if (row.model) summary.model = row.model
+    if (this.live.get(row.id)?.blocked) summary.blocked = true
     return summary
   }
 
@@ -792,6 +810,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const state = this.live.get(native)
     if (!state) return 'ended'
     if (state.status === 'ended') return 'ended'
+    // Prefer herdr's screen-manifest over the activity clock when present.
+    if (state.herdrStatus === 'working' || state.herdrStatus === 'blocked') return 'active'
+    if (state.herdrStatus === 'idle') return 'idle'
     return state.turnInFlight ? 'active' : 'idle'
   }
 
@@ -907,11 +928,59 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected setStatus(native: string, status: 'active' | 'idle' | 'ended' | 'error'): void {
     const state = this.ensureLive(native)
     if (status !== 'error') state.status = status
-    if (state.reported === status) return
+    const blocked = status === 'active' && Boolean(state.blocked)
+    if (state.reported === status && Boolean(state.reportedBlocked) === blocked) return
     state.reported = status
+    state.reportedBlocked = blocked
     const event: HarnessEvent = { type: 'session-updated', sessionId: this.sid(native), status }
+    if (blocked) event.blocked = true
     this.emit(native, event)
     this.emitRegistry(event)
+  }
+
+  /**
+   * Apply a herdr `status` frame. `working`/`idle` replace the activity clock
+   * for active↔idle; `blocked` stays `active` and surfaces `blocked: true`
+   * so a permission prompt is not a silent no-op.
+   *
+   * `nativeOrRoom` is the harness native id, or the den room key (claude/grok
+   * pin them equal; adopting drivers look up by room).
+   */
+  applyHerdrStatus(nativeOrRoom: string, frame: HarnessStatusFrame): void {
+    let native = nativeOrRoom
+    if (!this.live.has(native)) {
+      for (const [k] of this.live) {
+        if (this.room(k) === nativeOrRoom) {
+          native = k
+          break
+        }
+      }
+    }
+    const state = this.ensureLive(native)
+    state.herdrStatus = frame.status
+    state.herdrSince = frame.since
+    if (frame.status === 'working') {
+      state.blocked = false
+      state.turnInFlight = true
+      this.armQuietWindow(native)
+      this.setStatus(native, 'active')
+    } else if (frame.status === 'blocked') {
+      state.blocked = true
+      state.turnInFlight = true
+      this.setStatus(native, 'active')
+    } else {
+      state.blocked = false
+      if (state.turnInFlight) this.endTurn(native, 'herdr-idle')
+      else this.setStatus(native, 'idle')
+    }
+    const statusEvent: HarnessEvent = {
+      type: 'status',
+      sessionId: this.sid(native),
+      status: frame.status,
+      since: frame.since,
+    }
+    this.emit(native, statusEvent)
+    this.emitRegistry(statusEvent)
   }
 
   /**

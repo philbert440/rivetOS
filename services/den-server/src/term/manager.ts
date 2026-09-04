@@ -14,6 +14,11 @@
 // `persisted:true` rows. `mux:'none'` is byte-identical to the pre-T1
 // behavior. See term/tmux.ts for the control seam and name encoding.
 //
+// `term.mux: 'herdr'` (default OFF) swaps the backend for herdr 0.8.2: the
+// PTY is `herdr --session <name>` (TUI client), create is headless server +
+// workspace create + agent start (env on the socket, never argv). herdr
+// missing/wrong version → one warning and fall back to tmux. See term/herdr.ts.
+//
 // Security posture (this is a shell as the service user behind a web page —
 // every rule here is deliberate):
 //   - only roster KEYS come in over HTTP; argv/cwd/env are operator-owned
@@ -68,6 +73,19 @@ import {
   type TmuxCtl,
   type TmuxSessionInfo,
 } from './tmux.js'
+import {
+  createHerdrStatusHub,
+  createRealHerdrCtl,
+  findHerdrOnPath,
+  HERDR_PINNED_VERSION,
+  herdrConfigHome,
+  herdrKindForCommand,
+  herdrSupported,
+  HerdrUnavailableError,
+  type HerdrCtl,
+  type HerdrStatusHub,
+} from './herdr.js'
+import type { HarnessStatusFrame } from '@rivetos/types'
 
 export class TermSpawnError extends Error {
   constructor(
@@ -98,6 +116,12 @@ export interface TermManagerDeps {
    *  `-L rivet-<hash>` socket (when mux resolves to tmux). Its presence also
    *  counts as "tmux is available" for mux detection. */
   tmuxCtl?: TmuxCtl
+  /** herdr control seam (`term.mux: 'herdr'`): injected by tests so unit
+   *  tests never spawn a real herdr. Omitted = execFileSync against a
+   *  pinned 0.8.2 binary on PATH. */
+  herdrCtl?: HerdrCtl
+  /** herdr `status` frames (working/blocked/idle) for the harness-session WS. */
+  onHerdrStatus?: (denSession: string, frame: HarnessStatusFrame) => void
   /** Write a 0600 env file used by the tmux CREATE harness wrapper.
    *  Default: writeFileSync(path, body, { mode: 0o600 }). Tests inject a
    *  capture so they can assert contents without reading the real fs. */
@@ -124,9 +148,9 @@ export interface PtyInfo {
   state: 'running' | 'exited'
   exitCode?: number | null
   lastOutputTs: number
-  /** Mux layer under this PTY. Present only when 'tmux' — under 'none' the
-   *  wire shape stays byte-identical to before T1. */
-  mux?: 'tmux'
+  /** Mux layer under this PTY. Present only when 'tmux' or 'herdr' — under
+   *  'none' the wire shape stays byte-identical to before T1. */
+  mux?: 'tmux' | 'herdr'
   /** /term/list only: a tmux session with NO den client — it outlived a den
    *  restart/detach (reattach with POST /term {session}). Never set on live
    *  client rows (those report `reattached` instead). */
@@ -170,10 +194,12 @@ interface PtyRecord {
   /** Per-user routing: the RIVETOS_USER_ID this PTY was spawned with, or
    *  undefined for the node owner. Reuse across identities is refused. */
   routedUser?: string
-  /** tmux session name (encoded) backing this PTY when mux is tmux; the den
-   *  PTY is a tmux CLIENT of this session. Never decode this back into
+  /** Encoded mux session name backing this PTY when mux is tmux or herdr;
+   *  the den PTY is a CLIENT of this session. Never decode this back into
    *  denSession on the spawn path — both are stored here. */
   tmuxName?: string
+  /** Which mux owns tmuxName. Absent on direct-PTY records. */
+  muxKind?: 'tmux' | 'herdr'
   /** The tmux session already existed at spawn time (attach-session): the
    *  harness is already running, so no --resume/--session-id flags were
    *  passed and the ready-gate starts open. Surfaced as `reattached`. */
@@ -384,18 +410,24 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       writeFileSync(path, body, { mode: 0o600 })
     })
 
-  // tmux mux resolution (T1) — once, at construction. An explicit
-  // `term.mux: 'none'` opts out; an explicit 'tmux' with a missing/too-old
-  // binary fails every spawn with tmux-unavailable (#19); unset = auto, used
-  // when available (injected ctl, or a ≥3.2 binary found on PATH — `-e`
-  // session env needs 3.2), with exactly one fallback log line when it isn't.
+  // Mux resolution — once, at construction.
+  //   mux: 'none'     → direct PTY (pre-T1)
+  //   mux: 'tmux'     → explicit tmux; missing/too-old binary fails every spawn
+  //   mux: unset      → auto tmux when ≥3.2 is on PATH, else one fallback log
+  //   mux: 'herdr'    → pinned herdr 0.8.2; missing/wrong version → one warning
+  //                     and fall back to tmux (never auto-select herdr)
   let tmux: TmuxCtl | undefined
+  let herdr: HerdrCtl | undefined
+  let herdrHome = ''
   let tmuxConfPath = ''
   let tmuxSocket = ''
   let tmuxUnavailableReason = ''
+  let herdrUnavailableReason = ''
   const muxWanted = config.term.mux !== 'none'
   const muxExplicit = config.term.mux === 'tmux'
-  if (muxWanted) {
+  const herdrWanted = config.term.mux === 'herdr'
+
+  const resolveTmux = (): void => {
     tmuxSocket = tmuxSocketName(config.stateDir, config.port)
     try {
       const dir = join(config.stateDir, 'den')
@@ -414,6 +446,46 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     } catch (e) {
       tmuxUnavailableReason = `failed to write tmux.conf (${String(e)})`
     }
+  }
+
+  if (herdrWanted) {
+    herdrHome = herdrConfigHome(config.stateDir)
+    try {
+      mkdirSync(herdrHome, { recursive: true, mode: 0o700 })
+      if (deps.herdrCtl) {
+        herdr = deps.herdrCtl
+      } else {
+        const bin = findHerdrOnPath()
+        if (!bin) herdrUnavailableReason = 'herdr not found on PATH'
+        else if (!herdrSupported(bin))
+          herdrUnavailableReason = `herdr at ${bin} is not ${HERDR_PINNED_VERSION} (den pins ${HERDR_PINNED_VERSION} / protocol 20)`
+        else herdr = createRealHerdrCtl(bin, herdrHome)
+      }
+    } catch (e) {
+      herdrUnavailableReason = `failed to init herdr (${String(e)})`
+    }
+    if (!herdr) {
+      deps.log(
+        `[den-server] terminal mux: term.mux is 'herdr' but ${herdrUnavailableReason} — falling back to tmux`,
+      )
+      resolveTmux()
+      if (tmux) {
+        deps.log(
+          `[den-server] terminal mux: tmux on socket ${tmuxSocket} — herdr fallback; sessions persist across detaches and den restarts`,
+        )
+      } else {
+        deps.log(
+          `[den-server] terminal mux: tmux also unavailable (${tmuxUnavailableReason}) — falling back to direct PTY`,
+        )
+      }
+    } else {
+      deps.log(
+        `[den-server] terminal mux: herdr 0.8.2 on ${herdrHome} — sessions persist across detaches and den restarts; ` +
+          `Attach externally: XDG_CONFIG_HOME=${herdrHome} herdr --session <session>`,
+      )
+    }
+  } else if (muxWanted) {
+    resolveTmux()
     if (!tmux) {
       if (muxExplicit)
         deps.log(
@@ -431,7 +503,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       )
     }
   }
-  const mux: 'tmux' | 'none' = tmux ? 'tmux' : 'none'
+  const mux: 'tmux' | 'herdr' | 'none' = herdr ? 'herdr' : tmux ? 'tmux' : 'none'
+  /** Shared hasSession/list/kill/windowSize surface — herdr implements the
+   *  same methods as TmuxCtl so create/attach/list/reap do not grow a second
+   *  copy of those branches. */
+  const muxCtl = herdr ?? tmux
+  let statusHub: HerdrStatusHub | undefined
   /** Auto mode only: one log line the first time a spawn hits a dead tmux
    *  mid-life and falls back to a direct spawn for that call. */
   let tmuxFallbackLogged = false
@@ -607,8 +684,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   // stalls the loop. With gcMs 0 only (a) runs — nothing is ever killed.
   const gcMs = config.term.sessionGcMs ?? 0
   let sweepTimer: NodeJS.Timeout | undefined
-  if (tmux) {
-    const ctl = tmux
+  if (muxCtl) {
+    const ctl = muxCtl
     sweepTimer = setInterval(
       () => {
         let sessions: TmuxSessionInfo[]
@@ -637,11 +714,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               firstSeenTs: now(),
               endSent: false,
             })
+            if (herdr) statusHub?.retain(s.name, decodeTmuxName(s.name))
           }
         }
         // prune dead-and-notified entries so the map stays bounded
         for (const [name, k] of knownTmux) {
-          if (k.endSent && !liveNames.has(name)) knownTmux.delete(name)
+          if (k.endSent && !liveNames.has(name)) {
+            statusHub?.release(name)
+            knownTmux.delete(name)
+          }
         }
         // (b) GC — opt-in via sessionGcMs; 0 = sessions live until killed
         if (gcMs <= 0) return
@@ -743,6 +824,20 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     armIdleTtl(r)
   }
 
+  if (herdr) {
+    const ctl = herdr
+    statusHub = createHerdrStatusHub({
+      subscribe: (name, onEvent, onClose) =>
+        ctl.subscribeEvents?.(name, onEvent, onClose) ?? ((): void => undefined),
+      onFrame: (name, frame) => {
+        const rec = [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
+        if (rec && frame.status === 'working') touchActivity(rec)
+        const denSession = rec?.denSession ?? decodeTmuxName(name)
+        deps.onHerdrStatus?.(denSession, { ...frame, sessionId: frame.sessionId || (denSession as HarnessStatusFrame['sessionId']) })
+      },
+    })
+  }
+
   const appendScrollback = (r: PtyRecord, data: string | Buffer): void => {
     const cap = config.term.scrollbackBytes
     const chunk = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
@@ -784,10 +879,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     // auto-mode direct fallback) the descriptor stays byte-identical to
     // before T1. socket + session are for the HTTP layer to compose attach;
     // they are stripped before the wire (see term/attach.ts).
-    if (r.tmuxName) {
-      out.mux = 'tmux'
-      out.socket = tmuxSocket
+    if (r.tmuxName && r.muxKind) {
+      out.mux = r.muxKind
       out.session = r.tmuxName
+      if (r.muxKind === 'tmux') out.socket = tmuxSocket
     }
     if (r.persisted) out.reattached = true
     if (r.routedUser !== undefined) out.routedUser = r.routedUser
@@ -799,17 +894,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
    *  (never fake 0s — the row exists so a client can reattach, not to report
    *  stale geometry). */
   const persistedRow = (s: TmuxSessionInfo): PtyInfo => ({
-    id: `tmux-${s.name}`,
+    id: mux === 'herdr' ? `herdr-${s.name}` : `tmux-${s.name}`,
     denSession: decodeTmuxName(s.name),
     command: s.command,
     attached: 0,
     createdAt: s.created * 1000,
     state: 'running',
     lastOutputTs: s.activity * 1000,
-    mux: 'tmux',
+    mux: mux === 'herdr' ? 'herdr' : 'tmux',
     persisted: true,
-    socket: tmuxSocket,
     session: s.name,
+    ...(mux === 'tmux' ? { socket: tmuxSocket } : {}),
     ...(s.pid !== undefined ? { pid: s.pid } : {}),
     ...(s.user && s.user !== 'owner' ? { routedUser: s.user } : {}),
   })
@@ -822,9 +917,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const aliased = bySession.get(id)
     const r = records.get(id) ?? (aliased ? records.get(aliased) : undefined)
     if (r) return r
-    if (!tmux) return undefined
+    if (!muxCtl) return undefined
     let name: string | undefined
     if (id.startsWith('tmux-')) name = id.slice('tmux-'.length)
+    else if (id.startsWith('herdr-')) name = id.slice('herdr-'.length)
     else if (/^[a-zA-Z0-9:_.-]{1,120}$/.test(id) && !id.startsWith('-')) {
       try {
         name = encodeTmuxName(id)
@@ -833,7 +929,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       }
     }
     if (!name) return undefined
-    const s = tmux.listSessions().find((x) => x.name === name)
+    const s = muxCtl.listSessions().find((x) => x.name === name)
     if (s && s.command) return s
     return undefined
   }
@@ -844,23 +940,23 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.exitCode = exitCode
     clearTimers(r)
     audit('exit', r, { exitCode })
-    if (tmux && r.tmuxName) {
-      // Under tmux a detaching CLIENT exits while the harness lives on in
-      // the tmux server — that is not a harness exit. Mark the detach on
+    if (muxCtl && r.tmuxName) {
+      // Under tmux/herdr a detaching CLIENT exits while the harness lives on
+      // in the mux server — that is not a harness exit. Mark the detach on
       // den's own clock (GC eligibility + sweep), drop the session alias
       // NOW so the next POST /term takes the attach path (never reuses a
       // dead client), and reap immediately: there is nothing to linger for
-      // — the scrollback replay belongs to tmux, not den's ring.
+      // — the scrollback replay belongs to the mux, not den's ring.
       const known = knownTmux.get(r.tmuxName)
       if (known) known.lastDetachTs = now()
       if (bySession.get(r.denSession) === r.id) bySession.delete(r.denSession)
       // If the session is ALREADY gone (kill path, or a harness that died
       // with its client) end the room now; if it still looks alive the
       // sweep re-checks — a session mid-teardown can read as alive here,
-      // and tmux being unreachable must read as "unknown", never as "end".
+      // and the mux being unreachable must read as "unknown", never as "end".
       let alive: boolean
       try {
-        alive = tmux.hasSession(r.tmuxName)
+        alive = muxCtl.hasSession(r.tmuxName)
       } catch {
         alive = true
       }
@@ -939,7 +1035,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // it without a trace (#19). Auto mode already logged its fallback.
       // Checked BEFORE the LRU eviction below — a spawn that throws must
       // never evict a healthy pty.
-      if (muxExplicit && !tmux)
+      if (muxExplicit && !tmux && !herdr)
         throw new TermSpawnError(
           'tmux-unavailable',
           `term.mux is 'tmux' but ${tmuxUnavailableReason}`,
@@ -1002,7 +1098,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             'user-mismatch',
             `tmux session for ${denSession} is owned by another user`,
           )
-        if (d === 'adopt' && tmux) {
+        if (d === 'adopt' && muxCtl) {
           // Classify already refuses non-owner adopt; keep the guard here so
           // a stub/mis-classified row cannot stamp a routed identity.
           if ((routedUser ?? 'owner') !== 'owner')
@@ -1010,8 +1106,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               'user-mismatch',
               `tmux session for ${denSession} is owned by another user`,
             )
-          tmux.setOption?.(s.name, '@rivet_command', s.command || key)
-          tmux.setOption?.(s.name, '@rivet_user', 'owner')
+          muxCtl.setOption?.(s.name, '@rivet_command', s.command || key)
+          muxCtl.setOption?.(s.name, '@rivet_user', 'owner')
           if (!adoptedTmux.has(s.name)) {
             adoptedTmux.add(s.name)
             deps.log(`[den-server] term: adopted untagged tmux session ${s.name} (pre-fix create)`)
@@ -1019,35 +1115,42 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
         persisted = true
       }
-      if (tmux) {
+      if (muxCtl) {
         if (spawnInflight.has(denSession))
           throw new TermSpawnError('cap', `spawn already in flight for session ${denSession}`)
         spawnInflight.add(denSession)
         try {
           tmuxName = encodeTmuxName(denSession)
-          tmux.refresh?.()
+          muxCtl.refresh?.()
           try {
-            const existing = tmux.listSessions().find((s) => s.name === tmuxName)
+            const existing = muxCtl.listSessions().find((s) => s.name === tmuxName)
             if (existing) {
               takeExisting(existing)
-            } else if (tmuxName && tmux.hasSession(tmuxName)) {
+            } else if (tmuxName && muxCtl.hasSession(tmuxName)) {
               // Session appeared between list and now (or list missed it).
               // Attach rather than create — new-session would print
               // "duplicate session" and the PTY would exit 1. Fail closed
               // when hasSession is true but list still has no row: a
               // synthesized empty-tag stub would adopt over a real
               // @rivet_user we cannot see.
-              tmux.refresh?.()
-              const raced = tmux.listSessions().find((s) => s.name === tmuxName)
+              muxCtl.refresh?.()
+              const raced = muxCtl.listSessions().find((s) => s.name === tmuxName)
               if (!raced)
                 throw new TermSpawnError('tmux-unavailable', 'session exists but is not listable')
               takeExisting(raced)
             }
           } catch (e) {
             if (e instanceof TermSpawnError) throw e
-            if (!(e instanceof TmuxUnavailableError)) throw e
+            const muxDown =
+              e instanceof TmuxUnavailableError || e instanceof HerdrUnavailableError
+            if (!muxDown) throw e
             if (muxExplicit)
               throw new TermSpawnError('tmux-unavailable', `tmux unavailable: ${e.message}`)
+            if (herdrWanted) {
+              // explicit herdr already fell back at construction; a mid-life
+              // herdr failure on a live herdr ctl is fail-closed for this spawn.
+              throw new TermSpawnError('tmux-unavailable', `herdr unavailable: ${e.message}`)
+            }
             if (!tmuxFallbackLogged) {
               tmuxFallbackLogged = true
               deps.log(
@@ -1201,9 +1304,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       let spawnCols = cols
       let spawnRows = rows
       const applyTmuxWindowSize = (): void => {
-        if (!tmux || !tmuxName) return
+        if (!muxCtl || !tmuxName) return
         try {
-          const win = tmux.windowSize?.(tmuxName)
+          const win = muxCtl.windowSize?.(tmuxName)
           if (
             win &&
             Number.isFinite(win.cols) &&
@@ -1218,7 +1321,41 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // keep the caller's size
         }
       }
-      if (tmux && tmuxName) {
+      let herdrPendingCreate:
+        | {
+            name: string
+            argv: string[]
+            env: Record<string, string>
+            cwd: string
+            kind: string
+            command: string
+            user: string
+            cols: number
+            rows: number
+          }
+        | undefined
+      if (herdr && tmuxName) {
+        if (!persisted) {
+          const herdrEnv: Record<string, string> = {}
+          for (const k of tmuxEnvKeys) {
+            if (Object.hasOwn(env, k)) herdrEnv[k] = env[k]
+          }
+          herdrPendingCreate = {
+            name: tmuxName,
+            argv,
+            env: herdrEnv,
+            cwd,
+            kind: herdrKindForCommand(key),
+            command: key,
+            user: routedUser ?? 'owner',
+            cols,
+            rows,
+          }
+        }
+        spawnArgv = herdr.attachArgv(tmuxName)
+        env.XDG_CONFIG_HOME = herdrHome
+        applyTmuxWindowSize()
+      } else if (tmux && tmuxName) {
         if (persisted) {
           // `-u` on the attach client fixes the visible `_` substitution for
           // sessions created before the locale fix; their pane processes
@@ -1260,6 +1397,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Env-file write + spawn share one try/finally so EACCES/ENOSPC cannot
       // leak spawnInflight (a leaked flag wedges the denSession with 'cap').
       try {
+        if (herdr && herdrPendingCreate) herdr.create(herdrPendingCreate)
         if (envFile && envDir) {
           mkdirSync(envDir, { recursive: true, mode: 0o700 })
           try {
@@ -1315,22 +1453,28 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               // best-effort: client failed before exec — don't leave credentials
             }
           }
+          if (e instanceof HerdrUnavailableError)
+            throw new TermSpawnError('tmux-unavailable', `herdr unavailable: ${e.message}`)
           throw e
         }
       } finally {
         spawnInflight.delete(denSession)
       }
-      if (tmux && tmuxName) {
+      if (muxCtl && tmuxName) {
         // den's own picture of the session: end-notification and GC work off
-        // this, never off tmux's activity clock.
+        // this, never off the mux activity clock.
+        const firstSeen = !knownTmux.has(tmuxName)
         knownTmux.set(tmuxName, {
           denSession,
           command: key,
           room: entry.room,
           routedUser,
-          firstSeenTs: now(),
+          firstSeenTs: knownTmux.get(tmuxName)?.firstSeenTs ?? now(),
           endSent: false,
         })
+        if (herdr && (firstSeen || (statusHub?.refs(tmuxName) ?? 0) === 0)) {
+          statusHub?.retain(tmuxName, denSession)
+        }
       }
       const r: PtyRecord = {
         id,
@@ -1346,6 +1490,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         scrollbackSize: 0,
         routedUser,
         tmuxName,
+        muxKind: tmuxName ? (herdr ? 'herdr' : tmux ? 'tmux' : undefined) : undefined,
         persisted,
         attached: new Set(),
         exitWatchers: new Set(),
@@ -1394,7 +1539,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         for (const cb of r.attached) cb(data)
       })
       proc.onExit((exitCode) => onExit(r, exitCode))
-      audit('spawn', r, tmux && tmuxName ? { mux, tmuxName, persisted } : {})
+      audit('spawn', r, tmuxName ? { mux, tmuxName, persisted } : {})
       armDetachedTtl(r)
       armIdleTtl(r)
       // room:true entries get their den room immediately: harness hooks only
@@ -1423,12 +1568,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // (@rivet_command) are listed — a bare name is never proof of
       // ownership (#7). A tmux failure degrades the answer to den's own
       // records instead of failing the poll (#9).
-      if (tmux) {
+      if (muxCtl) {
         const claimed = new Set<string>()
         for (const r of records.values()) if (r.tmuxName) claimed.add(r.tmuxName)
         let sessions: TmuxSessionInfo[] = []
         try {
-          sessions = tmux.listSessions()
+          sessions = muxCtl.listSessions()
         } catch (e) {
           deps.log(
             `[den-server] term: listSessions failed — listing den records only (${String(e)})`,
@@ -1465,10 +1610,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // client (#4). Only den-tagged sessions are killable this way; ctl
         // failures propagate so DELETE fails closed instead of silently
         // skipping (#9).
-        if (!tmux) return false
+        if (!muxCtl) return false
         const s = hit
         const name = s.name
-        tmux.killSession(name)
+        muxCtl.killSession(name)
+        statusHub?.release(name)
         auditLine({
           ts: now(),
           action: 'kill',
@@ -1501,9 +1647,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // SIGKILL escalation on the client PTY below is the backstop. Ordered
       // kill-session FIRST so the client's exit sees the session gone and the
       // synthetic session.end still fires as it does under mux:none.
-      if (tmux && r.tmuxName) {
+      if (muxCtl && r.tmuxName) {
         try {
-          tmux.killSession(r.tmuxName)
+          muxCtl.killSession(r.tmuxName)
+          statusHub?.release(r.tmuxName)
         } catch {
           // session may already be gone — the escalation below still applies
         }
@@ -1619,6 +1766,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
     close(): void {
       if (sweepTimer) clearInterval(sweepTimer)
+      statusHub?.close()
       for (const r of records.values()) {
         clearTimers(r)
         if (r.state === 'running') r.proc.kill('SIGHUP')

@@ -62,10 +62,12 @@ export interface DenTermConfig {
   injectSubmitDelayMs?: number
   /** Mux layer under every PTY (RIVETOS_DEN_TERM_MUX). 'tmux' runs the harness
    *  inside a tmux session on the `-L rivet` socket so it survives den
-   *  restarts and browser detaches; 'none' is today's direct spawn. Unset =
+   *  restarts and browser detaches; 'herdr' uses a pinned herdr 0.8.2 server
+   *  (screen-manifest working/blocked/idle) and falls back to tmux if the
+   *  binary is missing/wrong version; 'none' is today's direct spawn. Unset =
    *  detect at manager construction: tmux when the binary is on PATH, else
-   *  none (one log line). */
-  mux?: 'tmux' | 'none'
+   *  none (one log line). herdr is NEVER auto-selected. */
+  mux?: 'tmux' | 'herdr' | 'none'
   /** Tmux session garbage collection (RIVETOS_DEN_TERM_SESSION_GC_MS). When
    *  > 0, a periodic sweep kills tmux sessions on our socket whose last
    *  activity is older than this and that have no den client attached.
@@ -290,14 +292,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
-      mux: ((): 'tmux' | 'none' | undefined => {
+      mux: ((): 'tmux' | 'herdr' | 'none' | undefined => {
         const raw = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()
-        if (raw === 'tmux' || raw === 'none') return raw
+        if (raw === 'tmux' || raw === 'herdr' || raw === 'none') return raw
         // a typo must not silently mean "auto" (which would enable tmux
         // against the operator's intent) — fail safe to 'none' and say so
         if (raw) {
           console.error(
-            `[den-server] config: RIVETOS_DEN_TERM_MUX=${JSON.stringify(env.RIVETOS_DEN_TERM_MUX)} is not 'tmux' or 'none' — using 'none'`,
+            `[den-server] config: RIVETOS_DEN_TERM_MUX=${JSON.stringify(env.RIVETOS_DEN_TERM_MUX)} is not 'tmux', 'herdr', or 'none' — using 'none'`,
           )
           return 'none'
         }
