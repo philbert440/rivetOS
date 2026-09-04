@@ -456,10 +456,19 @@ export function ChatPage(): JSX.Element {
     }
   }, [sessionFromUrl, active, drafts, setActive, navigate])
   // Chat-first launch on narrow (Phil 2026-09-03): land in the most recent
-  // session for the current node — an in-progress draft wins — instead of
-  // the list. Latched: once any session has been established (deep link,
-  // restore, or this pick), explicit list visits (rail Conversations, the
-  // history drawer) must not be bounced back into a thread.
+  // session — current node preferred, any node as fallback, a draft wins —
+  // instead of the list. `pickLaunchSession` (lib/launch-session.ts) shares
+  // its rule with Android. Latched: once any session has been established
+  // (deep link, restore, or this pick), explicit list visits (rail
+  // Conversations, the history drawer) must not be bounced back into a thread.
+  //
+  // Divergence from Android (MainActivity, which debounces the multi-node load
+  // and mints a new draft when there are zero sessions): here the effect
+  // re-runs on every `items` change and latches on the FIRST successful pick,
+  // so a session that streams in from a slow node after the pick is not
+  // preferred, and a hub with NO sessions stays on the list rather than
+  // minting a draft. Acceptable on web (desktop-first; the phone is the native
+  // app); revisit if web becomes a primary phone surface.
   const launchLatch = useRef(false)
   useEffect(() => {
     if (!narrow || launchLatch.current) return

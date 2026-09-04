@@ -14,7 +14,8 @@ class LaunchSessionTest {
         updatedAt: Long,
         kind: ChatItemKind = ChatItemKind.HARNESS,
         pinNodeBaseUrl: String? = null,
-    ) = LaunchCandidate(key, updatedAt, kind, pinNodeBaseUrl)
+        pin: Boolean = false,
+    ) = LaunchCandidate(key, updatedAt, kind, pinNodeBaseUrl, pin)
 
     @Test
     fun `picks the most recent session for the current node`() {
@@ -44,24 +45,51 @@ class LaunchSessionTest {
     }
 
     @Test
-    fun `ignores rows pinned from another node`() {
+    fun `prefers the current node over a more recent session on another node`() {
         assertEquals(
             "local",
-            pickLaunchSession(listOf(row("remote-pin", 900, ChatItemKind.LEGACY, other), row("local", 100)), hub),
+            pickLaunchSession(
+                listOf(row("remote-newer", 900, pinNodeBaseUrl = other), row("local", 100, pinNodeBaseUrl = hub)),
+                hub,
+            ),
         )
     }
 
     @Test
-    fun `accepts a pin whose node is the current node`() {
+    fun `falls back to the most recent session on ANY node when the current node has none`() {
+        // The current node (hub) has no sessions → resume the genuinely most
+        // recent thread rather than stranding on the list. (This is the
+        // datahub case: the default node holds no interactive sessions.)
         assertEquals(
-            "home-pin",
-            pickLaunchSession(listOf(row("home-pin", 900, ChatItemKind.LEGACY, hub), row("local", 100)), hub),
+            "remote-new",
+            pickLaunchSession(
+                listOf(row("remote-old", 100, pinNodeBaseUrl = other), row("remote-new", 500, pinNodeBaseUrl = other)),
+                hub,
+            ),
         )
     }
 
     @Test
-    fun `returns null when the node has no sessions at all`() {
+    fun `excludes agent-pin pointer rows, even the most recent`() {
+        // Pin rows are agent pointers, not resumable sessions.
+        assertEquals(
+            "real",
+            pickLaunchSession(
+                listOf(row("agent-pin", 900, pinNodeBaseUrl = hub, pin = true), row("real", 100, pinNodeBaseUrl = hub)),
+                hub,
+            ),
+        )
+    }
+
+    @Test
+    fun `returns null only when there is no resumable session anywhere`() {
         assertNull(pickLaunchSession(emptyList(), hub))
-        assertNull(pickLaunchSession(listOf(row("remote-pin", 1, ChatItemKind.LEGACY, other)), hub))
+        // All candidates are agent pins → nothing to resume → null → new draft.
+        assertNull(
+            pickLaunchSession(
+                listOf(row("p1", 900, pinNodeBaseUrl = hub, pin = true), row("p2", 800, pinNodeBaseUrl = other, pin = true)),
+                hub,
+            ),
+        )
     }
 }
