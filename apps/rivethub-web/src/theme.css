@@ -400,6 +400,17 @@ html[data-theme='light'] {
   font-size: 13px;
 }
 
+@media (max-width: 767px) {
+  .rivet-memory-surfaces .stat-grid {
+    grid-template-columns: 1fr;
+  }
+  .rivet-memory-surfaces .searchbar input[type='search'],
+  .rivet-memory-surfaces .searchbar input[type='text'] {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
 .health.compact {
   padding: 0;
   border: 0;

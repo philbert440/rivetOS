@@ -2,6 +2,8 @@ import type { JSX } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { BarChart3, BookOpen, Clock, Search } from 'lucide-react'
 import type { RivetGateway } from '@rivetos/gateway-client'
+import { useIsNarrow } from '../lib/use-narrow.js'
+import { cn } from '../lib/utils.js'
 import { HealthTile } from './HealthTile.js'
 
 export type MemoryTab = 'search' | 'wiki' | 'browse' | 'stats'
@@ -21,6 +23,7 @@ export function MemoryHubNav(props: {
   baseUrl?: string
 }): JSX.Element {
   const navigate = useNavigate()
+  const narrow = useIsNarrow()
   function setTab(next: MemoryTab): void {
     void navigate({
       to: '/memory',
@@ -28,18 +31,25 @@ export function MemoryHubNav(props: {
     })
   }
   return (
-    <nav className="flex shrink-0 items-center gap-1 border-b border-line bg-panel/60 px-3 py-2">
+    <nav
+      className={
+        narrow
+          ? 'flex shrink-0 items-center gap-1 overflow-x-auto border-b border-line bg-panel/60 px-2 py-1.5'
+          : 'flex shrink-0 items-center gap-1 border-b border-line bg-panel/60 px-3 py-2'
+      }
+    >
       {TABS.map(({ id, label, icon: Icon }) => (
         <button
           key={id}
           type="button"
           onClick={() => setTab(id)}
           aria-current={props.tab === id ? 'page' : undefined}
-          className={
+          className={cn(
             props.tab === id
               ? 'inline-flex items-center gap-1.5 rounded bg-panel-2 px-3 py-1.5 text-sm text-em'
-              : 'inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink'
-          }
+              : 'inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink',
+            narrow && 'shrink-0 whitespace-nowrap',
+          )}
         >
           <Icon className="size-3.5" aria-hidden />
           {label}
