@@ -77,6 +77,20 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             TopBar(title = "Settings", onOpenDrawer = {}, padStatusBar = false)
             Spacer(Modifier.height(8.dp))
             TopBar(title = "RivetHub", onOpenDrawer = null, padStatusBar = false)
+            Spacer(Modifier.height(8.dp))
+            // Session one-row header (chat.tsx:1645): ☰ · id · ctx % · Stop · Terminal|Chat · history.
+            ChatSessionHeader(
+                sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
+                context = ContextBarView(tokens = 50_202, max = 1_000_000, pct = 5, estimated = false),
+                modeOptions = listOf("Terminal", "Chat"),
+                selectedMode = "Chat",
+                onSelectMode = {},
+                onOpenMenu = {},
+                onOpenHistory = {},
+                showStop = true,
+                onStop = {},
+                padStatusBar = false,
+            )
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Drawer nav · $label")
                 NavRow("Conversations", R.drawable.lucide_message_square, active = true, onClick = {})
@@ -237,9 +251,11 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
                 onSelectMode = {},
-                onBack = {},
+                onOpenMenu = {},
+                onOpenHistory = {},
                 showStop = false,
                 onStop = {},
+                padStatusBar = false,
             )
             GalleryH("Chat header · in-flight")
             ChatSessionHeader(
@@ -248,9 +264,11 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
                 onSelectMode = {},
-                onBack = {},
+                onOpenMenu = {},
+                onOpenHistory = {},
                 showStop = true,
                 onStop = {},
+                padStatusBar = false,
             )
             GalleryH("Chat header · draft")
             ChatSessionHeader(
@@ -259,9 +277,11 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
                 onSelectMode = {},
-                onBack = {},
+                onOpenMenu = {},
+                onOpenHistory = {},
                 showStop = false,
                 onStop = {},
+                padStatusBar = false,
             )
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Context bar")

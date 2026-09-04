@@ -12,9 +12,12 @@ runs on the phone. Off-LAN via the stock Tailscale app. The plan of record is
 M3b replaced the Grok-Bot UI. M4 attaches Terminal mode to the session PTY. D1a is desktop-parity
 chrome (drawer · conversations · settings · enroll). D1b is desktop-parity chat (header ·
 transcript · composer · terminal chrome). D2 is visual parity with the responsive web at phone
-width (MobileTopBar on every screen, flat conversation rows, drawer/status-bar insets fixed,
-no spinners, light-theme audit). `MainActivity.App()` routes Enroll → Hub
-(drawer + Conversations / Settings) → Chat. Grok-Bot screens/VMs are gone from the tree
+width (MobileTopBar chrome, flat conversation rows, drawer/status-bar insets fixed,
+no spinners, light-theme audit). The session-header slice adds the phone session chrome:
+ONE header row (☰ · id · ctx % · Stop · Terminal|Chat · history, no TopBar/no back), the left
+drawer shared with the session (☰ or edge swipe everywhere), a right history drawer hosting the
+conversations pane, transcript pinned to the bottom, chat-first launch. `MainActivity.App()`
+routes Enroll → Hub (HubDrawer + Conversations / Settings) → Chat (same HubDrawer + HistoryDrawer). Grok-Bot screens/VMs are gone from the tree
 (removed in the M3b commit).
 
 ## Where this tree came from (slice M1a, 2026-09-03)
@@ -45,11 +48,11 @@ Hand-rolled `Nav` back stack. Start: Enroll if no identity / blank entry URL / n
 
 | Screen | File | ViewModel | Notes |
 |---|---|---|---|
-| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative DenBot) + p12 + entry URL; 401 → cert refused; `https://` only |
-| Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Modal left drawer + Conversations (home) or Settings; Forget calls `shutdown()` on the same instance |
-| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | TopBar + desktop ConversationsPane: flat recency list, filter after threshold, archive swipe, `+ new`, no FAB / no bottom rail |
-| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (`Settings` title) + desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | TopBar above the D1b back row / transcript / composer, Terminal\|Chat swipe, VT attach |
+| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative DenBot, no ☰ — no drawer exists pre-onboarding) + p12 + entry URL; 401 → cert refused; `https://` only |
+| Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left ModalNavigationDrawer shared with Chat; Forget calls `shutdown()` on the same instance |
+| Conversations | `ui/screens/ConversationsScreen.kt` | HubViewModel | TopBar (☰ opener + decorative DenBot) + `ConversationsPane`: flat recency list, filter after threshold, archive swipe, `+ new`, no FAB / no bottom rail; the same pane fills the right history drawer in a session |
+| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer) = ConversationsPane; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
 | Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
 
 Agents live in the drawer (tap / long-press ↺ / + pointer semantics). Nodes live in the
@@ -83,7 +86,7 @@ Chat mapping (phone session view ← rivethub-web):
 | desktop | phone file |
 |---|---|
 | `pages/chat.tsx` ActiveSession header | `ui/components/ChatHeader.kt` + `HarnessChatScreen` |
-| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — phone branch only: track + token counts are `hidden sm:*`, so just `{pct}%` mono 10sp inkDim; header second line is `justify-between` (pct left, Stop + segments right) |
+| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — phone branch only: track + token counts are `hidden sm:*`, so just `{pct}%` mono 10sp inkDim, inline in the one-row session header |
 | `components/segmented-control.tsx` Terminal \| Chat | existing `SegmentedControl` |
 | `components/transcript.tsx` | `ui/components/Transcript.kt` |
 | `components/markdown.tsx` | `ui/components/MarkdownBody.kt` (`plane/Markdown.kt`) |
@@ -97,7 +100,8 @@ D2 phone chrome (responsive rivethub-web ← sidebar.tsx MobileTopBar + chat.tsx
 
 | web (phone) | phone file |
 |---|---|
-| `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, DenBot `size-7` in 44dp hit, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home/session, page title on Settings); decorative DenBot where no drawer exists |
+| `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, ☰ `size-5` in 44dp hit "Open menu", DenBot `size-7` decorative, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every non-session screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home, page title on Settings); NOT shown in a session (lib/session-header.ts showMobileTopBar) |
+| `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, items from `plane/ChatChrome.kt narrowHeaderItems`; the session screen calls no TopBar. Right history drawer (chat.tsx:585-626, `w-64 border-l line bg-panel`, bg/70 scrim) = `HistoryDrawer` hosting `ConversationsPane`; chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
 | `chat.tsx:631` flat row (`mb-1 rounded`, `px-3 py-2 text-xs`, idle `text-ink-dim`, active `text-em bg-panel-2`, chip mono 9sp `bg-panel-2`) | `ui/components/ConversationRow.kt` — 36dp rows, no cards, no 44dp row floor (source density wins over hit area here); the `SwipeToDismissBox` panel2 reveal paints ONLY while `dismissDirection == EndToStart` (an always-on backgroundContent shows through the transparent idle row as a card) |
 | `chat.tsx:833` flat list, no node/agent group rows | `paneRows` in `plane/HubChrome.kt` (pin rows titled by agent name are desktop parity, chat.tsx:378-388) |
 | `chat.tsx:808` `+ new` raw button (`rounded border line px-2 py-1 text-xs inkDim`) | `NewConversationButton` in ConversationsScreen (NOT RivetButton) |
@@ -189,7 +193,8 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 360 (D2: +5 HubChrome, +1 MaterialResidue guard).
+  (`.github/workflows/android.yml`) enforces a floor of 376 (session-header: +6 TranscriptPin,
+  +6 pickLaunchSession, +2 DrawerNav, +2 narrow header, +1 HubChrome).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo

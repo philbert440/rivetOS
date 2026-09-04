@@ -5,17 +5,19 @@ package io.rivethub.app.plane
  * pin them; the composables stay dumb.
  */
 
-/** What the mobile top bar shows after the DenBot (web `hubPageTitle`, sidebar-chrome.ts). */
+/** What the mobile top bar shows after the ☰ + DenBot (web `hubPageTitle`, sidebar-chrome.ts). */
 enum class TopBarTitle { Wordmark, Settings }
 
 /**
- * Web rule: the home page (`/`) and every session show the `RivetHub`
- * wordmark; named pages show their page title. Session / enroll screens have
- * no hub tab and pass null — the bar keeps the wordmark above the back row.
+ * Web rule (lib/session-header.ts `showMobileTopBar`): the wordmark bar shows
+ * on every narrow screen EXCEPT an open session. A session renders no TopBar
+ * at all — the one-row session header owns the top inset there (chat.tsx:1645)
+ * — so this rule only has hub-tab inputs: wordmark on Conversations, page
+ * title on Settings. There is deliberately no session (null) case anymore.
  */
-fun topBarTitle(tab: HubTab?): TopBarTitle = when (tab) {
+fun topBarTitle(tab: HubTab): TopBarTitle = when (tab) {
     HubTab.Settings -> TopBarTitle.Settings
-    HubTab.Conversations, null -> TopBarTitle.Wordmark
+    HubTab.Conversations -> TopBarTitle.Wordmark
 }
 
 /**

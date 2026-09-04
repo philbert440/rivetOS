@@ -3,27 +3,42 @@ package io.rivethub.app.ui.screens
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -33,7 +48,7 @@ import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TermStatus
-import io.rivethub.app.plane.TopBarTitle
+import io.rivethub.app.plane.TranscriptPin
 import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
@@ -41,18 +56,17 @@ import io.rivethub.app.plane.contextBarView
 import io.rivethub.app.plane.humanToolTitle
 import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.plane.toolArgStrings
-import io.rivethub.app.plane.topBarTitle
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.components.AskUserCardView
 import io.rivethub.app.ui.components.ChatSessionHeader
 import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.Composer
 import io.rivethub.app.ui.components.ComposerPicker
+import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.ModePager
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
 import io.rivethub.app.ui.components.ToolRow
-import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.components.TranscriptAssistantTurn
 import io.rivethub.app.ui.components.TranscriptUserTurn
 import io.rivethub.app.ui.components.rivetHexColor
@@ -61,9 +75,25 @@ import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.term.clipboardText
 import io.rivethub.app.ui.term.copyText
 import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.RivetTheme
+import io.rivethub.app.ui.theme.RivetType
+import kotlinx.coroutines.launch
 
+/**
+ * The session screen. There is NO wordmark TopBar here (web
+ * lib/session-header.ts: the bar shows on every narrow screen EXCEPT an open
+ * session) and no back control (Phil 2026-09-03: "back" is the right-side
+ * history drawer). The one-row [ChatSessionHeader] owns the status-bar inset;
+ * [onOpenDrawer] opens the left navigation drawer (☰), [onOpenHistory] the
+ * right history drawer.
+ */
 @Composable
-fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
+fun HarnessChatScreen(
+    vm: HarnessChatViewModel,
+    onOpenDrawer: () -> Unit,
+    onOpenHistory: () -> Unit,
+) {
     val st by vm.state.collectAsState()
     val ctx = LocalContext.current
     val chatLabel = stringResource(R.string.mode_chat)
@@ -131,25 +161,14 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             .fillMaxSize()
             .imePadding(),
     ) {
-        // D2-1: the web mobile top bar stays above the session back row
-        // (routes.tsx:107 mounts MobileTopBar above <main>); no drawer here,
-        // so the DenBot is decorative.
-        TopBar(
-            title = stringResource(
-                when (topBarTitle(null)) {
-                    TopBarTitle.Wordmark -> R.string.brand_rivethub
-                    TopBarTitle.Settings -> R.string.title_settings
-                },
-            ),
-            onOpenDrawer = null,
-        )
         ChatSessionHeader(
             sessionLabel = sessionLabel,
             context = context,
             modeOptions = pages,
             selectedMode = selected,
             onSelectMode = { vm.setMode(if (it == termLabel) SessionMode.Terminal else SessionMode.Chat) },
-            onBack = onBack,
+            onOpenMenu = onOpenDrawer,
+            onOpenHistory = onOpenHistory,
             showStop = st.inFlight && st.gate.canInterrupt && !st.draft,
             onStop = vm::stop,
         )
@@ -159,11 +178,13 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
             ChatStatusStrip(stringResource(R.string.ws_disconnected), error = true)
         }
         stripError?.let { ChatStatusStrip("✗ $it", error = true) }
+        // Phil 2026-09-03: the Terminal|Chat segment is the ONLY mode switch —
+        // horizontal swipes belong to the drawers, so the pager never swipes.
         ModePager(
             pages = pages,
             selected = selected,
             onSelect = { vm.setMode(if (it == termLabel) SessionMode.Terminal else SessionMode.Chat) },
-            swipe = true,
+            swipe = false,
             showControl = false,
             modifier = Modifier.weight(1f),
         ) { page ->
@@ -282,25 +303,49 @@ fun HarnessChatScreen(vm: HarnessChatViewModel, onBack: () -> Unit) {
 private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui.graphics.Color) {
     val st by vm.state.collectAsState()
     val ctx = LocalContext.current
+    val colors = RivetTheme.colors
     val list = rememberLazyListState()
-    val last = st.turns.size + if (st.inFlight || st.liveText.isNotBlank()) 1 else 0
-    LaunchedEffect(st.turns.size, st.inFlight) {
-        val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-        if (last > 0 && (lastVisible == null || last - lastVisible <= 2)) {
-            runCatching { list.animateScrollToItem(last) }
+    val scope = rememberCoroutineScope()
+    val liveExtra = if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank()) 1 else 0
+    val count = st.turns.size + liveExtra
+    // transcript.tsx:385-480 port (plane/TranscriptPin.kt): pinned starts
+    // true; the first non-empty load jumps to the end unconditionally (a chat
+    // opens at the bottom of the thread); afterwards new content follows ONLY
+    // while within 120dp of the bottom; the ↓ latest pill re-pins.
+    val pin = remember { TranscriptPin() }
+    var pinned by remember { mutableStateOf(true) }
+    val density = LocalDensity.current
+    val distanceFromBottom by remember {
+        derivedStateOf {
+            val info = list.layoutInfo
+            val lastVisible = info.visibleItemsInfo.lastOrNull()
+            when {
+                info.totalItemsCount == 0 || lastVisible == null -> 0f
+                lastVisible.index < info.totalItemsCount - 1 -> Float.POSITIVE_INFINITY
+                else -> (lastVisible.offset + lastVisible.size - info.viewportEndOffset).toFloat()
+            }
         }
     }
-    LaunchedEffect(st.liveText) {
-        val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-        if (last > 0 && (lastVisible == null || last - lastVisible <= 2)) {
-            runCatching { list.scrollToItem(last) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { distanceFromBottom }.collect { d ->
+            pin.onScroll(with(density) { d.toDp().value })
+            pinned = pin.pinned
         }
     }
-    LazyColumn(
-        state = list,
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
+    LaunchedEffect(count, st.liveText.length, st.liveReasoning.length) {
+        if (pin.onContent(count)) {
+            // Index `count` = the trailing spacer — scrolling it into view
+            // lands on the very bottom of the thread.
+            runCatching { list.scrollToItem(count) }
+        }
+        pinned = pin.pinned
+    }
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = list,
+            modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
         itemsIndexed(st.turns, key = { i, turn -> "$i:${turn.role}" }) { _, turn ->
             val split = if (turn.role != "user") splitHermesReasoning(turn.text) else null
             val thinking = turn.thinking?.takeIf { it.isNotBlank() } ?: split?.reasoning.orEmpty()
@@ -341,6 +386,41 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
                 )
             }
         }
-        item { Spacer(Modifier.height(Dimens.grid2)) }
+            item { Spacer(Modifier.height(Dimens.grid2)) }
+        }
+        if (!pinned) {
+            // transcript.tsx:470-479 — the jump pill: absolute bottom-center
+            // 16dp, `gap-1.5 rounded-full border border-em-dim/50 bg-panel
+            // px-3 py-1.5 font-mono text-[11px] text-em`, ArrowDown 14dp
+            // (`size-3.5`), label "latest" (lowercase, as on the web).
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp)
+                    .clip(RoundedCornerShape(Radius.full))
+                    .border(1.dp, colors.emDim.copy(alpha = 0.5f), RoundedCornerShape(Radius.full))
+                    .background(colors.panel)
+                    .clickable(role = Role.Button) {
+                        pin.jump()
+                        pinned = true
+                        scope.launch { runCatching { list.scrollToItem(count) } }
+                    }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Lucide(
+                    R.drawable.lucide_arrow_down,
+                    contentDescription = null,
+                    tint = colors.em,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    stringResource(R.string.jump_latest),
+                    color = colors.em,
+                    style = RivetType.mono11,
+                )
+            }
+        }
     }
 }

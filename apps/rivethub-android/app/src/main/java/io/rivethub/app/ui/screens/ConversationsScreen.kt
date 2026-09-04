@@ -89,6 +89,45 @@ fun ConversationsScreen(
     onOpenChat: (AgentOpen) -> Unit,
     onOpenDrawer: () -> Unit,
 ) {
+    val colors = RivetTheme.colors
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(colors.panel.copy(alpha = 0.4f)),
+    ) {
+        TopBar(
+            title = stringResource(
+                when (topBarTitle(HubTab.Conversations)) {
+                    TopBarTitle.Wordmark -> R.string.brand_rivethub
+                    TopBarTitle.Settings -> R.string.title_settings
+                },
+            ),
+            onOpenDrawer = onOpenDrawer,
+        )
+        ConversationsPane(
+            vm = vm,
+            onOpenRow = onOpenRow,
+            onOpenChat = onOpenChat,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * The D1a conversations pane (chat.tsx ConversationsPane): `conversations ●
+ * (n)` + `+ new` header, filter after the threshold, flat recency rows,
+ * archived block. Used by [ConversationsScreen] on the hub AND as the content
+ * of the right-side history drawer in a session (web chat.tsx:585-626 mounts
+ * the same pane there) — one implementation, two hosts. The caller bounds the
+ * height (`weight` on the hub, the drawer sheet's own size in the drawer).
+ */
+@Composable
+fun ConversationsPane(
+    vm: HubViewModel,
+    onOpenRow: (LocatedChatItem) -> Unit,
+    onOpenChat: (AgentOpen) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val st by vm.state.collectAsState()
     val colors = RivetTheme.colors
     val lists = filterConversations(
@@ -120,20 +159,7 @@ fun ConversationsScreen(
     var pulled by remember { mutableStateOf(false) }
     LaunchedEffect(st.loading) { if (!st.loading) pulled = false }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(colors.panel.copy(alpha = 0.4f)),
-    ) {
-        TopBar(
-            title = stringResource(
-                when (topBarTitle(HubTab.Conversations)) {
-                    TopBarTitle.Wordmark -> R.string.brand_rivethub
-                    TopBarTitle.Settings -> R.string.title_settings
-                },
-            ),
-            onOpenDrawer = onOpenDrawer,
-        )
+    Column(modifier.fillMaxWidth()) {
         Row(
             Modifier
                 .fillMaxWidth()

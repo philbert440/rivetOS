@@ -89,3 +89,21 @@ describe('rail header toggle', () => {
     expect(src).not.toContain("'bg-red'")
   })
 })
+
+describe('MobileTopBar ☰ opener', () => {
+  it('makes the lucide Menu button the rail toggle, labelled "Open menu"', () => {
+    const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
+    expect(src).toContain('aria-label="Open menu"')
+    expect(src).toContain('id="hub-rail-toggle"')
+    expect(src).toContain('<Menu className="size-5 shrink-0" aria-hidden />')
+    // The DenBot stays as brand — it is no longer the toggle button.
+    expect(src).not.toContain('aria-label="Open sidebar"')
+  })
+
+  it('keeps the 44px hit box on the opener', () => {
+    const src = readFileSync(new URL('./sidebar.tsx', import.meta.url), 'utf8')
+    const toggle = src.indexOf('id="hub-rail-toggle"')
+    const hitBox = src.indexOf('size-11 shrink-0 p-0', toggle)
+    expect(hitBox).toBeGreaterThan(toggle)
+  })
+})

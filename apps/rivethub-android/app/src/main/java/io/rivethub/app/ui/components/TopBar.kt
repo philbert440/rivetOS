@@ -29,15 +29,19 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 /**
- * Mobile top bar — web `MobileTopBar` (sidebar.tsx:126-139):
- * `h-12 border-b border-line bg-panel/80 px-3`, DenBot `size-7` in a 44dp hit
- * area (the drawer toggle), then the page title `font-mono text-sm text-em`
- * (`hubPageTitle`: wordmark on home/sessions, page title elsewhere).
+ * Mobile top bar — web `MobileTopBar` (sidebar.tsx:126-140):
+ * `h-12 border-b border-line bg-panel/80 px-3`, ☰ (lucide `menu` `size-5` in a
+ * 44dp hit box, contentDescription "Open menu") as the drawer opener, DenBot
+ * `size-7` DECORATIVE beside it (web made the DenBot non-interactive in the
+ * bar — sidebar.tsx:139), then the page title `font-mono text-sm text-em`
+ * (`hubPageTitle`: wordmark on home, page title elsewhere). The bar is NOT
+ * shown while a session is open (lib/session-header.ts) — the one-row
+ * `ChatSessionHeader` owns the top inset there.
  *
  * The bar OWNS the status-bar inset: the `panel/80` background extends under
  * the status bar (`statusBarsPadding` inside the bar, never around the
  * content), so no black band shows above it. Pass `onOpenDrawer = null` on
- * screens without a drawer (session, enroll): the DenBot stays decorative.
+ * screens without a drawer (enroll): no ☰, the DenBot stays decorative.
  * `padStatusBar = false` is for the component gallery, where samples render
  * mid-scroll and must show the true 48dp bar.
  */
@@ -75,8 +79,14 @@ fun TopBar(
                     .clickable(role = Role.Button, onClick = onOpenDrawer),
                 contentAlignment = Alignment.Center,
             ) {
-                DenBot(size = Dimens.denBotHeader, decorative = true)
+                Lucide(
+                    R.drawable.lucide_menu,
+                    contentDescription = null,
+                    tint = colors.inkDim,
+                    modifier = Modifier.size(20.dp),
+                )
             }
+            DenBot(size = Dimens.denBotHeader, decorative = true)
         } else {
             Box(
                 Modifier.size(Dimens.touchTarget),

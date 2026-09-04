@@ -109,12 +109,14 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import { Archive, ArchiveRestore, ChevronLeft, Pencil, Square, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, History, Menu, Pencil, Square, Trash2 } from 'lucide-react'
 import { Button } from '../components/ui/button.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { discardDraft } from '../lib/discard-session.js'
+import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
+import { pickLaunchSession } from '../lib/launch-session.js'
 import {
   getSessionMode,
   hasSessionMode,
@@ -421,6 +423,8 @@ export function ChatPage(): JSX.Element {
   const navigate = useNavigate()
   const { session: sessionFromUrl } = useSearch({ from: '/' })
   const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
+  const historyOpen = useSidebarPrefs((s) => s.historyOpen)
+  const setHistoryOpen = useSidebarPrefs((s) => s.setHistoryOpen)
   const narrow = useIsNarrow()
   // Bidirectional ?session= sync. One effect, one direction at a time,
   // arbitrated by lastUrlRef so the two never fight:
@@ -451,6 +455,24 @@ export function ChatPage(): JSX.Element {
       void navigate({ to: '/', search: urlTarget ? { session: urlTarget } : {}, replace: true })
     }
   }, [sessionFromUrl, active, drafts, setActive, navigate])
+  // Chat-first launch on narrow (Phil 2026-09-03): land in the most recent
+  // session for the current node — an in-progress draft wins — instead of
+  // the list. Latched: once any session has been established (deep link,
+  // restore, or this pick), explicit list visits (rail Conversations, the
+  // history drawer) must not be bounced back into a thread.
+  const launchLatch = useRef(false)
+  useEffect(() => {
+    if (!narrow || launchLatch.current) return
+    if (active !== undefined || sessionFromUrl !== undefined) {
+      launchLatch.current = true
+      return
+    }
+    const pick = pickLaunchSession(items, baseUrl)
+    if (pick !== undefined) {
+      launchLatch.current = true
+      setActive(pick)
+    }
+  }, [narrow, active, sessionFromUrl, items, baseUrl, setActive])
   // Tolerant lookup: the open thread's key changes under the selection when
   // the plane adopts a draft (bare uuid → canonical) or a driver rotates the
   // native id. The rekey effect below moves the conversation onto the new
@@ -555,11 +577,52 @@ export function ChatPage(): JSX.Element {
             item={activeItem}
             gate={gate}
             harnessCommand={activeItem?.command}
-            onBack={narrow ? () => setActive(undefined) : undefined}
           />
         </SessionErrorBoundary>
       ) : (
         showEmpty && <EmptyState />
+      )}
+      {/* Narrow RIGHT history drawer (Phil 2026-09-03: "back" in a session is
+          the conversations list as a right-side drawer). Same pane, same
+          width rule as the left rail (w-64, sidebar.tsx:186-197). Mounted
+          only while a session is open; stays mounted closed so the slide
+          transition runs. Row selection closes it via
+          shouldCloseHistoryOnSelect; route/session changes close it from
+          routes.tsx. */}
+      {narrow && active !== undefined && (
+        <>
+          {historyOpen && (
+            <button
+              type="button"
+              tabIndex={-1}
+              aria-hidden={true}
+              aria-label="Close conversations"
+              className="fixed inset-0 z-30 bg-bg/70"
+              onClick={() => setHistoryOpen(false)}
+            />
+          )}
+          <div
+            id="hub-history"
+            role="dialog"
+            aria-modal={historyOpen ? true : undefined}
+            aria-label="Conversations"
+            tabIndex={-1}
+            inert={!historyOpen ? true : undefined}
+            className={cn(
+              'fixed inset-y-0 right-0 z-40 flex w-64 shrink-0 flex-col border-l border-line bg-panel',
+              'transition-transform duration-150 motion-reduce:transition-none',
+              historyOpen ? 'translate-x-0' : 'translate-x-full',
+            )}
+          >
+            <SessionDrawer
+              items={items}
+              active={active}
+              width={drawerWidth}
+              fullWidth
+              error={harnessQuery.isError ? harnessQuery.error.message : undefined}
+            />
+          </div>
+        </>
       )}
     </div>
   )
@@ -748,6 +811,7 @@ function SessionDrawer(props: {
   const unarchive = useArchived((s) => s.unarchive)
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
+  const narrow = useIsNarrow()
 
   const itemBase = (it: ChatItem): string => it.pinNodeBaseUrl ?? baseUrl
   const isArchived = (it: ChatItem): boolean =>
@@ -773,6 +837,11 @@ function SessionDrawer(props: {
 
   const openRow = (key: string): void => {
     setActive(key)
+    // Narrow right history drawer: picking a row switches the session and
+    // closes the drawer (Phil 2026-09-03). No-op anywhere else.
+    if (shouldCloseHistoryOnSelect(narrow)) {
+      useSidebarPrefs.getState().setHistoryOpen(false)
+    }
   }
 
   const renderRow = (it: ChatItem): JSX.Element => (
@@ -810,6 +879,9 @@ function SessionDrawer(props: {
             const id = newSessionId()
             addDraft(id)
             setActive(id)
+            if (shouldCloseHistoryOnSelect(narrow)) {
+              useSidebarPrefs.getState().setHistoryOpen(false)
+            }
           }}
           className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
         >
@@ -861,12 +933,11 @@ function ActiveSession(props: {
   /** Which control-plane affordances this session's driver actually has. */
   gate: HarnessGate
   harnessCommand?: string
-  /** Narrow back control — same path as the error-boundary close. */
-  onBack?: () => void
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const roster = useConnection((s) => s.roster)
   const epochForNode = useConnection((s) => s.transportEpoch)
+  const narrow = useIsNarrow()
 
   // ---- Per-session node binding --------------------------------------------
   //
@@ -1512,71 +1583,106 @@ function ActiveSession(props: {
       })
   }
 
+  // Shared header tail — identical items and order on wide and narrow:
+  // remote badge · ContextBar · Stop (interruptible turn only) · Terminal|Chat.
+  const headerTail = (
+    <>
+      {isRemote && (
+        <span
+          title={`this conversation lives on ${remoteNodeName ?? urlLabel(sessionBase)} — the app stays connected to your node`}
+          className="shrink-0 rounded border border-em-dim/60 bg-em-dim/10 px-1.5 py-0.5 font-mono text-[10px] text-em"
+        >
+          @{remoteNodeName ?? urlLabel(sessionBase)}
+        </span>
+      )}
+      {/* Context-fill bar — reported usage when present; else estimate. */}
+      <ContextBar
+        tokens={contextSource?.usage?.promptTokens}
+        model={contextSource?.model || lastAssistant?.model || settings?.agent || harnessCommand}
+        transcriptTexts={transcriptTexts}
+      />
+      {/* Interrupt is the driver's capability, not a UI preference: shown
+          only when the control plane owns this session AND reports one. */}
+      {gate.canInterrupt && liveBusy && (
+        <button
+          onClick={onInterrupt}
+          title="cancel the in-flight turn"
+          className="flex shrink-0 items-center gap-1 rounded border border-line px-2 py-1 font-mono text-[11px] text-ink-dim hover:border-red hover:text-red"
+        >
+          <Square className="size-2.5 fill-current" aria-hidden />
+          Stop
+        </button>
+      )}
+      {/* [Terminal | Chat] — two views of ONE session, ordered by
+          immersion (terminal is home). */}
+      <span className="shrink-0">
+        <SegmentedControl
+          ariaLabel="Session view"
+          value={mode}
+          onChange={(v) => {
+            // Terminal goes through enterTerminal: a parked ('failed')
+            // spawn gate re-arms the spawn effect.
+            if (v === 'terminal') enterTerminal()
+            else setMode(v)
+          }}
+          options={[
+            { value: 'terminal', label: 'Terminal' },
+            { value: 'chat', label: 'Chat' },
+          ]}
+        />
+      </span>
+    </>
+  )
+
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
-      <div className="flex max-md:flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
-        {props.onBack && (
+      {narrow ? (
+        /* ONE 48px row on the phone (Phil 2026-09-03) — same tokens as the
+           desktop header below (border-b border-line, bg-panel/40, mono
+           text-xs title): ☰ · id (truncates) · ctx % · Stop · Terminal|Chat ·
+           history. No back chevron: "back" is the right history drawer.
+           ContextBar collapses to % on its own (hidden sm: track/counts). */
+        <div className="flex h-12 flex-nowrap items-center gap-2 border-b border-line bg-panel/40 px-2">
           <Button
             variant="ghost"
             size="icon"
-            aria-label="back to conversations"
-            onClick={props.onBack}
-            className="size-8 shrink-0"
+            aria-label="Open menu"
+            aria-controls="hub-rail"
+            onClick={() => useSidebarPrefs.getState().setDrawerOpen(true)}
+            className="size-11 shrink-0 p-0"
           >
-            <ChevronLeft className="size-4" aria-hidden />
+            <Menu className="size-5 shrink-0" aria-hidden />
           </Button>
-        )}
-        {/* Canonical `<harness-id>:<native>` once the control plane owns the
-            session; the bare den join key until then. Session id truncates
-            first when the header wraps. */}
-        <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
-          {canonicalId ?? props.sessionId}
-        </span>
-        {isRemote && (
-          <span
-            title={`this conversation lives on ${remoteNodeName ?? urlLabel(sessionBase)} — the app stays connected to your node`}
-            className="shrink-0 rounded border border-em-dim/60 bg-em-dim/10 px-1.5 py-0.5 font-mono text-[10px] text-em"
-          >
-            @{remoteNodeName ?? urlLabel(sessionBase)}
+          {/* Canonical `<harness-id>:<native>` once the control plane owns the
+              session; the bare den join key until then. flex-1 min-w-0: the
+              id absorbs the squeeze so the row never wraps. */}
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-dim">
+            {canonicalId ?? props.sessionId}
           </span>
-        )}
-        {/* Context-fill bar — reported usage when present; else estimate. */}
-        <ContextBar
-          tokens={contextSource?.usage?.promptTokens}
-          model={contextSource?.model || lastAssistant?.model || settings?.agent || harnessCommand}
-          transcriptTexts={transcriptTexts}
-        />
-        {/* Interrupt is the driver's capability, not a UI preference: shown
-            only when the control plane owns this session AND reports one. */}
-        {gate.canInterrupt && liveBusy && (
-          <button
-            onClick={onInterrupt}
-            title="cancel the in-flight turn"
-            className="flex shrink-0 items-center gap-1 rounded border border-line px-2 py-1 font-mono text-[11px] text-ink-dim hover:border-red hover:text-red"
+          {headerTail}
+          <Button
+            variant="ghost"
+            size="icon"
+            id="hub-history-toggle"
+            aria-label="Conversations"
+            aria-controls="hub-history"
+            onClick={() => useSidebarPrefs.getState().setHistoryOpen(true)}
+            className="size-11 shrink-0 p-0"
           >
-            <Square className="size-2.5 fill-current" aria-hidden />
-            Stop
-          </button>
-        )}
-        {/* [Terminal | Chat] — two views of ONE session, ordered by
-            immersion (terminal is home). */}
-        <span className="shrink-0">
-          <SegmentedControl
-            ariaLabel="Session view"
-            value={mode}
-            onChange={(v) => {
-              // Terminal goes through enterTerminal: a parked ('failed')
-              // spawn gate re-arms the spawn effect.
-              if (v === 'terminal') enterTerminal()
-              else setMode(v)
-            }}
-            options={[
-              { value: 'terminal', label: 'Terminal' },
-              { value: 'chat', label: 'Chat' },
-            ]}
-          />
-        </span>
-      </div>
+            <History className="size-5 shrink-0" aria-hidden />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex max-md:flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
+          {/* Canonical `<harness-id>:<native>` once the control plane owns the
+              session; the bare den join key until then. Session id truncates
+              first when the header wraps. */}
+          <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
+            {canonicalId ?? props.sessionId}
+          </span>
+          {headerTail}
+        </div>
+      )}
       {mode === 'chat' ? (
         <>
           {/* Transcript owns its scroll container (stick-to-bottom lives there). */}

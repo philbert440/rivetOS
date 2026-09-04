@@ -8,12 +8,12 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +32,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.ContextBarView
+import io.rivethub.app.plane.NarrowHeaderItem
+import io.rivethub.app.plane.narrowHeaderItems
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetFonts
@@ -39,8 +41,17 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 /**
- * Session chrome: back + canonical id, context bar, optional Stop,
- * Terminal | Chat. Wraps like the phone web header.
+ * Session chrome — ONE 48dp row that OWNS the status-bar inset (web narrow
+ * branch, chat.tsx:1645-1674): ☰ · session id (flex-1, truncates) · ctx % ·
+ * Stop (interruptible turn only) · Terminal|Chat · history. No back chevron —
+ * on the phone "back" is the right-side history drawer (Phil 2026-09-03), and
+ * the wordmark TopBar is not shown while a session is open.
+ *
+ * Tokens mirror the desktop header: `border-b border-line bg-panel/40 px-2
+ * gap-2` (chat.tsx:1645), mono `text-xs text-ink-dim` title (chat.tsx:1659),
+ * 44dp hit boxes with 20dp (`size-5`) lucide icons. Item order and visibility
+ * come from `narrowHeaderItems` (plane/ChatChrome.kt), mirroring
+ * lib/session-header.ts. `padStatusBar = false` is for the component gallery.
  */
 @Composable
 fun ChatSessionHeader(
@@ -49,86 +60,97 @@ fun ChatSessionHeader(
     modeOptions: List<String>,
     selectedMode: String,
     onSelectMode: (String) -> Unit,
-    onBack: () -> Unit,
+    onOpenMenu: () -> Unit,
+    onOpenHistory: () -> Unit,
     showStop: Boolean,
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
+    padStatusBar: Boolean = true,
 ) {
     val colors = RivetTheme.colors
-    FlowRow(
+    Row(
         modifier
             .fillMaxWidth()
             .background(colors.panel.copy(alpha = 0.4f))
+            .then(if (padStatusBar) Modifier.statusBarsPadding() else Modifier)
             .drawBehind {
                 val y = size.height - Dimens.line.toPx() / 2f
                 drawLine(colors.line, Offset(0f, y), Offset(size.width, y), Dimens.line.toPx())
             }
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        itemVerticalAlignment = Alignment.CenterVertically,
+            .height(Dimens.pageHeader)
+            .padding(horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            val back = stringResource(R.string.action_back)
-            Box(
-                Modifier
-                    .size(Dimens.touchTarget)
-                    .semantics {
-                        contentDescription = back
-                        role = Role.Button
+        // Android opens every session against its own node (no cross-node
+        // proxying like the web's), so the remote badge slot is never filled.
+        narrowHeaderItems(running = showStop, remote = false).forEach { item ->
+            when (item) {
+                NarrowHeaderItem.Menu -> {
+                    val openMenu = stringResource(R.string.cd_open_drawer)
+                    Box(
+                        Modifier
+                            .size(Dimens.touchTarget)
+                            .semantics {
+                                contentDescription = openMenu
+                                role = Role.Button
+                            }
+                            .clickable(role = Role.Button, onClick = onOpenMenu),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Lucide(
+                            R.drawable.lucide_menu,
+                            contentDescription = null,
+                            tint = colors.inkDim,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
-                    .clickable(role = Role.Button, onClick = onBack),
-                contentAlignment = Alignment.Center,
-            ) {
-                Lucide(
-                    R.drawable.lucide_arrow_left,
-                    contentDescription = null,
-                    tint = colors.inkDim,
-                    modifier = Modifier.size(16.dp),
-                )
-            }
-            Text(
-                sessionLabel,
-                color = colors.inkDim,
-                style = RivetType.xs.copy(fontFamily = RivetFonts.Mono),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-        }
-        // Second header line: web is `justify-between` (chat.tsx:1517), so the
-        // context bar pins left and Stop + Terminal|Chat pin right.
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            if (context != null) {
-                ContextBar(view = context)
-            } else {
-                Spacer(Modifier)
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (showStop) {
-                    HeaderStopButton(onClick = onStop)
                 }
-                SegmentedControl(
+                NarrowHeaderItem.Title -> Text(
+                    sessionLabel,
+                    color = colors.inkDim,
+                    style = RivetType.xs.copy(fontFamily = RivetFonts.Mono),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                // chat.tsx:1590-1597 — the cross-node badge has no Android case.
+                NarrowHeaderItem.Remote -> Unit
+                NarrowHeaderItem.Context -> if (context != null) {
+                    ContextBar(view = context)
+                }
+                NarrowHeaderItem.Stop -> HeaderStopButton(onClick = onStop)
+                NarrowHeaderItem.Segmented -> SegmentedControl(
                     options = modeOptions,
                     selected = selectedMode,
                     onSelect = onSelectMode,
                 )
+                NarrowHeaderItem.History -> {
+                    val conversations = stringResource(R.string.cd_conversations)
+                    Box(
+                        Modifier
+                            .size(Dimens.touchTarget)
+                            .semantics {
+                                contentDescription = conversations
+                                role = Role.Button
+                            }
+                            .clickable(role = Role.Button, onClick = onOpenHistory),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Lucide(
+                            R.drawable.lucide_history,
+                            contentDescription = null,
+                            tint = colors.inkDim,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
             }
         }
     }
 }
 
+/** Web Stop (chat.tsx:1606-1615): `rounded border line px-2 py-1 mono 11px inkDim`, pressed → red. */
 @Composable
 private fun HeaderStopButton(onClick: () -> Unit) {
     val colors = RivetTheme.colors
