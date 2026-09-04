@@ -81,7 +81,9 @@ import {
   createRealHerdrCtl,
   findHerdrOnPath,
   HERDR_PINNED_VERSION,
+  herdrConfigContent,
   herdrConfigHome,
+  herdrConfigPath,
   herdrKindForCommand,
   herdrSessionName,
   herdrSupported,
@@ -460,7 +462,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   if (herdrWanted) {
     herdrHome = herdrConfigHome(config.stateDir, config.port)
     try {
-      mkdirSync(herdrHome, { recursive: true, mode: 0o700 })
+      mkdirSync(join(herdrHome, 'herdr'), { recursive: true, mode: 0o700 })
+      // den owns herdr's config (chrome off) the way it owns tmux.conf
+      writeFileSync(herdrConfigPath(herdrHome), herdrConfigContent(), { mode: 0o600 })
       assertHerdrSocketPath(herdrHome, herdrSessionName('probe'))
       if (deps.herdrCtl) {
         herdr = deps.herdrCtl
