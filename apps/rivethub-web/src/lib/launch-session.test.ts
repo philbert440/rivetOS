@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { pickLaunchSession, type LaunchCandidate } from './launch-session.js'
+import { narrowLaunchTarget, pickLaunchSession, type LaunchCandidate } from './launch-session.js'
 
 const HUB = 'https://hub.example'
 const OTHER = 'https://other.example'
@@ -73,5 +73,63 @@ describe('pickLaunchSession', () => {
         HUB,
       ),
     ).toBeUndefined()
+  })
+})
+
+describe('narrowLaunchTarget', () => {
+  const items = [row('old', 100), row('new', 300)]
+
+  it('resumes the persisted last session IMMEDIATELY, before the load lands', () => {
+    expect(
+      narrowLaunchTarget({ lastActiveKey: 'last', loaded: false, sourceKeys: [], items, baseUrl: HUB }),
+    ).toEqual({ kind: 'resume', key: 'last' })
+  })
+
+  it('keeps the resume when the load confirms the key still exists', () => {
+    expect(
+      narrowLaunchTarget({
+        lastActiveKey: 'old',
+        loaded: true,
+        sourceKeys: ['old', 'new'],
+        items,
+        baseUrl: HUB,
+      }),
+    ).toEqual({ kind: 'resume', key: 'old' })
+  })
+
+  it('a stale lastActive (no source row after load) falls back to the pick', () => {
+    expect(
+      narrowLaunchTarget({
+        lastActiveKey: 'gone',
+        loaded: true,
+        sourceKeys: ['old', 'new'],
+        items,
+        baseUrl: HUB,
+      }),
+    ).toEqual({ kind: 'pick', key: 'new' })
+  })
+
+  it('a stale lastActive with no sessions anywhere resolves to new', () => {
+    expect(
+      narrowLaunchTarget({ lastActiveKey: 'gone', loaded: true, sourceKeys: [], items: [], baseUrl: HUB }),
+    ).toEqual({ kind: 'new' })
+  })
+
+  it('with nothing persisted and the load in flight, the surface is loading', () => {
+    expect(
+      narrowLaunchTarget({ loaded: false, sourceKeys: [], items: [], baseUrl: HUB }),
+    ).toEqual({ kind: 'loading' })
+  })
+
+  it('with nothing persisted, the most recent session is picked once loaded', () => {
+    expect(
+      narrowLaunchTarget({ loaded: true, sourceKeys: ['old', 'new'], items, baseUrl: HUB }),
+    ).toEqual({ kind: 'pick', key: 'new' })
+  })
+
+  it('an empty account resolves to the new-conversation compose state, never the list', () => {
+    expect(
+      narrowLaunchTarget({ loaded: true, sourceKeys: [], items: [], baseUrl: HUB }),
+    ).toEqual({ kind: 'new' })
   })
 })

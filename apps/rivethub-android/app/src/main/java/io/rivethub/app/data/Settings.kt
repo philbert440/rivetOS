@@ -38,6 +38,11 @@ data class Prefs(
     val viewNodeId: String = "",
     val currentAgentId: String = "",
     val agentsCollapsed: Boolean = false,
+    /** Instant-resume pointer (2026-09-04: home is the chat surface, not the
+     *  list) — the last opened session's key + its node's den URL. Drafts are
+     *  never written (they are in-memory only). */
+    val lastSessionKey: String = "",
+    val lastSessionNode: String = "",
 )
 
 class Settings(context: Context) {
@@ -64,6 +69,8 @@ class Settings(context: Context) {
             viewNodeId = p[VIEW_NODE] ?: "",
             currentAgentId = p[CURRENT_AGENT] ?: "",
             agentsCollapsed = p[AGENTS_COLLAPSED] ?: false,
+            lastSessionKey = p[LAST_SESSION_KEY] ?: "",
+            lastSessionNode = p[LAST_SESSION_NODE] ?: "",
         )
     }
 
@@ -81,6 +88,17 @@ class Settings(context: Context) {
     suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
     suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
     suspend fun setAgentsCollapsed(v: Boolean) = ds.edit { it[AGENTS_COLLAPSED] = v }
+
+    /** The instant-resume pointer — written on every chat open (see
+     *  MainActivity openChat); read once at nav init. */
+    suspend fun setLastSession(key: String, nodeDenUrl: String) = ds.edit {
+        it[LAST_SESSION_KEY] = key
+        it[LAST_SESSION_NODE] = nodeDenUrl.trim().trimEnd('/')
+    }
+    suspend fun clearLastSession() = ds.edit {
+        it.remove(LAST_SESSION_KEY)
+        it.remove(LAST_SESSION_NODE)
+    }
 
     suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
         it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
@@ -128,6 +146,8 @@ class Settings(context: Context) {
         private val VIEW_NODE = stringPreferencesKey("viewNodeId")
         private val CURRENT_AGENT = stringPreferencesKey("currentAgentId")
         private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
+        private val LAST_SESSION_KEY = stringPreferencesKey("lastSessionKey")
+        private val LAST_SESSION_NODE = stringPreferencesKey("lastSessionNode")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

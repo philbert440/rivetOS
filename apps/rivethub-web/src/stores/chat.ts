@@ -22,6 +22,7 @@
  */
 
 import { create } from 'zustand'
+import { createJSONStorage, persist } from 'zustand/middleware'
 import {
   mergeTranscriptWindow,
   type HarnessTranscriptTurn,
@@ -110,6 +111,16 @@ interface ChatState {
   draftCreatedAt: Record<string, number>
   /** the open conversation */
   active?: string
+  /**
+   * The last session the user opened (key + node), persisted across reloads
+   * for INSTANT RESUME on narrow launch: the phone's home is the chat
+   * surface, never a conversations list, so the last thread reopens before
+   * the mesh loads. Written by `setActive`, moved by `rekey`, dropped by
+   * `removeDraft` / `clearLastActive`. A stale pointer (its row 404s once the
+   * load lands) falls back to `pickLaunchSession` — see pages/chat.tsx. The
+   * only field of this store that persists (see the persist partialize).
+   */
+  lastActive?: { sessionId: string; baseUrl: string }
   seed: (sessionId: string, messages: SessionMessage[]) => void
   /** Hard-resync: replace the session transcript wholesale and clear live
    *  turn state (Android resyncTranscriptToConversation). Does not merge.
@@ -185,8 +196,12 @@ interface ChatState {
   liveIsBusy: (sessionId: string) => boolean
   /** Drop the pending ask card (user dismissed it / answered by other means). */
   dismissAsk: (sessionId: string) => void
-  /** Pass undefined to deselect (error-boundary recover, etc.). */
+  /** Pass undefined to deselect (error-boundary recover, etc.). Deselecting
+   *  keeps `lastActive` — it is the resume pointer, not the selection. */
   setActive: (sessionId: string | undefined) => void
+  /** Forget the resume pointer (a resumed key turned out stale — its row
+   *  404'd after the load). */
+  clearLastActive: () => void
   /** Subscribe to pushed transcript frames for a session (refcounted
    *  server-side per socket; re-sent automatically on reconnect). */
   watchTranscript: (sessionId: string) => void
@@ -324,583 +339,628 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
   return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev, offset)
 }
 
-export const useChat = create<ChatState>((set, get) => ({
-  messages: {},
-  transcripts: {},
-  sessionsDirty: 0,
-  live: {},
-  liveTs: {},
-  ask: {},
-  outbound: {},
-  harnessBound: {},
-  approvals: {},
-  opened: [],
-  wsStatus: 'closed',
-  wsEpoch: 0,
-  drafts: [],
-  draftCreatedAt: {},
+export const useChat = create<ChatState>()(
+  persist(
+    (set, get) => ({
+      messages: {},
+      transcripts: {},
+      sessionsDirty: 0,
+      live: {},
+      liveTs: {},
+      ask: {},
+      outbound: {},
+      harnessBound: {},
+      approvals: {},
+      opened: [],
+      wsStatus: 'closed',
+      wsEpoch: 0,
+      drafts: [],
+      draftCreatedAt: {},
 
-  seed: (sessionId, msgs) =>
-    set((s) => {
-      const existing = s.messages[sessionId] ?? []
-      // Keep WS frames that raced ahead of the HTTP backfill. Safe to merge
-      // unconditionally: state is reset on endpoint change, so everything
-      // here belongs to the current gateway.
-      const merged = [...msgs]
-      for (const m of existing) if (!merged.some((x) => x.id === m.id)) merged.push(m)
-      merged.sort((a, b) => a.ts - b.ts)
-      return { messages: { ...s.messages, [sessionId]: merged } }
-    }),
+      seed: (sessionId, msgs) =>
+        set((s) => {
+          const existing = s.messages[sessionId] ?? []
+          // Keep WS frames that raced ahead of the HTTP backfill. Safe to merge
+          // unconditionally: state is reset on endpoint change, so everything
+          // here belongs to the current gateway.
+          const merged = [...msgs]
+          for (const m of existing) if (!merged.some((x) => x.id === m.id)) merged.push(m)
+          merged.sort((a, b) => a.ts - b.ts)
+          return { messages: { ...s.messages, [sessionId]: merged } }
+        }),
 
-  replace: (sessionId, msgs, opts) =>
-    set((s) => {
-      const preserve = opts?.preserveOutbound === true
-      const outbound = s.outbound[sessionId] ?? []
-      let next = [...msgs]
-      if (preserve && outbound.length > 0) {
-        // Keep optimistic bubbles for still-queued/sending turns so auto-sync
-        // from the TUI store doesn't erase the inject queue mid-compose.
-        const existing = s.messages[sessionId] ?? []
-        const byId = new Map(next.map((m) => [m.id, m] as const))
-        for (const o of outbound) {
-          const bubble = existing.find((m) => m.id === o.id)
-          if (bubble) byId.set(bubble.id, bubble)
+      replace: (sessionId, msgs, opts) =>
+        set((s) => {
+          const preserve = opts?.preserveOutbound === true
+          const outbound = s.outbound[sessionId] ?? []
+          let next = [...msgs]
+          if (preserve && outbound.length > 0) {
+            // Keep optimistic bubbles for still-queued/sending turns so auto-sync
+            // from the TUI store doesn't erase the inject queue mid-compose.
+            const existing = s.messages[sessionId] ?? []
+            const byId = new Map(next.map((m) => [m.id, m] as const))
+            for (const o of outbound) {
+              const bubble = existing.find((m) => m.id === o.id)
+              if (bubble) byId.set(bubble.id, bubble)
+            }
+            next = [...byId.values()].sort((a, b) => a.ts - b.ts)
+          }
+          return {
+            messages: { ...s.messages, [sessionId]: next },
+            // messages and the turn cache must clear together, or the next
+            // transcript frame reconciles fresh rows against stale turns
+            transcripts:
+              preserve || s.transcripts[sessionId] === undefined
+                ? s.transcripts
+                : { ...s.transcripts, [sessionId]: undefined },
+            live: preserve ? s.live : { ...s.live, [sessionId]: undefined },
+            outbound: preserve ? s.outbound : { ...s.outbound, [sessionId]: [] },
+            // hard resync rebuilds from disk — a stale ask card must not survive it
+            ask: preserve ? s.ask : { ...s.ask, [sessionId]: undefined },
+          }
+        }),
+
+      addDraft: (sessionId) =>
+        set((s) => {
+          const already = s.drafts.includes(sessionId)
+          return {
+            drafts: already ? s.drafts : [sessionId, ...s.drafts],
+            opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+            draftCreatedAt: already
+              ? s.draftCreatedAt
+              : { ...s.draftCreatedAt, [sessionId]: Date.now() },
+          }
+        }),
+
+      removeDraft: (sessionId) => {
+        releaseWatch(sessionId)
+        set((s) => {
+          const drop = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
+            if (!(sessionId in m)) return m
+            const { [sessionId]: _gone, ...rest } = m
+            return rest
+          }
+          return {
+            drafts: s.drafts.filter((id) => id !== sessionId),
+            opened: s.opened.filter((id) => id !== sessionId),
+            active: s.active === sessionId ? undefined : s.active,
+            // A discarded draft must not be resumed on the next launch.
+            lastActive: s.lastActive?.sessionId === sessionId ? undefined : s.lastActive,
+            messages: drop(s.messages),
+            transcripts: drop(s.transcripts),
+            live: drop(s.live),
+            liveTs: drop(s.liveTs),
+            ask: drop(s.ask),
+            outbound: drop(s.outbound),
+            draftCreatedAt: drop(s.draftCreatedAt) as Record<string, number>,
+          }
+        })
+      },
+
+      rekey: (from, to) => {
+        if (from === to) return false
+        // Decide before mutating, so the updater below stays a pure reducer.
+        // Destination already live: keep its records rather than clobber a real
+        // transcript with the one we were about to fold in — but still move the
+        // selection, or the composer keeps queueing turns onto the retired key
+        // (the effect that called us does not re-fire).
+        const moved = get().messages[to] === undefined && get().transcripts[to] === undefined
+        // The retired key keeps no subscription either way — the selection has
+        // left it, so its frames would be dropped client-side while the server
+        // kept parsing the store for it. We do NOT auto-watch `to`: the view owns
+        // that lifecycle, and `<SessionErrorBoundary key={active}>` remounts
+        // `ActiveSession` under the new key, which subscribes (or binds to the
+        // control plane, which needs no watch at all). Sends on a socket, so it
+        // lives out here rather than inside `set`.
+        releaseWatch(from)
+        set((s) => {
+          const swap = (list: string[]): string[] =>
+            list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
+          /** Point the user (and so the send path) at the surviving key. */
+          const { [from]: _draftStamp, ...draftCreatedAt } = s.draftCreatedAt
+          const retarget = {
+            opened: s.opened.includes(to) ? s.opened.filter((id) => id !== from) : swap(s.opened),
+            drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
+            active: s.active === from ? to : s.active,
+            // The resume pointer follows the thread onto its new key — resuming a
+            // retired id would 404-fallback the next launch for no reason.
+            lastActive:
+              s.lastActive?.sessionId === from ? { ...s.lastActive, sessionId: to } : s.lastActive,
+            draftCreatedAt: from in s.draftCreatedAt ? draftCreatedAt : s.draftCreatedAt,
+          }
+          if (!moved) return retarget
+          const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
+            if (!(from in m)) return m
+            const { [from]: value, ...rest } = m
+            return { ...rest, [to]: value }
+          }
+          return {
+            ...retarget,
+            messages: move(s.messages),
+            transcripts: move(s.transcripts),
+            live: move(s.live),
+            liveTs: move(s.liveTs),
+            ask: move(s.ask),
+            outbound: move(s.outbound),
+            harnessBound: move(s.harnessBound),
+            approvals: move(s.approvals),
+          }
+        })
+        return moved
+      },
+
+      adoptSessionKey: (canonical, previous) => {
+        const tracked = (id: string): boolean => {
+          const s = get()
+          return (
+            s.opened.includes(id) || s.messages[id] !== undefined || s.transcripts[id] !== undefined
+          )
         }
-        next = [...byId.values()].sort((a, b) => a.ts - b.ts)
-      }
-      return {
-        messages: { ...s.messages, [sessionId]: next },
-        // messages and the turn cache must clear together, or the next
-        // transcript frame reconciles fresh rows against stale turns
-        transcripts:
-          preserve || s.transcripts[sessionId] === undefined
-            ? s.transcripts
-            : { ...s.transcripts, [sessionId]: undefined },
-        live: preserve ? s.live : { ...s.live, [sessionId]: undefined },
-        outbound: preserve ? s.outbound : { ...s.outbound, [sessionId]: [] },
-        // hard resync rebuilds from disk — a stale ask card must not survive it
-        ask: preserve ? s.ask : { ...s.ask, [sessionId]: undefined },
-      }
-    }),
-
-  addDraft: (sessionId) =>
-    set((s) => {
-      const already = s.drafts.includes(sessionId)
-      return {
-        drafts: already ? s.drafts : [sessionId, ...s.drafts],
-        opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-        draftCreatedAt: already
-          ? s.draftCreatedAt
-          : { ...s.draftCreatedAt, [sessionId]: Date.now() },
-      }
-    }),
-
-  removeDraft: (sessionId) => {
-    releaseWatch(sessionId)
-    set((s) => {
-      const drop = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-        if (!(sessionId in m)) return m
-        const { [sessionId]: _gone, ...rest } = m
-        return rest
-      }
-      return {
-        drafts: s.drafts.filter((id) => id !== sessionId),
-        opened: s.opened.filter((id) => id !== sessionId),
-        active: s.active === sessionId ? undefined : s.active,
-        messages: drop(s.messages),
-        transcripts: drop(s.transcripts),
-        live: drop(s.live),
-        liveTs: drop(s.liveTs),
-        ask: drop(s.ask),
-        outbound: drop(s.outbound),
-        draftCreatedAt: drop(s.draftCreatedAt) as Record<string, number>,
-      }
-    })
-  },
-
-  rekey: (from, to) => {
-    if (from === to) return false
-    // Decide before mutating, so the updater below stays a pure reducer.
-    // Destination already live: keep its records rather than clobber a real
-    // transcript with the one we were about to fold in — but still move the
-    // selection, or the composer keeps queueing turns onto the retired key
-    // (the effect that called us does not re-fire).
-    const moved = get().messages[to] === undefined && get().transcripts[to] === undefined
-    // The retired key keeps no subscription either way — the selection has
-    // left it, so its frames would be dropped client-side while the server
-    // kept parsing the store for it. We do NOT auto-watch `to`: the view owns
-    // that lifecycle, and `<SessionErrorBoundary key={active}>` remounts
-    // `ActiveSession` under the new key, which subscribes (or binds to the
-    // control plane, which needs no watch at all). Sends on a socket, so it
-    // lives out here rather than inside `set`.
-    releaseWatch(from)
-    set((s) => {
-      const swap = (list: string[]): string[] =>
-        list.includes(from) ? list.map((id) => (id === from ? to : id)) : list
-      /** Point the user (and so the send path) at the surviving key. */
-      const { [from]: _draftStamp, ...draftCreatedAt } = s.draftCreatedAt
-      const retarget = {
-        opened: s.opened.includes(to) ? s.opened.filter((id) => id !== from) : swap(s.opened),
-        drafts: s.drafts.includes(from) ? s.drafts.filter((id) => id !== from) : s.drafts,
-        active: s.active === from ? to : s.active,
-        draftCreatedAt: from in s.draftCreatedAt ? draftCreatedAt : s.draftCreatedAt,
-      }
-      if (!moved) return retarget
-      const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-        if (!(from in m)) return m
-        const { [from]: value, ...rest } = m
-        return { ...rest, [to]: value }
-      }
-      return {
-        ...retarget,
-        messages: move(s.messages),
-        transcripts: move(s.transcripts),
-        live: move(s.live),
-        liveTs: move(s.liveTs),
-        ask: move(s.ask),
-        outbound: move(s.outbound),
-        harnessBound: move(s.harnessBound),
-        approvals: move(s.approvals),
-      }
-    })
-    return moved
-  },
-
-  adoptSessionKey: (canonical, previous) => {
-    const tracked = (id: string): boolean => {
-      const s = get()
-      return (
-        s.opened.includes(id) || s.messages[id] !== undefined || s.transcripts[id] !== undefined
-      )
-    }
-    const retire = new Set<string>()
-    // Rotation: the control plane names the predecessor outright, and its
-    // native half is unrelated to the successor's — nothing else can find it.
-    if (previous !== undefined && previous !== canonical && tracked(previous)) {
-      retire.add(previous)
-    }
-    // Adoption: a thread we opened under the BARE native id (a draft, or a
-    // legacy row) that the plane has now claimed. Every opened entry, not just
-    // the active one — a background draft left in `opened` under its bare id
-    // keeps catching bridge frames onto records no drawer row renders.
-    //
-    // Bare only, and that restriction is load-bearing. Two canonical threads
-    // can share a native half across stores (`claude-code:U` and
-    // `grok-build:U` — the collision `ownerKey` ranks for), and an ordinary
-    // `session-created` for one of them is NOT a claim on the other: folding
-    // grok's live transcript, queue and selection onto claude would go dark on
-    // a conversation the user is sitting in. A canonical predecessor is only
-    // ever retired when the control plane names it via `previousSessionId`.
-    const native = denRoomKey(canonical)
-    for (const key of get().opened) {
-      if (key !== canonical && key === native) retire.add(key)
-    }
-    const moved: string[] = []
-    for (const from of retire) {
-      if (get().rekey(from, canonical)) moved.push(from)
-    }
-    return moved
-  },
-
-  addOptimisticUser: (sessionId, text, id) => {
-    const msgId = id ?? `optim:${uuidv4()}`
-    set((s) => {
-      const msg: SessionMessage = {
-        id: msgId,
-        sessionId,
-        role: 'user',
-        text,
-        ts: Date.now(),
-      }
-      return { messages: { ...s.messages, [sessionId]: appendMessage(s.messages[sessionId], msg) } }
-    })
-    return msgId
-  },
-
-  enqueueOutbound: (sessionId, text) => {
-    const id = `optim:${uuidv4()}`
-    get().addOptimisticUser(sessionId, text, id)
-    set((s) => ({
-      outbound: {
-        ...s.outbound,
-        [sessionId]: [...(s.outbound[sessionId] ?? []), { id, text, status: 'queued' }],
+        const retire = new Set<string>()
+        // Rotation: the control plane names the predecessor outright, and its
+        // native half is unrelated to the successor's — nothing else can find it.
+        if (previous !== undefined && previous !== canonical && tracked(previous)) {
+          retire.add(previous)
+        }
+        // Adoption: a thread we opened under the BARE native id (a draft, or a
+        // legacy row) that the plane has now claimed. Every opened entry, not just
+        // the active one — a background draft left in `opened` under its bare id
+        // keeps catching bridge frames onto records no drawer row renders.
+        //
+        // Bare only, and that restriction is load-bearing. Two canonical threads
+        // can share a native half across stores (`claude-code:U` and
+        // `grok-build:U` — the collision `ownerKey` ranks for), and an ordinary
+        // `session-created` for one of them is NOT a claim on the other: folding
+        // grok's live transcript, queue and selection onto claude would go dark on
+        // a conversation the user is sitting in. A canonical predecessor is only
+        // ever retired when the control plane names it via `previousSessionId`.
+        const native = denRoomKey(canonical)
+        for (const key of get().opened) {
+          if (key !== canonical && key === native) retire.add(key)
+        }
+        const moved: string[] = []
+        for (const from of retire) {
+          if (get().rekey(from, canonical)) moved.push(from)
+        }
+        return moved
       },
-      // whatever the user sent IS the answer — retire the ask card
-      ask: { ...s.ask, [sessionId]: undefined },
-    }))
-    return id
-  },
 
-  markOutboundSending: (sessionId, id) =>
-    set((s) => ({
-      outbound: {
-        ...s.outbound,
-        [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-          o.id === id ? { ...o, status: 'sending' as const } : o,
-        ),
+      addOptimisticUser: (sessionId, text, id) => {
+        const msgId = id ?? `optim:${uuidv4()}`
+        set((s) => {
+          const msg: SessionMessage = {
+            id: msgId,
+            sessionId,
+            role: 'user',
+            text,
+            ts: Date.now(),
+          }
+          return {
+            messages: { ...s.messages, [sessionId]: appendMessage(s.messages[sessionId], msg) },
+          }
+        })
+        return msgId
       },
-    })),
 
-  requeueOutbound: (sessionId, id) =>
-    set((s) => ({
-      outbound: {
-        ...s.outbound,
-        [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-          o.id === id ? { ...o, status: 'queued' as const } : o,
-        ),
+      enqueueOutbound: (sessionId, text) => {
+        const id = `optim:${uuidv4()}`
+        get().addOptimisticUser(sessionId, text, id)
+        set((s) => ({
+          outbound: {
+            ...s.outbound,
+            [sessionId]: [...(s.outbound[sessionId] ?? []), { id, text, status: 'queued' }],
+          },
+          // whatever the user sent IS the answer — retire the ask card
+          ask: { ...s.ask, [sessionId]: undefined },
+        }))
+        return id
       },
-    })),
 
-  dequeueOutbound: (sessionId, id) =>
-    set((s) => ({
-      outbound: {
-        ...s.outbound,
-        [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+      markOutboundSending: (sessionId, id) =>
+        set((s) => ({
+          outbound: {
+            ...s.outbound,
+            [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+              o.id === id ? { ...o, status: 'sending' as const } : o,
+            ),
+          },
+        })),
+
+      requeueOutbound: (sessionId, id) =>
+        set((s) => ({
+          outbound: {
+            ...s.outbound,
+            [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+              o.id === id ? { ...o, status: 'queued' as const } : o,
+            ),
+          },
+        })),
+
+      dequeueOutbound: (sessionId, id) =>
+        set((s) => ({
+          outbound: {
+            ...s.outbound,
+            [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+          },
+        })),
+
+      failOutbound: (sessionId, id) =>
+        set((s) => ({
+          outbound: {
+            ...s.outbound,
+            [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+          },
+          messages: {
+            ...s.messages,
+            [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
+          },
+        })),
+
+      cancelOutbound: (sessionId, id) => get().failOutbound(sessionId, id),
+
+      beginLive: (sessionId, activity = 'processing…') =>
+        set((s) => {
+          // Don't clobber an already-streaming turn (tool stack / partial text).
+          const existing = s.live[sessionId]
+          if (existing && (existing.text || existing.tools.length > 0 || existing.reasoningText)) {
+            return s
+          }
+          return {
+            live: {
+              ...s.live,
+              [sessionId]: existing
+                ? { ...existing, activity: activity || existing.activity }
+                : { text: '', reasoning: false, reasoningText: '', tools: [], activity },
+            },
+          }
+        }),
+
+      setLive: (sessionId, turn) =>
+        set((s) => {
+          // A turn ending takes its ask-user prompt with it unless we stash it:
+          // headless ask tools don't block, so the question outlives the turn as
+          // the composer's ask card until answered or dismissed. Same rule the
+          // bridge path applies on `done` — without it, a control-plane session
+          // would show the card mid-turn and lose it the moment the turn ended.
+          const prev = s.live[sessionId]
+          const stashed = turn === undefined && prev ? questionsFromLiveTools(prev.tools) : []
+          return {
+            live: { ...s.live, [sessionId]: turn },
+            liveTs: { ...s.liveTs, [sessionId]: Date.now() },
+            ask: stashed.length > 0 ? { ...s.ask, [sessionId]: stashed } : s.ask,
+          }
+        }),
+
+      clearLive: (sessionId) =>
+        set((s) => ({
+          live: { ...s.live, [sessionId]: undefined },
+        })),
+
+      liveIsBusy: (sessionId) => {
+        const L = get().live[sessionId]
+        if (!L) return false
+        // Placeholder activity alone is not "busy" — many harnesses never bridge
+        // a done event, and that used to stall the inject queue forever.
+        return !!(L.text || L.tools.length > 0 || L.reasoningText)
       },
-    })),
 
-  failOutbound: (sessionId, id) =>
-    set((s) => ({
-      outbound: {
-        ...s.outbound,
-        [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+      dismissAsk: (sessionId) => set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } })),
+
+      setActive: (sessionId) =>
+        set((s) => {
+          if (sessionId === undefined) return { active: undefined }
+          return {
+            active: sessionId,
+            // Instant-resume pointer (narrow launch reopens the last thread
+            // before the mesh loads). Node-tagged: ids are per-gateway, so a
+            // pointer only resumes against the node it was written on.
+            lastActive: { sessionId, baseUrl: useConnection.getState().baseUrl },
+            opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+          }
+        }),
+
+      clearLastActive: () => set({ lastActive: undefined }),
+
+      watchTranscript: (sessionId) => {
+        set((s) => ({
+          opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+        }))
+        // Idempotent per key: the server refcounts subscriptions per socket, and
+        // this client has exactly one logical watcher per thread. A second `watch`
+        // for a key we already hold (a React remount after `rekey` changed
+        // `active`, StrictMode's double-effect) would take a ref that the single
+        // matching unmount never gives back — a permanent leak, not just waste.
+        if (watchedSessions.has(sessionId)) return
+        watchedSessions.add(sessionId)
+        subscription?.send({ type: 'watch', session: sessionId })
+        // not-open sends are fine — the onStatus('open') hook re-sends the set
       },
-      messages: {
-        ...s.messages,
-        [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
-      },
-    })),
 
-  cancelOutbound: (sessionId, id) => get().failOutbound(sessionId, id),
+      unwatchTranscript: (sessionId) => releaseWatch(sessionId),
 
-  beginLive: (sessionId, activity = 'processing…') =>
-    set((s) => {
-      // Don't clobber an already-streaming turn (tool stack / partial text).
-      const existing = s.live[sessionId]
-      if (existing && (existing.text || existing.tools.length > 0 || existing.reasoningText)) {
-        return s
-      }
-      return {
-        live: {
-          ...s.live,
-          [sessionId]: existing
-            ? { ...existing, activity: activity || existing.activity }
-            : { text: '', reasoning: false, reasoningText: '', tools: [], activity },
-        },
-      }
-    }),
+      bindHarness: (sessionId, harnessId) =>
+        set((s) => ({
+          harnessBound: { ...s.harnessBound, [sessionId]: true },
+          opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+          // Mark the session store-backed straight away: the transcript is the
+          // source of truth for solid messages, so nothing else may append.
+          transcripts: s.transcripts[sessionId]
+            ? { ...s.transcripts, [sessionId]: { ...s.transcripts[sessionId], command: harnessId } }
+            : {
+                ...s.transcripts,
+                [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 },
+              },
+        })),
 
-  setLive: (sessionId, turn) =>
-    set((s) => {
-      // A turn ending takes its ask-user prompt with it unless we stash it:
-      // headless ask tools don't block, so the question outlives the turn as
-      // the composer's ask card until answered or dismissed. Same rule the
-      // bridge path applies on `done` — without it, a control-plane session
-      // would show the card mid-turn and lose it the moment the turn ended.
-      const prev = s.live[sessionId]
-      const stashed = turn === undefined && prev ? questionsFromLiveTools(prev.tools) : []
-      return {
-        live: { ...s.live, [sessionId]: turn },
-        liveTs: { ...s.liveTs, [sessionId]: Date.now() },
-        ask: stashed.length > 0 ? { ...s.ask, [sessionId]: stashed } : s.ask,
-      }
-    }),
+      unbindHarness: (sessionId) =>
+        set((s) => {
+          const { [sessionId]: _bound, ...harnessBound } = s.harnessBound
+          return { harnessBound, approvals: { ...s.approvals, [sessionId]: undefined } }
+        }),
 
-  clearLive: (sessionId) =>
-    set((s) => ({
-      live: { ...s.live, [sessionId]: undefined },
-    })),
+      syncHarnessTranscript: (sessionId, turns) =>
+        set((s) => {
+          // A resync carries no "what changed", so derive it: everything past the
+          // common prefix with what we already hold. That keeps bubble
+          // reconciliation pointed at the tail instead of the whole history, where
+          // an identical turn from earlier in the conversation could eat a bubble
+          // the store has not actually committed yet.
+          const prev = s.transcripts[sessionId]?.turns ?? []
+          let prefix = 0
+          while (
+            prefix < prev.length &&
+            prefix < turns.length &&
+            prev[prefix].role === turns[prefix].role &&
+            prev[prefix].text === turns[prefix].text
+          ) {
+            prefix += 1
+          }
+          const patch = transcriptPatch(
+            s,
+            sessionId,
+            turns,
+            turns.slice(prefix),
+            s.transcripts[sessionId]?.command || 'harness',
+            (s.transcripts[sessionId]?.rev ?? 0) + 1,
+            0, // hard resync from HTTP — no client-side pinning
+          )
+          // A committed user turn at the tail IS the answer — retire the ask card
+          // even when the user typed it into the TUI instead of the composer.
+          return turns.at(-1)?.role === 'user'
+            ? { ...patch, ask: { ...s.ask, [sessionId]: undefined } }
+            : patch
+        }),
 
-  liveIsBusy: (sessionId) => {
-    const L = get().live[sessionId]
-    if (!L) return false
-    // Placeholder activity alone is not "busy" — many harnesses never bridge
-    // a done event, and that used to stall the inject queue forever.
-    return !!(L.text || L.tools.length > 0 || L.reasoningText)
-  },
+      applyApprovalEvent: (sessionId, event) =>
+        set((s) => {
+          const pending = s.approvals[sessionId] ?? []
+          if (event.type === 'approval-resolved') {
+            return {
+              approvals: {
+                ...s.approvals,
+                [sessionId]: pending.filter((p) => p.requestId !== event.requestId),
+              },
+            }
+          }
+          if (pending.some((p) => p.requestId === event.requestId)) return s
+          return { approvals: { ...s.approvals, [sessionId]: [...pending, event] } }
+        }),
 
-  dismissAsk: (sessionId) => set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } })),
-
-  setActive: (sessionId) =>
-    set((s) => {
-      if (sessionId === undefined) return { active: undefined }
-      return {
-        active: sessionId,
-        opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-      }
-    }),
-
-  watchTranscript: (sessionId) => {
-    set((s) => ({
-      opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-    }))
-    // Idempotent per key: the server refcounts subscriptions per socket, and
-    // this client has exactly one logical watcher per thread. A second `watch`
-    // for a key we already hold (a React remount after `rekey` changed
-    // `active`, StrictMode's double-effect) would take a ref that the single
-    // matching unmount never gives back — a permanent leak, not just waste.
-    if (watchedSessions.has(sessionId)) return
-    watchedSessions.add(sessionId)
-    subscription?.send({ type: 'watch', session: sessionId })
-    // not-open sends are fine — the onStatus('open') hook re-sends the set
-  },
-
-  unwatchTranscript: (sessionId) => releaseWatch(sessionId),
-
-  bindHarness: (sessionId, harnessId) =>
-    set((s) => ({
-      harnessBound: { ...s.harnessBound, [sessionId]: true },
-      opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-      // Mark the session store-backed straight away: the transcript is the
-      // source of truth for solid messages, so nothing else may append.
-      transcripts: s.transcripts[sessionId]
-        ? { ...s.transcripts, [sessionId]: { ...s.transcripts[sessionId], command: harnessId } }
-        : { ...s.transcripts, [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 } },
-    })),
-
-  unbindHarness: (sessionId) =>
-    set((s) => {
-      const { [sessionId]: _bound, ...harnessBound } = s.harnessBound
-      return { harnessBound, approvals: { ...s.approvals, [sessionId]: undefined } }
-    }),
-
-  syncHarnessTranscript: (sessionId, turns) =>
-    set((s) => {
-      // A resync carries no "what changed", so derive it: everything past the
-      // common prefix with what we already hold. That keeps bubble
-      // reconciliation pointed at the tail instead of the whole history, where
-      // an identical turn from earlier in the conversation could eat a bubble
-      // the store has not actually committed yet.
-      const prev = s.transcripts[sessionId]?.turns ?? []
-      let prefix = 0
-      while (
-        prefix < prev.length &&
-        prefix < turns.length &&
-        prev[prefix].role === turns[prefix].role &&
-        prev[prefix].text === turns[prefix].text
-      ) {
-        prefix += 1
-      }
-      const patch = transcriptPatch(
-        s,
-        sessionId,
-        turns,
-        turns.slice(prefix),
-        s.transcripts[sessionId]?.command || 'harness',
-        (s.transcripts[sessionId]?.rev ?? 0) + 1,
-        0, // hard resync from HTTP — no client-side pinning
-      )
-      // A committed user turn at the tail IS the answer — retire the ask card
-      // even when the user typed it into the TUI instead of the composer.
-      return turns.at(-1)?.role === 'user'
-        ? { ...patch, ask: { ...s.ask, [sessionId]: undefined } }
-        : patch
-    }),
-
-  applyApprovalEvent: (sessionId, event) =>
-    set((s) => {
-      const pending = s.approvals[sessionId] ?? []
-      if (event.type === 'approval-resolved') {
-        return {
+      clearApproval: (sessionId, requestId) =>
+        set((s) => ({
           approvals: {
             ...s.approvals,
-            [sessionId]: pending.filter((p) => p.requestId !== event.requestId),
+            [sessionId]: (s.approvals[sessionId] ?? []).filter((p) => p.requestId !== requestId),
           },
-        }
-      }
-      if (pending.some((p) => p.requestId === event.requestId)) return s
-      return { approvals: { ...s.approvals, [sessionId]: [...pending, event] } }
-    }),
+        })),
 
-  clearApproval: (sessionId, requestId) =>
-    set((s) => ({
-      approvals: {
-        ...s.approvals,
-        [sessionId]: (s.approvals[sessionId] ?? []).filter((p) => p.requestId !== requestId),
-      },
-    })),
-
-  connect: (endpointKey) => {
-    subscription?.close()
-    if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
-      watchedSessions.clear() // session ids are only meaningful per gateway
-      set({
-        messages: {},
-        transcripts: {},
-        live: {},
-        liveTs: {},
-        ask: {},
-        outbound: {},
-        harnessBound: {},
-        approvals: {},
-        opened: [],
-        drafts: [],
-        draftCreatedAt: {},
-        active: undefined,
-      })
-    }
-    currentEndpoint = endpointKey
-    // No gateway configured (fresh desktop shell, or a bad URL): don't open
-    // a socket against a non-http origin — WebKit throws on the URL (#4j).
-    if (!isValidGatewayUrl(useConnection.getState().baseUrl)) {
-      set({ wsStatus: 'closed' })
-      return
-    }
-    const { gateway } = useConnection.getState()
-    subscription = gateway.watchSessions(
-      (frame: SessionWsFrame) => {
-        // A control-plane session is driven by its own socket; the same den
-        // events surface on both, so writing here too would double every
-        // delta and re-append every committed turn.
-        const isOpen = (id: string): boolean => get().opened.includes(id) && !get().harnessBound[id]
-        // The den bridge keys its message/stream frames on the DEN ROOM key,
-        // which is the native half of a canonical thread key. Map one back
-        // onto the thread that owns it — otherwise a canonical-keyed session
-        // matches neither `opened` (nothing renders) nor `harnessBound` (the
-        // suppression that stops a control-plane session folding every delta
-        // twice). Transcript frames need no mapping: the server echoes the id
-        // the client watched with, so they already arrive keyed on the thread.
-        //
-        // More than one opened entry can share a native half — mid-adoption
-        // (`opened` briefly holds both the bare draft and its canonical id),
-        // or two harnesses whose stores collide on a uuid. "First in `opened`"
-        // would then hand frames to the retired draft and leave the row the
-        // user is looking at silent, so rank instead: the active selection
-        // wins, then a canonical key over the bare room key, then the thread
-        // the control plane actually owns. Ties keep `opened` order.
-        const ownerKey = (id: string): string => {
-          const s = get()
-          const owners = s.opened.filter((key) => denRoomKey(key) === id)
-          if (owners.length <= 1) return owners[0] ?? id
-          const rank = (key: string): number =>
-            (key === s.active ? 4 : 0) + (key === id ? 0 : 2) + (s.harnessBound[key] ? 1 : 0)
-          return owners.reduce((best, key) => (rank(key) > rank(best) ? key : best))
-        }
-        if (frame.kind === 'sessions-dirty') {
-          // a harness store changed somewhere — the drawer refetches on this
-          set((s) => ({ sessionsDirty: s.sessionsDirty + 1 }))
-          return
-        }
-        if (frame.kind === 'transcript') {
-          if (!isOpen(frame.session)) return
-          const patch = applyTranscriptFrame(get(), frame)
-          if (patch) {
-            set(patch)
-          } else {
-            // missed a delta (reconnect gap / out-of-order) — ask the server
-            // for a fresh full snapshot on this same subscription
-            subscription?.send({ type: 'sync', session: frame.session })
-          }
-          return
-        }
-        if (frame.kind === 'message') {
-          const { kind: _kind, ...bridged } = frame
-          const msg = { ...bridged, sessionId: ownerKey(bridged.sessionId) }
-          if (!isOpen(msg.sessionId)) return
-          set((s) => {
-            let list = s.messages[msg.sessionId] ?? []
-            // the real user frame supersedes ONE optimistic bubble of the same
-            // text — remove only the first match so two identical turns
-            // ("yes" then "yes") don't collapse to one.
-            let outbound = s.outbound[msg.sessionId]
-            if (msg.role === 'user') {
-              const i = list.findIndex((m) => m.id.startsWith('optim:') && m.text === msg.text)
-              if (i >= 0) {
-                const optimId = list[i].id
-                list = [...list.slice(0, i), ...list.slice(i + 1)]
-                // Real echo supersedes optim — drop matching outbound entry if any.
-                if (outbound?.some((o) => o.id === optimId)) {
-                  outbound = outbound.filter((o) => o.id !== optimId)
-                }
-              }
-            }
-            // an assistant message ends the in-flight turn; an ask-user tool
-            // from that turn outlives it as the composer's ask card (headless
-            // ask doesn't block — the answer is the next user turn). A user
-            // echo means the question got answered (here or in the TUI).
-            const endsTurn = msg.role === 'assistant'
-            const stashed = endsTurn
-              ? questionsFromLiveTools(s.live[msg.sessionId]?.tools ?? [])
-              : []
-            // Store-backed sessions (push-synced transcript): the store file
-            // owns solid messages, so bridge commits don't append — they'd
-            // duplicate the turn the next transcript frame carries. Their
-            // side effects (optimistic supersede, live clear, ask stash)
-            // still apply.
-            const storeBacked = !!s.transcripts[msg.sessionId]?.command
-            return {
-              messages: {
-                ...s.messages,
-                [msg.sessionId]: storeBacked ? list : appendMessage(list, msg),
-              },
-              outbound:
-                outbound !== s.outbound[msg.sessionId]
-                  ? { ...s.outbound, [msg.sessionId]: outbound }
-                  : s.outbound,
-              live: endsTurn ? { ...s.live, [msg.sessionId]: undefined } : s.live,
-              ask:
-                msg.role === 'user'
-                  ? { ...s.ask, [msg.sessionId]: undefined }
-                  : stashed.length > 0
-                    ? { ...s.ask, [msg.sessionId]: stashed }
-                    : s.ask,
-            }
-          })
-        } else {
-          const sid = ownerKey(frame.session)
-          if (!isOpen(sid)) return
-          set((s) => {
-            const prev = s.live[sid]
-            const next = foldStream(prev, frame.event)
-            // `done` clears the slot — keep the turn's ask-user prompt alive
-            // as the pending ask card (cleared on answer/dismiss).
-            const stashed = next === undefined && prev ? questionsFromLiveTools(prev.tools) : []
-            return {
-              live: { ...s.live, [sid]: next },
-              liveTs: { ...s.liveTs, [sid]: Date.now() },
-              ask: stashed.length > 0 ? { ...s.ask, [sid]: stashed } : s.ask,
-            }
+      connect: (endpointKey) => {
+        subscription?.close()
+        if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
+          watchedSessions.clear() // session ids are only meaningful per gateway
+          set({
+            messages: {},
+            transcripts: {},
+            live: {},
+            liveTs: {},
+            ask: {},
+            outbound: {},
+            harnessBound: {},
+            approvals: {},
+            opened: [],
+            drafts: [],
+            draftCreatedAt: {},
+            active: undefined,
           })
         }
-      },
-      undefined,
-      {
-        onStatus: (status) => {
-          if (status === 'open') {
-            // Fresh socket: anything accumulated before the outage is
-            // unreliable (frames during the gap are gone) — clear live and
-            // signal consumers to refetch backfill.
+        currentEndpoint = endpointKey
+        // No gateway configured (fresh desktop shell, or a bad URL): don't open
+        // a socket against a non-http origin — WebKit throws on the URL (#4j).
+        if (!isValidGatewayUrl(useConnection.getState().baseUrl)) {
+          set({ wsStatus: 'closed' })
+          return
+        }
+        const { gateway } = useConnection.getState()
+        subscription = gateway.watchSessions(
+          (frame: SessionWsFrame) => {
+            // A control-plane session is driven by its own socket; the same den
+            // events surface on both, so writing here too would double every
+            // delta and re-append every committed turn.
+            const isOpen = (id: string): boolean =>
+              get().opened.includes(id) && !get().harnessBound[id]
+            // The den bridge keys its message/stream frames on the DEN ROOM key,
+            // which is the native half of a canonical thread key. Map one back
+            // onto the thread that owns it — otherwise a canonical-keyed session
+            // matches neither `opened` (nothing renders) nor `harnessBound` (the
+            // suppression that stops a control-plane session folding every delta
+            // twice). Transcript frames need no mapping: the server echoes the id
+            // the client watched with, so they already arrive keyed on the thread.
             //
-            // Except what this socket does not own. A control-plane session's
-            // live turn belongs to ITS socket, which did not drop; blanking it
-            // here would erase a mid-stream bubble and hand the queue pump a
-            // false "idle" mid-turn. Non-owner never mutates owner state.
-            set((s) => {
-              const live: Record<string, LiveTurn | undefined> = {}
-              for (const sid of Object.keys(s.live)) {
-                if (s.harnessBound[sid]) live[sid] = s.live[sid]
-              }
-              // wsEpoch still bumps: it only drives HTTP backfill refetches,
-              // which bound sessions gate off their own transcript anyway.
-              return { wsStatus: status, live, wsEpoch: s.wsEpoch + 1 }
-            })
-            // Server-side transcript subscriptions died with the old socket;
-            // re-watch everything open. The server answers each watch with a
-            // full snapshot, which also heals any frames lost in the gap.
-            for (const sid of watchedSessions) {
-              subscription?.send({ type: 'watch', session: sid })
+            // More than one opened entry can share a native half — mid-adoption
+            // (`opened` briefly holds both the bare draft and its canonical id),
+            // or two harnesses whose stores collide on a uuid. "First in `opened`"
+            // would then hand frames to the retired draft and leave the row the
+            // user is looking at silent, so rank instead: the active selection
+            // wins, then a canonical key over the bare room key, then the thread
+            // the control plane actually owns. Ties keep `opened` order.
+            const ownerKey = (id: string): string => {
+              const s = get()
+              const owners = s.opened.filter((key) => denRoomKey(key) === id)
+              if (owners.length <= 1) return owners[0] ?? id
+              const rank = (key: string): number =>
+                (key === s.active ? 4 : 0) + (key === id ? 0 : 2) + (s.harnessBound[key] ? 1 : 0)
+              return owners.reduce((best, key) => (rank(key) > rank(best) ? key : best))
             }
-          } else {
-            set({ wsStatus: status })
-          }
-        },
+            if (frame.kind === 'sessions-dirty') {
+              // a harness store changed somewhere — the drawer refetches on this
+              set((s) => ({ sessionsDirty: s.sessionsDirty + 1 }))
+              return
+            }
+            if (frame.kind === 'transcript') {
+              if (!isOpen(frame.session)) return
+              const patch = applyTranscriptFrame(get(), frame)
+              if (patch) {
+                set(patch)
+              } else {
+                // missed a delta (reconnect gap / out-of-order) — ask the server
+                // for a fresh full snapshot on this same subscription
+                subscription?.send({ type: 'sync', session: frame.session })
+              }
+              return
+            }
+            if (frame.kind === 'message') {
+              const { kind: _kind, ...bridged } = frame
+              const msg = { ...bridged, sessionId: ownerKey(bridged.sessionId) }
+              if (!isOpen(msg.sessionId)) return
+              set((s) => {
+                let list = s.messages[msg.sessionId] ?? []
+                // the real user frame supersedes ONE optimistic bubble of the same
+                // text — remove only the first match so two identical turns
+                // ("yes" then "yes") don't collapse to one.
+                let outbound = s.outbound[msg.sessionId]
+                if (msg.role === 'user') {
+                  const i = list.findIndex((m) => m.id.startsWith('optim:') && m.text === msg.text)
+                  if (i >= 0) {
+                    const optimId = list[i].id
+                    list = [...list.slice(0, i), ...list.slice(i + 1)]
+                    // Real echo supersedes optim — drop matching outbound entry if any.
+                    if (outbound?.some((o) => o.id === optimId)) {
+                      outbound = outbound.filter((o) => o.id !== optimId)
+                    }
+                  }
+                }
+                // an assistant message ends the in-flight turn; an ask-user tool
+                // from that turn outlives it as the composer's ask card (headless
+                // ask doesn't block — the answer is the next user turn). A user
+                // echo means the question got answered (here or in the TUI).
+                const endsTurn = msg.role === 'assistant'
+                const stashed = endsTurn
+                  ? questionsFromLiveTools(s.live[msg.sessionId]?.tools ?? [])
+                  : []
+                // Store-backed sessions (push-synced transcript): the store file
+                // owns solid messages, so bridge commits don't append — they'd
+                // duplicate the turn the next transcript frame carries. Their
+                // side effects (optimistic supersede, live clear, ask stash)
+                // still apply.
+                const storeBacked = !!s.transcripts[msg.sessionId]?.command
+                return {
+                  messages: {
+                    ...s.messages,
+                    [msg.sessionId]: storeBacked ? list : appendMessage(list, msg),
+                  },
+                  outbound:
+                    outbound !== s.outbound[msg.sessionId]
+                      ? { ...s.outbound, [msg.sessionId]: outbound }
+                      : s.outbound,
+                  live: endsTurn ? { ...s.live, [msg.sessionId]: undefined } : s.live,
+                  ask:
+                    msg.role === 'user'
+                      ? { ...s.ask, [msg.sessionId]: undefined }
+                      : stashed.length > 0
+                        ? { ...s.ask, [msg.sessionId]: stashed }
+                        : s.ask,
+                }
+              })
+            } else {
+              const sid = ownerKey(frame.session)
+              if (!isOpen(sid)) return
+              set((s) => {
+                const prev = s.live[sid]
+                const next = foldStream(prev, frame.event)
+                // `done` clears the slot — keep the turn's ask-user prompt alive
+                // as the pending ask card (cleared on answer/dismiss).
+                const stashed = next === undefined && prev ? questionsFromLiveTools(prev.tools) : []
+                return {
+                  live: { ...s.live, [sid]: next },
+                  liveTs: { ...s.liveTs, [sid]: Date.now() },
+                  ask: stashed.length > 0 ? { ...s.ask, [sid]: stashed } : s.ask,
+                }
+              })
+            }
+          },
+          undefined,
+          {
+            onStatus: (status) => {
+              if (status === 'open') {
+                // Fresh socket: anything accumulated before the outage is
+                // unreliable (frames during the gap are gone) — clear live and
+                // signal consumers to refetch backfill.
+                //
+                // Except what this socket does not own. A control-plane session's
+                // live turn belongs to ITS socket, which did not drop; blanking it
+                // here would erase a mid-stream bubble and hand the queue pump a
+                // false "idle" mid-turn. Non-owner never mutates owner state.
+                set((s) => {
+                  const live: Record<string, LiveTurn | undefined> = {}
+                  for (const sid of Object.keys(s.live)) {
+                    if (s.harnessBound[sid]) live[sid] = s.live[sid]
+                  }
+                  // wsEpoch still bumps: it only drives HTTP backfill refetches,
+                  // which bound sessions gate off their own transcript anyway.
+                  return { wsStatus: status, live, wsEpoch: s.wsEpoch + 1 }
+                })
+                // Server-side transcript subscriptions died with the old socket;
+                // re-watch everything open. The server answers each watch with a
+                // full snapshot, which also heals any frames lost in the gap.
+                for (const sid of watchedSessions) {
+                  subscription?.send({ type: 'watch', session: sid })
+                }
+              } else {
+                set({ wsStatus: status })
+              }
+            },
+          },
+        )
       },
-    )
-  },
 
-  disconnect: () => {
-    subscription?.close()
-    subscription = undefined
-    set({ wsStatus: 'closed' })
-  },
-}))
+      disconnect: () => {
+        subscription?.close()
+        subscription = undefined
+        set({ wsStatus: 'closed' })
+      },
+    }),
+    {
+      name: 'rivethub.chat',
+      version: 1,
+      storage: createJSONStorage(() => localStorage),
+      // Only the instant-resume pointer survives a reload — everything else
+      // in this store is live socket state that means nothing once the
+      // socket is gone.
+      partialize: (s): Pick<ChatState, 'lastActive'> => ({ lastActive: s.lastActive }),
+    },
+  ),
+)
+
+/**
+ * The session key to instantly resume on a narrow launch, or undefined when
+ * no session was ever opened or the pointer belongs to another node (session
+ * ids are only meaningful per gateway). Pure — fed from
+ * `useChat((s) => s.lastActive)` so callers subscribe, not peek.
+ */
+export function lastActiveFor(
+  lastActive: { sessionId: string; baseUrl: string } | undefined,
+  baseUrl: string,
+): string | undefined {
+  if (lastActive === undefined || lastActive.baseUrl !== baseUrl) return undefined
+  return lastActive.sessionId
+}

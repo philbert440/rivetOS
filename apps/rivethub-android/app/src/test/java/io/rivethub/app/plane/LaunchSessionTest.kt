@@ -1,7 +1,9 @@
 package io.rivethub.app.plane
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Mirrors rivethub-web lib/launch-session.test.ts case for case. */
@@ -91,5 +93,93 @@ class LaunchSessionTest {
                 hub,
             ),
         )
+    }
+}
+
+/** Mirrors rivethub-web lib/launch-session.test.ts narrowLaunchTarget cases. */
+class NarrowLaunchTargetTest {
+    private val hub = "https://a"
+    private val items = listOf(
+        LaunchCandidate("old", 100, ChatItemKind.HARNESS),
+        LaunchCandidate("new", 300, ChatItemKind.HARNESS),
+    )
+
+    @Test
+    fun `resumes the persisted last session immediately, before the load lands`() {
+        assertEquals(
+            NarrowLaunchTarget.Resume("last"),
+            narrowLaunchTarget("last", loaded = false, sourceKeys = emptySet(), items, hub),
+        )
+    }
+
+    @Test
+    fun `keeps the resume when the load confirms the key still exists`() {
+        assertEquals(
+            NarrowLaunchTarget.Resume("old"),
+            narrowLaunchTarget("old", loaded = true, sourceKeys = setOf("old", "new"), items, hub),
+        )
+    }
+
+    @Test
+    fun `a stale lastActive (no source row after load) falls back to the pick`() {
+        assertEquals(
+            NarrowLaunchTarget.Pick("new"),
+            narrowLaunchTarget("gone", loaded = true, sourceKeys = setOf("old", "new"), items, hub),
+        )
+    }
+
+    @Test
+    fun `a stale lastActive with no sessions anywhere resolves to new`() {
+        assertEquals(
+            NarrowLaunchTarget.New,
+            narrowLaunchTarget("gone", loaded = true, sourceKeys = emptySet(), items = emptyList(), hub),
+        )
+    }
+
+    @Test
+    fun `with nothing persisted and the load in flight, the surface is loading`() {
+        assertEquals(
+            NarrowLaunchTarget.Loading,
+            narrowLaunchTarget(null, loaded = false, sourceKeys = emptySet(), items = emptyList(), hub),
+        )
+    }
+
+    @Test
+    fun `with nothing persisted, the most recent session is picked once loaded`() {
+        assertEquals(
+            NarrowLaunchTarget.Pick("new"),
+            narrowLaunchTarget(null, loaded = true, sourceKeys = setOf("old", "new"), items, hub),
+        )
+    }
+
+    @Test
+    fun `an empty account resolves to the new-conversation compose state, never the list`() {
+        assertEquals(
+            NarrowLaunchTarget.New,
+            narrowLaunchTarget(null, loaded = true, sourceKeys = emptySet(), items = emptyList(), hub),
+        )
+    }
+}
+
+class LastSessionPersistenceTest {
+    @Test
+    fun `opening a real session persists the resume pointer with a trimmed node url`() {
+        assertEquals(
+            LastSession("claude-code:abc", "https://a"),
+            persistableLastSession("claude-code:abc", "https://a/", draft = false),
+        )
+    }
+
+    @Test
+    fun `drafts are never persisted — they are in-memory only and would resurrect dead`() {
+        assertNull(persistableLastSession("3f6b3e1a-0000-4000-8000-000000000000", "https://a", draft = true))
+    }
+
+    @Test
+    fun `a resumed session is stale only when its node is online and the key is gone`() {
+        assertTrue(resumedSessionStale("k", nodeOnline = true, sourceKeys = emptySet()))
+        assertFalse(resumedSessionStale("k", nodeOnline = true, sourceKeys = setOf("k")))
+        // An unreachable node cannot judge — the session screen keeps its own offline state.
+        assertFalse(resumedSessionStale("k", nodeOnline = false, sourceKeys = emptySet()))
     }
 }

@@ -45,6 +45,21 @@ fun hubTabOf(dest: DrawerDest): HubTab? = when (dest) {
 fun drawerTabRoute(dest: DrawerDest): HubTab? = hubTabOf(dest)
 
 /**
+ * Left-nav Conversations → the CHAT HOME, never a list screen (Phil
+ * 2026-09-04: the list is not an app screen; it lives only in the right
+ * history drawer). The home is the ACTIVE session when one is on the back
+ * stack — popping to it beats resolving a pick — and only a stack without
+ * any session needs the pick/new resolution.
+ */
+enum class ChatHomeNav { AlreadyHome, PopToSession, Resolve }
+
+fun chatHomeNav(currentIsChat: Boolean, stackHasChat: Boolean): ChatHomeNav = when {
+    currentIsChat -> ChatHomeNav.AlreadyHome
+    stackHasChat -> ChatHomeNav.PopToSession
+    else -> ChatHomeNav.Resolve
+}
+
+/**
  * System Back on the Settings tab returns to Conversations.
  * Conversations yields null so the activity can finish as normal.
  */

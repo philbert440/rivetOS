@@ -81,3 +81,20 @@ class DrawerNavTest {
         }
     }
 }
+
+class ChatHomeNavTest {
+    @Test
+    fun `left-nav conversations on a session is already home`() {
+        assertEquals(ChatHomeNav.AlreadyHome, chatHomeNav(currentIsChat = true, stackHasChat = true))
+    }
+
+    @Test
+    fun `left-nav conversations from settings pops back to the open session`() {
+        assertEquals(ChatHomeNav.PopToSession, chatHomeNav(currentIsChat = false, stackHasChat = true))
+    }
+
+    @Test
+    fun `left-nav conversations with no session on the stack resolves a launch pick`() {
+        assertEquals(ChatHomeNav.Resolve, chatHomeNav(currentIsChat = false, stackHasChat = false))
+    }
+}

@@ -11,7 +11,6 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
-import { useChat } from '../stores/chat.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
@@ -99,12 +98,15 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
         className={navClass(onChat, props.collapsed)}
         onClick={() => {
           if (narrow) {
-            useSidebarPrefs.getState().openConversation()
+            // Narrow (Phil 2026-09-04): the list is not a screen — the rail's
+            // Conversations item returns to the CHAT HOME (the active
+            // session). The selection is left alone: remounting ChatPage
+            // rewrites ?session= from `active`, and with no active session
+            // the launch effect resolves resume/pick/new.
             if (shouldCloseDrawerOnSelection(narrow)) {
               useSidebarPrefs.getState().setDrawerOpen(false)
             }
-            useChat.getState().setActive(undefined)
-            void navigate({ to: '/', search: {} })
+            if (!onChat) void navigate({ to: '/' })
             return
           }
           if (!onChat) {

@@ -282,13 +282,15 @@ fun HistoryDrawer(
     }
 }
 
-/** The hub content — Conversations (home) or Settings — inside [HubDrawer]. */
+/** The hub content — the launch surface (Conversations tab) or Settings —
+ *  inside [HubDrawer]. 2026-09-04: the Conversations tab is no longer a
+ *  full-screen list; it renders [ChatLaunchScreen] while MainActivity's
+ *  launch resolution opens the session the phone's home actually is. */
 @Composable
 fun HubScreen(
     vm: HubViewModel,
     c: AppContainer,
-    onOpenChat: (AgentOpen) -> Unit,
-    onOpenRow: (LocatedChatItem) -> Unit,
+    onNew: () -> Unit,
     onOpenGallery: () -> Unit,
     onForget: () -> Unit,
     onOpenDrawer: () -> Unit,
@@ -307,12 +309,7 @@ fun HubScreen(
     }
     Column(Modifier.fillMaxSize()) {
         when (st.tab) {
-            HubViewModel.Tab.Conversations -> ConversationsScreen(
-                vm = vm,
-                onOpenRow = onOpenRow,
-                onOpenChat = onOpenChat,
-                onOpenDrawer = onOpenDrawer,
-            )
+            HubViewModel.Tab.Conversations -> ChatLaunchScreen(onOpenDrawer = onOpenDrawer, onNew = onNew)
             HubViewModel.Tab.Settings -> SettingsScreen(
                 c = c,
                 vm = vm,
