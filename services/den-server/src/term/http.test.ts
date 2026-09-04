@@ -222,6 +222,31 @@ describe('term endpoints', () => {
     expect(after.active).toBe(1)
   })
 
+  it('POST /term on a live record does not resize (spawn-or-get pin)', async () => {
+    const { base } = await start()
+    const first = await post(base, '/term', {
+      command: 'shell',
+      session: 'chat-live',
+      cols: 200,
+      rows: 50,
+    })
+    expect(first.status).toBe(201)
+    const a = (await first.json()) as SpawnedPty
+    const second = await post(base, '/term', {
+      command: 'shell',
+      session: 'chat-live',
+      cols: 80,
+      rows: 24,
+    })
+    expect(second.status).toBe(201)
+    const b = (await second.json()) as SpawnedPty
+    expect(b.id).toBe(a.id)
+    const list = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: { id: string; cols: number; rows: number }[]
+    }
+    expect(list.ptys[0]).toMatchObject({ id: a.id, cols: 200, rows: 50 })
+  })
+
   it('GET /term/list reports live ptys; DELETE /term kills them', async () => {
     const { base, procs } = await start()
     const pty = (await (await post(base, '/term', { command: 'shell' })).json()) as SpawnedPty

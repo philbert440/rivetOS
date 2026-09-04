@@ -304,6 +304,8 @@ export type {
   TermListResponse,
   TermHelloFrame,
   TermExitFrame,
+  TermOwnerFrame,
+  TermClaimFrame,
   TermControlFrame,
   DenSessionInfo,
   DenSessionsResponse,

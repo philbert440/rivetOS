@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -9,6 +9,7 @@ import {
   createDevicesRoutes,
   isCidr,
   deviceRoleName,
+  lookupDeviceName,
   type DatahubAdminDriver,
   type DevicesConfig,
   type RelayDriver,
@@ -200,6 +201,34 @@ describe('isCidr', () => {
     expect(isCidr('10.0.0.0/24/8')).toBe(false) // extra slash
     expect(isCidr('; rm -rf/24')).toBe(false) // injection shape
     expect(isCidr('')).toBe(false)
+  })
+})
+
+describe('lookupDeviceName', () => {
+  it('returns the roster name, or undefined when missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-dev-label-'))
+    const file = join(dir, 'mesh-devices.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        devices: [
+          {
+            id: 'abc',
+            name: 'Pixel 8',
+            publicKey: PUBKEY,
+            address: '192.0.2.10',
+            createdAt: 1,
+            enrolledAt: 1,
+            lastHandshake: null,
+          },
+        ],
+        pending: [],
+      }),
+    )
+    expect(lookupDeviceName(file, 'abc')).toBe('Pixel 8')
+    expect(lookupDeviceName(file, 'nope')).toBeUndefined()
+    expect(lookupDeviceName(join(dir, 'missing.json'), 'abc')).toBeUndefined()
+    expect(lookupDeviceName('', 'abc')).toBeUndefined()
   })
 })
 

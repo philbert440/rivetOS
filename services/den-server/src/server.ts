@@ -78,7 +78,7 @@ import {
   readHarnessTranscript,
 } from './term/harness-sessions.js'
 import { createFilesRoutes } from './files.js'
-import { createDevicesRoutes } from './devices.js'
+import { createDevicesRoutes, lookupDeviceName } from './devices.js'
 import { createAgentsRoutes } from './agents.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
@@ -97,6 +97,7 @@ import {
   type RotationBreadcrumbSource,
 } from './harness/alias-restore.js'
 import {
+  clientDevice,
   isGatewayAuthorized,
   isLoopbackHost,
   isLoopbackRemote,
@@ -349,6 +350,11 @@ export interface DenServerOptions {
    * `null` disables it outright — what most tests want.
    */
   aliasBreadcrumbs?: RotationBreadcrumbSource | null
+  /**
+   * Test seam: override /term WS device identity (ownership labels).
+   * Production uses the mTLS cert + mesh-devices roster.
+   */
+  termIdentity?: (req: IncomingMessage) => { device: string } | null
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -549,6 +555,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       auditTenancyDeny('WS /term attach', denSession, ctx as UserContext)
       return false
     },
+    identity:
+      opts.termIdentity ??
+      ((req) => {
+        const id = clientDevice(req)
+        if (!id) return null
+        const roster =
+          config.devices?.rosterPath.trim() || join(config.stateDir, 'mesh-devices.json')
+        const name = lookupDeviceName(roster, id.deviceId)
+        return { device: name || id.cn }
+      }),
   })
 
   // ── harness control plane ───────────────────────────────────────────────

@@ -790,6 +790,9 @@ export interface TermHelloFrame {
    *  client; clear the local buffer instead of replaying). A reattach on the
    *  same still-live client carries den's scrollback ring as usual. */
   mux?: 'tmux'
+  /** Present when this session already has a terminal owner. Absent until
+   *  the first viewer resizes (auto-claim). `self` is per-recipient. */
+  owner?: { device: string; self: boolean }
 }
 
 export interface TermExitFrame {
@@ -798,8 +801,26 @@ export interface TermExitFrame {
   signal?: string
 }
 
+/** Server → client: ownership of the shared PTY changed. `self` is per-recipient. */
+export interface TermOwnerFrame {
+  type: 'owner'
+  device: string | null
+  self: boolean
+  since?: number
+}
+
+/** Client → server: take ownership of the shared PTY. Optional size is
+ *  applied (clamped like resize); omitted → last `{type:'resize'}` on this
+ *  client, or no PTY resize if this client never sent one. */
+export interface TermClaimFrame {
+  type: 'claim'
+  cols?: number
+  rows?: number
+}
+
 /** Client → server JSON control frames (keystrokes ride as binary). */
-export type TermControlFrame = { type: 'resize'; cols: number; rows: number } | { type: 'kill' }
+export type TermControlFrame =
+  { type: 'resize'; cols: number; rows: number } | { type: 'kill' } | TermClaimFrame
 
 // ---------------------------------------------------------------------------
 // WS /api/notifications/ws (phase 4e) — ephemeral delivery; /api/outcomes is

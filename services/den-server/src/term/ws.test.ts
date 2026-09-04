@@ -18,6 +18,7 @@ import { defaultRoster } from './roster.js'
 import type { PtyProc, PtySpawn, PtySpawnOpts } from './pty.js'
 import { createTermWs, type TermSocket, type TermWs } from './ws.js'
 import type { TmuxCtl } from './tmux.js'
+import type { TermClaimFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 
 class FakeProc extends EventEmitter implements PtyProc {
   writes: string[] = []
@@ -169,7 +170,7 @@ async function start(
     spawns.push({ argv, opts })
     return proc
   }
-  const den = createDenServer(config, serverOpts ?? { ptySpawn: fakeSpawn })
+  const den = createDenServer(config, { ptySpawn: fakeSpawn, ...serverOpts })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
@@ -398,6 +399,67 @@ describe('WS /term attach protocol', () => {
     expect(await upgradeResult(port, `id=${pty.id}`)).toBe('open')
   })
 
+  it('identity hook labels the owner; loopback without a cert is another device', async () => {
+    const labeled = await start({}, {}, { termIdentity: () => ({ device: 'Pixel 8' }) })
+    const pty = await spawnPty(labeled.base, 'shell')
+    const a = await connect(labeled.port, `id=${pty.id}`)
+    a.ws.send(JSON.stringify({ type: 'resize', cols: 200, rows: 50 }))
+    await vi.waitFor(() => expect(labeled.procs[0].resizes).toEqual([[200, 50]]))
+    const b = await connect(labeled.port, `id=${pty.id}`)
+    await vi.waitFor(() => expect(b.frames.length).toBeGreaterThanOrEqual(1))
+    expect(JSON.parse(b.frames[0].data.toString())).toMatchObject({
+      type: 'hello',
+      owner: { device: 'Pixel 8', self: false },
+    })
+    a.ws.close()
+    b.ws.close()
+
+    const plain = await start()
+    const pty2 = await spawnPty(plain.base, 'shell')
+    const c = await connect(plain.port, `id=${pty2.id}`)
+    c.ws.send(JSON.stringify({ type: 'resize', cols: 120, rows: 40 }))
+    await vi.waitFor(() => expect(plain.procs[0].resizes).toEqual([[120, 40]]))
+    const d = await connect(plain.port, `id=${pty2.id}`)
+    await vi.waitFor(() => expect(d.frames.length).toBeGreaterThanOrEqual(1))
+    expect(JSON.parse(d.frames[0].data.toString())).toMatchObject({
+      owner: { device: 'another device', self: false },
+    })
+    c.ws.close()
+    d.ws.close()
+  })
+
+  it('POST /term on a live owned record does not resize or change owner', async () => {
+    const { port, base, procs } = await start()
+    const res = await fetch(`${base}/term`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'shell', session: 'chat-owned', cols: 80, rows: 24 }),
+    })
+    expect(res.status).toBe(201)
+    const pty = (await res.json()) as SpawnedPty
+    const a = await connect(port, `id=${pty.id}`)
+    a.ws.send(JSON.stringify({ type: 'resize', cols: 200, rows: 50 }))
+    await vi.waitFor(() => expect(procs[0].resizes).toEqual([[200, 50]]))
+
+    const again = await fetch(`${base}/term`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'shell', session: 'chat-owned', cols: 80, rows: 24 }),
+    })
+    expect(again.status).toBe(201)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+
+    const b = await connect(port, `id=${pty.id}`)
+    await vi.waitFor(() => expect(b.frames.length).toBeGreaterThanOrEqual(1))
+    expect(JSON.parse(b.frames[0].data.toString())).toMatchObject({
+      cols: 200,
+      rows: 50,
+      owner: { device: 'another device', self: false },
+    })
+    a.ws.close()
+    b.ws.close()
+  })
+
   it('destroys upgrades when terminals are disabled or node-pty is absent', async () => {
     const disabled = await start({}, { enabled: false })
     expect(await upgradeResult(disabled.port, 'id=pty-x')).toBe('rejected')
@@ -593,7 +655,7 @@ describe('WS /term protocol core (scripted sockets)', () => {
     expect(procs[0].kills).toEqual([]) // heartbeat reaps sockets, not ptys
   })
 
-  it('detach restores the most-recent remaining viewer size; last viewer leaves the PTY alone', () => {
+  it('non-owner detach does not resize; last viewer leaves the PTY alone', () => {
     const logs: string[] = []
     const { manager, procs } = makeCore()
     const termWs = createTermWs({
@@ -605,32 +667,21 @@ describe('WS /term protocol core (scripted sockets)', () => {
     const pty = manager.spawn('shell', 80, 24, '')
     const a = new FakeSocket()
     const b = new FakeSocket()
-    termWs.attach(manager, pty.id, a)
-    termWs.attach(manager, pty.id, b)
+    termWs.attach(manager, pty.id, a, { device: 'desk' })
+    termWs.attach(manager, pty.id, b, { device: 'phone' })
 
     a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
     expect(procs[0].resizes).toEqual([[200, 50]])
     b.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 40, rows: 20 })), false)
-    expect(procs[0].resizes).toEqual([
-      [200, 50],
-      [40, 20],
-    ])
+    expect(procs[0].resizes).toEqual([[200, 50]])
 
     b.close()
-    expect(procs[0].resizes).toEqual([
-      [200, 50],
-      [40, 20],
-      [200, 50],
-    ])
-    expect(logs).toEqual([`term: restored 200x50 for ${pty.id} after viewer detach`])
+    expect(procs[0].resizes).toEqual([[200, 50]])
     expect(manager.get(pty.id)).toMatchObject({ cols: 200, rows: 50 })
+    expect(logs).toEqual([`term: owner none → desk for ${pty.id} (resize)`])
 
     a.close()
-    expect(procs[0].resizes).toEqual([
-      [200, 50],
-      [40, 20],
-      [200, 50],
-    ])
+    expect(procs[0].resizes).toEqual([[200, 50]])
     expect(logs).toHaveLength(1)
   })
 
@@ -650,6 +701,243 @@ describe('WS /term protocol core (scripted sockets)', () => {
     termWs.attach(manager, pty.id, never)
     never.close()
     expect(procs[0].resizes).toEqual([[200, 50]])
+  })
+
+  it('exports TermHelloFrame.owner, TermOwnerFrame, TermClaimFrame', () => {
+    const hello: TermHelloFrame = {
+      type: 'hello',
+      v: 1,
+      id: 'pty-x',
+      denSession: 's',
+      command: 'shell',
+      cols: 80,
+      rows: 24,
+      state: 'running',
+      owner: { device: 'Pixel 8', self: false },
+    }
+    const owner: TermOwnerFrame = { type: 'owner', device: 'Pixel 8', self: true, since: 1 }
+    const claim: TermClaimFrame = { type: 'claim', cols: 40, rows: 20 }
+    expect(hello.owner?.device).toBe('Pixel 8')
+    expect(owner.self).toBe(true)
+    expect(claim.type).toBe('claim')
+  })
+
+  it('A owns at 200×50; B resize is recorded not applied; B claim then detach restores A', () => {
+    const logs: string[] = []
+    const { manager, procs } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: (m) => logs.push(m),
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    termWs.attach(manager, pty.id, a, { device: 'desk' })
+    expect(a.textFrames()[0].owner).toBeUndefined()
+
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+    expect(a.textFrames().filter((f) => f.type === 'owner')).toEqual([
+      expect.objectContaining({ type: 'owner', device: 'desk', self: true }),
+    ])
+
+    termWs.attach(manager, pty.id, b, { device: 'phone' })
+    expect(b.textFrames()[0]).toMatchObject({
+      type: 'hello',
+      owner: { device: 'desk', self: false },
+    })
+
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 40, rows: 20 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+    expect(manager.get(pty.id)).toMatchObject({ cols: 200, rows: 50 })
+
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'claim' })), false)
+    expect(procs[0].resizes).toEqual([
+      [200, 50],
+      [40, 20],
+    ])
+    expect(a.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      type: 'owner',
+      device: 'phone',
+      self: false,
+    })
+    expect(b.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      type: 'owner',
+      device: 'phone',
+      self: true,
+    })
+    expect(logs).toEqual([
+      `term: owner none → desk for ${pty.id} (resize)`,
+      `term: owner desk → phone for ${pty.id} (claim)`,
+    ])
+
+    b.close()
+    expect(procs[0].resizes).toEqual([
+      [200, 50],
+      [40, 20],
+      [200, 50],
+    ])
+    expect(manager.get(pty.id)).toMatchObject({ cols: 200, rows: 50 })
+    expect(a.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      type: 'owner',
+      device: 'desk',
+      self: true,
+    })
+    expect(logs.at(-1)).toBe(`term: owner phone → desk for ${pty.id} (detach)`)
+  })
+
+  it('three viewers: owner detach hands ownership to the most recent resizer', () => {
+    const logs: string[] = []
+    const { manager, procs } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: (m) => logs.push(m),
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    const c = new FakeSocket()
+    termWs.attach(manager, pty.id, a, { device: 'A' })
+    termWs.attach(manager, pty.id, b, { device: 'B' })
+    termWs.attach(manager, pty.id, c, { device: 'C' })
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 40, rows: 20 })), false)
+    c.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 100, rows: 30 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+
+    a.close()
+    expect(procs[0].resizes).toEqual([
+      [200, 50],
+      [100, 30],
+    ])
+    expect(manager.get(pty.id)).toMatchObject({ cols: 100, rows: 30 })
+    expect(b.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: 'C',
+      self: false,
+    })
+    expect(c.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: 'C',
+      self: true,
+    })
+    expect(logs.at(-1)).toBe(`term: owner A → C for ${pty.id} (detach)`)
+  })
+
+  it('owner detach with two remaining, none resized → owner none (N1)', () => {
+    const logs: string[] = []
+    const { manager, procs } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: (m) => logs.push(m),
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    const c = new FakeSocket()
+    termWs.attach(manager, pty.id, a, { device: 'A' })
+    termWs.attach(manager, pty.id, b, { device: 'B' })
+    termWs.attach(manager, pty.id, c, { device: 'C' })
+    // Only A ever resizes → A owns. B and C never resized.
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+
+    a.close()
+    // Two viewers remain, neither resized → nobody can inherit → owner none,
+    // the PTY size is left alone (no extra resize).
+    expect(procs[0].resizes).toEqual([[200, 50]])
+    expect(b.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: null,
+      self: false,
+    })
+    expect(c.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: null,
+      self: false,
+    })
+    expect(logs.at(-1)).toBe(`term: owner A → none for ${pty.id} (detach)`)
+    // …and a fresh resize from either re-claims (owner=none auto-owns).
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 90, rows: 24 })), false)
+    expect(procs[0].resizes).toEqual([[200, 50], [90, 24]])
+    expect(b.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: 'B',
+      self: true,
+    })
+  })
+
+  it('claim with no size from a never-resized client changes owner only', () => {
+    const { manager, procs } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: () => {},
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    termWs.attach(manager, pty.id, a, { device: 'desk' })
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    termWs.attach(manager, pty.id, b, { device: 'phone' })
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'claim' })), false)
+    expect(procs[0].resizes).toEqual([[200, 50]])
+    expect(manager.get(pty.id)).toMatchObject({ cols: 200, rows: 50 })
+    expect(a.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: 'phone',
+      self: false,
+    })
+    expect(b.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: 'phone',
+      self: true,
+    })
+  })
+
+  it('hello of a lone first viewer has owner undefined until its first resize', () => {
+    const { manager, procs } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: () => {},
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    termWs.attach(manager, pty.id, a, { device: 'desk' })
+    expect(a.textFrames()[0].owner).toBeUndefined()
+    expect(a.textFrames()[0]).not.toHaveProperty('owner')
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 80, rows: 24 })), false)
+    expect(procs[0].resizes).toEqual([[80, 24]])
+    expect(a.textFrames().filter((f) => f.type === 'owner')[0]).toMatchObject({
+      device: 'desk',
+      self: true,
+    })
+  })
+
+  it('attach device label is the owner device; default is another device', () => {
+    const { manager } = makeCore()
+    const termWs = createTermWs({
+      manager: () => Promise.resolve(manager),
+      enabled: () => true,
+      log: () => {},
+    })
+    termWss.push(termWs)
+    const pty = manager.spawn('shell', 80, 24, '')
+    const a = new FakeSocket()
+    const b = new FakeSocket()
+    termWs.attach(manager, pty.id, a, { device: 'Pixel 8' })
+    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
+    termWs.attach(manager, pty.id, b)
+    expect(b.textFrames()[0]).toMatchObject({
+      owner: { device: 'Pixel 8', self: false },
+    })
+    b.emit('message', Buffer.from(JSON.stringify({ type: 'claim' })), false)
+    expect(a.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
+      device: 'another device',
+      self: false,
+    })
   })
 })
 
