@@ -10,6 +10,8 @@ import { BUILD_INFO } from '../lib/build-info.js'
 import { DevicesSection } from '../components/devices-section.js'
 import { UpdatesSection } from '../components/updates-section.js'
 import { TerminalSection } from '../components/terminal-section.js'
+import { Toggle } from '../components/ui/toggle.js'
+import { useExperimental } from '../stores/experimental.js'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -126,6 +128,10 @@ export function SettingsPage(): JSX.Element {
   const themePreference = useTheme((s) => s.preference)
   const setThemePreference = useTheme((s) => s.setPreference)
   const omarchy = useTheme((s) => s.omarchy)
+  const experimental = useExperimental((s) => s.experimental)
+  const setFiles = useExperimental((s) => s.setFiles)
+  const setTasks = useExperimental((s) => s.setTasks)
+  const setWorkflows = useExperimental((s) => s.setWorkflows)
   const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
   // The Saved Nodes editor below can repoint baseUrl from within this page —
@@ -257,6 +263,25 @@ export function SettingsPage(): JSX.Element {
       <p className="mt-2 text-xs text-ink-dim">System follows the OS light/dark setting.</p>
 
       <TerminalSection />
+
+      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+        Experimental features
+      </h2>
+      <p className="mb-3 text-xs text-ink-dim">These are unfinished — turn them on to try them.</p>
+      {(
+        [
+          ['exp-files', 'Files', experimental.files, setFiles],
+          ['exp-tasks', 'Tasks', experimental.tasks, setTasks],
+          ['exp-workflows', 'Workflows', experimental.workflows, setWorkflows],
+        ] as const
+      ).map(([id, label, value, onChange]) => (
+        <div key={id} className="mb-2 flex items-center justify-between gap-3">
+          <label htmlFor={id} className="text-xs text-ink-dim">
+            {label}
+          </label>
+          <Toggle id={id} value={value} onChange={onChange} />
+        </div>
+      ))}
 
       <SavedNodesSection />
 

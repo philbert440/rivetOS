@@ -11,8 +11,10 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useNotifications } from '../stores/notifications.js'
+import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
+import { visibleNav } from '../lib/visible-nav.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
@@ -181,6 +183,9 @@ export function Sidebar(): JSX.Element {
   const setRailCollapsed = useSidebarPrefs((s) => s.setRailCollapsed)
   const drawerOpen = useSidebarPrefs((s) => s.drawerOpen)
   const setDrawerOpen = useSidebarPrefs((s) => s.setDrawerOpen)
+  const experimental = useExperimental((s) => s.experimental)
+  const primaryItems = visibleNav(PRIMARY_NAV, experimental)
+  const secondaryItems = visibleNav(SECONDARY_NAV, experimental)
   // Narrow always uses the expanded rail — never the 48px icon strip.
   const collapsed = narrow ? false : railCollapsed
   const toggle = railToggle(collapsed)
@@ -261,15 +266,18 @@ export function Sidebar(): JSX.Element {
 
       <nav id="hub-rail-nav" className={cn('flex flex-col gap-1', collapsed ? 'px-1' : 'px-2')}>
         <ConversationsNav collapsed={collapsed} />
-        {PRIMARY_NAV.map((item) => (
+        {primaryItems.map((item) => (
           <NavLink key={item.to} {...item} collapsed={collapsed} />
         ))}
 
-        <div className="my-2 border-t border-line" role="separator" />
-
-        {SECONDARY_NAV.map((item) => (
-          <NavLink key={item.to} {...item} collapsed={collapsed} />
-        ))}
+        {secondaryItems.length > 0 && (
+          <>
+            <div className="my-2 border-t border-line" role="separator" />
+            {secondaryItems.map((item) => (
+              <NavLink key={item.to} {...item} collapsed={collapsed} />
+            ))}
+          </>
+        )}
       </nav>
 
       <AgentsSection compact={collapsed} />

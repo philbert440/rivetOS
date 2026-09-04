@@ -40,6 +40,7 @@ import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
+import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.drawerTabRoute
 import io.rivethub.app.plane.drawerWidthDp
 import io.rivethub.app.plane.hubTabOnBack
@@ -118,6 +119,11 @@ fun HubDrawer(
                     agentsCollapsed = st.prefs.agentsCollapsed,
                     currentNodeName = currentName,
                     nodeSheet = nodeSheet,
+                    exp = ExperimentalFlags(
+                        files = st.prefs.expFiles,
+                        tasks = st.prefs.expTasks,
+                        workflows = st.prefs.expWorkflows,
+                    ),
                     onClose = { closeDrawer() },
                     onNav = { dest ->
                         drawerTabRoute(dest)?.let { onNavTab(it) }

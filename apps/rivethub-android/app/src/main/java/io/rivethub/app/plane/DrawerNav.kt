@@ -12,9 +12,26 @@ enum class DrawerDest {
 
 enum class HubTab { Conversations, Settings }
 
-fun drawerDestEnabled(dest: DrawerDest): Boolean = when (dest) {
+/** Unfinished drawer sections. Memory is not experimental — it stays listed. */
+data class ExperimentalFlags(
+    val files: Boolean = false,
+    val tasks: Boolean = false,
+    val workflows: Boolean = false,
+)
+
+fun drawerDestVisible(dest: DrawerDest, exp: ExperimentalFlags = ExperimentalFlags()): Boolean = when (dest) {
+    DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Settings -> true
+    DrawerDest.Files -> exp.files
+    DrawerDest.Tasks -> exp.tasks
+    DrawerDest.Workflows -> exp.workflows
+}
+
+fun drawerDestEnabled(dest: DrawerDest, exp: ExperimentalFlags = ExperimentalFlags()): Boolean = when (dest) {
     DrawerDest.Conversations, DrawerDest.Settings -> true
-    DrawerDest.Memory, DrawerDest.Files, DrawerDest.Tasks, DrawerDest.Workflows -> false
+    DrawerDest.Memory -> false
+    DrawerDest.Files -> exp.files
+    DrawerDest.Tasks -> exp.tasks
+    DrawerDest.Workflows -> exp.workflows
 }
 
 fun drawerPrimaryNav(): List<DrawerDest> =
@@ -22,6 +39,19 @@ fun drawerPrimaryNav(): List<DrawerDest> =
 
 fun drawerSecondaryNav(): List<DrawerDest> =
     listOf(DrawerDest.Tasks, DrawerDest.Workflows)
+
+fun drawerVisiblePrimary(exp: ExperimentalFlags): List<DrawerDest> =
+    drawerPrimaryNav().filter { drawerDestVisible(it, exp) }
+
+fun drawerVisibleSecondary(exp: ExperimentalFlags): List<DrawerDest> =
+    drawerSecondaryNav().filter { drawerDestVisible(it, exp) }
+
+/** DataStore missing keys read as off — same default as Prefs.exp*. */
+fun storedExperimentalFlags(files: Boolean?, tasks: Boolean?, workflows: Boolean?) = ExperimentalFlags(
+    files = files ?: false,
+    tasks = tasks ?: false,
+    workflows = workflows ?: false,
+)
 
 fun drawerItemActive(dest: DrawerDest, tab: HubTab): Boolean = when (dest) {
     DrawerDest.Conversations -> tab == HubTab.Conversations

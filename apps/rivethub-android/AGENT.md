@@ -71,7 +71,8 @@ Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `
 (`system`\|`light`\|`dark`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
 `titleOverrides`, `agentPointers` (`sessionId\tnodeBaseUrl`), `terminalFontSp`, `viewNodeId`,
 `currentAgentId`, `agentsCollapsed`, `lastSessionKey` + `lastSessionNode` (instant-resume
-pointer, written on every chat open; drafts never written). Leftover Grok-Bot keys (`handle`,
+pointer, written on every chat open; drafts never written), `expFiles` / `expTasks` /
+`expWorkflows` (experimental drawer sections, default false). Leftover Grok-Bot keys (`handle`,
 `pinned`, `hidden`, `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is
 not required; their setters are gone.
 

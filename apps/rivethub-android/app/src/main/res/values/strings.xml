@@ -120,6 +120,8 @@
     <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>
     <string name="section_terminal">Terminal</string>
+    <string name="section_experimental">Experimental features</string>
+    <string name="experimental_helper">These are unfinished — turn them on to try them.</string>
     <string name="label_fingerprint">Fingerprint</string>
     <string name="label_subject">Subject</string>
     <string name="no_identity">No device certificate imported.</string>
