@@ -49,6 +49,7 @@ import io.rivethub.app.plane.persistableLastSession
 import io.rivethub.app.plane.resumedSessionStale
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.HubViewModel
+import io.rivethub.app.ui.MemoryViewModel
 import io.rivethub.app.ui.Nav
 import io.rivethub.app.ui.Screen
 import io.rivethub.app.ui.components.ComponentGallery
@@ -57,6 +58,8 @@ import io.rivethub.app.ui.screens.HarnessChatScreen
 import io.rivethub.app.ui.screens.HistoryDrawer
 import io.rivethub.app.ui.screens.HubDrawer
 import io.rivethub.app.ui.screens.HubScreen
+import io.rivethub.app.ui.screens.MemoryScreen
+import io.rivethub.app.ui.screens.MemoryTopicScreen
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.ThemeMode
 import io.rivethub.app.ui.theme.blueprintGrid
@@ -171,6 +174,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
     val scope = rememberCoroutineScope()
     val stores: ScreenStores = viewModel(key = "screen-stores")
     val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c) }
+    val memoryVm: MemoryViewModel = viewModel(key = "memory") { MemoryViewModel(c) }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
     LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
@@ -272,6 +276,18 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
         }
     }
 
+    // Drawer Memory → the native wiki hub (its own screen, never a hub tab —
+    // plane/DrawerNav.kt drawerOpensMemoryScreen). Like Settings it pushes
+    // over the current screen, so system Back returns to the hub or the open
+    // session below it; from a topic it pops back to the hub list.
+    fun openMemory() {
+        when {
+            nav.current == Screen.Memory -> Unit
+            Screen.Memory in nav.stack -> nav.popTo { it == Screen.Memory }
+            else -> nav.push(Screen.Memory)
+        }
+    }
+
     val hubSt by hubVm.state.collectAsState()
     val launchNode = hubSt.nodes.find { it.id == hubSt.prefs.viewNodeId }
         ?: hubSt.nodes.find { it.denUrl.trimEnd('/') == hubSt.prefs.entryUrl.trim().trimEnd('/') }
@@ -370,6 +386,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
             vm = hubVm,
             onOpenChat = { openChatScreen(it) },
             onNavTab = { onNavTab(it) },
+            onOpenMemory = { openMemory() },
         ) { openDrawer ->
             HubScreen(
                 vm = hubVm,
@@ -406,6 +423,7 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                     onOpenChat = { openChatScreen(it) },
                     onNavTab = { onNavTab(it) },
                     rightDrawer = historyState,
+                    onOpenMemory = { openMemory() },
                 ) { openDrawer ->
                     HistoryDrawer(
                         vm = hubVm,
@@ -421,6 +439,35 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                     }
                 }
             }
+        }
+        // Memory hub + topic live inside the same left drawer as the hub and a
+        // session (☰ / edge swipe everywhere); the topic header shows Back
+        // instead of ☰ (session-header vocabulary). System Back pops topic →
+        // hub list → whatever is below (hub / session).
+        Screen.Memory -> HubDrawer(
+            vm = hubVm,
+            onOpenChat = { openChatScreen(it) },
+            onNavTab = { onNavTab(it) },
+            onOpenMemory = { openMemory() },
+        ) { openDrawer ->
+            MemoryScreen(
+                vm = memoryVm,
+                nodes = hubSt.nodes,
+                onOpenDrawer = openDrawer,
+                onOpenTopic = { slug -> nav.push(Screen.MemoryTopic(slug)) },
+            )
+        }
+        is Screen.MemoryTopic -> HubDrawer(
+            vm = hubVm,
+            onOpenChat = { openChatScreen(it) },
+            onNavTab = { onNavTab(it) },
+            onOpenMemory = { openMemory() },
+        ) {
+            MemoryTopicScreen(
+                vm = memoryVm,
+                slug = s.slug,
+                onBack = { nav.pop() },
+            )
         }
         Screen.Gallery -> ComponentGallery()
     }

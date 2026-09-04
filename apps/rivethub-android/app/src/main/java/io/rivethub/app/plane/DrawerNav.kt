@@ -1,6 +1,6 @@
 package io.rivethub.app.plane
 
-/** Destinations in the left rail. Phase-2 rows render but do not navigate. */
+/** Destinations in the left rail. Phase-2 rows render but do not navigate; Memory routes to its own screen. */
 enum class DrawerDest {
     Conversations,
     Memory,
@@ -12,7 +12,7 @@ enum class DrawerDest {
 
 enum class HubTab { Conversations, Settings }
 
-/** Unfinished drawer sections. Memory is not experimental — it stays listed. */
+/** Unfinished drawer sections. Memory is a real destination (native wiki hub) — not experimental. */
 data class ExperimentalFlags(
     val files: Boolean = false,
     val tasks: Boolean = false,
@@ -27,8 +27,7 @@ fun drawerDestVisible(dest: DrawerDest, exp: ExperimentalFlags = ExperimentalFla
 }
 
 fun drawerDestEnabled(dest: DrawerDest, exp: ExperimentalFlags = ExperimentalFlags()): Boolean = when (dest) {
-    DrawerDest.Conversations, DrawerDest.Settings -> true
-    DrawerDest.Memory -> false
+    DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Settings -> true
     DrawerDest.Files -> exp.files
     DrawerDest.Tasks -> exp.tasks
     DrawerDest.Workflows -> exp.workflows
@@ -73,6 +72,13 @@ fun hubTabOf(dest: DrawerDest): HubTab? = when (dest) {
  * every origin. MainActivity routes both origins through this one function.
  */
 fun drawerTabRoute(dest: DrawerDest): HubTab? = hubTabOf(dest)
+
+/**
+ * Memory is its own SCREEN (the native wiki hub, Screen.Memory), never a hub
+ * tab — the drawer routes it separately from drawerTabRoute, exactly like the
+ * web where /memory is a route, not a chat tab.
+ */
+fun drawerOpensMemoryScreen(dest: DrawerDest): Boolean = dest == DrawerDest.Memory
 
 /**
  * Left-nav Conversations → the CHAT HOME, never a list screen (Phil

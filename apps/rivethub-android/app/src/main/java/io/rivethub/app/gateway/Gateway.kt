@@ -92,6 +92,20 @@ class Gateway(
 
     suspend fun healthz(): Healthz = get(listOf("healthz"), Healthz.serializer())
     suspend fun mesh(): MeshOverview = get(listOf("api", "mesh"), MeshOverview.serializer())
+
+    // -- /api/wiki — the datahub memory wiki (Kotlin twin of RivetGateway.wiki*) --
+
+    /** Topic index (`GET /api/wiki`). */
+    suspend fun wikiPages(limit: Int? = null): WikiIndexResponse =
+        get(listOf("api", "wiki"), WikiIndexResponse.serializer(), mapOf("limit" to limit?.toString()))
+
+    /** Server-side index search (`GET /api/wiki?q=`). */
+    suspend fun wikiSearch(q: String, limit: Int? = null): WikiIndexResponse =
+        get(listOf("api", "wiki"), WikiIndexResponse.serializer(), mapOf("q" to q, "limit" to limit?.toString()))
+
+    /** One topic page (`GET /api/wiki/{slug}`); a red link is a GatewayException(404). */
+    suspend fun wikiTopic(slug: String): WikiPageResponse =
+        get(listOf("api", "wiki", slug), WikiPageResponse.serializer())
     suspend fun catalogAgents(): CatalogAgentsResponse = get(listOf("api", "catalog", "agents"), CatalogAgentsResponse.serializer())
     suspend fun agents(): List<AgentPreset> =
         get(listOf("api", "agents"), AgentsListResponse.serializer()).agents

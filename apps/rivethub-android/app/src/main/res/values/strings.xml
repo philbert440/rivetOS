@@ -11,6 +11,25 @@
     <string name="nav_settings">Settings</string>
 
     <string name="title_settings">Settings</string>
+    <string name="title_memory">Memory</string>
+
+    <string name="memory_tab_search">Search</string>
+    <string name="memory_tab_wiki">Wiki</string>
+    <string name="memory_tab_browse">Browse</string>
+    <string name="memory_tab_stats">Stats</string>
+    <string name="memory_search_placeholder">Search memory…</string>
+    <string name="memory_search_hint">Type to search the memory wiki.</string>
+    <string name="memory_loading">loading…</string>
+    <string name="memory_empty_search">Nothing matched — try a broader term.</string>
+    <string name="memory_empty_topics">No topics yet — backfill still writing.</string>
+    <string name="memory_pointer_body">Point RivetHub at datahub so Search, Wiki, Browse, and Stats can read the memory store. Set the datahub gateway URL in Settings, or connect a node that lists datahub on the mesh.</string>
+    <string name="memory_retry">retry</string>
+    <string name="memory_subtitle">From RivetOS memory — the distilled record of what is currently true.</string>
+    <string name="memory_meta_line">verified %1$s · updated %2$s</string>
+    <string name="memory_contents">CONTENTS</string>
+    <string name="memory_red_link_body">This page does not exist yet (red link). Teach the mesh — a future extraction pass may open the article when the fact lands.</string>
+    <string name="memory_stats_line">%1$d topics · %2$d current · %3$d aging · %4$d stale · %5$d never verified</string>
+    <string name="memory_stats_stalest">Longest unverified</string>
 
     <string name="cd_open_drawer">Open menu</string>
     <string name="cd_close_drawer">Close menu</string>

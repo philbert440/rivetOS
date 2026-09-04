@@ -16,6 +16,9 @@ sealed interface Screen {
         val agentId: String = "",
     ) : Screen
     data object Gallery : Screen
+    /** Native Memory wiki hub (drawer Memory row); the topic page pushes over it. */
+    data object Memory : Screen
+    data class MemoryTopic(val slug: String) : Screen
 }
 
 /** Hand-rolled back stack — a handful of screens don't justify a navigation library. */
