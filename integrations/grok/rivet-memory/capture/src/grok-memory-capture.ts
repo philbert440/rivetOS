@@ -69,6 +69,15 @@ interface CaptureOp {
   finalize?: boolean
   /** Optional hint from the hook event; recorded in metadata for traceability. */
   sourceEvent?: string
+  /** herdr pane identity, stamped at hook time from HERDR_PANE_ID /
+   *  HERDR_WORKSPACE_ID + hostname when the session runs inside a herdr pane.
+   *  Spooled (not re-read from env) because the detached worker must not
+   *  depend on env inheritance. Merged into message metadata. */
+  herdr?: {
+    paneId?: string
+    workspaceId?: string
+    host?: string
+  }
 }
 
 /** Normalized row destined for ros_messages. */
@@ -525,7 +534,8 @@ async function insertMessage(
   client: PoolClient,
   conversationId: string,
   m: PendingMessage,
-  sessionJsonlPath: string | null
+  sessionJsonlPath: string | null,
+  herdr?: CaptureOp['herdr']
 ): Promise<void> {
   // PendingMessage now carries un-truncated content + toolResult; trunc runs
   // here so we can record the original length and a disk-pointer back to the
@@ -557,6 +567,13 @@ async function insertMessage(
   if (m.eventTs) meta.event_ts = m.eventTs
   if (typeof m.ordinal === 'number') meta.ordinal = m.ordinal
   if (sessionJsonlPath) meta.session_jsonl_path = sessionJsonlPath
+  // herdr pane identity — lets the federated view join captured messages to
+  // the pane/workspace/host that produced them. Absent when not under herdr.
+  if (herdr?.paneId) {
+    meta.herdr_pane_id = herdr.paneId
+    if (herdr.workspaceId) meta.herdr_workspace_id = herdr.workspaceId
+    if (herdr.host) meta.herdr_host = herdr.host
+  }
   if (typeof m.lineIndex === 'number') meta.session_jsonl_line = m.lineIndex
   // Record original lengths whenever truncation occurred — recall consumers
   // use full_content_length / full_tool_result_length to decide whether to
@@ -683,7 +700,7 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     const toInsert = parsed.slice(stored)
     const sessionJsonlPath = path.join(sessionDir, 'updates.jsonl')
     for (const m of toInsert) {
-      await insertMessage(client, conv.id, m, sessionJsonlPath)
+      await insertMessage(client, conv.id, m, sessionJsonlPath, op.herdr)
     }
 
     if (op.finalize) {
@@ -763,7 +780,17 @@ async function main() {
     // ingest pass; the worker is fully idempotent so extra fires are harmless.
     const finalize = /end|End/.test(event)
 
-    enqueue({ kind: 'ingest', sessionId, finalize, sourceEvent: event })
+    // herdr pane identity rides the spool (the detached worker must not
+    // depend on env inheritance). Absent when the pane is not herdr-launched.
+    const herdr = process.env.HERDR_ENV === '1' && process.env.HERDR_PANE_ID
+      ? {
+          paneId: process.env.HERDR_PANE_ID,
+          workspaceId: process.env.HERDR_WORKSPACE_ID,
+          host: os.hostname(),
+        }
+      : undefined
+
+    enqueue({ kind: 'ingest', sessionId, finalize, sourceEvent: event, herdr })
     process.exit(0) // always succeed fast
   }
 

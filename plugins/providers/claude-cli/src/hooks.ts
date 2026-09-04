@@ -99,6 +99,16 @@ interface HookPayload {
    * does not change where the turns are written.
    */
   rivetos_task_id?: string
+  /**
+   * herdr pane identity (HERDR_PANE_ID / HERDR_WORKSPACE_ID), stamped at hook
+   * time when the session runs inside a herdr pane. Carried in the spool for
+   * the same reason as rivetos_session_key: the detached worker must not
+   * depend on env inheritance. Merged into message metadata so the federated
+   * view can join captured messages to pane/workspace/host.
+   */
+  herdr_pane_id?: string
+  herdr_workspace_id?: string
+  herdr_host?: string
   transcript_path?: string
   cwd?: string
   reason?: string
@@ -139,6 +149,14 @@ async function runHook(): Promise<void> {
   const task = resolveTaskContext(process.env)
   if (task.sessionKeyOverride) payload.rivetos_session_key = task.sessionKeyOverride
   if (task.taskId) payload.rivetos_task_id = task.taskId
+
+  // Same spool-stamping for herdr pane identity (present only when herdr
+  // launched this pane).
+  if (process.env.HERDR_ENV === '1' && process.env.HERDR_PANE_ID) {
+    payload.herdr_pane_id = process.env.HERDR_PANE_ID
+    if (process.env.HERDR_WORKSPACE_ID) payload.herdr_workspace_id = process.env.HERDR_WORKSPACE_ID
+    payload.herdr_host = os.hostname()
+  }
 
   try {
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
@@ -188,6 +206,15 @@ async function runWorker(spoolFile: string): Promise<void> {
     )
   }
 
+  // herdr pane identity, if the hook spooled it (session runs in a herdr pane).
+  const herdr = payload.herdr_pane_id
+    ? {
+        paneId: payload.herdr_pane_id,
+        workspaceId: payload.herdr_workspace_id,
+        host: payload.herdr_host,
+      }
+    : undefined
+
   // Payload events (UserPromptSubmit / PostToolUse) — ingest straight from
   // the stdin payload; no transcript involved.
   if ((PAYLOAD_EVENTS as readonly string[]).includes(event)) {
@@ -196,6 +223,7 @@ async function runWorker(spoolFile: string): Promise<void> {
         payload,
         sessionKeyOverride: payload.rivetos_session_key,
         taskId: payload.rivetos_task_id,
+        herdr,
       })
       if (res.skipped) {
         log(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
@@ -223,6 +251,7 @@ async function runWorker(spoolFile: string): Promise<void> {
       sessionId: payload.session_id,
       sessionKeyOverride: payload.rivetos_session_key,
       taskId: payload.rivetos_task_id,
+      herdr,
       event,
       markInactive: event === 'SessionEnd',
     })

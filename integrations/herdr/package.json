@@ -1,0 +1,11 @@
+{
+  "name": "@rivetos/herdr-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "herdr provisioning assets: pinned-version manifest overrides and the API schema reference the den herdr backend depends on. See README.md.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "vitest run"
+  }
+}

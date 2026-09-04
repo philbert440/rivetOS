@@ -1,0 +1,92 @@
+id = "grok"
+version = "2099.01.01.1"
+min_engine_version = 2
+updated_at = "2026-09-04T00:00:00Z"
+aliases = ["grok-build"]
+
+# RivetOS override for grok 1.0.13 (evidence: live herdr pane reads on ct112, 2026-09-04).
+# grok 1.0.13 NEVER changes its OSC title ("grok" in 34/34 samples) and emits no [stop] chip, so the
+# upstream title/[stop]-based rules can't see a turn. The one universal working signature is the
+# live status line: a braille spinner, activity text, an elapsed "N.Ns", and a "⇣<tokens>" tail —
+#   "⠸ Run 10 one-second tick loop… 1.1s        5.5s ⇣20.6k"
+#   "⠼ Waiting for response… 0.6s                0.6s ⇣4.44k"
+#   "⠼ Responding… 0.3s                          2.8s ⇣4.44k"
+# The "❯" prompt box stays drawn UNDER that line while working, so "❯" alone is not idle. The footer
+#   "Grok 4.6 (high) · always-approve · 20K / 500K (4%) · ctrl+o transcript"
+# is constant in every state (and carries the live context usage). Idle = footer present with no
+# spinner line; working outranks it. Blocked rules are carried from upstream (0.2.x permission UI)
+# pending a real 1.0.13 permission-prompt capture.
+
+[[rules]]
+id = "osc_title_blocked"
+state = "blocked"
+priority = 1300
+region = "osc_title"
+visible_blocker = true
+contains = ["Action Required"]
+
+[[rules]]
+id = "option_dialog_blocked"
+state = "blocked"
+priority = 1350
+region = "whole_recent"
+visible_blocker = true
+line_regex = ['^\s*┃\s+[0-9a-z]+\s+\([●○]\)\s']
+
+[[rules]]
+id = "permission_hints_blocked"
+state = "blocked"
+priority = 1340
+region = "bottom_non_empty_lines(2)"
+visible_blocker = true
+contains = [":select", "ctrl+o:yolo", "ctrl+c:cancel"]
+
+[[rules]]
+id = "question_dialog_hints_blocked"
+state = "blocked"
+priority = 1335
+region = "bottom_non_empty_lines(2)"
+visible_blocker = true
+contains = ["tab:scrollback", "shift+x:dismiss"]
+
+# grok 1.0.13: the live status line = working, in EVERY phase (tool run, waiting, responding).
+[[rules]]
+id = "status_line_working"
+state = "working"
+priority = 1250
+region = "whole_recent"
+visible_working = true
+line_regex = ['^\s*[\x{2801}-\x{28FF}]\s+\S.*\b\d+(?:\.\d+)?s\b.*⇣\d']
+
+[[rules]]
+id = "osc_progress_working"
+state = "working"
+priority = 1150
+region = "osc_progress"
+visible_working = true
+regex = ['^4;1;-1$']
+
+# Idle = the constant footer is on the bottom lines and no working rule outranked it.
+[[rules]]
+id = "footer_idle"
+state = "idle"
+priority = 1100
+region = "bottom_non_empty_lines(2)"
+visible_idle = true
+contains = ["ctrl+o transcript"]
+
+[[rules]]
+id = "osc_title_idle"
+state = "idle"
+priority = 1050
+region = "osc_title"
+visible_idle = true
+regex = ['(?:^| - )grok$']
+
+[[rules]]
+id = "osc_progress_idle"
+state = "idle"
+priority = 950
+region = "osc_progress"
+visible_idle = true
+regex = ['^4;0;0$']

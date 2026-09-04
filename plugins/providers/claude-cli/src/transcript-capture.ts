@@ -120,6 +120,28 @@ export interface IngestOptions {
   markInactive?: boolean
   /** Hook event name, recorded in conversation settings for observability. */
   event?: string
+  /** herdr pane identity, when the session runs inside a herdr pane. Merged
+   *  into every inserted message's metadata (see herdrMeta). */
+  herdr?: HerdrPaneContext
+}
+
+/** herdr pane identity for one captured session (spooled by the hook from
+ *  HERDR_PANE_ID / HERDR_WORKSPACE_ID + hostname). */
+export interface HerdrPaneContext {
+  paneId?: string
+  workspaceId?: string
+  host?: string
+}
+
+/** Metadata fragment for herdr pane identity. Empty when the session is not
+ *  under herdr, so non-herdr captures are byte-identical to before. */
+export function herdrMeta(herdr?: HerdrPaneContext): Record<string, unknown> {
+  if (!herdr?.paneId) return {}
+  return {
+    herdr_pane_id: herdr.paneId,
+    ...(herdr.workspaceId ? { herdr_workspace_id: herdr.workspaceId } : {}),
+    ...(herdr.host ? { herdr_host: herdr.host } : {}),
+  }
 }
 
 export interface IngestResult {
@@ -709,7 +731,12 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       await insertMessage(client, conv.id, {
         role: 'assistant',
         content: m.content,
-        metadata: { source: 'claude-code-hook', uuid: m.uuid, sidechain: m.sidechain },
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: m.uuid,
+          sidechain: m.sidechain,
+          ...herdrMeta(opts.herdr),
+        },
         ts: m.ts,
       })
       inserted++
@@ -745,6 +772,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
           uuid: t.uuid,
           hook_event: 'PostToolUse',
           recovered: true,
+          ...herdrMeta(opts.herdr),
         },
         ts: t.ts,
       })
@@ -768,7 +796,12 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       await insertMessage(client, conv.id, {
         role: 'user',
         content: m.content,
-        metadata: { source: 'claude-code-hook', uuid: m.uuid, recovered: true },
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: m.uuid,
+          recovered: true,
+          ...herdrMeta(opts.herdr),
+        },
         ts: m.ts,
       })
       inserted++
@@ -838,6 +871,8 @@ export interface HookEventOptions {
   taskId?: string
   /** Postgres connection string. Falls back to resolvePgUrl(). */
   pgUrl?: string
+  /** herdr pane identity — see IngestOptions.herdr. */
+  herdr?: HerdrPaneContext
 }
 
 export interface HookEventResult {
@@ -953,7 +988,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       toolName: row.toolName,
       toolArgs: row.toolArgs,
       toolResult: row.toolResult,
-      metadata: { source: 'claude-code-hook', hook_event: event },
+      metadata: { source: 'claude-code-hook', hook_event: event, ...herdrMeta(opts.herdr) },
     })
 
     await client.query(

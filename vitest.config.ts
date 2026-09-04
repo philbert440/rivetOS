@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     include: [
+      'integrations/herdr/**/*.test.ts',
       'src/**/*.test.ts',
       'packages/*/src/**/*.test.ts',
       'plugins/*/src/**/*.test.ts',

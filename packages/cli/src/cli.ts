@@ -51,6 +51,7 @@ async function runSubRoute(route: SubRoute): Promise<void> {
 
 export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   init: (args) => import('./commands/init.js').then((m) => m.default(args)),
+  install: (args) => import('./commands/install.js').then((m) => m.default(args)),
   start: () => import('./commands/start.js').then((m) => m.default()),
   stop: () => import('./commands/stop.js').then((m) => m.default()),
   status: () => import('./commands/status.js').then((m) => m.default()),
@@ -96,6 +97,7 @@ export function helpText(): string {
 
   Setup:
     rivetos init [--answers-file PATH]  Interactive setup wizard (JSON for non-interactive)
+    rivetos install --herdr             Provision pinned herdr + manifest overrides
     rivetos update                      Pull latest, rebuild containers
     rivetos doctor                      Check config and connectivity
     rivetos version                     Show CLI version and commit

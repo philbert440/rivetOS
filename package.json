@@ -60,6 +60,7 @@
     "plugins/tools/*",
     "plugins/transports/*",
     "services/*",
+    "integrations/herdr",
     "integrations/grok/rivet-memory/capture",
     "integrations/kimi/rivet-memory/capture",
     "integrations/kimi/rivet-den",
