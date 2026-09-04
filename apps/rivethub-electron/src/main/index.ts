@@ -205,6 +205,10 @@ function createWindow(isMain: boolean): BrowserWindow {
     // (Electron docs), and Alt is a terminal modifier in den xterms. The
     // bar is fully hidden off macOS via setMenuBarVisibility(false) below;
     // application-menu accelerators work regardless (grok round 2).
+    // Both paths live in app.asar. They keep resolving after the AppImage
+    // extraction dir is deleted under a running app (see snapshotDist) only
+    // because Electron holds the asar fd open — an unpacked preload or icon
+    // would not. The web dist is the part served from memory.
     icon: path.join(__dirname, '../icons/icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -490,6 +494,16 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on('second-instance', () => {
     if (quitting) return
+    // The launch that just lost the lock is exiting — and under
+    // APPIMAGE_EXTRACT_AND_RUN its runtime removes the extraction dir this
+    // instance runs from (shared: named by the image path). serve-dist's
+    // snapshot keeps the new window alive; the trail explains anything else.
+    if (process.env.APPIMAGE_EXTRACT_AND_RUN) {
+      logFault(
+        'second-instance',
+        'APPIMAGE_EXTRACT_AND_RUN: the exiting launch removes the shared extraction dir',
+      )
+    }
     const anyVisible = BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && w.isVisible())
     if (anyVisible) spawnWindow()
     else showMain()
@@ -521,7 +535,14 @@ function startup(): void {
   // function must not resurrect it.
   if (process.platform === 'win32') Menu.setApplicationMenu(null)
 
-  serveDist(protocol, distDir())
+  // Packaged: serve the web dist from memory. The AppImage extraction dir
+  // can be deleted out from under a running app (a second launch of the
+  // same image under APPIMAGE_EXTRACT_AND_RUN — see snapshotDist); windows
+  // opened after that must still load.
+  serveDist(protocol, distDir(), {
+    snapshot: app.isPackaged,
+    onError: (err) => logFault('dist-snapshot', err instanceof Error ? err.message : err),
+  })
   registerIpc({
     pipes,
     settingsStore,
