@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The RivetHub robot from the desktop app, not the old Rivet Bots blob face. Foreground/monochrome PNGs are
+     generated from apps/rivethub-electron/icons/icon.png (robot scaled to 58dp inside the 66dp safe zone). -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_bg" />
-    <foreground android:drawable="@drawable/ic_launcher_fg" />
-    <monochrome android:drawable="@drawable/ic_launcher_mono" />
+    <foreground android:drawable="@mipmap/ic_launcher_fg" />
+    <monochrome android:drawable="@mipmap/ic_launcher_mono" />
 </adaptive-icon>
