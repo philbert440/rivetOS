@@ -21,5 +21,17 @@ fi
 HOOK="$RIVETOS_ROOT/plugins/providers/claude-cli/dist/hooks.js"
 [ -f "$HOOK" ] || exit 0
 
-node "$HOOK" || true
+# herdr pane identity: when this session runs inside a herdr pane, report the
+# harness session id + transcript path to the pane over the session socket
+# (the same env herdr's own integration hook keys on: HERDR_ENV=1,
+# HERDR_SOCKET_PATH, HERDR_PANE_ID). stdin is captured once and replayed to
+# both consumers ONLY in that case — off herdr the hook is byte-for-byte the
+# old `node "$HOOK"`. Never fails the hook.
+if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ]; then
+  PAYLOAD="$(cat)"
+  printf '%s' "$PAYLOAD" | node "$RIVETOS_ROOT/integrations/shared/herdr-report-session.mjs" claude || true
+  printf '%s' "$PAYLOAD" | node "$HOOK" || true
+else
+  node "$HOOK" || true
+fi
 exit 0

@@ -21,6 +21,9 @@
  *  11. DNS — can resolve provider hostnames
  *  12. Peer reachability — health check other agents in mesh
  *  13. Leaf cert expiry — warn if this node's mTLS leaf expires within 30 days
+ *  14. herdr — pinned binary + manifest overrides when the optional mux
+ *      backend is provisioned; warn (not fail) when term.mux=herdr but the
+ *      binary is missing
  *
  * Usage:
  *   rivetos doctor               Run all checks
@@ -29,7 +32,7 @@
  */
 
 import { readFile, access, writeFile, unlink, stat as fsStat } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -40,6 +43,13 @@ import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
 import { resolveLocalNodeName } from '../lib/node-identity.js'
+import {
+  HERDR_VERSION,
+  herdrBinPath,
+  herdrManifestCacheDir,
+  herdrRepoManifestsDir,
+  readHerdrVersion,
+} from '../lib/herdr.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1198,6 +1208,124 @@ function checkTerminalMux(rawConfig: string | null): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
+// Check: herdr (optional terminal mux backend) — pinned binary, manifest
+// overrides, and the term.mux value. Never fails: herdr is opt-in, so every
+// row here is pass/warn. See integrations/herdr/README.md.
+// ---------------------------------------------------------------------------
+
+export interface HerdrDoctorProbe {
+  home?: string
+  repoManifestsDir?: string
+  /** `herdr --version` probe — tests stub this; default reads the real binary. */
+  versionOf?: (binPath: string) => string | null
+  env?: NodeJS.ProcessEnv
+}
+
+export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {}): CheckResult[] {
+  const results: CheckResult[] = []
+  const home = probe.home ?? homedir()
+  const env = probe.env ?? process.env
+  const versionOf = probe.versionOf ?? readHerdrVersion
+  const binPath = herdrBinPath(home)
+
+  // term.mux — the runtime reads RIVETOS_DEN_TERM_MUX (there is no YAML mux
+  // key on main; the YAML peek is forward-compatible with the backend lane).
+  let mux = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase() || undefined
+  if (!mux && rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as { den?: { terminal?: { mux?: unknown } } }
+      const y = parsed.den?.terminal?.mux
+      if (typeof y === 'string' && y.trim()) mux = y.trim().toLowerCase()
+    } catch {
+      /* expected */
+    }
+  }
+
+  const version = existsSync(binPath) ? versionOf(binPath) : null
+  const relevant = version !== null || mux === 'herdr'
+
+  // Binary row — present at the pin, present at the wrong version, missing
+  // while opted in (warn per the herdr lane contract), or simply absent.
+  if (version === HERDR_VERSION) {
+    results.push(check('terminal', 'herdr', 'pass', `herdr: ${HERDR_VERSION} (${binPath})`))
+  } else if (version !== null) {
+    results.push(
+      check(
+        'terminal',
+        'herdr',
+        'warn',
+        `herdr: ${version} at ${binPath}, expected ${HERDR_VERSION}`,
+        'Run: rivetos install --herdr',
+      ),
+    )
+  } else if (mux === 'herdr') {
+    results.push(
+      check(
+        'terminal',
+        'herdr',
+        'warn',
+        'term.mux=herdr but the herdr binary is missing',
+        'Run: rivetos install --herdr',
+      ),
+    )
+  } else {
+    results.push(
+      check(
+        'terminal',
+        'herdr',
+        'pass',
+        'herdr: not installed (optional — only term.mux=herdr needs it)',
+      ),
+    )
+  }
+
+  if (!relevant) return results
+
+  // Manifest override row — the remote-cache copies must match the repo's
+  // integrations/herdr/manifests/*.toml byte for byte.
+  const manifestsDir = probe.repoManifestsDir ?? herdrRepoManifestsDir()
+  if (existsSync(manifestsDir)) {
+    const cacheDir = herdrManifestCacheDir(home)
+    const files = readdirSync(manifestsDir).filter((f) => f.endsWith('.toml'))
+    const stale: string[] = []
+    for (const file of files) {
+      const desired = readFileSync(join(manifestsDir, file), 'utf-8')
+      let installed: string | null = null
+      try {
+        installed = readFileSync(join(cacheDir, file), 'utf-8')
+      } catch {
+        /* missing */
+      }
+      if (installed !== desired) stale.push(file)
+    }
+    if (stale.length === 0) {
+      results.push(
+        check(
+          'terminal',
+          'herdr-manifests',
+          'pass',
+          `herdr manifests: ${files.length} override(s) current`,
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'terminal',
+          'herdr-manifests',
+          'warn',
+          `herdr manifests: ${stale.join(', ')} missing or stale in ${cacheDir}`,
+          'Run: rivetos install --herdr',
+        ),
+      )
+    }
+  }
+
+  results.push(check('terminal', 'herdr-mux', 'pass', `term.mux: ${mux ?? 'unset (auto)'}`))
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // Check: leaf cert expiry (90-day leaves; warn within 30 days)
 // ---------------------------------------------------------------------------
 
@@ -1325,7 +1453,7 @@ Options:
 Checks: system, config, workspace, env vars, secrets, containers,
         memory backend, embedding width, memory queue (dead jobs, wiki starve), shared
         storage, DNS, provider connectivity, peer reachability, service user,
-        leaf cert expiry
+        leaf cert expiry, herdr (optional mux backend)
 `)
 }
 
@@ -1400,6 +1528,9 @@ export default async function doctor(): Promise<void> {
 
   const terminalMuxResults = checkTerminalMux(rawConfig)
   allResults.push(...terminalMuxResults)
+
+  const herdrResults = checkHerdr(rawConfig)
+  allResults.push(...herdrResults)
 
   const leafCertResults = await checkLeafCert(rawConfig)
   allResults.push(...leafCertResults)

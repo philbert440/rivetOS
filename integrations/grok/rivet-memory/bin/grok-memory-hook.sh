@@ -34,12 +34,25 @@ if [ -f "$RIVETOS_ENV" ]; then
   set +a
 fi
 
-if [ -f "$CAPTURE_BUILT" ]; then
-  node "$CAPTURE_BUILT" --hook "${1:-unknown}" || true
-elif [ -f "$CAPTURE_SRC" ]; then
-  npx --yes tsx "$CAPTURE_SRC" --hook "${1:-unknown}" || true
+run_capture() {
+  if [ -f "$CAPTURE_BUILT" ]; then
+    node "$CAPTURE_BUILT" --hook "${1:-unknown}" || true
+  elif [ -f "$CAPTURE_SRC" ]; then
+    npx --yes tsx "$CAPTURE_SRC" --hook "${1:-unknown}" || true
+  else
+    echo "grok-memory-hook: capture not found at $CAPTURE_BUILT or $CAPTURE_SRC" >&2
+  fi
+}
+
+# herdr pane identity: when this session runs inside a herdr pane, report the
+# harness session id to the pane over the session socket (silent no-op when
+# not under herdr). stdin is captured once and replayed to both consumers.
+if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ]; then
+  PAYLOAD="$(cat)"
+  printf '%s' "$PAYLOAD" | node "$RIVETOS_ROOT/integrations/shared/herdr-report-session.mjs" grok || true
+  printf '%s' "$PAYLOAD" | run_capture "${1:-}"
 else
-  echo "grok-memory-hook: capture not found at $CAPTURE_BUILT or $CAPTURE_SRC" >&2
+  run_capture "${1:-}"
 fi
 
 exit 0

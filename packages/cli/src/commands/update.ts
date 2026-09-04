@@ -384,6 +384,10 @@ export default async function update(): Promise<void> {
     console.warn(`  ⚠️  plugins sync failed (non-fatal): ${(err as Error).message}`)
   }
 
+  // Step 4.7: provision herdr (pinned binary + manifest overrides). See the
+  // helper for the skip/warn policy — never blocks an update.
+  await provisionHerdr()
+
   // Step 5: Post-update — report what changed
   const newPkg = JSON.parse(await readFile(resolve(ROOT, 'package.json'), 'utf-8')) as {
     version: string
@@ -476,6 +480,50 @@ async function verifyDataPersistence(): Promise<void> {
     }
   } catch {
     // Fresh install, nothing to check
+  }
+}
+
+/**
+ * Provision herdr (pinned binary + manifest overrides) on this node. Inert
+ * for nodes that never set term.mux=herdr — provisioning only, never
+ * activation. Non-fatal: a node without the staged binary (off-fleet,
+ * offline) skips quietly, a verification failure only warns.
+ */
+async function provisionHerdr(): Promise<void> {
+  try {
+    const { installHerdr, HerdrUnavailableError, herdrOptedIn } = await import('../lib/herdr.js')
+    // Opt-in only: never touch a node that did not set term.mux=herdr (the
+    // staged binary is on /rivet-shared, mounted everywhere — a hand-installed
+    // newer herdr must not be silently downgraded by a routine update).
+    let rawConfig: string | null = null
+    try {
+      const { readFileSync } = await import('node:fs')
+      const { join } = await import('node:path')
+      const { homedir } = await import('node:os')
+      rawConfig = readFileSync(
+        process.env.RIVETOS_CONFIG ?? join(homedir(), '.rivetos', 'config.yaml'),
+        'utf-8',
+      )
+    } catch {
+      rawConfig = null
+    }
+    if (!herdrOptedIn(process.env, rawConfig)) {
+      console.log('  ℹ️  herdr not enabled on this node (term.mux≠herdr) — skipping provisioning')
+      return
+    }
+    try {
+      installHerdr({ log: (msg) => console.log(msg) })
+    } catch (err: unknown) {
+      if (err instanceof HerdrUnavailableError) {
+        console.log(
+          '  ℹ️  herdr not staged on this node — skipping (only needed for term.mux=herdr)',
+        )
+      } else {
+        console.warn(`  ⚠️  herdr provisioning failed (non-fatal): ${(err as Error).message}`)
+      }
+    }
+  } catch (err: unknown) {
+    console.warn(`  ⚠️  herdr provisioning failed (non-fatal): ${(err as Error).message}`)
   }
 }
 
@@ -756,6 +804,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
         }
       }
       await verifyGatewayLocal(localOpts.restart)
+      await provisionHerdr()
       console.log('  ✅ Local node updated')
     } catch (err: unknown) {
       console.error(`  ❌ Local node update failed: ${(err as Error).message}`)
@@ -818,6 +867,8 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
       } catch (err: unknown) {
         console.warn(`  ⚠️  plugins sync failed (non-fatal): ${(err as Error).message}`)
       }
+
+      await provisionHerdr()
 
       console.log('  ✅ Local node updated')
     } catch (err: unknown) {
