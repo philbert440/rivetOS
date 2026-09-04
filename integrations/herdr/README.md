@@ -31,7 +31,10 @@ Idempotent. It:
    cache dir (see below), backing up a diverging existing file to
    `<agent>.toml.orig` (the first backup is never clobbered).
 
-`rivetos update` runs the same step non-fatally: a node without the staged
+`rivetos update` runs the same step non-fatally **only on nodes that opted in**
+(`RIVETOS_DEN_TERM_MUX=herdr` in the process env, else in the unit's
+EnvironmentFile `~/.rivetos/.env`, else YAML `den.terminal.mux`; a shell-launched
+update does not inherit the EnvironmentFile, so it is read explicitly): a node without the staged
 binary (off-fleet, offline) skips quietly; a verification failure warns but
 never blocks the update. `--from-upstream` opts into the unpinned upstream
 installer as a fallback and fails unless it lands exactly 0.8.2.

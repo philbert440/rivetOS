@@ -491,7 +491,8 @@ async function verifyDataPersistence(): Promise<void> {
  */
 async function provisionHerdr(): Promise<void> {
   try {
-    const { installHerdr, HerdrUnavailableError, herdrOptedIn } = await import('../lib/herdr.js')
+    const { installHerdr, HerdrUnavailableError, herdrOptedIn, readRivetosDotEnv } =
+      await import('../lib/herdr.js')
     // Opt-in only: never touch a node that did not set term.mux=herdr (the
     // staged binary is on /rivet-shared, mounted everywhere — a hand-installed
     // newer herdr must not be silently downgraded by a routine update).
@@ -507,7 +508,9 @@ async function provisionHerdr(): Promise<void> {
     } catch {
       rawConfig = null
     }
-    if (!herdrOptedIn(process.env, rawConfig)) {
+    // A shell-launched update does not inherit the unit's EnvironmentFile
+    // (~/.rivetos/.env) — read it, or every node would report "not enabled".
+    if (!herdrOptedIn(process.env, rawConfig, readRivetosDotEnv())) {
       console.log('  ℹ️  herdr not enabled on this node (term.mux≠herdr) — skipping provisioning')
       return
     }

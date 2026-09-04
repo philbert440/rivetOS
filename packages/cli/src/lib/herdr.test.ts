@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -10,7 +18,10 @@ import {
   herdrManifestCacheDir,
   installHerdr,
   parseHerdrVersion,
+  herdrOptedIn,
   planHerdrInstall,
+  readDotEnvValue,
+  resolveHerdrMux,
 } from './herdr.js'
 
 const FAKE_BINARY = `#!/bin/sh\necho 'herdr ${HERDR_VERSION}'\n`
@@ -58,9 +69,9 @@ describe('planHerdrInstall', () => {
       }).binary,
     ).toBe('install-upstream')
     // staged always wins over upstream — it is the sha-verified pin path
-    expect(
-      planHerdrInstall({ ...base, allowUpstream: true, installedVersion: null }).binary,
-    ).toBe('install-staged')
+    expect(planHerdrInstall({ ...base, allowUpstream: true, installedVersion: null }).binary).toBe(
+      'install-staged',
+    )
   })
 
   it('plans manifest actions from installed vs desired content', () => {
@@ -133,9 +144,7 @@ describe('installHerdr', () => {
     expect(first.plan.manifests).toEqual([{ agent: 'grok', action: 'install' }])
     expect(first.version).toBe(HERDR_VERSION)
     expect(readFileSync(herdrBinPath(home), 'utf-8')).toBe(FAKE_BINARY)
-    expect(
-      readFileSync(join(herdrManifestCacheDir(home), 'grok.toml'), 'utf-8'),
-    ).toBe(MANIFEST_V1)
+    expect(readFileSync(join(herdrManifestCacheDir(home), 'grok.toml'), 'utf-8')).toBe(MANIFEST_V1)
 
     const second = run()
     expect(second.plan.binary).toBe('current')
@@ -147,7 +156,13 @@ describe('installHerdr', () => {
     stageBinary()
     writeRepoManifest(MANIFEST_V1)
     expect(() =>
-      installHerdr({ home, repoRoot, sharedDir: shared, expectedSha256: HERDR_SHA256, log: () => {} }),
+      installHerdr({
+        home,
+        repoRoot,
+        sharedDir: shared,
+        expectedSha256: HERDR_SHA256,
+        log: () => {},
+      }),
     ).toThrow(/sha256 mismatch/)
     expect(existsSync(herdrBinPath(home))).toBe(false)
   })
@@ -185,9 +200,50 @@ describe('herdrOptedIn (rivetos update only provisions opted-in nodes)', () => {
   it('env RIVETOS_DEN_TERM_MUX=herdr opts in; other values never do', async () => {
     const { herdrOptedIn } = await import('./herdr.js')
     expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'herdr' }, null)).toBe(true)
-    expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'tmux' }, 'den:\n  terminal:\n    mux: herdr\n')).toBe(false)
+    expect(
+      herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'tmux' }, 'den:\n  terminal:\n    mux: herdr\n'),
+    ).toBe(false)
     expect(herdrOptedIn({}, 'den:\n  terminal:\n    mux: herdr\n')).toBe(true)
     expect(herdrOptedIn({}, 'den:\n  terminal:\n    mux: tmux\n')).toBe(false)
     expect(herdrOptedIn({}, null)).toBe(false)
+  })
+})
+
+describe('readDotEnvValue (systemd EnvironmentFile semantics)', () => {
+  it('finds a plain, quoted, exported, and last-wins assignment', () => {
+    expect(readDotEnvValue('A', 'A=1\n')).toBe('1')
+    expect(readDotEnvValue('A', 'A="quoted value"\n')).toBe('quoted value')
+    expect(readDotEnvValue('A', "export A='x'\n")).toBe('x')
+    expect(readDotEnvValue('A', 'A=first\nB=2\nA=last\n')).toBe('last')
+  })
+
+  it('ignores comments, other keys, and missing input', () => {
+    expect(readDotEnvValue('A', '# A=1\nAB=2\n')).toBeUndefined()
+    expect(readDotEnvValue('A', null)).toBeUndefined()
+    expect(readDotEnvValue('A', '')).toBeUndefined()
+  })
+})
+
+describe('resolveHerdrMux / herdrOptedIn — env → ~/.rivetos/.env → YAML', () => {
+  it('process env wins over the EnvironmentFile and YAML', () => {
+    expect(
+      resolveHerdrMux(
+        { RIVETOS_DEN_TERM_MUX: 'tmux' },
+        'RIVETOS_DEN_TERM_MUX=herdr\n',
+        'den:\n  terminal:\n    mux: herdr\n',
+      ),
+    ).toBe('tmux')
+  })
+
+  it('reads the EnvironmentFile when the process env is silent (shell-launched update/doctor)', () => {
+    expect(resolveHerdrMux({}, 'XAI_API_KEY=x\nRIVETOS_DEN_TERM_MUX=herdr\n', null)).toBe('herdr')
+    expect(herdrOptedIn({}, null, 'RIVETOS_DEN_TERM_MUX=herdr\n')).toBe(true)
+    expect(herdrOptedIn({}, null, 'RIVETOS_DEN_TERM_MUX=tmux\n')).toBe(false)
+  })
+
+  it('falls back to the scoped YAML key, never a whole-file mux: match', () => {
+    expect(resolveHerdrMux({}, null, 'den:\n  terminal:\n    mux: herdr\n')).toBe('herdr')
+    expect(resolveHerdrMux({}, null, 'other:\n  mux: herdr\n')).toBeUndefined()
+    expect(herdrOptedIn({}, null, null)).toBe(false)
   })
 })

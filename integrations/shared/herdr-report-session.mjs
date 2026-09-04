@@ -46,6 +46,8 @@ if (typeof path === 'string' && path) params.agent_session_path = path
 const c = net.createConnection(sock)
 c.on('error', () => process.exit(0))
 c.on('connect', () =>
-  c.end(JSON.stringify({ id: 'rivet-memory-1', method: 'pane.report_agent_session', params }) + '\n'),
+  c.end(
+    JSON.stringify({ id: 'rivet-memory-1', method: 'pane.report_agent_session', params }) + '\n',
+  ),
 )
 setTimeout(() => process.exit(0), 2000).unref()
