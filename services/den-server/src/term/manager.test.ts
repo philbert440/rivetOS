@@ -21,6 +21,7 @@ import {
   type TmuxSessionInfo,
 } from './tmux.js'
 import {
+  herdrSessionName,
   type HerdrCtl,
   type HerdrCreateOpts,
   type HerdrSessionInfo,
@@ -2206,6 +2207,7 @@ class FakeHerdrCtl implements HerdrCtl {
     this.creates.push(opts)
     this.sessions.set(opts.name, {
       name: opts.name,
+      denKey: opts.denKey,
       activity: 1,
       created: 1,
       command: opts.command,
@@ -2237,9 +2239,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, spawns } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
     const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
     expect(pty.mux).toBe('herdr')
-    expect(spawns[0].argv).toEqual(['herdr', '--session', encodeTmuxName(uuid)])
+    expect(spawns[0].argv).toEqual(['herdr', '--session', herdrSessionName(uuid)])
     expect(ctl.creates).toHaveLength(1)
     expect(ctl.creates[0].kind).toBe('claude')
+    expect(ctl.creates[0].denKey).toBe(uuid)
     expect(ctl.creates[0].argv[0]).toBe('claude')
     expect(JSON.stringify(ctl.creates[0].argv)).not.toMatch(/TOKEN|sekrit/)
     expect(ctl.creates[0].env.COLORTERM).toBe('truecolor')
@@ -2247,11 +2250,21 @@ describe('term manager (herdr mux)', () => {
     expect(ctl.subscribes).toBe(1)
   })
 
+  it('plain shell create has no herdr kind and does not subscribe to agent status', () => {
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    manager.spawn('shell', 80, 24, '', uuid)
+    expect(ctl.creates).toHaveLength(1)
+    expect(ctl.creates[0].kind).toBeUndefined()
+    expect(ctl.subscribes).toBe(0)
+  })
+
   it('reattach uses attach argv and does not create a second agent', () => {
     const ctl = new FakeHerdrCtl()
-    const name = encodeTmuxName(uuid)
+    const name = herdrSessionName(uuid)
     ctl.sessions.set(name, {
       name,
+      denKey: uuid,
       activity: 1,
       created: 1,
       command: 'claude',
@@ -2270,7 +2283,7 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(ctl.subscribes).toBe(1)
     expect(manager.kill(pty.id)).toBe(true)
-    expect(ctl.kills).toEqual([encodeTmuxName(uuid)])
+    expect(ctl.kills).toEqual([herdrSessionName(uuid)])
     expect(ctl.unsubscribes).toBe(1)
   })
 

@@ -5,43 +5,68 @@
 // lives in the herdr server (headless `herdr --session <name> server`) and
 // survives den restarts, browser detaches and the idle/detached reapers the
 // same way a tmux session does. A user can attach the same session from their
-// own terminal with `XDG_CONFIG_HOME=<stateDir>/den/herdr-config herdr
-// --session <name>`. Nothing here runs unless `term.mux` is explicitly
-// `herdr` — unset still auto-detects tmux.
+// own terminal with `XDG_CONFIG_HOME=<short-runtime-home> herdr --session
+// <short-name>`. Nothing here runs unless `term.mux` is explicitly `herdr`
+// — unset still auto-detects tmux.
 //
-// Everything herdr touches goes through the HerdrCtl seam: production uses
-// the execFileSync / spawn implementation below (no shell), tests inject a
-// scripted fake so unit tests never spawn a real herdr. Binary is pinned to
-// 0.8.2 (protocol 20); any other version is HerdrUnavailableError and the
-// manager falls back to tmux with one warning line.
+// Socket paths: Linux `sun_path` is 108 bytes (107 usable). herdr binds
+// `<configHome>/herdr/sessions/<name>/herdr-client.sock`. Config home is a
+// short runtime dir (`/run/user/<uid>/rivet-den-<hash8>` or `/tmp/…`) and
+// the session name is `d<12-hex-of-sha256(denKey)>`. The full den key lives
+// in `rivet.json` — never decode the hashed name. An up-front length check
+// throws `HerdrUnavailableError('socket path too long …')` instead of a
+// silent wait.
 //
-// Session names reuse tmux's reversible encoding (den keys allow `:`/`.`;
-// herdr session dirs should not). Env for the AGENT is passed on
-// `workspace create` (socket/`--env`), never on the agent argv / `ps`.
-// Screen-manifest status (`pane.agent_status_changed`) is a NEW signal den
-// did not have under tmux — see `herdrStatusToFrame` and the status hub.
+// Create is async (detached spawn + event-loop sock poll + socket RPC).
+// Credentials travel on `workspace.create` JSON params, never ctl argv.
+// Unknown `--kind` values get a plain pane (`pane.send_text`), not `agent
+// start`. Liveness is a pid/`session.snapshot` round-trip, not sock-file
+// presence.
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createConnection } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { HarnessStatusFrame } from '@rivetos/types'
-import {
-  classifyExistingTmuxSession,
-  decodeTmuxName,
-  encodeTmuxName,
-  findOnPath,
-  isDenTmuxName,
-  type TmuxSessionInfo,
-} from './tmux.js'
+import { findOnPath } from './tmux.js'
 
 /** Pinned herdr release. `herdr --version` must report this exact x.y.z. */
 export const HERDR_PINNED_VERSION = '0.8.2'
 
 /** Default pane created by `workspace create` (spike, protocol 20). */
 export const HERDR_DEFAULT_PANE = 'w1:p1'
+
+/** Linux `sockaddr_un.sun_path` usable bytes (108 including NUL). */
+export const HERDR_SUN_PATH_MAX = 107
+
+/** herdr 0.8.2 `agent start --kind` closed enum (measured). */
+export const HERDR_AGENT_KINDS = new Set([
+  'pi',
+  'claude',
+  'codex',
+  'gemini',
+  'cursor',
+  'devin',
+  'agy',
+  'cline',
+  'omp',
+  'mastracode',
+  'opencode',
+  'copilot',
+  'kimi',
+  'kiro',
+  'droid',
+  'amp',
+  'grok',
+  'hermes',
+  'kilo',
+  'qodercli',
+  'qwen',
+  'maki',
+])
 
 export class HerdrUnavailableError extends Error {
   constructor(message: string) {
@@ -50,11 +75,24 @@ export class HerdrUnavailableError extends Error {
   }
 }
 
+/** Exit 2 / protocol errors that must NOT be reported as tmux-unavailable. */
+export class HerdrCommandError extends Error {
+  constructor(
+    message: string,
+    readonly exitCode?: number,
+  ) {
+    super(message)
+    this.name = 'HerdrCommandError'
+  }
+}
+
 export type ExistingHerdrDisposition = 'attach' | 'adopt' | 'foreign' | 'user-mismatch'
 
 export interface HerdrSessionInfo {
-  /** Encoded session name (decode with decodeHerdrName). */
+  /** Short hashed session dir name (`d` + 12 hex). */
   name: string
+  /** Full den session key, from `rivet.json`. */
+  denKey?: string
   /** epoch seconds — display-only, never a liveness/idle signal. */
   activity: number
   /** epoch seconds. */
@@ -68,9 +106,9 @@ export interface HerdrSessionInfo {
   paneId?: string
 }
 
-/** The herdr command surface the manager uses. Sync, like TmuxCtl: the
- *  manager's spawn path is synchronous. "Not found" collapses to false/[];
- *  every other failure throws HerdrUnavailableError. */
+/** The herdr command surface the manager uses. `create` is async (event-loop
+ *  poll + socket RPC). The rest stay sync like TmuxCtl so list/kill/reattach
+ *  do not grow a second copy of those branches. */
 export interface HerdrCtl {
   hasSession(name: string): boolean
   killSession(name: string): void
@@ -78,30 +116,27 @@ export interface HerdrCtl {
   refresh?(): void
   setOption?(name: string, option: string, value: string): void
   windowSize?(name: string): { cols: number; rows: number } | undefined
-  /** Headless server + workspace create + agent start. No-op-ish when the
-   *  session already exists — callers check hasSession first. Env rides the
-   *  workspace create params (socket), never the agent argv. */
-  create(opts: HerdrCreateOpts): void
+  /** Headless server + workspace.create (socket, env in JSON) + agent.start
+   *  or a plain pane.send_text. Returns a Promise from the real ctl. */
+  create(opts: HerdrCreateOpts): void | Promise<void>
   /** TUI client argv for the den PTY. */
   attachArgv(name: string): string[]
   /** Scrollback via `agent read` / `pane read`. Empty string on failure. */
   capture?(name: string, lines: number): string
-  /** One newline-JSON `events subscribe` child. Returns unsubscribe.
-   *  `onClose` fires when the child exits (hub reconnects). */
-  subscribeEvents?(
-    name: string,
-    onEvent: (evt: unknown) => void,
-    onClose?: () => void,
-  ): () => void
+  /** One newline-JSON `events.subscribe` socket. Returns unsubscribe.
+   *  `onClose` fires when the socket ends (hub reconnects). */
+  subscribeEvents?(name: string, onEvent: (evt: unknown) => void, onClose?: () => void): () => void
 }
 
 export interface HerdrCreateOpts {
   name: string
+  /** Full den session key — stored in rivet.json, never used as the dir name. */
+  denKey?: string
   argv: string[]
   env: Record<string, string>
   cwd: string
-  /** herdr `--kind` (claude|grok|kimi|…). */
-  kind: string
+  /** herdr `--kind`. Undefined → plain pane, no agent start. */
+  kind?: string
   command: string
   user: string
   cols?: number
@@ -109,30 +144,83 @@ export interface HerdrCreateOpts {
 }
 
 // ---------------------------------------------------------------------------
-// Name encoding — identical to tmux, reused on purpose.
+// Short names + short config home (B1)
 // ---------------------------------------------------------------------------
 
-export const encodeHerdrName = encodeTmuxName
-export const decodeHerdrName = decodeTmuxName
-export const isDenHerdrName = isDenTmuxName
-export const classifyExistingHerdrSession = (
+export function herdrRuntimeHash(stateDir: string, port: number): string {
+  return createHash('sha256').update(`${stateDir}:${port}`).digest('hex').slice(0, 8)
+}
+
+/** Deterministic 13-char session dir name. Full den key stays in rivet.json. */
+export function herdrSessionName(denKey: string): string {
+  return `d${createHash('sha256').update(denKey).digest('hex').slice(0, 12)}`
+}
+
+export const encodeHerdrName = herdrSessionName
+
+/** Hashed names are not reversible — callers must read `denKey` from meta. */
+export function decodeHerdrName(_name: string): string {
+  throw new Error('herdr session names are hashed; read denKey from rivet.json')
+}
+
+export function isDenHerdrName(name: string): boolean {
+  return /^d[0-9a-f]{12}$/.test(name)
+}
+
+export function classifyExistingHerdrSession(
   s: HerdrSessionInfo,
   routedUser?: string,
-): ExistingHerdrDisposition =>
-  classifyExistingTmuxSession(s as TmuxSessionInfo, routedUser)
+): ExistingHerdrDisposition {
+  const want = routedUser ?? 'owner'
+  if (s.command) {
+    const have = s.user || 'owner'
+    if (have !== want) return 'user-mismatch'
+    return 'attach'
+  }
+  if (s.user && s.user !== want) return 'user-mismatch'
+  if (s.denKey || isDenHerdrName(s.name)) {
+    if (want !== 'owner') return 'user-mismatch'
+    return 'adopt'
+  }
+  return 'foreign'
+}
 
-/** Per-den XDG_CONFIG_HOME so two dens never share `herdr.sock` dirs.
- *  Agent-detection manifests stay on the real XDG_STATE_HOME (grok.toml). */
-export function herdrConfigHome(stateDir: string): string {
-  return join(stateDir, 'den', 'herdr-config')
+/** Per-den XDG_CONFIG_HOME. Short on purpose: `/run/user/<uid>/rivet-den-<hash8>`
+ *  when that runtime dir exists, else `/tmp/rivet-den-<hash8>`. Hash is
+ *  sha256(stateDir:port)[0:8]. Agent-detection manifests stay on the real
+ *  XDG_STATE_HOME (grok.toml). */
+export function herdrConfigHome(
+  stateDir: string,
+  port: number,
+  exists: (p: string) => boolean = existsSync,
+): string {
+  const h = herdrRuntimeHash(stateDir, port)
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+  const runBase = `/run/user/${uid}`
+  if (exists(runBase)) return join(runBase, `rivet-den-${h}`)
+  return join('/tmp', `rivet-den-${h}`)
 }
 
 export function herdrSocketPath(configHome: string, name: string): string {
   return join(configHome, 'herdr', 'sessions', name, 'herdr.sock')
 }
 
+export function herdrClientSocketPath(configHome: string, name: string): string {
+  return join(configHome, 'herdr', 'sessions', name, 'herdr-client.sock')
+}
+
 export function herdrMetaPath(configHome: string, name: string): string {
   return join(configHome, 'herdr', 'sessions', name, 'rivet.json')
+}
+
+export function assertHerdrSocketPath(configHome: string, name: string): void {
+  const client = herdrClientSocketPath(configHome, name)
+  const n = Buffer.byteLength(client, 'utf8')
+  if (n > HERDR_SUN_PATH_MAX) {
+    throw new HerdrUnavailableError(
+      `socket path too long (${n} > ${HERDR_SUN_PATH_MAX}): ${client}`,
+    )
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,6 +241,8 @@ export function herdrAttachArgv(name: string): string[] {
   return ['herdr', '--session', name]
 }
 
+/** CLI workspace create. NEVER put credential-class values here — create()
+ *  sends env on the socket API. This builder is for non-secret keys only. */
 export function herdrWorkspaceCreateArgv(
   name: string,
   env: Record<string, string>,
@@ -229,15 +319,34 @@ export function herdrEventsSubscribeRequest(paneId: string, id = 'den-status'): 
   )
 }
 
+export function herdrRpcRequest(
+  id: string,
+  method: string,
+  params: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({ id, method, params }) + '\n'
+}
+
 /** Is this newline-JSON frame the subscribe ack (or any non-event reply)? */
 export function isHerdrEventEnvelope(obj: unknown): boolean {
   return typeof obj === 'object' && obj !== null && 'event' in obj
 }
 
-/** Roster command → herdr `--kind`. Unknown keys pass through. */
-export function herdrKindForCommand(command: string): string {
-  if (command === 'dsh' || command === 'deepseek') return 'deepseek'
-  return command
+/** Roster command → herdr `--kind`. Undefined = not in the closed enum
+ *  (plain `shell`/`bash`, `dsh`/`deepseek`, operator keys) → plain pane. */
+export function herdrKindForCommand(command: string): string | undefined {
+  if (HERDR_AGENT_KINDS.has(command)) return command
+  return undefined
+}
+
+export function posixShellJoin(argv: string[]): string {
+  return argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ')
+}
+
+function herdrDebug(msg: string): void {
+  if (process.env.RIVETOS_HERDR_DEBUG === '1') {
+    console.error(`[herdr] ${msg}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,19 +436,37 @@ export function herdrStatusToFrame(
 
 export function parseWorkspaceCreate(stdout: string): { paneId: string } {
   try {
-    const j = JSON.parse(stdout) as Record<string, unknown>
-    const pane =
-      j.pane_id ??
-      j.paneId ??
-      asRecord(j.pane)?.id ??
-      asRecord(j.pane)?.pane_id ??
-      (Array.isArray(asRecord(j.workspace)?.panes)
-        ? asRecord((asRecord(j.workspace)?.panes as unknown[])[0])?.pane_id
-        : undefined)
-    if (typeof pane === 'string' && pane) return { paneId: pane }
-  } catch {
-    // fall through to the spike default
+    return parseWorkspaceCreateValue(JSON.parse(stdout))
+  } catch (e) {
+    if (e instanceof HerdrUnavailableError || e instanceof HerdrCommandError) throw e
+    return { paneId: HERDR_DEFAULT_PANE }
   }
+}
+
+export function parseWorkspaceCreateValue(raw: unknown): { paneId: string } {
+  const rec = asRecord(raw)
+  if (!rec) return { paneId: HERDR_DEFAULT_PANE }
+  const err = asRecord(rec.error)
+  if (err) {
+    const code = typeof err.code === 'string' ? err.code : ''
+    const message = typeof err.message === 'string' ? err.message : JSON.stringify(err)
+    throw new HerdrCommandError(`herdr workspace.create failed (${code || 'error'}): ${message}`)
+  }
+  const result = asRecord(rec.result) ?? rec
+  const root = asRecord(result.root_pane) ?? asRecord(result.rootPane)
+  const pane =
+    (typeof result.pane_id === 'string' && result.pane_id) ||
+    (typeof result.paneId === 'string' && result.paneId) ||
+    (typeof asRecord(result.pane)?.id === 'string' && (asRecord(result.pane)?.id as string)) ||
+    (typeof asRecord(result.pane)?.pane_id === 'string' &&
+      (asRecord(result.pane)?.pane_id as string)) ||
+    (typeof root?.pane_id === 'string' && root.pane_id) ||
+    (typeof root?.id === 'string' && root.id) ||
+    (Array.isArray(asRecord(result.workspace)?.panes)
+      ? (asRecord((asRecord(result.workspace)?.panes as unknown[])[0])?.pane_id as
+          string | undefined)
+      : undefined)
+  if (typeof pane === 'string' && pane) return { paneId: pane }
   return { paneId: HERDR_DEFAULT_PANE }
 }
 
@@ -350,22 +477,38 @@ export function parsePaneSize(stdout: string): { cols: number; rows: number } | 
   } catch {
     return undefined
   }
-  const rows = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : []
-  for (const row of rows) {
+  const rec = asRecord(raw)
+  const result = rec ? (asRecord(rec.result) ?? rec) : undefined
+  const rowsSrc: unknown[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(result?.panes)
+      ? (result.panes as unknown[])
+      : raw && typeof raw === 'object'
+        ? [raw]
+        : []
+  for (const row of rowsSrc) {
     const r = asRecord(row)
     if (!r) continue
+    const scroll = asRecord(r.scroll)
     const inner = asRecord(r.size) ?? asRecord(r.geometry) ?? r
-    const cols = Number(inner.cols ?? inner.width)
-    const height = Number(inner.rows ?? inner.height)
+    const cols = Number(
+      inner.cols ?? inner.width ?? inner.viewport_cols ?? scroll?.viewport_cols ?? scroll?.cols,
+    )
+    const height = Number(
+      inner.rows ?? inner.height ?? inner.viewport_rows ?? scroll?.viewport_rows ?? scroll?.rows,
+    )
     if (Number.isFinite(cols) && Number.isFinite(height) && cols >= 1 && height >= 1) {
       return { cols, rows: height }
     }
   }
+  // 0.8.2 pane list has viewport_rows and no cols — windowSize is undefined
+  // (herdr is latest-client-wins; den does not invent a width).
   return undefined
 }
 
+/** Exact x.y.z only. `0.8.2-preview.N` must not match the pin. */
 export function parseHerdrVersion(out: string): string | null {
-  const m = /(\d+\.\d+\.\d+)/.exec(out)
+  const m = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/.exec(out.trim())
   return m ? m[1] : null
 }
 
@@ -421,6 +564,9 @@ export interface HerdrStatusHub {
 }
 
 const DEFAULT_BACKOFF_MS = [250, 500, 1000, 2000, 5000]
+/** Reset reconnect attempt only after the stream delivered an event or stayed
+ *  up this long. Otherwise a flapping socket reconnects at backoff[0] forever. */
+const HUB_STABLE_MS = 5_000
 
 export function createHerdrStatusHub(opts: {
   subscribe: (name: string, onEvent: (evt: unknown) => void, onClose: () => void) => () => void
@@ -442,6 +588,8 @@ export function createHerdrStatusHub(opts: {
     timer?: ReturnType<typeof setTimeout>
     attempt: number
     closed: boolean
+    connectedAt?: number
+    gotEvent?: boolean
   }
   const slots = new Map<string, Slot>()
 
@@ -464,18 +612,19 @@ export function createHerdrStatusHub(opts: {
     if (s.closed || s.refs <= 0) return
     stopChild(s)
     let closedOnce = false
+    s.gotEvent = false
+    s.connectedAt = now()
     s.unsub = opts.subscribe(
       name,
       (evt) => {
         const frame = herdrStatusToFrame(evt, now)
         if (!frame) return
-        const sessionId = (frame.sessionId || s.sessionId) as HarnessStatusFrame['sessionId']
-        opts.onFrame(name, { ...frame, sessionId })
+        s.gotEvent = true
+        // Always den's id — herdr events carry no den session key, and a
+        // herdr-native id would miss the registry subscription.
+        opts.onFrame(name, { ...frame, sessionId: s.sessionId as HarnessStatusFrame['sessionId'] })
       },
       () => {
-        // The child ended on its own: release its handle exactly once (the
-        // real unsub kills an already-dead process and closes its pipes; a
-        // second onClose from that kill must not schedule a second reconnect).
         if (closedOnce) return
         closedOnce = true
         const unsub = s.unsub
@@ -488,6 +637,8 @@ export function createHerdrStatusHub(opts: {
           }
         }
         if (s.closed || s.refs <= 0) return
+        const upMs = s.connectedAt !== undefined ? now() - s.connectedAt : 0
+        if (s.gotEvent || upMs >= HUB_STABLE_MS) s.attempt = 0
         const wait = backoff[Math.min(s.attempt, backoff.length - 1)] ?? 5000
         s.attempt += 1
         s.timer = setT(() => {
@@ -496,7 +647,6 @@ export function createHerdrStatusHub(opts: {
         }, wait)
       },
     )
-    s.attempt = 0
   }
 
   return {
@@ -541,8 +691,13 @@ export function createHerdrStatusHub(opts: {
 
 const HERDR_CTL_MS = 250
 const HERDR_CREATE_MS = 30_000
+/** A fresh workspace pane must reach its shell prompt before agent.start /
+ *  send_text — herdr answers `agent_pane_busy: not an available shell` otherwise. */
+const HERDR_PANE_READY_MS = 10_000
+const HERDR_WS_CREATE_MS = 5_000
+const HERDR_SEND_TEXT_MS = 2_000
 
-export type HerdrChild = { kill: () => void }
+export type HerdrChild = { kill: () => void; pid?: number }
 
 export type HerdrSpawn = (
   bin: string,
@@ -556,6 +711,14 @@ export type HerdrSpawn = (
     detached?: boolean
   },
 ) => HerdrChild
+
+export type HerdrRpc = (
+  sockPath: string,
+  req: { id: string; method: string; params?: Record<string, unknown> },
+  timeoutMs: number,
+) => Promise<unknown>
+
+export type HerdrWaitFn = (path: string, timeoutMs: number) => boolean | Promise<boolean>
 
 const defaultSpawn: HerdrSpawn = (bin, args, opts) => {
   const child: ChildProcess = spawn(bin, args, {
@@ -587,7 +750,102 @@ const defaultSpawn: HerdrSpawn = (bin, args, opts) => {
         // already gone
       }
     },
+    pid: child.pid ?? undefined,
   }
+}
+
+/** Event-loop poll for the api socket. No Atomics.wait, no busy spin. */
+export async function waitForSocket(
+  path: string,
+  timeoutMs: number,
+  pause: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return true
+    await pause(50)
+  }
+  return existsSync(path)
+}
+
+function defaultRpc(connectFn: (path: string) => Duplex): HerdrRpc {
+  return (sockPath, req, timeoutMs) =>
+    new Promise((resolve, reject) => {
+      let sock: Duplex
+      try {
+        sock = connectFn(sockPath)
+      } catch (e) {
+        reject(e instanceof Error ? e : new HerdrUnavailableError(String(e)))
+        return
+      }
+      let buf = ''
+      let done = false
+      const timer = setTimeout(() => {
+        finish(new HerdrUnavailableError(`herdr rpc ${req.method} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      const finish = (err?: Error, val?: unknown): void => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        try {
+          sock.destroy()
+        } catch {
+          // already gone
+        }
+        if (err) reject(err)
+        else resolve(val)
+      }
+      sock.on('connect', () => {
+        try {
+          sock.write(
+            JSON.stringify({ id: req.id, method: req.method, params: req.params ?? {} }) + '\n',
+          )
+        } catch (e) {
+          finish(e instanceof Error ? e : new HerdrUnavailableError(String(e)))
+        }
+      })
+      sock.on('data', (chunk: Buffer | string) => {
+        buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        let nl: number
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl)
+          buf = buf.slice(nl + 1)
+          if (!line.trim()) continue
+          let obj: unknown
+          try {
+            obj = JSON.parse(line)
+          } catch {
+            continue
+          }
+          const rec = asRecord(obj)
+          if (!rec) continue
+          if (rec.id !== req.id) continue
+          const err = asRecord(rec.error)
+          if (err) {
+            const code = typeof err.code === 'string' ? err.code : ''
+            const message = typeof err.message === 'string' ? err.message : JSON.stringify(err)
+            if (code === 'server_not_running') {
+              finish(new HerdrUnavailableError(`server_not_running: ${message}`))
+              return
+            }
+            finish(new HerdrCommandError(`herdr ${req.method} failed (${code}): ${message}`))
+            return
+          }
+          finish(undefined, rec.result ?? rec)
+        }
+      })
+      sock.on('error', (e: Error) => {
+        const code = (e as NodeJS.ErrnoException).code ?? ''
+        if (code === 'ECONNREFUSED' || /ECONNREFUSED/.test(e.message)) {
+          finish(new HerdrUnavailableError(`ECONNREFUSED: ${e.message}`))
+          return
+        }
+        finish(e)
+      })
+      sock.on('close', () => {
+        if (!done) finish(new HerdrUnavailableError(`herdr rpc ${req.method}: socket closed`))
+      })
+    })
 }
 
 interface RivetMeta {
@@ -595,6 +853,8 @@ interface RivetMeta {
   user: string
   paneId?: string
   created?: number
+  denKey?: string
+  pid?: number
 }
 
 function readMeta(configHome: string, name: string): RivetMeta {
@@ -606,6 +866,8 @@ function readMeta(configHome: string, name: string): RivetMeta {
       user: typeof j.user === 'string' ? j.user : '',
       paneId: typeof j.paneId === 'string' ? j.paneId : undefined,
       created: typeof j.created === 'number' ? j.created : undefined,
+      denKey: typeof j.denKey === 'string' ? j.denKey : undefined,
+      pid: typeof j.pid === 'number' && j.pid > 0 ? j.pid : undefined,
     }
   } catch {
     return { command: '', user: '' }
@@ -618,38 +880,41 @@ function writeMeta(configHome: string, name: string, meta: RivetMeta): void {
   writeFileSync(herdrMetaPath(configHome, name), JSON.stringify(meta) + '\n', { mode: 0o600 })
 }
 
-/** Block (without a shell and without spinning) until `path` exists or the
- *  deadline passes. `herdr --session <name> server` is a FOREGROUND daemon
- *  (verified on 0.8.2: it prints "herdr server running" and never returns),
- *  so create() spawns it detached and waits for the api socket instead of
- *  running it to completion. */
-export function waitForSocketSync(path: string, timeoutMs: number): boolean {
-  const deadline = Date.now() + timeoutMs
-  const cell = new Int32Array(new SharedArrayBuffer(4))
-  while (Date.now() < deadline) {
-    if (existsSync(path)) return true
-    Atomics.wait(cell, 0, 0, 100)
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
   }
-  return existsSync(path)
 }
 
-/** HerdrCtl backed by the real herdr binary (absolute path). Every ctl call
- *  is execFileSync, no shell, with `XDG_CONFIG_HOME` pointed at the per-den
- *  config home so sockets never collide across dens. The session server is
- *  the one exception: a detached spawn (see waitForSocketSync). */
+function userXdgConfigHome(configHome: string): string {
+  const fromEnv = process.env.XDG_CONFIG_HOME
+  if (fromEnv && fromEnv !== configHome) return fromEnv
+  return join(homedir(), '.config')
+}
+
+/** HerdrCtl backed by the real herdr binary (absolute path). Ctl probes use
+ *  short execFileSync (250 ms). Create is async: detached spawn + event-loop
+ *  sock poll + socket RPC for workspace.create / agent.start / pane.send_text.
+ *  `XDG_CONFIG_HOME` on ctl/client processes is the per-den short home; the
+ *  agent env on workspace.create gets the user's real XDG_CONFIG_HOME. */
 export function createRealHerdrCtl(
   binary: string,
   configHome: string,
   execFn: HerdrExec = execFileSync,
   spawnFn: HerdrSpawn = defaultSpawn,
-  waitFn: (path: string, timeoutMs: number) => boolean = waitForSocketSync,
+  waitFn: HerdrWaitFn = waitForSocket,
   connectFn: (path: string) => Duplex = (path) => createConnection(path),
+  rpcFn?: HerdrRpc,
 ): HerdrCtl {
   mkdirSync(configHome, { recursive: true, mode: 0o700 })
   const envFor = (): NodeJS.ProcessEnv => ({
     ...process.env,
     XDG_CONFIG_HOME: configHome,
   })
+  const rpc = rpcFn ?? defaultRpc(connectFn)
 
   const run = (args: string[], timeout = HERDR_CTL_MS): string | null => {
     try {
@@ -660,10 +925,59 @@ export function createRealHerdrCtl(
         env: envFor(),
       })
     } catch (e) {
-      const err = e as { status?: unknown; code?: unknown }
+      const err = e as { status?: unknown; code?: unknown; message?: unknown }
       if (typeof err.status === 'number' && err.status === 1) return null
+      if (typeof err.status === 'number' && err.status === 2) {
+        throw new HerdrCommandError(`herdr ctl failed (exit 2, ${args[0]}): ${String(e)}`, 2)
+      }
       throw new HerdrUnavailableError(`herdr ctl failed (${args[0]}): ${String(e)}`)
     }
+  }
+
+  const reapDir = (name: string): void => {
+    try {
+      rmSync(join(configHome, 'herdr', 'sessions', name), { recursive: true, force: true })
+    } catch {
+      // best-effort
+    }
+  }
+
+  const snapshotAlive = (name: string): boolean => {
+    try {
+      const out = execFn(binary, herdrSnapshotArgv(name).slice(1), {
+        encoding: 'utf8',
+        timeout: HERDR_CTL_MS,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: envFor(),
+      })
+      if (typeof out === 'string' && /server_not_running/.test(out)) return false
+      return true
+    } catch (e) {
+      const err = e as { status?: unknown; code?: unknown; message?: unknown }
+      const str = (v: unknown): string =>
+        typeof v === 'string' || typeof v === 'number' ? String(v) : ''
+      const blob = `${str(err.code)} ${str(err.message) || String(e)} ${str(err.status)}`
+      if (/ECONNREFUSED|server_not_running|ENOENT|ECONNRESET/.test(blob)) return false
+      return false
+    }
+  }
+
+  const isLive = (name: string): boolean => {
+    const meta = readMeta(configHome, name)
+    if (meta.pid && meta.pid > 0) {
+      if (!pidAlive(meta.pid)) {
+        reapDir(name)
+        return false
+      }
+      return true
+    }
+    const sock = herdrSocketPath(configHome, name)
+    if (!existsSync(sock)) return false
+    if (!snapshotAlive(name)) {
+      reapDir(name)
+      return false
+    }
+    return true
   }
 
   const listFresh = (): HerdrSessionInfo[] => {
@@ -672,12 +986,14 @@ export function createRealHerdrCtl(
     const nowSec = Math.floor(Date.now() / 1000)
     const out: HerdrSessionInfo[] = []
     for (const name of names) {
-      if (!existsSync(herdrSocketPath(configHome, name))) continue
+      if (!isLive(name)) continue
       const meta = readMeta(configHome, name)
       out.push({
         name,
+        denKey: meta.denKey,
         activity: nowSec,
         created: meta.created ?? nowSec,
+        pid: meta.pid,
         command: meta.command,
         user: meta.user,
         paneId: meta.paneId,
@@ -688,23 +1004,33 @@ export function createRealHerdrCtl(
 
   return {
     hasSession(name) {
-      return existsSync(herdrSocketPath(configHome, name))
+      return isLive(name)
     },
     killSession(name) {
       try {
         run(herdrServerStopArgv(name).slice(1), 2000)
       } catch {
-        // stop may throw unavailable — still try to remove the sock dir
+        const meta = readMeta(configHome, name)
+        if (meta.pid) {
+          try {
+            process.kill(meta.pid, 'SIGTERM')
+          } catch {
+            // ESRCH = already dead
+          }
+        }
       }
-      try {
-        rmSync(join(configHome, 'herdr', 'sessions', name), { recursive: true, force: true })
-      } catch {
-        // best-effort
+      const meta = readMeta(configHome, name)
+      if (meta.pid && pidAlive(meta.pid)) {
+        // stop did not take — keep the dir so the orphan stays addressable
+        throw new HerdrUnavailableError(
+          `herdr server stop failed for ${name} (pid ${meta.pid} still alive); not removing session dir`,
+        )
       }
+      reapDir(name)
     },
     listSessions: listFresh,
     refresh() {
-      // no memo today — list is a readdir
+      // no memo today — list is a readdir + liveness probe
     },
     setOption(name, option, value) {
       const meta = readMeta(configHome, name)
@@ -721,44 +1047,114 @@ export function createRealHerdrCtl(
         return undefined
       }
     },
-    create(opts) {
+    async create(opts) {
+      assertHerdrSocketPath(configHome, opts.name)
       mkdirSync(join(configHome, 'herdr', 'sessions', opts.name), { recursive: true, mode: 0o700 })
       const sock = herdrSocketPath(configHome, opts.name)
-      spawnFn(binary, herdrServerArgv(opts.name).slice(1), { env: envFor(), detached: true })
-      if (!waitFn(sock, HERDR_CREATE_MS)) {
+      const child = spawnFn(binary, herdrServerArgv(opts.name).slice(1), {
+        env: envFor(),
+        detached: true,
+      })
+      const ready = await Promise.resolve(waitFn(sock, HERDR_CREATE_MS))
+      if (!ready) {
         throw new HerdrUnavailableError(
           `herdr server did not open ${sock} within ${HERDR_CREATE_MS}ms for ${opts.name}`,
         )
       }
+      const agentEnv = { ...opts.env }
+      if (!agentEnv.XDG_CONFIG_HOME || agentEnv.XDG_CONFIG_HOME === configHome) {
+        agentEnv.XDG_CONFIG_HOME = userXdgConfigHome(configHome)
+      }
       try {
-        const wsArgv = herdrWorkspaceCreateArgv(opts.name, opts.env, opts.cwd)
-        const wsOut = run(wsArgv.slice(1), HERDR_CREATE_MS)
-        if (wsOut === null) {
-          throw new HerdrUnavailableError(`herdr workspace create failed for ${opts.name}`)
-        }
-        const { paneId } = parseWorkspaceCreate(wsOut)
-        const agentArgv = herdrAgentStartArgv(
-          opts.name,
-          opts.name,
-          opts.kind,
-          paneId,
-          opts.argv,
+        const ws = await rpc(
+          sock,
+          {
+            id: 'den-ws-create',
+            method: 'workspace.create',
+            params: {
+              cwd: opts.cwd,
+              env: agentEnv,
+              label: opts.command,
+            },
+          },
+          HERDR_WS_CREATE_MS,
         )
-        const agentOut = run(agentArgv.slice(1), HERDR_CREATE_MS)
-        if (agentOut === null) {
-          throw new HerdrUnavailableError(`herdr agent start failed for ${opts.name}`)
+        const { paneId } = parseWorkspaceCreateValue(ws)
+        // Wait for the pane's shell prompt (the shell sets the terminal title
+        // on prompt). Verified on 0.8.2: agent.start straight after
+        // workspace.create fails with agent_pane_busy.
+        const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+        const readyBy = Date.now() + HERDR_PANE_READY_MS
+        while (Date.now() < readyBy) {
+          try {
+            const got = (await rpc(
+              sock,
+              { id: 'den-pane-get', method: 'pane.get', params: { pane_id: paneId } },
+              1000,
+            )) as { pane?: { terminal_title?: unknown }; terminal_title?: unknown } | null
+            const title = got?.pane?.terminal_title ?? got?.terminal_title
+            if (typeof title === 'string' && title.trim()) break
+          } catch {
+            // server still settling — keep polling
+          }
+          await sleep(200)
+        }
+        if (opts.kind) {
+          const startReq = {
+            id: 'den-agent-start',
+            method: 'agent.start',
+            params: {
+              // herdr agent names: [a-z][a-z0-9_-]{0,31} — the hashed session
+              // name qualifies; the den key (colons, 36-44 chars) does not.
+              name: opts.name,
+              kind: opts.kind,
+              pane_id: paneId,
+              args: opts.argv,
+              timeout_ms: HERDR_CREATE_MS,
+            },
+          }
+          // agent_pane_busy = the shell prompt is not up yet; retry briefly.
+          const busyBy = Date.now() + HERDR_PANE_READY_MS
+          for (;;) {
+            try {
+              await rpc(sock, startReq, HERDR_CREATE_MS)
+              break
+            } catch (e) {
+              if (!/agent_pane_busy/.test(String(e)) || Date.now() >= busyBy) throw e
+              await sleep(250)
+            }
+          }
+        } else {
+          const text = `${posixShellJoin(opts.argv)}\n`
+          await rpc(
+            sock,
+            {
+              id: 'den-pane-run',
+              method: 'pane.send_text',
+              params: { pane_id: paneId, text },
+            },
+            HERDR_SEND_TEXT_MS,
+          )
         }
         writeMeta(configHome, opts.name, {
           command: opts.command,
           user: opts.user,
           paneId,
           created: Math.floor(Date.now() / 1000),
+          denKey: opts.denKey,
+          pid: child.pid,
         })
       } catch (e) {
         try {
           run(herdrServerStopArgv(opts.name).slice(1), 2000)
         } catch {
-          // best-effort teardown of a half-created session
+          if (child.pid) {
+            try {
+              process.kill(child.pid, 'SIGTERM')
+            } catch {
+              // best-effort teardown of a half-created session
+            }
+          }
         }
         throw e
       }
@@ -768,34 +1164,34 @@ export function createRealHerdrCtl(
     },
     capture(name, lines) {
       const meta = readMeta(configHome, name)
-      const target = meta.paneId ?? HERDR_DEFAULT_PANE
+      const label = name // the agent is registered under the hashed session name
       try {
-        const agent = run(herdrAgentReadArgv(name, target, lines).slice(1), 2000)
+        const agent = run(herdrAgentReadArgv(name, label, lines).slice(1), 2000)
         if (agent !== null && agent.trim()) return agent
       } catch {
         // fall through to pane read
       }
+      const pane = meta.paneId ?? HERDR_DEFAULT_PANE
       try {
-        return run(herdrPaneReadArgv(name, target, lines).slice(1), 2000) ?? ''
+        return run(herdrPaneReadArgv(name, pane, lines).slice(1), 2000) ?? ''
       } catch {
         return ''
       }
     },
     subscribeEvents(name, onEvent, onClose) {
-      // One socket per subscribed session: connect, send events.subscribe,
-      // then deliver every `{event,data}` envelope. The ack and any RPC reply
-      // (no `event` key) are skipped. Close/error → onClose (the hub
-      // reconnects with backoff); unsub destroys the socket.
       const paneId = readMeta(configHome, name).paneId ?? 'w1:p1'
-      const sock = connectFn(herdrSocketPath(configHome, name))
+      const sockPath = herdrSocketPath(configHome, name)
+      const sock = connectFn(sockPath)
       let buf = ''
       let closed = false
       const finish = (): void => {
         if (closed) return
         closed = true
+        herdrDebug(`close session=${name} sock=${sockPath}`)
         onClose?.()
       }
       sock.on('connect', () => {
+        herdrDebug(`connect session=${name} sock=${sockPath} pane=${paneId}`)
         sock.write(herdrEventsSubscribeRequest(paneId))
       })
       sock.on('data', (chunk: Buffer | string) => {
@@ -811,7 +1207,24 @@ export function createRealHerdrCtl(
           } catch {
             continue
           }
-          if (isHerdrEventEnvelope(obj)) onEvent(obj)
+          const rec = asRecord(obj)
+          if (
+            rec &&
+            rec.id === 'den-status' &&
+            asRecord(rec.result)?.type === 'subscription_started'
+          ) {
+            herdrDebug(`subscribe-ack session=${name} pane=${paneId}`)
+            continue
+          }
+          if (isHerdrEventEnvelope(obj)) {
+            if (process.env.RIVETOS_HERDR_DEBUG === '1') {
+              const ev = obj as { event?: unknown; data?: { agent_status?: unknown } }
+              console.error(
+                `[herdr] event session=${name} ${String(ev.event)} status=${typeof ev.data?.agent_status === 'string' ? ev.data.agent_status : '-'}`,
+              )
+            }
+            onEvent(obj)
+          }
         }
       })
       sock.on('close', finish)

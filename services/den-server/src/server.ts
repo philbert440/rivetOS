@@ -523,8 +523,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const rosterProvider = createRosterProvider(config.term.configFile)
   let termManager: TermManager | null = null
   let onHerdrStatusRef:
-    | ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void)
-    | undefined
+    ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
+    undefined
   // memoized as a promise: concurrent first requests must share ONE backend
   // load + manager, and a failed node-pty import stays failed (503) for the
   // life of the process — it logs once inside loadRealPtySpawn
@@ -645,7 +645,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('claude'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
-        herdrStatus: config.term.mux === 'herdr',
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('claude'),
         log: console.error,
         sheetOverride: config.harnesses?.['claude-code'],
@@ -654,7 +654,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('grok'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
-        herdrStatus: config.term.mux === 'herdr',
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('grok'),
         log: console.error,
         sheetOverride: config.harnesses?.['grok-build'],
@@ -663,7 +663,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('hermes'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
-        herdrStatus: config.term.mux === 'herdr',
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('hermes'),
         log: console.error,
         sheetOverride: config.harnesses?.hermes,
@@ -672,7 +672,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         store: createHarnessStore('kimi'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
-        herdrStatus: config.term.mux === 'herdr',
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('kimi'),
         log: console.error,
         sheetOverride: config.harnesses?.['kimi-code'],
@@ -684,7 +684,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // spawn. dsh itself has no hook-fed events today; liveStream then
         // reports the tap, not a fake assistant stream.
         events: denEventTap,
-        herdrStatus: config.term.mux === 'herdr',
+        herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('dsh'),
         log: console.error,
         sheetOverride: config.harnesses?.['deepseek-harness'],
@@ -1267,7 +1267,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 return
             }
             const userEnv = captureEnvFor(userCtx)
-            const pty = manager.spawn(
+            const pty = await manager.spawn(
               p.command,
               clamp(p.cols, 20, 500, 80),
               clamp(p.rows, 5, 200, 24),
@@ -1315,7 +1315,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                     ? 403
                     : e.code === 'tmux-unavailable'
                       ? 503
-                      : 404,
+                      : e.code === 'herdr'
+                        ? 400
+                        : 404,
                 { error: e.message },
               )
             throw e
