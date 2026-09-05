@@ -39,7 +39,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { hostname } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -583,7 +583,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const rosterCwdFor = (key: string) => (): string => {
     const roster = rosterProvider.get()
     if (!Object.hasOwn(roster.commands, key)) return roster.cwd
-    return roster.commands[key].cwd ?? roster.cwd
+    const entry = roster.commands[key]
+    // Mirrors the spawn rule in term/manager.ts: harness entries run in home.
+    if (entry.room) return homedir()
+    return entry.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
   // All five built-in drivers formalize the machinery right above them — the
