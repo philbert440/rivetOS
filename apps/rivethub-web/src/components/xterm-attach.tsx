@@ -9,6 +9,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import type { TermExitFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
+import { connectTermSocket, type TermSocketHandle } from '../lib/term-socket.js'
 import { resolvedThemeOf, useResolvedTheme, useTheme } from '../stores/theme.js'
 import { resolveXtermTheme, useTerminalSettings } from '../stores/terminal-settings.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
@@ -676,6 +677,11 @@ export function XtermAttach(props: {
     // and a remote dial must not open a keystroke-dropping window beyond the
     // pre-open drop both paths always had (readyState !== 1 → ignored).
     const sockRef: { current: WebSocket | undefined } = { current: undefined }
+    // The dial handle: closes a socket that never reached OPEN (fail-closed
+    // timeout in lib/term-socket.ts) so the overlay can't sit on
+    // 'connecting' forever behind a den that waits on a client cert or a
+    // dropped upgrade.
+    const dialRef: { current: TermSocketHandle | undefined } = { current: undefined }
     let resizeTimer: ReturnType<typeof setTimeout> | undefined
 
     const dataSub = term.onData((data) => {
@@ -715,54 +721,63 @@ export function XtermAttach(props: {
         return
       }
       if (life.disposed) return
-      const sock = new WebSocket(gateway.terminalWsUrl({ id: props.ptyId }))
-      sockRef.current = sock
-      sock.binaryType = 'arraybuffer'
-      // Ownership re-derives from the new socket's hello — drop stale state
-      // from a previous attach so a released owner can't linger as a banner.
-      setOwner(undefined)
-      claimRef.current = () => {
-        if (sock.readyState === 1) sock.send(buildClaimFrame(term.cols, term.rows))
-      }
-
-      sock.onopen = () => {
-        if (life.disposed) return
-        setStatus('attached')
-        // Always re-fit and declare our size on (re)attach — a rebind would
-        // otherwise keep whatever PTY size the previous socket negotiated.
-        fit.fit()
-        sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-      sock.onclose = () => {
-        if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
-      }
-      sock.onmessage = (event: MessageEvent) => {
-        if (life.disposed) return
-        if (typeof event.data === 'string') {
-          const frame = JSON.parse(event.data) as TermHelloFrame | TermExitFrame | TermOwnerFrame
-          if (frame.type === 'hello') {
-            setOwner(reduceOwner(undefined, frame))
-            if (frame.cols !== term.cols || frame.rows !== term.rows)
-              sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-            if (frame.state === 'exited') {
-              setStatus('exited')
-              onExitRef.current?.()
-            }
-          } else if (frame.type === 'owner') {
-            // Ownership changed: a won claim arrives as self:true and clears
-            // the banner; device:null releases it (nobody owns the PTY).
-            setOwner((prev) => reduceOwner(prev, frame))
-          } else {
-            setStatus('exited')
-            onExitRef.current?.()
-            term.write(`\r\n\x1b[2m[process exited ${String(frame.code)}]\x1b[0m\r\n`)
+      dialRef.current = connectTermSocket(gateway.terminalWsUrl({ id: props.ptyId }), {
+        onOpen: (sock) => {
+          if (life.disposed) {
+            sock.close()
+            return
           }
-          return
-        }
-        // Drop color queries so attach/scrollback replay doesn't generate
-        // OSC rgb: replies that leak into the harness as fake keystrokes.
-        term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
-      }
+          sockRef.current = sock
+          sock.binaryType = 'arraybuffer'
+          // Ownership re-derives from the new socket's hello — drop stale state
+          // from a previous attach so a released owner can't linger as a banner.
+          setOwner(undefined)
+          claimRef.current = () => {
+            if (sock.readyState === 1) sock.send(buildClaimFrame(term.cols, term.rows))
+          }
+          setStatus('attached')
+          // Always re-fit and declare our size on (re)attach — a rebind would
+          // otherwise keep whatever PTY size the previous socket negotiated.
+          fit.fit()
+          sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+          sock.onclose = () => {
+            if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+          }
+          sock.onmessage = (event: MessageEvent) => {
+            if (life.disposed) return
+            if (typeof event.data === 'string') {
+              const frame = JSON.parse(event.data) as
+                TermHelloFrame | TermExitFrame | TermOwnerFrame
+              if (frame.type === 'hello') {
+                setOwner(reduceOwner(undefined, frame))
+                if (frame.cols !== term.cols || frame.rows !== term.rows)
+                  sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+                if (frame.state === 'exited') {
+                  setStatus('exited')
+                  onExitRef.current?.()
+                }
+              } else if (frame.type === 'owner') {
+                // Ownership changed: a won claim arrives as self:true and clears
+                // the banner; device:null releases it (nobody owns the PTY).
+                setOwner((prev) => reduceOwner(prev, frame))
+              } else {
+                setStatus('exited')
+                onExitRef.current?.()
+                term.write(`\r\n\x1b[2m[process exited ${String(frame.code)}]\x1b[0m\r\n`)
+              }
+              return
+            }
+            // Drop color queries so attach/scrollback replay doesn't generate
+            // OSC rgb: replies that leak into the harness as fake keystrokes.
+            term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
+          }
+        },
+        // Never opened (timeout / error / early close): same UI outcome as a
+        // real close, so the pane shows 'closed' instead of an eternal spinner.
+        onClose: () => {
+          if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+        },
+      })
     })()
 
     return () => {
@@ -776,6 +791,7 @@ export function XtermAttach(props: {
       } catch {
         // terminal may already be disposed when the PTY itself changed
       }
+      dialRef.current?.close()
       sockRef.current?.close()
     }
     // transportEpoch on the remote path too: the epoch tracks the shell's
