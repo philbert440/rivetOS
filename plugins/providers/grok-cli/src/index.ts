@@ -40,6 +40,7 @@ export {
   buildUsage,
   finishReasonFor,
   effortFromProviderOptions,
+  MAX_PROMPT_BYTES,
 } from './grok-cli-model.js'
 export { buildArgs, parseGrokJson, spawnGrokTurn } from './spawn-turn.js'
 export type { GrokReasoningEffort, GrokSystemPromptMode } from './grok-cli-model.js'

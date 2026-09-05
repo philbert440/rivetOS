@@ -119,6 +119,7 @@ function chunkFor(msg: LanguageModelV3Message): string {
 export function renderPromptForCli(prompt: LanguageModelV3Prompt): {
   systemText: string
   userText: string
+  chunks: string[]
 } {
   const system: string[] = []
   const chunks: string[] = []
@@ -130,22 +131,48 @@ export function renderPromptForCli(prompt: LanguageModelV3Prompt): {
     const chunk = chunkFor(msg)
     if (chunk) chunks.push(chunk)
   }
-  return { systemText: system.join('\n\n'), userText: chunks.join(SEP) }
+  return { systemText: system.join('\n\n'), userText: chunks.join(SEP), chunks }
 }
+
+/**
+ * The prompt travels as ONE argv argument. Linux caps a single argument at
+ * MAX_ARG_STRLEN = 128 KiB (E2BIG past that), so long conversations are
+ * trimmed from the OLDEST turn forward until the composed prompt fits; the
+ * system text and the newest turns always survive. 100 KB leaves headroom
+ * for the other flags and multi-byte text.
+ */
+export const MAX_PROMPT_BYTES = 100_000
+const TRUNCATION_NOTE = '[… earlier conversation trimmed to fit the CLI argument limit …]'
 
 /** The single `-p` argument: optional SYSTEM section + the transcript. */
 export function composePrompt(
-  rendered: { systemText: string; userText: string },
+  rendered: { systemText: string; chunks: string[] },
   mode: GrokSystemPromptMode,
-): { prompt: string; systemPromptOverride: string } {
-  const body = rendered.userText || 'USER:\n(no message)'
-  if (mode === 'prepend' && rendered.systemText) {
-    return { prompt: `SYSTEM:\n${rendered.systemText}${SEP}${body}`, systemPromptOverride: '' }
+  maxBytes: number = MAX_PROMPT_BYTES,
+): { prompt: string; systemPromptOverride: string; trimmedChunks: number } {
+  const head =
+    mode === 'prepend' && rendered.systemText ? `SYSTEM:\n${rendered.systemText}${SEP}` : ''
+  const systemPromptOverride = mode === 'override' ? rendered.systemText : ''
+  const build = (chunks: string[], trimmed: boolean): string => {
+    const parts = trimmed ? [TRUNCATION_NOTE, ...chunks] : chunks
+    return head + (parts.length > 0 ? parts.join(SEP) : 'USER:\n(no message)')
   }
-  if (mode === 'override') {
-    return { prompt: body, systemPromptOverride: rendered.systemText }
+  let chunks = rendered.chunks
+  let trimmedChunks = 0
+  let prompt = build(chunks, false)
+  while (Buffer.byteLength(prompt, 'utf8') > maxBytes && chunks.length > 1) {
+    chunks = chunks.slice(1)
+    trimmedChunks++
+    prompt = build(chunks, true)
   }
-  return { prompt: body, systemPromptOverride: '' }
+  if (Buffer.byteLength(prompt, 'utf8') > maxBytes && chunks.length === 1) {
+    // A single oversized turn (or system text): keep its tail, which holds the actual ask.
+    const keep = Math.max(0, maxBytes - Buffer.byteLength(head + TRUNCATION_NOTE + SEP, 'utf8'))
+    const last = chunks[0]
+    prompt = head + TRUNCATION_NOTE + SEP + last.slice(Math.max(0, last.length - keep))
+    trimmedChunks++
+  }
+  return { prompt, systemPromptOverride, trimmedChunks }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +280,17 @@ export class GrokCliModel implements LanguageModelV3 {
 
   doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
     const rendered = renderPromptForCli(options.prompt)
-    const { prompt, systemPromptOverride } = composePrompt(rendered, this.config.systemPromptMode)
+    const { prompt, systemPromptOverride, trimmedChunks } = composePrompt(
+      rendered,
+      this.config.systemPromptMode,
+    )
+    if (trimmedChunks > 0) {
+      this.log.warn('prompt.trimmed', {
+        trimmedChunks,
+        promptChars: prompt.length,
+        maxBytes: MAX_PROMPT_BYTES,
+      })
+    }
     const reasoningEffort = effortFromProviderOptions(
       options.providerOptions,
       this.config.reasoningEffort,

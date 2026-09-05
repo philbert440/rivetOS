@@ -92,7 +92,34 @@ describe('renderPromptForCli / composePrompt', () => {
   })
 
   it('never sends an empty -p argument', () => {
-    expect(composePrompt({ systemText: '', userText: '' }, 'prepend').prompt).toBe('USER:\n(no message)')
+    expect(composePrompt({ systemText: '', chunks: [] }, 'prepend').prompt).toBe('USER:\n(no message)')
+  })
+
+  it('trims the OLDEST turns to stay under the argv limit, keeping system text and the newest turn', () => {
+    const big = 'x'.repeat(30_000)
+    const r = { systemText: 'SYS', chunks: [`USER:\n${big}1`, `ASSISTANT:\n${big}2`, `USER:\n${big}3`, 'USER:\nlast'] }
+    const out = composePrompt(r, 'prepend', 40_000)
+    expect(Buffer.byteLength(out.prompt, 'utf8')).toBeLessThanOrEqual(40_000)
+    expect(out.trimmedChunks).toBe(2)
+    expect(out.prompt.startsWith('SYSTEM:\nSYS')).toBe(true)
+    expect(out.prompt).toContain('trimmed to fit')
+    expect(out.prompt).not.toContain(`${big}1`)
+    expect(out.prompt).not.toContain(`${big}2`)
+    expect(out.prompt).toContain(`${big}3`)
+    expect(out.prompt.endsWith('USER:\nlast')).toBe(true)
+  })
+
+  it('a single oversized turn keeps its tail', () => {
+    const r = { systemText: '', chunks: [`USER:\n${'a'.repeat(50_000)}THE-ASK`] }
+    const out = composePrompt(r, 'off', 10_000)
+    expect(Buffer.byteLength(out.prompt, 'utf8')).toBeLessThanOrEqual(10_000)
+    expect(out.prompt.endsWith('THE-ASK')).toBe(true)
+    expect(out.trimmedChunks).toBe(1)
+  })
+
+  it('does not trim when the prompt fits', () => {
+    const r = renderPromptForCli(prompt)
+    expect(composePrompt(r, 'prepend').trimmedChunks).toBe(0)
   })
 })
 
