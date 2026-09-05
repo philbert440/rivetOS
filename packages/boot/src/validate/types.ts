@@ -182,6 +182,11 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'system_prompt',
     'allow',
     'tools',
+  'hermes-cli': new Set(['model', 'binary', 'cwd', 'name', 'context_window', 'max_output_tokens']),
+  'kimi-code': new Set([
+    'model',
+    'binary',
+    'home',
     'cwd',
     'name',
     'context_window',

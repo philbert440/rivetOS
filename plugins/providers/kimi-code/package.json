@@ -1,0 +1,42 @@
+{
+  "name": "@rivetos/provider-kimi-code",
+  "version": "0.5.0",
+  "description": "Kimi Code CLI provider \u2014 shells out to the local `kimi -p --output-format stream-json`. Was running untracked on ct116 since 2026-08-18.",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "mkdir -p dist && cp src/index.js dist/index.js",
+    "typecheck": "node --check src/index.js",
+    "lint": "eslint --no-error-on-unmatched-pattern src/ package.json",
+    "test": "node --test src/*.test.js",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "rivetos": {
+    "type": "provider",
+    "name": "kimi-code"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "plugins/providers/kimi-code"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "nx": {
+    "tags": [
+      "scope:adapter",
+      "type:plugin",
+      "domain:runtime"
+    ]
+  }
+}
