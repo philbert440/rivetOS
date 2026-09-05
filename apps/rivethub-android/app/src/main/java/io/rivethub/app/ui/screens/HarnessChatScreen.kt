@@ -142,8 +142,14 @@ fun HarnessChatScreen(
     val sessionLabel = if (st.draft) stringResource(R.string.new_conversation) else st.sessionId
     val reported = st.turns.mapNotNull { it.usage?.promptTokens }.lastOrNull()
     val barModel = st.turns.mapNotNull { it.model }.lastOrNull() ?: st.model
-    val context = remember(st.turns, st.model) {
-        contextBarView(reported, barModel, st.turns.map { it.text })
+    val context = remember(st.turns, st.model, st.contextWindow, st.compactAt) {
+        contextBarView(
+            reported,
+            barModel,
+            st.turns.map { it.text },
+            contextWindow = st.contextWindow,
+            compactAt = st.compactAt,
+        )
     }
     val accentHex = accentFor(
         command = st.sessionId.substringBefore(':').takeIf { st.sessionId.contains(':') } ?: st.model,

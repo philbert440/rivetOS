@@ -34,6 +34,7 @@
     <string name="cd_open_drawer">Open menu</string>
     <string name="cd_close_drawer">Close menu</string>
     <string name="cd_conversations">Conversations</string>
+    <string name="cd_context_fill">Context %1$d%% of compaction</string>
     <string name="cd_coming_soon">coming soon</string>
     <string name="cd_den_bot">Rivet den bot</string>
     <string name="unread_notifications">%d unread notifications</string>

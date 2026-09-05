@@ -104,7 +104,7 @@ Chat mapping (phone session view ← rivethub-web):
 | desktop | phone file |
 |---|---|
 | `pages/chat.tsx` ActiveSession header | `ui/components/ChatHeader.kt` + `HarnessChatScreen` |
-| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — phone branch only: track + token counts are `hidden sm:*`, so just `{pct}%` mono 10sp inkDim, inline in the one-row session header |
+| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — pct is toward FORCED COMPACTION (`compactAt` = window − 35k reserve; wire `contextWindow`/`compactAt`/`contextSource` preferred over `contextWindowFor(model)`, claude default 200k / 1M only on an explicit `[1m]`/`-1m` variant): the `{pct}%` mono 10sp pill stays inline in the one-row header (inkDim → warn ≥70% → red ≥90%) and a 2dp hairline track at the header's bottom edge fills to `fraction` (em → warn → red, `animateFloatAsState`) |
 | `components/segmented-control.tsx` Terminal \| Chat | existing `SegmentedControl` |
 | `components/transcript.tsx` | `ui/components/Transcript.kt` |
 | `components/markdown.tsx` | `ui/components/MarkdownBody.kt` (`plane/Markdown.kt`) |
@@ -218,8 +218,8 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 458 (memory-native: +12 MemoryWikiTest,
-  +1 DrawerNavTest memory-route; the floor tracks `grep -rc @Test app/src/test` exactly — the
+  (`.github/workflows/android.yml`) enforces a floor of 466 (context-bar: +2 ContextWindowTest,
+  +4 ChatChromeTest, +2 HarnessWireTest; the floor tracks `grep -rc @Test app/src/test` exactly — the
   earlier 431/436 notes had drifted from the real count).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no

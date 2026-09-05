@@ -14,27 +14,63 @@ fun formatCount(n: Int): String = String.format(Locale.US, "%,d", n)
 /**
  * Phone context bar model. The desktop caption (`50.2k/1M · 5%`) and the hot
  * colour live on the track that is `hidden sm:block` (context-bar.tsx:44-56),
- * so the phone view carries only what it renders: the percentage.
+ * so the phone view carries only what it renders: the percentage — here the
+ * percentage toward FORCED COMPACTION (`compactAt`), not the raw window, so
+ * 100% means "the harness is about to compact". [max] is the real window, for
+ * the caption; [warn] / [hot] drive the em → amber → red colour shift.
  */
 data class ContextBarView(
     val tokens: Int,
     val max: Int,
+    val compactAt: Int,
     val pct: Int,
+    /** tokens / compactAt as 0..1 — the hairline track's fill fraction. */
+    val fraction: Float,
     val estimated: Boolean,
+    val warn: Boolean,
+    val hot: Boolean,
 )
+
+/** Header pill/track turns amber at this fill (of compaction). */
+const val CONTEXT_WARN_PCT = 70
+
+/** Header pill/track turns red at this fill (of compaction). */
+const val CONTEXT_HOT_PCT = 90
 
 /**
  * Prefers harness-reported prompt tokens; estimates from transcript texts
  * when usage is missing. Null when there is nothing to show.
+ *
+ * The wire fields ([contextWindow] / [compactAt], den #context-bar contract)
+ * are preferred over the model-derived defaults; either may be null while the
+ * den that reports them rolls out. The denominator is always the compaction
+ * threshold: `compactAt ?: compactAtFor(window)`.
  */
-fun contextBarView(reported: Int?, model: String?, texts: List<String>): ContextBarView? {
+fun contextBarView(
+    reported: Int?,
+    model: String?,
+    texts: List<String>,
+    contextWindow: Int? = null,
+    compactAt: Int? = null,
+): ContextBarView? {
     val fromReport = reported?.takeIf { it > 0 }
     val estimated = fromReport == null
     val tokens = fromReport ?: if (texts.isNotEmpty()) estimatePromptTokens(texts) else 0
     if (tokens <= 0) return null
-    val max = contextWindowFor(model)
-    val pct = min(100, ((tokens.toDouble() / max) * 100.0).roundToInt())
-    return ContextBarView(tokens = tokens, max = max, pct = pct, estimated = estimated)
+    val max = contextWindow?.takeIf { it > 0 } ?: contextWindowFor(model)
+    val limit = (compactAt?.takeIf { it > 0 } ?: compactAtFor(max)).coerceAtLeast(1)
+    val fraction = (tokens.toDouble() / limit).toFloat().coerceIn(0f, 1f)
+    val pct = min(100, (fraction * 100.0).roundToInt())
+    return ContextBarView(
+        tokens = tokens,
+        max = max,
+        compactAt = limit,
+        pct = pct,
+        fraction = fraction,
+        estimated = estimated,
+        warn = pct >= CONTEXT_WARN_PCT,
+        hot = pct >= CONTEXT_HOT_PCT,
+    )
 }
 
 data class StatsLine(

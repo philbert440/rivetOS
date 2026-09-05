@@ -144,6 +144,12 @@ data class HarnessSessionTranscriptResponse(
      * already the canonical; this is the same adoption signal as the 202.
      */
     val redirectedTo: String? = null,
+    /** Real max window, tokens (context-bar contract; null until the den reports it). */
+    val contextWindow: Int? = null,
+    /** Forced-compaction threshold — the context bar's 100%. */
+    val compactAt: Int? = null,
+    /** "spawn" | "observed" | "default". */
+    val contextSource: String? = null,
 )
 
 /**

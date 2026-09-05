@@ -142,6 +142,10 @@ class HarnessChatViewModel(
         val termClipboard: String? = null,
         /** Terminal owner (den #681); null = nobody owns it. Drives the ownership overlay. */
         val termOwner: io.rivethub.app.gateway.TermOwner? = null,
+        /** Context-bar wire contract (null until the den reports it → model-derived fallback). */
+        val contextWindow: Int? = null,
+        val compactAt: Int? = null,
+        val contextSource: String? = null,
     )
 
     private val _state = MutableStateFlow(
@@ -609,9 +613,16 @@ class HarnessChatViewModel(
         val machineAttach = SessionAttach(
             machine = machine,
             fetchTranscript = {
-                val turns = withContext(Dispatchers.IO) { hg.transcript(enc).turns }
-                AndroidLogger.debug("RivetHub", "transcript fetched: ${turns.size} turns for $sessionId", null)
-                turns
+                val resp = withContext(Dispatchers.IO) { hg.transcript(enc) }
+                AndroidLogger.debug("RivetHub", "transcript fetched: ${resp.turns.size} turns for $sessionId", null)
+                _state.update {
+                    it.copy(
+                        contextWindow = resp.contextWindow,
+                        compactAt = resp.compactAt,
+                        contextSource = resp.contextSource,
+                    )
+                }
+                resp.turns
             },
             onFatal = { msg ->
                 AndroidLogger.warn("RivetHub", "attach fatal: $msg", null)
@@ -904,9 +915,17 @@ class HarnessChatViewModel(
             current.fetchTranscriptNow() ?: return
         } else {
             val enc = sessionKeyEnc(sid)
-            withContext(Dispatchers.IO) {
-                runCatching { c.harness(nodeDenUrl).transcript(enc).turns }.getOrNull()
+            val resp = withContext(Dispatchers.IO) {
+                runCatching { c.harness(nodeDenUrl).transcript(enc) }.getOrNull()
             } ?: return
+            _state.update {
+                it.copy(
+                    contextWindow = resp.contextWindow,
+                    compactAt = resp.compactAt,
+                    contextSource = resp.contextSource,
+                )
+            }
+            resp.turns
         }
         if (!resyncStillApplies(sid, _state.value.sessionId, attach === current)) return
         val complete = resyncCompletesTurn(
