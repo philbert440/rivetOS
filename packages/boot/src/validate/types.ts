@@ -172,6 +172,21 @@ export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high'])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
   anthropic: new Set(['model', 'max_tokens', 'api_key', 'context_window', 'max_output_tokens']),
+  'grok-cli': new Set([
+    'model',
+    'binary',
+    'permission_mode',
+    'reasoning_effort',
+    'max_turns',
+    'no_plan',
+    'system_prompt',
+    'allow',
+    'tools',
+    'cwd',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
   'claude-cli': new Set([
     'model',
     'binary',
