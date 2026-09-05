@@ -3,6 +3,8 @@ package dev.rivet.app.ui.pages.terminal
 import android.content.Context
 import android.util.Log
 import android.view.KeyEvent
+import androidx.compose.foundation.layout.size
+import android.view.View
 import android.view.MotionEvent
 import android.view.inputmethod.InputMethodManager
 import androidx.compose.foundation.background
@@ -409,12 +411,12 @@ fun TerminalPage(
                             val px = (ctx.resources.displayMetrics.density * 13f).toInt()
                             setTextSize(px)
                             keepScreenOn = true
-                            isFocusable = true
-                            isFocusableInTouchMode = true
+                            // Focus (and the IME) live on the TerminalInputProxy below.
+                            isFocusable = false
+                            isFocusableInTouchMode = false
                             setBackgroundColor(Color.Black.toArgb())
                             activeHandle.client.terminalView = this
                             attachSession(activeHandle.session)
-                            post { requestFocus() }
                         }
                     },
                     update = {
@@ -424,6 +426,20 @@ fun TerminalPage(
                             r.maybeResize(emu.mColumns, emu.mRows)
                         }
                     },
+                )
+            }
+            // Keyboard focus target: advertises a plain text field so Gboard offers voice typing.
+            key(activeHandle) {
+                AndroidView(
+                    modifier = Modifier.align(Alignment.BottomStart).size(1.dp),
+                    factory = { ctx ->
+                        TerminalInputProxy(ctx).apply {
+                            terminalView = activeHandle.client.terminalView
+                            activeHandle.client.inputProxy = this
+                            post { requestFocus() }
+                        }
+                    },
+                    update = { it.terminalView = activeHandle.client.terminalView },
                 )
             }
             if (activeHandle.finished) {
@@ -503,6 +519,7 @@ private fun ModKey(label: String, active: Boolean, onClick: () -> Unit) {
 internal class RivetTerminalClient : TerminalSessionClient, TerminalViewClient {
 
     var terminalView: TerminalView? = null
+    var inputProxy: TerminalInputProxy? = null
     var handle: TerminalHandle? = null
 
     // --- TerminalSessionClient --------------------------------------------------------
@@ -537,7 +554,7 @@ internal class RivetTerminalClient : TerminalSessionClient, TerminalViewClient {
     // --- TerminalViewClient -----------------------------------------------------------
     override fun onScale(scale: Float): Float = scale // no pinch-zoom in v1
     override fun onSingleTapUp(e: MotionEvent?) {
-        val v = terminalView ?: return
+        val v: View = inputProxy ?: terminalView ?: return
         v.requestFocus()
         val imm = v.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT)

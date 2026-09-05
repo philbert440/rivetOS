@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -152,6 +153,12 @@ class RouteActivity : ComponentActivity() {
         enableEdgeToEdge()
         disableNavigationBarContrast()
         super.onCreate(savedInstanceState)
+        // Keep password managers (1Password, Google) out of the app. Compose UI 1.8+ reports every
+        // text field to the Autofill framework, so the chat composer and the terminal's keyboard
+        // capture were being offered as fill targets. The manifest attribute this replaces was a
+        // View attribute on an <activity> element and never took effect. NO_EXCLUDE_DESCENDANTS also
+        // stops the framework from serialising the whole Compose tree (TransactionTooLargeException).
+        window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         if (CrashHandler.hasCrashed(this)) {
             startActivity(Intent(this, SafeModeActivity::class.java))
             finish()

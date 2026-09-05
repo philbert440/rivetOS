@@ -56,7 +56,6 @@
       android:name=".RouteActivity"
       android:configChanges="keyboardHidden|orientation|screenSize"
       android:exported="true"
-      android:importantForAutofill="noExcludeDescendants"
       android:theme="@style/Theme.Rivethub.Splash"
       android:windowSoftInputMode="adjustResize">
       <intent-filter>
