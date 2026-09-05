@@ -1213,6 +1213,7 @@ function ActiveSession(props: {
     if (lastWithUsage) break
   }
   const contextSource = lastWithUsage ?? lastAssistant
+  const transcriptCtx = useChat((s) => s.transcripts[props.sessionId])
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
@@ -1252,7 +1253,8 @@ function ActiveSession(props: {
       attachment = attachHarnessSession({
         gateway: gw,
         sessionId: streamId,
-        onTranscript: (turns) => useChat.getState().syncHarnessTranscript(props.sessionId, turns),
+        onTranscript: (turns, ctx) =>
+          useChat.getState().syncHarnessTranscript(props.sessionId, turns, ctx),
         onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
         onError: (err) => setStreamError(err instanceof Error ? err.message : String(err)),
@@ -1673,6 +1675,9 @@ function ActiveSession(props: {
         tokens={contextSource?.usage?.promptTokens}
         model={contextSource?.model || lastAssistant?.model || settings?.agent || harnessCommand}
         transcriptTexts={transcriptTexts}
+        contextWindow={transcriptCtx?.contextWindow}
+        compactAt={transcriptCtx?.compactAt}
+        hairline={narrow}
       />
       {/* Interrupt is the driver's capability, not a UI preference: shown
           only when the control plane owns this session AND reports one. */}
@@ -1714,8 +1719,9 @@ function ActiveSession(props: {
            desktop header below (border-b border-line, bg-panel/40, mono
            text-xs title): ☰ · id (truncates) · ctx % · Stop · Terminal|Chat ·
            history. No back chevron: "back" is the right history drawer.
-           ContextBar collapses to % on its own (hidden sm: track/counts). */
-        <div className="flex h-12 flex-nowrap items-center gap-2 border-b border-line bg-panel/40 px-2">
+           ContextBar collapses to %; a 2px hairline track sits on the
+           header's bottom edge (pct toward forced compaction). */
+        <div className="relative flex h-12 flex-nowrap items-center gap-2 border-b border-line bg-panel/40 px-2">
           <Button
             variant="ghost"
             size="icon"

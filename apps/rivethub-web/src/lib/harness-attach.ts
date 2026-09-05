@@ -16,18 +16,27 @@
  * reconnect/resync ordering is unit-testable without a DOM.
  */
 
-import type { HarnessEvent, HarnessTranscriptTurn } from '@rivetos/types'
+import type {
+  HarnessEvent,
+  HarnessSessionTranscriptResponse,
+  HarnessTranscriptTurn,
+} from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { foldHarnessEvent, isApprovalEvent, type HarnessApprovalEvent } from './harness-fold.js'
 import type { LiveTurn } from './fold-stream.js'
 import { clearSystemPromptSent } from './system-prompt-sent.js'
 
 /** The slice of RivetGateway an attachment needs (also the test seam). */
+export type SessionContextStamp = Pick<
+  HarnessSessionTranscriptResponse,
+  'contextWindow' | 'compactAt' | 'contextSource'
+>
+
 export interface HarnessAttachGateway {
   harnessSessionTranscript(
     sessionId: string,
     signal?: AbortSignal,
-  ): Promise<{ turns: HarnessTranscriptTurn[] }>
+  ): Promise<{ turns: HarnessTranscriptTurn[] } & SessionContextStamp>
   watchHarnessSession(
     sessionId: string,
     onEvent: (event: HarnessEvent) => void,
@@ -40,7 +49,7 @@ export interface HarnessAttachOptions {
   /** Canonical `<harness-id>:<native>`. */
   sessionId: string
   /** Hard resync — replaces the transcript wholesale. Never merges. */
-  onTranscript: (turns: HarnessTranscriptTurn[]) => void
+  onTranscript: (turns: HarnessTranscriptTurn[], ctx?: SessionContextStamp) => void
   /** Live turn state, `undefined` when the slot should clear. */
   onLive: (turn: LiveTurn | undefined) => void
   /** Approval request/resolution — outlives the turn, so not part of the fold. */
@@ -110,7 +119,11 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
     opts.gateway.harnessSessionTranscript(opts.sessionId, controller.signal).then(
       (res) => {
         if (closed || mine !== generation) return
-        opts.onTranscript(res.turns)
+        opts.onTranscript(res.turns, {
+          contextWindow: res.contextWindow,
+          compactAt: res.compactAt,
+          contextSource: res.contextSource,
+        })
       },
       (err: unknown) => {
         if (closed || mine !== generation) return

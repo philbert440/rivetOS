@@ -55,6 +55,13 @@ import {
   sheetForRosterCommand,
   type ModelSheet,
 } from '../harness/model-sheets.js'
+import {
+  rememberSessionContext,
+  sessionContext,
+  stampDefault,
+  stampFromSpawn,
+  type ContextSource,
+} from './context-window.js'
 import type { PtyProc, PtySpawn } from './pty.js'
 import type { TermRoster } from './roster.js'
 import {
@@ -175,6 +182,12 @@ export interface PtyInfo {
   /** Encoded tmux session name. Present only when mux is tmux. The HTTP
    *  layer maps this into `attach.session`. */
   session?: string
+  /** Real max context window for this session's model, tokens. */
+  contextWindow?: number
+  /** Forced-compaction threshold, tokens — the bar's 100%. */
+  compactAt?: number
+  /** Provenance of contextWindow/compactAt. */
+  contextSource?: ContextSource
 }
 
 type DataSubscriber = (data: string | Buffer) => void
@@ -238,6 +251,9 @@ interface PtyRecord {
    *  stdout AND chat inject so an actively-chatted (but unattached) harness
    *  isn't evicted between a send and its reply (#316 review). */
   lastActivityTs: number
+  contextWindow?: number
+  compactAt?: number
+  contextSource?: ContextSource
 }
 
 export interface TermManager {
@@ -908,6 +924,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
     if (r.persisted) out.reattached = true
     if (r.routedUser !== undefined) out.routedUser = r.routedUser
+    if (r.contextWindow !== undefined) out.contextWindow = r.contextWindow
+    if (r.compactAt !== undefined) out.compactAt = r.compactAt
+    if (r.contextSource !== undefined) out.contextSource = r.contextSource
     return out
   }
 
@@ -1513,6 +1532,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             statusHub?.retain(tmuxName, denSession)
           }
         }
+        // Context-window stamp: CREATE with a model option is 'spawn'. An
+        // attach (tmux session already running) or --resume of a store we did
+        // not mint this process is 'default', unless a prior stamp for this
+        // join key survived (reconnect / LRU respawn).
+        const resumeHint = Boolean(resume) || Boolean(session && deps.sessionExists?.(key, session))
+        const attachedOrResumed = persisted || resumeHint
+        const ctxStamp = attachedOrResumed
+          ? (sessionContext(denSession) ?? stampDefault(model, key))
+          : stampFromSpawn(model, key)
+        rememberSessionContext(denSession, ctxStamp)
+
         const r: PtyRecord = {
           id,
           denSession,
@@ -1536,6 +1566,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           rows: spawnRows,
           lastOutputTs: now(),
           state: 'running',
+          contextWindow: ctxStamp.contextWindow,
+          compactAt: ctxStamp.compactAt,
+          contextSource: ctxStamp.contextSource,
           // An attach (session already existed) reattaches a RUNNING harness:
           // the first output is tmux's attach redraw, which would fire the
           // ready-gate settle too early — an attach is immediately ready.

@@ -30,6 +30,7 @@ import {
   type SessionWsFrame,
   type TranscriptWsFrame,
 } from '@rivetos/types'
+import type { SessionContextStamp } from '../lib/harness-attach.js'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
 import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
@@ -62,6 +63,9 @@ export interface TranscriptState {
   /** Client-side offset: how many turns we pinned before the server's window.
    *  When >0, deltas arrive in server-relative index space and must be adjusted. */
   offset: number
+  contextWindow?: number
+  compactAt?: number
+  contextSource?: SessionContextStamp['contextSource']
 }
 
 /** An approval the harness is blocked on (control-plane sessions only —
@@ -215,7 +219,11 @@ interface ChatState {
    * the only source of missed history) while keeping optimistic bubbles the
    * store has not caught up with yet.
    */
-  syncHarnessTranscript: (sessionId: string, turns: HarnessTranscriptTurn[]) => void
+  syncHarnessTranscript: (
+    sessionId: string,
+    turns: HarnessTranscriptTurn[],
+    ctx?: SessionContextStamp,
+  ) => void
   /** Record an approval-request / retire it on approval-resolved. */
   applyApprovalEvent: (sessionId: string, event: HarnessApprovalEvent) => void
   /** Drop one pending approval (answered locally). */
@@ -268,6 +276,7 @@ function transcriptPatch(
   command: string,
   rev: number,
   offset: number,
+  ctx?: SessionContextStamp,
 ): Partial<ChatState> {
   const existing = s.messages[sid] ?? []
   // Previous frame's list doubles as the identity cache: mapped rows sit at
@@ -289,8 +298,20 @@ function transcriptPatch(
       keptBubbles.push(bubble)
     }
   }
+  const prev = s.transcripts[sid]
   return {
-    transcripts: { ...s.transcripts, [sid]: { rev, turns, command, offset } },
+    transcripts: {
+      ...s.transcripts,
+      [sid]: {
+        rev,
+        turns,
+        command,
+        offset,
+        contextWindow: ctx?.contextWindow ?? prev?.contextWindow,
+        compactAt: ctx?.compactAt ?? prev?.compactAt,
+        contextSource: ctx?.contextSource ?? prev?.contextSource,
+      },
+    },
     messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
   }
 }
@@ -698,7 +719,7 @@ export const useChat = create<ChatState>()(
           return { harnessBound, approvals: { ...s.approvals, [sessionId]: undefined } }
         }),
 
-      syncHarnessTranscript: (sessionId, turns) =>
+      syncHarnessTranscript: (sessionId, turns, ctx) =>
         set((s) => {
           // A resync carries no "what changed", so derive it: everything past the
           // common prefix with what we already hold. That keeps bubble
@@ -723,6 +744,7 @@ export const useChat = create<ChatState>()(
             s.transcripts[sessionId]?.command || 'harness',
             (s.transcripts[sessionId]?.rev ?? 0) + 1,
             0, // hard resync from HTTP — no client-side pinning
+            ctx,
           )
           // A committed user turn at the tail IS the answer — retire the ask card
           // even when the user typed it into the TUI instead of the composer.

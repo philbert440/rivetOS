@@ -29,6 +29,7 @@ import type { DenConfig } from '../config.js'
 import { createHarnessRegistry } from './registry.js'
 import { createHarnessRoutes } from './routes.js'
 import { FakeRotatingDriver } from './test/fake-rotating-driver.js'
+import { resetSessionContextForTest } from '../term/context-window.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 const SID = `claude-code:${UUID}` as SessionId
@@ -144,6 +145,7 @@ class FakeDriver implements HarnessDriver {
 const servers: DenServer[] = []
 const dirs: string[] = []
 afterEach(async () => {
+  resetSessionContextForTest()
   await Promise.all(servers.splice(0).map((s) => s.close()))
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
 })
@@ -757,6 +759,9 @@ describe('session-scoped actions', () => {
       sessionId: SID,
       harnessId: 'claude-code',
       turns: [{ role: 'user', text: `transcript of ${SID}` }],
+      contextWindow: 200_000,
+      compactAt: 165_000,
+      contextSource: 'default',
     })
   })
 
