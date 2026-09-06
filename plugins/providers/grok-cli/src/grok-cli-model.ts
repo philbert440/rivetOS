@@ -2,15 +2,15 @@
  * GrokCliModel — a LanguageModelV3 that answers each turn with ONE headless
  * Grok Build call (`grok -p … --output-format json`).
  *
- * Shape of a turn: the AI SDK loop hands us the whole conversation as a V3
- * prompt. We render it to a single text prompt (SYSTEM / USER / ASSISTANT /
- * TOOL RESULT sections), spawn grok, wait for its JSON result, and replay it
- * as stream parts (reasoning → text → finish). There is no incremental
- * streaming in v1 — `--output-format json` only arrives at the end — and no
- * RivetOS tool bridge: grok runs with its own tools (denied unless `allow`
- * rules are configured) plus whatever MCP servers ~/.grok/config.toml wires,
- * e.g. the rivet-memory plugin. That is enough for mesh delegation, heartbeat
- * tasks and chat; an MCP bridge for RivetOS tools is a later step.
+ * Default `session: resume` keeps ONE grok session per RivetOS conversation
+ * (`--session-id` on the first turn with the full transcript, `--resume` after
+ * with only the newest USER chunk). `session: replay` is the old behavior:
+ * every turn re-sends the whole conversation as one prompt, no session flags.
+ *
+ * There is no incremental streaming in v1 — `--output-format json` only
+ * arrives at the end — and no RivetOS tool bridge: grok runs with its own
+ * tools (denied unless `allow` rules are configured) plus whatever MCP
+ * servers ~/.grok/config.toml wires, e.g. the rivet-memory plugin.
  */
 import type {
   LanguageModelV3,
@@ -33,11 +33,20 @@ import {
 } from './spawn-turn.js'
 import type { BridgeLogger } from './log.js'
 import { createLogger } from './log.js'
+import {
+  defaultSessionMapPath,
+  loadSessionMap,
+  saveSessionMap,
+  uuidForConversation,
+} from './session-map.js'
 
 export type { GrokReasoningEffort } from './spawn-turn.js'
 
 /** How the RivetOS system prompt (agent persona + tool docs) reaches grok. */
 export type GrokSystemPromptMode = 'prepend' | 'override' | 'off'
+
+/** Per-conversation grok session vs. re-send the whole transcript every turn. */
+export type GrokSessionMode = 'resume' | 'replay'
 
 export interface GrokCliModelConfig {
   providerId: string
@@ -52,6 +61,12 @@ export interface GrokCliModelConfig {
   tools: string | undefined
   cwd: string | undefined
   agentId: string | undefined
+  /** Default `resume`. */
+  sessionMode?: GrokSessionMode
+  /** RivetOS conversation id; session map key. Falls back to `default`. */
+  conversationId?: string
+  /** Injected in tests. Default `~/.rivetos/grok-cli-sessions.json`. */
+  sessionMapPath?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +147,14 @@ export function renderPromptForCli(prompt: LanguageModelV3Prompt): {
     if (chunk) chunks.push(chunk)
   }
   return { systemText: system.join('\n\n'), userText: chunks.join(SEP), chunks }
+}
+
+/** Newest `USER:` chunk for a `--resume` turn. Grok already holds the rest. */
+export function newestUserChunk(chunks: string[]): string {
+  for (let i = chunks.length - 1; i >= 0; i--) {
+    if (chunks[i].startsWith('USER:')) return chunks[i]
+  }
+  return 'USER:\n(no message)'
 }
 
 /**
@@ -280,10 +303,36 @@ export class GrokCliModel implements LanguageModelV3 {
 
   doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
     const rendered = renderPromptForCli(options.prompt)
-    const { prompt, systemPromptOverride, trimmedChunks } = composePrompt(
-      rendered,
-      this.config.systemPromptMode,
-    )
+    const full = composePrompt(rendered, this.config.systemPromptMode)
+    const sessionMode = this.config.sessionMode ?? 'resume'
+    const convKey = this.config.conversationId || 'default'
+    const mapPath = this.config.sessionMapPath ?? defaultSessionMapPath()
+
+    let prompt = full.prompt
+    let systemPromptOverride = full.systemPromptOverride
+    let trimmedChunks = full.trimmedChunks
+    let sessionId: string | undefined
+    let resume = false
+
+    if (sessionMode === 'resume') {
+      const map = loadSessionMap(mapPath)
+      const existing = map[convKey]
+      if (existing) {
+        const delta = composePrompt(
+          { systemText: rendered.systemText, chunks: [newestUserChunk(rendered.chunks)] },
+          this.config.systemPromptMode,
+        )
+        prompt = delta.prompt
+        systemPromptOverride = delta.systemPromptOverride
+        trimmedChunks = delta.trimmedChunks
+        sessionId = existing
+        resume = true
+      } else {
+        sessionId = uuidForConversation(convKey)
+        resume = false
+      }
+    }
+
     if (trimmedChunks > 0) {
       this.log.warn('prompt.trimmed', {
         trimmedChunks,
@@ -296,26 +345,43 @@ export class GrokCliModel implements LanguageModelV3 {
       this.config.reasoningEffort,
     )
 
-    const flags: GrokSpawnFlags = {
+    const baseFlags = {
       binary: this.config.binary,
       modelId: this.config.modelId === 'default' ? undefined : this.config.modelId,
       permissionMode: this.config.permissionMode,
       reasoningEffort,
       maxTurns: this.config.maxTurns,
       noPlan: this.config.noPlan,
-      systemPromptOverride,
       allow: this.config.allow,
       tools: this.config.tools,
       cwd: this.config.cwd,
     }
 
+    const flagsFor = (
+      p: string,
+      override: string,
+      sid: string | undefined,
+      isResume: boolean,
+    ): GrokSpawnFlags => ({
+      ...baseFlags,
+      systemPromptOverride: override,
+      sessionId: sid,
+      resume: Boolean(sid) && isResume,
+    })
+
+    let flags: GrokSpawnFlags = flagsFor(prompt, systemPromptOverride, sessionId, resume)
+
     this.log.info('doStream.start', {
       agentId: this.config.agentId,
+      conversationId: convKey,
       model: this.modelId,
       reasoningEffort,
       maxTurns: flags.maxTurns,
       promptChars: prompt.length,
       systemPromptMode: this.config.systemPromptMode,
+      sessionMode,
+      sessionId: sessionId ?? null,
+      resume,
     })
 
     let turn: ReturnType<typeof spawnGrokTurn>
@@ -340,6 +406,26 @@ export class GrokCliModel implements LanguageModelV3 {
     const providerId = this.provider
     const modelId = this.modelId
     const startedAt = Date.now()
+    const persistSessions = sessionMode === 'resume'
+    const requestedSessionId = sessionId
+    const wasResume = resume
+    const fullPrompt = full.prompt
+    const fullOverride = full.systemPromptOverride
+
+    const rememberSession = (returned: string | undefined, requested: string | undefined): void => {
+      const keep = returned || requested
+      if (!keep) return
+      if (returned && requested && returned !== requested) {
+        log.warn('session.id.mismatch', {
+          conversationId: convKey,
+          requested,
+          returned,
+        })
+      }
+      const map = loadSessionMap(mapPath)
+      map[convKey] = keep
+      saveSessionMap(mapPath, map)
+    }
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       async start(controller) {
@@ -347,8 +433,36 @@ export class GrokCliModel implements LanguageModelV3 {
         const REASON_ID = 'grok-reasoning'
         controller.enqueue({ type: 'stream-start', warnings: [] })
         try {
-          const exitCode = await turn.waitExit()
-          const result = parseGrokJson(turn.stdoutText())
+          let exitCode = await turn.waitExit()
+          let result = parseGrokJson(turn.stdoutText())
+          let usedSessionId = requestedSessionId
+
+          if (persistSessions && wasResume && exitCode !== 0 && !options.abortSignal?.aborted) {
+            const freshId = uuidForConversation(convKey)
+            log.warn('session.resume.failed', {
+              conversationId: convKey,
+              sessionId: requestedSessionId,
+              exitCode,
+              fallbackSessionId: freshId,
+            })
+            turn.kill()
+            flags = flagsFor(fullPrompt, fullOverride, freshId, false)
+            try {
+              turn = spawnGrokTurn(flags, fullPrompt)
+            } catch (err: unknown) {
+              const msg = err instanceof Error ? err.message : String(err)
+              throw new APICallError({
+                message: `Failed to spawn ${baseFlags.binary}: ${msg}`,
+                url: baseFlags.binary,
+                requestBodyValues: { args: redactArgs(buildArgs(flags, fullPrompt)) },
+                isRetryable: false,
+              })
+            }
+            usedSessionId = freshId
+            exitCode = await turn.waitExit()
+            result = parseGrokJson(turn.stdoutText())
+          }
+
           if (!result) {
             const err = turn.stderrText().trim() || turn.stdoutText().trim()
             throw new APICallError({
@@ -359,6 +473,7 @@ export class GrokCliModel implements LanguageModelV3 {
               isRetryable: false,
             })
           }
+          if (persistSessions) rememberSession(result.sessionId, usedSessionId)
           if (result.thought) {
             controller.enqueue({ type: 'reasoning-start', id: REASON_ID })
             controller.enqueue({ type: 'reasoning-delta', id: REASON_ID, delta: result.thought })

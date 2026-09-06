@@ -8,7 +8,10 @@ describe('GrokCliProvider', () => {
     expect(p.id).toBe('grok-cli')
     expect(p.getModel()).toBe('default')
     const bridge = p.aiSdkBridge()
-    const model = bridge.getModel({ agentId: 'maggie' }) as unknown as { modelId: string; provider: string }
+    const model = bridge.getModel({
+      agentId: 'maggie',
+      conversationId: 'conv-1',
+    }) as unknown as { modelId: string; provider: string }
     expect(model.provider).toBe('grok-cli')
     expect(model.modelId).toBe('default')
   })
@@ -42,7 +45,14 @@ describe('GrokCliProvider', () => {
   it('manifest registers a provider from snake_case config keys', () => {
     let registered: Provider | undefined
     const ctx = {
-      pluginConfig: { model: 'grok-4.5', permission_mode: 'bypassPermissions', max_turns: 3, system_prompt: 'override', allow: ['Read'] },
+      pluginConfig: {
+        model: 'grok-4.5',
+        permission_mode: 'bypassPermissions',
+        max_turns: 3,
+        system_prompt: 'override',
+        session: 'replay',
+        allow: ['Read'],
+      },
       registerProvider: (p: Provider) => {
         registered = p
       },

@@ -11,6 +11,7 @@ import {
   REMOVED_PROVIDERS,
   VALID_THINKING_LEVELS,
   KNOWN_PROVIDERS,
+  CLI_HARNESS_PROVIDERS,
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
@@ -377,11 +378,13 @@ export function validateProviders(
     }
 
     if (!provider.model) {
-      issues.push({
-        severity: 'error',
-        path: `${path}.model`,
-        message: `Provider "${name}" is missing required field "model"`,
-      })
+      if (!CLI_HARNESS_PROVIDERS.has(name)) {
+        issues.push({
+          severity: 'error',
+          path: `${path}.model`,
+          message: `Provider "${name}" is missing required field "model"`,
+        })
+      }
     } else if (typeof provider.model !== 'string') {
       issues.push({
         severity: 'error',
