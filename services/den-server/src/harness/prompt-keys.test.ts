@@ -3,6 +3,7 @@ import { HarnessError, type HarnessAskQuestion } from '@rivetos/types'
 import {
   CLAUDE_TUI_KEYS_VERIFIED,
   approvalKeyFromOptions,
+  claudeAskCurrentQuestionKeys,
   claudeApprovalKeys,
   claudeAskAnswerKeys,
   grokApprovalKeys,
@@ -195,5 +196,25 @@ describe('approvalKeyFromOptions (the screen decides the key, adapter map is the
     expect(approvalKeyFromOptions(kimiBottom, 'deny')).toBe('3')
     expect(approvalKeyFromOptions(kimiBottom, 'allow')).toBeUndefined()
     expect(approvalKeyFromOptions(undefined, 'allow')).toBeUndefined()
+  })
+})
+
+describe('claudeAskCurrentQuestionKeys (one tab of a screen-read picker)', () => {
+  const single = TWO_Q[0]!
+  const multi = TWO_Q[1]!
+  it('non-last single-select: the digit only (auto-advances)', () => {
+    expect(decode(claudeAskCurrentQuestionKeys(single, { question: 0, labels: ['Green'] }, { current: 0, total: 2 }))).toEqual(['2'])
+  })
+  it('last multiSelect: toggles, Tab, then 1 on the Submit tab; non-last: toggles, Tab', () => {
+    expect(decode(claudeAskCurrentQuestionKeys(multi, { question: 0, labels: ['Cheese', 'Peppers'] }, { current: 1, total: 2 }))).toEqual(['1', '3', '\t', '1'])
+    expect(decode(claudeAskCurrentQuestionKeys(multi, { question: 0, labels: ['Cheese'] }, { current: 0, total: 3 }))).toEqual(['1', '\t'])
+  })
+  it('last single-select of several, free text with several, and unknown options are refused', () => {
+    expect(() => claudeAskCurrentQuestionKeys(single, { question: 0, labels: ['Green'] }, { current: 1, total: 2 })).toThrowError(HarnessError)
+    expect(() => claudeAskCurrentQuestionKeys(single, { question: 0, labels: [], other: 'Teal' }, { current: 0, total: 2 })).toThrowError(HarnessError)
+    expect(() => claudeAskCurrentQuestionKeys({ question: 'x', multiSelect: false, options: [] }, { question: 0, labels: ['a'] }, { current: 0, total: 2 })).toThrowError(HarnessError)
+  })
+  it('a single question delegates to the full translator', () => {
+    expect(decode(claudeAskCurrentQuestionKeys(single, { question: 0, labels: ['Blue'] }, { current: 0, total: 1 }))).toEqual(['3'])
   })
 })

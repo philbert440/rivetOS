@@ -170,3 +170,42 @@ export function grokApprovalKeys(decision: ApprovalDecision): Uint8Array[] {
 export function kimiApprovalKeys(decision: ApprovalDecision): Uint8Array[] {
   return claudeApprovalKeys(decision)
 }
+
+/**
+ * Keys for ONE question of a screen-read picker (`prompt.screen`): the TUI is
+ * on that tab; answering advances it. Spike-pinned cases only:
+ * - single question: same as claudeAskAnswerKeys.
+ * - single-select, not last: the digit (auto-advances). Last of several:
+ *   whether the digit lands on Submit was never exercised → bad_request.
+ * - multiSelect: toggles, Tab; plus `1` on the Submit tab when it is the last.
+ * - free text with several questions: refused (unverified).
+ */
+export function claudeAskCurrentQuestionKeys(
+  question: HarnessAskQuestion,
+  answer: PromptAnswer,
+  pos: { current: number; total: number },
+): Uint8Array[] {
+  if (pos.total <= 1) return claudeAskAnswerKeys([question], [{ ...answer, question: 0 }])
+  const isLast = pos.current >= pos.total - 1
+  const other = typeof answer.other === 'string'
+  if (other) bad('free text with several questions is not supported')
+  if (question.options.length === 0)
+    bad('question options are unknown (not on the captured screen)')
+  if (question.options.length > MAX_DIGIT_OPTIONS)
+    bad(`more than ${String(MAX_DIGIT_OPTIONS)} options`)
+  const chunks: Uint8Array[] = []
+  if (question.multiSelect) {
+    if (answer.labels.length === 0) bad('no labels')
+    for (const label of answer.labels) chunks.push(enc(optionDigit([question], 0, label)))
+    chunks.push(enc('\t'))
+    if (isLast) chunks.push(enc('1'))
+    return chunks
+  }
+  if (answer.labels.length !== 1) bad('single-select needs exactly one label')
+  if (isLast)
+    bad(
+      'the last question of a multi-question picker is not answerable from chat yet — answer it in the terminal',
+    )
+  chunks.push(enc(optionDigit([question], 0, answer.labels[0])))
+  return chunks
+}

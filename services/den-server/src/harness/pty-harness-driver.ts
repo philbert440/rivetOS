@@ -80,7 +80,7 @@
  * See docs/ARCHITECTURE.md.
  */
 
-import { approvalKeyFromOptions } from './prompt-keys.js'
+import { approvalKeyFromOptions, claudeAskCurrentQuestionKeys } from './prompt-keys.js'
 import { randomUUID } from 'node:crypto'
 import {
   HarnessError,
@@ -232,6 +232,8 @@ const SPAWN_COLS = 120
 const SPAWN_ROWS = 40
 /** Drop the per-session transcript watch this long after the last sink / endTurn. */
 const TRANSCRIPT_HOLD_MS = 30_000
+/** Pane redraw wait after answering one question of a multi-question picker. */
+const SCREEN_REREAD_MS = 800
 /** Min gap between two herdr screen reads for one session (each is a subprocess). */
 const CAPTURE_COOLDOWN_MS = 5_000
 /** If the store is in-flight with no running tool this long, release as stale. */
@@ -266,7 +268,18 @@ export interface LiveState {
   /** AskUserQuestion parsed off the pane while herdr is `blocked`. Claude
    *  2.1.263 does not write the tool_use line until the picker completes, so
    *  the store cannot source this `prompt` event. */
-  pendingScreenPrompt?: { promptId: string; questions: HarnessAskQuestion[] }
+  pendingScreenPrompt?: {
+    promptId: string
+    questions: HarnessAskQuestion[]
+    /** Position of the shown question in the picker. */
+    current: number
+    total: number
+    /** Prompt-tool ids already in the store when the picker was read — only a
+     *  NEWER prompt tool's result may resolve this screen prompt. */
+    knownPromptIds: Set<string>
+  }
+  /** One-shot re-read of the pane after answering a non-last question. */
+  screenRereadTimer?: NodeJS.Timeout
   /** Last herdr screen read for a blocked pane — cooldown against a
    *  chatty `blocked` stream (each read is a herdr subprocess). */
   captureAt?: number
@@ -794,6 +807,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // status yet has no floor for the live overlay and no line to show); the
     // transcript snapshot follows from the watcher.
     this.emitStatusSnapshot(native, sink)
+    this.replayPendingPrompts(native, sink)
     return () => {
       const current = this.sessionSinks.get(native)
       if (!current) return
@@ -831,6 +845,36 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     const pty = await this.requirePty('answerPrompt')
     const ptyId = await this.ensurePty(pty, native)
+    const state = this.live.get(native)
+    const screen = state?.pendingScreenPrompt
+    if (state && screen && screen.promptId === promptId) {
+      const answer = answers.find((a) => a.question === 0) ?? answers[0]
+      if (!answer) {
+        throw new HarnessError('bad_request', 'no answer for the shown question', {
+          harnessId: this.harnessId,
+          sessionId,
+        })
+      }
+      const keys = claudeAskCurrentQuestionKeys(screen.questions[0], answer, {
+        current: screen.current,
+        total: screen.total,
+      })
+      this.log(`[den-server] harness: answerPrompt ${promptId} via screen keys`)
+      this.injectKeys(pty, ptyId, keys)
+      const more = screen.current < screen.total - 1
+      this.resolveScreenPrompt(native)
+      if (more) {
+        // The TUI moved to the next tab; herdr stays `blocked` (no new frame),
+        // so read the pane once more after it redraws.
+        if (state.screenRereadTimer) clearTimeout(state.screenRereadTimer)
+        state.screenRereadTimer = setTimeout(() => {
+          state.screenRereadTimer = undefined
+          if (state.herdrStatus === 'blocked') void this.captureBlockedScreen(native)
+        }, SCREEN_REREAD_MS)
+        state.screenRereadTimer.unref?.()
+      }
+      return
+    }
     const keys = this.adapter?.answerKeys?.(
       { promptId, toolName: pending.toolName, questions: pending.questions },
       answers,
@@ -856,6 +900,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       if (state.herdrIdleTimer) clearTimeout(state.herdrIdleTimer)
       if (state.staleTimer) clearTimeout(state.staleTimer)
       if (state.transcriptHoldTimer) clearTimeout(state.transcriptHoldTimer)
+      if (state.screenRereadTimer) clearTimeout(state.screenRereadTimer)
       state.transcriptOff?.()
     }
     this.live.clear()
@@ -1421,12 +1466,28 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (state.pendingApproval) return
 
     const picker = parseAskPicker(raw)
-    if (picker) {
+    const parsed = parsePermissionPrompt(raw)
+    // Both can parse when a finished picker's text lingers above a live
+    // permission dialog (or the reverse): whichever anchor is LOWER on the
+    // screen is the live one.
+    const pickerAt = raw.lastIndexOf('Type something')
+    const dialogAt = raw.lastIndexOf('Do you want to proceed?')
+    if (picker && (!parsed || pickerAt > dialogAt)) {
       if (this.storePromptHasQuestion(state, picker.questions)) return
+      const total = picker.questions.length
+      const current = Math.min(Math.max(picker.current, 0), Math.max(total - 1, 0))
+      const shown = picker.questions[current]
+      if (!shown) return
       state.screenSeq += 1
       const promptId = `screen:${native}:${String(state.screenSeq)}`
-      const questions = picker.questions
-      state.pendingScreenPrompt = { promptId, questions }
+      const questions = [shown]
+      const knownPromptIds = new Set(
+        (state.turns ?? [])
+          .flatMap((t) => (t.role === 'assistant' ? (t.tools ?? []) : []))
+          .filter((t) => isPromptToolName(t.name) && t.id)
+          .map((t) => t.id as string),
+      )
+      state.pendingScreenPrompt = { promptId, questions, current, total, knownPromptIds }
       state.pendingPrompts.set(promptId, { toolName: 'AskUserQuestion', questions })
       this.emit(native, {
         type: 'prompt',
@@ -1435,11 +1496,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         kind: 'ask-user',
         toolName: 'AskUserQuestion',
         questions,
+        screen: { current, total },
       })
       return
     }
 
-    const parsed = parsePermissionPrompt(raw)
     if (!parsed) return
     state.approvalSeq += 1
     const requestId = `perm:${native}:${String(state.approvalSeq)}`
@@ -1456,15 +1517,27 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   }
 
   protected storePromptHasQuestion(state: LiveState, questions: HarnessAskQuestion[]): boolean {
+    // The pane wraps long questions and the parser keeps the tail line —
+    // compare a whitespace-collapsed prefix, not the exact text.
+    const key = (t: string): string => t.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 40)
     const texts = new Set(
       questions
         .map((q) => q.question)
-        .filter((t): t is string => typeof t === 'string' && t.length > 0),
+        .filter((t): t is string => typeof t === 'string' && t.length > 0)
+        .map(key),
     )
     if (texts.size === 0) return false
     for (const id of state.tracker?.pendingPromptIds() ?? []) {
       const pending = state.pendingPrompts.get(id)
-      if (pending?.questions.some((q) => q.question && texts.has(q.question))) return true
+      if (
+        pending?.questions.some((q) => {
+          if (!q.question) return false
+          const k = key(q.question)
+          for (const t of texts) if (k.startsWith(t) || t.startsWith(k)) return true
+          return false
+        })
+      )
+        return true
     }
     return false
   }
@@ -1504,6 +1577,32 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected injectKeys(pty: HarnessPtyHost, ptyId: string, keys: Uint8Array[]): void {
     for (const buf of keys) {
       pty.inject(ptyId, Buffer.from(buf).toString('utf8'), false)
+    }
+  }
+
+  /** Open prompts (store + screen) for a single sink — a reconnecting client
+   *  has no card for a screen prompt otherwise (nothing in the store). */
+  protected replayPendingPrompts(native: string, sink: (e: HarnessEvent) => void): void {
+    const state = this.live.get(native)
+    if (!state) return
+    for (const id of this.pendingPromptIds(state)) {
+      const p = state.pendingPrompts.get(id)
+      if (!p) continue
+      const screen =
+        state.pendingScreenPrompt?.promptId === id ? state.pendingScreenPrompt : undefined
+      try {
+        sink({
+          type: 'prompt',
+          sessionId: this.sid(native),
+          promptId: id,
+          kind: 'ask-user',
+          toolName: p.toolName,
+          questions: p.questions,
+          ...(screen ? { screen: { current: screen.current, total: screen.total } } : {}),
+        })
+      } catch {
+        // the socket's problem
+      }
     }
   }
 
@@ -1674,8 +1773,13 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       })
     }
     if (state.pendingScreenPrompt) {
+      // Only a prompt tool that did NOT exist when the picker was read may
+      // resolve it — an earlier, already-answered question must not.
+      const known = state.pendingScreenPrompt.knownPromptIds
       const tools = full.flatMap((t) => (t.role === 'assistant' ? (t.tools ?? []) : []))
-      const done = tools.find((t) => isPromptToolName(t.name) && t.resultText)
+      const done = tools.find(
+        (t) => isPromptToolName(t.name) && t.resultText && t.id && !known.has(t.id),
+      )
       if (done?.resultText) this.resolveScreenPrompt(native, done.resultText)
     }
     if (state.pendingApproval) {

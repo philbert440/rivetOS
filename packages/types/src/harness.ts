@@ -236,6 +236,10 @@ export interface HarnessPromptEvent {
   toolName: string
   questions: HarnessAskQuestion[]
   resolved?: { at: number; answerText?: string }
+  /** Screen-read picker (herdr): only the CURRENT question is known from one
+   *  read, so `questions` has exactly one entry and this says where it sits.
+   *  Answering it advances the TUI; the next question arrives as a new prompt. */
+  screen?: { current: number; total: number }
 }
 
 /**

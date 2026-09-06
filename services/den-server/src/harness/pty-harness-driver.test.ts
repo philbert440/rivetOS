@@ -1014,6 +1014,108 @@ const CLAUDE_PERM_SCREEN = `\
 describe('pty-harness-driver permission prompts', () => {
   const sid = ClaudeCodeDriver.sessionId(UUID)
 
+  it('an already-answered AskUserQuestion in the store does NOT resolve a new screen picker; a newer one does', async () => {
+    const pty = fakePty()
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      transcript: tx,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    const answered = (id: string, text: string) => ({
+      role: 'assistant' as const,
+      text: '',
+      lastBlock: 'tool_result' as const,
+      stopReason: 'tool_use',
+      tools: [{ id, name: 'AskUserQuestion', status: 'done' as const, resultText: text, input: { questions: [] } }],
+    })
+    tx.emit(sid, { kind: 'transcript', session: sid, rev: 1, from: 0, total: 2, command: 'claude', turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')] })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const opened = seen.find((e) => e.type === 'prompt' && !e.resolved)
+    expect(opened).toBeDefined()
+    // a sync re-snapshot carrying the OLD answer again
+    tx.emit(sid, { kind: 'transcript', session: sid, rev: 2, from: 0, total: 2, command: 'claude', turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')] })
+    expect(seen.some((e) => e.type === 'prompt' && e.resolved)).toBe(false)
+    // the NEW question's answer lands
+    tx.emit(sid, { kind: 'transcript', session: sid, rev: 3, from: 2, total: 3, command: 'claude', turns: [answered('q-new', 'Green')] })
+    const resolved = seen.find((e) => e.type === 'prompt' && e.resolved)
+    expect(resolved && resolved.resolved?.answerText).toBe('Green')
+    driver.close()
+  })
+
+  it('a later subscriber gets the open screen prompt replayed (status first, then the prompt)', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const later: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => later.push(e))
+    expect(later[0]).toMatchObject({ type: 'status', status: 'blocked', phase: 'prompt' })
+    expect(later[1]).toMatchObject({ type: 'prompt', kind: 'ask-user', promptId: `screen:${UUID}:1` })
+    driver.close()
+  })
+
+  it('a multi-question picker emits only the current question with its position; answering a non-last single-select presses the digit and resolves it', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_MULTI_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const p = seen.find((e) => e.type === 'prompt' && !e.resolved)
+    expect(p && p.questions.length).toBe(1)
+    expect(p && p.screen).toEqual({ current: 0, total: 2 })
+    await driver.answerPrompt(sid, `screen:${UUID}:1`, [{ question: 0, labels: ['Green'] }])
+    expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
+    expect(seen.some((e) => e.type === 'prompt' && e.resolved && e.promptId === `screen:${UUID}:1`)).toBe(true)
+    driver.close()
+  })
+
+  it('a finished picker lingering above a live permission dialog yields the dialog, not a prompt', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => PICKER_ABOVE_DIALOG_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(true)
+    expect(seen.some((e) => e.type === 'prompt')).toBe(false)
+    driver.close()
+  })
+
   it('blocked → screen → approval-request with options', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({
@@ -1312,6 +1414,36 @@ Which color would you like?
 ────────────────────────────────────────────
   5. Chat about this
 Enter to select · ↑/↓ to navigate · Esc to cancel
+`
+
+const CLAUDE_PICKER_MULTI_SCREEN = `\
+←  ☐ Color  ☐ Toppings  ✔ Submit  →
+What color would you like?
+❯ 1. Red
+     The color red
+  2. Green
+     The color green
+  3. Blue
+     The color blue
+  4. Type something.
+────────────────────────────────────────────
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+`
+
+const PICKER_ABOVE_DIALOG_SCREEN = `\
+Which color would you like?
+❯ 1. Red
+  2. Green
+  3. Type something.
+Enter to select · ↑/↓ to navigate · Esc to cancel
+ Bash command
+   mkdir -p zz && rm -r zz && echo done
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for mkdir
+   3. No
+ Esc to cancel · Tab to amend
 `
 
 describe('pty-harness-driver screen AskUserQuestion picker', () => {
