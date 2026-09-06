@@ -9,8 +9,10 @@
  * on EVERY `open`, first connect and reconnect alike, and never assumes replay
  * (docs/ARCHITECTURE.md § HarnessDriver: control-plane contract).
  *
- * It also resyncs at `turn-complete`: the live tail carries text and tool
- * calls, but usage, thinking and the committed turn text come from the store.
+ * Live in-turn state comes from `transcript` / `status` / `prompt` frames on
+ * this same socket. Hook deltas are folded only while the store has not
+ * marked the session transcript-sourced. HTTP resync-after-turn-complete is
+ * gone — the transcript watcher pushes the committed turn.
  *
  * Framework-free on purpose — the React layer supplies the sinks, so the
  * reconnect/resync ordering is unit-testable without a DOM.
@@ -18,7 +20,10 @@
 
 import type {
   HarnessEvent,
+  HarnessPromptEvent,
   HarnessSessionTranscriptResponse,
+  HarnessStatusFrame,
+  HarnessTranscriptEvent,
   HarnessTranscriptTurn,
 } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
@@ -48,12 +53,26 @@ export interface HarnessAttachOptions {
   gateway: HarnessAttachGateway
   /** Canonical `<harness-id>:<native>`. */
   sessionId: string
-  /** Hard resync — replaces the transcript wholesale. Never merges. */
-  onTranscript: (turns: HarnessTranscriptTurn[], ctx?: SessionContextStamp) => void
+  /** HTTP hard resync — replaces the transcript wholesale. Never merges. */
+  onResync: (turns: HarnessTranscriptTurn[], ctx?: SessionContextStamp) => void
+  /**
+   * WS transcript frame. Return `false` so the attachment sends `{type:'sync'}`
+   * (rev gap / splice mismatch). Absent → frames are ignored.
+   */
+  onTranscript?: (event: HarnessTranscriptEvent) => boolean
+  onAgentStatus?: (event: HarnessStatusFrame) => void
+  onPrompt?: (event: HarnessPromptEvent) => void
   /** Live turn state, `undefined` when the slot should clear. */
   onLive: (turn: LiveTurn | undefined) => void
   /** Approval request/resolution — outlives the turn, so not part of the fold. */
   onApproval?: (event: HarnessApprovalEvent) => void
+  onTurnComplete?: () => void
+  onSessionUpdated?: () => void
+  /**
+   * Store's live-turn source for this session. Hook deltas fold only while
+   * this is not `'transcript'`.
+   */
+  liveSource?: () => 'transcript' | 'hooks' | undefined
   onStatus?: (status: 'connecting' | 'open' | 'closed') => void
   /** Transient resync failure (node offline, node restarting). */
   onError?: (err: unknown) => void
@@ -63,20 +82,15 @@ export interface HarnessAttachOptions {
    * first (no reconnect loop against a session that will never answer).
    */
   onFatal?: (message: string) => void
-  /**
-   * Grace before the post-turn resync: the harness store is written as the
-   * turn commits, and `turn-complete` can beat the last flush to disk.
-   */
-  settleMs?: number
 }
 
 export interface HarnessAttachment {
   close(): void
   /** Force a hard resync (mode switch back into chat, manual refresh). */
   resync(): void
+  /** Ask the server to re-send a from:0 snapshot on this socket. */
+  sync(): void
 }
-
-const DEFAULT_SETTLE_MS = 400
 
 /**
  * Typed harness codes that will never succeed on retry: the session is gone,
@@ -84,6 +98,7 @@ const DEFAULT_SETTLE_MS = 400
  * restarting, a transient 5xx) is worth reconnecting for.
  */
 const FATAL_CODES = new Set(['invalid_session_id', 'capability_unsupported'])
+const SYNC_REARM_MS = 3_000
 /** Same, on the resync side: gone / malformed / unsupported. */
 const FATAL_STATUS = new Set([400, 404, 501])
 
@@ -94,13 +109,20 @@ function fatalResyncMessage(err: unknown): string | undefined {
   return typeof message === 'string' && message ? message : `transcript unavailable (${status})`
 }
 
+function isHookDelta(event: HarnessEvent): boolean {
+  return (
+    event.type === 'assistant-delta' ||
+    event.type === 'reasoning-delta' ||
+    event.type === 'tool-use' ||
+    event.type === 'tool-result'
+  )
+}
+
 export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachment {
-  const settleMs = opts.settleMs ?? DEFAULT_SETTLE_MS
   let closed = false
   let live: LiveTurn | undefined
   /** Bumped per resync so a slow in-flight fetch can't overwrite a newer one. */
   let generation = 0
-  let settle: ReturnType<typeof setTimeout> | undefined
   let abort: AbortController | undefined
 
   /** Stop for good — a session that will never answer must not be retried. */
@@ -119,7 +141,7 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
     opts.gateway.harnessSessionTranscript(opts.sessionId, controller.signal).then(
       (res) => {
         if (closed || mine !== generation) return
-        opts.onTranscript(res.turns, {
+        opts.onResync(res.turns, {
           contextWindow: res.contextWindow,
           compactAt: res.compactAt,
           contextSource: res.contextSource,
@@ -142,6 +164,19 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
   // inside the subscribe call itself, and `stop()` running from there must not
   // hit the temporal dead zone of a `const` that has not been assigned yet.
   const socket: { sub?: Subscription } = {}
+  // den drops a `sync` that lands within 2 s of the previous one, silently —
+  // re-arm ONCE after a short wait unless a snapshot arrived meanwhile (one-shot
+  // timeout re-armed by frames, not a poll).
+  let syncTimer: ReturnType<typeof setTimeout> | undefined
+  const sync = (): boolean => {
+    const ok = socket.sub?.send({ type: 'sync' }) ?? false
+    if (syncTimer) clearTimeout(syncTimer)
+    syncTimer = setTimeout(() => {
+      syncTimer = undefined
+      if (!closed) socket.sub?.send({ type: 'sync' })
+    }, SYNC_REARM_MS)
+    return ok
+  }
   socket.sub = opts.gateway.watchHarnessSession(
     opts.sessionId,
     (event) => {
@@ -160,20 +195,45 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
           return
         }
       }
-      if (event.type === 'session-updated' && event.status === 'error') {
-        clearSystemPromptSent(opts.sessionId)
-        if (event.previousSessionId) clearSystemPromptSent(event.previousSessionId)
+      if (event.type === 'session-updated') {
+        opts.onSessionUpdated?.()
+        if (event.status === 'error') {
+          clearSystemPromptSent(opts.sessionId)
+          if (event.previousSessionId) clearSystemPromptSent(event.previousSessionId)
+        }
+      }
+      if (event.type === 'transcript') {
+        // First snapshot (and later from:0) owns the live slot — do not clear
+        // on socket open, or a reconnect blanks a mid-turn bubble the
+        // transcript frame is about to rebuild.
+        if (event.from === 0) {
+          live = undefined
+          opts.onLive(undefined)
+          if (syncTimer) {
+            clearTimeout(syncTimer)
+            syncTimer = undefined
+          }
+        }
+        const ok = opts.onTranscript?.(event)
+        if (ok === false) sync()
+        return
+      }
+      if (event.type === 'status') {
+        opts.onAgentStatus?.(event)
+        if (opts.liveSource?.() === 'transcript') return
+      } else if (event.type === 'prompt') {
+        opts.onPrompt?.(event)
+        return
+      } else if (event.type === 'turn-complete') {
+        opts.onTurnComplete?.()
+        if (opts.liveSource?.() === 'transcript') return
+      } else if (isHookDelta(event) && opts.liveSource?.() === 'transcript') {
+        return
       }
       const next = foldHarnessEvent(live, event)
       if (next !== live) {
         live = next
         opts.onLive(live)
-      }
-      if (event.type === 'turn-complete') {
-        // The committed turn (usage, thinking, tool results) lands on disk;
-        // read it back rather than trusting the tail we just folded.
-        if (settle) clearTimeout(settle)
-        settle = setTimeout(resync, settleMs)
       }
     },
     {
@@ -182,16 +242,10 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
         opts.onStatus?.(status)
         if (status !== 'open') return
         // Fresh attach (first or Nth): everything between the drop and now is
-        // gone from the tail forever. Drop the live turn and rebuild from the
-        // transcript — the contract's hard-resync rule.
-        //
-        // Unconditionally, not just when WE folded one: the bubble showing on
-        // open may have been folded by the all-sessions socket before this
-        // session was handed over, and with no replay nothing will ever
-        // supersede it. (Same reason a mid-turn attach can't recover the
-        // turn's prefix — only the committed transcript can, at turn end.)
-        live = undefined
-        opts.onLive(undefined)
+        // gone from the tail forever. Rebuild from the transcript — the
+        // contract's hard-resync rule. Do NOT clear `live` here: the first
+        // transcript snapshot does that, so a reconnect does not blank the
+        // bubble the snapshot is about to restore.
         resync()
       },
     },
@@ -200,13 +254,14 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
   /** Release every resource without reporting anything. */
   function stop(): void {
     closed = true
-    if (settle) clearTimeout(settle)
     abort?.abort()
+    if (syncTimer) clearTimeout(syncTimer)
     socket.sub?.close()
   }
 
   return {
     close: stop,
     resync,
+    sync,
   }
 }

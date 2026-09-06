@@ -45,5 +45,26 @@ Anything else on the socket is ignored (same posture as `/api/sessions/ws`).
 → **404** `unknown_prompt` (not pending)
 → **501** driver has no `answerPrompt` (capability_unsupported)
 
-Keystroke translation (`adapter.answerKeys`) is lane A2. Until then the driver
-composes a text answer and PTY-injects it with submit.
+Claude answers with TUI keystrokes (`adapter.answerKeys`, Claude Code 2.1.263).
+Adapters without `answerKeys` still compose a text answer and PTY-inject it
+with submit.
+
+`POST /api/harness-sessions/:enc/approvals/:reqId`
+
+```json
+{ "decision": "allow" | "deny" | "allow-session" }
+```
+
+→ **202** `{ ok: true, sessionId, requestId }`
+→ **400** malformed decision
+→ **404** `unknown_approval` (not pending)
+→ **501** `capabilities.approvals` is false (no PTY, mux is not herdr, or the
+adapter has no permission keys — hermes / deepseek)
+
+Permission prompts are herdr-`blocked` plus a screen capture
+(`HerdrCtl.capture`). The driver emits `approval-request` with parsed
+`options`; answering injects `adapter.approvalKeys` (`submit: false`). If the
+TUI itself dismisses the dialog, the next herdr `working`/`idle` (or a
+transcript frame with no running tool) emits `approval-resolved` with
+`decision: "external"`. Under tmux the approvals flag stays false and the
+card does not mount.

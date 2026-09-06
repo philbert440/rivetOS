@@ -13,7 +13,65 @@
  * in-place `status` flip detectable on the next frame.
  */
 
-import type { HarnessTranscriptTool, HarnessTranscriptTurn, SessionMessage } from '@rivetos/types'
+import type {
+  HarnessStatusFrame,
+  HarnessTranscriptTool,
+  HarnessTranscriptTurn,
+  SessionMessage,
+} from '@rivetos/types'
+import { humanToolTitle } from './tool-titles.js'
+import { statusActivity } from './harness-fold.js'
+import type { LiveToolEntry, LiveTurn } from './fold-stream.js'
+
+/**
+ * Roster / harness tokens whose on-disk store carries in-flight turns
+ * (tools + thinking). Matches adapter `capabilities().liveTurn` — the
+ * transcript event does not carry that flag, so we key on `command`.
+ * `dsh` stays hook-sourced (no decompressor).
+ */
+export function isLiveTurnCommand(command: string): boolean {
+  const c = command.toLowerCase()
+  return (
+    c === 'claude' ||
+    c === 'claude-code' ||
+    c === 'kimi' ||
+    c === 'kimi-code' ||
+    c === 'grok' ||
+    c === 'grok-build' ||
+    c === 'hermes'
+  )
+}
+
+/**
+ * Build the live overlay from a trailing incomplete assistant turn while
+ * the agent is working/blocked. `undefined` when the turn is solid
+ * (status idle, or `complete`).
+ */
+export function liveFromTranscript(
+  turns: HarnessTranscriptTurn[],
+  status: HarnessStatusFrame | undefined,
+): LiveTurn | undefined {
+  if (status?.status !== 'working' && status?.status !== 'blocked') return undefined
+  const last = turns.at(-1)
+  if (!last || last.role !== 'assistant' || last.complete === true) return undefined
+  const tools: LiveToolEntry[] = (last.tools ?? []).map((t, i) => {
+    const args = t.args
+    return {
+      id: t.id ?? `tool:${String(i)}`,
+      name: t.name,
+      title: humanToolTitle(t.name, args),
+      status: t.status,
+      ...(args ? { args } : {}),
+    }
+  })
+  return {
+    text: last.text,
+    reasoning: last.lastBlock === 'thinking' && !last.text,
+    reasoningText: last.thinking ?? '',
+    tools,
+    activity: statusActivity(status),
+  }
+}
 
 function sameUsage(a: SessionMessage['usage'], b: HarnessTranscriptTurn['usage']): boolean {
   if (!a || !b) return !a && !b
@@ -41,8 +99,11 @@ export function messagesFromHarnessTurns(
   /** The previous frame's messages for this session — trailing optimistic
    *  bubbles (or ring-seeded rows) are fine, the id check skips them. */
   prev?: SessionMessage[],
+  /** Drop the trailing assistant while it is the live overlay (incomplete). */
+  skipTrailingLive?: boolean,
 ): SessionMessage[] {
-  return turns.map((t, i) => {
+  const list = skipTrailingLive && turns.length > 0 ? turns.slice(0, -1) : turns
+  return list.map((t, i) => {
     const id = `harness:${sessionId}:${String(i)}`
     const tools = t.tools && t.tools.length > 0 ? t.tools : undefined
     const prevMsg = prev?.[i]
@@ -70,4 +131,24 @@ export function messagesFromHarnessTurns(
       ...(t.model ? { model: t.model } : {}),
     }
   })
+}
+
+/**
+ * The one-line status under the transcript when there is NO live bubble but
+ * the agent is not idle: the thinking window before the first block, or a
+ * blocked / prompt state. Undefined when idle or when a live bubble already
+ * carries the activity.
+ */
+export function agentStatusLine(
+  live: LiveTurn | undefined,
+  status: HarnessStatusFrame | undefined,
+): { text: string; tool?: string } | undefined {
+  if (live || !status) return undefined
+  if (status.status === 'blocked' || status.phase === 'prompt') {
+    return { text: 'waiting for you', tool: status.tool?.name }
+  }
+  if (status.status === 'working') {
+    return { text: statusActivity(status) ?? 'working…', tool: status.tool?.name }
+  }
+  return undefined
 }

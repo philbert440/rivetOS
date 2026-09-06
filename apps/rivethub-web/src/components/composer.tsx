@@ -32,7 +32,7 @@ import { Textarea } from './ui/textarea.js'
 import { EffortPicker } from './pickers/effort-picker.js'
 import { ModelPicker } from './pickers/model-picker.js'
 import { NodePicker } from './pickers/node-picker.js'
-import { AskUserCard } from './ask-user-card.js'
+import { AskUserCard, type AskStructuredAnswer } from './ask-user-card.js'
 
 /** Imperative surface for the parent (chat page): cancelling a queued message
  *  recalls its text into the draft instead of discarding it. */
@@ -81,6 +81,8 @@ export function Composer(props: {
   /** Ask-user card content (agent prompted the user). Empty hides the card. */
   ask?: AskQuestion[]
   onDismissAsk?: () => void
+  /** Bound harness: answer via `answerHarnessPrompt` instead of a user turn. */
+  onAnswerAsk?: (answers: AskStructuredAnswer[]) => Promise<void>
   handleRef?: RefObject<ComposerHandle | null>
 }): JSX.Element {
   const [text, setText] = useState('')
@@ -345,6 +347,7 @@ export function Composer(props: {
           onAnswer={async (label) => {
             if (!(await sendBody(label, { bare: true }))) throw new Error('answer not sent')
           }}
+          onAnswerStructured={props.onAnswerAsk}
           onDismiss={() => props.onDismissAsk?.()}
           onFocusComposer={() => taRef.current?.focus()}
         />

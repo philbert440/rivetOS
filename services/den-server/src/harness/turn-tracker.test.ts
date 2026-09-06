@@ -193,3 +193,46 @@ describe('createTurnTracker', () => {
     expect(t.inFlight()).toBe(false)
   })
 })
+
+describe('createTurnTracker — prompts beyond the trailing turn', () => {
+  const ask = (status: 'running' | 'done', id = 'q1') => ({
+    role: 'assistant' as const,
+    text: '',
+    lastBlock: 'tool_use' as const,
+    stopReason: 'tool_use',
+    tools: [
+      {
+        id,
+        name: 'AskUserQuestion',
+        status,
+        input: { questions: [{ question: 'Pick', multiSelect: false, options: [{ label: 'A' }] }] },
+      },
+    ],
+  })
+  it('resolves a prompt whose tool has scrolled into an earlier turn', () => {
+    const t = createTurnTracker(claudeAdapter)
+    const opened = t.apply([{ role: 'user', text: 'hi' }, ask('running')], 'claude')
+    expect(opened.promptsOpened.map((p) => p.promptId)).toEqual(['q1'])
+    const later = t.apply(
+      [
+        { role: 'user', text: 'hi' },
+        ask('done'),
+        { role: 'user', text: 'next' },
+        { role: 'assistant', text: 'ok', lastBlock: 'text', stopReason: 'end_turn', complete: true },
+      ],
+      'claude',
+    )
+    expect(later.promptsResolved.map((p) => p.promptId)).toEqual(['q1'])
+    expect(t.pendingPromptIds()).toEqual([])
+  })
+  it('retires a pending prompt whose tool is no longer anywhere in the window', () => {
+    const t = createTurnTracker(claudeAdapter)
+    t.apply([{ role: 'user', text: 'hi' }, ask('running')], 'claude')
+    const gone = t.apply(
+      [{ role: 'user', text: 'much later' }, { role: 'assistant', text: 'ok', complete: true }],
+      'claude',
+    )
+    expect(gone.promptsResolved.map((p) => p.promptId)).toEqual(['q1'])
+    expect(t.pendingPromptIds()).toEqual([])
+  })
+})

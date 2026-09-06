@@ -23,6 +23,16 @@ export function HarnessApprovalCard(props: {
     request.input && typeof request.input === 'object' && !Array.isArray(request.input)
       ? (request.input as Record<string, unknown>)
       : undefined
+  const scrapedOptions: string[] = []
+  const extra = request as PendingApproval & {
+    options?: Array<{ key?: string; label?: string } | string>
+  }
+  if (Array.isArray(extra.options)) {
+    for (const o of extra.options) {
+      const label = typeof o === 'string' ? o : o.label
+      if (label) scrapedOptions.push(label)
+    }
+  }
 
   const choices: { label: string; decision: ApprovalDecision; accent: boolean }[] = [
     { label: 'Allow', decision: 'allow', accent: true },
@@ -46,6 +56,13 @@ export function HarnessApprovalCard(props: {
         )}
       </div>
       {request.reason && <div className="mt-1 text-[11px] text-ink-dim">{request.reason}</div>}
+      {scrapedOptions.length > 0 && (
+        <ul className="mt-1 list-inside list-disc font-mono text-[10px] text-ink-dim">
+          {scrapedOptions.map((o) => (
+            <li key={o}>{o}</li>
+          ))}
+        </ul>
+      )}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {choices.map((c) => (
           <button
