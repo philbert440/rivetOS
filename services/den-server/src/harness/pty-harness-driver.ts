@@ -863,12 +863,16 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.injectKeys(pty, ptyId, keys)
       const more = screen.current < screen.total - 1
       this.resolveScreenPrompt(native)
+      // Hold the cooldown until the TUI has redrawn: a repeated herdr `blocked`
+      // frame inside that window would re-read the OLD tab and mint a duplicate.
+      state.captureAt = this.now()
       if (more) {
         // The TUI moved to the next tab; herdr stays `blocked` (no new frame),
         // so read the pane once more after it redraws.
         if (state.screenRereadTimer) clearTimeout(state.screenRereadTimer)
         state.screenRereadTimer = setTimeout(() => {
           state.screenRereadTimer = undefined
+          state.captureAt = undefined
           if (state.herdrStatus === 'blocked') void this.captureBlockedScreen(native)
         }, SCREEN_REREAD_MS)
         state.screenRereadTimer.unref?.()
@@ -1316,6 +1320,17 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.pendingPrompts = carried.pendingPrompts
       state.pendingApproval = carried.pendingApproval
       state.pendingScreenPrompt = carried.pendingScreenPrompt
+      if (carried.screenRereadTimer) {
+        clearTimeout(carried.screenRereadTimer)
+        carried.screenRereadTimer = undefined
+        // A picker mid-answer survives the rotation: re-arm its next-tab read.
+        state.screenRereadTimer = setTimeout(() => {
+          state.screenRereadTimer = undefined
+          state.captureAt = undefined
+          if (state.herdrStatus === 'blocked') void this.captureBlockedScreen(next)
+        }, SCREEN_REREAD_MS)
+        state.screenRereadTimer.unref?.()
+      }
       state.approvalSeq = carried.approvalSeq
       state.screenSeq = carried.screenSeq
       state.turns = carried.turns
