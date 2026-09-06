@@ -7,6 +7,8 @@ import {
   describeGrokSession,
   describeKimiSession,
   describeDshSession,
+  claudeTurnsFromLines,
+  grokTurnsFromLines,
   listHarnessSessions,
   harnessSessionExists,
   readGrokTranscript,
@@ -15,6 +17,7 @@ import {
   readKimiTranscript,
   resolveHarnessStore,
   setTranscriptMaxBytesForTest,
+  kimiTurnsFromLines,
 } from './harness-sessions.js'
 
 const dirs: string[] = []
@@ -324,6 +327,62 @@ describe('listHarnessSessions', () => {
     delete process.env.HERMES_HOME
   })
 
+  it('pairs hermes tool_calls with tool rows and stamps complete from finish_reason', async () => {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return
+    }
+    const base = mkdtempSync(join(tmpdir(), 'hermes-tools-'))
+    dirs.push(base)
+    const tools = JSON.stringify([
+      {
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+      },
+    ]).replace(/'/g, "''")
+    const db = new DatabaseSync(join(base, 'state.db'))
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
+      CREATE TABLE messages (
+        session_id TEXT, role TEXT, content TEXT, tool_call_id TEXT, tool_calls TEXT,
+        tool_name TEXT, timestamp INTEGER, finish_reason TEXT, reasoning TEXT,
+        reasoning_content TEXT, active INTEGER, compacted INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess_tools', 1000, 2000);
+      INSERT INTO messages VALUES ('sess_tools','user','read a.ts',NULL,NULL,NULL,1000,NULL,NULL,NULL,1,0);
+      INSERT INTO messages VALUES ('sess_tools','assistant','','call_1','${tools}','read_file',1001,'tool_calls','looking it up',NULL,1,0);
+    `)
+    db.close()
+    process.env.HERMES_HOME = base
+    const running = await readHermesTranscript('sess_tools')
+    const asst = running.turns.find((t) => t.role === 'assistant')
+    expect(asst?.complete).toBeUndefined()
+    expect(asst?.stopReason).toBe('tool_use')
+    expect(asst?.thinking).toBe('looking it up')
+    expect(asst?.tools).toEqual([
+      { name: 'read_file', status: 'running', id: 'call_1', args: { path: 'a.ts' } },
+    ])
+
+    const db2 = new DatabaseSync(join(base, 'state.db'))
+    db2.exec(`
+      INSERT INTO messages VALUES ('sess_tools','tool','export const a = 1','call_1',NULL,'read_file',1002,NULL,NULL,NULL,1,0);
+      INSERT INTO messages VALUES ('sess_tools','assistant','it exports a',NULL,NULL,NULL,1003,'stop',NULL,NULL,1,0);
+    `)
+    db2.close()
+    const full = await readHermesTranscript('sess_tools')
+    const last = full.turns[full.turns.length - 1]
+    expect(last?.role).toBe('assistant')
+    expect(last?.text).toBe('it exports a')
+    expect(last?.stopReason).toBe('end_turn')
+    expect(last?.lastBlock).toBe('text')
+    expect(last?.complete).toBe(true)
+    expect(last?.tools?.[0]?.status).toBe('done')
+    delete process.env.HERMES_HOME
+  })
+
   it('reads kimi sessions across BOTH on-disk state shapes', async () => {
     const { v1, v2, untitled } = fakeKimiStore()
     const sessions = await listHarnessSessions(['kimi'])
@@ -530,6 +589,7 @@ describe('readHarnessTranscript', () => {
         role: 'assistant',
         text: 'hi there',
         thinking: 'x', // thinking blocks ride the turn now (text variant tolerated)
+        lastBlock: 'thinking',
         model: 'claude-opus-4',
         // prompt = input + cache_read + cache_creation (den-hook parity)
         usage: { promptTokens: 1250, completionTokens: 40, cachedTokens: 200 },
@@ -605,9 +665,10 @@ describe('readHarnessTranscript', () => {
       {
         role: 'assistant',
         text: 'tests pass, edit failed',
+        lastBlock: 'text',
         tools: [
-          { name: 'Bash', status: 'done', args: { command: 'npm test' } },
-          { name: 'Edit', status: 'error' },
+          { name: 'Bash', status: 'done', args: { command: 'npm test' }, id: 'tu_1' },
+          { name: 'Edit', status: 'error', id: 'tu_2' },
         ],
         model: 'claude-opus-4',
         // output SUMMED across the turn's lines; prompt from the LAST line
@@ -650,7 +711,7 @@ describe('readHarnessTranscript', () => {
     const t = await readHarnessTranscript(id)
     expect(t.turns).toEqual([
       { role: 'user', text: 'real question' },
-      { role: 'assistant', text: 'real answer' },
+      { role: 'assistant', text: 'real answer', lastBlock: 'text' },
     ])
   })
 
@@ -674,8 +735,79 @@ describe('readHarnessTranscript', () => {
     expect(t.command).toBe('grok')
     expect(t.turns).toEqual([
       { role: 'user', text: 'plan the migrate' },
-      { role: 'assistant', text: 'ok, planning' },
+      {
+        role: 'assistant',
+        text: 'ok, planning',
+        lastBlock: 'text',
+        stopReason: 'end_turn',
+        complete: true,
+      },
     ])
+  })
+
+  it('folds grok tool_calls/tool_result/reasoning and stamps complete only on the final text line', () => {
+    const lines: Record<string, unknown>[] = [
+      { type: 'system', content: 'boot' },
+      {
+        type: 'user',
+        content: [{ type: 'text', text: 'read the file' }],
+        prompt_index: 0,
+      },
+      {
+        type: 'user',
+        content: [{ type: 'text', text: 'ignore me' }],
+        synthetic_reason: 'system_reminder',
+        prompt_index: 0,
+      },
+      {
+        type: 'reasoning',
+        id: 'rs_1',
+        summary: [{ type: 'summary_text', text: 'need the contents' }],
+        encrypted_content: 'enc',
+        status: 'completed',
+      },
+      {
+        type: 'assistant',
+        content: 'opening it',
+        tool_calls: [
+          {
+            id: 'call-abc-0',
+            name: 'read_file',
+            arguments: '{"target_file":"src/a.ts"}',
+          },
+        ],
+        model_id: 'grok-4.6',
+      },
+      { type: 'tool_result', tool_call_id: 'call-abc-0', content: 'export const a = 1' },
+      { type: 'assistant', content: 'it exports a', model_id: 'grok-4.6' },
+    ]
+    const mid = grokTurnsFromLines(lines.slice(0, 5))
+    const midAsst = mid.find((t) => t.role === 'assistant')
+    expect(midAsst?.complete).toBeUndefined()
+    expect(midAsst?.stopReason).toBe('tool_use')
+    expect(midAsst?.tools).toEqual([
+      { name: 'read_file', status: 'running', id: 'call-abc-0', args: { target_file: 'src/a.ts' } },
+    ])
+    expect(midAsst?.thinking).toBe('need the contents')
+
+    const paired = grokTurnsFromLines(lines.slice(0, 6))
+    expect(paired.find((t) => t.role === 'assistant')?.tools?.[0]?.status).toBe('done')
+    expect(paired.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+
+    const full = grokTurnsFromLines(lines)
+    const last = full[full.length - 1]
+    expect(last?.role).toBe('assistant')
+    expect(last?.text).toBe('opening it\n\nit exports a')
+    expect(last?.stopReason).toBe('end_turn')
+    expect(last?.lastBlock).toBe('text')
+    expect(last?.complete).toBe(true)
+    expect(last?.tools?.[0]).toMatchObject({
+      id: 'call-abc-0',
+      name: 'read_file',
+      status: 'done',
+    })
+    expect(last?.model).toBe('grok-4.6')
+    expect(full.some((t) => t.text === 'ignore me')).toBe(false)
   })
 
   it('returns empty for unknown session ids', async () => {
@@ -894,10 +1026,18 @@ describe('readHarnessTranscript', () => {
         {
           role: 'assistant',
           text: 'looks good',
+          stopReason: 'end_turn',
+          lastBlock: 'text',
+          complete: true,
           thinking: 'weighing it',
           tools: [
-            { name: 'Bash', status: 'error', args: { command: 'git diff', timeout: 30 } },
-            { name: 'Read', status: 'done', args: { path: '/tmp/x' } },
+            {
+              name: 'Bash',
+              status: 'error',
+              args: { command: 'git diff', timeout: 30 },
+              id: 'Bash_0',
+            },
+            { name: 'Read', status: 'done', args: { path: '/tmp/x' }, id: 'Read_0' },
           ],
           usage: { promptTokens: 125, completionTokens: 40, cachedTokens: 20 },
           model: 'kimi-k2',
@@ -912,5 +1052,180 @@ describe('readHarnessTranscript', () => {
       command: '',
       turns: [],
     })
+  })
+
+  it('stamps stopReason/lastBlock/complete from the real Claude sequence; complete absent in-flight', () => {
+    const asst = (
+      stop: string,
+      block: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      type: 'assistant',
+      message: { stop_reason: stop, content: [block] },
+    })
+    const toolResults = (...ids: string[]): Record<string, unknown> => ({
+      type: 'user',
+      message: {
+        content: ids.map((id) => ({ type: 'tool_result', tool_use_id: id, content: 'ok' })),
+      },
+    })
+    const lines: Record<string, unknown>[] = [
+      { type: 'user', message: { content: 'do the thing' } },
+      asst('tool_use', { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo 1' } }),
+      asst('tool_use', { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'echo 2' } }),
+      toolResults('t1', 't2'),
+      asst('tool_use', { type: 'thinking', thinking: 'next step' }),
+      asst('tool_use', { type: 'tool_use', id: 't3', name: 'Read', input: { path: 'x' } }),
+      toolResults('t3'),
+      asst('end_turn', { type: 'thinking', thinking: 'done thinking' }),
+      asst('end_turn', { type: 'text', text: 'all done' }),
+    ]
+
+    const early = claudeTurnsFromLines(lines.slice(0, 3))
+    expect(early.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+    expect(early.find((t) => t.role === 'assistant')?.stopReason).toBe('tool_use')
+
+    const prefix = claudeTurnsFromLines(lines.slice(0, -1))
+    const prefixAsst = prefix.filter((t) => t.role === 'assistant')
+    expect(prefixAsst.length).toBeGreaterThan(0)
+    expect(prefixAsst[prefixAsst.length - 1]?.complete).toBeUndefined()
+    expect(prefixAsst[prefixAsst.length - 1]?.stopReason).toBe('end_turn')
+    expect(prefixAsst[prefixAsst.length - 1]?.lastBlock).toBe('thinking')
+
+    const full = claudeTurnsFromLines(lines)
+    const last = full[full.length - 1]
+    expect(last?.role).toBe('assistant')
+    expect(last?.stopReason).toBe('end_turn')
+    expect(last?.lastBlock).toBe('text')
+    expect(last?.complete).toBe(true)
+    expect(last?.text).toBe('all done')
+  })
+
+  it('preserves AskUserQuestion id/input/resultText and stays incomplete while unanswered', () => {
+    const questions = [
+      {
+        question: 'Which auth?',
+        header: 'Auth',
+        multiSelect: false,
+        options: [
+          { label: 'OAuth', description: 'browser' },
+          { label: 'API key', description: 'token' },
+        ],
+      },
+    ]
+    const ask = {
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'ask_1',
+            name: 'AskUserQuestion',
+            input: { questions },
+          },
+        ],
+      },
+    }
+    const unanswered = claudeTurnsFromLines([
+      { type: 'user', message: { content: 'ask me' } },
+      ask,
+    ])
+    const tool = unanswered.find((t) => t.role === 'assistant')?.tools?.[0]
+    expect(tool?.id).toBe('ask_1')
+    expect(
+      (tool?.input as { questions: Array<{ options: Array<{ label: string }> }> }).questions[0]
+        .options[1].label,
+    ).toBe('API key')
+    expect(unanswered.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+
+    const answered = claudeTurnsFromLines([
+      { type: 'user', message: { content: 'ask me' } },
+      ask,
+      {
+        type: 'user',
+        toolUseResult: { answers: [{ question: 0, labels: ['API key'] }] },
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'ask_1',
+              content: 'Your questions have been answered: Auth: API key',
+            },
+          ],
+        },
+      },
+    ])
+    const after = answered.find((t) => t.role === 'assistant')?.tools?.[0]
+    expect(after?.resultText).toBe('Your questions have been answered: Auth: API key')
+    expect(after?.status).toBe('done')
+    expect(answered.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+  })
+
+  it('still summarises away array args on a non-prompt Bash tool', () => {
+    const turns = claudeTurnsFromLines([
+      { type: 'user', message: { content: 'run' } },
+      {
+        type: 'assistant',
+        message: {
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'b1',
+              name: 'Bash',
+              input: { command: 'ls', files: ['a', 'b'] },
+            },
+          ],
+        },
+      },
+    ])
+    const bash = turns.find((t) => t.role === 'assistant')?.tools?.[0]
+    expect(bash?.id).toBe('b1')
+    expect(bash?.args).toEqual({ command: 'ls' })
+    expect(bash?.args).not.toHaveProperty('files')
+    expect(bash?.input).toBeUndefined()
+  })
+})
+
+describe('kimi completion (hook-free turn-complete)', () => {
+  const step = { stepId: 's1' }
+  const user = {
+    type: 'context.append_message',
+    message: { role: 'user', content: [{ type: 'text', text: 'run it' }], origin: { kind: 'user' } },
+  }
+  const ev = (event: Record<string, unknown>): Record<string, unknown> => ({
+    type: 'context.append_loop_event',
+    event: { ...step, ...event },
+  })
+  const usage = { inputOther: 10, inputCacheRead: 0, inputCacheCreation: 0, output: 5 }
+  const toolStep = [
+    { type: 'llm.request', model: 'kimi-k2', kind: 'chat' },
+    ev({ type: 'step.begin' }),
+    ev({ type: 'content.part', part: { type: 'think', think: 'plan' } }),
+    ev({ type: 'tool.call', toolCallId: 'Bash_0', name: 'Bash', args: { command: 'ls' } }),
+    ev({ type: 'step.end', usage }),
+  ]
+  const result = [ev({ type: 'tool.result', toolCallId: 'Bash_0', result: { isError: false } })]
+  const finalStep = [
+    { type: 'llm.request', model: 'kimi-k2', kind: 'chat' },
+    ev({ type: 'step.begin' }),
+    ev({ type: 'content.part', part: { type: 'text', text: 'done' } }),
+    ev({ type: 'step.end', usage }),
+  ]
+  it('a step that issued a tool call is tool_use / not complete; the final text step is end_turn + complete', () => {
+    const mid = kimiTurnsFromLines([user, ...toolStep])
+    const midTurn = mid[mid.length - 1]
+    expect(midTurn.role).toBe('assistant')
+    expect(midTurn.stopReason).toBe('tool_use')
+    expect(midTurn.complete).toBeUndefined()
+    expect(midTurn.tools?.[0]).toMatchObject({ name: 'Bash', status: 'running', id: 'Bash_0' })
+
+    const done = kimiTurnsFromLines([user, ...toolStep, ...result, ...finalStep])
+    const last = done[done.length - 1]
+    expect(last.role).toBe('assistant')
+    expect(last.tools?.[0].status).toBe('done')
+    expect(last.stopReason).toBe('end_turn')
+    expect(last.lastBlock).toBe('text')
+    expect(last.complete).toBe(true)
   })
 })

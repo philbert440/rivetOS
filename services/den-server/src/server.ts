@@ -106,6 +106,7 @@ import {
   wantsHtmlUnauthorized,
   UNAUTHORIZED_HTML,
 } from './auth.js'
+import type { TranscriptWatcher } from './term/transcript-watch.js'
 
 // Push-based transcript sync (seamless modes v2) — constructed by the boot
 // registrar and handed to the gateway channel, so it rides this export path.
@@ -360,6 +361,11 @@ export interface DenServerOptions {
    * Production uses the mTLS cert + mesh-devices roster.
    */
   termIdentity?: (req: IncomingMessage) => { device: string } | null
+  /**
+   * Singleton file-watch transcript pusher. Drivers store it in part 1;
+   * part 2 subscribes per session.
+   */
+  transcriptWatcher?: Pick<TranscriptWatcher, 'subscribe' | 'sync'>
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -653,6 +659,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('claude'),
         log: console.error,
         sheetOverride: config.harnesses?.['claude-code'],
+        transcript: opts.transcriptWatcher,
       }),
       new GrokBuildDriver({
         store: createHarnessStore('grok'),
@@ -662,6 +669,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('grok'),
         log: console.error,
         sheetOverride: config.harnesses?.['grok-build'],
+        transcript: opts.transcriptWatcher,
       }),
       new HermesDriver({
         store: createHarnessStore('hermes'),
@@ -671,6 +679,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('hermes'),
         log: console.error,
         sheetOverride: config.harnesses?.hermes,
+        transcript: opts.transcriptWatcher,
       }),
       new KimiCodeDriver({
         store: createHarnessStore('kimi'),
@@ -680,6 +689,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('kimi'),
         log: console.error,
         sheetOverride: config.harnesses?.['kimi-code'],
+        transcript: opts.transcriptWatcher,
       }),
       new DeepseekHarnessDriver({
         store: createHarnessStore('deepseek'),
@@ -692,6 +702,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('dsh'),
         log: console.error,
         sheetOverride: config.harnesses?.['deepseek-harness'],
+        transcript: opts.transcriptWatcher,
       }),
     )
     for (const driver of builtinDrivers) harnesses.register(driver)

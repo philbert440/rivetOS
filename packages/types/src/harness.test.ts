@@ -29,6 +29,8 @@ const OWNER: Record<HarnessEvent['type'], 'turn' | 'approval' | 'registry'> = {
   'approval-request': 'approval',
   'approval-resolved': 'approval',
   'session-created': 'registry',
+  transcript: 'turn',
+  prompt: 'approval',
 }
 
 describe('prefixSystemPrompt', () => {
@@ -64,6 +66,6 @@ describe('harness event contract', () => {
   })
 
   it('classifies every member of the union', () => {
-    expect(Object.keys(OWNER)).toHaveLength(11)
+    expect(Object.keys(OWNER)).toHaveLength(13)
   })
 })

@@ -14,6 +14,8 @@
  * Source of truth: docs/ARCHITECTURE.md.
  */
 
+import type { HarnessTranscriptTurn } from './gateway-api.js'
+
 /** Left half of SessionId. Fixed product tokens. */
 export const HARNESS_IDS = [
   'claude-code',
@@ -190,6 +192,45 @@ export type HarnessEvent =
       blocked?: boolean
     }
   | HarnessStatusFrame
+  | HarnessTranscriptEvent
+  | HarnessPromptEvent
+
+export interface HarnessAskOption {
+  label: string
+  description?: string
+}
+
+export interface HarnessAskQuestion {
+  question?: string
+  header?: string
+  multiSelect: boolean
+  options: HarnessAskOption[]
+}
+
+export interface HarnessTranscriptEvent {
+  type: 'transcript'
+  sessionId: SessionId
+  rev: number
+  from: number
+  total: number
+  turns: HarnessTranscriptTurn[]
+  command: string
+  truncatedBefore?: true
+  /** snapshots (from === 0) only */
+  contextWindow?: number
+  compactAt?: number
+  contextSource?: 'spawn' | 'observed' | 'default'
+}
+
+export interface HarnessPromptEvent {
+  type: 'prompt'
+  sessionId: SessionId
+  promptId: string
+  kind: 'ask-user'
+  toolName: string
+  questions: HarnessAskQuestion[]
+  resolved?: { at: number; answerText?: string }
+}
 
 /**
  * herdr agent-status fan-in on the harness-session WS (`/api/harness-sessions/ws`).
@@ -205,6 +246,10 @@ export interface HarnessStatusFrame {
   status: 'working' | 'blocked' | 'idle'
   /** epoch ms of this status sample */
   since: number
+  source?: 'herdr' | 'transcript' | 'hooks'
+  phase?: 'thinking' | 'tool' | 'writing' | 'prompt'
+  tool?: { name: string; toolCallId?: string }
+  promptId?: string
 }
 
 /** `idle` = session alive, no turn in flight; drivers emit `session-updated`
