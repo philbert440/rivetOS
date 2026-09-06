@@ -87,7 +87,10 @@ class OutboundPump(
     suspend fun onIdle() = lock.withLock {
         awaitingTurnComplete = false
         pendingOnServer = false
-        pumpLocked()
+        // A speculative drain: an idle edge can land while an accepted turn is
+        // still settling and the den answers 409 — that must not burn one of
+        // the TURN_RETRY_ATTEMPTS meant for real retries.
+        pumpLocked(countAttempt = false)
     }
 
     /**
@@ -104,7 +107,7 @@ class OutboundPump(
         }
     }
 
-    private suspend fun pumpLocked(forceId: String? = null) {
+    private suspend fun pumpLocked(forceId: String? = null, countAttempt: Boolean = true) {
         if (attachmentsUploading()) return
         if (forceId == null) {
             if (awaitingTurnComplete) return
@@ -129,7 +132,7 @@ class OutboundPump(
                 replace(next, next.copy(status = OutboundItem.Status.QUEUED))
                 awaitingTurnComplete = true
                 pendingOnServer = true
-                attempts[next.id] = (attempts[next.id] ?: 0) + 1
+                if (countAttempt) attempts[next.id] = (attempts[next.id] ?: 0) + 1
                 awaitSince = nowMs()
                 return
             }
