@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { HarnessTranscriptTurn } from '@rivetos/types'
-import { messagesFromHarnessTurns } from './harness-turns.js'
+import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
+import {
+  isLiveTurnCommand,
+  liveFromTranscript,
+  messagesFromHarnessTurns,
+} from './harness-turns.js'
 
 const turn = (role: 'user' | 'assistant', text: string): HarnessTranscriptTurn => ({ role, text })
 
@@ -88,5 +92,69 @@ describe('messagesFromHarnessTurns', () => {
     const rebuilt = messagesFromHarnessTurns('s1', [t0], seeded)
     expect(rebuilt[0]).not.toBe(seeded[0])
     expect(rebuilt[0].id).toBe('harness:s1:0')
+  })
+
+  it('skips the trailing live turn when asked', () => {
+    const msgs = messagesFromHarnessTurns(
+      's1',
+      [turn('user', 'hi'), turn('assistant', 'partial')],
+      undefined,
+      true,
+    )
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0].text).toBe('hi')
+  })
+})
+
+describe('isLiveTurnCommand', () => {
+  it('treats claude/kimi/grok/hermes as live-turn stores; dsh is not', () => {
+    expect(isLiveTurnCommand('claude')).toBe(true)
+    expect(isLiveTurnCommand('kimi-code')).toBe(true)
+    expect(isLiveTurnCommand('grok')).toBe(true)
+    expect(isLiveTurnCommand('hermes')).toBe(true)
+    expect(isLiveTurnCommand('dsh')).toBe(false)
+    expect(isLiveTurnCommand('')).toBe(false)
+  })
+})
+
+describe('liveFromTranscript', () => {
+  const SID = 'claude-code:a1b2c3d4-1111-4222-8333-444455556666' as SessionId
+  const working: HarnessStatusFrame = {
+    type: 'status',
+    sessionId: SID,
+    status: 'working',
+    since: 1,
+    phase: 'thinking',
+  }
+
+  it('builds live from a trailing incomplete assistant while working', () => {
+    const live = liveFromTranscript(
+      [
+        turn('user', 'hi'),
+        {
+          role: 'assistant',
+          text: 'partial',
+          thinking: 'plan',
+          lastBlock: 'text',
+          tools: [{ name: 'Bash', status: 'running', id: 't1' }],
+        },
+      ],
+      working,
+    )
+    expect(live?.text).toBe('partial')
+    expect(live?.reasoningText).toBe('plan')
+    expect(live?.tools).toEqual([
+      expect.objectContaining({ id: 't1', name: 'Bash', status: 'running' }),
+    ])
+    expect(live?.activity).toBe('thinking…')
+  })
+
+  it('returns undefined on idle, complete, or a trailing user turn', () => {
+    const incomplete: HarnessTranscriptTurn = { role: 'assistant', text: 'partial' }
+    expect(liveFromTranscript([incomplete], { ...working, status: 'idle' })).toBeUndefined()
+    expect(
+      liveFromTranscript([{ ...incomplete, complete: true }], working),
+    ).toBeUndefined()
+    expect(liveFromTranscript([turn('user', 'hi')], working)).toBeUndefined()
   })
 })

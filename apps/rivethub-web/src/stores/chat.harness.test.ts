@@ -4,7 +4,13 @@
 // import time and none of this needs a real gateway.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { HarnessTranscriptTurn, SessionId } from '@rivetos/types'
+import type {
+  HarnessPromptEvent,
+  HarnessStatusFrame,
+  HarnessTranscriptEvent,
+  HarnessTranscriptTurn,
+  SessionId,
+} from '@rivetos/types'
 
 /** Captured all-sessions socket — the store's only outside dependency. */
 const socket = vi.hoisted(() => ({
@@ -56,6 +62,9 @@ beforeEach(() => {
     outbound: {},
     harnessBound: {},
     approvals: {},
+    agentStatus: {},
+    prompts: {},
+    liveSource: {},
     opened: [],
     drafts: [],
     draftCreatedAt: {},
@@ -127,16 +136,17 @@ describe('syncHarnessTranscript', () => {
     expect(s.transcripts[KEY]?.turns).toHaveLength(2)
   })
 
-  it('keeps a still-queued bubble even when the text matches (TUI twin)', () => {
+  it('keeps a still-sending bubble even when the text matches (TUI twin)', () => {
     const chat = useChat.getState()
     chat.bindHarness(KEY, 'claude-code')
     const id = chat.enqueueOutbound(KEY, 'ship it')
+    chat.markOutboundSending(KEY, id)
 
     chat.syncHarnessTranscript(KEY, [turn('user', 'ship it')])
 
     const s = useChat.getState()
-    // The queued turn has not been sent yet: the store row is someone else's
-    // (typed in the TUI), so eating the bubble would lose the user's message.
+    // The sending turn has not been observed as committed: the store row is
+    // someone else's (typed in the TUI), so eating the bubble would lose it.
     expect(s.messages[KEY]?.filter((m) => m.id === id)).toHaveLength(1)
     expect(s.outbound[KEY]).toHaveLength(1)
   })
@@ -304,7 +314,18 @@ describe('approvals slice', () => {
 })
 
 describe('outbound queue', () => {
-  it('requeues a turn the driver rejected as turn_in_flight, bubble intact', () => {
+  it('does not put a queued turn in messages until sending', () => {
+    const chat = useChat.getState()
+    const id = chat.enqueueOutbound(KEY, 'next please')
+    expect(useChat.getState().messages[KEY]?.some((m) => m.id === id) ?? false).toBe(false)
+    expect(useChat.getState().outbound[KEY]?.[0].status).toBe('queued')
+
+    chat.markOutboundSending(KEY, id)
+    expect(useChat.getState().messages[KEY]?.some((m) => m.id === id)).toBe(true)
+    expect(useChat.getState().outbound[KEY]?.[0].status).toBe('sending')
+  })
+
+  it('requeues a turn the driver rejected as turn_in_flight back into the strip', () => {
     const chat = useChat.getState()
     const id = chat.enqueueOutbound(KEY, 'next please')
     chat.markOutboundSending(KEY, id)
@@ -313,7 +334,7 @@ describe('outbound queue', () => {
     chat.requeueOutbound(KEY, id)
     const s = useChat.getState()
     expect(s.outbound[KEY]?.[0].status).toBe('queued')
-    expect(s.messages[KEY]?.some((m) => m.id === id)).toBe(true)
+    expect(s.messages[KEY]?.some((m) => m.id === id)).toBe(false)
   })
 })
 
@@ -747,5 +768,162 @@ describe('ownerKey affinity', () => {
     // routes the frame to grok instead, where `harnessBound` suppresses it.
     expect(useChat.getState().live[SID]).toBeUndefined()
     expect(useChat.getState().live[grok]).toBeUndefined()
+  })
+})
+
+describe('applyHarnessTranscriptEvent', () => {
+  const ev = (
+    extra: Partial<HarnessTranscriptEvent> &
+      Pick<HarnessTranscriptEvent, 'rev' | 'from' | 'total' | 'turns'>,
+  ): HarnessTranscriptEvent => ({
+    type: 'transcript',
+    sessionId: SID,
+    command: 'claude',
+    ...extra,
+  })
+
+  it('applies a snapshot and stamps liveSource + ctx', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    const ok = useChat.getState().applyHarnessTranscriptEvent(
+      KEY,
+      ev({
+        rev: 1,
+        from: 0,
+        total: 2,
+        turns: [turn('user', 'hi'), turn('assistant', 'hello')],
+        contextWindow: 200_000,
+        compactAt: 160_000,
+        contextSource: 'spawn',
+      }),
+    )
+    expect(ok).toBe(true)
+    const s = useChat.getState()
+    expect(s.liveSource[KEY]).toBe('transcript')
+    expect(s.transcripts[KEY]?.turns.map((t) => t.text)).toEqual(['hi', 'hello'])
+    expect(s.transcripts[KEY]?.contextWindow).toBe(200_000)
+    expect(s.messages[KEY]?.map((m) => m.text)).toEqual(['hi', 'hello'])
+  })
+
+  it('applies a delta and returns false on a rev gap', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    expect(
+      useChat.getState().applyHarnessTranscriptEvent(
+        KEY,
+        ev({
+          rev: 1,
+          from: 0,
+          total: 1,
+          turns: [turn('user', 'hi')],
+        }),
+      ),
+    ).toBe(true)
+    expect(
+      useChat.getState().applyHarnessTranscriptEvent(
+        KEY,
+        ev({
+          rev: 2,
+          from: 1,
+          total: 2,
+          turns: [turn('assistant', 'yo')],
+        }),
+      ),
+    ).toBe(true)
+    expect(useChat.getState().transcripts[KEY]?.turns.map((t) => t.text)).toEqual(['hi', 'yo'])
+    expect(
+      useChat.getState().applyHarnessTranscriptEvent(
+        KEY,
+        ev({
+          rev: 9,
+          from: 4,
+          total: 5,
+          turns: [turn('assistant', 'gap')],
+        }),
+      ),
+    ).toBe(false)
+  })
+
+  it('builds live from a trailing incomplete assistant while working', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    const status: HarnessStatusFrame = {
+      type: 'status',
+      sessionId: SID,
+      status: 'working',
+      since: 1,
+      phase: 'thinking',
+    }
+    useChat.getState().applyAgentStatus(KEY, status)
+    useChat.getState().applyHarnessTranscriptEvent(
+      KEY,
+      ev({
+        rev: 1,
+        from: 0,
+        total: 2,
+        turns: [
+          turn('user', 'hi'),
+          { role: 'assistant', text: 'partial', thinking: 'plan' },
+        ],
+      }),
+    )
+    const s = useChat.getState()
+    expect(s.live[KEY]?.text).toBe('partial')
+    expect(s.live[KEY]?.reasoningText).toBe('plan')
+    expect(s.messages[KEY]?.map((m) => m.text)).toEqual(['hi'])
+    expect(s.liveIsBusy(KEY)).toBe(true)
+
+    useChat.getState().applyAgentStatus(KEY, { ...status, status: 'idle', phase: undefined })
+    const idle = useChat.getState()
+    expect(idle.live[KEY]).toBeUndefined()
+    expect(idle.messages[KEY]?.map((m) => m.text)).toEqual(['hi', 'partial'])
+    expect(idle.liveIsBusy(KEY)).toBe(false)
+  })
+})
+
+describe('applyPromptEvent', () => {
+  it('adds on open (deduped) and removes on resolved', () => {
+    const open: HarnessPromptEvent = {
+      type: 'prompt',
+      sessionId: SID,
+      promptId: 'p1',
+      kind: 'ask-user',
+      toolName: 'AskUserQuestion',
+      questions: [{ multiSelect: false, options: [{ label: 'A' }] }],
+    }
+    const chat = useChat.getState()
+    chat.applyPromptEvent(KEY, open)
+    chat.applyPromptEvent(KEY, open)
+    expect(useChat.getState().prompts[KEY]).toHaveLength(1)
+    chat.applyPromptEvent(KEY, { ...open, resolved: { at: 2 } })
+    expect(useChat.getState().prompts[KEY]).toEqual([])
+  })
+})
+
+describe('transcript-sourced setLive does not stash ask', () => {
+  it('skips the tool-stack stash once liveSource is transcript', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    useChat.getState().applyHarnessTranscriptEvent(KEY, {
+      type: 'transcript',
+      sessionId: SID,
+      rev: 1,
+      from: 0,
+      total: 1,
+      turns: [turn('user', 'hi')],
+      command: 'claude',
+    })
+    useChat.getState().setLive(KEY, {
+      text: '',
+      reasoning: false,
+      reasoningText: '',
+      tools: [
+        {
+          id: 't1',
+          name: 'AskUserQuestion',
+          title: 'asked',
+          status: 'done',
+          args: { questions: [{ question: 'Which?', options: [{ label: 'JWT' }] }] },
+        },
+      ],
+    })
+    useChat.getState().setLive(KEY, undefined)
+    expect(useChat.getState().ask[KEY]).toBeUndefined()
   })
 })

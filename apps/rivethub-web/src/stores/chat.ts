@@ -25,6 +25,9 @@ import { create } from 'zustand'
 import { createJSONStorage, persist } from 'zustand/middleware'
 import {
   mergeTranscriptWindow,
+  type HarnessPromptEvent,
+  type HarnessStatusFrame,
+  type HarnessTranscriptEvent,
   type HarnessTranscriptTurn,
   type SessionMessage,
   type SessionWsFrame,
@@ -35,10 +38,16 @@ import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
 import { foldStream, type LiveTurn } from '../lib/fold-stream.js'
 import { uuidv4 } from '../lib/uuid.js'
-import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
+import {
+  isLiveTurnCommand,
+  liveFromTranscript,
+  messagesFromHarnessTurns,
+} from '../lib/harness-turns.js'
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 import type { HarnessApprovalEvent } from '../lib/harness-fold.js'
 import { denRoomKey } from '../lib/harness-chat.js'
+
+export type LiveSource = 'transcript' | 'hooks'
 
 export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 
@@ -103,6 +112,12 @@ interface ChatState {
   harnessBound: Record<string, true | undefined>
   /** Approvals a control-plane session is blocked on, oldest-first. */
   approvals: Record<string, PendingApproval[] | undefined>
+  /** Last `status` frame per harness session. */
+  agentStatus: Record<string, HarnessStatusFrame | undefined>
+  /** Open AskUserQuestion prompts, oldest-first. */
+  prompts: Record<string, HarnessPromptEvent[] | undefined>
+  /** Where the in-flight turn is coming from. */
+  liveSource: Record<string, LiveSource | undefined>
   /** sessions the user opened — the WS write gate */
   opened: string[]
   wsStatus: WsStatus
@@ -173,7 +188,7 @@ interface ChatState {
   adoptSessionKey: (canonical: string, previous?: string) => string[]
   /** Seamless modes: show the user's turn immediately. Returns optim id. */
   addOptimisticUser: (sessionId: string, text: string, id?: string) => string
-  /** Enqueue a user turn (optimistic bubble + queue). Returns optim id. */
+  /** Enqueue a user turn (queue only — the bubble is minted at send). Returns optim id. */
   enqueueOutbound: (sessionId: string, text: string) => string
   markOutboundSending: (sessionId: string, id: string) => void
   /** Put a sending item back in the queue — the harness answered
@@ -226,6 +241,10 @@ interface ChatState {
   ) => void
   /** Record an approval-request / retire it on approval-resolved. */
   applyApprovalEvent: (sessionId: string, event: HarnessApprovalEvent) => void
+  /** WS transcript frame. `false` → caller should send `{type:'sync'}`. */
+  applyHarnessTranscriptEvent: (sessionId: string, event: HarnessTranscriptEvent) => boolean
+  applyPromptEvent: (sessionId: string, event: HarnessPromptEvent) => void
+  applyAgentStatus: (sessionId: string, event: HarnessStatusFrame) => void
   /** Drop one pending approval (answered locally). */
   clearApproval: (sessionId: string, requestId: string) => void
   connect: (endpointKey: string) => void
@@ -321,7 +340,11 @@ function transcriptPatch(
  * rebuild through `transcriptPatch`. Returns null when a delta can't be
  * applied (missed rev / length mismatch) so the caller can ask for a snapshot.
  */
-function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<ChatState> | null {
+function applyTranscriptFrame(
+  s: ChatState,
+  frame: TranscriptWsFrame,
+  ctx?: SessionContextStamp,
+): Partial<ChatState> | null {
   const sid = frame.session
   const cur = s.transcripts[sid]
   let turns: HarnessTranscriptTurn[]
@@ -357,7 +380,59 @@ function applyTranscriptFrame(s: ChatState, frame: TranscriptWsFrame): Partial<C
   }
   // Validate total against the server's view (excluding our pinned prefix).
   if (turns.length - offset !== frame.total) return null
-  return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev, offset)
+  return transcriptPatch(s, sid, turns, frame.turns, frame.command, frame.rev, offset, ctx)
+}
+
+/**
+ * For transcript-sourced sessions: overlay `live` from the trailing
+ * incomplete assistant turn (and hide that turn from solid messages).
+ * On idle/complete the same turn becomes solid again.
+ */
+function overlayTranscriptLive(
+  s: ChatState,
+  sid: string,
+  base: Partial<ChatState>,
+): Partial<ChatState> {
+  const liveSource = { ...s.liveSource, ...(base.liveSource ?? {}) }
+  if (liveSource[sid] !== 'transcript') return base
+  const transcripts = base.transcripts ?? s.transcripts
+  const turns = transcripts[sid]?.turns ?? []
+  const agentStatus = { ...s.agentStatus, ...(base.agentStatus ?? {}) }
+  const liveTurn = liveFromTranscript(turns, agentStatus[sid])
+  const srcMessages = (base.messages ?? s.messages)[sid] ?? []
+  if (liveTurn) {
+    const skipId = `harness:${sid}:${String(turns.length - 1)}`
+    return {
+      ...base,
+      liveSource,
+      live: { ...(base.live ?? s.live), [sid]: liveTurn },
+      liveTs: { ...(base.liveTs ?? s.liveTs), [sid]: Date.now() },
+      messages: {
+        ...(base.messages ?? s.messages),
+        [sid]: srcMessages.filter((m) => m.id !== skipId),
+      },
+    }
+  }
+  const mapped = messagesFromHarnessTurns(sid, turns, srcMessages)
+  const outbound = (base.outbound ?? s.outbound)[sid] ?? []
+  const bubbles = srcMessages.filter((m) => m.id.startsWith('optim:'))
+  const kept: SessionMessage[] = []
+  for (const b of bubbles) {
+    if (mapped.some((m) => m.id === b.id)) continue
+    const inQueue = outbound.some((o) => o.id === b.id)
+    const matched = mapped.some((m) => m.role === 'user' && m.text === b.text)
+    if (matched && !inQueue) continue
+    kept.push(b)
+  }
+  return {
+    ...base,
+    liveSource,
+    live: { ...(base.live ?? s.live), [sid]: undefined },
+    messages: {
+      ...(base.messages ?? s.messages),
+      [sid]: [...mapped, ...kept],
+    },
+  }
 }
 
 export const useChat = create<ChatState>()(
@@ -372,6 +447,9 @@ export const useChat = create<ChatState>()(
       outbound: {},
       harnessBound: {},
       approvals: {},
+      agentStatus: {},
+      prompts: {},
+      liveSource: {},
       opened: [],
       wsStatus: 'closed',
       wsEpoch: 0,
@@ -453,6 +531,9 @@ export const useChat = create<ChatState>()(
             liveTs: drop(s.liveTs),
             ask: drop(s.ask),
             outbound: drop(s.outbound),
+            agentStatus: drop(s.agentStatus),
+            prompts: drop(s.prompts),
+            liveSource: drop(s.liveSource),
             draftCreatedAt: drop(s.draftCreatedAt) as Record<string, number>,
           }
         })
@@ -505,6 +586,9 @@ export const useChat = create<ChatState>()(
             outbound: move(s.outbound),
             harnessBound: move(s.harnessBound),
             approvals: move(s.approvals),
+            agentStatus: move(s.agentStatus),
+            prompts: move(s.prompts),
+            liveSource: move(s.liveSource),
           }
         })
         return moved
@@ -565,7 +649,6 @@ export const useChat = create<ChatState>()(
 
       enqueueOutbound: (sessionId, text) => {
         const id = `optim:${uuidv4()}`
-        get().addOptimisticUser(sessionId, text, id)
         set((s) => ({
           outbound: {
             ...s.outbound,
@@ -577,7 +660,9 @@ export const useChat = create<ChatState>()(
         return id
       },
 
-      markOutboundSending: (sessionId, id) =>
+      markOutboundSending: (sessionId, id) => {
+        const item = get().outbound[sessionId]?.find((o) => o.id === id)
+        if (item) get().addOptimisticUser(sessionId, item.text, id)
         set((s) => ({
           outbound: {
             ...s.outbound,
@@ -585,7 +670,8 @@ export const useChat = create<ChatState>()(
               o.id === id ? { ...o, status: 'sending' as const } : o,
             ),
           },
-        })),
+        }))
+      },
 
       requeueOutbound: (sessionId, id) =>
         set((s) => ({
@@ -594,6 +680,11 @@ export const useChat = create<ChatState>()(
             [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
               o.id === id ? { ...o, status: 'queued' as const } : o,
             ),
+          },
+          // Queue is not history: a requeued turn waits in the strip, not as a bubble.
+          messages: {
+            ...s.messages,
+            [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
           },
         })),
 
@@ -638,6 +729,14 @@ export const useChat = create<ChatState>()(
 
       setLive: (sessionId, turn) =>
         set((s) => {
+          // Transcript-sourced sessions get ask cards from `prompts`, not a
+          // tool-stack stash. Hook-sourced (and legacy) still stash.
+          if (s.liveSource[sessionId] === 'transcript') {
+            return {
+              live: { ...s.live, [sessionId]: turn },
+              liveTs: { ...s.liveTs, [sessionId]: Date.now() },
+            }
+          }
           // A turn ending takes its ask-user prompt with it unless we stash it:
           // headless ask tools don't block, so the question outlives the turn as
           // the composer's ask card until answered or dismissed. Same rule the
@@ -658,6 +757,10 @@ export const useChat = create<ChatState>()(
         })),
 
       liveIsBusy: (sessionId) => {
+        if (get().liveSource[sessionId] === 'transcript') {
+          const st = get().agentStatus[sessionId]?.status
+          return st === 'working' || st === 'blocked'
+        }
         const L = get().live[sessionId]
         if (!L) return false
         // Placeholder activity alone is not "busy" — many harnesses never bridge
@@ -716,7 +819,13 @@ export const useChat = create<ChatState>()(
       unbindHarness: (sessionId) =>
         set((s) => {
           const { [sessionId]: _bound, ...harnessBound } = s.harnessBound
-          return { harnessBound, approvals: { ...s.approvals, [sessionId]: undefined } }
+          return {
+            harnessBound,
+            approvals: { ...s.approvals, [sessionId]: undefined },
+            prompts: { ...s.prompts, [sessionId]: undefined },
+            agentStatus: { ...s.agentStatus, [sessionId]: undefined },
+            liveSource: { ...s.liveSource, [sessionId]: undefined },
+          }
         }),
 
       syncHarnessTranscript: (sessionId, turns, ctx) =>
@@ -768,6 +877,62 @@ export const useChat = create<ChatState>()(
           return { approvals: { ...s.approvals, [sessionId]: [...pending, event] } }
         }),
 
+      applyHarnessTranscriptEvent: (sessionId, event) => {
+        const frame: TranscriptWsFrame = {
+          kind: 'transcript',
+          session: sessionId,
+          rev: event.rev,
+          from: event.from,
+          turns: event.turns,
+          total: event.total,
+          command: event.command,
+          ...(event.truncatedBefore ? { truncatedBefore: true as const } : {}),
+        }
+        const ctx =
+          event.from === 0
+            ? {
+                contextWindow: event.contextWindow,
+                compactAt: event.compactAt,
+                contextSource: event.contextSource,
+              }
+            : undefined
+        const s = get()
+        const patch = applyTranscriptFrame(s, frame, ctx)
+        if (!patch) return false
+        const already = s.liveSource[sessionId]
+        const nextSource: LiveSource =
+          already === 'transcript' || isLiveTurnCommand(event.command) ? 'transcript' : 'hooks'
+        set((cur) =>
+          overlayTranscriptLive(cur, sessionId, {
+            ...patch,
+            liveSource: { ...cur.liveSource, [sessionId]: nextSource },
+          }),
+        )
+        return true
+      },
+
+      applyPromptEvent: (sessionId, event) =>
+        set((s) => {
+          const pending = s.prompts[sessionId] ?? []
+          if (event.resolved) {
+            return {
+              prompts: {
+                ...s.prompts,
+                [sessionId]: pending.filter((p) => p.promptId !== event.promptId),
+              },
+            }
+          }
+          if (pending.some((p) => p.promptId === event.promptId)) return s
+          return { prompts: { ...s.prompts, [sessionId]: [...pending, event] } }
+        }),
+
+      applyAgentStatus: (sessionId, event) =>
+        set((s) =>
+          overlayTranscriptLive(s, sessionId, {
+            agentStatus: { ...s.agentStatus, [sessionId]: event },
+          }),
+        ),
+
       clearApproval: (sessionId, requestId) =>
         set((s) => ({
           approvals: {
@@ -789,6 +954,9 @@ export const useChat = create<ChatState>()(
             outbound: {},
             harnessBound: {},
             approvals: {},
+            agentStatus: {},
+            prompts: {},
+            liveSource: {},
             opened: [],
             drafts: [],
             draftCreatedAt: {},

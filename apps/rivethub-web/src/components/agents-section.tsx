@@ -492,7 +492,6 @@ function AgentRow({
       return rows.filter((r) => r !== null)
     },
     staleTime: 30_000,
-    refetchInterval: 60_000,
     retry: 0,
   })
   const activity = aggregateAgentActivity(statuses ?? [], baseUrl)
@@ -634,7 +633,6 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       return allAgents
     },
     placeholderData: (prev) => prev,
-    refetchInterval: 60_000,
   })
 
   const agents = nodeQueries.data ?? []

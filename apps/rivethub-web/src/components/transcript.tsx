@@ -256,10 +256,8 @@ const Bubble = memo(function Bubble(props: {
   accent?: string
   /** Deep-history row: allowed to skip offscreen layout/paint. */
   offscreenSkip?: boolean
-  /** Outbound queue status for optimistic user turns. */
-  outboundStatus?: 'queued' | 'sending'
-  onInject?: (id: string) => void
-  onCancel?: (id: string) => void
+  /** Outbound status for optimistic user turns — sending only (queued lives in QueuedStrip). */
+  outboundStatus?: 'sending'
 }): JSX.Element {
   const mine = props.msg.role === 'user'
   const tools = useMemo(
@@ -280,39 +278,13 @@ const Bubble = memo(function Bubble(props: {
       {mine ? (
         // User text is plain — right-aligned bubble, no markdown.
         <div className="relative max-w-[85%]">
-          <div
-            className={`whitespace-pre-wrap rounded-lg border px-4 py-2.5 text-sm ${
-              props.outboundStatus === 'queued'
-                ? 'border-line bg-panel-2/50 text-ink-dim'
-                : 'border-em-dim/40 bg-em-dim/10'
-            }`}
-          >
+          <div className="whitespace-pre-wrap rounded-lg border border-em-dim/40 bg-em-dim/10 px-4 py-2.5 text-sm">
             {props.msg.text}
           </div>
           {props.msg.text && <CopyMessage text={props.msg.text} />}
-          {props.outboundStatus && (
+          {props.outboundStatus === 'sending' && (
             <div className="mt-1 flex items-center justify-end gap-2 px-1 font-mono text-[10px] text-ink-dim">
-              <span>{props.outboundStatus === 'queued' ? 'queued' : 'sending…'}</span>
-              {props.outboundStatus === 'queued' && props.onInject && (
-                <button
-                  type="button"
-                  onClick={() => props.onInject?.(props.msg.id)}
-                  className="text-em hover:underline"
-                  title="Inject this message into the harness now"
-                >
-                  inject
-                </button>
-              )}
-              {props.onCancel && (
-                <button
-                  type="button"
-                  onClick={() => props.onCancel?.(props.msg.id)}
-                  className="text-ink-dim hover:text-red hover:underline"
-                  title="Remove from the send queue"
-                >
-                  cancel
-                </button>
-              )}
+              <span>sending…</span>
             </div>
           )}
         </div>
@@ -334,6 +306,22 @@ const Bubble = memo(function Bubble(props: {
     </Row>
   )
 })
+
+/** Status line when the agent is blocked/prompting with no live turn yet. */
+export function AgentStatusLine(props: { text: string; tool?: string }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2 px-1 font-mono text-[11px] text-ink-dim">
+      <span className="relative flex size-2">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-em opacity-60" />
+        <span className="relative inline-flex size-2 rounded-full bg-em" />
+      </span>
+      <span>
+        {props.text}
+        {props.tool ? ` · ${props.tool}` : ''}
+      </span>
+    </div>
+  )
+}
 
 function LiveBubble(props: { turn: LiveTurn; accent?: string }): JSX.Element {
   const hasTools = props.turn.tools.some((t) => t.status === 'running')
@@ -393,12 +381,10 @@ const CV_EDGE_ROWS = 12
 export function Transcript(props: {
   messages: SessionMessage[]
   live?: LiveTurn
-  /** optim message id → outbound queue status */
-  outbound?: Record<string, 'queued' | 'sending'>
-  /** Force-inject a queued bubble now (bypass busy wait). */
-  onInjectOutbound?: (id: string) => void
-  /** Drop a queued/sending bubble without sending. */
-  onCancelOutbound?: (id: string) => void
+  /** optim message id → outbound sending badge */
+  outbound?: Record<string, 'sending'>
+  /** Blocked/prompt with no live turn — small line under the last message. */
+  statusLine?: { text: string; tool?: string }
   /** per-harness bot accent (claude clay / grok grey / local emerald) */
   accent?: string
 }): JSX.Element {
@@ -459,11 +445,12 @@ export function Transcript(props: {
               msg={m}
               offscreenSkip={i < props.messages.length - CV_EDGE_ROWS}
               outboundStatus={props.outbound?.[m.id]}
-              onInject={props.outbound?.[m.id] ? props.onInjectOutbound : undefined}
-              onCancel={props.outbound?.[m.id] ? props.onCancelOutbound : undefined}
             />
           ))}
           {props.live && <LiveBubble turn={props.live} accent={props.accent} />}
+          {!props.live && props.statusLine && (
+            <AgentStatusLine text={props.statusLine.text} tool={props.statusLine.tool} />
+          )}
           <div ref={endRef} />
         </div>
       </div>

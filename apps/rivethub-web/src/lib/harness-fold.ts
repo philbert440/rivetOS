@@ -15,9 +15,24 @@
  * the chat store (see `stores/chat.ts` `approvals`).
  */
 
-import type { HarnessEvent } from '@rivetos/types'
+import type { HarnessEvent, HarnessStatusFrame } from '@rivetos/types'
 import { humanToolTitle, type ToolArgs } from './tool-titles.js'
 import { emptyTurn, nextReasoningText, type LiveToolEntry, type LiveTurn } from './fold-stream.js'
+
+/** Status frame → live activity line (hook-sourced fold and transcript live). */
+export function statusActivity(
+  event: Pick<HarnessStatusFrame, 'status' | 'phase' | 'tool'>,
+): string | undefined {
+  if (event.status === 'blocked' || event.phase === 'prompt') return 'waiting for you'
+  if (event.phase === 'thinking') return 'thinking…'
+  if (event.phase === 'tool') {
+    const name = event.tool?.name
+    return name ? `running ${humanToolTitle(name)}…` : 'working…'
+  }
+  if (event.phase === 'writing') return 'writing…'
+  if (event.status === 'working') return 'working…'
+  return undefined
+}
 
 function toolArgs(input: unknown): ToolArgs {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
@@ -82,11 +97,16 @@ export function foldHarnessEvent(
       return { ...base, activity: `⚠ ${event.message || event.code}` }
     case 'turn-complete':
       return undefined
+    case 'status': {
+      // Hook-sourced sessions: status frames refine the activity line.
+      if (event.status === 'idle') return turn ? { ...base, activity: undefined } : turn
+      return { ...base, activity: statusActivity(event) }
+    }
     case 'session-updated':
       // A session that ended or errored out has no live turn left to show.
       return event.status === 'ended' || event.status === 'error' ? undefined : base
     default:
-      // session-created / approval-request / approval-resolved: not turn state.
+      // session-created / approval-request / approval-resolved / transcript / prompt: not turn state.
       return turn
   }
 }
