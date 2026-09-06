@@ -132,7 +132,7 @@ export function grokTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
       continue
     }
 
-    if (type === 'tool_result') {
+    if (type === 'tool_result' || type === 'tool') {
       if (cur) cur.lastBlock = 'tool_result'
       const id = typeof obj.tool_call_id === 'string' ? obj.tool_call_id : undefined
       const entry = id ? toolsById.get(id) : undefined
@@ -190,12 +190,9 @@ export function grokTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
           entry.id = parsed.id
           toolsById.set(parsed.id, entry)
         }
-        if (isPromptToolName(parsed.name)) {
-          entry.input = promptInput(parsed.args)
-        } else {
-          const args = summarizeTurnArgs(parsed.args)
-          if (args) entry.args = args
-        }
+        const args = summarizeTurnArgs(parsed.args)
+        if (args) entry.args = args
+        if (isPromptToolName(parsed.name)) entry.input = promptInput(parsed.args)
         cur.tools?.push(entry)
       }
       cur.lastBlock = 'tool_use'
@@ -217,6 +214,9 @@ export const grokAdapter: HarnessAdapter = {
   store: {
     parseLines(lines: string[]): HarnessTranscriptTurn[] {
       return grokTurnsFromLines(objectsFromLines(lines))
+    },
+    parseObjects(objects: Record<string, unknown>[]): HarnessTranscriptTurn[] {
+      return grokTurnsFromLines(objects)
     },
   },
   promptToolNames: [],

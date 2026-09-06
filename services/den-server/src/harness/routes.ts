@@ -684,7 +684,7 @@ export function createHarnessRoutes(opts: {
     }
 
     if (action === 'prompts') {
-      if (!requestId) return json(res, 404, { error: 'promptId is required' })
+      if (!requestId) return json(res, 400, { error: 'promptId is required' })
       const source = driver as unknown as Partial<HarnessPromptSource>
       if (typeof source.answerPrompt !== 'function') {
         return fail(
@@ -824,6 +824,7 @@ export function createHarnessRoutes(opts: {
             // a rotation mid-stream never costs the client its socket
             // (§ Contract semantics, "Subscriptions survive rotation").
             attach(ws, (sink) => registry.subscribeSession(target.sessionId, sink))
+            let lastSyncAt = 0
             ws.on('message', (data: Buffer | string) => {
               let msg: unknown
               try {
@@ -833,6 +834,11 @@ export function createHarnessRoutes(opts: {
               }
               if (!msg || typeof msg !== 'object') return
               if ((msg as { type?: unknown }).type !== 'sync') return
+              // A sync re-snapshots every sink on the session — bound a chatty
+              // client to one per 2 s (a real rev gap needs exactly one).
+              const now = Date.now()
+              if (now - lastSyncAt < 2_000) return
+              lastSyncAt = now
               const sync = target.driver as unknown as Partial<HarnessSyncSource>
               sync.syncTranscript?.(target.sessionId)
             })

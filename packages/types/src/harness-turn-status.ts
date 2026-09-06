@@ -42,9 +42,11 @@ export function deriveTurnStatus(
     return { inFlight: true, phase: 'tool', tool }
   }
 
-  if (last.lastBlock === 'thinking') return { inFlight: true, phase: 'thinking' }
-  if (last.lastBlock === 'text' && !last.complete) return { inFlight: true, phase: 'writing' }
+  // `complete` first: a final line whose blocks are [text, thinking] is done
+  // even though its last block is a thinking one.
   if (last.complete) return { inFlight: false }
+  if (last.lastBlock === 'thinking') return { inFlight: true, phase: 'thinking' }
+  if (last.lastBlock === 'text') return { inFlight: true, phase: 'writing' }
   // Trailing assistant with neither stopReason nor lastBlock (grok/hermes/dsh).
   return {}
 }

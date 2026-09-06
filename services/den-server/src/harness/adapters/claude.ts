@@ -169,12 +169,11 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
           entry.id = block.id
           toolsById.set(block.id, entry)
         }
-        if (isPromptToolName(block.name)) {
-          entry.input = promptInput(block.input)
-        } else {
-          const args = summarizeTurnArgs(block.input)
-          if (args) entry.args = args
-        }
+        // `args` (summarised) for every tool — clients title tool rows from it;
+        // prompt-class tools ALSO carry the full structured `input`.
+        const args = summarizeTurnArgs(block.input)
+        if (args) entry.args = args
+        if (isPromptToolName(block.name)) entry.input = promptInput(block.input)
         cur.tools?.push(entry)
         cur.lastBlock = 'tool_use'
       }
@@ -198,6 +197,9 @@ export const claudeAdapter: HarnessAdapter = {
   store: {
     parseLines(lines: string[]): HarnessTranscriptTurn[] {
       return claudeTurnsFromLines(objectsFromLines(lines))
+    },
+    parseObjects(objects: Record<string, unknown>[]): HarnessTranscriptTurn[] {
+      return claudeTurnsFromLines(objects)
     },
   },
   promptToolNames: ['AskUserQuestion'],

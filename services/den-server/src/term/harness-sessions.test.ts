@@ -17,6 +17,7 @@ import {
   readKimiTranscript,
   resolveHarnessStore,
   setTranscriptMaxBytesForTest,
+  kimiTurnsFromLines,
 } from './harness-sessions.js'
 
 const dirs: string[] = []
@@ -1025,6 +1026,9 @@ describe('readHarnessTranscript', () => {
         {
           role: 'assistant',
           text: 'looks good',
+          stopReason: 'end_turn',
+          lastBlock: 'text',
+          complete: true,
           thinking: 'weighing it',
           tools: [
             {
@@ -1180,5 +1184,48 @@ describe('readHarnessTranscript', () => {
     expect(bash?.args).toEqual({ command: 'ls' })
     expect(bash?.args).not.toHaveProperty('files')
     expect(bash?.input).toBeUndefined()
+  })
+})
+
+describe('kimi completion (hook-free turn-complete)', () => {
+  const step = { stepId: 's1' }
+  const user = {
+    type: 'context.append_message',
+    message: { role: 'user', content: [{ type: 'text', text: 'run it' }], origin: { kind: 'user' } },
+  }
+  const ev = (event: Record<string, unknown>): Record<string, unknown> => ({
+    type: 'context.append_loop_event',
+    event: { ...step, ...event },
+  })
+  const usage = { inputOther: 10, inputCacheRead: 0, inputCacheCreation: 0, output: 5 }
+  const toolStep = [
+    { type: 'llm.request', model: 'kimi-k2', kind: 'chat' },
+    ev({ type: 'step.begin' }),
+    ev({ type: 'content.part', part: { type: 'think', think: 'plan' } }),
+    ev({ type: 'tool.call', toolCallId: 'Bash_0', name: 'Bash', args: { command: 'ls' } }),
+    ev({ type: 'step.end', usage }),
+  ]
+  const result = [ev({ type: 'tool.result', toolCallId: 'Bash_0', result: { isError: false } })]
+  const finalStep = [
+    { type: 'llm.request', model: 'kimi-k2', kind: 'chat' },
+    ev({ type: 'step.begin' }),
+    ev({ type: 'content.part', part: { type: 'text', text: 'done' } }),
+    ev({ type: 'step.end', usage }),
+  ]
+  it('a step that issued a tool call is tool_use / not complete; the final text step is end_turn + complete', () => {
+    const mid = kimiTurnsFromLines([user, ...toolStep])
+    const midTurn = mid[mid.length - 1]
+    expect(midTurn.role).toBe('assistant')
+    expect(midTurn.stopReason).toBe('tool_use')
+    expect(midTurn.complete).toBeUndefined()
+    expect(midTurn.tools?.[0]).toMatchObject({ name: 'Bash', status: 'running', id: 'Bash_0' })
+
+    const done = kimiTurnsFromLines([user, ...toolStep, ...result, ...finalStep])
+    const last = done[done.length - 1]
+    expect(last.role).toBe('assistant')
+    expect(last.tools?.[0].status).toBe('done')
+    expect(last.stopReason).toBe('end_turn')
+    expect(last.lastBlock).toBe('text')
+    expect(last.complete).toBe(true)
   })
 })

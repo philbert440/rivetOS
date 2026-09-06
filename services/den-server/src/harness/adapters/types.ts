@@ -13,6 +13,9 @@ export interface HarnessAdapter {
   store: {
     /** Parse a resolved store (tail window already applied by the caller) into turns. */
     parseLines?(lines: string[]): HarnessTranscriptTurn[] // claude, kimi, grok (JSONL stores)
+    /** Same fold over ALREADY-PARSED JSONL objects — the watcher hot path has
+     *  them from the tail-window reader; never stringify to re-parse. */
+    parseObjects?(objects: Record<string, unknown>[]): HarnessTranscriptTurn[]
     /** hermes (sqlite), dsh (empty). sessionId is the den join key; hermes rows are keyed by it. */
     readTurns?(
       ref: HarnessStoreRef,

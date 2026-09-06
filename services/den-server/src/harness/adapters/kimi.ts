@@ -41,6 +41,8 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
   let completion = 0
   let cached = 0
   let model = ''
+  /** A text part landed on the current step — `complete` needs a final text line. */
+  let hadText = false
 
   const finishAssistant = (): void => {
     if (cur) {
@@ -55,9 +57,20 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
         cur.usage = { promptTokens: prompt, completionTokens: completion, cachedTokens: cached }
       }
       if (model) cur.model = model
+      // Hook-free turn-complete: the last step ended with no tool call pending
+      // (`end_turn`) and produced text. A step that issued tool calls ends as
+      // `tool_use`; its results and the next step follow.
+      if (
+        cur.stopReason === 'end_turn' &&
+        hadText &&
+        !cur.tools?.some((t) => t.status === 'running')
+      ) {
+        cur.complete = true
+      }
       if (cur.text || cur.thinking || cur.tools) turns.push(cur)
     }
     cur = null
+    hadText = false
     thinking = ''
     prompt = 0
     completion = 0
@@ -92,8 +105,11 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
         cur ??= { role: 'assistant', text: '', tools: [] }
         if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
           cur.text = cur.text ? cur.text + '\n\n' + part.text.trim() : part.text.trim()
+          cur.lastBlock = 'text'
+          hadText = true
         } else if (part.type === 'think' && typeof part.think === 'string') {
           thinking += part.think
+          cur.lastBlock = 'thinking'
         }
         break
       }
@@ -108,6 +124,7 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
           toolsById.set(event.toolCallId, entry)
         }
         cur.tools?.push(entry)
+        cur.lastBlock = 'tool_use'
         break
       }
       case 'tool.result': {
@@ -116,9 +133,14 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
         if (!entry) break
         const result = event.result as { isError?: unknown } | undefined
         entry.status = result?.isError === true ? 'error' : 'done'
+        if (cur) cur.lastBlock = 'tool_result'
         break
       }
       case 'step.end': {
+        // The step's stop reason: tool calls still pending → more steps follow.
+        if (cur) {
+          cur.stopReason = cur.tools?.some((t) => t.status === 'running') ? 'tool_use' : 'end_turn'
+        }
         // kimi's usage split: `inputOther` is the uncached prompt, and the two
         // cache counters are prompt tokens too — summed the same way the Claude
         // reader sums input + cache_read + cache_creation, so a token count
@@ -145,6 +167,9 @@ export const kimiAdapter: HarnessAdapter = {
   store: {
     parseLines(lines: string[]): HarnessTranscriptTurn[] {
       return kimiTurnsFromLines(objectsFromLines(lines))
+    },
+    parseObjects(objects: Record<string, unknown>[]): HarnessTranscriptTurn[] {
+      return kimiTurnsFromLines(objects)
     },
   },
   promptToolNames: [],

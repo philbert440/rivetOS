@@ -1123,7 +1123,9 @@ export async function readHarnessStoreAt(
   if (!adapter) return { id, command: '', turns: [] }
   if (adapter.store.parseLines) {
     const parsed = await parseJsonlObjects(ref.path)
-    const turns = adapter.store.parseLines(parsed.objects.map((o) => JSON.stringify(o)))
+    const turns = adapter.store.parseObjects
+      ? adapter.store.parseObjects(parsed.objects)
+      : adapter.store.parseLines(parsed.objects.map((o) => JSON.stringify(o)))
     return withTruncated({ id, command: ref.command, turns }, parsed.truncated)
   }
   if (adapter.store.readTurns) {

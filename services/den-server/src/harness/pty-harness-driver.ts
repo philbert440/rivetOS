@@ -368,7 +368,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // TUI, and nothing on the den wire carries an approval request, let
       // alone a decision channel. Never faked true.
       approvals: false,
-      liveStream: !!deps.events,
+      // Honest: a live turn comes from the hook tap OR from a store whose
+      // adapter exposes in-flight turns (claude/kimi/grok/hermes) via the
+      // transcript watcher (`deps.transcript`, wired on every node with den).
+      liveStream:
+        !!deps.events || (!!deps.transcript && this.adapter?.capabilities().liveTurn === true),
       listSessions: true,
     }
     this.refreshSheet()
@@ -1211,10 +1215,15 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         clearTimeout(carried.transcriptHoldTimer)
         carried.transcriptHoldTimer = undefined
       }
+      const hadTranscriptSub = carried.transcriptOff !== undefined
       carried.transcriptOff?.()
       carried.transcriptOff = undefined
       if (state.turnInFlight) this.armQuietWindow(next)
       this.live.delete(previous)
+      // The chat must not go dark for the rest of a turn that spans a rotation:
+      // re-subscribe under the successor id and re-arm the stale release.
+      if (hadTranscriptSub) this.ensureTranscriptSub(next)
+      if (state.turnInFlight && hadTranscriptSub) this.armStaleTimer(next)
     }
     const status = this.statusFor(next)
     // The rotation event is also the successor's first status report, so record
@@ -1323,6 +1332,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.transcriptHoldTimer = undefined
       state.transcriptOff?.()
       state.transcriptOff = undefined
+      state.turns = undefined // nothing feeds it any more; the next subscribe snapshots
     }, TRANSCRIPT_HOLD_MS)
     state.transcriptHoldTimer.unref?.()
   }
@@ -1361,8 +1371,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // Un-echoed explicit claim: has the store advanced past it yet?
     if (state.turnInFlight && state.claimAt !== undefined) {
       const last = full[full.length - 1]
+      // Growth past the claim proves the injected turn landed. When the tail
+      // window truncated (length can shrink), fall back to the content test.
       const echoed =
-        state.claimTurns !== undefined
+        state.claimTurns !== undefined && !f.truncatedBefore
           ? full.length > state.claimTurns
           : last !== undefined && (last.role === 'user' || last.complete !== true)
       if (echoed) {

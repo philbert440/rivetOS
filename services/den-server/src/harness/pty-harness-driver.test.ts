@@ -566,11 +566,13 @@ function fakeTranscript(): {
   sync: (session: string) => void
   emit: (session: string, frame: TranscriptWsFrame) => void
   synced: string[]
+  subscribed: (session: string) => boolean
 } {
   const bySession = new Map<string, Set<(f: TranscriptWsFrame) => void>>()
   const synced: string[] = []
   return {
     synced,
+    subscribed: (session) => (bySession.get(session)?.size ?? 0) > 0,
     subscribe(session, sink) {
       let set = bySession.get(session)
       if (!set) {
@@ -619,6 +621,39 @@ describe('pty-harness-driver transcript tracker', () => {
       ...partial,
     }
   }
+
+  it('liveStream is honest: true with a transcript dep on a live-turn store, even without a hook tap', () => {
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    expect(driver.capabilities.liveStream).toBe(true)
+    driver.close()
+    const noTx = new ClaudeCodeDriver({ store: fakeStore([]), turnQuietMs: 0 })
+    expect(noTx.capabilities.liveStream).toBe(false)
+    noTx.close()
+  })
+
+  it('a rotation re-subscribes the transcript watcher under the successor id', () => {
+    class Rotating extends ClaudeCodeDriver {
+      doRotate(from: string, to: string): void {
+        this.rotate(from, to)
+      }
+      nativeOf(s: SessionId): string {
+        return this.native(s)
+      }
+      sidOf(n: string): SessionId {
+        return this.sid(n)
+      }
+    }
+    const tx = fakeTranscript()
+    const driver = new Rotating({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    driver.subscribe(sid, () => undefined)
+    expect(tx.subscribed(sid)).toBe(true)
+    const next = 'bbbbbbbb-0000-4000-8000-0000000000b2'
+    driver.doRotate(driver.nativeOf(sid), next)
+    expect(tx.subscribed(sid)).toBe(false)
+    expect(tx.subscribed(driver.sidOf(next))).toBe(true)
+    driver.close()
+  })
 
   it('subscribe succeeds with only a transcript dep', () => {
     const tx = fakeTranscript()

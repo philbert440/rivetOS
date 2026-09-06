@@ -74,12 +74,9 @@ function asToolEntry(
 ): HarnessTranscriptTool {
   const entry: HarnessTranscriptTool = { name: parsed.name, status }
   if (parsed.id) entry.id = parsed.id
-  if (isPromptToolName(parsed.name)) {
-    entry.input = promptInput(parsed.args)
-  } else {
-    const args = summarizeTurnArgs(parsed.args)
-    if (args) entry.args = args
-  }
+  const args = summarizeTurnArgs(parsed.args)
+  if (args) entry.args = args
+  if (isPromptToolName(parsed.name)) entry.input = promptInput(parsed.args)
   return entry
 }
 
@@ -102,7 +99,7 @@ export function readHermesTurns(id: string): HarnessTurn[] {
       .prepare(
         `SELECT * FROM messages
          WHERE session_id = ?
-         ORDER BY timestamp ASC`,
+         ORDER BY timestamp ASC, rowid ASC`,
       )
       .all(id)
     const turns: HarnessTurn[] = []
