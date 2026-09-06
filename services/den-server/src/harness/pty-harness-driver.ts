@@ -264,7 +264,6 @@ export interface LiveState {
   /** Last herdr screen read for a permission prompt — cooldown against a
    *  chatty `blocked` stream (each read is a herdr subprocess). */
   captureAt?: number
-  approvalIdleTimer?: NodeJS.Timeout
   approvalSeq: number
   staleTimer?: NodeJS.Timeout
   lastStoreChangeAt?: number
@@ -748,6 +747,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       : adapter.approvalKeys(decision)
     this.injectKeys(pty, ptyId, keys)
     state.pendingApproval = undefined
+    // The dialog is being answered: the next `blocked` may be a NEW prompt —
+    // let it read the screen immediately instead of eating the cooldown.
+    state.captureAt = undefined
     this.emit(native, {
       type: 'approval-resolved',
       sessionId: this.sid(native),
@@ -1411,6 +1413,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const pending = state?.pendingApproval
     if (!pending) return
     state.pendingApproval = undefined
+    state.captureAt = undefined
     this.emit(native, {
       type: 'approval-resolved',
       sessionId: this.sid(native),

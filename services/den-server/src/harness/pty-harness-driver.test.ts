@@ -1082,6 +1082,32 @@ describe('pty-harness-driver permission prompts', () => {
     driver.close()
   })
 
+  it('answering a prompt resets the capture cooldown so a second prompt right after is read', async () => {
+    const pty = fakePty()
+    let reads = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => {
+        reads += 1
+        return CLAUDE_PERM_SCREEN
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    await driver.resolveApproval(sid, `perm:${UUID}:1`, 'allow')
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 2 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(reads).toBe(2)
+    driver.close()
+  })
+
   it('a screen read that lands after herdr left blocked mints no card (race re-check)', async () => {
     const pty = fakePty()
     let release: (s: string) => void = () => undefined
