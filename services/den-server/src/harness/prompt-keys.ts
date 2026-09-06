@@ -12,6 +12,9 @@ import { HarnessError, type ApprovalDecision, type HarnessAskQuestion } from '@r
 export const CLAUDE_TUI_KEYS_VERIFIED = '2.1.263'
 
 const MAX_DIGIT_OPTIONS = 9
+/** \r, \n, ESC … inside free text would submit early or cancel the prompt. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
 
 export type PromptAnswer = { question: number; labels: string[]; other?: string }
 
@@ -26,9 +29,6 @@ function bad(message: string): never {
 function optionDigit(questions: HarnessAskQuestion[], qi: number, label: string): string {
   const q = questions[qi]
   if (!q) bad(`unknown question index ${String(qi)}`)
-  if (q.options.length > MAX_DIGIT_OPTIONS) {
-    bad(`question ${String(qi)} has more than ${String(MAX_DIGIT_OPTIONS)} options`)
-  }
   const idx = q.options.findIndex((o) => o.label === label)
   if (idx < 0) bad(`unknown label ${JSON.stringify(label)}`)
   if (idx >= MAX_DIGIT_OPTIONS) {
@@ -72,6 +72,7 @@ export function claudeAskAnswerKeys(
 
   const chunks: Uint8Array[] = []
   const onlyOne = questions.length === 1
+  let sawMultiSelect = false
 
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i]
@@ -79,23 +80,28 @@ export function claudeAskAnswerKeys(
     if (!ans) bad(`missing answer for question ${String(i)}`)
     const other = typeof ans.other === 'string'
     if (!other && ans.labels.length === 0) bad(`question ${String(i)} has no labels`)
+    if (other && CONTROL_CHARS.test(ans.other!)) {
+      bad(`question ${String(i)} free text must not contain control characters`)
+    }
 
     if (q.multiSelect) {
+      // Spike 2 (17:30): "Type something" inside a multiSelect ticks a box and
+      // opens the field, but the answer never registers ("You have not
+      // answered all questions") — refuse until it is pinned.
+      if (other) bad(`question ${String(i)}: free text on a multiSelect question is not supported`)
+      sawMultiSelect = true
       for (const label of ans.labels) chunks.push(enc(optionDigit(questions, i, label)))
-      if (other) {
-        chunks.push(enc(otherDigit(q, i)))
-        chunks.push(enc(ans.other!))
-        chunks.push(enc('\r'))
-      }
-      // Digit toggles do not auto-advance; Tab moves to the next tab / Submit.
-      // A single-question screen has no Tab row.
-      if (!onlyOne) chunks.push(enc('\t'))
+      // Digit toggles do not auto-advance; Tab moves to the next tab — or, with
+      // one question, straight to the Submit tab (spike 2).
+      chunks.push(enc('\t'))
     } else if (other) {
+      // Verified only for ONE single-select question: digit, text, Enter
+      // submits. Whether Enter advances or submits with several questions was
+      // never exercised — refuse rather than guess.
+      if (!onlyOne) bad(`question ${String(i)}: free text with several questions is not supported`)
       chunks.push(enc(otherDigit(q, i)))
       chunks.push(enc(ans.other!))
       chunks.push(enc('\r'))
-      // Single-select Other: Enter submits the field. With one question that
-      // also submits the prompt (no Submit tab). With several, Enter advances.
     } else {
       if (ans.labels.length !== 1) {
         bad(`question ${String(i)} single-select needs exactly one label`)
@@ -105,10 +111,34 @@ export function claudeAskAnswerKeys(
     }
   }
 
-  // Submit tab: present when there is more than one question. One-question
-  // digit pick submits immediately; one-question Other submits on Enter.
-  if (!onlyOne) chunks.push(enc('1'))
+  // Submit tab ("Review your answers" → `1`): present with several questions
+  // and whenever a multiSelect was involved (Tab lands on it). A lone
+  // single-select digit pick submits on the digit; lone Other on its Enter.
+  if (!onlyOne || sawMultiSelect) chunks.push(enc('1'))
   return chunks
+}
+
+/**
+ * Pick the key for a decision from the OPTIONS SCRAPED OFF THE SCREEN, by
+ * label, so grok's inverted order and kimi's unverified rows self-correct.
+ * Undefined when no label matches — the caller falls back to the adapter's
+ * fixed map.
+ */
+export function approvalKeyFromOptions(
+  options: { key: string; label: string }[] | undefined,
+  decision: ApprovalDecision,
+): string | undefined {
+  if (!options?.length) return undefined
+  const remember = /don'?t ask|always|never ask|for this session|this session/i
+  const yes = /^(yes|proceed|approve|allow|accept)\b/i
+  const no = /^(no|reject|deny|decline)\b/i
+  const pick = (pred: (label: string) => boolean): string | undefined =>
+    options.find((o) => pred(o.label))?.key
+  if (decision === 'allow-session') return pick((l) => remember.test(l) && !no.test(l))
+  if (decision === 'allow') return pick((l) => yes.test(l) && !remember.test(l))
+  if (decision === 'deny')
+    return pick((l) => no.test(l) && !/feedback/i.test(l)) ?? pick((l) => no.test(l))
+  return undefined
 }
 
 export function claudeApprovalKeys(decision: ApprovalDecision): Uint8Array[] {

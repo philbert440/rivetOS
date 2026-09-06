@@ -1010,9 +1010,9 @@ describe('pty-harness-driver permission prompts', () => {
       type: 'approval-request',
       sessionId: sid,
       requestId: `perm:${UUID}:1`,
-      name: 'Bash command',
-      input: { text: 'mkdir -p zz && rm -r zz && echo done' },
-      reason: 'mkdir -p zz && rm -r zz && echo done',
+      name: 'Bash',
+      input: { text: expect.stringContaining('mkdir -p zz && rm -r zz && echo done') },
+      reason: expect.stringContaining('mkdir -p zz && rm -r zz && echo done'),
       options: [
         { key: '1', label: 'Yes' },
         { key: '2', label: "Yes, and don't ask again for mkdir" },
@@ -1055,6 +1055,121 @@ describe('pty-harness-driver permission prompts', () => {
     await expect(driver.resolveApproval(sid, reqId, 'allow')).rejects.toMatchObject({
       code: 'unknown_approval',
     })
+    driver.close()
+  })
+
+  it('a chatty blocked stream reads the screen once per cooldown', async () => {
+    const pty = fakePty()
+    let reads = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => {
+        reads += 1
+        return 'nothing that parses'
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    for (let i = 1; i <= 4; i++) {
+      driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: i })
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+    expect(reads).toBe(1)
+    driver.close()
+  })
+
+  it('a screen read that lands after herdr left blocked mints no card (race re-check)', async () => {
+    const pty = fakePty()
+    let release: (s: string) => void = () => undefined
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () =>
+        new Promise<string>((resolve) => {
+          release = resolve
+        }),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 2 })
+    release(CLAUDE_PERM_SCREEN)
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(false)
+    driver.close()
+  })
+
+  it('the blocked tool finishing in the transcript resolves the card as external', async () => {
+    const pty = fakePty()
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      transcript: tx,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PERM_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(true)
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'claude',
+      turns: [
+        { role: 'user', text: 'go' },
+        {
+          role: 'assistant',
+          text: '',
+          lastBlock: 'tool_result',
+          stopReason: 'tool_use',
+          tools: [{ id: 't1', name: 'Bash', status: 'done' }],
+        },
+      ],
+    })
+    expect(seen.some((e) => e.type === 'approval-resolved' && e.decision === 'external')).toBe(true)
+    driver.close()
+  })
+
+  it('resolveApproval presses the key the SCREEN labels, not the adapter default (grok order)', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () =>
+        [
+          "┃  1 (●) Yes, and don't ask again for this command",
+          '┃  2 (○) Yes, proceed',
+          '┃  3 (○) No, reject',
+        ].join('\n'),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    await driver.resolveApproval(sid, `perm:${UUID}:1`, 'allow')
+    expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
+    expect(pty.injects.some((i) => i.text === '1')).toBe(false)
     driver.close()
   })
 

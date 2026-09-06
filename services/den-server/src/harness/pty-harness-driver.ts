@@ -80,6 +80,7 @@
  * See docs/ARCHITECTURE.md.
  */
 
+import { approvalKeyFromOptions } from './prompt-keys.js'
 import { randomUUID } from 'node:crypto'
 import {
   HarnessError,
@@ -229,6 +230,8 @@ const SPAWN_COLS = 120
 const SPAWN_ROWS = 40
 /** Drop the per-session transcript watch this long after the last sink / endTurn. */
 const TRANSCRIPT_HOLD_MS = 30_000
+/** Min gap between two herdr screen reads for one session (each is a subprocess). */
+const CAPTURE_COOLDOWN_MS = 5_000
 /** If the store is in-flight with no running tool this long, release as stale. */
 const STALE_TURN_MS = 120_000
 
@@ -257,7 +260,11 @@ export interface LiveState {
   transcriptHoldTimer?: NodeJS.Timeout
   tracker?: TurnTracker
   pendingPrompts: Map<string, { toolName: string; questions: HarnessAskQuestion[] }>
-  pendingApproval?: { requestId: string; name: string }
+  pendingApproval?: { requestId: string; name: string; options?: { key: string; label: string }[] }
+  /** Last herdr screen read for a permission prompt — cooldown against a
+   *  chatty `blocked` stream (each read is a herdr subprocess). */
+  captureAt?: number
+  approvalIdleTimer?: NodeJS.Timeout
   approvalSeq: number
   staleTimer?: NodeJS.Timeout
   lastStoreChangeAt?: number
@@ -732,7 +739,13 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     const pty = await this.requirePty('resolveApproval')
     const ptyId = await this.ensurePty(pty, native)
-    const keys = adapter.approvalKeys(decision)
+    // The key the SCREEN says, when a scraped label matches the decision —
+    // grok's inverted order and kimi's unverified rows self-correct; the
+    // adapter's fixed map is the fallback.
+    const fromScreen = approvalKeyFromOptions(state.pendingApproval.options, decision)
+    const keys = fromScreen
+      ? [new TextEncoder().encode(fromScreen)]
+      : adapter.approvalKeys(decision)
     this.injectKeys(pty, ptyId, keys)
     state.pendingApproval = undefined
     this.emit(native, {
@@ -1183,18 +1196,19 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.setStatus(native, 'active')
       const pending = state.tracker?.pendingPromptIds() ?? []
       if (pending.length > 0) {
-        statusEvent.promptId = pending[0]
+        statusEvent.promptId = pending[pending.length - 1] // most recently opened
         statusEvent.phase = 'prompt'
       }
       this.onHerdrBlocked(native)
     } else {
       state.blocked = false
-      this.resolveExternalApproval(native)
-      // N4: one flicker of idle must not end a live turn. Debounce unless
-      // the quiet window is disabled (tests / operator 0).
+      // N4: one flicker of idle must not end a live turn — nor retire a
+      // permission card whose dialog is still on screen. Debounce unless the
+      // quiet window is disabled (tests / operator 0).
       const idleWait = this.turnQuietMs <= 0 ? 0 : Math.min(750, this.turnQuietMs)
       const endIdle = (): void => {
         if (state.herdrStatus !== 'idle') return
+        this.resolveExternalApproval(native)
         if (state.turnInFlight) this.endTurn(native, 'herdr-idle')
         else this.setStatus(native, 'idle')
       }
@@ -1357,6 +1371,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (!state) return
     if ((state.tracker?.pendingPromptIds() ?? []).length > 0) return
     if (state.pendingApproval) return
+    const now = this.now()
+    if (state.captureAt !== undefined && now - state.captureAt < CAPTURE_COOLDOWN_MS) return
+    state.captureAt = now
     let raw: string
     try {
       raw = (await this.deps.screen?.(this.room(native))) ?? ''
@@ -1377,7 +1394,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (state.pendingApproval) return
     state.approvalSeq += 1
     const requestId = `perm:${native}:${String(state.approvalSeq)}`
-    state.pendingApproval = { requestId, name: parsed.toolName }
+    state.pendingApproval = { requestId, name: parsed.toolName, options: parsed.options }
     this.emit(native, {
       type: 'approval-request',
       sessionId: this.sid(native),
@@ -1534,8 +1551,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       })
     }
     if (state.pendingApproval) {
+      // The blocked tool finished (its result landed): the dialog is gone.
       const last = full[full.length - 1]
-      if (last && !last.tools?.some((t) => t.status === 'running')) {
+      const tools = last?.role === 'assistant' ? last.tools : undefined
+      if (tools && tools.length > 0 && !tools.some((t) => t.status === 'running')) {
         this.resolveExternalApproval(native)
       }
     }

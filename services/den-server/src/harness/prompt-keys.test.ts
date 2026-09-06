@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { HarnessError, type HarnessAskQuestion } from '@rivetos/types'
 import {
   CLAUDE_TUI_KEYS_VERIFIED,
+  approvalKeyFromOptions,
   claudeApprovalKeys,
   claudeAskAnswerKeys,
   grokApprovalKeys,
@@ -61,16 +62,39 @@ describe('claudeAskAnswerKeys', () => {
     expect(decode(keys)).toEqual(['3', 'Mango', '\r'])
   })
 
-  it('multiSelect with Other toggles then Type-something, text, Enter', () => {
+  it('one-question multiSelect: toggles, Tab to the Submit tab, 1 (spike 2)', () => {
     const q: HarnessAskQuestion[] = [
-      {
-        question: 'Pick',
-        multiSelect: true,
-        options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }],
-      },
+      { question: 'Pick', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }] },
     ]
-    const keys = claudeAskAnswerKeys(q, [{ question: 0, labels: ['A', 'C'], other: 'Extra' }])
-    expect(decode(keys)).toEqual(['1', '3', '4', 'Extra', '\r'])
+    const keys = claudeAskAnswerKeys(q, [{ question: 0, labels: ['A', 'C'] }])
+    expect(decode(keys)).toEqual(['1', '3', '\t', '1'])
+  })
+
+  it('refuses free text on a multiSelect question (never registers on the TUI — spike 2)', () => {
+    const q: HarnessAskQuestion[] = [
+      { question: 'Pick', multiSelect: true, options: [{ label: 'A' }, { label: 'B' }] },
+    ]
+    expect(() => claudeAskAnswerKeys(q, [{ question: 0, labels: ['A'], other: 'Extra' }])).toThrowError(
+      HarnessError,
+    )
+  })
+
+  it('refuses free text when there are several questions (Enter advance/submit unverified)', () => {
+    expect(() =>
+      claudeAskAnswerKeys(TWO_Q, [
+        { question: 0, labels: [], other: 'Teal' },
+        { question: 1, labels: ['Cheese'] },
+      ]),
+    ).toThrowError(HarnessError)
+  })
+
+  it('refuses control characters in free text (a stray Enter/ESC would submit early or cancel)', () => {
+    expect(() =>
+      claudeAskAnswerKeys([TWO_Q[0]!], [{ question: 0, labels: [], other: 'Teal\rrm -rf /' }]),
+    ).toThrowError(HarnessError)
+    expect(() =>
+      claudeAskAnswerKeys([TWO_Q[0]!], [{ question: 0, labels: [], other: 'Teal\u001b' }]),
+    ).toThrowError(HarnessError)
   })
 
   it('unknown label throws bad_request', () => {
@@ -114,5 +138,36 @@ describe('approval keys', () => {
     expect(decode(grokApprovalKeys('allow-session'))).toEqual(['1'])
     expect(decode(grokApprovalKeys('allow'))).toEqual(['2'])
     expect(decode(grokApprovalKeys('deny'))).toEqual(['3'])
+  })
+})
+
+describe('approvalKeyFromOptions (the screen decides the key, adapter map is the fallback)', () => {
+  const claude = [
+    { key: '1', label: 'Yes' },
+    { key: '2', label: "Yes, and don't ask again for mkdir -p zz commands in /tmp" },
+    { key: '3', label: 'No' },
+  ]
+  const grok = [
+    { key: '1', label: "Yes, and don't ask again for this command" },
+    { key: '2', label: 'Yes, proceed' },
+    { key: '3', label: 'No, reject' },
+    { key: '4', label: 'Never allow: run_command' },
+  ]
+  const kimiBottom = [
+    { key: '3', label: 'Reject' },
+    { key: '4', label: 'Reject with feedback' },
+  ]
+  it('maps allow / allow-session / deny by label on Claude and on grok (inverted order)', () => {
+    expect(approvalKeyFromOptions(claude, 'allow')).toBe('1')
+    expect(approvalKeyFromOptions(claude, 'allow-session')).toBe('2')
+    expect(approvalKeyFromOptions(claude, 'deny')).toBe('3')
+    expect(approvalKeyFromOptions(grok, 'allow')).toBe('2')
+    expect(approvalKeyFromOptions(grok, 'allow-session')).toBe('1')
+    expect(approvalKeyFromOptions(grok, 'deny')).toBe('3')
+  })
+  it('kimi: deny prefers plain Reject; allow is undefined when its row was not scraped', () => {
+    expect(approvalKeyFromOptions(kimiBottom, 'deny')).toBe('3')
+    expect(approvalKeyFromOptions(kimiBottom, 'allow')).toBeUndefined()
+    expect(approvalKeyFromOptions(undefined, 'allow')).toBeUndefined()
   })
 })

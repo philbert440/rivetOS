@@ -45,8 +45,8 @@ const KIMI_PANEL = `\
 describe('parsePermissionPrompt', () => {
   it('parses the Claude Bash proceed dialog', () => {
     expect(parsePermissionPrompt(CLAUDE_BASH)).toEqual({
-      toolName: 'Bash command',
-      text: 'mkdir -p zz && rm -r zz && echo done\nCreate zz directory, remove it, and echo done',
+      toolName: 'Bash',
+      text: 'Bash command\nmkdir -p zz && rm -r zz && echo done\nCreate zz directory, remove it, and echo done',
       options: [
         { key: '1', label: 'Yes' },
         {
@@ -86,5 +86,49 @@ describe('parsePermissionPrompt', () => {
     expect(parsePermissionPrompt('')).toBeUndefined()
     expect(parsePermissionPrompt('kimi-k3 thinking  ~')).toBeUndefined()
     expect(parsePermissionPrompt('❯ 1. Red\n  2. Green')).toBeUndefined()
+  })
+})
+
+describe('parsePermissionPrompt — review fixes', () => {
+  it('glues a wrapped option label and still collects the options after it', () => {
+    const wrapped = `\
+ Bash command
+   mkdir -p zz && rm -r zz && echo done
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for mkdir -p zz and rm -r zz commands in
+      /tmp/some/very/long/working/directory
+   3. No
+ Esc to cancel · Tab to amend
+`
+    const parsed = parsePermissionPrompt(wrapped)
+    expect(parsed?.options.map((o) => o.key)).toEqual(['1', '2', '3'])
+    expect(parsed?.options[1]?.label).toBe(
+      "Yes, and don't ask again for mkdir -p zz and rm -r zz commands in /tmp/some/very/long/working/directory",
+    )
+    expect(parsed?.toolName).toBe('Bash')
+  })
+
+  it('kimi: ordinary prose with "choose" and "confirm" is not a panel', () => {
+    const prose = `\
+● I can do either — tell me which you choose and I'll confirm before running.
+  1. keep the file
+  2. delete it
+`
+    expect(parsePermissionPrompt(prose)).toBeUndefined()
+  })
+
+  it('kimi: only the numbered rows directly above the panel footer are options', () => {
+    const screen = `\
+  Earlier output:
+  1. not an option
+  2. also not
+
+     3. Reject
+     4. Reject with feedback
+
+   ↑/↓ select · 1/2/3/4 choose · ↵ confirm
+`
+    expect(parsePermissionPrompt(screen)?.options.map((o) => o.key)).toEqual(['3', '4'])
   })
 })

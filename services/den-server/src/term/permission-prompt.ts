@@ -13,7 +13,8 @@ export interface ParsedPermissionPrompt {
 }
 
 const OPTION_LINE = /^\s*(?:❯\s*)?(\d)\.\s+(.+?)\s*$/
-const SEPARATOR = /^[\s─━─-]+$/
+const SEPARATOR = /^[\s─━-]+$/
+const FOOTER = /Esc to cancel|Tab to amend|↵ confirm|choose/
 const GROK_ITEM = /(\d)\s*\([●○]\)\s*([^/┃]+?)(?=\s*\/\s*\d|\s*$)/g
 
 function linesOf(screen: string): string[] {
@@ -23,12 +24,18 @@ function linesOf(screen: string): string[] {
 function parseClaude(lines: string[], proceedIdx: number): ParsedPermissionPrompt | undefined {
   const options: { key: string; label: string }[] = []
   for (let i = proceedIdx + 1; i < lines.length; i++) {
-    const m = OPTION_LINE.exec(lines[i])
+    const line = lines[i]
+    const m = OPTION_LINE.exec(line)
     if (m) {
       options.push({ key: m[1], label: m[2].trim() })
       continue
     }
-    if (options.length > 0) break
+    if (options.length === 0) continue
+    if (FOOTER.test(line) || /^\s*$/.test(line) || SEPARATOR.test(line)) break
+    // A long label wraps onto indented continuation lines ("… commands in
+    // <cwd>") — glue them onto the previous option instead of stopping.
+    const last = options[options.length - 1]
+    last.label = `${last.label} ${line.trim()}`
   }
   if (options.length === 0) return undefined
 
@@ -46,12 +53,16 @@ function parseClaude(lines: string[], proceedIdx: number): ParsedPermissionPromp
     }
     before.unshift(l)
   }
-  const toolName = before[0]?.trim() || 'tool'
-  const text = before
-    .slice(1)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .join('\n')
+  const title = before[0]?.trim() || 'tool'
+  // Panel title is "Bash command" / "Edit file" — the tool name is the head.
+  const toolName = title.replace(/\s+(command|file|files|tool|request|edit|write)$/i, '') || title
+  const text = [
+    title,
+    ...before
+      .slice(1)
+      .map((l) => l.trim())
+      .filter(Boolean),
+  ].join('\n')
   return { toolName, text, options }
 }
 
@@ -79,15 +90,26 @@ function parseGrok(lines: string[]): ParsedPermissionPrompt | undefined {
 }
 
 function parseKimi(lines: string[]): ParsedPermissionPrompt | undefined {
-  // herdr rule is current_approval_panel; the screen footer is
-  // "↑/↓ select · 1/2/3/4 choose · ↵ confirm". Full 1/2 rows were not in the
-  // capture log — this parser is unverified above option 3.
-  const footer = lines.some((l) => /choose/.test(l) && /confirm/.test(l))
-  if (!footer) return undefined
+  // herdr rule is current_approval_panel; the panel footer is
+  // "↑/↓ select · 1/2/3/4 choose · ↵ confirm" and the numbered rows sit
+  // DIRECTLY above it. Anchor on that footer line — not on prose that happens
+  // to contain "choose" and "confirm" — and only harvest the contiguous block
+  // of numbered rows above it. Rows 1/2 were not in the capture: unverified.
+  const footerIdx = lines.findIndex((l) => /↑\/↓.*choose.*↵\s*confirm/.test(l))
+  if (footerIdx < 0) return undefined
   const options: { key: string; label: string }[] = []
-  for (const line of lines) {
+  for (let i = footerIdx - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (/^\s*$/.test(line) || SEPARATOR.test(line)) {
+      if (options.length > 0) break
+      continue
+    }
     const m = OPTION_LINE.exec(line)
-    if (m) options.push({ key: m[1], label: m[2].trim() })
+    if (!m) {
+      if (options.length > 0) break
+      continue
+    }
+    options.unshift({ key: m[1], label: m[2].trim() })
   }
   if (options.length === 0) return undefined
   return {

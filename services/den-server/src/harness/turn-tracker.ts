@@ -166,8 +166,12 @@ export function createTurnTracker(adapter: HarnessAdapter): TurnTracker {
       wasComplete = nowComplete
       applied = true
 
-      const tools = last?.role === 'assistant' ? (last.tools ?? []) : []
+      // Every assistant turn in the window, not just the trailing one: a
+      // prompt's tool scrolls into an earlier turn as the session goes on.
+      const seen = new Set<string>()
+      const tools = turns.flatMap((t) => (t.role === 'assistant' ? (t.tools ?? []) : []))
       for (const tool of tools) {
+        if (tool.id) seen.add(tool.id)
         if (!tool.id || !promptNames.has(tool.name)) continue
         const questions = extractAskUserQuestions(tool.input)
         if (!questions.length) continue
@@ -185,6 +189,15 @@ export function createTurnTracker(adapter: HarnessAdapter): TurnTracker {
             promptId: tool.id,
             ...(tool.resultText ? { answerText: tool.resultText } : {}),
           })
+        }
+      }
+
+      // A pending prompt whose tool is no longer anywhere in the window (tail
+      // truncation) can never resolve from the store — retire it.
+      for (const [id, v] of pending) {
+        if (!v.resolved && !seen.has(id) && turns.length > 0) {
+          v.resolved = true
+          edges.promptsResolved.push({ promptId: id })
         }
       }
 

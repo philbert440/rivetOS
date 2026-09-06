@@ -1839,9 +1839,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
     screen(id, lines = 40): Promise<string> {
       const r = records.get(id)
-      if (!r || r.muxKind !== 'herdr' || !r.tmuxName || !herdr?.capture) {
-        return Promise.resolve('')
-      }
+      if (!r || r.muxKind !== 'herdr' || !r.tmuxName || !herdr) return Promise.resolve('')
+      if (herdr.captureAsync) return herdr.captureAsync(r.tmuxName, lines).catch(() => '')
+      if (!herdr.capture) return Promise.resolve('')
       try {
         return Promise.resolve(herdr.capture(r.tmuxName, lines) ?? '')
       } catch {
