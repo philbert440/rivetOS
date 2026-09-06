@@ -25,7 +25,6 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.AttachmentStatus
-import io.rivethub.app.plane.ContextBarView
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
@@ -81,7 +80,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             // Session one-row header (chat.tsx:1645): ☰ · id · ctx % · Stop · Terminal|Chat · history.
             ChatSessionHeader(
                 sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
-                context = ContextBarView(tokens = 50_202, max = 1_000_000, pct = 5, estimated = false),
+                context = contextBarView(50_202, "claude", listOf("hello")),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
                 onSelectMode = {},
@@ -285,7 +284,9 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             )
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Context bar")
-                ContextBar(ContextBarView(50_202, 1_000_000, 5, estimated = false))
+                ContextBar(contextBarView(50_202, "claude", listOf("hello"))!!)
+                Spacer(Modifier.height(8.dp))
+                ContextBar(contextBarView(150_000, "claude", listOf("hello"))!!)
                 Spacer(Modifier.height(8.dp))
                 ContextBar(contextBarView(null, "grok", listOf("abcd"))!!)
                 Spacer(Modifier.height(12.dp))

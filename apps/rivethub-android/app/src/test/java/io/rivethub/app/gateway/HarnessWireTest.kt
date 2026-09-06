@@ -171,6 +171,40 @@ class HarnessWireTest {
         assertFalse(isTurnInFlightStatus(501, "turn_in_flight"))
         assertFalse(isTurnInFlight(GatewayException(409, "nope")))
     }
+
+    @Test fun `transcript response decodes the context-bar contract and tolerates its absence`() {
+        val full = wireJson.decodeFromString(
+            HarnessSessionTranscriptResponse.serializer(),
+            """{"sessionId":"$sid","harnessId":"claude-code","turns":[],"contextWindow":200000,"compactAt":165000,"contextSource":"spawn"}""",
+        )
+        assertEquals(200_000, full.contextWindow)
+        assertEquals(165_000, full.compactAt)
+        assertEquals("spawn", full.contextSource)
+        val legacy = wireJson.decodeFromString(
+            HarnessSessionTranscriptResponse.serializer(),
+            """{"sessionId":"$sid","harnessId":"claude-code","turns":[]}""",
+        )
+        assertNull(legacy.contextWindow)
+        assertNull(legacy.compactAt)
+        assertNull(legacy.contextSource)
+    }
+
+    @Test fun `den session info and messages response decode the context-bar contract`() {
+        val info = wireJson.decodeFromString(
+            DenSessionInfo.serializer(),
+            """{"id":"$sid","contextWindow":200000,"compactAt":165000,"contextSource":"observed"}""",
+        )
+        assertEquals(200_000, info.contextWindow)
+        assertEquals(165_000, info.compactAt)
+        assertEquals("observed", info.contextSource)
+        val msgs = wireJson.decodeFromString(
+            SessionMessagesResponse.serializer(),
+            """{"messages":[],"contextWindow":200000,"compactAt":165000,"contextSource":"default"}""",
+        )
+        assertEquals(200_000, msgs.contextWindow)
+        assertEquals(165_000, msgs.compactAt)
+        assertEquals("default", msgs.contextSource)
+    }
 }
 
 private fun kotlinx.serialization.json.JsonElement.jsonPrimitiveContent(): String =

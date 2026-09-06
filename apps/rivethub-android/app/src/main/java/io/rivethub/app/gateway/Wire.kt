@@ -63,7 +63,15 @@ data class SessionMessage(
 )
 
 @Serializable
-data class SessionMessagesResponse(val messages: List<SessionMessage> = emptyList())
+data class SessionMessagesResponse(
+    val messages: List<SessionMessage> = emptyList(),
+    /** Real max window, tokens (context-bar contract; null until the den reports it). */
+    val contextWindow: Int? = null,
+    /** Forced-compaction threshold — the context bar's 100%. */
+    val compactAt: Int? = null,
+    /** "spawn" | "observed" | "default". */
+    val contextSource: String? = null,
+)
 
 @Serializable
 data class SessionSummary(val id: String, val lastActive: Long = 0, val messages: Int = 0)
@@ -100,7 +108,18 @@ data class RoomState(
 data class DenStateResponse(val session: String = "", val state: RoomState = RoomState())
 
 @Serializable
-data class DenSessionInfo(val id: String, val name: String = "", val harness: String? = null, val lastEventTs: Long? = null)
+data class DenSessionInfo(
+    val id: String,
+    val name: String = "",
+    val harness: String? = null,
+    val lastEventTs: Long? = null,
+    /** Real max window, tokens (context-bar contract; null until the den reports it). */
+    val contextWindow: Int? = null,
+    /** Forced-compaction threshold — the context bar's 100%. */
+    val compactAt: Int? = null,
+    /** "spawn" | "observed" | "default". */
+    val contextSource: String? = null,
+)
 
 // -- /api/wiki (datahub memory wiki) — verbatim from @rivetos/types wiki.ts --
 

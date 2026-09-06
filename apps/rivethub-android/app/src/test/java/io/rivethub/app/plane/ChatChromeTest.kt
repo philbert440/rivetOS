@@ -15,9 +15,12 @@ class ChatChromeTest {
         val view = contextBarView(50_202, "claude", listOf("hello"))
         assertNotNull(view)
         assertEquals(50_202, view!!.tokens)
-        assertEquals(1_000_000, view.max)
-        assertEquals(5, view.pct)
+        assertEquals(200_000, view.max)
+        assertEquals(165_000, view.compactAt)
+        assertEquals(30, view.pct) // 50,202 / 165,000 — toward compaction, not the window
         assertFalse(view.estimated)
+        assertFalse(view.warn)
+        assertFalse(view.hot)
     }
 
     @Test
@@ -27,14 +30,63 @@ class ChatChromeTest {
         assertTrue(view!!.estimated)
         assertEquals(5, view.tokens)
         assertEquals(500_000, view.max)
+        assertEquals(465_000, view.compactAt)
         assertEquals(0, view.pct)
     }
 
     @Test
     fun `context bar pct rounds and caps at 100`() {
-        assertEquals(85, contextBarView(850_000, "claude", emptyList())!!.pct)
-        assertEquals(84, contextBarView(844_999, "claude", emptyList())!!.pct)
+        assertEquals(85, contextBarView(850_000, "claude", emptyList(), contextWindow = 1_000_000, compactAt = 1_000_000)!!.pct)
+        assertEquals(84, contextBarView(844_999, "claude", emptyList(), contextWindow = 1_000_000, compactAt = 1_000_000)!!.pct)
         assertEquals(100, contextBarView(2_000_000, "claude", emptyList())!!.pct)
+    }
+
+    @Test
+    fun `context bar pct is tokens over compaction not the window`() {
+        // The revert guard: a 200k session at 180k is about to compact — it
+        // must read ~100%, never the old 18% (180k / 1M).
+        val about = contextBarView(180_000, "claude", emptyList())
+        assertNotNull(about)
+        assertEquals(100, about!!.pct)
+        assertTrue(about.hot)
+        val half = contextBarView(82_500, "claude", emptyList())
+        assertNotNull(half)
+        assertEquals(50, half!!.pct)
+        assertEquals(0.5f, half.fraction, 0.001f)
+    }
+
+    @Test
+    fun `context bar prefers wire window and compactAt over the model default`() {
+        val view = contextBarView(90_000, "claude", emptyList(), contextWindow = 500_000, compactAt = 450_000)
+        assertNotNull(view)
+        assertEquals(500_000, view!!.max)
+        assertEquals(450_000, view.compactAt)
+        assertEquals(20, view.pct) // not 55% (90k / the model-derived 165k)
+    }
+
+    @Test
+    fun `context bar falls back to the model window when the wire fields are null`() {
+        val view = contextBarView(33_000, "claude", emptyList(), contextWindow = null, compactAt = null)
+        assertNotNull(view)
+        assertEquals(200_000, view!!.max)
+        assertEquals(165_000, view.compactAt)
+        assertEquals(20, view.pct)
+    }
+
+    @Test
+    fun `context bar warn and hot flags trip at 70 and 90 percent of compaction`() {
+        val calm = contextBarView(60_000, "claude", emptyList(), compactAt = 100_000)!!
+        assertEquals(60, calm.pct)
+        assertFalse(calm.warn)
+        assertFalse(calm.hot)
+        val warn = contextBarView(70_000, "claude", emptyList(), compactAt = 100_000)!!
+        assertEquals(70, warn.pct)
+        assertTrue(warn.warn)
+        assertFalse(warn.hot)
+        val hot = contextBarView(90_000, "claude", emptyList(), compactAt = 100_000)!!
+        assertEquals(90, hot.pct)
+        assertTrue(hot.warn)
+        assertTrue(hot.hot)
     }
 
     @Test

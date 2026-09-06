@@ -1,5 +1,6 @@
 package io.rivethub.app.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -52,6 +54,11 @@ import io.rivethub.app.ui.theme.RivetType
  * 44dp hit boxes with 20dp (`size-5`) lucide icons. Item order and visibility
  * come from `narrowHeaderItems` (plane/ChatChrome.kt), mirroring
  * lib/session-header.ts. `padStatusBar = false` is for the component gallery.
+ *
+ * Phil 2026-09-04: the BOTTOM EDGE of the header is the context-compaction
+ * bar — a 2dp hairline track below the row (above the transcript), filled
+ * toward forced compaction; its unfilled `line` segment doubles as the
+ * header's `border-b`.
  */
 @Composable
 fun ChatSessionHeader(
@@ -68,86 +75,124 @@ fun ChatSessionHeader(
     padStatusBar: Boolean = true,
 ) {
     val colors = RivetTheme.colors
-    Row(
+    Column(
         modifier
             .fillMaxWidth()
-            .background(colors.panel.copy(alpha = 0.4f))
-            .then(if (padStatusBar) Modifier.statusBarsPadding() else Modifier)
-            .drawBehind {
-                val y = size.height - Dimens.line.toPx() / 2f
-                drawLine(colors.line, Offset(0f, y), Offset(size.width, y), Dimens.line.toPx())
-            }
-            .height(Dimens.pageHeader)
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .background(colors.panel.copy(alpha = 0.4f)),
     ) {
-        // Android opens every session against its own node (no cross-node
-        // proxying like the web's), so the remote badge slot is never filled.
-        narrowHeaderItems(running = showStop, remote = false).forEach { item ->
-            when (item) {
-                NarrowHeaderItem.Menu -> {
-                    val openMenu = stringResource(R.string.cd_open_drawer)
-                    Box(
-                        Modifier
-                            .size(Dimens.touchTarget)
-                            .semantics {
-                                contentDescription = openMenu
-                                role = Role.Button
-                            }
-                            .clickable(role = Role.Button, onClick = onOpenMenu),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Lucide(
-                            R.drawable.lucide_menu,
-                            contentDescription = null,
-                            tint = colors.inkDim,
-                            modifier = Modifier.size(20.dp),
-                        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(if (padStatusBar) Modifier.statusBarsPadding() else Modifier)
+                .height(Dimens.pageHeader)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Android opens every session against its own node (no cross-node
+            // proxying like the web's), so the remote badge slot is never filled.
+            narrowHeaderItems(running = showStop, remote = false).forEach { item ->
+                when (item) {
+                    NarrowHeaderItem.Menu -> {
+                        val openMenu = stringResource(R.string.cd_open_drawer)
+                        Box(
+                            Modifier
+                                .size(Dimens.touchTarget)
+                                .semantics {
+                                    contentDescription = openMenu
+                                    role = Role.Button
+                                }
+                                .clickable(role = Role.Button, onClick = onOpenMenu),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Lucide(
+                                R.drawable.lucide_menu,
+                                contentDescription = null,
+                                tint = colors.inkDim,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
-                }
-                NarrowHeaderItem.Title -> Text(
-                    sessionLabel,
-                    color = colors.inkDim,
-                    style = RivetType.xs.copy(fontFamily = RivetFonts.Mono),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                // chat.tsx:1590-1597 — the cross-node badge has no Android case.
-                NarrowHeaderItem.Remote -> Unit
-                NarrowHeaderItem.Context -> if (context != null) {
-                    ContextBar(view = context)
-                }
-                NarrowHeaderItem.Stop -> HeaderStopButton(onClick = onStop)
-                NarrowHeaderItem.Segmented -> SegmentedControl(
-                    options = modeOptions,
-                    selected = selectedMode,
-                    onSelect = onSelectMode,
-                )
-                NarrowHeaderItem.History -> {
-                    val conversations = stringResource(R.string.cd_conversations)
-                    Box(
-                        Modifier
-                            .size(Dimens.touchTarget)
-                            .semantics {
-                                contentDescription = conversations
-                                role = Role.Button
-                            }
-                            .clickable(role = Role.Button, onClick = onOpenHistory),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Lucide(
-                            R.drawable.lucide_history,
-                            contentDescription = null,
-                            tint = colors.inkDim,
-                            modifier = Modifier.size(20.dp),
-                        )
+                    NarrowHeaderItem.Title -> Text(
+                        sessionLabel,
+                        color = colors.inkDim,
+                        style = RivetType.xs.copy(fontFamily = RivetFonts.Mono),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // chat.tsx:1590-1597 — the cross-node badge has no Android case.
+                    NarrowHeaderItem.Remote -> Unit
+                    NarrowHeaderItem.Context -> if (context != null) {
+                        ContextBar(view = context)
+                    }
+                    NarrowHeaderItem.Stop -> HeaderStopButton(onClick = onStop)
+                    NarrowHeaderItem.Segmented -> SegmentedControl(
+                        options = modeOptions,
+                        selected = selectedMode,
+                        onSelect = onSelectMode,
+                    )
+                    NarrowHeaderItem.History -> {
+                        val conversations = stringResource(R.string.cd_conversations)
+                        Box(
+                            Modifier
+                                .size(Dimens.touchTarget)
+                                .semantics {
+                                    contentDescription = conversations
+                                    role = Role.Button
+                                }
+                                .clickable(role = Role.Button, onClick = onOpenHistory),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Lucide(
+                                R.drawable.lucide_history,
+                                contentDescription = null,
+                                tint = colors.inkDim,
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
             }
         }
+        ContextCompactionTrack(view = context)
     }
+}
+
+/**
+ * The hairline context-compaction track (Phil 2026-09-04): full width, 2dp,
+ * filled to [ContextBarView.fraction] where 100% = forced compaction. Fill is
+ * `em` → `warn` (≥70%) → `red` (≥90%); the unfilled `line` segment reads as
+ * the header's bottom border, so the track is drawn even with no data. Plain
+ * `Box` + `drawBehind` over Rivet tokens — no Material progress chrome.
+ * `animateFloatAsState` lets a post-compaction drop sweep down.
+ */
+@Composable
+private fun ContextCompactionTrack(view: ContextBarView?) {
+    val colors = RivetTheme.colors
+    val fraction by animateFloatAsState(
+        targetValue = view?.fraction ?: 0f,
+        label = "contextCompactionFill",
+    )
+    val fill = when {
+        view == null -> colors.line
+        view.hot -> colors.red
+        view.warn -> colors.warn
+        else -> colors.em
+    }
+    val description = view?.let { stringResource(R.string.cd_context_fill, it.pct) }
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(2.dp)
+            .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier)
+            .drawBehind {
+                drawRect(colors.line)
+                if (fraction > 0f) {
+                    drawRect(fill, topLeft = Offset.Zero, size = Size(size.width * fraction, size.height))
+                }
+            },
+    )
 }
 
 /** Web Stop (chat.tsx:1606-1615): `rounded border line px-2 py-1 mono 11px inkDim`, pressed → red. */
