@@ -1,6 +1,7 @@
 package io.rivethub.app
 
 import android.os.Bundle
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -68,6 +69,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Compose UI 1.8+ reports every text field to the Autofill framework, so password
+        // managers (1Password) kept offering themselves on the chat composer and the terminal
+        // field. Nothing here takes a credential — tokens come from the mesh — so opt the whole
+        // window out. (A manifest android:importantForAutofill on <activity> never applied: it is a
+        // View attribute.)
+        window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         requestLocalNetworkAccess()
         val container = (application as BotsApp).container
         setContent {
