@@ -427,13 +427,9 @@ function overlayTranscriptLive(
   // newest-first, one per turn) when the ECHO lands — never re-derived here
   // by text, which would drop a just-sent bubble that repeats an earlier turn.
   const kept = srcMessages.filter((m) => m.id.startsWith('optim:'))
-  // Only an explicit idle settles the floor — "no status yet" must not freeze
-  // a turn that is about to go live.
-  const settled = agentStatus[sid]?.status === 'idle'
   return {
     ...base,
     liveSource,
-    ...(settled ? { liveFloor: { ...(base.liveFloor ?? s.liveFloor), [sid]: turns.length } } : {}),
     live: { ...(base.live ?? s.live), [sid]: undefined },
     messages: {
       ...(base.messages ?? s.messages),
@@ -942,6 +938,17 @@ export const useChat = create<ChatState>()(
         set((s) =>
           overlayTranscriptLive(s, sessionId, {
             agentStatus: { ...s.agentStatus, [sessionId]: event },
+            // The INCOMING idle settles the floor — not the cached status, which
+            // is still "idle" when the next turn's first transcript frame lands
+            // (den emits the transcript before the status it derives from it).
+            ...(event.status === 'idle'
+              ? {
+                  liveFloor: {
+                    ...s.liveFloor,
+                    [sessionId]: s.transcripts[sessionId]?.turns.length ?? 0,
+                  },
+                }
+              : {}),
           }),
         ),
 

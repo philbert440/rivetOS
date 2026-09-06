@@ -956,6 +956,20 @@ describe('transcript live overlay — settled turns stay solid; bubbles survive 
     expect(useChat.getState().live[KEY]?.text).toBe('new')
   })
 
+  it('a transcript frame that lands while the cached status is still idle does not settle the floor', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'go' }, { role: 'assistant', text: 'done', complete: true }] }))
+    useChat.getState().applyAgentStatus(KEY, status('idle')) // floor = 2
+    // den emits the transcript BEFORE the status it derives from it: user line +
+    // first assistant block coalesced into one frame, cache still says idle.
+    useChat.getState().applyHarnessTranscriptEvent(
+      KEY,
+      ev({ rev: 2, from: 2, total: 4, turns: [{ role: 'user', text: 'again' }, { role: 'assistant', text: 'new', lastBlock: 'text', stopReason: 'tool_use' }] }),
+    )
+    useChat.getState().applyAgentStatus(KEY, status('working'))
+    expect(useChat.getState().live[KEY]?.text).toBe('new')
+  })
+
   it('a status frame does not retire a sent bubble whose text repeats an earlier turn', () => {
     useChat.getState().bindHarness(KEY, 'claude-code')
     useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'yes' }, { role: 'assistant', text: 'ok', complete: true }] }))
