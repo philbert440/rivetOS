@@ -32,7 +32,14 @@
  */
 
 import { readFile, access, writeFile, unlink, stat as fsStat } from 'node:fs/promises'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+} from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -1137,8 +1144,9 @@ function checkTerminalMux(rawConfig: string | null): CheckResult[] {
 
   // Read the SAME keys the den-server runtime parses: enablement is
   // RIVETOS_DEN_TERM (or YAML den.terminal.enabled, which the gateway
-  // registrar translates into it); the mux choice is RIVETOS_DEN_TERM_MUX —
-  // there is NO YAML mux key (den.terminal.mux is not a known config key).
+  // registrar translates into it); the mux choice is RIVETOS_DEN_TERM_MUX
+  // (den-server's loadConfig reads only the env; resolveHerdrMux additionally
+  // accepts a forward-compatible YAML den.terminal.mux for doctor/update).
   let termEnabled = false
   if (rawConfig) {
     try {
@@ -1152,42 +1160,47 @@ function checkTerminalMux(rawConfig: string | null): CheckResult[] {
   }
   const envTerm = (process.env.RIVETOS_DEN_TERM ?? '').trim().toLowerCase()
   if (envTerm === '1' || envTerm === 'on') termEnabled = true
-  const mux = process.env.RIVETOS_DEN_TERM_MUX
+  // env → the unit's EnvironmentFile (~/.rivetos/.env) → YAML, same lookup as
+  // checkHerdr: a shell-launched doctor does not inherit the EnvironmentFile, and
+  // the rollback recipe is exactly a `RIVETOS_DEN_TERM_MUX=tmux` line in it.
+  const mux = resolveHerdrMux(process.env, readRivetosDotEnv(), rawConfig)
 
   if (!termEnabled) return results
 
-  const muxRaw = mux?.trim().toLowerCase()
+  // Unset resolves to herdr when the pinned binary is present (fleet default
+  // since 2026-09-06) — mirror den-server loadConfig so the row says what the
+  // runtime will actually do.
+  const muxRaw = mux?.trim().toLowerCase() || (herdrAutoDefault() ? 'herdr' : undefined)
   if (muxRaw === 'none') {
     results.push(check('terminal', 'mux', 'pass', 'Terminal mux: none (tmux disabled by config)'))
     return results
   }
   if (muxRaw === 'herdr') {
-    try {
-      const out = execFileSync('herdr', ['--version'], {
-        timeout: 5000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim()
-      const m = /(?:^|\s)(\d+\.\d+\.\d+)(?:\s|$)/.exec(out)
-      if (m?.[1] === '0.8.2') {
-        results.push(check('terminal', 'mux', 'pass', `Terminal mux: herdr found (${out})`))
-      } else {
-        results.push(
-          check(
-            'terminal',
-            'mux',
-            'warn',
-            `herdr found but not 0.8.2 (${out || 'unparseable'}) — den pins 0.8.2`,
-          ),
-        )
-      }
-    } catch {
+    // Probe the binary den will actually resolve (PATH, then ~/.local/bin) —
+    // a bare `herdr` would ENOENT on a healthy node whose shell PATH lacks
+    // ~/.local/bin and warn "not installed" for nothing.
+    const bin = findHerdrBin()
+    const version = bin ? readHerdrVersion(bin) : null
+    if (bin && version === HERDR_VERSION) {
+      results.push(check('terminal', 'mux', 'pass', `Terminal mux: herdr ${version} (${bin})`))
+    } else if (bin) {
       results.push(
         check(
           'terminal',
           'mux',
           'warn',
-          'herdr not installed — term.mux is herdr (install herdr 0.8.2)',
+          `herdr at ${bin} is ${version ?? 'an unrecognised version'} — den pins ${HERDR_VERSION}`,
+          'Run: rivetos install --herdr',
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'terminal',
+          'mux',
+          'warn',
+          `herdr not installed — term.mux is herdr (install herdr ${HERDR_VERSION})`,
+          'Run: rivetos install --herdr',
         ),
       )
     }
@@ -1273,6 +1286,11 @@ export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {
 
   const version = existsSync(binPath) ? versionOf(binPath) : null
   const relevant = version !== null || mux === 'herdr'
+  // What an UNSET term.mux resolves to: the ~/.local/bin binary (via the
+  // injectable versionOf) or a pinned herdr on PATH — same rule as the mux row.
+  const autoHerdr =
+    version === HERDR_VERSION ||
+    (env.PATH !== undefined && herdrAutoDefault({ PATH: env.PATH }, join(home, 'no-such-dir')))
 
   // Binary row — present at the pin, present at the wrong version, missing
   // while opted in (warn per the herdr lane contract), or simply absent.
@@ -1308,6 +1326,15 @@ export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {
       ),
     )
   }
+
+  results.push(
+    check(
+      'terminal',
+      'herdr-mux',
+      'pass',
+      `term.mux: ${mux ?? (autoHerdr ? 'unset (auto → herdr, the fleet default; RIVETOS_DEN_TERM_MUX=tmux opts out)' : 'unset (auto → tmux; install herdr 0.8.2 for the fleet default)')}`,
+    ),
+  )
 
   if (!relevant) return results
 
@@ -1349,8 +1376,6 @@ export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {
       )
     }
   }
-
-  results.push(check('terminal', 'herdr-mux', 'pass', `term.mux: ${mux ?? 'unset (auto)'}`))
 
   return results
 }
@@ -1606,4 +1631,36 @@ export default async function doctor(): Promise<void> {
   if (summary.fail > 0) {
     process.exit(1)
   }
+}
+
+/** The herdr binary den will resolve: PATH first (empty segments skipped —
+ *  never a bare `./herdr` from the cwd), then ~/.local/bin/herdr where
+ *  `rivetos install --herdr` puts it. Mirrors den-server's `findHerdrOnPath`. */
+export function findHerdrBin(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string | null {
+  const fromPath = (env.PATH ?? '')
+    .split(':')
+    .filter((d) => d.length > 0)
+    .map((d) => join(d, 'herdr'))
+  for (const bin of [...fromPath, herdrBinPath(home)]) {
+    try {
+      accessSync(bin, fsConstants.X_OK)
+      if (statSync(bin).isFile()) return bin
+    } catch {
+      // not here — keep looking
+    }
+  }
+  return null
+}
+
+/** Does an unset term.mux resolve to herdr on this host? Same rule as
+ *  den-server's `herdrAvailable`: a reachable binary at the pinned version. */
+export function herdrAutoDefault(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): boolean {
+  const bin = findHerdrBin(env, home)
+  return bin !== null && readHerdrVersion(bin) === HERDR_VERSION
 }

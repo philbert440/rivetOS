@@ -19,6 +19,8 @@ import {
   installHerdr,
   parseHerdrVersion,
   herdrOptedIn,
+  herdrProvisionDecision,
+  isNewerVersion,
   planHerdrInstall,
   readDotEnvValue,
   resolveHerdrMux,
@@ -196,7 +198,7 @@ describe('installHerdr', () => {
   })
 })
 
-describe('herdrOptedIn (rivetos update only provisions opted-in nodes)', () => {
+describe('herdrOptedIn (herdr is the default; rivetos update provisions unless opted OUT)', () => {
   it('env RIVETOS_DEN_TERM_MUX=herdr opts in; other values never do', async () => {
     const { herdrOptedIn } = await import('./herdr.js')
     expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'herdr' }, null)).toBe(true)
@@ -205,7 +207,9 @@ describe('herdrOptedIn (rivetos update only provisions opted-in nodes)', () => {
     ).toBe(false)
     expect(herdrOptedIn({}, null, 'den:\n  terminal:\n    mux: herdr\n')).toBe(true)
     expect(herdrOptedIn({}, null, 'den:\n  terminal:\n    mux: tmux\n')).toBe(false)
-    expect(herdrOptedIn({}, null)).toBe(false)
+    // unset = fleet default → provision
+    expect(herdrOptedIn({}, null)).toBe(true)
+    expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'none' }, null)).toBe(false)
   })
 })
 
@@ -259,6 +263,24 @@ describe('resolveHerdrMux / herdrOptedIn — env → ~/.rivetos/.env → YAML', 
   it('falls back to the scoped YAML key, never a whole-file mux: match', () => {
     expect(resolveHerdrMux({}, null, 'den:\n  terminal:\n    mux: herdr\n')).toBe('herdr')
     expect(resolveHerdrMux({}, null, 'other:\n  mux: herdr\n')).toBeUndefined()
-    expect(herdrOptedIn({}, null, null)).toBe(false)
+    // no value anywhere = the fleet default → provision (herdr is default-on since 2026-09-06)
+    expect(herdrOptedIn({}, null, null)).toBe(true)
+  })
+})
+
+describe('herdrProvisionDecision (routine update never downgrades a hand install)', () => {
+  it('installs when absent or older; skips a newer or unparseable (preview) build', () => {
+    expect(herdrProvisionDecision(false, null)).toBe('install')
+    expect(herdrProvisionDecision(true, '0.8.2')).toBe('install') // installHerdr reports "current"
+    expect(herdrProvisionDecision(true, '0.8.1')).toBe('install')
+    expect(herdrProvisionDecision(true, '0.9.0')).toBe('skip-newer')
+    expect(herdrProvisionDecision(true, '1.0.0')).toBe('skip-newer')
+    expect(herdrProvisionDecision(true, null)).toBe('skip-unparseable') // e.g. 0.9.0-preview.1
+  })
+  it('isNewerVersion compares dotted numerics', () => {
+    expect(isNewerVersion('0.9.0', '0.8.2')).toBe(true)
+    expect(isNewerVersion('0.8.10', '0.8.2')).toBe(true)
+    expect(isNewerVersion('0.8.2', '0.8.2')).toBe(false)
+    expect(isNewerVersion('0.8.1', '0.8.2')).toBe(false)
   })
 })

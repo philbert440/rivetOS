@@ -6,8 +6,9 @@
 // survives den restarts, browser detaches and the idle/detached reapers the
 // same way a tmux session does. A user can attach the same session from their
 // own terminal with `XDG_CONFIG_HOME=<short-runtime-home> herdr --session
-// <short-name>`. Nothing here runs unless `term.mux` is explicitly `herdr`
-// — unset still auto-detects tmux.
+// <short-name>`. herdr is the default mux since 2026-09-06: loadConfig turns an
+// unset `term.mux` into `herdr` when the pinned binary is reachable (PATH or
+// ~/.local/bin); `RIVETOS_DEN_TERM_MUX=tmux` opts out.
 //
 // Socket paths: Linux `sun_path` is 108 bytes (107 usable). herdr binds
 // `<configHome>/herdr/sessions/<name>/herdr-client.sock`. Config home is a
@@ -27,7 +28,17 @@ import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createConnection } from 'node:net'
 import type { Duplex } from 'node:stream'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { HarnessStatusFrame } from '@rivetos/types'
@@ -576,8 +587,28 @@ export function herdrSupported(bin: string, execFn: HerdrExec = execFileSync): b
   return herdrVersion(bin, execFn) === HERDR_PINNED_VERSION
 }
 
-export function findHerdrOnPath(pathEnv?: string): string | null {
-  return findOnPath('herdr', pathEnv ?? process.env.PATH ?? '')
+export function findHerdrOnPath(pathEnv?: string, home: string = homedir()): string | null {
+  const onPath = findOnPath('herdr', pathEnv ?? process.env.PATH ?? '')
+  if (onPath) return onPath
+  // `rivetos install --herdr` puts the pinned binary in ~/.local/bin, which the
+  // service unit's PATH usually lacks (2026-09-04: den fell back to tmux on the
+  // canary for exactly that reason). Look there explicitly before giving up.
+  const local = join(home, '.local', 'bin', 'herdr')
+  try {
+    accessSync(local, fsConstants.X_OK)
+    if (statSync(local).isFile()) return local
+  } catch {
+    // not installed there either
+  }
+  return null
+}
+
+/** True when a herdr binary at the pinned version is reachable (PATH or
+ *  ~/.local/bin). This is what makes herdr the DEFAULT mux when
+ *  RIVETOS_DEN_TERM_MUX is unset (fleet decision 2026-09-06). */
+export function herdrAvailable(pathEnv?: string, home?: string, execFn?: HerdrExec): boolean {
+  const bin = findHerdrOnPath(pathEnv, home)
+  return bin !== null && herdrSupported(bin, execFn)
 }
 
 // ---------------------------------------------------------------------------
