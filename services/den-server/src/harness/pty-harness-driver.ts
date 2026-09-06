@@ -1342,9 +1342,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const sessionId = this.sid(native)
     if (f.from === 0) {
       state.turns = f.turns.slice()
+    } else if (state.turns === undefined) {
+      // A delta before our snapshot (sink added mid-parse, or turns cleared on
+      // drop): splicing onto nothing would forward one wrong event — ask the
+      // watcher for a from-0 snapshot instead.
+      this.deps.transcript?.sync(sessionId)
+      return
     } else {
-      const prev = state.turns ?? []
-      state.turns = [...prev.slice(0, f.from), ...f.turns]
+      state.turns = [...state.turns.slice(0, f.from), ...f.turns]
     }
     const full = state.turns
     const event: HarnessTranscriptEvent = {
