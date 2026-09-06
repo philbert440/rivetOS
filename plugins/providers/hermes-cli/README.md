@@ -9,7 +9,7 @@ RivetOS agent loop drives it via `streamText`.
 
 History: written 2026-08-18 and deployed untracked to ct113/ct114 (survived every
 `git reset --hard` deploy); committed to the repo 2026-09-05 unchanged. Plain CommonJS, no
-dependencies; `build` copies `src/index.js` to `dist/`.
+dependencies; `build` copies `src/index.cjs` to `dist/`.
 
 ```yaml
 agents:

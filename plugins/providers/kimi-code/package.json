@@ -5,10 +5,10 @@
   "license": "MIT",
   "main": "dist/index.js",
   "scripts": {
-    "build": "mkdir -p dist && cp src/index.js dist/index.js",
-    "typecheck": "node --check src/index.js",
+    "build": "mkdir -p dist && cp src/index.cjs dist/index.js",
+    "typecheck": "node --check src/index.cjs",
     "lint": "eslint --no-error-on-unmatched-pattern src/ package.json",
-    "test": "node --test src/*.test.js",
+    "test": "node --test src/*.test.cjs",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },

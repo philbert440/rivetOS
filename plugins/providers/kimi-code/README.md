@@ -6,7 +6,7 @@ and replays the stream as a turn; per-conversation continuity via a session map 
 
 History: written 2026-08-18 and deployed untracked to ct116 WITHOUT a package.json, so boot never
 discovered it (`Unknown provider type "kimi-code"`); committed to the repo 2026-09-05 with a
-manifest. Plain CommonJS, no dependencies; `build` copies `src/index.js` to `dist/`.
+manifest. Plain CommonJS, no dependencies; `build` copies `src/index.cjs` to `dist/`.
 
 ```yaml
 agents:
