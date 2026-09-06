@@ -1,13 +1,17 @@
 package io.rivethub.app.gateway
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.util.Base64
 
 /** Fixed product tokens — left half of a canonical SessionId. */
@@ -122,6 +126,9 @@ data class HarnessTranscriptTool(
     val name: String,
     val status: String = "running",
     val args: JsonObject? = null,
+    val id: String? = null,
+    val input: JsonElement? = null,
+    val resultText: String? = null,
 )
 
 @Serializable
@@ -132,7 +139,37 @@ data class HarnessTranscriptTurn(
     val model: String? = null,
     val tools: List<HarnessTranscriptTool>? = null,
     val usage: MessageUsage? = null,
+    val stopReason: String? = null,
+    val lastBlock: String? = null,
+    val complete: Boolean? = null,
 )
+
+@Serializable
+data class HarnessAskOption(
+    val label: String,
+    val description: String? = null,
+)
+
+@Serializable
+data class HarnessAskQuestion(
+    val question: String? = null,
+    val header: String? = null,
+    val multiSelect: Boolean = false,
+    val options: List<HarnessAskOption> = emptyList(),
+)
+
+@Serializable
+data class HarnessPromptAnswer(
+    val question: Int,
+    val labels: List<String> = emptyList(),
+    val other: String? = null,
+)
+
+@Serializable
+data class HarnessPromptAnswersBody(val answers: List<HarnessPromptAnswer>)
+
+@Serializable
+data class HarnessApprovalDecisionBody(val decision: String)
 
 @Serializable
 data class HarnessSessionTranscriptResponse(
@@ -217,6 +254,49 @@ sealed class HarnessEvent {
         val capabilities: HarnessCapabilities,
         val changed: JsonObject? = null,
         val reason: String = "",
+    ) : HarnessEvent()
+    data class Transcript(
+        val sessionId: String,
+        val rev: Int,
+        val from: Int,
+        val total: Int,
+        val turns: List<HarnessTranscriptTurn>,
+        val command: String,
+        val truncatedBefore: Boolean = false,
+        val contextWindow: Int? = null,
+        val compactAt: Int? = null,
+        val contextSource: String? = null,
+    ) : HarnessEvent()
+    data class Status(
+        val sessionId: String,
+        val status: String,
+        val since: Long,
+        val source: String? = null,
+        val phase: String? = null,
+        val toolName: String? = null,
+        val toolCallId: String? = null,
+        val promptId: String? = null,
+    ) : HarnessEvent()
+    data class Prompt(
+        val sessionId: String,
+        val promptId: String,
+        val toolName: String,
+        val questions: List<HarnessAskQuestion>,
+        val resolved: Boolean,
+        val answerText: String? = null,
+    ) : HarnessEvent()
+    data class ApprovalRequest(
+        val sessionId: String,
+        val requestId: String,
+        val name: String,
+        val input: JsonObject? = null,
+        val reason: String? = null,
+        val options: List<String>? = null,
+    ) : HarnessEvent()
+    data class ApprovalResolved(
+        val sessionId: String,
+        val requestId: String,
+        val decision: String,
     ) : HarnessEvent()
     data class Unknown(val type: String, val raw: JsonObject) : HarnessEvent()
 }
@@ -331,6 +411,57 @@ fun parseHarnessEvent(el: JsonObject): HarnessEvent {
                 reason = el.str("reason") ?: "",
             )
         }
+        "transcript" -> HarnessEvent.Transcript(
+            sessionId = sessionId,
+            rev = el.int("rev") ?: 0,
+            from = el.int("from") ?: 0,
+            total = el.int("total") ?: 0,
+            turns = parseTurns(el["turns"]),
+            command = el.str("command") ?: "",
+            truncatedBefore = el["truncatedBefore"]?.jsonPrimitive?.booleanOrNull == true,
+            contextWindow = el.int("contextWindow"),
+            compactAt = el.int("compactAt"),
+            contextSource = el.str("contextSource"),
+        )
+        "status" -> {
+            val tool = el["tool"] as? JsonObject
+            HarnessEvent.Status(
+                sessionId = sessionId,
+                status = el.str("status") ?: "idle",
+                since = el.long("since") ?: 0L,
+                source = el.str("source"),
+                phase = el.str("phase"),
+                toolName = tool?.str("name") ?: el.str("tool"),
+                toolCallId = tool?.str("toolCallId"),
+                promptId = el.str("promptId"),
+            )
+        }
+        "prompt" -> {
+            val resolvedEl = el["resolved"]
+            val resolvedObj = resolvedEl as? JsonObject
+            val resolved = resolvedEl != null && resolvedEl !is JsonNull
+            HarnessEvent.Prompt(
+                sessionId = sessionId,
+                promptId = el.str("promptId") ?: "",
+                toolName = el.str("toolName") ?: "",
+                questions = parseAskQuestions(el["questions"]),
+                resolved = resolved,
+                answerText = resolvedObj?.str("answerText"),
+            )
+        }
+        "approval-request" -> HarnessEvent.ApprovalRequest(
+            sessionId = sessionId,
+            requestId = el.str("requestId") ?: "",
+            name = el.str("name") ?: "",
+            input = el["input"] as? JsonObject,
+            reason = el.str("reason"),
+            options = parseStringList(el["options"]),
+        )
+        "approval-resolved" -> HarnessEvent.ApprovalResolved(
+            sessionId = sessionId,
+            requestId = el.str("requestId") ?: "",
+            decision = el.str("decision") ?: "",
+        )
         else -> HarnessEvent.Unknown(rawType, el)
     }
 }
@@ -344,3 +475,51 @@ private fun normalizeEventType(type: String): String = type.lowercase().replace(
 
 private fun JsonObject.str(key: String): String? =
     runCatching { this[key]?.jsonPrimitive?.contentOrNull }.getOrNull()
+
+private fun JsonObject.int(key: String): Int? =
+    runCatching { this[key]?.jsonPrimitive?.intOrNull }.getOrNull()
+        ?: runCatching { this[key]?.jsonPrimitive?.contentOrNull?.toInt() }.getOrNull()
+
+private fun JsonObject.long(key: String): Long? =
+    runCatching { this[key]?.jsonPrimitive?.longOrNull }.getOrNull()
+        ?: runCatching { this[key]?.jsonPrimitive?.contentOrNull?.toLong() }.getOrNull()
+
+private fun parseTurns(el: JsonElement?): List<HarnessTranscriptTurn> {
+    val arr = el as? JsonArray ?: return emptyList()
+    return arr.mapNotNull {
+        runCatching { wireJson.decodeFromJsonElement(HarnessTranscriptTurn.serializer(), it) }.getOrNull()
+    }
+}
+
+private fun parseAskQuestions(el: JsonElement?): List<HarnessAskQuestion> {
+    val arr = el as? JsonArray ?: return emptyList()
+    return arr.mapNotNull { item ->
+        val obj = item as? JsonObject ?: return@mapNotNull null
+        HarnessAskQuestion(
+            question = obj.str("question"),
+            header = obj.str("header"),
+            multiSelect = obj["multiSelect"]?.jsonPrimitive?.booleanOrNull == true,
+            options = parseAskOptions(obj["options"] ?: obj["choices"]),
+        )
+    }
+}
+
+private fun parseAskOptions(el: JsonElement?): List<HarnessAskOption> {
+    val arr = el as? JsonArray ?: return emptyList()
+    return arr.mapNotNull { item ->
+        when (item) {
+            is kotlinx.serialization.json.JsonPrimitive ->
+                item.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }?.let { HarnessAskOption(it) }
+            is JsonObject -> {
+                val label = item.str("label") ?: item.str("value") ?: item.str("text") ?: return@mapNotNull null
+                HarnessAskOption(label, item.str("description"))
+            }
+            else -> null
+        }
+    }
+}
+
+private fun parseStringList(el: JsonElement?): List<String>? {
+    val arr = el as? JsonArray ?: return null
+    return arr.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
+}

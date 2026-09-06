@@ -9,6 +9,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
@@ -166,7 +167,6 @@ class OutboundTest {
 
     @Test fun `409 then success retries on pending cadence`() = runBlocking {
         withTimeout(1_000) {
-            var t = 0L
             var calls = 0
             val pump = OutboundPump(
                 send = {
@@ -174,22 +174,68 @@ class OutboundTest {
                     if (calls == 1) throw TurnInFlight()
                 },
                 newId = { "q1" },
-                nowMs = { t },
             )
             pump.tryEnqueue("hi")
             pump.pump()
             assertEquals(1, calls)
             assertTrue(pump.pendingOnServer)
             assertEquals(1, pump.queued.size)
-            t = PENDING_RETRY_MS - 1
-            assertFalse(pump.pendingRetryDue())
-            t = PENDING_RETRY_MS
-            assertTrue(pump.pendingRetryDue())
-            pump.onTurnComplete()
+            pump.onIdle()
             assertEquals(2, calls)
             assertFalse(pump.pendingOnServer)
             assertTrue(pump.queued.isEmpty())
             assertTrue(pump.awaitingTurnComplete)
+        }
+    }
+
+    @Test fun `cancel returns the item text and drops it`() = runBlocking {
+        withTimeout(1_000) {
+            var n = 0
+            val pump = OutboundPump(send = {}, newId = { "id-${n++}" })
+            pump.tryEnqueue("keep me")
+            pump.tryEnqueue("drop me")
+            val dropped = pump.cancel("id-1")
+            assertEquals("drop me", dropped!!.text)
+            assertEquals(1, pump.queued.size)
+            assertEquals("keep me", pump.queued.single().text)
+            assertNull(pump.cancel("missing"))
+        }
+    }
+
+    @Test fun `inject forceId sends that item while awaiting`() = runBlocking {
+        withTimeout(1_000) {
+            val seen = mutableListOf<String>()
+            var n = 0
+            val pump = OutboundPump(send = { seen += it }, newId = { "id-${n++}" })
+            pump.tryEnqueue("one")
+            pump.tryEnqueue("two")
+            pump.pump()
+            assertEquals(listOf("one"), seen)
+            assertTrue(pump.awaitingTurnComplete)
+            pump.pump(forceId = "id-1")
+            assertEquals(listOf("one", "two"), seen)
+        }
+    }
+
+    @Test fun `onIdle retries a 409 once`() = runBlocking {
+        withTimeout(1_000) {
+            var calls = 0
+            val pump = OutboundPump(
+                send = {
+                    calls++
+                    if (calls == 1) throw TurnInFlight()
+                },
+                newId = { "q1" },
+            )
+            pump.tryEnqueue("hi")
+            pump.pump()
+            assertEquals(1, calls)
+            assertTrue(pump.pendingOnServer)
+            pump.onIdle()
+            assertEquals(2, calls)
+            assertFalse(pump.pendingOnServer)
+            pump.onIdle()
+            assertEquals(2, calls)
         }
     }
 

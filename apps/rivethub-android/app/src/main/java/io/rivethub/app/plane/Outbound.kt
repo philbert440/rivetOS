@@ -18,23 +18,20 @@ sealed class EnqueueResult {
     data object Uploading : EnqueueResult()
 }
 
-/** Retry a 409 `turn_in_flight` on the VM tick (15 s), not the 3 min stall. */
-const val PENDING_RETRY_MS: Long = 15_000L
+/** Give up auto-retrying a 409 after this many idle/turn-complete edges. */
+const val TURN_RETRY_ATTEMPTS: Int = 6
 
 /**
  * One-conversation outbound pump. Queues a turn that the driver rejects
- * with turn_in_flight (HTTP 409) and retries it after turn-complete.
+ * with turn_in_flight (HTTP 409) and retries it on a status-idle /
+ * turn-complete edge ([onIdle] / [onTurnComplete]), not a timer.
  * Refuses a send while any attachment chip is still uploading.
  *
  * Single-flight: a Mutex plus a SENDING-status guard so two concurrent
  * pump() calls cannot put two turns in flight. Stale-turn release is
- * [isStalled] — M3b's 3-minute tick calls [onTurnComplete] when true.
- * A 409 is [pendingOnServer]: the den holds turnInFlight up to 5 min,
- * and [pendingRetryDue] retries on the 15 s tick.
- *
- * Deliberately smaller than the web inject-latch / exponential-backoff
- * pump: the control-plane 409 is "not yet", and turn-complete is the
- * retry signal. Persistence of the queue across process death is M3b.
+ * [isStalled]. A 409 is [pendingOnServer]; [onIdle] retries once per
+ * idle edge up to [TURN_RETRY_ATTEMPTS]. [pump] with [forceId] injects
+ * that item even while awaiting.
  */
 class OutboundPump(
     private val send: suspend (text: String) -> Unit,
@@ -45,9 +42,10 @@ class OutboundPump(
 ) {
     private val lock = Mutex()
     private val q = ArrayDeque<OutboundItem>()
+    private val attempts = HashMap<String, Int>()
     var awaitingTurnComplete: Boolean = false
         private set
-    /** Den rejected with 409; the item is requeued and retried on [PENDING_RETRY_MS]. */
+    /** Den rejected with 409; retried on the next idle / turn-complete edge. */
     var pendingOnServer: Boolean = false
         private set
     private var awaitSince: Long = 0
@@ -64,18 +62,39 @@ class OutboundPump(
     fun isStalled(now: Long = nowMs()): Boolean =
         awaitingTurnComplete && now - awaitSince > idleDeadlineMs
 
-    fun pendingRetryDue(now: Long = nowMs()): Boolean =
-        pendingOnServer && awaitingTurnComplete && now - awaitSince >= PENDING_RETRY_MS
+    /** Remove a QUEUED item (never one mid-send) under the same lock as the pump. */
+    suspend fun cancel(id: String): OutboundItem? = lock.withLock {
+        val item = q.firstOrNull { it.id == id && it.status == OutboundItem.Status.QUEUED }
+            ?: return@withLock null
+        q.removeAll { it.id == id }
+        attempts.remove(id)
+        item
+    }
 
-    suspend fun pump() = lock.withLock { pumpLocked() }
+    suspend fun pump(forceId: String? = null) = lock.withLock { pumpLocked(forceId) }
 
     suspend fun onTurnComplete() = lock.withLock {
         awaitingTurnComplete = false
+        pendingOnServer = false
         pumpLocked()
     }
 
     /**
-     * Poll found our assistant while a 409 item is still queued — drop it
+     * Status went idle: whatever turn we were waiting on is over — an accepted
+     * one that never got a `turn-complete` (herdr off, text-only store) as much
+     * as a 409-pending one. Drain the queue (attempts cap kept).
+     */
+    suspend fun onIdle() = lock.withLock {
+        awaitingTurnComplete = false
+        pendingOnServer = false
+        // A speculative drain: an idle edge can land while an accepted turn is
+        // still settling and the den answers 409 — that must not burn one of
+        // the TURN_RETRY_ATTEMPTS meant for real retries.
+        pumpLocked(countAttempt = false)
+    }
+
+    /**
+     * Registry found our assistant while a 409 item is still queued — drop it
      * so [onTurnComplete] cannot double-send, then the caller may pump the next.
      */
     suspend fun acknowledgePending() = lock.withLock {
@@ -84,18 +103,27 @@ class OutboundPump(
         awaitingTurnComplete = false
         q.firstOrNull { it.status == OutboundItem.Status.QUEUED }?.let { item ->
             q.removeAll { it.id == item.id }
+            attempts.remove(item.id)
         }
     }
 
-    private suspend fun pumpLocked() {
+    private suspend fun pumpLocked(forceId: String? = null, countAttempt: Boolean = true) {
         if (attachmentsUploading()) return
-        if (awaitingTurnComplete) return
-        if (q.any { it.status == OutboundItem.Status.SENDING }) return
-        val next = q.firstOrNull { it.status == OutboundItem.Status.QUEUED } ?: return
+        if (forceId == null) {
+            if (awaitingTurnComplete) return
+            if (q.any { it.status == OutboundItem.Status.SENDING }) return
+        }
+        val next = if (forceId != null) {
+            q.firstOrNull { it.id == forceId } ?: return
+        } else {
+            q.firstOrNull { it.status == OutboundItem.Status.QUEUED } ?: return
+        }
+        if (forceId == null && (attempts[next.id] ?: 0) >= TURN_RETRY_ATTEMPTS) return
         replace(next, next.copy(status = OutboundItem.Status.SENDING))
         try {
             send(next.text)
             q.removeAll { it.id == next.id }
+            attempts.remove(next.id)
             awaitingTurnComplete = true
             pendingOnServer = false
             awaitSince = nowMs()
@@ -104,10 +132,12 @@ class OutboundPump(
                 replace(next, next.copy(status = OutboundItem.Status.QUEUED))
                 awaitingTurnComplete = true
                 pendingOnServer = true
+                if (countAttempt) attempts[next.id] = (attempts[next.id] ?: 0) + 1
                 awaitSince = nowMs()
                 return
             }
             pendingOnServer = false
+            attempts.remove(next.id)
             q.removeAll { it.id == next.id }
             throw e
         }

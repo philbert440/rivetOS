@@ -21,6 +21,25 @@ class AttachTest {
     private fun turns(vararg texts: String) =
         texts.map { HarnessTranscriptTurn(role = "assistant", text = it) }
 
+    private fun u(text: String) = HarnessTranscriptTurn(role = "user", text = text)
+    private fun a(text: String) = HarnessTranscriptTurn(role = "assistant", text = text)
+    private fun tx(
+        rev: Int,
+        from: Int,
+        total: Int,
+        turns: List<HarnessTranscriptTurn>,
+        command: String = "claude",
+        truncatedBefore: Boolean = false,
+    ) = HarnessEvent.Transcript(
+        sessionId = "s",
+        rev = rev,
+        from = from,
+        total = total,
+        turns = turns,
+        command = command,
+        truncatedBefore = truncatedBefore,
+    )
+
     @Test fun `onOpen replaces and does not merge`() {
         val m = TranscriptMachine({ 0 })
         m.onOpen(turns("a", "b"))
@@ -300,7 +319,6 @@ class AttachTest {
         m.beginTurn()
         assertEquals(listOf("user" to "hello"), m.transcript.map { it.role to it.text })
         assertTrue(m.inFlight)
-        assertFalse(m.sawSessionFrame)
     }
 
     @Test fun `resync dedupes the optimistic user turn`() {
@@ -421,270 +439,152 @@ class AttachTest {
         }
     }
 
-    @Test fun `poll cadence is every 5s bounded by the idle deadline`() {
-        val clock = Clock(0)
-        fun due(lastPoll: Long?) = transcriptPollDue(
-            inFlight = true,
-            sawSessionFrame = false,
-            elapsedSinceTurnMs = clock.now(),
-            elapsedSincePollMs = lastPoll?.let { clock.now() - it },
-        )
-        assertFalse(due(null))
-        clock.advance(TRANSCRIPT_POLL_EVERY_MS - 1)
-        assertFalse(due(null))
-        clock.advance(1)
-        assertTrue(due(null))
-        val first = clock.now()
-        clock.advance(TRANSCRIPT_POLL_EVERY_MS - 1)
-        assertFalse(due(first))
-        clock.advance(1)
-        assertTrue(due(first))
-        clock.t = IDLE_DEADLINE_MS
-        assertFalse(due(first))
-        clock.t = TRANSCRIPT_POLL_EVERY_MS
-        assertFalse(transcriptPollDue(inFlight = false, sawSessionFrame = false, elapsedSinceTurnMs = clock.now()))
+    @Test fun `transcript snapshot from 0 replaces turns and sets rev`() {
+        val m = TranscriptMachine({ 0 })
+        val ok = m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 2, turns = listOf(u("a"), a("b"))))
+        assertTrue(ok)
+        assertEquals(1, m.rev)
+        assertEquals(0, m.offset)
+        assertEquals(listOf("a", "b"), m.transcript.map { it.text })
+        assertEquals(LiveSource.TRANSCRIPT, m.liveSource)
     }
 
-    @Test fun `frames cancel polling`() {
+    @Test fun `transcript delta splices when rev is next`() {
         val m = TranscriptMachine({ 0 })
-        m.beginTurn()
-        assertFalse(m.sawSessionFrame)
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 1, turns = listOf(u("a")))))
+        assertTrue(m.applyTranscriptFrame(tx(rev = 2, from = 1, total = 2, turns = listOf(a("b")))))
+        assertEquals(2, m.rev)
+        assertEquals(listOf("a", "b"), m.transcript.map { it.text })
+    }
+
+    @Test fun `rev gap returns false so caller syncs`() {
+        val m = TranscriptMachine({ 0 })
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 1, turns = listOf(u("a")))))
+        assertFalse(m.applyTranscriptFrame(tx(rev = 3, from = 1, total = 2, turns = listOf(a("b")))))
+        assertEquals(1, m.rev)
+        assertEquals(listOf("a"), m.transcript.map { it.text })
+    }
+
+    @Test fun `truncatedBefore pins the earlier prefix`() {
+        val m = TranscriptMachine({ 0 })
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 3, turns = listOf(u("a"), a("b"), u("c")))))
         assertTrue(
-            transcriptPollDue(
-                inFlight = true,
-                sawSessionFrame = m.sawSessionFrame,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            m.applyTranscriptFrame(
+                tx(rev = 2, from = 0, total = 2, turns = listOf(a("b"), u("c")), truncatedBefore = true),
             ),
         )
-        m.onFrame(HarnessEvent.AssistantDelta("s", "x"))
-        assertTrue(m.sawSessionFrame)
-        assertFalse(
-            transcriptPollDue(
-                inFlight = true,
-                sawSessionFrame = m.sawSessionFrame,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
+        assertEquals(listOf("a", "b", "c"), m.transcript.map { it.text })
+        assertEquals(1, m.offset)
     }
 
-    @Test fun `poll apply with new assistant ends the turn - user-only does not`() {
+    @Test fun `total mismatch returns false`() {
         val m = TranscriptMachine({ 0 })
-        m.appendOptimisticUser("hello")
-        m.beginTurn()
-        val userOnly = listOf(HarnessTranscriptTurn(role = "user", text = "hello"))
-        assertFalse(fetchedHasNewAssistant(userOnly, m.committedAtTurnStart))
-        m.applyFetched(userOnly, complete = false)
+        assertFalse(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 5, turns = listOf(u("a")))))
+        assertEquals(-1, m.rev)
+        assertTrue(m.transcript.isEmpty())
+    }
+
+    @Test fun `trailing incomplete assistant is live not committed`() {
+        val m = TranscriptMachine({ 0 })
+        val live = HarnessTranscriptTurn(role = "assistant", text = "partial", thinking = "hmm", complete = null)
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 2, turns = listOf(u("hi"), live))))
+        m.onStatus(HarnessEvent.Status("s", "working", 1, phase = "writing"))
+        assertEquals(listOf("hi"), m.committedTurns.map { it.text })
+        assertEquals("partial", m.liveText)
+        assertEquals("hmm", m.liveReasoning)
         assertTrue(m.inFlight)
-        assertEquals(listOf("hello"), m.transcript.map { it.text })
-        val withAssistant = userOnly + HarnessTranscriptTurn(role = "assistant", text = "yo")
-        assertTrue(fetchedHasNewAssistant(withAssistant, m.committedAtTurnStart))
-        m.applyFetched(withAssistant, complete = true)
+        assertFalse(m.transcript.any { it.text == "partial" })
+    }
+
+    @Test fun `status idle solidifies the trailing turn`() {
+        val m = TranscriptMachine({ 0 })
+        val live = HarnessTranscriptTurn(role = "assistant", text = "done", complete = null)
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 2, turns = listOf(u("hi"), live))))
+        m.onStatus(HarnessEvent.Status("s", "working", 1, phase = "writing"))
+        assertEquals("done", m.liveText)
+        assertFalse(m.committedTurns.any { it.text == "done" })
+        m.onStatus(HarnessEvent.Status("s", "idle", 2))
         assertFalse(m.inFlight)
-        assertEquals(listOf("hello", "yo"), m.transcript.map { it.text })
+        assertEquals("", m.liveText)
+        assertEquals(listOf("hi", "done"), m.transcript.map { it.text })
     }
 
-    @Test fun `premature resync of 0 turns keeps inFlight and the poll armed`() {
+    @Test fun `prompt open then resolve`() {
         val m = TranscriptMachine({ 0 })
-        m.appendOptimisticUser("hello")
-        m.beginTurn()
-        val fetched = emptyList<HarnessTranscriptTurn>()
-        val complete = resyncCompletesTurn(
-            fetched = fetched,
-            pendingUserText = m.pendingUserText,
-            committedPrefix = m.committedAtTurnStart,
-            injectCompleted = false,
-        )
-        assertFalse(complete)
-        m.applyFetched(fetched, complete = false)
-        assertTrue(m.inFlight)
-        assertEquals(listOf("hello"), m.transcript.map { it.text })
-        assertEquals("user", m.transcript.single().role)
+        val open = HarnessEvent.Prompt("s", "p1", "AskUserQuestion", emptyList(), resolved = false)
+        m.onPrompt(open)
+        assertEquals("p1", m.openPrompt?.promptId)
+        m.onPrompt(open.copy(resolved = true, answerText = "Yes"))
+        assertNull(m.openPrompt)
+    }
+
+    @Test fun `hook deltas ignored on a live-turn store`() {
+        val m = TranscriptMachine({ 0 })
+        val live = HarnessTranscriptTurn(role = "assistant", text = "from-store", complete = null)
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 1, turns = listOf(live))))
+        m.onStatus(HarnessEvent.Status("s", "working", 1, phase = "writing"))
+        m.onFrame(HarnessEvent.AssistantDelta("s", "hook-text"))
+        m.onFrame(HarnessEvent.ReasoningDelta("s", "hook-think"))
+        assertEquals("from-store", m.liveText)
+        assertFalse(m.liveText.contains("hook-text"))
+        assertEquals(LiveSource.TRANSCRIPT, m.liveSource)
+    }
+
+    @Test fun `hook deltas applied on a text-only store`() {
+        val m = TranscriptMachine({ 0 })
         assertTrue(
-            silentPollShouldRemainArmed(
-                inFlight = m.inFlight,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = complete,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
+            m.applyTranscriptFrame(
+                tx(rev = 1, from = 0, total = 1, turns = listOf(u("hi")), command = "dsh"),
             ),
         )
+        assertEquals(LiveSource.HOOKS, m.liveSource)
+        m.onFrame(HarnessEvent.AssistantDelta("s", "hel"))
+        m.onFrame(HarnessEvent.AssistantDelta("s", "lo"))
+        assertEquals("hello", m.liveText)
+        assertTrue(m.inFlight)
     }
 
-    @Test fun `poll that finds the assistant turn ends inFlight and renders`() {
+    @Test fun `interrupted turn renders truncated`() {
         val m = TranscriptMachine({ 0 })
-        m.appendOptimisticUser("hello")
-        m.beginTurn()
-        val fetched = listOf(
-            HarnessTranscriptTurn(role = "user", text = "hello"),
-            HarnessTranscriptTurn(role = "assistant", text = "yo"),
+        val cut = HarnessTranscriptTurn(
+            role = "assistant",
+            text = "half",
+            stopReason = "interrupted",
+            complete = null,
         )
-        val complete = resyncCompletesTurn(
-            fetched = fetched,
-            pendingUserText = m.pendingUserText,
-            committedPrefix = m.committedAtTurnStart,
-            injectCompleted = true,
-        )
-        assertTrue(complete)
-        m.applyFetched(fetched, complete = true)
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 2, turns = listOf(u("hi"), cut))))
+        m.onStatus(HarnessEvent.Status("s", "idle", 1))
         assertFalse(m.inFlight)
-        assertEquals(listOf("hello", "yo"), m.transcript.map { it.text })
-        assertEquals(listOf("user", "assistant"), m.transcript.map { it.role })
-        assertFalse(
-            silentPollShouldRemainArmed(
-                inFlight = m.inFlight,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = complete,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
+        assertEquals("", m.liveText)
+        assertEquals(listOf("hi", "half"), m.transcript.map { it.text })
+        assertEquals("interrupted", m.transcript.last().stopReason)
     }
 
-    @Test fun `resync with only the user turn keeps polling`() {
+    @Test fun `delta after pin uses the offset`() {
         val m = TranscriptMachine({ 0 })
-        m.appendOptimisticUser("hello")
-        m.beginTurn()
-        val fetched = listOf(HarnessTranscriptTurn(role = "user", text = "hello"))
-        val complete = resyncCompletesTurn(
-            fetched = fetched,
-            pendingUserText = m.pendingUserText,
-            committedPrefix = m.committedAtTurnStart,
-            injectCompleted = true,
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 3, turns = listOf(u("a"), a("b"), u("c")))))
+        assertTrue(
+            m.applyTranscriptFrame(
+                tx(rev = 2, from = 0, total = 2, turns = listOf(a("b"), u("c")), truncatedBefore = true),
+            ),
         )
-        assertFalse(complete)
-        m.applyFetched(fetched, complete = false)
+        assertTrue(m.applyTranscriptFrame(tx(rev = 3, from = 2, total = 3, turns = listOf(a("d")))))
+        assertEquals(listOf("a", "b", "c", "d"), m.transcript.map { it.text })
+        assertEquals(1, m.offset)
+    }
+
+    @Test fun `status working without complete keeps inFlight`() {
+        val m = TranscriptMachine({ 0 })
+        assertTrue(m.applyTranscriptFrame(tx(rev = 1, from = 0, total = 1, turns = listOf(u("hi")))))
+        m.onStatus(HarnessEvent.Status("s", "working", 1, phase = "thinking"))
         assertTrue(m.inFlight)
-        assertEquals(listOf("hello"), m.transcript.map { it.text })
-        assertEquals("user", m.transcript.single().role)
-        assertTrue(
-            silentPollShouldRemainArmed(
-                inFlight = m.inFlight,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = complete,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
+        assertEquals("thinking…", agentStatusLine("working", "thinking", null))
+        assertEquals("running Bash…", agentStatusLine("working", "tool", "Bash"))
+        assertEquals("writing…", agentStatusLine("working", "writing", null))
+        assertEquals("waiting for you", agentStatusLine("blocked", null, null))
     }
 
-    @Test fun `accepted frame keeps the poll`() {
-        val m = TranscriptMachine({ 0 })
-        m.appendOptimisticUser("PONG2")
-        m.beginTurn()
-        assertFalse(sessionFrameCancelsPoll(HarnessEvent.SessionUpdated("s", "active")))
-        assertFalse(sessionFrameCancelsPoll(HarnessEvent.Unknown("accepted", kotlinx.serialization.json.buildJsonObject {})))
-        m.onFrame(HarnessEvent.SessionUpdated("s", "active"))
-        assertFalse(m.sawSessionFrame)
-        assertTrue(m.inFlight)
-        assertTrue(
-            transcriptPollDue(
-                inFlight = true,
-                sawSessionFrame = m.sawSessionFrame,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-        m.onFrame(HarnessEvent.Unknown("accepted", kotlinx.serialization.json.buildJsonObject {}))
-        assertFalse(m.sawSessionFrame)
-        assertTrue(
-            silentPollShouldRemainArmed(
-                inFlight = m.inFlight,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = false,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-    }
-
-    @Test fun `delta frame cancels the poll`() {
-        val m = TranscriptMachine({ 0 })
-        m.beginTurn()
-        assertTrue(sessionFrameCancelsPoll(HarnessEvent.AssistantDelta("s", "x")))
-        assertTrue(sessionFrameCancelsPoll(HarnessEvent.ReasoningDelta("s", "think")))
-        assertTrue(sessionFrameCancelsPoll(HarnessEvent.ToolUse("s", "c1", "Bash")))
-        assertTrue(sessionFrameCancelsPoll(HarnessEvent.TurnComplete("s", "t1", "end-turn")))
-        assertTrue(sessionFrameCancelsPoll(HarnessEvent.Error("s", "upstream", "tmp")))
-        m.onFrame(HarnessEvent.AssistantDelta("s", "x"))
-        assertTrue(m.sawSessionFrame)
-        assertFalse(
-            transcriptPollDue(
-                inFlight = true,
-                sawSessionFrame = m.sawSessionFrame,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-        assertFalse(
-            silentPollShouldRemainArmed(
-                inFlight = true,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = false,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-    }
-
-    @Test fun `PONG2-style second turn renders via poll`() {
-        val m = TranscriptMachine({ 0 })
-        m.onOpen(
-            listOf(
-                HarnessTranscriptTurn(role = "user", text = "PING"),
-                HarnessTranscriptTurn(role = "assistant", text = "PONG"),
-            ),
-        )
-        m.appendOptimisticUser("PONG2")
-        m.beginTurn()
-        m.onFrame(HarnessEvent.SessionUpdated("claude-code:s", "active"))
-        assertFalse(m.sawSessionFrame)
-        assertTrue(m.inFlight)
-        assertTrue(
-            silentPollShouldRemainArmed(
-                inFlight = m.inFlight,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = false,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-        val fetched = listOf(
-            HarnessTranscriptTurn(role = "user", text = "PING"),
-            HarnessTranscriptTurn(role = "assistant", text = "PONG"),
-            HarnessTranscriptTurn(role = "user", text = "PONG2"),
-            HarnessTranscriptTurn(role = "assistant", text = "ok"),
-        )
-        val complete = resyncCompletesTurn(
-            fetched = fetched,
-            pendingUserText = m.pendingUserText,
-            committedPrefix = m.committedAtTurnStart,
-            injectCompleted = true,
-        )
-        assertTrue(complete)
-        m.applyFetched(fetched, complete = true)
-        assertFalse(m.inFlight)
-        assertEquals(listOf("PING", "PONG", "PONG2", "ok"), m.transcript.map { it.text })
-        assertEquals(listOf("user", "assistant", "user", "assistant"), m.transcript.map { it.role })
-    }
-
-    @Test fun `SessionUpdated driven through onFrame does not cancel the poll`() {
-        val m = TranscriptMachine({ 0 })
-        m.appendOptimisticUser("hello")
-        m.beginTurn()
-        assertFalse(sessionFrameCancelsPoll(HarnessEvent.SessionUpdated("s", "active")))
-        m.onFrame(HarnessEvent.SessionUpdated("s", "active"))
-        assertFalse(m.sawSessionFrame)
-        assertTrue(m.inFlight)
-        assertTrue(
-            transcriptPollDue(
-                inFlight = true,
-                sawSessionFrame = m.sawSessionFrame,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-        assertTrue(
-            silentPollShouldRemainArmed(
-                inFlight = m.inFlight,
-                sawSessionFrame = m.sawSessionFrame,
-                complete = false,
-                elapsedSinceTurnMs = TRANSCRIPT_POLL_EVERY_MS,
-            ),
-        )
-    }
-
-    @Test fun `409 pending-on-server poll finding assistant completes the turn`() {
+    @Test fun `409 pending-on-server then assistant on disk completes the turn`() {
         val m = TranscriptMachine({ 0 })
         m.appendOptimisticUser("hello")
         m.beginTurn()

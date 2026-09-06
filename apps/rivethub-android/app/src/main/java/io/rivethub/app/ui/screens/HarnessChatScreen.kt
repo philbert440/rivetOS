@@ -57,10 +57,13 @@ import io.rivethub.app.plane.humanToolTitle
 import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.plane.toolArgStrings
 import io.rivethub.app.ui.HarnessChatViewModel
+import io.rivethub.app.ui.components.AgentStatusLine
+import io.rivethub.app.ui.components.ApprovalCard
 import io.rivethub.app.ui.components.AskUserCardView
 import io.rivethub.app.ui.components.ChatSessionHeader
 import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.Composer
+import io.rivethub.app.ui.components.QueuedStrip
 import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.ModePager
@@ -237,6 +240,11 @@ fun HarnessChatScreen(
                 modifier = Modifier.navigationBarsPadding(),
             )
         } else {
+            QueuedStrip(
+                items = st.queued,
+                onInject = vm::injectQueued,
+                onCancel = vm::cancelQueued,
+            )
             Composer(
                 value = st.composer,
                 onValueChange = vm::setComposer,
@@ -254,11 +262,16 @@ fun HarnessChatScreen(
                 onStop = vm::stop,
                 enabled = composerEnabled,
                 ask = {
-                    st.ask?.let { card ->
-                        AskUserCardView(
-                            card = card,
+                    when {
+                        st.ask != null -> AskUserCardView(
+                            card = st.ask!!,
                             onSubmit = { picked, free -> vm.answerAsk(picked, free) },
                             onDismiss = vm::dismissAsk,
+                            enabled = !st.answeringPrompt,
+                        )
+                        st.approval != null -> ApprovalCard(
+                            approval = st.approval!!,
+                            onDecide = vm::decideApproval,
                         )
                     }
                 },
@@ -379,7 +392,7 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
                 )
             }
         }
-        if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank()) {
+        if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank() || st.liveTools.isNotEmpty()) {
             item {
                 TranscriptAssistantTurn(
                     text = st.liveText,
@@ -387,11 +400,14 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
                     model = st.model.takeIf { it.isNotBlank() },
                     time = null,
                     accent = accent,
-                    tools = emptyList(),
+                    tools = st.liveTools.map {
+                        ToolRow(humanToolTitle(it.name, toolArgStrings(it.args as? kotlinx.serialization.json.JsonObject)), it.status)
+                    },
                     stats = null,
                     onCopy = { copyText(ctx, it) },
                     thinkingOpenDefault = st.liveReasoning.isNotBlank() && st.liveText.isBlank(),
                 )
+                st.agentStatusText?.let { AgentStatusLine(it) }
             }
         }
             item { Spacer(Modifier.height(Dimens.grid2)) }

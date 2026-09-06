@@ -220,4 +220,47 @@ class AskUserTest {
         assertEquals("A\nalso: be careful", composeAskAnswer(listOf(q), mapOf(0 to listOf("A")), "also: be careful"))
         assertEquals("", composeAskAnswer(listOf(q), emptyMap(), "   "))
     }
+
+    @Test fun `promptAnswers emits one entry per question`() {
+        val qs = listOf(
+            AskQuestion(header = "A", options = listOf(AskOption("1"))),
+            AskQuestion(header = "B", options = listOf(AskOption("2"))),
+        )
+        val answers = promptAnswers(qs, mapOf(0 to listOf("1"), 1 to listOf("2")), "")
+        assertEquals(2, answers.size)
+        assertEquals(0, answers[0].question)
+        assertEquals(listOf("1"), answers[0].labels)
+        assertEquals(1, answers[1].question)
+        assertEquals(listOf("2"), answers[1].labels)
+        assertNull(answers[0].other)
+    }
+
+    @Test fun `promptAnswers puts free text on other`() {
+        val q = AskQuestion(options = listOf(AskOption("Go"), AskOption("Other")))
+        val answers = promptAnswers(listOf(q), mapOf(0 to listOf("Other")), "typed extra")
+        assertEquals(listOf("Other"), answers.single().labels)
+        assertEquals("typed extra", answers.single().other)
+        val lone = promptAnswers(listOf(q), mapOf(0 to listOf("Go")), "also this")
+        assertEquals("also this", lone.single().other)
+    }
+
+    @Test fun `askQuestionsFromHarness copies wire questions`() {
+        val wire = listOf(
+            io.rivethub.app.gateway.HarnessAskQuestion(
+                question = "Go?",
+                header = "Auth",
+                multiSelect = true,
+                options = listOf(
+                    io.rivethub.app.gateway.HarnessAskOption("Yes", "do it"),
+                    io.rivethub.app.gateway.HarnessAskOption("No"),
+                ),
+            ),
+        )
+        val qs = askQuestionsFromHarness(wire)
+        assertEquals("Go?", qs.single().question)
+        assertEquals("Auth", qs.single().header)
+        assertTrue(qs.single().multiSelect)
+        assertEquals("Yes", qs.single().options[0].label)
+        assertEquals("do it", qs.single().options[0].description)
+    }
 }
