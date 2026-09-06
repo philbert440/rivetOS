@@ -45,9 +45,10 @@
  *
  * Everything else is identical across the three, including the honest-capability
  * stance: flags report what is ACTUALLY wired on this node (terminals enabled,
- * den tap present), `approvals` is false because a TUI's permission prompt
- * never reaches the den wire, and roster-owned `cwd`/`model` plus attachments
- * are rejected with `capability_unsupported` rather than silently ignored.
+ * den tap present). `approvals` is true only when a PTY is available, herdr is
+ * the mux, and the adapter implements permission keys (claude/grok/kimi).
+ * Roster-owned `cwd`/`model` plus attachments are rejected with
+ * `capability_unsupported` rather than silently ignored.
  *
  * **Capabilities are runtime-truthed, not just declared** (`capabilities.ts`) —
  * a config-level answer ("are den terminals enabled") must never stand in for
@@ -74,7 +75,7 @@
  * `liveStream` and `listSessions` are NOT probed, deliberately. The den tap is
  * a closure over an in-process Set — `!!deps.events` is not a proxy for
  * anything, it IS the answer — and `listSessions` is a store scan that reports
- * an empty list rather than failing. `approvals` is false unconditionally.
+ * an empty list rather than failing. `approvals` follows PTY + herdr + adapter.
  *
  * See docs/ARCHITECTURE.md.
  */
@@ -84,6 +85,7 @@ import {
   HarnessError,
   formatSessionId,
   parseSessionId,
+  type ApprovalDecision,
   type HarnessAskQuestion,
   type HarnessCapabilities,
   type HarnessDriver,
@@ -101,6 +103,7 @@ import {
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { overlaySessionContext } from '../term/context-window.js'
+import { parsePermissionPrompt } from '../term/permission-prompt.js'
 import type { TranscriptWatcher } from '../term/transcript-watch.js'
 import { adapterForCommand, type HarnessAdapter } from './adapters/index.js'
 import { isBareNativeUuid } from './alias.js'
@@ -201,6 +204,11 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    * per-session transcript frames from the file watcher; part 2 consumes it
    */
   transcript?: Pick<TranscriptWatcher, 'subscribe' | 'sync'>
+  /**
+   * herdr screen capture for the den room (native id for pinning harnesses,
+   * room key for adopting ones). Empty / omitted under tmux.
+   */
+  screen?: (native: string) => Promise<string> | string
 }
 
 /** Per-driver identity, supplied by the subclass's constructor. */
@@ -208,7 +216,7 @@ export interface PtyHarnessIdentity {
   harnessId: HarnessId
   /** Roster key the den term manager spawns this harness under. */
   rosterCommand: string
-  /** Product name, for the `approvals: false` rejection message. */
+  /** Product name, for the `approvals` rejection message. */
   productName: string
 }
 
@@ -249,6 +257,8 @@ export interface LiveState {
   transcriptHoldTimer?: NodeJS.Timeout
   tracker?: TurnTracker
   pendingPrompts: Map<string, { toolName: string; questions: HarnessAskQuestion[] }>
+  pendingApproval?: { requestId: string; name: string }
+  approvalSeq: number
   staleTimer?: NodeJS.Timeout
   lastStoreChangeAt?: number
   /** Stale-timer release: ignore tracker.inFlight() until the next store frame. */
@@ -364,9 +374,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // asked, the declaration is the most this driver honestly knows.
       interrupt: !!deps.pty,
       resume: !!deps.pty,
-      // Every harness on this path owns its permission prompts inside its own
-      // TUI, and nothing on the den wire carries an approval request, let
-      // alone a decision channel. Never faked true.
+      // Overridden in the getter: PTY + herdr mux + adapter.approvals.
       approvals: false,
       // Honest: a live turn comes from the hook tap OR from a store whose
       // adapter exposes in-flight turns (claude/kimi/grok/hermes) via the
@@ -419,7 +427,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    */
   get capabilities(): HarnessCapabilities {
     const pty = this.declared.interrupt && this.ptyVerdict !== 'unavailable'
-    return { ...this.declared, interrupt: pty, resume: pty }
+    const approvals = pty && this.herdrStatusOn() && !!this.adapter?.capabilities().approvals
+    return { ...this.declared, interrupt: pty, resume: pty, approvals }
   }
 
   /**
@@ -695,13 +704,43 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (this.live.get(native)?.turnInFlight) this.endTurn(native, 'interrupted')
   }
 
-  resolveApproval(): Promise<void> {
-    return Promise.reject(
-      this.unsupported(
+  async resolveApproval(
+    sessionId: SessionId,
+    requestId: string,
+    decision: ApprovalDecision,
+  ): Promise<void> {
+    const adapter = this.adapter
+    if (!this.capabilities.approvals || !adapter?.approvalKeys) {
+      throw this.unsupported(
         `${this.harnessId}: approvals are handled inside the ${this.productName} TUI and are ` +
           'not observable on the den wire',
-      ),
-    )
+      )
+    }
+    if (decision !== 'allow' && decision !== 'deny' && decision !== 'allow-session') {
+      throw new HarnessError('bad_request', `decision must be allow | deny | allow-session`, {
+        harnessId: this.harnessId,
+        sessionId,
+      })
+    }
+    const native = this.native(sessionId)
+    const state = this.live.get(native)
+    if (!state?.pendingApproval || state.pendingApproval.requestId !== requestId) {
+      throw new HarnessError('unknown_approval', `unknown approval ${requestId}`, {
+        harnessId: this.harnessId,
+        sessionId,
+      })
+    }
+    const pty = await this.requirePty('resolveApproval')
+    const ptyId = await this.ensurePty(pty, native)
+    const keys = adapter.approvalKeys(decision)
+    this.injectKeys(pty, ptyId, keys)
+    state.pendingApproval = undefined
+    this.emit(native, {
+      type: 'approval-resolved',
+      sessionId: this.sid(native),
+      requestId,
+      decision,
+    })
   }
 
   // -- streams ---------------------------------------------------------------
@@ -748,8 +787,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   /**
    * Answer a pending AskUserQuestion prompt. 404 `unknown_prompt` if it is
-   * not in `pendingPrompts`. Keystroke translation (`adapter.answerKeys`) is
-   * lane A2 — until then, compose a text answer and inject it with submit.
+   * not in `pendingPrompts`. Uses `adapter.answerKeys` when present (Claude);
+   * otherwise composes a text answer and injects it with submit.
    */
   async answerPrompt(
     sessionId: SessionId,
@@ -772,9 +811,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     )
     if (keys && keys.length > 0) {
       this.log(`[den-server] harness: answerPrompt ${promptId} via answerKeys`)
-      for (const buf of keys) {
-        pty.inject(ptyId, Buffer.from(buf).toString('latin1'), false)
-      }
+      this.injectKeys(pty, ptyId, keys)
       return
     }
     this.log(`[den-server] harness: answerPrompt ${promptId} via inject-text`)
@@ -966,6 +1003,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         openTools: [],
         toolSeq: 0,
         pendingPrompts: new Map(),
+        approvalSeq: 0,
         tracker: this.adapter ? createTurnTracker(this.adapter) : undefined,
       }
       this.live.set(native, state)
@@ -1138,6 +1176,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.turnInFlight = true
       this.armQuietWindow(native)
       this.setStatus(native, 'active')
+      this.resolveExternalApproval(native)
     } else if (frame.status === 'blocked') {
       state.blocked = true
       state.turnInFlight = true
@@ -1150,6 +1189,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.onHerdrBlocked(native)
     } else {
       state.blocked = false
+      this.resolveExternalApproval(native)
       // N4: one flicker of idle must not end a live turn. Debounce unless
       // the quiet window is disabled (tests / operator 0).
       const idleWait = this.turnQuietMs <= 0 ? 0 : Math.min(750, this.turnQuietMs)
@@ -1199,6 +1239,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.systemPromptApplied = carried.systemPromptApplied
       state.tracker = carried.tracker
       state.pendingPrompts = carried.pendingPrompts
+      state.pendingApproval = carried.pendingApproval
+      state.approvalSeq = carried.approvalSeq
       state.turns = carried.turns
       state.lastStoreChangeAt = carried.lastStoreChangeAt
       state.claimAt = carried.claimAt
@@ -1303,11 +1345,67 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   }
 
   /**
-   * Lane A2 fills this: herdr `blocked` + screen capture → permission prompt.
-   * Hook-free AskUserQuestion is already handled by the transcript tracker.
+   * herdr `blocked` + screen capture → permission prompt. AskUserQuestion is
+   * already a `prompt` event from the tracker — skip the approval card.
    */
-  protected onHerdrBlocked(_native: string): void {
-    /* A2 */
+  protected onHerdrBlocked(native: string): void {
+    void this.capturePermissionPrompt(native)
+  }
+
+  protected async capturePermissionPrompt(native: string): Promise<void> {
+    const state = this.live.get(native)
+    if (!state) return
+    if ((state.tracker?.pendingPromptIds() ?? []).length > 0) return
+    if (state.pendingApproval) return
+    let raw: string
+    try {
+      raw = (await this.deps.screen?.(this.room(native))) ?? ''
+    } catch (err) {
+      this.log(
+        `[den-server] harness: screen capture failed for ${this.harnessId}:${native}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      )
+      return
+    }
+    const parsed = parsePermissionPrompt(raw)
+    if (!parsed) return
+    // Re-check after the await: an AskUserQuestion may have landed, a
+    // concurrent blocked frame already opened the card, or herdr already
+    // left blocked (working/idle) while we were reading the pane.
+    if (state.herdrStatus !== 'blocked') return
+    if ((state.tracker?.pendingPromptIds() ?? []).length > 0) return
+    if (state.pendingApproval) return
+    state.approvalSeq += 1
+    const requestId = `perm:${native}:${String(state.approvalSeq)}`
+    state.pendingApproval = { requestId, name: parsed.toolName }
+    this.emit(native, {
+      type: 'approval-request',
+      sessionId: this.sid(native),
+      requestId,
+      name: parsed.toolName,
+      input: { text: parsed.text },
+      reason: parsed.text,
+      options: parsed.options,
+    })
+  }
+
+  protected resolveExternalApproval(native: string): void {
+    const state = this.live.get(native)
+    const pending = state?.pendingApproval
+    if (!pending) return
+    state.pendingApproval = undefined
+    this.emit(native, {
+      type: 'approval-resolved',
+      sessionId: this.sid(native),
+      requestId: pending.requestId,
+      decision: 'external',
+    })
+  }
+
+  protected injectKeys(pty: HarnessPtyHost, ptyId: string, keys: Uint8Array[]): void {
+    for (const buf of keys) {
+      pty.inject(ptyId, Buffer.from(buf).toString('utf8'), false)
+    }
   }
 
   protected ensureTranscriptSub(native: string): void {
@@ -1434,6 +1532,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         questions: prev?.questions ?? [],
         resolved: { at: this.now(), ...(p.answerText ? { answerText: p.answerText } : {}) },
       })
+    }
+    if (state.pendingApproval) {
+      const last = full[full.length - 1]
+      if (last && !last.tools?.some((t) => t.status === 'running')) {
+        this.resolveExternalApproval(native)
+      }
     }
     this.armStaleTimer(native)
   }

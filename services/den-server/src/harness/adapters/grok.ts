@@ -10,6 +10,7 @@ import {
   THINKING_TAIL_CHARS,
   type HarnessTurn,
 } from './parse-helpers.js'
+import { grokApprovalKeys } from '../prompt-keys.js'
 import type { HarnessAdapter } from './types.js'
 
 const PROMPT_INPUT_MAX = 8192
@@ -221,4 +222,7 @@ export const grokAdapter: HarnessAdapter = {
   },
   promptToolNames: [],
   capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
+  approvalKeys(decision) {
+    return grokApprovalKeys(decision)
+  },
 }

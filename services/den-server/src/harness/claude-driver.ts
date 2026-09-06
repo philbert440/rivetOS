@@ -26,13 +26,10 @@
  * the drawer/hub use and capture's `claude-code:<project-slug>/<uuid>` path
  * fallback — are aliased to it by the control plane, never dual-written.
  *
- * **Honest capabilities.** `approvals` is `false`: Claude Code surfaces
- * permission prompts inside its TUI, and nothing on the den wire carries an
- * approval request or a decision channel. Rather than fake it, the driver
- * rejects `resolveApproval` with `capability_unsupported` (HTTP 501) and the
- * UI hides the affordance. `interrupt` / `resume` / `liveStream` are true only
- * when the machinery backing them is actually wired on this node (terminals
- * enabled, den ingest tap present).
+ * **Honest capabilities.** `approvals` is true only when a PTY is available,
+ * herdr is the mux, and the adapter has permission keys. Under tmux it stays
+ * false (501). `interrupt` / `resume` / `liveStream` are true only when the
+ * machinery backing them is actually wired on this node.
  *
  * **This driver does not rotate.** Claude never replaces its native session id,
  * so it emits no `session-updated` with `previousSessionId` and the rotation

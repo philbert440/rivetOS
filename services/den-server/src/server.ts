@@ -647,6 +647,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     denEventSinks.add(sink)
     return () => denEventSinks.delete(sink)
   }
+  const screenFor = termEnabled
+    ? async (native: string): Promise<string> => {
+        const m = await ensureManager()
+        if (!m) return ''
+        const id = m.ptyForSession(native)
+        return id ? m.screen(id, 40) : ''
+      }
+    : undefined
   /** Built-ins we own the lifetime of — closed on shutdown to drop the tap. */
   const builtinDrivers: (HarnessDriver & { close(): void })[] = []
   if (!opts.skipBuiltinHarnessDrivers) {
@@ -660,6 +668,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         log: console.error,
         sheetOverride: config.harnesses?.['claude-code'],
         transcript: opts.transcriptWatcher,
+        screen: screenFor,
       }),
       new GrokBuildDriver({
         store: createHarnessStore('grok'),
@@ -670,6 +679,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         log: console.error,
         sheetOverride: config.harnesses?.['grok-build'],
         transcript: opts.transcriptWatcher,
+        screen: screenFor,
       }),
       new HermesDriver({
         store: createHarnessStore('hermes'),
@@ -680,6 +690,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         log: console.error,
         sheetOverride: config.harnesses?.hermes,
         transcript: opts.transcriptWatcher,
+        screen: screenFor,
       }),
       new KimiCodeDriver({
         store: createHarnessStore('kimi'),
@@ -690,6 +701,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         log: console.error,
         sheetOverride: config.harnesses?.['kimi-code'],
         transcript: opts.transcriptWatcher,
+        screen: screenFor,
       }),
       new DeepseekHarnessDriver({
         store: createHarnessStore('deepseek'),
@@ -703,6 +715,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         log: console.error,
         sheetOverride: config.harnesses?.['deepseek-harness'],
         transcript: opts.transcriptWatcher,
+        screen: screenFor,
       }),
     )
     for (const driver of builtinDrivers) harnesses.register(driver)

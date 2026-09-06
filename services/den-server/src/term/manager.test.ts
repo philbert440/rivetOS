@@ -2267,6 +2267,12 @@ class FakeHerdrCtl implements HerdrCtl {
   attachArgv(name: string): string[] {
     return ['herdr', '--session', name]
   }
+  captures: { name: string; lines: number }[] = []
+  captureText = ''
+  capture(name: string, lines: number): string {
+    this.captures.push({ name, lines })
+    return this.captureText
+  }
   subscribeEvents(
     _name: string,
     _onEvent: (evt: unknown) => void,
@@ -2374,6 +2380,22 @@ describe('term manager (herdr mux)', () => {
     } finally {
       process.env.PATH = prevPath
     }
+  })
+
+  it('screen reads herdr capture and is empty under tmux', async () => {
+    const ctl = new FakeHerdrCtl()
+    ctl.captureText = 'pane text'
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    const info = pty instanceof Promise ? await pty : pty
+    expect(await manager.screen(info.id, 40)).toBe('pane text')
+    expect(ctl.captures).toEqual([{ name: herdrSessionName(uuid), lines: 40 }])
+
+    const tmux = new FakeTmuxCtl()
+    const { manager: tmuxMgr } = makeManager({ mux: 'tmux' }, { tmuxCtl: tmux })
+    const t = tmuxMgr.spawn('claude', 80, 24, '', uuid)
+    const tInfo = t instanceof Promise ? await t : t
+    expect(await tmuxMgr.screen(tInfo.id, 40)).toBe('')
   })
 
   it('working status frame is forwarded on the onHerdrStatus seam', () => {

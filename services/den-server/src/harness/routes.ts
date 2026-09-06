@@ -123,6 +123,7 @@ const ERROR_STATUS: Record<string, number> = {
   capability_unsupported: 501,
   unknown_approval: 404,
   unknown_prompt: 404,
+  bad_request: 400,
   turn_in_flight: 409,
 }
 

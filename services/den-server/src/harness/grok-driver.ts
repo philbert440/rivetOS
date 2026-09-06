@@ -43,11 +43,8 @@
  *     stream is the higher-fidelity one. Tool names likewise pass through as
  *     grok emits them (`run_terminal_cmd`, `search_replace`).
  *
- * **Honest capabilities.** `approvals` is `false`: Grok Build owns permission
- * prompts inside its TUI (and the den roster runs it with
- * `--permission-mode bypassPermissions` precisely so it does not block), and
- * nothing on the den wire carries an approval request or a decision channel —
- * `resolveApproval` rejects with `capability_unsupported` (HTTP 501).
+ * **Honest capabilities.** `approvals` is true when a PTY is available and
+ * herdr is the mux (┃ dialog keys). Under tmux it stays false (501).
  * `interrupt` / `resume` / `liveStream` are true only when the machinery
  * backing them is wired on this node (terminals enabled, den ingest tap
  * present).

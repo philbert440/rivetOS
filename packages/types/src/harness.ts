@@ -77,8 +77,10 @@ export type HarnessCapabilities = {
 }
 
 /** `allow-session` scope = all future invocations of the same tool `name`
- *  within that session. Nothing broader. */
-export type ApprovalDecision = 'allow' | 'deny' | 'allow-session'
+ *  within that session. Nothing broader. `'external'` is not a POST body —
+ *  it is emitted when the TUI itself resolved the prompt (herdr left
+ *  `blocked`). */
+export type ApprovalDecision = 'allow' | 'deny' | 'allow-session' | 'external'
 
 export type HarnessEvent =
   | { type: 'assistant-delta'; sessionId: SessionId; text: string; turnId?: string }
@@ -124,6 +126,7 @@ export type HarnessEvent =
       name: string
       input: unknown
       reason?: string
+      options?: { key: string; label: string }[]
     }
   | {
       /** Broadcast to ALL subscribers so multi-client UIs clear stale prompts. */

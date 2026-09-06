@@ -6,6 +6,7 @@ import {
   THINKING_TAIL_CHARS,
   type HarnessTurn,
 } from './parse-helpers.js'
+import { kimiApprovalKeys } from '../prompt-keys.js'
 import type { HarnessAdapter } from './types.js'
 
 /**
@@ -174,4 +175,9 @@ export const kimiAdapter: HarnessAdapter = {
   },
   promptToolNames: [],
   capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
+  // kimi-code 0.36.0 approval panel key mapping is unverified (capture log
+  // truncated the 1/2 rows). Treat as 1=allow, 2=allow-session, 3=deny.
+  approvalKeys(decision) {
+    return kimiApprovalKeys(decision)
+  },
 }
