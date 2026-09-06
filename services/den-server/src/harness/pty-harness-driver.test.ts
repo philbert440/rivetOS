@@ -21,7 +21,7 @@ import { HermesDriver } from './hermes-driver.js'
 import { KimiCodeDriver } from './kimi-driver.js'
 import { DeepseekHarnessDriver } from './deepseek-driver.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
-import type { HarnessPtyHost, PtyHarnessDriver } from './pty-harness-driver.js'
+import { composePromptText, type HarnessPtyHost, type PtyHarnessDriver } from './pty-harness-driver.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 /** hermes mints its own, and they are not uuids. */
@@ -855,7 +855,7 @@ describe('pty-harness-driver transcript tracker', () => {
     driver.close()
   })
 
-  it('answerPrompt fallback path injects composed text', async () => {
+  it('answerPrompt uses answerKeys for claude and injects the digit sequence', async () => {
     const tx = fakeTranscript()
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({
@@ -886,7 +886,7 @@ describe('pty-harness-driver transcript tracker', () => {
       }),
     )
     await driver.answerPrompt(sid, 'ask_1', [{ question: 0, labels: ['API key'] }])
-    expect(pty.injects.some((i) => i.text === 'API key' && i.submit === true)).toBe(true)
+    expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
     await expect(
       driver.answerPrompt(sid, 'nope', [{ question: 0, labels: ['x'] }]),
     ).rejects.toMatchObject({
@@ -974,6 +974,316 @@ describe('pty-harness-driver transcript tracker', () => {
       phase: 'prompt',
     })
     driver.close()
+  })
+})
+
+const CLAUDE_PERM_SCREEN = `\
+ Bash command
+   mkdir -p zz && rm -r zz && echo done
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for mkdir
+   3. No
+ Esc to cancel · Tab to amend
+`
+
+describe('pty-harness-driver permission prompts', () => {
+  const sid = ClaudeCodeDriver.sessionId(UUID)
+
+  it('blocked → screen → approval-request with options', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PERM_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const req = seen.find((e) => e.type === 'approval-request')
+    expect(req).toMatchObject({
+      type: 'approval-request',
+      sessionId: sid,
+      requestId: `perm:${UUID}:1`,
+      name: 'Bash',
+      input: { text: expect.stringContaining('mkdir -p zz && rm -r zz && echo done') },
+      reason: expect.stringContaining('mkdir -p zz && rm -r zz && echo done'),
+      options: [
+        { key: '1', label: 'Yes' },
+        { key: '2', label: "Yes, and don't ask again for mkdir" },
+        { key: '3', label: 'No' },
+      ],
+    })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 2 })
+    expect(
+      seen.some(
+        (e) =>
+          e.type === 'approval-resolved' &&
+          e.requestId === `perm:${UUID}:1` &&
+          e.decision === 'external',
+      ),
+    ).toBe(true)
+    driver.close()
+  })
+
+  it('resolveApproval injects the adapter key and emits approval-resolved', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PERM_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const reqId = `perm:${UUID}:1`
+    await driver.resolveApproval(sid, reqId, 'allow')
+    expect(pty.injects.some((i) => i.text === '1' && i.submit === false)).toBe(true)
+    expect(seen.some((e) => e.type === 'approval-resolved' && e.requestId === reqId && e.decision === 'allow')).toBe(
+      true,
+    )
+    await expect(driver.resolveApproval(sid, reqId, 'allow')).rejects.toMatchObject({
+      code: 'unknown_approval',
+    })
+    driver.close()
+  })
+
+  it('a chatty blocked stream reads the screen once per cooldown', async () => {
+    const pty = fakePty()
+    let reads = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => {
+        reads += 1
+        return 'nothing that parses'
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    for (let i = 1; i <= 4; i++) {
+      driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: i })
+      await Promise.resolve()
+      await Promise.resolve()
+    }
+    expect(reads).toBe(1)
+    driver.close()
+  })
+
+  it('answering a prompt resets the capture cooldown so a second prompt right after is read', async () => {
+    const pty = fakePty()
+    let reads = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => {
+        reads += 1
+        return CLAUDE_PERM_SCREEN
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    await driver.resolveApproval(sid, `perm:${UUID}:1`, 'allow')
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 2 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(reads).toBe(2)
+    driver.close()
+  })
+
+  it('a screen read that lands after herdr left blocked mints no card (race re-check)', async () => {
+    const pty = fakePty()
+    let release: (s: string) => void = () => undefined
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () =>
+        new Promise<string>((resolve) => {
+          release = resolve
+        }),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 2 })
+    release(CLAUDE_PERM_SCREEN)
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(false)
+    driver.close()
+  })
+
+  it('the blocked tool finishing in the transcript resolves the card as external', async () => {
+    const pty = fakePty()
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      transcript: tx,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PERM_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(true)
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'claude',
+      turns: [
+        { role: 'user', text: 'go' },
+        {
+          role: 'assistant',
+          text: '',
+          lastBlock: 'tool_result',
+          stopReason: 'tool_use',
+          tools: [{ id: 't1', name: 'Bash', status: 'done' }],
+        },
+      ],
+    })
+    expect(seen.some((e) => e.type === 'approval-resolved' && e.decision === 'external')).toBe(true)
+    driver.close()
+  })
+
+  it('resolveApproval presses the key the SCREEN labels, not the adapter default (grok order)', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () =>
+        [
+          "┃  1 (●) Yes, and don't ask again for this command",
+          '┃  2 (○) Yes, proceed',
+          '┃  3 (○) No, reject',
+        ].join('\n'),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    await driver.resolveApproval(sid, `perm:${UUID}:1`, 'allow')
+    expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
+    expect(pty.injects.some((i) => i.text === '1')).toBe(false)
+    driver.close()
+  })
+
+  it('blocked while an ask-user prompt is pending does not emit approval-request', async () => {
+    const tx = fakeTranscript()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      transcript: tx,
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PERM_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      command: 'claude',
+      from: 0,
+      total: 2,
+      turns: [
+        { role: 'user', text: 'ask' },
+        {
+          role: 'assistant',
+          text: '',
+          lastBlock: 'tool_use',
+          stopReason: 'tool_use',
+          tools: [{ name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT }],
+        },
+      ],
+    })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.filter((e) => e.type === 'approval-request')).toEqual([])
+    driver.close()
+  })
+
+  it('approvals is true only with pty + herdr + adapter.approvals', () => {
+    const withBoth = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(fakePty().host),
+      herdrStatus: true,
+    })
+    expect(withBoth.capabilities.approvals).toBe(true)
+    const noHerdr = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(fakePty().host),
+    })
+    expect(noHerdr.capabilities.approvals).toBe(false)
+    const grok = new GrokBuildDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(fakePty().host),
+      herdrStatus: true,
+    })
+    expect(grok.capabilities.approvals).toBe(true)
+    const kimi = new KimiCodeDriver({
+      store: fakeStore([{ id: KIMI_NATIVE, command: 'kimi', title: 't', updatedAt: 1 }]),
+      pty: () => Promise.resolve(fakePty().host),
+      herdrStatus: true,
+    })
+    expect(kimi.capabilities.approvals).toBe(true)
+    const hermes = new HermesDriver({
+      store: fakeStore([{ id: HERMES_NATIVE, command: 'hermes', title: 't', updatedAt: 1 }]),
+      pty: () => Promise.resolve(fakePty().host),
+      herdrStatus: true,
+    })
+    expect(hermes.capabilities.approvals).toBe(false)
+    withBoth.close()
+    noHerdr.close()
+    grok.close()
+    kimi.close()
+    hermes.close()
+  })
+})
+
+describe('composePromptText fallback', () => {
+  it('joins labels and appends other', () => {
+    expect(
+      composePromptText(
+        [{ question: 'Q', header: 'Auth', multiSelect: false, options: [{ label: 'API key' }] }],
+        [{ question: 0, labels: ['API key'] }],
+      ),
+    ).toBe('API key')
   })
 })
 

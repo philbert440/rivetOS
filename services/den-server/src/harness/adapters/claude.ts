@@ -11,6 +11,7 @@ import {
   THINKING_TAIL_CHARS,
   type HarnessTurn,
 } from './parse-helpers.js'
+import { claudeApprovalKeys, claudeAskAnswerKeys } from '../prompt-keys.js'
 import type { HarnessAdapter } from './types.js'
 
 const PROMPT_INPUT_MAX = 8192
@@ -204,4 +205,10 @@ export const claudeAdapter: HarnessAdapter = {
   },
   promptToolNames: ['AskUserQuestion'],
   capabilities: () => ({ liveTurn: true, prompts: true, approvals: true }),
+  answerKeys(prompt, answers) {
+    return claudeAskAnswerKeys(prompt.questions, answers)
+  },
+  approvalKeys(decision) {
+    return claudeApprovalKeys(decision)
+  },
 }

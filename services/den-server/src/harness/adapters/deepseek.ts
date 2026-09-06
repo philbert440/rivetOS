@@ -14,5 +14,5 @@ export const deepseekAdapter: HarnessAdapter = {
     },
   },
   promptToolNames: [],
-  capabilities: () => ({ liveTurn: false, prompts: false, approvals: true }),
+  capabilities: () => ({ liveTurn: false, prompts: false, approvals: false }),
 }

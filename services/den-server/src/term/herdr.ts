@@ -24,7 +24,7 @@
 // start`. Liveness is a pid/`session.snapshot` round-trip, not sock-file
 // presence.
 
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createConnection } from 'node:net'
 import type { Duplex } from 'node:stream'
@@ -134,6 +134,8 @@ export interface HerdrCtl {
   attachArgv(name: string): string[]
   /** Scrollback via `agent read` / `pane read`. Empty string on failure. */
   capture?(name: string, lines: number): string
+  /** Same, without blocking the event loop (execFile). Prefer this. */
+  captureAsync?(name: string, lines: number): Promise<string>
   /** One newline-JSON `events.subscribe` socket. Returns unsubscribe.
    *  `onClose` fires when the socket ends (hub reconnects). */
   subscribeEvents?(name: string, onEvent: (evt: unknown) => void, onClose?: () => void): () => void
@@ -1285,6 +1287,23 @@ export function createRealHerdrCtl(
       } catch {
         return ''
       }
+    },
+    captureAsync(name, lines) {
+      const meta = readMeta(configHome, name)
+      const runAsync = (args: string[]): Promise<string> =>
+        new Promise((resolve) => {
+          execFile(
+            binary,
+            args,
+            { encoding: 'utf8', timeout: 2000, env: envFor() },
+            (err, stdout) => resolve(err ? '' : stdout),
+          )
+        })
+      return runAsync(herdrAgentReadArgv(name, name, lines).slice(1)).then((agent) =>
+        agent.trim()
+          ? agent
+          : runAsync(herdrPaneReadArgv(name, meta.paneId ?? HERDR_DEFAULT_PANE, lines).slice(1)),
+      )
     },
     subscribeEvents(name, onEvent, onClose) {
       const paneId = readMeta(configHome, name).paneId ?? 'w1:p1'

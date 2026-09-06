@@ -1,4 +1,9 @@
-import type { HarnessAskQuestion, HarnessId, HarnessTranscriptTurn } from '@rivetos/types'
+import type {
+  ApprovalDecision,
+  HarnessAskQuestion,
+  HarnessId,
+  HarnessTranscriptTurn,
+} from '@rivetos/types'
 
 /** Resolved on-disk store the transcript watcher / readers parse. */
 export interface HarnessStoreRef {
@@ -35,4 +40,6 @@ export interface HarnessAdapter {
     prompt: { promptId: string; toolName: string; questions: HarnessAskQuestion[] },
     answers: Array<{ question: number; labels: string[]; other?: string }>,
   ): Uint8Array[]
+  /** Permission-prompt keystrokes. Absent → resolveApproval stays 501. */
+  approvalKeys?(decision: ApprovalDecision): Uint8Array[]
 }

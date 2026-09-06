@@ -305,6 +305,12 @@ export interface TermManager {
    *  `interrupt` first sends Esc to cancel the harness's in-flight turn, then
    *  pastes after a settle — RivetHub's "inject now" on a queued message. */
   inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
+  /**
+   * herdr `agent read` / `pane read` via `HerdrCtl.capture`. Empty string when
+   * the record is not herdr-backed, capture is missing, or it throws. Tmux
+   * is never scraped.
+   */
+  screen(id: string, lines?: number): Promise<string>
   /** Resize the child and record the new dimensions (hello frames report them). */
   resize(id: string, cols: number, rows: number): boolean
   /** Flow control for saturated viewers — no-op on backends without pause. */
@@ -1829,6 +1835,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (r.injectBuffer.length >= INJECT_BUFFER_MAX) return false
       r.injectBuffer.push({ text, submit })
       return true
+    },
+
+    screen(id, lines = 40): Promise<string> {
+      const r = records.get(id)
+      if (!r || r.muxKind !== 'herdr' || !r.tmuxName || !herdr) return Promise.resolve('')
+      if (herdr.captureAsync) return herdr.captureAsync(r.tmuxName, lines).catch(() => '')
+      if (!herdr.capture) return Promise.resolve('')
+      try {
+        return Promise.resolve(herdr.capture(r.tmuxName, lines) ?? '')
+      } catch {
+        return Promise.resolve('')
+      }
     },
 
     resize(id, cols, rows): boolean {
