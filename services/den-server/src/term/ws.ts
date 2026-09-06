@@ -320,20 +320,7 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       ws.terminate()
     })
     ws.on('pong', () => (client.alive = true))
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        // raw keystrokes — refused by the manager after exit, nothing to do
-        manager.write(ptyId, toBuffer(data))
-        return
-      }
-      let raw: unknown
-      try {
-        raw = JSON.parse(toBuffer(data).toString('utf8'))
-      } catch {
-        return
-      }
-      if (typeof raw !== 'object' || raw === null) return
-      const m = raw as { type?: unknown; cols?: unknown; rows?: unknown }
+    const applyControl = (m: { type?: unknown; cols?: unknown; rows?: unknown }): void => {
       if (m.type === 'resize') {
         if (typeof m.cols !== 'number' || !Number.isFinite(m.cols)) return
         if (typeof m.rows !== 'number' || !Number.isFinite(m.rows)) return
@@ -367,6 +354,41 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       } else if (m.type === 'kill') {
         manager.kill(ptyId)
       }
+    }
+
+    ws.on('message', (data, isBinary) => {
+      const buf = toBuffer(data)
+      // Control frames are JSON (`claim` / `resize` / `kill`). Some clients mix
+      // them onto the binary keystroke channel (TextEncoder, a proxy that
+      // collapses opcodes). A payload that is exactly one of those objects is
+      // never a keystroke — don't write it into the PTY as garbage and ignore
+      // the claim, which is how "Use terminal here" became a silent no-op.
+      if (isBinary) {
+        if (buf.length > 0 && buf[0] === 0x7b) {
+          try {
+            const raw: unknown = JSON.parse(buf.toString('utf8'))
+            if (typeof raw === 'object' && raw !== null) {
+              const type = (raw as { type?: unknown }).type
+              if (type === 'claim' || type === 'resize' || type === 'kill') {
+                applyControl(raw as { type?: unknown; cols?: unknown; rows?: unknown })
+                return
+              }
+            }
+          } catch {
+            /* not JSON — keystrokes */
+          }
+        }
+        manager.write(ptyId, buf)
+        return
+      }
+      let raw: unknown
+      try {
+        raw = JSON.parse(buf.toString('utf8'))
+      } catch {
+        return
+      }
+      if (typeof raw !== 'object' || raw === null) return
+      applyControl(raw as { type?: unknown; cols?: unknown; rows?: unknown })
     })
 
     // hello → replay → subscribe happen in ONE synchronous block: no PTY

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
-import { buildClaimFrame, ownerBanner, reduceOwner } from './owner-banner.js'
+import { buildClaimFrame, ownerBanner, parseTermControlFrame, reduceOwner, sendClaim } from './owner-banner.js'
 
 function hello(owner?: { device: string; self: boolean }): TermHelloFrame {
   return {
@@ -39,6 +39,47 @@ describe('buildClaimFrame', () => {
 
   it('carries optional geometry', () => {
     expect(buildClaimFrame(120, 36)).toBe('{"type":"claim","cols":120,"rows":36}')
+  })
+})
+
+describe('sendClaim', () => {
+  it('sends on an OPEN socket and returns true', () => {
+    const sent: string[] = []
+    expect(sendClaim({ readyState: 1, send: (d) => sent.push(d) }, 120, 36)).toBe(true)
+    expect(sent).toEqual(['{"type":"claim","cols":120,"rows":36}'])
+  })
+
+  it('returns false when the socket is missing or not OPEN (no silent send)', () => {
+    const sent: string[] = []
+    expect(sendClaim(undefined, 80, 24)).toBe(false)
+    expect(sendClaim({ readyState: 0, send: (d) => sent.push(d) }, 80, 24)).toBe(false)
+    expect(sendClaim({ readyState: 3, send: (d) => sent.push(d) }, 80, 24)).toBe(false)
+    expect(sent).toEqual([])
+  })
+})
+
+describe('parseTermControlFrame', () => {
+  it('parses a text hello/owner/exit and ignores other JSON', () => {
+    expect(parseTermControlFrame('{"type":"owner","device":"phone","self":false}')).toEqual({
+      type: 'owner',
+      device: 'phone',
+      self: false,
+    })
+    expect(parseTermControlFrame('{"type":"claim","cols":80,"rows":24}')).toBeUndefined()
+  })
+
+  it('parses the same owner frame when delivered as an ArrayBuffer', () => {
+    const bytes = new TextEncoder().encode('{"type":"owner","device":"desk","self":true}')
+    const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    expect(parseTermControlFrame(buf)).toEqual({
+      type: 'owner',
+      device: 'desk',
+      self: true,
+    })
+  })
+
+  it('does not treat PTY bytes as a control frame', () => {
+    expect(parseTermControlFrame(new TextEncoder().encode('hello').buffer)).toBeUndefined()
   })
 })
 

@@ -1,4 +1,4 @@
-import type { TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
+import type { TermExitFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 
 /**
  * Terminal ownership (den #681): one device owns a session's terminal; only
@@ -48,4 +48,41 @@ export function ownerBanner(owner: TermOwner | undefined): { show: boolean; labe
 export function buildClaimFrame(cols?: number, rows?: number): string {
   if (cols !== undefined && rows !== undefined) return JSON.stringify({ type: 'claim', cols, rows })
   return JSON.stringify({ type: 'claim' })
+}
+
+/**
+ * Send `{type:'claim'}` on a live socket. Returns false when there is no OPEN
+ * socket — the banner button used to swallow that as a silent no-op.
+ */
+export function sendClaim(
+  ws: { readyState: number; send: (data: string) => void } | undefined,
+  cols?: number,
+  rows?: number,
+): boolean {
+  if (!ws || ws.readyState !== 1) return false
+  ws.send(buildClaimFrame(cols, rows))
+  return true
+}
+
+/** JSON hello/owner/exit, whether the browser delivered a text frame or (after
+ *  binaryType=arraybuffer / a proxy) the same payload as an ArrayBuffer. */
+export function parseTermControlFrame(
+  data: unknown,
+): TermHelloFrame | TermExitFrame | TermOwnerFrame | undefined {
+  let text: string | undefined
+  if (typeof data === 'string') text = data
+  else if (data instanceof ArrayBuffer) {
+    const u8 = new Uint8Array(data)
+    if (u8.length === 0 || u8[0] !== 0x7b /* '{' */) return undefined
+    text = new TextDecoder().decode(u8)
+  } else return undefined
+  try {
+    const raw = JSON.parse(text) as { type?: unknown }
+    if (raw?.type === 'hello' || raw?.type === 'owner' || raw?.type === 'exit') {
+      return raw as TermHelloFrame | TermExitFrame | TermOwnerFrame
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }

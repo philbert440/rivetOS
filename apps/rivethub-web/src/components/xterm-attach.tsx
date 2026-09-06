@@ -7,7 +7,6 @@ import { SearchAddon } from '@xterm/addon-search'
 import { ImageAddon } from '@xterm/addon-image'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import type { TermExitFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { connectTermSocket, type TermSocketHandle } from '../lib/term-socket.js'
 import { resolvedThemeOf, useResolvedTheme, useTheme } from '../stores/theme.js'
@@ -18,7 +17,13 @@ import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
 import { expiresInLabel, filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
-import { buildClaimFrame, ownerBanner, reduceOwner, type TermOwner } from '../lib/owner-banner.js'
+import {
+  ownerBanner,
+  parseTermControlFrame,
+  reduceOwner,
+  sendClaim,
+  type TermOwner,
+} from '../lib/owner-banner.js'
 import { DenBot } from './den-bot.js'
 import { Button } from './ui/button.js'
 
@@ -733,7 +738,18 @@ export function XtermAttach(props: {
           // from a previous attach so a released owner can't linger as a banner.
           setOwner(undefined)
           claimRef.current = () => {
-            if (sock.readyState === 1) sock.send(buildClaimFrame(term.cols, term.rows))
+            // Use the live socket, not the onOpen closure — a rebind leaves the
+            // old sock at readyState !== OPEN and the button used to no-op.
+            const live = sockRef.current
+            if (!sendClaim(live, term.cols, term.rows)) {
+              setOwner(undefined)
+              setStatus((s) => (s === 'exited' ? s : 'closed'))
+              return
+            }
+            // Hide the banner immediately. The `{type:'owner', self:true}`
+            // broadcast confirms; if that frame is missed (binary opcode, a
+            // proxy) the button used to look dead after a real claim.
+            setOwner({ device: 'here', self: true })
           }
           setStatus('attached')
           // Always re-fit and declare our size on (re)attach — a rebind would
@@ -741,13 +757,16 @@ export function XtermAttach(props: {
           fit.fit()
           sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           sock.onclose = () => {
-            if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+            if (life.disposed) return
+            setStatus((s) => (s === 'exited' ? s : 'closed'))
+            // A closed socket cannot claim — don't leave the banner up over a
+            // dead pane so "Use terminal here" looks clickable and does nothing.
+            setOwner(undefined)
           }
           sock.onmessage = (event: MessageEvent) => {
             if (life.disposed) return
-            if (typeof event.data === 'string') {
-              const frame = JSON.parse(event.data) as
-                TermHelloFrame | TermExitFrame | TermOwnerFrame
+            const frame = parseTermControlFrame(event.data)
+            if (frame) {
               if (frame.type === 'hello') {
                 setOwner(reduceOwner(undefined, frame))
                 if (frame.cols !== term.cols || frame.rows !== term.rows)
@@ -767,6 +786,7 @@ export function XtermAttach(props: {
               }
               return
             }
+            if (typeof event.data === 'string') return
             // Drop color queries so attach/scrollback replay doesn't generate
             // OSC rgb: replies that leak into the harness as fake keystrokes.
             term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
@@ -775,7 +795,9 @@ export function XtermAttach(props: {
         // Never opened (timeout / error / early close): same UI outcome as a
         // real close, so the pane shows 'closed' instead of an eternal spinner.
         onClose: () => {
-          if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+          if (life.disposed) return
+          setStatus((s) => (s === 'exited' ? s : 'closed'))
+          setOwner(undefined)
         },
       })
     })()
@@ -805,7 +827,12 @@ export function XtermAttach(props: {
 
   return (
     <div className="relative min-h-0 flex-1 p-2">
-      <div ref={hostRef} className="h-full w-full" data-term-host data-terminal-font={fontFamily} />
+      <div
+        ref={hostRef}
+        className={`h-full w-full${banner.show ? ' pointer-events-none' : ''}`}
+        data-term-host
+        data-terminal-font={fontFamily}
+      />
       {/* Screen-reader announcement for the visual bell (the flash itself is
           purely visual — theme.css `.term-bell-flash`). */}
       <div ref={bellLiveRef} role="status" aria-live="polite" className="sr-only" />
@@ -883,11 +910,16 @@ export function XtermAttach(props: {
           terminal. The xterm stays mounted and warm behind the scrim — only
           the resize/claim path changes hands, never the PTY attach. */}
       {banner.show && (
-        <div className="absolute inset-0 flex items-center justify-center bg-bg/70 p-4">
+        <div
+          data-term-owner-banner
+          className="absolute inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+        >
           <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-5">
             <DenBot className="size-9" decorative />
             <p className="font-mono text-xs text-ink">{banner.label}</p>
-            <Button onClick={() => claimRef.current?.()}>Use terminal here</Button>
+            <Button type="button" onClick={() => claimRef.current?.()}>
+              Use terminal here
+            </Button>
           </div>
         </div>
       )}
