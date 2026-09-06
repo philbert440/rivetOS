@@ -317,7 +317,9 @@ export function loadConfig(
         // Unset: herdr is the default wherever the pinned binary is present
         // (status detection for chat needs it); a node without it keeps the
         // tmux-on-PATH auto-detect in the manager. Explicit 'tmux' opts out.
-        const probe = probes.herdr ?? ((): boolean => herdrAvailable(env.PATH))
+        if (!truthyEnv(env.RIVETOS_DEN_TERM)) return undefined // no terminals → nothing to mux
+        const probe =
+          probes.herdr ?? ((): boolean => herdrAvailable(env.PATH, env.HOME || undefined))
         return probe() ? 'herdr' : undefined
       })(),
       sessionGcMs: intEnv(env, 'RIVETOS_DEN_TERM_SESSION_GC_MS', 0),

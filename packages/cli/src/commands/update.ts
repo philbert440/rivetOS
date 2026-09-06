@@ -485,17 +485,25 @@ async function verifyDataPersistence(): Promise<void> {
 
 /**
  * Provision herdr (pinned binary + manifest overrides) on this node. Inert
- * for nodes that never set term.mux=herdr — provisioning only, never
- * activation. Non-fatal: a node without the staged binary (off-fleet,
+ * on every node that has not opted out (term.mux=tmux/none) — provisioning
+ * only, never activation. Non-fatal: a node without the staged binary (off-fleet,
  * offline) skips quietly, a verification failure only warns.
  */
 async function provisionHerdr(): Promise<void> {
   try {
-    const { installHerdr, HerdrUnavailableError, herdrOptedIn, readRivetosDotEnv } =
-      await import('../lib/herdr.js')
-    // Opt-in only: never touch a node that did not set term.mux=herdr (the
-    // staged binary is on /rivet-shared, mounted everywhere — a hand-installed
-    // newer herdr must not be silently downgraded by a routine update).
+    const {
+      installHerdr,
+      HerdrUnavailableError,
+      herdrOptedIn,
+      readRivetosDotEnv,
+      readHerdrVersion,
+      herdrBinPath,
+      HERDR_VERSION,
+    } = await import('../lib/herdr.js')
+    // Default-on since 2026-09-06: provision unless the node opted OUT
+    // (term.mux=tmux/none). The staged binary is on /rivet-shared, mounted
+    // everywhere — so a hand-installed herdr NEWER than the pin must still not
+    // be silently downgraded by a routine update (guard below).
     let rawConfig: string | null = null
     try {
       const { readFileSync } = await import('node:fs')
@@ -512,6 +520,17 @@ async function provisionHerdr(): Promise<void> {
     // (~/.rivetos/.env) — read it, or every node would report "not enabled".
     if (!herdrOptedIn(process.env, readRivetosDotEnv(), rawConfig)) {
       console.log('  ℹ️  herdr opted out on this node (term.mux=tmux/none) — skipping provisioning')
+      return
+    }
+    const installed = readHerdrVersion(herdrBinPath())
+    if (
+      installed !== null &&
+      installed !== HERDR_VERSION &&
+      isNewerVersion(installed, HERDR_VERSION)
+    ) {
+      console.log(
+        `  ℹ️  herdr ${installed} at ~/.local/bin is newer than the pin ${HERDR_VERSION} — leaving it alone (rivetos install --herdr to force the pin)`,
+      )
       return
     }
     try {
@@ -949,4 +968,16 @@ function assertInstallWritable(root: string, ignore: boolean): void {
   console.error('   Or re-run as the install owner (mesh nodes: usually rivet).')
   console.error('   Escape hatch (not recommended): --ignore-ownership')
   process.exit(1)
+}
+
+/** a > b for dotted numeric versions ("0.9.0" > "0.8.2"); non-numeric parts compare as 0. */
+function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] ?? 0
+    const db = pb[i] ?? 0
+    if (da !== db) return da > db
+  }
+  return false
 }

@@ -6,8 +6,9 @@
 // survives den restarts, browser detaches and the idle/detached reapers the
 // same way a tmux session does. A user can attach the same session from their
 // own terminal with `XDG_CONFIG_HOME=<short-runtime-home> herdr --session
-// <short-name>`. Nothing here runs unless `term.mux` is explicitly `herdr`
-// — unset still auto-detects tmux.
+// <short-name>`. herdr is the default mux since 2026-09-06: loadConfig turns an
+// unset `term.mux` into `herdr` when the pinned binary is reachable (PATH or
+// ~/.local/bin); `RIVETOS_DEN_TERM_MUX=tmux` opts out.
 //
 // Socket paths: Linux `sun_path` is 108 bytes (107 usable). herdr binds
 // `<configHome>/herdr/sessions/<name>/herdr-client.sock`. Config home is a

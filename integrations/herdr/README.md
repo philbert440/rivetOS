@@ -75,9 +75,8 @@ RIVETOS_DEN_TERM=1 RIVETOS_DEN_TERM_MUX=tmux
 ```
 
 `rivetos doctor` says which way an unset value resolves (`term.mux: unset (auto →
-herdr …)` / `(auto → tmux …)`). Requires terminals enabled (`RIVETOS_DEN_TERM=1`). The backend itself lands with
-`feat/den-herdr-backend`; on main today any value other than `tmux`/`none`
-fails safe to `none`.
+herdr …)` / `(auto → tmux …)`). Requires terminals enabled (`RIVETOS_DEN_TERM=1`).
+Any value other than `tmux`/`herdr`/`none` still fails safe to `none`.
 
 ## Memory hook pane identity
 

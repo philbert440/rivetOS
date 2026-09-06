@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -98,5 +98,24 @@ describe('term.mux default (fleet default = herdr when the pinned binary is pres
   })
   it('a garbage value still fails safe to none, never to the herdr default', () => {
     expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'zellij' }, { herdr: () => true }).term.mux).toBe('none')
+  })
+})
+
+describe('term.mux default — the REAL probe is wired (no injected probe)', () => {
+  it('a fake pinned herdr under HOME/.local/bin flips unset → herdr; without it → undefined', () => {
+    const home = mkdtempSync(join(tmpdir(), 'den-home-'))
+    const env = { RIVETOS_DEN_TERM: '1', PATH: '/nonexistent-dir', HOME: home }
+    expect(loadConfig(env).term.mux).toBeUndefined()
+    mkdirSync(join(home, '.local', 'bin'), { recursive: true })
+    writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.8.2\n', { mode: 0o755 })
+    expect(loadConfig(env).term.mux).toBe('herdr')
+    writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.9.0\n', { mode: 0o755 })
+    expect(loadConfig(env).term.mux).toBeUndefined() // wrong pin never auto-selects
+    rmSync(home, { recursive: true, force: true })
+  })
+  it('terminals disabled → no probe, mux stays unset', () => {
+    let probed = false
+    expect(loadConfig({ PATH: '/nonexistent-dir' }, { herdr: () => ((probed = true), true) }).term.mux).toBeUndefined()
+    expect(probed).toBe(false)
   })
 })
