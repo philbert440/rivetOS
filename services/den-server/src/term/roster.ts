@@ -22,7 +22,8 @@ export interface RosterEntry {
    *  session.end on exit if the harness never sent one). false: plain
    *  process, no synthetic events ever. */
   room: boolean
-  /** Working directory override (default: top-level roster cwd). */
+  /** Working directory override for non-harness (`room: false`) entries.
+   *  Harness sessions ignore this and always spawn in `homedir()`. */
   cwd?: string
   /** Extra env for this entry (layered over the top-level roster env). */
   env?: Record<string, string>
@@ -32,7 +33,8 @@ export interface TermRoster {
   /** Key spawned when POST /term omits `command`. */
   default: string
   commands: Record<string, RosterEntry>
-  /** Default working directory for all entries. */
+  /** Default working directory for non-harness entries. Harness sessions
+   *  (`room: true`) always spawn in `homedir()` regardless of this value. */
   cwd: string
   /** Env layered over the inherited service env for all entries. */
   env: Record<string, string>
@@ -64,6 +66,8 @@ export function defaultRoster(): TermRoster {
       //             reason hermes uses it — the operator can trade up in
       //             den-term.json, and the roster should not be the place a
       //             node quietly loses its last "are you sure".
+      // Harness cwd is forced to homedir() at spawn (manager.ts). Shared
+      // trees belong in the prompt, not here.
       // claude trusts its cwd via ~/.claude.json and needs no flag here.
       claude: { label: 'Claude Code', cmd: ['claude'], room: true },
       grok: {

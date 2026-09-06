@@ -46,7 +46,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { hostname } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import type { DenConfig } from '../config.js'
@@ -1119,7 +1119,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // The conversation join key IS the den session, so den (?session), the
       // capture hooks (RIVETOS_SESSION_KEY), and this PTY all share one id.
       const denSession = session ?? `den-${id}`
-      const cwd = entry.cwd ?? roster.cwd
+      // Harness sessions (room: true) always spawn in the user's home: the
+      // harness owns its working tree via the prompt/session, and a roster or
+      // entry cwd pointing at a shared tree made every harness start there.
+      // Non-harness entries keep the roster/entry cwd.
+      const cwd = entry.room ? homedir() : (entry.cwd ?? roster.cwd)
 
       // tmux reattach path (T1): if a tmux session for this den session
       // already exists on our socket, the harness is STILL RUNNING (it
