@@ -95,6 +95,33 @@ export function readHerdrVersion(binPath: string): string | null {
   }
 }
 
+/** a > b for dotted numeric versions ("0.9.0" > "0.8.2"); non-numeric parts compare as 0. */
+export function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] ?? 0
+    const db = pb[i] ?? 0
+    if (da !== db) return da > db
+  }
+  return false
+}
+
+/** Should a routine `rivetos update` (re)install the pinned herdr? Pure: the
+ *  caller passes whether ~/.local/bin/herdr exists and what `--version` parsed
+ *  to. A binary NEWER than the pin, or one whose version we cannot parse (a
+ *  preview build), is a hand install — leave it alone. */
+export function herdrProvisionDecision(
+  binaryExists: boolean,
+  installedVersion: string | null,
+  pin: string = HERDR_VERSION,
+): 'install' | 'skip-newer' | 'skip-unparseable' {
+  if (!binaryExists) return 'install'
+  if (installedVersion === null) return 'skip-unparseable'
+  if (installedVersion !== pin && isNewerVersion(installedVersion, pin)) return 'skip-newer'
+  return 'install'
+}
+
 // ---------------------------------------------------------------------------
 // Pure planner (unit-tested — no fs, no exec)
 // ---------------------------------------------------------------------------
@@ -373,15 +400,17 @@ export function readRivetosDotEnv(home: string = homedir()): string | null {
   }
 }
 
-/** Has this node opted into the herdr mux? `rivetos update` provisions herdr
- *  ONLY when this is true — the staged binary lives on /rivet-shared, which
- *  every fleet node mounts, so "staged" is not a signal of intent. See
- *  resolveHerdrMux for the lookup order (env → ~/.rivetos/.env → YAML); the
- *  argument order is the same as resolveHerdrMux on purpose. */
+/** Should `rivetos update` provision herdr on this node? herdr is the fleet
+ *  default mux since 2026-09-06: true unless the node opted OUT with
+ *  term.mux=tmux or none. See resolveHerdrMux for the lookup order (env →
+ *  ~/.rivetos/.env → YAML); the argument order is the same on purpose. A node
+ *  where the staged binary is unreachable (off-fleet) skips quietly in the
+ *  caller via HerdrUnavailableError. */
 export function herdrOptedIn(
   env: NodeJS.ProcessEnv = process.env,
   dotEnvContents: string | null = null,
   rawConfigYaml: string | null = null,
 ): boolean {
-  return resolveHerdrMux(env, dotEnvContents, rawConfigYaml) === 'herdr'
+  const mux = resolveHerdrMux(env, dotEnvContents, rawConfigYaml)
+  return mux === 'herdr' || mux === undefined
 }
