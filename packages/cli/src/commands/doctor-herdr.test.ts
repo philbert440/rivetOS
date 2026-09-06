@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkHerdr, herdrAutoDefault } from './doctor.js'
+import { checkHerdr, findHerdrBin, herdrAutoDefault } from './doctor.js'
 import { HERDR_VERSION, herdrManifestCacheDir } from '../lib/herdr.js'
 
 const MANIFEST = 'id = "grok"\nversion = "2099.01.01.1"\n'
@@ -109,5 +109,22 @@ describe('herdrAutoDefault (what an unset term.mux resolves to)', () => {
     writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.9.0\n', { mode: 0o755 })
     expect(herdrAutoDefault({ PATH: '' }, home)).toBe(false)
     rmSync(home, { recursive: true, force: true })
+  })
+})
+
+describe('findHerdrBin (PATH first, then ~/.local/bin, executable files only)', () => {
+  it('skips empty PATH segments and non-executable files; PATH wins over ~/.local/bin', () => {
+    const home = mkdtempSync(join(tmpdir(), 'doctor-home-'))
+    const bin = join(home, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'herdr'), '#!/bin/sh\n', { mode: 0o644 }) // present but not executable
+    expect(findHerdrBin({ PATH: '::' }, home)).toBeNull()
+    chmodSync(join(bin, 'herdr'), 0o755) // mode on writeFileSync only applies at creation
+    expect(findHerdrBin({ PATH: '::' }, home)).toBe(join(bin, 'herdr'))
+    const onPath = mkdtempSync(join(tmpdir(), 'doctor-path-'))
+    writeFileSync(join(onPath, 'herdr'), '#!/bin/sh\necho herdr 0.8.2\n', { mode: 0o755 })
+    expect(findHerdrBin({ PATH: `${onPath}:` }, home)).toBe(join(onPath, 'herdr'))
+    rmSync(home, { recursive: true, force: true })
+    rmSync(onPath, { recursive: true, force: true })
   })
 })

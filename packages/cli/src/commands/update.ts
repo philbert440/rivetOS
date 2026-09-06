@@ -16,6 +16,7 @@
  *   --mesh             Rolling update across all agents in the mesh
  */
 
+import { existsSync } from 'node:fs'
 import { readFile, access } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -499,6 +500,7 @@ async function provisionHerdr(): Promise<void> {
       readHerdrVersion,
       herdrBinPath,
       HERDR_VERSION,
+      herdrProvisionDecision,
     } = await import('../lib/herdr.js')
     // Default-on since 2026-09-06: provision unless the node opted OUT
     // (term.mux=tmux/none). The staged binary is on /rivet-shared, mounted
@@ -522,14 +524,14 @@ async function provisionHerdr(): Promise<void> {
       console.log('  ℹ️  herdr opted out on this node (term.mux=tmux/none) — skipping provisioning')
       return
     }
-    const installed = readHerdrVersion(herdrBinPath())
-    if (
-      installed !== null &&
-      installed !== HERDR_VERSION &&
-      isNewerVersion(installed, HERDR_VERSION)
-    ) {
+    const binPath = herdrBinPath()
+    const installed = readHerdrVersion(binPath)
+    const decision = herdrProvisionDecision(existsSync(binPath), installed)
+    if (decision !== 'install') {
       console.log(
-        `  ℹ️  herdr ${installed} at ~/.local/bin is newer than the pin ${HERDR_VERSION} — leaving it alone (rivetos install --herdr to force the pin)`,
+        decision === 'skip-newer'
+          ? `  ℹ️  herdr ${installed} at ~/.local/bin is newer than the pin ${HERDR_VERSION} — leaving it alone (rivetos install --herdr to force the pin)`
+          : `  ℹ️  herdr at ~/.local/bin reports an unrecognised version — leaving it alone (rivetos install --herdr to force the pin ${HERDR_VERSION})`,
       )
       return
     }
@@ -968,16 +970,4 @@ function assertInstallWritable(root: string, ignore: boolean): void {
   console.error('   Or re-run as the install owner (mesh nodes: usually rivet).')
   console.error('   Escape hatch (not recommended): --ignore-ownership')
   process.exit(1)
-}
-
-/** a > b for dotted numeric versions ("0.9.0" > "0.8.2"); non-numeric parts compare as 0. */
-function isNewerVersion(a: string, b: string): boolean {
-  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0)
-  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const da = pa[i] ?? 0
-    const db = pb[i] ?? 0
-    if (da !== db) return da > db
-  }
-  return false
 }

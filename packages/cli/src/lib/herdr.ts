@@ -95,6 +95,33 @@ export function readHerdrVersion(binPath: string): string | null {
   }
 }
 
+/** a > b for dotted numeric versions ("0.9.0" > "0.8.2"); non-numeric parts compare as 0. */
+export function isNewerVersion(a: string, b: string): boolean {
+  const pa = a.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  const pb = b.split('.').map((x) => Number.parseInt(x, 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] ?? 0
+    const db = pb[i] ?? 0
+    if (da !== db) return da > db
+  }
+  return false
+}
+
+/** Should a routine `rivetos update` (re)install the pinned herdr? Pure: the
+ *  caller passes whether ~/.local/bin/herdr exists and what `--version` parsed
+ *  to. A binary NEWER than the pin, or one whose version we cannot parse (a
+ *  preview build), is a hand install — leave it alone. */
+export function herdrProvisionDecision(
+  binaryExists: boolean,
+  installedVersion: string | null,
+  pin: string = HERDR_VERSION,
+): 'install' | 'skip-newer' | 'skip-unparseable' {
+  if (!binaryExists) return 'install'
+  if (installedVersion === null) return 'skip-unparseable'
+  if (installedVersion !== pin && isNewerVersion(installedVersion, pin)) return 'skip-newer'
+  return 'install'
+}
+
 // ---------------------------------------------------------------------------
 // Pure planner (unit-tested — no fs, no exec)
 // ---------------------------------------------------------------------------
