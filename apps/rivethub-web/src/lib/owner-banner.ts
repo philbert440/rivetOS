@@ -64,21 +64,14 @@ export function sendClaim(
   return true
 }
 
-/** JSON hello/owner/exit, whether the browser delivered a text frame or (after
- *  binaryType=arraybuffer / a proxy) the same payload as an ArrayBuffer. */
+/** JSON hello/owner/exit from a text WS frame. Binary frames are PTY bytes. */
 export function parseTermControlFrame(
   data: unknown,
 ): TermHelloFrame | TermExitFrame | TermOwnerFrame | undefined {
-  let text: string | undefined
-  if (typeof data === 'string') text = data
-  else if (data instanceof ArrayBuffer) {
-    const u8 = new Uint8Array(data)
-    if (u8.length === 0 || u8[0] !== 0x7b /* '{' */) return undefined
-    text = new TextDecoder().decode(u8)
-  } else return undefined
+  if (typeof data !== 'string') return undefined
   try {
-    const raw = JSON.parse(text) as { type?: unknown }
-    if (raw?.type === 'hello' || raw?.type === 'owner' || raw?.type === 'exit') {
+    const raw = JSON.parse(data) as { type?: unknown }
+    if (raw.type === 'hello' || raw.type === 'owner' || raw.type === 'exit') {
       return raw as TermHelloFrame | TermExitFrame | TermOwnerFrame
     }
   } catch {

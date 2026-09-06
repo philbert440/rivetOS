@@ -659,6 +659,7 @@ export function XtermAttach(props: {
     if (!host || !term || !fit) return
 
     setStatus('connecting')
+    setOwner(undefined)
     // Reattach (epoch rebind) replays scrollback — clear the buffer so the
     // replay doesn't append a second copy. First attach: no-op. Silence
     // copy-on-select for the reset: it clears the selection, and a leftover
@@ -677,6 +678,11 @@ export function XtermAttach(props: {
     // holder, not a bare let: the async body reads it AFTER awaits, and TS
     // narrows a closed-over let to its initializer across those boundaries.
     const life = { disposed: false }
+    const markClosed = (): void => {
+      if (life.disposed) return
+      setStatus((s) => (s === 'exited' ? s : 'closed'))
+      setOwner(undefined)
+    }
     // Filled once the async dial lands. Input/resize subscribe SYNCHRONOUSLY
     // against this ref — the home path used to subscribe before any await,
     // and a remote dial must not open a keystroke-dropping window beyond the
@@ -722,7 +728,7 @@ export function XtermAttach(props: {
       try {
         gateway = await resolveGateway()
       } catch {
-        if (!life.disposed) setStatus('closed')
+        markClosed()
         return
       }
       if (life.disposed) return
@@ -738,18 +744,9 @@ export function XtermAttach(props: {
           // from a previous attach so a released owner can't linger as a banner.
           setOwner(undefined)
           claimRef.current = () => {
-            // Use the live socket, not the onOpen closure — a rebind leaves the
-            // old sock at readyState !== OPEN and the button used to no-op.
-            const live = sockRef.current
-            if (!sendClaim(live, term.cols, term.rows)) {
-              setOwner(undefined)
-              setStatus((s) => (s === 'exited' ? s : 'closed'))
-              return
-            }
-            // Hide the banner immediately. The `{type:'owner', self:true}`
-            // broadcast confirms; if that frame is missed (binary opcode, a
-            // proxy) the button used to look dead after a real claim.
-            setOwner({ device: 'here', self: true })
+            if (sendClaim(sock, term.cols, term.rows)) return
+            console.warn('[xterm] claim skipped: socket not open')
+            markClosed()
           }
           setStatus('attached')
           // Always re-fit and declare our size on (re)attach — a rebind would
@@ -757,11 +754,7 @@ export function XtermAttach(props: {
           fit.fit()
           sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           sock.onclose = () => {
-            if (life.disposed) return
-            setStatus((s) => (s === 'exited' ? s : 'closed'))
-            // A closed socket cannot claim — don't leave the banner up over a
-            // dead pane so "Use terminal here" looks clickable and does nothing.
-            setOwner(undefined)
+            markClosed()
           }
           sock.onmessage = (event: MessageEvent) => {
             if (life.disposed) return
@@ -795,9 +788,7 @@ export function XtermAttach(props: {
         // Never opened (timeout / error / early close): same UI outcome as a
         // real close, so the pane shows 'closed' instead of an eternal spinner.
         onClose: () => {
-          if (life.disposed) return
-          setStatus((s) => (s === 'exited' ? s : 'closed'))
-          setOwner(undefined)
+          markClosed()
         },
       })
     })()
@@ -823,16 +814,11 @@ export function XtermAttach(props: {
     // pipe swap costs it the session. Rebind.
   }, [props.ptyId, transportEpoch, props.base])
 
-  const banner = ownerBanner(owner)
+  const banner = ownerBanner(status === 'attached' ? owner : undefined)
 
   return (
-    <div className="relative min-h-0 flex-1 p-2">
-      <div
-        ref={hostRef}
-        className={`h-full w-full${banner.show ? ' pointer-events-none' : ''}`}
-        data-term-host
-        data-terminal-font={fontFamily}
-      />
+    <div className="relative isolate min-h-0 flex-1 p-2">
+      <div ref={hostRef} className="h-full w-full" data-term-host data-terminal-font={fontFamily} />
       {/* Screen-reader announcement for the visual bell (the flash itself is
           purely visual — theme.css `.term-bell-flash`). */}
       <div ref={bellLiveRef} role="status" aria-live="polite" className="sr-only" />
@@ -912,14 +898,12 @@ export function XtermAttach(props: {
       {banner.show && (
         <div
           data-term-owner-banner
-          className="absolute inset-0 z-50 flex items-center justify-center bg-bg/70 p-4"
+          className="absolute inset-0 z-20 flex items-center justify-center bg-bg/70 p-4"
         >
           <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-5">
             <DenBot className="size-9" decorative />
             <p className="font-mono text-xs text-ink">{banner.label}</p>
-            <Button type="button" onClick={() => claimRef.current?.()}>
-              Use terminal here
-            </Button>
+            <Button onClick={() => claimRef.current?.()}>Use terminal here</Button>
           </div>
         </div>
       )}

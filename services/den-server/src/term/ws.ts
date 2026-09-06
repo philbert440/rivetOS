@@ -320,12 +320,23 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       ws.terminate()
     })
     ws.on('pong', () => (client.alive = true))
-    const applyControl = (raw: unknown): boolean => {
-      if (typeof raw !== 'object' || raw === null) return false
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) {
+        // raw keystrokes — refused by the manager after exit, nothing to do
+        manager.write(ptyId, toBuffer(data))
+        return
+      }
+      let raw: unknown
+      try {
+        raw = JSON.parse(toBuffer(data).toString('utf8'))
+      } catch {
+        return
+      }
+      if (typeof raw !== 'object' || raw === null) return
       const m = raw as { type?: unknown; cols?: unknown; rows?: unknown }
       if (m.type === 'resize') {
-        if (typeof m.cols !== 'number' || !Number.isFinite(m.cols)) return true
-        if (typeof m.rows !== 'number' || !Number.isFinite(m.rows)) return true
+        if (typeof m.cols !== 'number' || !Number.isFinite(m.cols)) return
+        if (typeof m.rows !== 'number' || !Number.isFinite(m.rows)) return
         const cols = clamp(m.cols, 20, 500)
         const rows = clamp(m.rows, 5, 200)
         client.cols = cols
@@ -337,17 +348,15 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         } else if (g.owner.clientId === client.id) {
           manager.resize(ptyId, cols, rows)
         }
-        return true
-      }
-      if (m.type === 'claim') {
+      } else if (m.type === 'claim') {
         const sized =
           typeof m.cols === 'number' &&
           Number.isFinite(m.cols) &&
           typeof m.rows === 'number' &&
           Number.isFinite(m.rows)
         if (sized) {
-          const cols = clamp(m.cols, 20, 500)
-          const rows = clamp(m.rows, 5, 200)
+          const cols = clamp(m.cols as number, 20, 500)
+          const rows = clamp(m.rows as number, 5, 200)
           client.cols = cols
           client.rows = rows
           client.resizeSeq = ++g.resizeSeq
@@ -355,37 +364,8 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         setOwner(g, ptyId, { clientId: client.id, device: client.device }, 'claim')
         if (client.cols !== undefined && client.rows !== undefined)
           applySize(manager, ptyId, client.cols, client.rows)
-        return true
-      }
-      if (m.type === 'kill') {
+      } else if (m.type === 'kill') {
         manager.kill(ptyId)
-        return true
-      }
-      return false
-    }
-
-    ws.on('message', (data, isBinary) => {
-      const buf = toBuffer(data)
-      // Control frames are JSON (`claim` / `resize` / `kill`). Some clients mix
-      // them onto the binary keystroke channel (TextEncoder, a proxy that
-      // collapses opcodes). A payload that is exactly one of those objects is
-      // never a keystroke — don't write it into the PTY as garbage and ignore
-      // the claim, which is how "Use terminal here" became a silent no-op.
-      if (isBinary) {
-        if (buf.length > 0 && buf[0] === 0x7b) {
-          try {
-            if (applyControl(JSON.parse(buf.toString('utf8')))) return
-          } catch {
-            /* not JSON — keystrokes */
-          }
-        }
-        manager.write(ptyId, buf)
-        return
-      }
-      try {
-        applyControl(JSON.parse(buf.toString('utf8')))
-      } catch {
-        /* ignore malformed text */
       }
     })
 

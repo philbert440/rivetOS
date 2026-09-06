@@ -68,18 +68,10 @@ describe('parseTermControlFrame', () => {
     expect(parseTermControlFrame('{"type":"claim","cols":80,"rows":24}')).toBeUndefined()
   })
 
-  it('parses the same owner frame when delivered as an ArrayBuffer', () => {
-    const bytes = new TextEncoder().encode('{"type":"owner","device":"desk","self":true}')
+  it('does not parse ArrayBuffer PTY bytes, even if they look like JSON', () => {
+    const bytes = new TextEncoder().encode('{"type":"exit","code":0}')
     const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-    expect(parseTermControlFrame(buf)).toEqual({
-      type: 'owner',
-      device: 'desk',
-      self: true,
-    })
-  })
-
-  it('does not treat PTY bytes as a control frame', () => {
-    expect(parseTermControlFrame(new TextEncoder().encode('hello').buffer)).toBeUndefined()
+    expect(parseTermControlFrame(buf)).toBeUndefined()
   })
 })
 

@@ -788,39 +788,6 @@ describe('WS /term protocol core (scripted sockets)', () => {
     expect(logs.at(-1)).toBe(`term: owner phone → desk for ${pty.id} (detach)`)
   })
 
-  it('claim sent as a binary frame still transfers ownership and is not written to the PTY', () => {
-    const logs: string[] = []
-    const { manager, procs } = makeCore()
-    const termWs = createTermWs({
-      manager: () => Promise.resolve(manager),
-      enabled: () => true,
-      log: (m) => logs.push(m),
-    })
-    termWss.push(termWs)
-    const pty = manager.spawn('shell', 80, 24, '')
-    const a = new FakeSocket()
-    const b = new FakeSocket()
-    termWs.attach(manager, pty.id, a, { device: 'desk' })
-    a.emit('message', Buffer.from(JSON.stringify({ type: 'resize', cols: 200, rows: 50 })), false)
-    termWs.attach(manager, pty.id, b, { device: 'phone' })
-    b.emit(
-      'message',
-      Buffer.from(JSON.stringify({ type: 'claim', cols: 40, rows: 20 })),
-      true,
-    )
-    expect(procs[0].writes.join('')).not.toContain('claim')
-    expect(procs[0].resizes).toEqual([
-      [200, 50],
-      [40, 20],
-    ])
-    expect(b.textFrames().filter((f) => f.type === 'owner').at(-1)).toMatchObject({
-      type: 'owner',
-      device: 'phone',
-      self: true,
-    })
-    expect(logs.at(-1)).toBe(`term: owner desk → phone for ${pty.id} (claim)`)
-  })
-
   it('three viewers: owner detach hands ownership to the most recent resizer', () => {
     const logs: string[] = []
     const { manager, procs } = makeCore()
