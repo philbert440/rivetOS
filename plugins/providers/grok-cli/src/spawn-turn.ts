@@ -40,6 +40,13 @@ export interface GrokSpawnFlags {
   tools?: string
   /** `--cwd` for the spawned process; also used as the child's cwd. */
   cwd?: string
+  /**
+   * Grok Build session id. With `resume: true` this becomes `--resume <id>`;
+   * otherwise `--session-id <id>`. Omit both flags when unset (replay mode).
+   */
+  sessionId?: string
+  /** When true (and `sessionId` is set), pass `--resume` instead of `--session-id`. */
+  resume?: boolean
 }
 
 export function buildArgs(flags: GrokSpawnFlags, prompt: string): string[] {
@@ -60,6 +67,10 @@ export function buildArgs(flags: GrokSpawnFlags, prompt: string): string[] {
   if (flags.tools) args.push('--tools', flags.tools)
   for (const rule of flags.allow ?? []) args.push('--allow', rule)
   if (flags.cwd) args.push('--cwd', flags.cwd)
+  if (flags.sessionId) {
+    if (flags.resume) args.push('--resume', flags.sessionId)
+    else args.push('--session-id', flags.sessionId)
+  }
   return args
 }
 

@@ -364,18 +364,19 @@ Messaging channel configuration. Each key is a channel type / plugin name.
 
 ### grok-cli
 
-Drives the local Grok Build `grok` binary headlessly — one `grok -p <prompt> --output-format json` call per turn — on the user's Grok Build subscription (OIDC login in `~/.grok`), not the metered xAI API. The CLI owns auth and its own tools/MCP servers; the provider renders the conversation to one prompt, runs grok once, and replays the JSON result (reasoning, text, usage, `sessionId`, cost) as a turn. This is what lets `provider: grok-cli` agents answer mesh delegations, heartbeat tasks and chat.
+Drives the local Grok Build `grok` binary headlessly — one `grok -p <prompt> --output-format json` call per turn — on the user's Grok Build subscription (OIDC login in `~/.grok`), not the metered xAI API. The CLI owns auth and its own tools/MCP servers. Default `session: resume` keeps one grok session per RivetOS conversation (`--session-id` on the first turn with the full transcript, `--resume` after with only the newest user turn). `session: replay` re-sends the whole conversation every turn. The JSON result (reasoning, text, usage, `sessionId`, cost) is replayed as a turn. This is what lets `provider: grok-cli` agents answer mesh delegations, heartbeat tasks and chat.
 
 ```yaml
 providers:
   grok-cli:
     binary: /home/rivet/.grok/bin/grok   # default ~/.grok/bin/grok, then `grok` on PATH
-    model: grok-4.5                      # -m; omit for the CLI's configured model
+    # model: grok-4.5                    # optional; omit for the CLI's configured model
     permission_mode: dontAsk             # tools denied unless `allow` rules cover them
     reasoning_effort: medium             # low|medium|high; a turn's `thinking` overrides
     max_turns: 1                         # 1 = answer only, no tool loop
     no_plan: true
     system_prompt: prepend               # prepend | override | off
+    session: resume                      # resume | replay
     cwd: /home/rivet/.rivetos/workspace
     # allow: [Read, Grep]                # --allow rules for tool-using turns
 ```
@@ -383,12 +384,13 @@ providers:
 | Key | Default | Notes |
 |-----|---------|-------|
 | `binary` | `~/.grok/bin/grok`, else `grok` | Grok Build CLI. `isAvailable()` = `grok --version` exits 0. |
-| `model` | CLI default | Passed as `-m`. |
+| `model` | CLI default (optional) | Passed as `-m` when set. Omit to use the CLI's configured model. |
 | `permission_mode` | `dontAsk` | `--permission-mode`. `dontAsk` auto-denies tools not covered by `allow`. |
 | `reasoning_effort` | CLI default | `--reasoning-effort`. Per-turn `thinking` (`low`/`medium`/`high`+) overrides. |
 | `max_turns` | `1` | `--max-turns`. Raise with `allow` rules for agentic turns. |
 | `no_plan` | `true` | `--no-plan` — plan mode would swallow a headless run. |
-| `system_prompt` | `prepend` | `prepend` = RivetOS system prompt at the top of the prompt, grok keeps its own; `override` = `--system-prompt-override`; `off` = dropped. |
+| `system_prompt` | `prepend` | `prepend` = RivetOS system prompt at the top of the prompt, grok keeps its own; `override` = `--system-prompt-override`; `off` = dropped. Applies on first turn and on later `--resume` turns. |
+| `session` | `resume` | `resume` = one grok session per RivetOS conversation (`~/.rivetos/grok-cli-sessions.json`). `replay` = full transcript every turn, no session flags. |
 | `allow` | — | List of `--allow` rules (Claude Code rule syntax). |
 | `tools` | — | `--tools` pass-through. |
 | `cwd` | — | Working directory for the spawned grok (`--cwd`). |

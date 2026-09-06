@@ -58,6 +58,16 @@ describe('buildArgs', () => {
     expect(args[args.indexOf('--cwd') + 1]).toBe('/tmp/w')
     expect(args[args.indexOf('--max-turns') + 1]).toBe('5')
   })
+
+  it('adds --session-id for a new session and --resume when resume is set', () => {
+    expect(buildArgs({ ...base, sessionId: 'abc' }, 'q')).toContain('--session-id')
+    expect(buildArgs({ ...base, sessionId: 'abc' }, 'q').slice(-2)).toEqual(['--session-id', 'abc'])
+    expect(buildArgs({ ...base, sessionId: 'abc', resume: true }, 'q').slice(-2)).toEqual([
+      '--resume',
+      'abc',
+    ])
+    expect(buildArgs({ ...base, resume: true }, 'q')).not.toContain('--resume')
+  })
 })
 
 describe('parseGrokJson', () => {

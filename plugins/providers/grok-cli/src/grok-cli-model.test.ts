@@ -9,9 +9,11 @@ import {
   composePrompt,
   effortFromProviderOptions,
   finishReasonFor,
+  newestUserChunk,
   renderPromptForCli,
   type GrokCliModelConfig,
 } from './grok-cli-model.js'
+import { loadSessionMap, saveSessionMap, uuidForConversation } from './session-map.js'
 
 function fakeScript(body: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-model-'))
@@ -37,6 +39,10 @@ const prompt: LanguageModelV3Prompt = [
   { role: 'user', content: [{ type: 'text', text: 'and now?' }] },
 ]
 
+function tmpMap(): string {
+  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'grok-cli-map-')), 'sessions.json')
+}
+
 function cfg(binary: string, extra: Partial<GrokCliModelConfig> = {}): GrokCliModelConfig {
   return {
     providerId: 'grok-cli',
@@ -51,8 +57,27 @@ function cfg(binary: string, extra: Partial<GrokCliModelConfig> = {}): GrokCliMo
     tools: undefined,
     cwd: undefined,
     agentId: 'maggie',
+    conversationId: 'test-conv',
+    sessionMode: 'resume',
+    sessionMapPath: tmpMap(),
     ...extra,
   }
+}
+
+/** Echo grok argv into JSON `text`. `--` so grok's `-p` is not a node flag. */
+function echoArgvScript(sessionId = 'sid-out'): string {
+  return fakeScript(
+    `#!/usr/bin/env bash
+node -e 'const a=process.argv; const i=a.indexOf("--"); const args=i>=0?a.slice(i+1):a.slice(1); process.stdout.write(JSON.stringify({text:args.join(" "),sessionId:"${sessionId}"}))' -- "$@"
+`,
+  )
+}
+
+function textOf(parts: LanguageModelV3StreamPart[]): string {
+  return parts
+    .filter((p) => p.type === 'text-delta')
+    .map((p) => ('delta' in p ? p.delta : ''))
+    .join('')
 }
 
 async function collect(model: GrokCliModel, p: LanguageModelV3Prompt): Promise<LanguageModelV3StreamPart[]> {
@@ -120,6 +145,12 @@ describe('renderPromptForCli / composePrompt', () => {
   it('does not trim when the prompt fits', () => {
     const r = renderPromptForCli(prompt)
     expect(composePrompt(r, 'prepend').trimmedChunks).toBe(0)
+  })
+
+  it('newestUserChunk is the last USER: section', () => {
+    const r = renderPromptForCli(prompt)
+    expect(newestUserChunk(r.chunks)).toBe('USER:\nand now?')
+    expect(newestUserChunk([])).toBe('USER:\n(no message)')
   })
 })
 
@@ -234,5 +265,80 @@ describe('GrokCliModel.doStream', () => {
     }
     expect(errored).toBe(true)
     expect(Date.now() - t0).toBeLessThan(10_000)
+  })
+})
+
+describe('session resume / replay', () => {
+  it('first resume turn sends --session-id, the full prompt, and stores grok\'s sessionId', async () => {
+    const mapPath = tmpMap()
+    const uuid = uuidForConversation('test-conv')
+    const parts = await collect(new GrokCliModel(cfg(echoArgvScript('returned-sid'), { sessionMapPath: mapPath })), prompt)
+    const text = textOf(parts)
+    expect(text).toContain('--session-id')
+    expect(text).toContain(uuid)
+    expect(text).not.toContain('--resume')
+    expect(text).toContain('USER:\nhello')
+    expect(text).toContain('USER:\nand now?')
+    expect(loadSessionMap(mapPath)).toEqual({ 'test-conv': 'returned-sid' })
+  })
+
+  it('later resume turn sends --resume and only the newest USER chunk', async () => {
+    const mapPath = tmpMap()
+    saveSessionMap(mapPath, { 'test-conv': 'already-sid' })
+    const text = textOf(
+      await collect(new GrokCliModel(cfg(echoArgvScript(), { sessionMapPath: mapPath })), prompt),
+    )
+    expect(text).toContain('--resume')
+    expect(text).toContain('already-sid')
+    expect(text).not.toContain('--session-id')
+    expect(text).toContain('USER:\nand now?')
+    expect(text).not.toContain('USER:\nhello')
+    expect(text).toContain('SYSTEM:\nYou are Maggie.')
+  })
+
+  it('replay mode sends the full prompt and no session flags, and does not write the map', async () => {
+    const mapPath = tmpMap()
+    const text = textOf(
+      await collect(
+        new GrokCliModel(cfg(echoArgvScript(), { sessionMapPath: mapPath, sessionMode: 'replay' })),
+        prompt,
+      ),
+    )
+    expect(text).toContain('USER:\nhello')
+    expect(text).toContain('USER:\nand now?')
+    expect(text).not.toContain('--session-id')
+    expect(text).not.toContain('--resume')
+    expect(loadSessionMap(mapPath)).toEqual({})
+    expect(fs.existsSync(mapPath)).toBe(false)
+  })
+
+  it('resume non-zero exit falls back once to --session-id with the full prompt and overwrites the map', async () => {
+    const mapPath = tmpMap()
+    saveSessionMap(mapPath, { 'test-conv': 'gone-sid' })
+    const bin = fakeScript(
+      `#!/usr/bin/env bash
+for a in "$@"; do if [ "$a" = "--resume" ]; then echo "session gone" >&2; exit 2; fi; done
+node -e 'const a=process.argv; const i=a.indexOf("--"); const args=i>=0?a.slice(i+1):a.slice(1); process.stdout.write(JSON.stringify({text:args.join(" "),sessionId:"fresh-sid"}))' -- "$@"
+`,
+    )
+    const text = textOf(await collect(new GrokCliModel(cfg(bin, { sessionMapPath: mapPath })), prompt))
+    expect(text).toContain('--session-id')
+    expect(text).toContain(uuidForConversation('test-conv'))
+    expect(text).not.toContain('--resume')
+    expect(text).toContain('USER:\nhello')
+    expect(text).toContain('USER:\nand now?')
+    expect(loadSessionMap(mapPath)).toEqual({ 'test-conv': 'fresh-sid' })
+  })
+
+  it('redacts the prompt in request logs', async () => {
+    const { stream, request } = await new GrokCliModel(cfg(echoArgvScript())).doStream({ prompt })
+    const reader = stream.getReader()
+    while (!(await reader.read()).done) {
+      /* drain so the child exits */
+    }
+    const body = request.body as { args: string[] }
+    const p = body.args.indexOf('-p')
+    expect(p).toBeGreaterThanOrEqual(0)
+    expect(body.args[p + 1]).toMatch(/^<prompt \d+ chars>$/)
   })
 })

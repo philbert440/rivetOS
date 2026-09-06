@@ -355,6 +355,32 @@ describe('Config Validation', () => {
       assertError(result, 'providers.anthropic.model', 'missing required field "model"')
     })
 
+    it('allows CLI harness providers without model', () => {
+      for (const name of ['grok-cli', 'hermes-cli', 'kimi-code', 'claude-cli']) {
+        const cfg = validConfig()
+        ;(cfg.providers as Record<string, unknown>)[name] = {}
+        const result = validateConfig(cfg)
+        assertValid(result)
+      }
+    })
+
+    it('still requires model on an API provider when a CLI provider is also present', () => {
+      const cfg = validConfig()
+      delete (cfg.providers as Record<string, Record<string, unknown>>).anthropic.model
+      ;(cfg.providers as Record<string, unknown>)['grok-cli'] = { session: 'resume' }
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.anthropic.model', 'missing required field "model"')
+    })
+
+    it('accepts session on grok-cli without an unknown-key warning', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>)['grok-cli'] = { session: 'resume' }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      const sessionWarnings = result.warnings.filter((w) => w.path === 'providers.grok-cli.session')
+      assert.equal(sessionWarnings.length, 0)
+    })
+
     it('requires base_url for ollama', () => {
       const cfg = validConfig()
       ;(cfg.providers as Record<string, unknown>).ollama = { model: 'llama3' }
