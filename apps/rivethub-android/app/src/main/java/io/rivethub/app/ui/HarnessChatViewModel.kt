@@ -12,43 +12,43 @@ import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.TermSpawnResponse
 import io.rivethub.app.gateway.UserTurn
 import io.rivethub.app.gateway.WsStatus
+import io.rivethub.app.gateway.WsSubscription
 import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
-import io.rivethub.app.gateway.TurnInFlight
 import io.rivethub.app.gateway.isTurnInFlight
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.AttachmentStatus
-import io.rivethub.app.plane.BARE_SUBMIT_AFTER_MS
 import io.rivethub.app.plane.CLOSED_GATE
 import io.rivethub.app.plane.ChatSendAction
 import io.rivethub.app.plane.EnqueueResult
 import io.rivethub.app.plane.HarnessGate
 import io.rivethub.app.plane.HarnessSheet
 import io.rivethub.app.plane.IDLE_DEADLINE_MS
+import io.rivethub.app.plane.LiveSource
 import io.rivethub.app.plane.LiveTool
+import io.rivethub.app.plane.OutboundItem
 import io.rivethub.app.plane.OutboundPump
 import io.rivethub.app.plane.PTY_READY_BOUND_MS
+import io.rivethub.app.plane.PTY_READY_QUIET_MS
 import io.rivethub.app.plane.PendingAttachment
+import io.rivethub.app.plane.PendingApproval
 import io.rivethub.app.plane.PtyReadyGate
-import io.rivethub.app.plane.SESSION_POLL_BOUND_MS
-import io.rivethub.app.plane.SESSION_POLL_EVERY_MS
 import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
-import io.rivethub.app.plane.TRANSCRIPT_POLL_EVERY_MS
 import io.rivethub.app.plane.TranscriptMachine
+import io.rivethub.app.plane.agentStatusLine
+import io.rivethub.app.plane.askQuestionsFromHarness
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
 import io.rivethub.app.plane.adoptCanonicalIsNoOp
 import io.rivethub.app.plane.canonicalFromSendTurn
 import io.rivethub.app.plane.injectCompletedAfterSend
+import io.rivethub.app.plane.promptAnswers
 import io.rivethub.app.plane.resyncCompletesTurn
 import io.rivethub.app.plane.resyncStillApplies
-import io.rivethub.app.plane.sessionFrameCancelsPoll
 import io.rivethub.app.plane.shouldResyncFromRegistry
-import io.rivethub.app.plane.transcriptPollDue
 import io.rivethub.app.plane.anyUploading
-import io.rivethub.app.plane.canonicalFromSessions
 import io.rivethub.app.plane.cardFromLiveTools
 import io.rivethub.app.plane.chatItemForGate
 import io.rivethub.app.plane.chatSendAction
@@ -66,8 +66,6 @@ import io.rivethub.app.plane.ptySpawnIsFresh
 import io.rivethub.app.plane.readyUris
 import io.rivethub.app.plane.rosterCommandFor
 import io.rivethub.app.plane.sessionMatchesNative
-import io.rivethub.app.plane.shouldBareSubmit
-import io.rivethub.app.plane.shouldPollSessions
 import io.rivethub.app.plane.spawnAttempts
 import io.rivethub.app.plane.spawnModelEffort
 import io.rivethub.app.plane.TermAttachController
@@ -83,6 +81,7 @@ import io.rivethub.app.plane.withAttachmentText
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
@@ -91,8 +90,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
@@ -124,8 +126,14 @@ class HarnessChatViewModel(
         val turns: List<io.rivethub.app.gateway.HarnessTranscriptTurn> = emptyList(),
         val liveText: String = "",
         val liveReasoning: String = "",
+        val liveTools: List<LiveTool> = emptyList(),
         val inFlight: Boolean = false,
         val ask: AskUserCard? = null,
+        val promptId: String? = null,
+        val answeringPrompt: Boolean = false,
+        val approval: PendingApproval? = null,
+        val queued: List<OutboundItem> = emptyList(),
+        val agentStatusText: String? = null,
         val composer: String = "",
         val attachments: List<PendingAttachment> = emptyList(),
         val sheet: HarnessSheet? = null,
@@ -162,12 +170,10 @@ class HarnessChatViewModel(
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private val machine = TranscriptMachine(nowMs = { System.currentTimeMillis() })
-    private val liveTools = ArrayList<LiveTool>()
     private var attach: SessionAttach? = null
-    private var sessionWatch: Closeable? = null
+    private var sessionWatch: WsSubscription? = null
     private var registryWatch: Closeable? = null
     private val identityGen = c.identity.generation()
-    private var spawnInFlight = false
     private var ptyId: String? = null
     private var lastSpawn: TermSpawnResponse? = null
     private var descriptors: List<HarnessDescriptor> = emptyList()
@@ -177,17 +183,31 @@ class HarnessChatViewModel(
     private sealed interface Frame {
         data class Ev(val e: HarnessEvent) : Frame
         data class St(val s: WsStatus) : Frame
-        data object Resync : Frame
     }
 
     private val pump = OutboundPump(
-        send = { text -> actuallySend(text) },
+        send = { text ->
+            machine.appendOptimisticUser(text)
+            machine.beginTurn()
+            injectCompleted = false
+            publishMachine()
+            rearmIdleWatch()
+            try {
+                actuallySend(text)
+                injectCompleted = true
+                publishMachine()
+            } catch (e: Throwable) {
+                machine.revertOptimisticUser(text)
+                machine.abortTurn()
+                publishMachine()
+                throw e
+            }
+        },
         attachmentsUploading = { anyUploading(_state.value.attachments) },
     )
 
-    private var tick: Job? = null
-    private var adoptWatch: Job? = null
-    private var silentPoll: Job? = null
+    private var idleWatch: Job? = null
+    private val spawnMu = Mutex()
     private var lastRegistryStatus: String? = null
     private var lastRegistryUpdatedAt: String? = null
     /** True after inject ok / sendTurn landed — a fetch before this cannot complete the turn. */
@@ -258,20 +278,6 @@ class HarnessChatViewModel(
                 _state.update { it.copy(termFontSp = p.terminalFontSp) }
             }
         }
-        tick = viewModelScope.launch {
-            while (true) {
-                delay(15_000)
-                if (c.identity.generation() != identityGen) {
-                    termCtl.drop()
-                    return@launch
-                }
-                if (machine.idleTimedOut()) {
-                    machine.onFrame(HarnessEvent.Error(_state.value.sessionId, "idle_timeout", "turn timed out"))
-                    publishMachine()
-                }
-                if (pump.pendingRetryDue() || pump.isStalled()) runCatching { pump.onTurnComplete() }
-            }
-        }
     }
 
     fun setComposer(v: String) {
@@ -308,22 +314,15 @@ class HarnessChatViewModel(
                 _state.update { it.copy(composer = keptComposer, attachments = st.attachments, errorCode = ERR_UPLOADING) }
             }
             is EnqueueResult.Accepted -> {
-                machine.appendOptimisticUser(text)
-                machine.beginTurn()
-                injectCompleted = false
                 publishMachine()
-                armSilentPoll()
                 viewModelScope.launch {
                     runCatching { pump.pump() }.onSuccess {
                         if (pump.pendingOnServer) {
                             injectCompleted = injectCompletedAfterSend(ok = false, turnInFlight409 = true)
                         }
-                        if (machine.inFlight) armSilentPoll()
+                        publishMachine()
                     }.onFailure { e ->
                         AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                        machine.revertOptimisticUser(text)
-                        if (!pump.awaitingTurnComplete) machine.abortTurn()
-                        silentPoll?.cancel()
                         publishMachine()
                         _state.update {
                             it.copy(
@@ -346,18 +345,65 @@ class HarnessChatViewModel(
     }
 
     fun answerAsk(picked: Map<Int, List<String>>, free: String) {
-        val card = _state.value.ask ?: return
+        val st = _state.value
+        val card = st.ask ?: return
+        val promptId = st.promptId
+        if (promptId != null) {
+            val answers = promptAnswers(card.questions, picked, free)
+            if (answers.all { it.labels.isEmpty() && it.other.isNullOrBlank() }) return
+            _state.update { it.copy(answeringPrompt = true) }
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    c.harness(nodeDenUrl).answerPrompt(sessionKeyEnc(_state.value.sessionId), promptId, answers)
+                }.onFailure { e ->
+                    _state.update { it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName) }
+                }.onSuccess {
+                    _state.update { it.copy(answeringPrompt = false) }
+                }
+            }
+            return
+        }
         val text = composeAskAnswer(card.questions, picked, free)
         if (text.isBlank()) return
-        _state.update { it.copy(ask = null) }
-        liveTools.clear()
-        _state.update { it.copy(composer = text) }
+        _state.update { it.copy(ask = null, composer = text) }
         send()
     }
 
     fun dismissAsk() {
-        _state.update { it.copy(ask = null) }
-        liveTools.clear()
+        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false) }
+    }
+
+    fun decideApproval(reqId: String, decision: String) {
+        val st = _state.value
+        if (st.draft) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                c.harness(nodeDenUrl).resolveApproval(sessionKeyEnc(st.sessionId), reqId, decision)
+            }.onFailure { e ->
+                _state.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    fun cancelQueued(id: String) {
+        val item = pump.cancel(id) ?: return
+        _state.update {
+            val rest = if (it.composer.isBlank()) "" else "\n" + it.composer
+            it.copy(composer = item.text + rest, queued = pump.queued)
+        }
+    }
+
+    fun injectQueued(id: String) {
+        val st = _state.value
+        viewModelScope.launch {
+            if (st.inFlight && st.gate.canInterrupt && !st.draft) {
+                runCatching {
+                    withContext(Dispatchers.IO) { c.harness(nodeDenUrl).interrupt(sessionKeyEnc(st.sessionId)) }
+                }
+            }
+            runCatching { pump.pump(forceId = id) }
+            publishMachine()
+        }
     }
 
     fun stageUri(uri: Uri, name: String, mime: String?, size: Long) {
@@ -449,9 +495,7 @@ class HarnessChatViewModel(
     }
 
     override fun onCleared() {
-        tick?.cancel()
-        adoptWatch?.cancel()
-        silentPoll?.cancel()
+        idleWatch?.cancel()
         frameJob?.cancel()
         frames.close()
         sessionWatch?.close()
@@ -585,7 +629,7 @@ class HarnessChatViewModel(
                 recomputeGate()
                 machine.rearmIdle()
                 startAttach(canonical)
-                if (machine.inFlight) armSilentPoll()
+                rearmIdleWatch()
             }
             return
         }
@@ -596,7 +640,7 @@ class HarnessChatViewModel(
         viewModelScope.launch { c.settings.rekeySessionMode(from, canonical) }
         if (wasDraft || from != canonical) {
             startAttach(canonical)
-            if (machine.inFlight) armSilentPoll()
+            rearmIdleWatch()
         }
     }
 
@@ -609,7 +653,7 @@ class HarnessChatViewModel(
         frames = Channel(Channel.UNLIMITED)
         val hg = c.harness(nodeDenUrl)
         val enc = sessionKeyEnc(sessionId)
-        val myWatch = arrayOfNulls<Closeable>(1)
+        val myWatch = arrayOfNulls<WsSubscription>(1)
         val machineAttach = SessionAttach(
             machine = machine,
             fetchTranscript = {
@@ -634,32 +678,69 @@ class HarnessChatViewModel(
         val mailbox = frames
         frameJob = viewModelScope.launch {
             for (f in mailbox) {
+                if (c.identity.generation() != identityGen) {
+                    termCtl.drop()
+                    return@launch
+                }
                 AndroidLogger.debug("RivetHub", "session frame: ${f.javaClass.simpleName}", null)
                 when (f) {
                     is Frame.Ev -> {
-                        val content = sessionFrameCancelsPoll(f.e)
-                        if (content) silentPoll?.cancel()
-                        onSessionEvent(f.e)
-                        machineAttach.onFrame(f.e)
-                        publishMachine()
-                        if (!content && machine.inFlight && silentPoll?.isActive != true) {
-                            armSilentPoll()
-                        }
-                        if (f.e is HarnessEvent.TurnComplete) {
-                            runCatching { pump.onTurnComplete() }
-                            launch {
-                                delay(machineAttach.settleMs)
-                                mailbox.trySend(Frame.Resync)
+                        when (val e = f.e) {
+                            is HarnessEvent.Transcript -> {
+                                val ok = machine.applyTranscriptFrame(e)
+                                if (!ok) sessionWatch?.send("""{"type":"sync"}""")
+                                if (e.from == 0) {
+                                    _state.update {
+                                        it.copy(
+                                            contextWindow = e.contextWindow ?: it.contextWindow,
+                                            compactAt = e.compactAt ?: it.compactAt,
+                                            contextSource = e.contextSource ?: it.contextSource,
+                                        )
+                                    }
+                                }
+                            }
+                            is HarnessEvent.Status -> {
+                                machine.onStatus(e)
+                                if (e.status == "idle") runCatching { pump.onIdle() }
+                            }
+                            is HarnessEvent.Prompt -> {
+                                machine.onPrompt(e)
+                                if (e.resolved) {
+                                    if (_state.value.promptId == e.promptId) {
+                                        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false) }
+                                    }
+                                } else {
+                                    val qs = askQuestionsFromHarness(e.questions)
+                                    if (qs.isNotEmpty()) {
+                                        _state.update { it.copy(ask = AskUserCard(qs), promptId = e.promptId) }
+                                    }
+                                }
+                            }
+                            is HarnessEvent.ApprovalRequest -> {
+                                _state.update {
+                                    it.copy(approval = PendingApproval(e.requestId, e.name, e.reason, e.input))
+                                }
+                            }
+                            is HarnessEvent.ApprovalResolved -> {
+                                if (_state.value.approval?.requestId == e.requestId) {
+                                    _state.update { it.copy(approval = null) }
+                                }
+                            }
+                            is HarnessEvent.TurnComplete -> {
+                                machineAttach.onFrame(e)
+                                runCatching { pump.onTurnComplete() }
+                            }
+                            else -> {
+                                machineAttach.onFrame(e)
+                                onSessionEvent(e)
                             }
                         }
+                        publishMachine()
+                        rearmIdleWatch()
                     }
                     is Frame.St -> {
                         _state.update { it.copy(ws = f.s) }
                         if (f.s == WsStatus.OPEN) machineAttach.onWatchOpen()
-                        publishMachine()
-                    }
-                    Frame.Resync -> {
-                        machineAttach.flushCommittedResync()
                         publishMachine()
                     }
                 }
@@ -679,11 +760,9 @@ class HarnessChatViewModel(
     private fun onSessionEvent(event: HarnessEvent) {
         when (event) {
             is HarnessEvent.ToolUse -> {
-                liveTools += LiveTool(event.name, event.input)
-                _state.update { it.copy(ask = cardFromLiveTools(liveTools)) }
-            }
-            is HarnessEvent.TurnComplete -> {
-                // keep the ask card until answered
+                if (machine.liveSource == LiveSource.HOOKS && _state.value.promptId == null) {
+                    _state.update { it.copy(ask = cardFromLiveTools(machine.liveTools)) }
+                }
             }
             else -> Unit
         }
@@ -730,13 +809,11 @@ class HarnessChatViewModel(
             if (pty.fresh) waitUntilPtyReady(pty.id)
             withContext(Dispatchers.IO) { gateway().termInject(session = native, text = action.text) }
             injectCompleted = true
-            armSilentPoll()
             return
         }
         val canon = canonicalFromSendTurn(accepted.redirectedTo, accepted.sessionId, action.sessionId)
         if (canon != null) adoptCanonical(canon)
         injectCompleted = injectCompletedAfterSend(ok = true, turnInFlight409 = false)
-        armSilentPoll()
     }
 
     private suspend fun injectDraft(action: ChatSendAction.Inject) {
@@ -749,8 +826,6 @@ class HarnessChatViewModel(
                 withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
                 AndroidLogger.debug("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
                 injectCompleted = true
-                armSilentPoll()
-                startAdoptWatch(action.sessionId)
                 return
             } catch (e: Exception) {
                 if (nextInjectTry(failed = true, alreadyRetried = retried) == null) throw e
@@ -762,99 +837,73 @@ class HarnessChatViewModel(
 
     private data class PtySlot(val id: String, val fresh: Boolean)
 
-    private suspend fun ensurePty(sessionOverride: String? = null): PtySlot {
-        ptyId?.let { return PtySlot(it, fresh = false) }
-        if (spawnInFlight) {
-            while (spawnInFlight) delay(50)
-            ptyId?.let { return PtySlot(it, fresh = false) }
-        }
-        spawnInFlight = true
-        try {
-            ptyId?.let { return PtySlot(it, fresh = false) }
-            val st = _state.value
-            val command = rosterCommandFor(harnessId)
-            val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
-            val gw = gateway()
-            val attempts = spawnAttempts(sessionOverride ?: st.sessionId, command, flags.model, flags.effort)
-            var last: Exception? = null
-            for (attempt in attempts) {
-                try {
-                    val spawned = withContext(Dispatchers.IO) {
-                        gw.termSpawn(
-                            session = attempt.session,
-                            cols = 80,
-                            rows = 24,
-                            command = attempt.command,
-                            model = attempt.model,
-                            effort = attempt.effort,
-                        )
-                    }
-                    val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
-                    ptyId = spawned.id
-                    lastSpawn = spawned
-                    AndroidLogger.debug("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
-                    return PtySlot(spawned.id, fresh)
-                } catch (e: Exception) {
-                    AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
-                    last = e
+    private suspend fun ensurePty(sessionOverride: String? = null): PtySlot = spawnMu.withLock {
+        ptyId?.let { return@withLock PtySlot(it, fresh = false) }
+        val st = _state.value
+        val command = rosterCommandFor(harnessId)
+        val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
+        val gw = gateway()
+        val attempts = spawnAttempts(sessionOverride ?: st.sessionId, command, flags.model, flags.effort)
+        var last: Exception? = null
+        for (attempt in attempts) {
+            try {
+                val spawned = withContext(Dispatchers.IO) {
+                    gw.termSpawn(
+                        session = attempt.session,
+                        cols = 80,
+                        rows = 24,
+                        command = attempt.command,
+                        model = attempt.model,
+                        effort = attempt.effort,
+                    )
                 }
+                val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
+                ptyId = spawned.id
+                lastSpawn = spawned
+                AndroidLogger.debug("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
+                return@withLock PtySlot(spawned.id, fresh)
+            } catch (e: Exception) {
+                AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
+                last = e
             }
-            throw last ?: IllegalStateException("termSpawn failed")
-        } finally {
-            spawnInFlight = false
         }
+        throw last ?: IllegalStateException("termSpawn failed")
     }
 
     private suspend fun waitUntilPtyReady(ptyId: String) {
         val gate = PtyReadyGate({ System.currentTimeMillis() })
+        val ready = CompletableDeferred<Unit>()
+        var quietJob: Job? = null
+        fun armQuiet() {
+            quietJob?.cancel()
+            quietJob = viewModelScope.launch {
+                delay(PTY_READY_QUIET_MS)
+                if (gate.isReady() && !ready.isCompleted) ready.complete(Unit)
+            }
+        }
         val watch = gateway().watchTerm(
             ptyId = ptyId,
             sessionId = _state.value.sessionId,
-            onText = { if (it.isNotEmpty()) gate.onOutput() },
-            onBinary = { if (it.isNotEmpty()) gate.onOutput() },
+            onText = {
+                if (it.isNotEmpty()) {
+                    gate.onOutput()
+                    armQuiet()
+                }
+            },
+            onBinary = {
+                if (it.isNotEmpty()) {
+                    gate.onOutput()
+                    armQuiet()
+                }
+            },
         )
         try {
-            withTimeout(PTY_READY_BOUND_MS + 250) {
-                while (!gate.isReady()) delay(50)
-            }
+            withTimeout(PTY_READY_BOUND_MS + 250) { ready.await() }
         } catch (_: TimeoutCancellationException) {
             // bounded — inject anyway
         } finally {
+            quietJob?.cancel()
             watch.close()
-        }
-    }
-
-    private fun startAdoptWatch(native: String) {
-        adoptWatch?.cancel()
-        adoptWatch = viewModelScope.launch {
-            val t0 = System.currentTimeMillis()
-            var bare = false
-            while (_state.value.draft) {
-                if (c.identity.generation() != identityGen) return@launch
-                val elapsed = System.currentTimeMillis() - t0
-                val hid = harnessId
-                if (hid != null && shouldPollSessions(elapsed)) {
-                    val rows = runCatching {
-                        withContext(Dispatchers.IO) { c.harness(nodeDenUrl).listSessions(hid) }
-                    }.getOrDefault(emptyList())
-                    val canon = canonicalFromSessions(rows, native)
-                    if (canon != null) {
-                        adoptCanonical(canon)
-                        return@launch
-                    }
-                }
-                if (shouldBareSubmit(!_state.value.draft, elapsed, bare)) {
-                    bare = true
-                    runCatching {
-                        withContext(Dispatchers.IO) {
-                            gateway().termInject(session = native, text = "", submit = true)
-                        }
-                    }
-                    AndroidLogger.debug("RivetHub", "bare submit retry: session=$native", null)
-                }
-                if (elapsed >= SESSION_POLL_BOUND_MS && (bare || elapsed >= BARE_SUBMIT_AFTER_MS)) return@launch
-                delay(SESSION_POLL_EVERY_MS)
-            }
         }
     }
 
@@ -872,41 +921,32 @@ class HarnessChatViewModel(
         AndroidLogger.debug("RivetHub", "term spawnAndAdopt: draft=${_state.value.draft} session=${_state.value.sessionId}", null)
         ensurePty()
         withTimeoutOrNull(60_000) {
-            while (_state.value.draft) delay(150)
+            state.first { !it.draft }
         }
     }
 
-    private fun armSilentPoll() {
-        silentPoll?.cancel()
-        if (!machine.inFlight || machine.sawSessionFrame) return
-        val started = System.currentTimeMillis()
-        var lastPollAt: Long? = null
-        silentPoll = viewModelScope.launch {
-            while (true) {
-                delay(TRANSCRIPT_POLL_EVERY_MS)
-                if (c.identity.generation() != identityGen) return@launch
-                if (!machine.inFlight || machine.sawSessionFrame) return@launch
-                val now = System.currentTimeMillis()
-                val elapsed = now - started
-                if (!transcriptPollDue(
-                        inFlight = true,
-                        sawSessionFrame = machine.sawSessionFrame,
-                        elapsedSinceTurnMs = elapsed,
-                        elapsedSincePollMs = lastPollAt?.let { now - it },
-                    )
-                ) {
-                    if (elapsed >= IDLE_DEADLINE_MS) return@launch
-                    continue
-                }
-                lastPollAt = now
-                AndroidLogger.debug("RivetHub", "transcript poll: elapsed=${elapsed}ms inFlight=${machine.inFlight}", null)
-                runCatching { resyncTranscript(reason = "poll") }
+    private fun rearmIdleWatch() {
+        idleWatch?.cancel()
+        if (!machine.inFlight) return
+        val last = machine.lastFrameTs ?: machine.turnStartTs ?: return
+        val remaining = IDLE_DEADLINE_MS - (System.currentTimeMillis() - last)
+        idleWatch = viewModelScope.launch {
+            delay(remaining.coerceAtLeast(0L))
+            if (c.identity.generation() != identityGen) {
+                termCtl.drop()
+                return@launch
+            }
+            if (machine.idleTimedOut()) {
+                machine.onFrame(HarnessEvent.Error(_state.value.sessionId, "idle_timeout", "turn timed out"))
+                runCatching { pump.onTurnComplete() }
+                publishMachine()
             }
         }
     }
 
     private suspend fun resyncTranscript(reason: String = "resync") {
         if (c.identity.generation() != identityGen) return
+        if (machine.liveSource == LiveSource.TRANSCRIPT) return
         val st = _state.value
         if (st.draft) return
         val sid = st.sessionId
@@ -939,7 +979,6 @@ class HarnessChatViewModel(
         current?.bumpGeneration()
         if (complete) {
             machine.onTurnComplete(turns)
-            silentPoll?.cancel()
             runCatching { pump.acknowledgePending() }
             runCatching { pump.onTurnComplete() }
         } else {
@@ -952,12 +991,16 @@ class HarnessChatViewModel(
         val thinking = machine.liveReasoning.ifBlank {
             splitHermesReasoning(machine.liveText).reasoning
         }
+        val st = machine.agentStatus
         _state.update {
             it.copy(
                 turns = machine.transcript,
                 liveText = machine.liveText,
                 liveReasoning = thinking,
+                liveTools = machine.liveTools,
                 inFlight = machine.inFlight,
+                queued = pump.queued.filter { q -> q.status == OutboundItem.Status.QUEUED },
+                agentStatusText = agentStatusLine(st?.status, st?.phase, st?.toolName),
             )
         }
     }

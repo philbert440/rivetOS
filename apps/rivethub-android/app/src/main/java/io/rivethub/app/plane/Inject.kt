@@ -6,9 +6,6 @@ import io.rivethub.app.gateway.nativeIdOf
 
 const val PTY_READY_QUIET_MS: Long = 1_500L
 const val PTY_READY_BOUND_MS: Long = 8_000L
-const val BARE_SUBMIT_AFTER_MS: Long = 15_000L
-const val SESSION_POLL_EVERY_MS: Long = 3_000L
-const val SESSION_POLL_BOUND_MS: Long = 30_000L
 
 /**
  * Fresh spawn waits for TUI readiness before inject. Reused (already held
@@ -87,13 +84,6 @@ fun canonicalFromSessions(rows: List<HarnessSessionSummary>, native: String): St
     }
     return null
 }
-
-/** One-shot bare `{text:"", submit:true}` after [BARE_SUBMIT_AFTER_MS] if still a draft. */
-fun shouldBareSubmit(adopted: Boolean, elapsedMs: Long, alreadySubmitted: Boolean): Boolean =
-    !adopted && !alreadySubmitted && elapsedMs >= BARE_SUBMIT_AFTER_MS
-
-fun shouldPollSessions(elapsedMs: Long): Boolean =
-    elapsedMs <= SESSION_POLL_BOUND_MS
 
 /** A pin without `:` is still a draft — attaching it 400s the den. */
 fun isDraftSessionId(sessionId: String): Boolean = ':' !in sessionId

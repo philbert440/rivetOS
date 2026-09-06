@@ -1,5 +1,7 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.HarnessAskQuestion
+import io.rivethub.app.gateway.HarnessPromptAnswer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -18,6 +20,13 @@ data class AskQuestion(
 )
 
 data class AskUserCard(val questions: List<AskQuestion>)
+
+data class PendingApproval(
+    val requestId: String,
+    val name: String,
+    val reason: String? = null,
+    val input: JsonObject? = null,
+)
 
 data class LiveTool(val name: String, val args: JsonElement? = null, val status: String = "running")
 
@@ -120,6 +129,42 @@ fun cardFromLiveTools(tools: List<LiveTool>): AskUserCard? {
  * and free text. Multi-question picks are prefixed so the agent can match
  * them up. Empty when there is nothing to send.
  */
+fun askQuestionsFromHarness(questions: List<HarnessAskQuestion>): List<AskQuestion> =
+    questions.map { q ->
+        AskQuestion(
+            question = q.question,
+            header = q.header,
+            multiSelect = q.multiSelect,
+            options = q.options.map { AskOption(it.label, it.description) },
+        )
+    }
+
+/**
+ * One HTTP answer entry per question. Free text rides `other` when the
+ * picked labels include "Other", or on a single-question card.
+ */
+fun promptAnswers(
+    questions: List<AskQuestion>,
+    picked: Map<Int, List<String>>,
+    free: String,
+): List<HarnessPromptAnswer> {
+    val other = free.trim().ifBlank { null }
+    return questions.indices.map { i ->
+        val labels = picked[i].orEmpty()
+        val attachOther = when {
+            other == null -> false
+            labels.any { it.equals("Other", ignoreCase = true) } -> true
+            questions.size == 1 -> true
+            else -> false
+        }
+        HarnessPromptAnswer(
+            question = i,
+            labels = labels,
+            other = other.takeIf { attachOther },
+        )
+    }
+}
+
 fun composeAskAnswer(
     questions: List<AskQuestion>,
     picked: Map<Int, List<String>>,

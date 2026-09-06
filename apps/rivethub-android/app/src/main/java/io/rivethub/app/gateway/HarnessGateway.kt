@@ -148,8 +148,8 @@ class HarnessGateway(
         enc: String,
         onEvent: (HarnessEvent) -> Unit,
         onStatus: (WsStatus) -> Unit = {},
-    ): Closeable {
-        val box = arrayOfNulls<Closeable>(1)
+    ): WsSubscription {
+        val box = arrayOfNulls<WsSubscription>(1)
         val sub = WsSubscription(clients(), sessionWatchUrl(enc), onStatus) { text ->
             val event = parseHarnessEvent(text) ?: return@WsSubscription
             if (isFatalHarnessEvent(event)) box[0]?.close()
@@ -176,6 +176,48 @@ class HarnessGateway(
             val req = Request.Builder()
                 .url(url(listOf("api", "harness-sessions", enc, "interrupt")))
                 .post("{}".toRequestBody("application/json".toMediaType()))
+                .build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    runCatching { wireJson.decodeFromString(HarnessTurnAccepted.serializer(), text) }
+                        .getOrDefault(HarnessTurnAccepted(true))
+                }
+            }
+        }
+
+    /** POST /api/harness-sessions/{enc}/prompts/{promptId} — answer an AskUser prompt. */
+    suspend fun answerPrompt(enc: String, promptId: String, answers: List<HarnessPromptAnswer>): HarnessTurnAccepted =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(
+                HarnessPromptAnswersBody.serializer(),
+                HarnessPromptAnswersBody(answers),
+            ).toRequestBody("application/json".toMediaType())
+            val req = Request.Builder()
+                .url(url(listOf("api", "harness-sessions", enc, "prompts", promptId)))
+                .post(body)
+                .build()
+            withClients { c ->
+                c.newCall(req).execute().use { res ->
+                    val text = res.body.string()
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    runCatching { wireJson.decodeFromString(HarnessTurnAccepted.serializer(), text) }
+                        .getOrDefault(HarnessTurnAccepted(true))
+                }
+            }
+        }
+
+    /** POST /api/harness-sessions/{enc}/approvals/{reqId} — allow / allow-session / deny. */
+    suspend fun resolveApproval(enc: String, requestId: String, decision: String): HarnessTurnAccepted =
+        withContext(Dispatchers.IO) {
+            val body = wireJson.encodeToString(
+                HarnessApprovalDecisionBody.serializer(),
+                HarnessApprovalDecisionBody(decision),
+            ).toRequestBody("application/json".toMediaType())
+            val req = Request.Builder()
+                .url(url(listOf("api", "harness-sessions", enc, "approvals", requestId)))
+                .post(body)
                 .build()
             withClients { c ->
                 c.newCall(req).execute().use { res ->

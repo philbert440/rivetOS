@@ -232,6 +232,57 @@ class HarnessGatewayTest {
         assertTrue(names.none { it.contains("start", ignoreCase = true) })
     }
 
+    @Test fun `answerPrompt posts answers under the enc prompts path`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath}"
+                    val body = req.body?.let { reqBody ->
+                        val buffer = okio.Buffer()
+                        reqBody.writeTo(buffer)
+                        buffer.readUtf8()
+                    } ?: ""
+                    assertTrue(body.contains("\"question\":0"))
+                    assertTrue(body.contains("Other"))
+                    json(req, 202, """{"ok":true}""")
+                },
+                base,
+            )
+            val accepted = gw.answerPrompt(
+                enc,
+                "p1",
+                listOf(HarnessPromptAnswer(0, listOf("Other"), other = "typed")),
+            )
+            assertTrue(accepted.ok)
+            assertTrue(seen.single().startsWith("POST "))
+            assertTrue(seen.single().endsWith("/api/harness-sessions/$enc/prompts/p1"))
+        }
+    }
+
+    @Test fun `resolveApproval posts decision under the enc approvals path`() = runBlocking {
+        withTimeout(2_000) {
+            val seen = CopyOnWriteArrayList<String>()
+            val gw = HarnessGateway(
+                client { req ->
+                    seen += "${req.method} ${req.url.encodedPath}"
+                    val body = req.body?.let { reqBody ->
+                        val buffer = okio.Buffer()
+                        reqBody.writeTo(buffer)
+                        buffer.readUtf8()
+                    } ?: ""
+                    assertTrue(body.contains("allow-session"))
+                    json(req, 202, """{"ok":true}""")
+                },
+                base,
+            )
+            val accepted = gw.resolveApproval(enc, "r1", "allow-session")
+            assertTrue(accepted.ok)
+            assertTrue(seen.single().startsWith("POST "))
+            assertTrue(seen.single().endsWith("/api/harness-sessions/$enc/approvals/r1"))
+        }
+    }
+
     @Test fun `enc of an id containing colon is used as the path segment`() {
         val pathEnc = sessionKeyEnc(sid)
         assertFalse(pathEnc.contains(":"))

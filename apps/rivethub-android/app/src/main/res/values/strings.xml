@@ -184,4 +184,9 @@
     <string name="jump_latest">latest</string>
     <string name="ask_user_free">Or type a reply</string>
     <string name="ask_user_selected">selected</string>
+    <string name="queued_inject">inject</string>
+    <string name="queued_cancel">cancel</string>
+    <string name="approval_allow">Allow</string>
+    <string name="approval_allow_session">Allow for session</string>
+    <string name="approval_deny">Deny</string>
 </resources>

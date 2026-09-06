@@ -101,9 +101,87 @@ class HarnessWireTest {
     }
 
     @Test fun `unknown type becomes Unknown carrying raw`() {
-        val e = parseHarnessEvent("""{"type":"approval-request","sessionId":"$sid","requestId":"r1"}""") as HarnessEvent.Unknown
-        assertEquals("approval-request", e.type)
+        val e = parseHarnessEvent("""{"type":"not-a-real-event","sessionId":"$sid","requestId":"r1"}""") as HarnessEvent.Unknown
+        assertEquals("not-a-real-event", e.type)
         assertEquals("r1", e.raw["requestId"]!!.jsonPrimitiveContent())
+    }
+
+    @Test fun `parse transcript snapshot with context fields`() {
+        val e = parseHarnessEvent(
+            """{"type":"transcript","sessionId":"$sid","rev":3,"from":0,"total":1,"command":"claude","truncatedBefore":true,"contextWindow":200000,"compactAt":165000,"contextSource":"spawn","turns":[{"role":"assistant","text":"hi"}]}""",
+        ) as HarnessEvent.Transcript
+        assertEquals(sid, e.sessionId)
+        assertEquals(3, e.rev)
+        assertEquals(0, e.from)
+        assertEquals(1, e.total)
+        assertEquals("claude", e.command)
+        assertTrue(e.truncatedBefore)
+        assertEquals(200_000, e.contextWindow)
+        assertEquals(165_000, e.compactAt)
+        assertEquals("spawn", e.contextSource)
+        assertEquals("hi", e.turns.single().text)
+    }
+
+    @Test fun `parse status with phase and tool`() {
+        val e = parseHarnessEvent(
+            """{"type":"status","sessionId":"$sid","status":"working","since":1700000000000,"source":"transcript","phase":"tool","tool":{"name":"Bash","toolCallId":"c1"},"promptId":"p1"}""",
+        ) as HarnessEvent.Status
+        assertEquals("working", e.status)
+        assertEquals(1_700_000_000_000L, e.since)
+        assertEquals("transcript", e.source)
+        assertEquals("tool", e.phase)
+        assertEquals("Bash", e.toolName)
+        assertEquals("c1", e.toolCallId)
+        assertEquals("p1", e.promptId)
+    }
+
+    @Test fun `parse prompt with questions and resolved`() {
+        val open = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p1","kind":"ask-user","toolName":"AskUserQuestion","questions":[{"question":"Go?","header":"Auth","multiSelect":false,"options":[{"label":"Yes","description":"do it"},{"label":"No"}]}]}""",
+        ) as HarnessEvent.Prompt
+        assertEquals("p1", open.promptId)
+        assertEquals("AskUserQuestion", open.toolName)
+        assertFalse(open.resolved)
+        assertEquals("Go?", open.questions.single().question)
+        assertEquals("Yes", open.questions.single().options[0].label)
+        val done = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p1","kind":"ask-user","toolName":"AskUserQuestion","questions":[],"resolved":{"at":1,"answerText":"Yes"}}""",
+        ) as HarnessEvent.Prompt
+        assertTrue(done.resolved)
+        assertEquals("Yes", done.answerText)
+    }
+
+    @Test fun `parse approval-request and approval-resolved`() {
+        val req = parseHarnessEvent(
+            """{"type":"approval-request","sessionId":"$sid","requestId":"r1","name":"Bash","reason":"Do you want to proceed?","options":["1","2","3"],"input":{"command":"ls"}}""",
+        ) as HarnessEvent.ApprovalRequest
+        assertEquals("r1", req.requestId)
+        assertEquals("Bash", req.name)
+        assertEquals("Do you want to proceed?", req.reason)
+        assertEquals(listOf("1", "2", "3"), req.options)
+        assertEquals("ls", req.input!!["command"]!!.jsonPrimitiveContent())
+        val res = parseHarnessEvent(
+            """{"type":"approval-resolved","sessionId":"$sid","requestId":"r1","decision":"allow"}""",
+        ) as HarnessEvent.ApprovalResolved
+        assertEquals("allow", res.decision)
+    }
+
+    @Test fun `transcript turn round-trips id input resultText stopReason lastBlock complete`() {
+        val json = """{"sessionId":"$sid","harnessId":"claude-code","turns":[{"role":"assistant","text":"done","stopReason":"end_turn","lastBlock":"text","complete":true,"tools":[{"name":"AskUserQuestion","status":"done","id":"toolu_1","input":{"questions":[1]},"resultText":"Yes"}]}]}"""
+        val body = wireJson.decodeFromString(HarnessSessionTranscriptResponse.serializer(), json)
+        val turn = body.turns.single()
+        assertEquals("end_turn", turn.stopReason)
+        assertEquals("text", turn.lastBlock)
+        assertEquals(true, turn.complete)
+        val tool = turn.tools!!.single()
+        assertEquals("toolu_1", tool.id)
+        assertEquals("Yes", tool.resultText)
+        assertTrue(tool.input != null)
+        val back = wireJson.decodeFromString(
+            HarnessSessionTranscriptResponse.serializer(),
+            wireJson.encodeToString(HarnessSessionTranscriptResponse.serializer(), body),
+        )
+        assertEquals(body, back)
     }
 
     @Test fun `junk json is null not thrown`() {

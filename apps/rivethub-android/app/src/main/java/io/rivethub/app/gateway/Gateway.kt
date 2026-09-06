@@ -307,6 +307,9 @@ class WsSubscription(
         }
     }
 
+    /** Client → server text frame (e.g. `{"type":"sync"}` on the session watch). */
+    fun send(text: String): Boolean = ws?.send(text) == true
+
     override fun close() {
         closed = true
         reconnectJob?.cancel()
