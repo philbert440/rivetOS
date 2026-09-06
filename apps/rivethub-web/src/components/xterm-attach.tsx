@@ -7,7 +7,6 @@ import { SearchAddon } from '@xterm/addon-search'
 import { ImageAddon } from '@xterm/addon-image'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import type { TermExitFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { connectTermSocket, type TermSocketHandle } from '../lib/term-socket.js'
 import { resolvedThemeOf, useResolvedTheme, useTheme } from '../stores/theme.js'
@@ -18,7 +17,13 @@ import { isOscColorReport, stripOscColorQueries } from '../lib/osc-filter.js'
 import { copyTextToClipboard, hasTauriClipboard, readTextFromClipboard } from '../lib/clipboard.js'
 import { openExternal } from '../lib/open-external.js'
 import { expiresInLabel, filesFrom, pathsToPasteText, stageFiles } from '../lib/stage-files.js'
-import { buildClaimFrame, ownerBanner, reduceOwner, type TermOwner } from '../lib/owner-banner.js'
+import {
+  ownerBanner,
+  parseTermControlFrame,
+  reduceOwner,
+  sendClaim,
+  type TermOwner,
+} from '../lib/owner-banner.js'
 import { DenBot } from './den-bot.js'
 import { Button } from './ui/button.js'
 
@@ -654,6 +659,7 @@ export function XtermAttach(props: {
     if (!host || !term || !fit) return
 
     setStatus('connecting')
+    setOwner(undefined)
     // Reattach (epoch rebind) replays scrollback — clear the buffer so the
     // replay doesn't append a second copy. First attach: no-op. Silence
     // copy-on-select for the reset: it clears the selection, and a leftover
@@ -672,6 +678,11 @@ export function XtermAttach(props: {
     // holder, not a bare let: the async body reads it AFTER awaits, and TS
     // narrows a closed-over let to its initializer across those boundaries.
     const life = { disposed: false }
+    const markClosed = (): void => {
+      if (life.disposed) return
+      setStatus((s) => (s === 'exited' ? s : 'closed'))
+      setOwner(undefined)
+    }
     // Filled once the async dial lands. Input/resize subscribe SYNCHRONOUSLY
     // against this ref — the home path used to subscribe before any await,
     // and a remote dial must not open a keystroke-dropping window beyond the
@@ -717,7 +728,7 @@ export function XtermAttach(props: {
       try {
         gateway = await resolveGateway()
       } catch {
-        if (!life.disposed) setStatus('closed')
+        markClosed()
         return
       }
       if (life.disposed) return
@@ -733,7 +744,9 @@ export function XtermAttach(props: {
           // from a previous attach so a released owner can't linger as a banner.
           setOwner(undefined)
           claimRef.current = () => {
-            if (sock.readyState === 1) sock.send(buildClaimFrame(term.cols, term.rows))
+            if (sendClaim(sock, term.cols, term.rows)) return
+            console.warn('[xterm] claim skipped: socket not open')
+            markClosed()
           }
           setStatus('attached')
           // Always re-fit and declare our size on (re)attach — a rebind would
@@ -741,13 +754,12 @@ export function XtermAttach(props: {
           fit.fit()
           sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
           sock.onclose = () => {
-            if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+            markClosed()
           }
           sock.onmessage = (event: MessageEvent) => {
             if (life.disposed) return
-            if (typeof event.data === 'string') {
-              const frame = JSON.parse(event.data) as
-                TermHelloFrame | TermExitFrame | TermOwnerFrame
+            const frame = parseTermControlFrame(event.data)
+            if (frame) {
               if (frame.type === 'hello') {
                 setOwner(reduceOwner(undefined, frame))
                 if (frame.cols !== term.cols || frame.rows !== term.rows)
@@ -767,6 +779,7 @@ export function XtermAttach(props: {
               }
               return
             }
+            if (typeof event.data === 'string') return
             // Drop color queries so attach/scrollback replay doesn't generate
             // OSC rgb: replies that leak into the harness as fake keystrokes.
             term.write(stripOscColorQueries(new Uint8Array(event.data as ArrayBuffer)))
@@ -775,7 +788,7 @@ export function XtermAttach(props: {
         // Never opened (timeout / error / early close): same UI outcome as a
         // real close, so the pane shows 'closed' instead of an eternal spinner.
         onClose: () => {
-          if (!life.disposed) setStatus((s) => (s === 'exited' ? s : 'closed'))
+          markClosed()
         },
       })
     })()
@@ -801,10 +814,10 @@ export function XtermAttach(props: {
     // pipe swap costs it the session. Rebind.
   }, [props.ptyId, transportEpoch, props.base])
 
-  const banner = ownerBanner(owner)
+  const banner = ownerBanner(status === 'attached' ? owner : undefined)
 
   return (
-    <div className="relative min-h-0 flex-1 p-2">
+    <div className="relative isolate min-h-0 flex-1 p-2">
       <div ref={hostRef} className="h-full w-full" data-term-host data-terminal-font={fontFamily} />
       {/* Screen-reader announcement for the visual bell (the flash itself is
           purely visual — theme.css `.term-bell-flash`). */}
@@ -883,7 +896,10 @@ export function XtermAttach(props: {
           terminal. The xterm stays mounted and warm behind the scrim — only
           the resize/claim path changes hands, never the PTY attach. */}
       {banner.show && (
-        <div className="absolute inset-0 flex items-center justify-center bg-bg/70 p-4">
+        <div
+          data-term-owner-banner
+          className="absolute inset-0 z-20 flex items-center justify-center bg-bg/70 p-4"
+        >
           <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-5">
             <DenBot className="size-9" decorative />
             <p className="font-mono text-xs text-ink">{banner.label}</p>

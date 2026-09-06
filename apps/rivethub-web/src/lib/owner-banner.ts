@@ -1,4 +1,4 @@
-import type { TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
+import type { TermExitFrame, TermHelloFrame, TermOwnerFrame } from '@rivetos/types'
 
 /**
  * Terminal ownership (den #681): one device owns a session's terminal; only
@@ -48,4 +48,34 @@ export function ownerBanner(owner: TermOwner | undefined): { show: boolean; labe
 export function buildClaimFrame(cols?: number, rows?: number): string {
   if (cols !== undefined && rows !== undefined) return JSON.stringify({ type: 'claim', cols, rows })
   return JSON.stringify({ type: 'claim' })
+}
+
+/**
+ * Send `{type:'claim'}` on a live socket. Returns false when there is no OPEN
+ * socket — the banner button used to swallow that as a silent no-op.
+ */
+export function sendClaim(
+  ws: { readyState: number; send: (data: string) => void } | undefined,
+  cols?: number,
+  rows?: number,
+): boolean {
+  if (!ws || ws.readyState !== 1) return false
+  ws.send(buildClaimFrame(cols, rows))
+  return true
+}
+
+/** JSON hello/owner/exit from a text WS frame. Binary frames are PTY bytes. */
+export function parseTermControlFrame(
+  data: unknown,
+): TermHelloFrame | TermExitFrame | TermOwnerFrame | undefined {
+  if (typeof data !== 'string') return undefined
+  try {
+    const raw = JSON.parse(data) as { type?: unknown }
+    if (raw.type === 'hello' || raw.type === 'owner' || raw.type === 'exit') {
+      return raw as TermHelloFrame | TermExitFrame | TermOwnerFrame
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
