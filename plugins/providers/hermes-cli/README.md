@@ -8,8 +8,7 @@ inference box). Per-conversation continuity via `--resume` with a session map in
 RivetOS agent loop drives it via `streamText`.
 
 History: written 2026-08-18 and deployed untracked to ct113/ct114 (survived every
-`git reset --hard` deploy); committed to the repo 2026-09-05 unchanged. Plain CommonJS, no
-dependencies; `build` copies `src/index.cjs` to `dist/`.
+`git reset --hard` deploy); ported to TypeScript and committed 2026-09-05 (typed against @ai-sdk/provider LanguageModelV3), behavior unchanged.
 
 ```yaml
 agents:

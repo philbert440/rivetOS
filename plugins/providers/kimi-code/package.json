@@ -1,20 +1,38 @@
 {
   "name": "@rivetos/provider-kimi-code",
   "version": "0.5.0",
-  "description": "Kimi Code CLI provider \u2014 shells out to the local `kimi -p --output-format stream-json`. Was running untracked on ct116 since 2026-08-18.",
+  "description": "Kimi Code CLI provider \u2014 shells out to the local `kimi -p --output-format stream-json`; per-conversation -S session map.",
   "license": "MIT",
+  "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
-    "build": "mkdir -p dist && cp src/index.cjs dist/index.js",
-    "typecheck": "node --check src/index.cjs",
-    "lint": "eslint --no-error-on-unmatched-pattern src/ package.json",
-    "test": "node --test src/*.test.cjs",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint src/ package.json",
+    "test": "vitest run",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "3.0.10",
+    "@rivetos/aisdk": "0.5.0",
+    "@rivetos/types": "0.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "vitest": "^4.1.10"
   },
   "rivetos": {
     "type": "provider",
     "name": "kimi-code"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
   },
   "files": [
     "dist",
