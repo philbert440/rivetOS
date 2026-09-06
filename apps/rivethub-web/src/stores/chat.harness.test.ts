@@ -65,6 +65,7 @@ beforeEach(() => {
     agentStatus: {},
     prompts: {},
     liveSource: {},
+    liveFloor: {},
     opened: [],
     drafts: [],
     draftCreatedAt: {},
@@ -925,5 +926,43 @@ describe('transcript-sourced setLive does not stash ask', () => {
     })
     useChat.getState().setLive(KEY, undefined)
     expect(useChat.getState().ask[KEY]).toBeUndefined()
+  })
+})
+
+describe('transcript live overlay — settled turns stay solid; bubbles survive status frames', () => {
+  const ev = (
+    extra: Partial<HarnessTranscriptEvent> &
+      Pick<HarnessTranscriptEvent, 'rev' | 'from' | 'total' | 'turns'>,
+  ): HarnessTranscriptEvent => ({ type: 'transcript', sessionId: SID, command: 'claude', ...extra })
+  const status = (s: 'working' | 'idle', extra: Record<string, unknown> = {}): HarnessStatusFrame =>
+    ({ type: 'status', sessionId: SID, since: 1, status: s, ...extra }) as HarnessStatusFrame
+  const interrupted = { role: 'assistant' as const, text: 'half an ans', lastBlock: 'text' as const, stopReason: 'tool_use' }
+
+  it('an interrupted (never complete) turn is NOT re-lived by the next turn\'s working frame', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'go' }, interrupted] }))
+    useChat.getState().applyAgentStatus(KEY, status('working'))
+    expect(useChat.getState().live[KEY]?.text).toBe('half an ans') // genuinely in flight
+    useChat.getState().applyAgentStatus(KEY, status('idle')) // interrupted → settled solid
+    expect(useChat.getState().live[KEY]).toBeUndefined()
+    useChat.getState().applyAgentStatus(KEY, status('working')) // inject: next turn starts, store unchanged
+    expect(useChat.getState().live[KEY]).toBeUndefined()
+    expect(useChat.getState().messages[KEY]?.some((m) => m.text === 'half an ans')).toBe(true)
+    // the new turn's assistant reply IS live
+    useChat.getState().applyHarnessTranscriptEvent(
+      KEY,
+      ev({ rev: 2, from: 2, total: 4, turns: [{ role: 'user', text: 'again' }, { role: 'assistant', text: 'new', lastBlock: 'text', stopReason: 'tool_use' }] }),
+    )
+    expect(useChat.getState().live[KEY]?.text).toBe('new')
+  })
+
+  it('a status frame does not retire a sent bubble whose text repeats an earlier turn', () => {
+    useChat.getState().bindHarness(KEY, 'claude-code')
+    useChat.getState().applyHarnessTranscriptEvent(KEY, ev({ rev: 1, from: 0, total: 2, turns: [{ role: 'user', text: 'yes' }, { role: 'assistant', text: 'ok', complete: true }] }))
+    const id = useChat.getState().enqueueOutbound(KEY, 'yes')
+    useChat.getState().markOutboundSending(KEY, id)
+    useChat.getState().dequeueOutbound(KEY, id)
+    useChat.getState().applyAgentStatus(KEY, status('working', { phase: 'thinking' }))
+    expect(useChat.getState().messages[KEY]?.some((m) => m.id === id)).toBe(true)
   })
 })

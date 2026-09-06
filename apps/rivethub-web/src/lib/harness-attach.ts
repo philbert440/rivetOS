@@ -98,6 +98,7 @@ export interface HarnessAttachment {
  * restarting, a transient 5xx) is worth reconnecting for.
  */
 const FATAL_CODES = new Set(['invalid_session_id', 'capability_unsupported'])
+const SYNC_REARM_MS = 3_000
 /** Same, on the resync side: gone / malformed / unsupported. */
 const FATAL_STATUS = new Set([400, 404, 501])
 
@@ -163,7 +164,19 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
   // inside the subscribe call itself, and `stop()` running from there must not
   // hit the temporal dead zone of a `const` that has not been assigned yet.
   const socket: { sub?: Subscription } = {}
-  const sync = (): boolean => socket.sub?.send({ type: 'sync' }) ?? false
+  // den drops a `sync` that lands within 2 s of the previous one, silently —
+  // re-arm ONCE after a short wait unless a snapshot arrived meanwhile (one-shot
+  // timeout re-armed by frames, not a poll).
+  let syncTimer: ReturnType<typeof setTimeout> | undefined
+  const sync = (): boolean => {
+    const ok = socket.sub?.send({ type: 'sync' }) ?? false
+    if (syncTimer) clearTimeout(syncTimer)
+    syncTimer = setTimeout(() => {
+      syncTimer = undefined
+      if (!closed) socket.sub?.send({ type: 'sync' })
+    }, SYNC_REARM_MS)
+    return ok
+  }
   socket.sub = opts.gateway.watchHarnessSession(
     opts.sessionId,
     (event) => {
@@ -196,6 +209,10 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
         if (event.from === 0) {
           live = undefined
           opts.onLive(undefined)
+          if (syncTimer) {
+            clearTimeout(syncTimer)
+            syncTimer = undefined
+          }
         }
         const ok = opts.onTranscript?.(event)
         if (ok === false) sync()
@@ -238,6 +255,7 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
   function stop(): void {
     closed = true
     abort?.abort()
+    if (syncTimer) clearTimeout(syncTimer)
     socket.sub?.close()
   }
 

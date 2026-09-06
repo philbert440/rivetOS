@@ -78,6 +78,7 @@ import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
 import { accentFor } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
+import { agentStatusLine } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import {
   createOutboundPump,
@@ -1331,9 +1332,14 @@ function ActiveSession(props: {
   // Backfill gate: bindHarness seeds rev 0; the first transcript frame bumps
   // it. Empty after that (API-only / fresh draft) → HTTP ring. Socket closed
   // is the fallback when no frame can arrive.
+  // A remote thread has NO transcript source until its summary binds the
+  // control-plane socket (the legacy watch is node-local): while it is
+  // unbound and the summary has settled, the ring backfill is its history.
+  const remoteUnbound = isRemote && streamId === undefined && !remoteSummary.isPending
   const storeEmpty =
     (transcript !== undefined && transcript.rev > 0 && transcript.turns.length === 0) ||
-    ((transcript === undefined || transcript.rev === 0) && wsStatus === 'closed')
+    ((transcript === undefined || transcript.rev === 0) && wsStatus === 'closed') ||
+    (remoteUnbound && !storeHasTurns)
 
   // HTTP ring backfill — only when the TUI store has nothing (fresh draft /
   // API agent / node without a harness file). seed() MERGES so live WS frames
@@ -1652,10 +1658,9 @@ function ActiveSession(props: {
       ),
     [outbound],
   )
-  const statusLine =
-    !live && (agentStatus?.status === 'blocked' || agentStatus?.phase === 'prompt')
-      ? { text: 'waiting for you' as const, tool: agentStatus.tool?.name }
-      : undefined
+  // Thinking window (no block yet), blocked, prompt: one line under the
+  // transcript so the agent is never silently "working" (requirement 3).
+  const statusLine = agentStatusLine(live, agentStatus)
 
   // Capability-gated affordances. `canInterrupt` is the driver's own flag —
   // hidden rather than shown-and-501'd when the node has no interrupt path.

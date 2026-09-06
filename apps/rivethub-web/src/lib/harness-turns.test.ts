@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
 import {
+  agentStatusLine,
   isLiveTurnCommand,
   liveFromTranscript,
   messagesFromHarnessTurns,
@@ -156,5 +157,23 @@ describe('liveFromTranscript', () => {
       liveFromTranscript([{ ...incomplete, complete: true }], working),
     ).toBeUndefined()
     expect(liveFromTranscript([turn('user', 'hi')], working)).toBeUndefined()
+  })
+})
+
+describe('agentStatusLine (the thinking window is never silent)', () => {
+  const st = (extra: Record<string, unknown>) =>
+    ({ type: 'status', sessionId: 's', since: 1, ...extra }) as unknown as import('@rivetos/types').HarnessStatusFrame
+  it('shows the activity while working with no live bubble yet', () => {
+    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'thinking' }))?.text).toBe('thinking…')
+    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'tool', tool: { name: 'Bash' } }))).toMatchObject({
+      tool: 'Bash',
+    })
+  })
+  it('says waiting for you when blocked or on a prompt; nothing when idle or a live bubble exists', () => {
+    expect(agentStatusLine(undefined, st({ status: 'blocked' }))?.text).toBe('waiting for you')
+    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'prompt' }))?.text).toBe('waiting for you')
+    expect(agentStatusLine(undefined, st({ status: 'idle' }))).toBeUndefined()
+    const live = { text: 'x', reasoning: false, reasoningText: '', tools: [] }
+    expect(agentStatusLine(live, st({ status: 'working' }))).toBeUndefined()
   })
 })

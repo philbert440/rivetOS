@@ -132,3 +132,23 @@ export function messagesFromHarnessTurns(
     }
   })
 }
+
+/**
+ * The one-line status under the transcript when there is NO live bubble but
+ * the agent is not idle: the thinking window before the first block, or a
+ * blocked / prompt state. Undefined when idle or when a live bubble already
+ * carries the activity.
+ */
+export function agentStatusLine(
+  live: LiveTurn | undefined,
+  status: HarnessStatusFrame | undefined,
+): { text: string; tool?: string } | undefined {
+  if (live || !status) return undefined
+  if (status.status === 'blocked' || status.phase === 'prompt') {
+    return { text: 'waiting for you', tool: status.tool?.name }
+  }
+  if (status.status === 'working') {
+    return { text: statusActivity(status) ?? 'working…', tool: status.tool?.name }
+  }
+  return undefined
+}

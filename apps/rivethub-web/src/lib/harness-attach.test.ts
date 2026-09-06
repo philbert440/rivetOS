@@ -381,3 +381,25 @@ describe('attachHarnessSession', () => {
     att.close()
   })
 })
+
+describe('sync re-arm', () => {
+  it('re-sends {type:sync} once after the re-arm wait when no snapshot followed (den throttles syncs)', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = fakeGateway()
+      attachHarnessSession({
+        gateway: h.gateway,
+        sessionId: SID,
+        onResync: () => {},
+        onLive: () => {},
+        onTranscript: () => false, // rev gap every time
+      })
+      h.emit(snapshot({ from: 3, rev: 9, total: 4, turns: [{ role: 'user', text: 'x' }] }))
+      expect(h.sent.filter((d) => (d as { type?: string }).type === 'sync')).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(3_100)
+      expect(h.sent.filter((d) => (d as { type?: string }).type === 'sync')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

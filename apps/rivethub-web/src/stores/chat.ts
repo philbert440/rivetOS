@@ -118,6 +118,11 @@ interface ChatState {
   prompts: Record<string, HarnessPromptEvent[] | undefined>
   /** Where the in-flight turn is coming from. */
   liveSource: Record<string, LiveSource | undefined>
+  /** Transcript-sourced sessions: index of the first turn that may become the
+   *  live overlay. Set to the turn count whenever the session settles idle, so a
+   *  turn already committed as solid (an interrupted reply) is never pulled
+   *  back out of history when the NEXT turn's `working` frame arrives. */
+  liveFloor: Record<string, number | undefined>
   /** sessions the user opened — the WS write gate */
   opened: string[]
   wsStatus: WsStatus
@@ -398,7 +403,11 @@ function overlayTranscriptLive(
   const transcripts = base.transcripts ?? s.transcripts
   const turns = transcripts[sid]?.turns ?? []
   const agentStatus = { ...s.agentStatus, ...(base.agentStatus ?? {}) }
-  const liveTurn = liveFromTranscript(turns, agentStatus[sid])
+  const floor = (base.liveFloor ?? s.liveFloor)[sid] ?? 0
+  // A trailing turn below the floor was already settled as solid (e.g. an
+  // interrupted reply): the next turn's `working` must not re-live it.
+  const candidate = liveFromTranscript(turns, agentStatus[sid])
+  const liveTurn = candidate && turns.length - 1 >= floor ? candidate : undefined
   const srcMessages = (base.messages ?? s.messages)[sid] ?? []
   if (liveTurn) {
     const skipId = `harness:${sid}:${String(turns.length - 1)}`
@@ -414,19 +423,17 @@ function overlayTranscriptLive(
     }
   }
   const mapped = messagesFromHarnessTurns(sid, turns, srcMessages)
-  const outbound = (base.outbound ?? s.outbound)[sid] ?? []
-  const bubbles = srcMessages.filter((m) => m.id.startsWith('optim:'))
-  const kept: SessionMessage[] = []
-  for (const b of bubbles) {
-    if (mapped.some((m) => m.id === b.id)) continue
-    const inQueue = outbound.some((o) => o.id === b.id)
-    const matched = mapped.some((m) => m.role === 'user' && m.text === b.text)
-    if (matched && !inQueue) continue
-    kept.push(b)
-  }
+  // Optimistic bubbles are retired by transcriptPatch (delta window,
+  // newest-first, one per turn) when the ECHO lands — never re-derived here
+  // by text, which would drop a just-sent bubble that repeats an earlier turn.
+  const kept = srcMessages.filter((m) => m.id.startsWith('optim:'))
+  // Only an explicit idle settles the floor — "no status yet" must not freeze
+  // a turn that is about to go live.
+  const settled = agentStatus[sid]?.status === 'idle'
   return {
     ...base,
     liveSource,
+    ...(settled ? { liveFloor: { ...(base.liveFloor ?? s.liveFloor), [sid]: turns.length } } : {}),
     live: { ...(base.live ?? s.live), [sid]: undefined },
     messages: {
       ...(base.messages ?? s.messages),
@@ -450,6 +457,7 @@ export const useChat = create<ChatState>()(
       agentStatus: {},
       prompts: {},
       liveSource: {},
+      liveFloor: {},
       opened: [],
       wsStatus: 'closed',
       wsEpoch: 0,
@@ -534,6 +542,7 @@ export const useChat = create<ChatState>()(
             agentStatus: drop(s.agentStatus),
             prompts: drop(s.prompts),
             liveSource: drop(s.liveSource),
+            liveFloor: drop(s.liveFloor),
             draftCreatedAt: drop(s.draftCreatedAt) as Record<string, number>,
           }
         })
@@ -589,6 +598,7 @@ export const useChat = create<ChatState>()(
             agentStatus: move(s.agentStatus),
             prompts: move(s.prompts),
             liveSource: move(s.liveSource),
+            liveFloor: move(s.liveFloor),
           }
         })
         return moved
@@ -805,6 +815,8 @@ export const useChat = create<ChatState>()(
       bindHarness: (sessionId, harnessId) =>
         set((s) => ({
           harnessBound: { ...s.harnessBound, [sessionId]: true },
+          // A fresh binding starts with no settled floor; the first idle sets it.
+          liveFloor: { ...s.liveFloor, [sessionId]: undefined },
           opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
           // Mark the session store-backed straight away: the transcript is the
           // source of truth for solid messages, so nothing else may append.

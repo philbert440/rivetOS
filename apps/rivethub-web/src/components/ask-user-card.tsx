@@ -50,6 +50,7 @@ export function AskUserCard(props: {
     })
   }
 
+  const [error, setError] = useState<string | undefined>()
   const composed = composeAskAnswer(props.questions, picked, own)
 
   const structured = (picks: Record<number, string[]>): AskStructuredAnswer[] => {
@@ -71,9 +72,10 @@ export function AskUserCard(props: {
         () => {
           inFlight.current = false
         },
-        () => {
+        (err: unknown) => {
           inFlight.current = false
           setSending(false)
+          setError(err instanceof Error ? err.message : String(err))
         },
       )
       return
@@ -223,6 +225,11 @@ export function AskUserCard(props: {
           {sending ? 'sending…' : own.trim() ? 'Answer' : 'Send answers'}
         </button>
       </div>
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-red">
+          {error}
+        </p>
+      )}
     </div>
   )
 }
