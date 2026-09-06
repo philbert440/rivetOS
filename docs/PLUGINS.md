@@ -132,6 +132,8 @@ interface LLMChunk {
 | llama-server | `plugins/providers/llama-server/` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body`); folds mid-conversation system messages |
 | claude-cli | `plugins/providers/claude-cli/` | Drives the `claude` binary via stream-json; embedded MCP bridge for hybrid tools |
 | grok-cli | `plugins/providers/grok-cli/` | Drives the Grok Build `grok` binary headlessly (`grok -p --output-format json`); one call per turn, subscription login, no API key |
+| hermes-cli | `plugins/providers/hermes-cli/` | Drives the local Hermes Agent CLI (`hermes chat -q`), Hermes's own tools/memory/model config; session map for continuity |
+| kimi-code | `plugins/providers/kimi-code/` | Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`); session map for continuity |
 
 ---
 

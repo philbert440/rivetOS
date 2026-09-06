@@ -187,6 +187,16 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'context_window',
     'max_output_tokens',
   ]),
+  'hermes-cli': new Set(['model', 'binary', 'cwd', 'name', 'context_window', 'max_output_tokens']),
+  'kimi-code': new Set([
+    'model',
+    'binary',
+    'home',
+    'cwd',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
   'claude-cli': new Set([
     'model',
     'binary',
