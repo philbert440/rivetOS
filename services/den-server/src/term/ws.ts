@@ -320,10 +320,12 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       ws.terminate()
     })
     ws.on('pong', () => (client.alive = true))
-    const applyControl = (m: { type?: unknown; cols?: unknown; rows?: unknown }): void => {
+    const applyControl = (raw: unknown): boolean => {
+      if (typeof raw !== 'object' || raw === null) return false
+      const m = raw as { type?: unknown; cols?: unknown; rows?: unknown }
       if (m.type === 'resize') {
-        if (typeof m.cols !== 'number' || !Number.isFinite(m.cols)) return
-        if (typeof m.rows !== 'number' || !Number.isFinite(m.rows)) return
+        if (typeof m.cols !== 'number' || !Number.isFinite(m.cols)) return true
+        if (typeof m.rows !== 'number' || !Number.isFinite(m.rows)) return true
         const cols = clamp(m.cols, 20, 500)
         const rows = clamp(m.rows, 5, 200)
         client.cols = cols
@@ -335,15 +337,17 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         } else if (g.owner.clientId === client.id) {
           manager.resize(ptyId, cols, rows)
         }
-      } else if (m.type === 'claim') {
+        return true
+      }
+      if (m.type === 'claim') {
         const sized =
           typeof m.cols === 'number' &&
           Number.isFinite(m.cols) &&
           typeof m.rows === 'number' &&
           Number.isFinite(m.rows)
         if (sized) {
-          const cols = clamp(m.cols as number, 20, 500)
-          const rows = clamp(m.rows as number, 5, 200)
+          const cols = clamp(m.cols, 20, 500)
+          const rows = clamp(m.rows, 5, 200)
           client.cols = cols
           client.rows = rows
           client.resizeSeq = ++g.resizeSeq
@@ -351,9 +355,13 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         setOwner(g, ptyId, { clientId: client.id, device: client.device }, 'claim')
         if (client.cols !== undefined && client.rows !== undefined)
           applySize(manager, ptyId, client.cols, client.rows)
-      } else if (m.type === 'kill') {
-        manager.kill(ptyId)
+        return true
       }
+      if (m.type === 'kill') {
+        manager.kill(ptyId)
+        return true
+      }
+      return false
     }
 
     ws.on('message', (data, isBinary) => {
@@ -366,14 +374,7 @@ export function createTermWs(deps: TermWsDeps): TermWs {
       if (isBinary) {
         if (buf.length > 0 && buf[0] === 0x7b) {
           try {
-            const raw: unknown = JSON.parse(buf.toString('utf8'))
-            if (typeof raw === 'object' && raw !== null) {
-              const type = (raw as { type?: unknown }).type
-              if (type === 'claim' || type === 'resize' || type === 'kill') {
-                applyControl(raw as { type?: unknown; cols?: unknown; rows?: unknown })
-                return
-              }
-            }
+            if (applyControl(JSON.parse(buf.toString('utf8')))) return
           } catch {
             /* not JSON — keystrokes */
           }
@@ -381,14 +382,11 @@ export function createTermWs(deps: TermWsDeps): TermWs {
         manager.write(ptyId, buf)
         return
       }
-      let raw: unknown
       try {
-        raw = JSON.parse(buf.toString('utf8'))
+        applyControl(JSON.parse(buf.toString('utf8')))
       } catch {
-        return
+        /* ignore malformed text */
       }
-      if (typeof raw !== 'object' || raw === null) return
-      applyControl(raw as { type?: unknown; cols?: unknown; rows?: unknown })
     })
 
     // hello → replay → subscribe happen in ONE synchronous block: no PTY
