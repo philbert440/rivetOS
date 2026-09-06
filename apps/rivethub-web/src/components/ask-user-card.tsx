@@ -13,12 +13,20 @@ import { composeAskAnswer, type AskQuestion } from '../lib/ask-user.js'
  * click, combining any typed text. "Chat about it" focuses the composer
  * (typing + sending there retires the card — that IS chatting about it).
  */
+export type AskStructuredAnswer = { question: number; labels: string[]; other?: string }
+
 export function AskUserCard(props: {
   questions: AskQuestion[]
   disabled?: boolean
   /** Resolves when the answer was actually sent — the card keeps its state
    *  (the only retry surface) until then; a rejected send leaves it intact. */
   onAnswer: (text: string) => Promise<void>
+  /**
+   * Bound harness path: one answers[i] per question. When set, submit uses
+   * this instead of composing a user-turn string. The card stays until the
+   * parent drops `questions` (resolved frame).
+   */
+  onAnswerStructured?: (answers: AskStructuredAnswer[]) => Promise<void>
   onDismiss: () => void
   /** Focus the composer textarea ("chat about it"). */
   onFocusComposer?: () => void
@@ -26,6 +34,7 @@ export function AskUserCard(props: {
   // label selections per question index
   const [picked, setPicked] = useState<Record<number, string[]>>({})
   const [own, setOwn] = useState('')
+  const [sending, setSending] = useState(false)
   // one answer in flight at a time — the async clear made double-click a
   // double-send (#578 audit); the sync clear used to make this free
   const inFlight = useRef(false)
@@ -41,11 +50,38 @@ export function AskUserCard(props: {
     })
   }
 
+  const [error, setError] = useState<string | undefined>()
   const composed = composeAskAnswer(props.questions, picked, own)
 
+  const structured = (picks: Record<number, string[]>): AskStructuredAnswer[] => {
+    const free = own.trim()
+    return props.questions.map((_, i) => ({
+      question: i,
+      labels: picks[i] ?? [],
+      ...(i === 0 && free ? { other: free } : {}),
+    }))
+  }
+
   const submit = (extra?: Record<number, string[]>): void => {
+    const picks = extra ?? picked
+    if (inFlight.current) return
+    if (props.onAnswerStructured) {
+      inFlight.current = true
+      setSending(true)
+      void props.onAnswerStructured(structured(picks)).then(
+        () => {
+          inFlight.current = false
+        },
+        (err: unknown) => {
+          inFlight.current = false
+          setSending(false)
+          setError(err instanceof Error ? err.message : String(err))
+        },
+      )
+      return
+    }
     const text = extra ? composeAskAnswer(props.questions, extra, own) : composed
-    if (!text || inFlight.current) return
+    if (!text) return
     inFlight.current = true
     void props.onAnswer(text).then(
       () => {
@@ -71,7 +107,10 @@ export function AskUserCard(props: {
           {props.onFocusComposer && (
             <button
               type="button"
-              onClick={props.onFocusComposer}
+              onClick={() => {
+                props.onFocusComposer?.()
+                props.onDismiss()
+              }}
               title="chat about it — reply freely below instead of picking"
               className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-ink-dim hover:text-em"
             >
@@ -80,9 +119,12 @@ export function AskUserCard(props: {
           )}
           <button
             type="button"
-            onClick={props.onDismiss}
+            onClick={() => {
+              props.onFocusComposer?.()
+              props.onDismiss()
+            }}
             aria-label="dismiss question"
-            title="dismiss"
+            title="chat about it"
             className="rounded p-0.5 text-ink-dim hover:text-ink"
           >
             <X className="size-3.5" />
@@ -120,7 +162,7 @@ export function AskUserCard(props: {
                       type="button"
                       role={q.multiSelect ? 'checkbox' : 'radio'}
                       aria-checked={selected}
-                      disabled={props.disabled}
+                      disabled={props.disabled || sending}
                       onClick={() => {
                         // Fast path: one bare single-select click answers now;
                         // typed text makes the click COMBINE instead of drop it.
@@ -169,20 +211,25 @@ export function AskUserCard(props: {
               submit()
             }
           }}
-          disabled={props.disabled}
+          disabled={props.disabled || sending}
           aria-label="Type your own answer"
           placeholder="type your own answer…"
           className="min-w-0 flex-1 rounded border border-line bg-panel-2/40 px-2 py-1 text-xs text-ink placeholder:text-ink-dim focus:border-em-dim focus:outline-none disabled:opacity-40"
         />
         <button
           type="button"
-          disabled={!composed || props.disabled}
+          disabled={!composed || props.disabled || sending}
           onClick={() => submit()}
           className="rounded border border-em bg-em-dim/20 px-3 py-1 text-xs text-em hover:bg-em-dim/40 disabled:opacity-40"
         >
-          {own.trim() ? 'Answer' : 'Send answers'}
+          {sending ? 'sending…' : own.trim() ? 'Answer' : 'Send answers'}
         </button>
       </div>
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-red">
+          {error}
+        </p>
+      )}
     </div>
   )
 }
