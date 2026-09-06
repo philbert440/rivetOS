@@ -85,6 +85,7 @@ import { randomUUID } from 'node:crypto'
 import {
   HarnessError,
   formatSessionId,
+  isPromptToolName,
   parseSessionId,
   type ApprovalDecision,
   type HarnessAskQuestion,
@@ -104,6 +105,7 @@ import {
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { overlaySessionContext } from '../term/context-window.js'
+import { parseAskPicker } from '../term/ask-picker.js'
 import { parsePermissionPrompt } from '../term/permission-prompt.js'
 import type { TranscriptWatcher } from '../term/transcript-watch.js'
 import { adapterForCommand, type HarnessAdapter } from './adapters/index.js'
@@ -261,10 +263,15 @@ export interface LiveState {
   tracker?: TurnTracker
   pendingPrompts: Map<string, { toolName: string; questions: HarnessAskQuestion[] }>
   pendingApproval?: { requestId: string; name: string; options?: { key: string; label: string }[] }
-  /** Last herdr screen read for a permission prompt — cooldown against a
+  /** AskUserQuestion parsed off the pane while herdr is `blocked`. Claude
+   *  2.1.263 does not write the tool_use line until the picker completes, so
+   *  the store cannot source this `prompt` event. */
+  pendingScreenPrompt?: { promptId: string; questions: HarnessAskQuestion[] }
+  /** Last herdr screen read for a blocked pane — cooldown against a
    *  chatty `blocked` stream (each read is a herdr subprocess). */
   captureAt?: number
   approvalSeq: number
+  screenSeq: number
   staleTimer?: NodeJS.Timeout
   lastStoreChangeAt?: number
   /** Stale-timer release: ignore tracker.inFlight() until the next store frame. */
@@ -783,6 +790,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const first = set.size === 0
     set.add(sink)
     if (first) this.ensureTranscriptSub(native)
+    // A fresh attach gets the CURRENT status straight away (a client with no
+    // status yet has no floor for the live overlay and no line to show); the
+    // transcript snapshot follows from the watcher.
+    this.emitStatusSnapshot(native, sink)
     return () => {
       const current = this.sessionSinks.get(native)
       if (!current) return
@@ -1019,6 +1030,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         toolSeq: 0,
         pendingPrompts: new Map(),
         approvalSeq: 0,
+        screenSeq: 0,
         tracker: this.adapter ? createTurnTracker(this.adapter) : undefined,
       }
       this.live.set(native, state)
@@ -1192,11 +1204,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.armQuietWindow(native)
       this.setStatus(native, 'active')
       this.resolveExternalApproval(native)
+      this.resolveScreenPrompt(native)
     } else if (frame.status === 'blocked') {
       state.blocked = true
       state.turnInFlight = true
       this.setStatus(native, 'active')
-      const pending = state.tracker?.pendingPromptIds() ?? []
+      const pending = this.pendingPromptIds(state)
       if (pending.length > 0) {
         statusEvent.promptId = pending[pending.length - 1] // most recently opened
         statusEvent.phase = 'prompt'
@@ -1211,6 +1224,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       const endIdle = (): void => {
         if (state.herdrStatus !== 'idle') return
         this.resolveExternalApproval(native)
+        this.resolveScreenPrompt(native)
         if (state.turnInFlight) this.endTurn(native, 'herdr-idle')
         else this.setStatus(native, 'idle')
       }
@@ -1256,7 +1270,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.tracker = carried.tracker
       state.pendingPrompts = carried.pendingPrompts
       state.pendingApproval = carried.pendingApproval
+      state.pendingScreenPrompt = carried.pendingScreenPrompt
       state.approvalSeq = carried.approvalSeq
+      state.screenSeq = carried.screenSeq
       state.turns = carried.turns
       state.lastStoreChangeAt = carried.lastStoreChangeAt
       state.claimAt = carried.claimAt
@@ -1361,17 +1377,28 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   }
 
   /**
-   * herdr `blocked` + screen capture → permission prompt. AskUserQuestion is
-   * already a `prompt` event from the tracker — skip the approval card.
+   * Store-sourced prompt ids plus a pending screen picker. Guards must treat
+   * them the same: no permission capture while either is open; blocked
+   * status frames stamp the id.
    */
-  protected onHerdrBlocked(native: string): void {
-    void this.capturePermissionPrompt(native)
+  protected pendingPromptIds(state: LiveState): string[] {
+    const ids = state.tracker?.pendingPromptIds() ?? []
+    if (state.pendingScreenPrompt) return [...ids, state.pendingScreenPrompt.promptId]
+    return ids
   }
 
-  protected async capturePermissionPrompt(native: string): Promise<void> {
+  /**
+   * herdr `blocked` + screen capture → AskUserQuestion picker (first) or
+   * permission dialog. Store-sourced AskUserQuestion already emits `prompt`.
+   */
+  protected onHerdrBlocked(native: string): void {
+    void this.captureBlockedScreen(native)
+  }
+
+  protected async captureBlockedScreen(native: string): Promise<void> {
     const state = this.live.get(native)
     if (!state) return
-    if ((state.tracker?.pendingPromptIds() ?? []).length > 0) return
+    if (this.pendingPromptIds(state).length > 0) return
     if (state.pendingApproval) return
     const now = this.now()
     if (state.captureAt !== undefined && now - state.captureAt < CAPTURE_COOLDOWN_MS) return
@@ -1386,14 +1413,34 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       )
       return
     }
-    const parsed = parsePermissionPrompt(raw)
-    if (!parsed) return
     // Re-check after the await: an AskUserQuestion may have landed, a
     // concurrent blocked frame already opened the card, or herdr already
     // left blocked (working/idle) while we were reading the pane.
     if (state.herdrStatus !== 'blocked') return
-    if ((state.tracker?.pendingPromptIds() ?? []).length > 0) return
+    if (this.pendingPromptIds(state).length > 0) return
     if (state.pendingApproval) return
+
+    const picker = parseAskPicker(raw)
+    if (picker) {
+      if (this.storePromptHasQuestion(state, picker.questions)) return
+      state.screenSeq += 1
+      const promptId = `screen:${native}:${String(state.screenSeq)}`
+      const questions = picker.questions
+      state.pendingScreenPrompt = { promptId, questions }
+      state.pendingPrompts.set(promptId, { toolName: 'AskUserQuestion', questions })
+      this.emit(native, {
+        type: 'prompt',
+        sessionId: this.sid(native),
+        promptId,
+        kind: 'ask-user',
+        toolName: 'AskUserQuestion',
+        questions,
+      })
+      return
+    }
+
+    const parsed = parsePermissionPrompt(raw)
+    if (!parsed) return
     state.approvalSeq += 1
     const requestId = `perm:${native}:${String(state.approvalSeq)}`
     state.pendingApproval = { requestId, name: parsed.toolName, options: parsed.options }
@@ -1405,6 +1452,38 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       input: { text: parsed.text },
       reason: parsed.text,
       options: parsed.options,
+    })
+  }
+
+  protected storePromptHasQuestion(state: LiveState, questions: HarnessAskQuestion[]): boolean {
+    const texts = new Set(
+      questions
+        .map((q) => q.question)
+        .filter((t): t is string => typeof t === 'string' && t.length > 0),
+    )
+    if (texts.size === 0) return false
+    for (const id of state.tracker?.pendingPromptIds() ?? []) {
+      const pending = state.pendingPrompts.get(id)
+      if (pending?.questions.some((q) => q.question && texts.has(q.question))) return true
+    }
+    return false
+  }
+
+  protected resolveScreenPrompt(native: string, answerText?: string): void {
+    const state = this.live.get(native)
+    const pending = state?.pendingScreenPrompt
+    if (!state || !pending) return
+    state.pendingScreenPrompt = undefined
+    state.pendingPrompts.delete(pending.promptId)
+    state.captureAt = undefined
+    this.emit(native, {
+      type: 'prompt',
+      sessionId: this.sid(native),
+      promptId: pending.promptId,
+      kind: 'ask-user',
+      toolName: 'AskUserQuestion',
+      questions: pending.questions,
+      resolved: { at: this.now(), ...(answerText ? { answerText } : {}) },
     })
   }
 
@@ -1425,6 +1504,47 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected injectKeys(pty: HarnessPtyHost, ptyId: string, keys: Uint8Array[]): void {
     for (const buf of keys) {
       pty.inject(ptyId, Buffer.from(buf).toString('utf8'), false)
+    }
+  }
+
+  /** One `status` frame for a single sink describing the session as it is now. */
+  protected emitStatusSnapshot(native: string, sink: (e: HarnessEvent) => void): void {
+    const state = this.live.get(native)
+    if (!state) return
+    const now = this.now()
+    const herdrFresh =
+      state.herdrStatus !== undefined &&
+      (this.turnQuietMs <= 0 ||
+        (state.herdrSince !== undefined && now - state.herdrSince <= this.turnQuietMs))
+    let status: 'working' | 'blocked' | 'idle'
+    let source: 'herdr' | 'transcript'
+    if (herdrFresh && state.herdrStatus) {
+      status = state.herdrStatus
+      source = 'herdr'
+    } else if (state.tracker?.inFlight() !== undefined) {
+      status = state.tracker.inFlight() ? 'working' : 'idle'
+      source = 'transcript'
+    } else {
+      // Only the activity clock: not a real signal — say nothing rather than
+      // guess (hook-driven sessions keep their event stream as the source).
+      return
+    }
+    const frame: HarnessStatusFrame = {
+      type: 'status',
+      sessionId: this.sid(native),
+      status,
+      since: now,
+      source,
+    }
+    const pending = this.pendingPromptIds(state)
+    if (status === 'blocked' && pending.length > 0) {
+      frame.promptId = pending[pending.length - 1]
+      frame.phase = 'prompt'
+    }
+    try {
+      sink(frame)
+    } catch {
+      // a sink that throws is the socket's problem, not ours
     }
   }
 
@@ -1552,6 +1672,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         questions: prev?.questions ?? [],
         resolved: { at: this.now(), ...(p.answerText ? { answerText: p.answerText } : {}) },
       })
+    }
+    if (state.pendingScreenPrompt) {
+      const tools = full.flatMap((t) => (t.role === 'assistant' ? (t.tools ?? []) : []))
+      const done = tools.find((t) => isPromptToolName(t.name) && t.resultText)
+      if (done?.resultText) this.resolveScreenPrompt(native, done.resultText)
     }
     if (state.pendingApproval) {
       // The blocked tool finished (its result landed): the dialog is gone.

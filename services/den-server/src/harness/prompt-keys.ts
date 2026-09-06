@@ -77,7 +77,11 @@ export function claudeAskAnswerKeys(
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i]
     const ans = byQ.get(i)
+    if (!q) bad(`unknown question index ${String(i)}`)
     if (!ans) bad(`missing answer for question ${String(i)}`)
+    if (q.options.length === 0) {
+      bad(`question ${String(i)} options are unknown`)
+    }
     const other = typeof ans.other === 'string'
     if (!other && ans.labels.length === 0) bad(`question ${String(i)} has no labels`)
     if (other && CONTROL_CHARS.test(ans.other!)) {

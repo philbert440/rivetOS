@@ -17,7 +17,8 @@ const SEPARATOR = /^[\s─━-]+$/
 const FOOTER = /Esc to cancel|Tab to amend|↵ confirm|choose/
 const GROK_ITEM = /(\d)\s*\([●○]\)\s*([^/┃]+?)(?=\s*\/\s*\d|\s*$)/g
 
-function linesOf(screen: string): string[] {
+/** ANSI-stripped, newline-normalized screen lines. Shared with ask-picker. */
+export function screenLines(screen: string): string[] {
   return stripAnsi(screen).replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
 }
 
@@ -121,7 +122,7 @@ function parseKimi(lines: string[]): ParsedPermissionPrompt | undefined {
 
 export function parsePermissionPrompt(screen: string): ParsedPermissionPrompt | undefined {
   if (!screen) return undefined
-  const lines = linesOf(screen)
+  const lines = screenLines(screen)
   const proceedIdx = lines.findIndex((l) => /^\s*Do you want to proceed\?\s*$/.test(l))
   if (proceedIdx >= 0) return parseClaude(lines, proceedIdx)
   const grok = parseGrok(lines)

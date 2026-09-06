@@ -97,6 +97,32 @@ describe('claudeAskAnswerKeys', () => {
     ).toThrowError(HarnessError)
   })
 
+  it('refuses an answer for a question whose options were not on screen', () => {
+    const q: HarnessAskQuestion[] = [
+      {
+        question: 'What color would you like?',
+        header: 'Color',
+        multiSelect: false,
+        options: [{ label: 'Red' }, { label: 'Green' }, { label: 'Blue' }],
+      },
+      { header: 'Toppings', multiSelect: true, options: [] },
+    ]
+    expect(() =>
+      claudeAskAnswerKeys(q, [
+        { question: 0, labels: ['Green'] },
+        { question: 1, labels: ['Cheese'] },
+      ]),
+    ).toThrowError(HarnessError)
+    try {
+      claudeAskAnswerKeys(q, [
+        { question: 0, labels: ['Green'] },
+        { question: 1, labels: ['Cheese'] },
+      ])
+    } catch (err) {
+      expect(err).toMatchObject({ code: 'bad_request' })
+    }
+  })
+
   it('unknown label throws bad_request', () => {
     expect(() => claudeAskAnswerKeys([TWO_Q[0]!], [{ question: 0, labels: ['Teal'] }])).toThrow(
       HarnessError,
