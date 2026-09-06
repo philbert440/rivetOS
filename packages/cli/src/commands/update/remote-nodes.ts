@@ -10,7 +10,7 @@
 
 import { execSync } from 'node:child_process'
 import { installRoot } from '@rivetos/types'
-import { buildMeshDispatcher } from '../../lib/mtls.js'
+import { buildMeshDispatcher, meshFetch } from '../../lib/mtls.js'
 import {
   sshExec,
   sshExecCapture,
@@ -622,13 +622,12 @@ export async function waitForHealth(
 
     // Fallback: try HTTPS health endpoint with mTLS
     try {
-      const dispatcher = await buildMeshDispatcher()
-
-      if (dispatcher) {
-        const res = await fetch(`https://${host}:${String(_port)}/api/mesh/ping`, {
-          signal: AbortSignal.timeout(2_000),
-          // @ts-expect-error — undici dispatcher not in Node fetch types
-          dispatcher,
+      // Gate on cert availability (unchanged behaviour when this node has no certs);
+      // meshFetch builds its own dispatcher = undici's own fetch + this node's cert
+      // (never global fetch — see lib/mtls.ts).
+      if (await buildMeshDispatcher()) {
+        const res = await meshFetch(`https://${host}:${String(_port)}/api/mesh/ping`, {
+          timeoutMs: 2_000,
         })
         if (res.ok) {
           const body = (await res.json().catch(() => ({}))) as { tls?: boolean }

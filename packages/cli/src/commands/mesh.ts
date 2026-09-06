@@ -18,7 +18,7 @@ import { execSync } from 'node:child_process'
 import { networkInterfaces } from 'node:os'
 import { dirname } from 'node:path'
 import { mkdir } from 'node:fs/promises'
-import { buildMeshFetchOptions } from '../lib/mtls.js'
+import { meshFetch } from '../lib/mtls.js'
 import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
 import { checkSshReachable, isSafeArg, sshExecCapture } from '../lib/ssh.js'
 import {
@@ -462,8 +462,9 @@ async function meshPing(flags: Flags): Promise<void> {
 
     const start = Date.now()
     try {
-      const fetchOpts = await buildMeshFetchOptions(timeoutMs)
-      const res = await fetch(`https://${node.host}:${String(node.port)}/api/mesh/ping`, fetchOpts)
+      const res = await meshFetch(`https://${node.host}:${String(node.port)}/api/mesh/ping`, {
+        timeoutMs,
+      })
 
       const latency = Date.now() - start
 
@@ -556,8 +557,9 @@ async function meshJoin(rest: string[], flags: Flags): Promise<void> {
 
   // First, check if seed is reachable
   try {
-    const pingOpts = await buildMeshFetchOptions(5000)
-    const pingRes = await fetch(`https://${host}:${String(port)}/api/mesh/ping`, pingOpts)
+    const pingRes = await meshFetch(`https://${host}:${String(port)}/api/mesh/ping`, {
+      timeoutMs: 5000,
+    })
     if (!pingRes.ok) {
       console.error(`  ❌ Seed node responded with HTTP ${String(pingRes.status)}`)
       process.exit(1)
@@ -597,12 +599,11 @@ async function meshJoin(rest: string[], flags: Flags): Promise<void> {
 
   // Send join request to seed
   try {
-    const joinOpts = await buildMeshFetchOptions(10_000)
-    const res = await fetch(`https://${host}:${String(port)}/api/mesh/join`, {
-      ...joinOpts,
+    const res = await meshFetch(`https://${host}:${String(port)}/api/mesh/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(localNode),
+      timeoutMs: 10_000,
     })
 
     if (!res.ok) {
