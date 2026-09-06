@@ -20,7 +20,7 @@ import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session
 import {
   adapterForCommand,
   claudeTurnsFromLines,
-  grokPickTurn,
+  grokTurnsFromLines,
   kimiTurnsFromLines,
   readHermesTurns,
 } from '../harness/adapters/index.js'
@@ -31,6 +31,7 @@ import { hermesDbPath, openHermesDb } from './hermes-db.js'
 export {
   claudeTurnsFromLines,
   grokPickTurn,
+  grokTurnsFromLines,
   kimiTurnsFromLines,
   readHermesTurns,
 } from '../harness/adapters/index.js'
@@ -913,19 +914,6 @@ async function parseJsonlObjects(
   return { objects: out, truncated }
 }
 
-async function parseJsonlTurns(
-  file: string,
-  pick: (obj: Record<string, unknown>) => HarnessTurn | null,
-): Promise<{ turns: HarnessTurn[]; truncated: boolean }> {
-  const { objects, truncated } = await parseJsonlObjects(file)
-  const out: HarnessTurn[] = []
-  for (const obj of objects) {
-    const turn = pick(obj)
-    if (turn) out.push(turn)
-  }
-  return { turns: out, truncated }
-}
-
 function withTruncated<T extends { turns: HarnessTurn[] }>(
   t: T,
   truncated: boolean,
@@ -1016,9 +1004,10 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
   if (wants('grok')) {
     const grokPath = await findGrokChatHistory(native)
     if (grokPath) {
-      const parsed = await parseJsonlTurns(grokPath, grokPickTurn)
-      if (parsed.turns.length > 0) {
-        return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
+      const parsed = await parseJsonlObjects(grokPath)
+      const turns = grokTurnsFromLines(parsed.objects)
+      if (turns.length > 0) {
+        return withTruncated({ id, command: 'grok', turns }, parsed.truncated)
       }
     }
   }
@@ -1113,8 +1102,11 @@ export async function readGrokTranscript(id: string): Promise<HarnessTranscript>
   if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
   const path = await findGrokChatHistory(id)
   if (!path) return { id, command: '', turns: [] }
-  const parsed = await parseJsonlTurns(path, grokPickTurn)
-  return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'grok', turns: grokTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
 }
 
 /**

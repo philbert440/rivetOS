@@ -922,6 +922,111 @@ describe('WS streams', () => {
     const { base } = await start(new FakeDriver())
     expect((await fetch(`${base}/api/harnesses/ws`)).status).toBe(426)
   })
+
+  it('forwards transcript frames from the session subscribe', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    const ws = new WebSocket(
+      `${base.replace('http', 'ws')}/api/harness-sessions/ws?session=${enc(SID)}`,
+    )
+    await new Promise<void>((r) => ws.on('open', () => r()))
+    const got = new Promise<string>((resolve) => ws.on('message', (d) => resolve(String(d))))
+    await new Promise((r) => setTimeout(r, 20))
+    driver.emitSession({
+      type: 'transcript',
+      sessionId: SID,
+      rev: 1,
+      from: 0,
+      total: 1,
+      turns: [{ role: 'user', text: 'hi' }],
+      command: 'claude',
+    })
+    expect(JSON.parse(await got)).toMatchObject({
+      type: 'transcript',
+      sessionId: SID,
+      from: 0,
+      command: 'claude',
+    })
+    ws.close()
+  })
+
+  it('sync control message reaches syncTranscript', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const synced: SessionId[] = []
+    ;(driver as FakeDriver & { syncTranscript: (id: SessionId) => void }).syncTranscript = (id) => {
+      synced.push(id)
+    }
+    const { base } = await start(driver)
+    const ws = new WebSocket(
+      `${base.replace('http', 'ws')}/api/harness-sessions/ws?session=${enc(SID)}`,
+    )
+    await new Promise<void>((r) => ws.on('open', () => r()))
+    await new Promise((r) => setTimeout(r, 20))
+    ws.send(JSON.stringify({ type: 'sync' }))
+    for (let i = 0; i < 50 && synced.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    expect(synced).toEqual([SID])
+    ws.send(JSON.stringify({ type: 'nope' }))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(synced).toEqual([SID])
+    ws.close()
+  })
+})
+
+describe('POST /api/harness-sessions/:enc/prompts/:promptId', () => {
+  it('202s a valid answer, 400s a bad body, 404s unknown_prompt, 501s when the driver lacks it', async () => {
+    const withPrompt = new FakeDriver()
+    withPrompt.add(SID)
+    ;(
+      withPrompt as FakeDriver & {
+        answerPrompt: (
+          sessionId: SessionId,
+          promptId: string,
+          answers: Array<{ question: number; labels: string[]; other?: string }>,
+        ) => Promise<void>
+      }
+    ).answerPrompt = (sessionId, promptId) => {
+      if (promptId === 'missing') {
+        return Promise.reject(new HarnessError('unknown_prompt', 'unknown prompt'))
+      }
+      void sessionId
+      return Promise.resolve()
+    }
+    const { base } = await start(withPrompt)
+    const ok = await post(base, `/api/harness-sessions/${enc(SID)}/prompts/ask_1`, {
+      answers: [{ question: 0, labels: ['API key'] }],
+    })
+    expect(ok.status).toBe(202)
+    expect(await ok.json()).toEqual({ ok: true, sessionId: SID, promptId: 'ask_1' })
+
+    expect(
+      (await post(base, `/api/harness-sessions/${enc(SID)}/prompts/ask_1`, { answers: 'nope' }))
+        .status,
+    ).toBe(400)
+    expect((await post(base, `/api/harness-sessions/${enc(SID)}/prompts/ask_1`, {})).status).toBe(
+      400,
+    )
+
+    const missing = await post(base, `/api/harness-sessions/${enc(SID)}/prompts/missing`, {
+      answers: [{ question: 0, labels: ['x'] }],
+    })
+    expect(missing.status).toBe(404)
+    expect(((await missing.json()) as { code: string }).code).toBe('unknown_prompt')
+
+    const bare = new FakeDriver()
+    bare.add(SID)
+    const other = await start(bare)
+    const unsupported = await post(
+      other.base,
+      `/api/harness-sessions/${enc(SID)}/prompts/ask_1`,
+      { answers: [{ question: 0, labels: ['x'] }] },
+    )
+    expect(unsupported.status).toBe(501)
+    expect(((await unsupported.json()) as { code: string }).code).toBe('capability_unsupported')
+  })
 })
 
 describe('legacy /term/harness-sessions is untouched', () => {

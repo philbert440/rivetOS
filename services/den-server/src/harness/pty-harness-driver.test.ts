@@ -8,7 +8,12 @@
 // code. Concurrency pins go here.
 
 import { describe, expect, it, vi } from 'vitest'
-import { HarnessError, type SessionId } from '@rivetos/types'
+import {
+  HarnessError,
+  type HarnessEvent,
+  type SessionId,
+  type TranscriptWsFrame,
+} from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
 import { GrokBuildDriver } from './grok-driver.js'
@@ -553,6 +558,387 @@ describe('pty-harness-driver herdr status mapping', () => {
       status: 'idle',
     })
     vi.useRealTimers()
+  })
+})
+
+function fakeTranscript(): {
+  subscribe: (session: string, sink: (f: TranscriptWsFrame) => void) => () => void
+  sync: (session: string) => void
+  emit: (session: string, frame: TranscriptWsFrame) => void
+  synced: string[]
+} {
+  const bySession = new Map<string, Set<(f: TranscriptWsFrame) => void>>()
+  const synced: string[] = []
+  return {
+    synced,
+    subscribe(session, sink) {
+      let set = bySession.get(session)
+      if (!set) {
+        set = new Set()
+        bySession.set(session, set)
+      }
+      set.add(sink)
+      return () => {
+        set!.delete(sink)
+      }
+    },
+    sync(session) {
+      synced.push(session)
+    },
+    emit(session, frame) {
+      for (const s of bySession.get(session) ?? []) s(frame)
+    },
+  }
+}
+
+const ASK_INPUT = {
+  questions: [
+    {
+      question: 'Which auth?',
+      header: 'Auth',
+      multiSelect: false,
+      options: [
+        { label: 'OAuth', description: 'browser' },
+        { label: 'API key', description: 'token' },
+      ],
+    },
+  ],
+}
+
+describe('pty-harness-driver transcript tracker', () => {
+  const sid = ClaudeCodeDriver.sessionId(UUID)
+
+  function frame(
+    partial: Pick<TranscriptWsFrame, 'from' | 'total' | 'turns'> & Partial<TranscriptWsFrame>,
+  ): TranscriptWsFrame {
+    return {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      command: 'claude',
+      ...partial,
+    }
+  }
+
+  it('subscribe succeeds with only a transcript dep', () => {
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    const off = driver.subscribe(sid, () => undefined)
+    expect(typeof off).toBe('function')
+    off()
+    driver.close()
+  })
+
+  it('forwards a transcript snapshot with the canonical id and ctx; deltas omit ctx', () => {
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 1,
+        rev: 1,
+        turns: [{ role: 'user', text: 'hi' }],
+      }),
+    )
+    const snap = seen.find((e) => e.type === 'transcript')
+    expect(snap).toMatchObject({
+      type: 'transcript',
+      sessionId: sid,
+      from: 0,
+      total: 1,
+      command: 'claude',
+    })
+    expect(snap && 'contextWindow' in snap && typeof snap.contextWindow === 'number').toBe(true)
+    seen.length = 0
+    tx.emit(
+      sid,
+      frame({
+        from: 1,
+        total: 2,
+        rev: 2,
+        turns: [
+          {
+            role: 'assistant',
+            text: 'ok',
+            lastBlock: 'text',
+            stopReason: 'end_turn',
+            complete: true,
+          },
+        ],
+      }),
+    )
+    const delta = seen.find((e) => e.type === 'transcript')
+    expect(delta).toMatchObject({ type: 'transcript', from: 1, total: 2, sessionId: sid })
+    expect(delta && 'contextWindow' in delta ? delta.contextWindow : undefined).toBeUndefined()
+    driver.close()
+  })
+
+  it('emits status once per change with source transcript', () => {
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    const status: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => {
+      if (e.type === 'status') status.push(e)
+    })
+    const working = frame({
+      from: 0,
+      total: 1,
+      turns: [{ role: 'user', text: 'hi' }],
+    })
+    tx.emit(sid, working)
+    tx.emit(sid, working)
+    expect(status).toHaveLength(1)
+    expect(status[0]).toMatchObject({
+      type: 'status',
+      source: 'transcript',
+      status: 'working',
+      phase: 'thinking',
+      sessionId: sid,
+    })
+    driver.close()
+  })
+
+  it('emits turn-complete from a complete trailing turn and sendUserTurn no longer 409s', async () => {
+    const tx = fakeTranscript()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      transcript: tx,
+      turnQuietMs: 0,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: string[] = []
+    driver.subscribe(sid, (e) => seen.push(e.type))
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'hi' },
+          {
+            role: 'assistant',
+            text: '',
+            lastBlock: 'tool_use',
+            stopReason: 'tool_use',
+            tools: [{ name: 'Bash', status: 'running', id: 't1' }],
+          },
+        ],
+      }),
+    )
+    tx.emit(
+      sid,
+      frame({
+        from: 1,
+        total: 2,
+        rev: 2,
+        turns: [
+          {
+            role: 'assistant',
+            text: 'done',
+            lastBlock: 'text',
+            stopReason: 'end_turn',
+            complete: true,
+          },
+        ],
+      }),
+    )
+    expect(seen.filter((t) => t === 'turn-complete')).toEqual(['turn-complete'])
+    await expect(driver.sendUserTurn(sid, { text: 'next' })).resolves.toBeUndefined()
+    driver.close()
+  })
+
+  it('emits prompt open then resolve', () => {
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    const prompts: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => {
+      if (e.type === 'prompt') prompts.push(e)
+    })
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'ask' },
+          {
+            role: 'assistant',
+            text: '',
+            lastBlock: 'tool_use',
+            stopReason: 'tool_use',
+            tools: [
+              { name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT },
+            ],
+          },
+        ],
+      }),
+    )
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toMatchObject({
+      type: 'prompt',
+      promptId: 'ask_1',
+      kind: 'ask-user',
+      toolName: 'AskUserQuestion',
+      sessionId: sid,
+    })
+    tx.emit(
+      sid,
+      frame({
+        from: 1,
+        total: 2,
+        rev: 2,
+        turns: [
+          {
+            role: 'assistant',
+            text: '',
+            lastBlock: 'tool_result',
+            stopReason: 'tool_use',
+            tools: [
+              {
+                name: 'AskUserQuestion',
+                status: 'done',
+                id: 'ask_1',
+                input: ASK_INPUT,
+                resultText: 'Auth: API key',
+              },
+            ],
+          },
+        ],
+      }),
+    )
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toMatchObject({
+      type: 'prompt',
+      promptId: 'ask_1',
+      resolved: { answerText: 'Auth: API key' },
+    })
+    driver.close()
+  })
+
+  it('answerPrompt fallback path injects composed text', async () => {
+    const tx = fakeTranscript()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      transcript: tx,
+      turnQuietMs: 0,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'ask' },
+          {
+            role: 'assistant',
+            text: '',
+            lastBlock: 'tool_use',
+            stopReason: 'tool_use',
+            tools: [
+              { name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT },
+            ],
+          },
+        ],
+      }),
+    )
+    await driver.answerPrompt(sid, 'ask_1', [{ question: 0, labels: ['API key'] }])
+    expect(pty.injects.some((i) => i.text === 'API key' && i.submit === true)).toBe(true)
+    await expect(
+      driver.answerPrompt(sid, 'nope', [{ question: 0, labels: ['x'] }]),
+    ).rejects.toMatchObject({
+      code: 'unknown_prompt',
+    })
+    driver.close()
+  })
+
+  it('stale timer idles an in-flight turn with no running tool', () => {
+    vi.useFakeTimers()
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      transcript: tx,
+      turnQuietMs: 0,
+      now: () => Date.now(),
+    })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'hi' },
+          { role: 'assistant', text: 'draft', lastBlock: 'text', stopReason: 'end_turn' },
+        ],
+      }),
+    )
+    vi.advanceTimersByTime(119_000)
+    expect(seen.some((e) => e.type === 'turn-complete')).toBe(false)
+    vi.advanceTimersByTime(1_000)
+    expect(
+      seen.some((e) => e.type === 'status' && e.status === 'idle' && e.source === 'transcript'),
+    ).toBe(true)
+    expect(seen.some((e) => e.type === 'turn-complete' && e.stopReason === 'stale')).toBe(true)
+    driver.close()
+    vi.useRealTimers()
+  })
+
+  it('herdr blocked + pending prompt stamps promptId and phase prompt', async () => {
+    const tx = fakeTranscript()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      transcript: tx,
+      herdrStatus: true,
+      turnQuietMs: 0,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'ask' },
+          {
+            role: 'assistant',
+            text: '',
+            lastBlock: 'tool_use',
+            stopReason: 'tool_use',
+            tools: [
+              { name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT },
+            ],
+          },
+        ],
+      }),
+    )
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'blocked',
+      since: 1,
+    })
+    expect(
+      seen.find((e) => e.type === 'status' && e.status === 'blocked'),
+    ).toMatchObject({
+      source: 'herdr',
+      promptId: 'ask_1',
+      phase: 'prompt',
+    })
+    driver.close()
   })
 })
 

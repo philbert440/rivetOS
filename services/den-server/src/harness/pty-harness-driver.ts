@@ -84,21 +84,27 @@ import {
   HarnessError,
   formatSessionId,
   parseSessionId,
+  type HarnessAskQuestion,
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessEvent,
   type HarnessStatusFrame,
+  type HarnessTranscriptEvent,
   type HarnessId,
   type HarnessSessionSummary,
   type HarnessTranscriptTurn,
   type SessionId,
   prefixSystemPrompt,
   type StartSessionOpts,
+  type TranscriptWsFrame,
   type UserTurn,
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
+import { overlaySessionContext } from '../term/context-window.js'
 import type { TranscriptWatcher } from '../term/transcript-watch.js'
+import { adapterForCommand, type HarnessAdapter } from './adapters/index.js'
 import { isBareNativeUuid } from './alias.js'
+import { createTurnTracker, type TurnTracker } from './turn-tracker.js'
 import {
   capabilityDiff,
   type HarnessCapabilityEvent,
@@ -213,6 +219,10 @@ const SHEET_TTL_MS = 60_000
 /** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
 const SPAWN_COLS = 120
 const SPAWN_ROWS = 40
+/** Drop the per-session transcript watch this long after the last sink / endTurn. */
+const TRANSCRIPT_HOLD_MS = 30_000
+/** If the store is in-flight with no running tool this long, release as stale. */
+const STALE_TURN_MS = 120_000
 
 export interface LiveState {
   status: 'active' | 'idle' | 'ended'
@@ -233,6 +243,25 @@ export interface LiveState {
   herdrIdleTimer?: NodeJS.Timeout
   /** Visible blocker: herdr `blocked` (permission prompt / stuck). */
   blocked?: boolean
+  /** Unsubscribe from the per-session transcript watcher. */
+  transcriptOff?: () => void
+  /** Hold the watcher 30s after the last sink so a reconnect does not re-parse. */
+  transcriptHoldTimer?: NodeJS.Timeout
+  tracker?: TurnTracker
+  pendingPrompts: Map<string, { toolName: string; questions: HarnessAskQuestion[] }>
+  staleTimer?: NodeJS.Timeout
+  lastStoreChangeAt?: number
+  /** Stale-timer release: ignore tracker.inFlight() until the next store frame. */
+  staleIdle?: boolean
+  /** Full turn list after splicing watcher deltas (from + total). */
+  turns?: HarnessTranscriptTurn[]
+  /** An explicit sendUserTurn claim the store has NOT echoed yet: `claimAt` is
+   *  when it was taken, `claimTurns` how many turns the store had then. Until
+   *  the store grows past that (the injected user turn lands), the tracker's
+   *  view is stale — a completed PREVIOUS turn must not release the lock, mark
+   *  the session idle, or fire turn-complete. Cleared on echo / endTurn. */
+  claimAt?: number
+  claimTurns?: number
 }
 
 /**
@@ -247,6 +276,32 @@ export function harnessTurnText(turn: UserTurn, applySystemPrompt: boolean): str
   return prefixSystemPrompt(prompt, turn.text)
 }
 
+/** Fallback AskUserQuestion answer: labels joined by ", "; multi-question
+ *  lines are `header: labels`; `other` appended. */
+export function composePromptText(
+  questions: HarnessAskQuestion[],
+  answers: Array<{ question: number; labels: string[]; other?: string }>,
+): string {
+  const multi = questions.length > 1
+  const lines: string[] = []
+  const others: string[] = []
+  for (const a of answers) {
+    const labels = a.labels.join(', ')
+    if (labels) {
+      if (multi) {
+        const q = questions[a.question]
+        const prefix = q?.header ?? q?.question
+        lines.push(prefix ? `${prefix}: ${labels}` : labels)
+      } else {
+        lines.push(labels)
+      }
+    }
+    const extra = a.other?.trim()
+    if (extra) others.push(extra)
+  }
+  return [...lines, ...others].join('\n')
+}
+
 /** What a PTY probe last learned. See § capability truthing in the header. */
 type PtyVerdict = 'unprobed' | 'available' | 'unavailable'
 
@@ -259,6 +314,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected readonly rosterCommand: string
   protected readonly productName: string
   protected readonly deps: PtyHarnessDriverDeps<S>
+  protected readonly adapter: HarnessAdapter | undefined
   protected readonly now: () => number
   protected readonly log: (msg: string) => void
   protected readonly listLimit: number
@@ -288,6 +344,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     this.rosterCommand = identity.rosterCommand
     this.productName = identity.productName
     this.deps = deps
+    this.adapter = adapterForCommand(identity.rosterCommand)
     this.now = deps.now ?? Date.now
     this.log = deps.log ?? ((): void => undefined)
     this.listLimit = deps.listLimit ?? DEFAULT_LIST_LIMIT
@@ -577,6 +634,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       })
     }
     state.turnInFlight = true
+    // Remember the store's size at claim time: the tracker may only take over
+    // (and release) once the store has grown past it — see LiveState.claimAt.
+    state.claimAt = this.now()
+    state.claimTurns = state.turns?.length
     try {
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)
@@ -652,7 +713,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * `session-updated` with `previousSessionId` — see `rotate`.
    */
   subscribe(sessionId: SessionId, sink: (e: HarnessEvent) => void): () => void {
-    if (!this.capabilities.liveStream && !this.herdrStatusOn()) {
+    if (!this.capabilities.liveStream && !this.herdrStatusOn() && !this.deps.transcript) {
       throw this.unsupported(`${this.harnessId}: no den event tap on this node`, sessionId)
     }
     const native = this.native(sessionId)
@@ -661,13 +722,59 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       set = new Set()
       this.sessionSinks.set(native, set)
     }
+    const first = set.size === 0
     set.add(sink)
+    if (first) this.ensureTranscriptSub(native)
     return () => {
       const current = this.sessionSinks.get(native)
       if (!current) return
       current.delete(sink)
-      if (current.size === 0) this.sessionSinks.delete(native)
+      if (current.size === 0) {
+        this.sessionSinks.delete(native)
+        this.scheduleTranscriptDrop(native)
+      }
     }
+  }
+
+  /** Re-emit a watcher snapshot for an already-subscribed session. */
+  syncTranscript(sessionId: SessionId): void {
+    const native = this.native(sessionId)
+    this.deps.transcript?.sync(this.sid(native))
+  }
+
+  /**
+   * Answer a pending AskUserQuestion prompt. 404 `unknown_prompt` if it is
+   * not in `pendingPrompts`. Keystroke translation (`adapter.answerKeys`) is
+   * lane A2 — until then, compose a text answer and inject it with submit.
+   */
+  async answerPrompt(
+    sessionId: SessionId,
+    promptId: string,
+    answers: Array<{ question: number; labels: string[]; other?: string }>,
+  ): Promise<void> {
+    const native = this.native(sessionId)
+    const pending = this.live.get(native)?.pendingPrompts.get(promptId)
+    if (!pending) {
+      throw new HarnessError('unknown_prompt', `unknown prompt ${promptId}`, {
+        harnessId: this.harnessId,
+        sessionId,
+      })
+    }
+    const pty = await this.requirePty('answerPrompt')
+    const ptyId = await this.ensurePty(pty, native)
+    const keys = this.adapter?.answerKeys?.(
+      { promptId, toolName: pending.toolName, questions: pending.questions },
+      answers,
+    )
+    if (keys && keys.length > 0) {
+      this.log(`[den-server] harness: answerPrompt ${promptId} via answerKeys`)
+      for (const buf of keys) {
+        pty.inject(ptyId, Buffer.from(buf).toString('latin1'), false)
+      }
+      return
+    }
+    this.log(`[den-server] harness: answerPrompt ${promptId} via inject-text`)
+    pty.inject(ptyId, composePromptText(pending.questions, answers), true)
   }
 
   subscribeEvents(sink: (e: HarnessEvent) => void): () => void {
@@ -680,6 +787,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     for (const state of this.live.values()) {
       if (state.quietTimer) clearTimeout(state.quietTimer)
       if (state.herdrIdleTimer) clearTimeout(state.herdrIdleTimer)
+      if (state.staleTimer) clearTimeout(state.staleTimer)
+      if (state.transcriptHoldTimer) clearTimeout(state.transcriptHoldTimer)
+      state.transcriptOff?.()
     }
     this.live.clear()
     this.sessionSinks.clear()
@@ -829,6 +939,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       if (state.herdrStatus === 'working' || state.herdrStatus === 'blocked') return 'active'
       if (state.herdrStatus === 'idle') return 'idle'
     }
+    // An explicit claim the store has not echoed yet outranks the tracker: the
+    // store still shows the PREVIOUS (completed) turn.
+    if (state.turnInFlight && state.claimAt !== undefined) return 'active'
+    const tracked = state.staleIdle ? undefined : state.tracker?.inFlight()
+    if (tracked === true) return 'active'
+    if (tracked === false) return 'idle'
     return state.turnInFlight ? 'active' : 'idle'
   }
 
@@ -840,7 +956,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected ensureLive(native: string): LiveState {
     let state = this.live.get(native)
     if (!state) {
-      state = { status: 'idle', turnInFlight: false, openTools: [], toolSeq: 0 }
+      state = {
+        status: 'idle',
+        turnInFlight: false,
+        openTools: [],
+        toolSeq: 0,
+        pendingPrompts: new Map(),
+        tracker: this.adapter ? createTurnTracker(this.adapter) : undefined,
+      }
       this.live.set(native, state)
     }
     return state
@@ -985,11 +1108,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         `[herdr] apply ${this.harnessId} room=${nativeOrRoom} native=${native} known=${String(known)} status=${frame.status}`,
       )
     }
-    const statusEvent: HarnessEvent = {
+    const statusEvent: HarnessStatusFrame = {
       type: 'status',
       sessionId: this.sid(native),
       status: frame.status,
       since: frame.since,
+      source: 'herdr',
     }
     if (!known) {
       // N2: do not mint a ghost LiveState for a room this driver has not
@@ -1014,6 +1138,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.blocked = true
       state.turnInFlight = true
       this.setStatus(native, 'active')
+      const pending = state.tracker?.pendingPromptIds() ?? []
+      if (pending.length > 0) {
+        statusEvent.promptId = pending[0]
+        statusEvent.phase = 'prompt'
+      }
+      this.onHerdrBlocked(native)
     } else {
       state.blocked = false
       // N4: one flicker of idle must not end a live turn. Debounce unless
@@ -1063,10 +1193,26 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.openTools = carried.openTools
       state.toolSeq = carried.toolSeq
       state.systemPromptApplied = carried.systemPromptApplied
+      state.tracker = carried.tracker
+      state.pendingPrompts = carried.pendingPrompts
+      state.turns = carried.turns
+      state.lastStoreChangeAt = carried.lastStoreChangeAt
+      state.claimAt = carried.claimAt
+      state.claimTurns = carried.claimTurns
       if (carried.quietTimer) {
         clearTimeout(carried.quietTimer)
         carried.quietTimer = undefined
       }
+      if (carried.staleTimer) {
+        clearTimeout(carried.staleTimer)
+        carried.staleTimer = undefined
+      }
+      if (carried.transcriptHoldTimer) {
+        clearTimeout(carried.transcriptHoldTimer)
+        carried.transcriptHoldTimer = undefined
+      }
+      carried.transcriptOff?.()
+      carried.transcriptOff = undefined
       if (state.turnInFlight) this.armQuietWindow(next)
       this.live.delete(previous)
     }
@@ -1094,6 +1240,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     state.turnInFlight = true
     this.armQuietWindow(native)
     this.setStatus(native, 'active')
+    this.ensureTranscriptSub(native)
   }
 
   /**
@@ -1111,6 +1258,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     if (!state.turnInFlight && !always) return
     state.turnInFlight = false
+    state.claimAt = undefined
+    state.claimTurns = undefined
     state.herdrStatus = undefined
     state.herdrSince = undefined
     if (state.herdrIdleTimer) {
@@ -1119,6 +1268,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     this.emit(native, { type: 'turn-complete', sessionId: this.sid(native), stopReason })
     this.setStatus(native, 'idle')
+    this.scheduleTranscriptDrop(native)
   }
 
   /**
@@ -1141,6 +1291,155 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.endTurn(native, 'quiet-timeout')
     }, this.turnQuietMs)
     state.quietTimer.unref()
+  }
+
+  /**
+   * Lane A2 fills this: herdr `blocked` + screen capture → permission prompt.
+   * Hook-free AskUserQuestion is already handled by the transcript tracker.
+   */
+  protected onHerdrBlocked(_native: string): void {
+    /* A2 */
+  }
+
+  protected ensureTranscriptSub(native: string): void {
+    if (!this.deps.transcript) return
+    const state = this.ensureLive(native)
+    if (state.transcriptHoldTimer) {
+      clearTimeout(state.transcriptHoldTimer)
+      state.transcriptHoldTimer = undefined
+    }
+    if (state.transcriptOff) return
+    state.transcriptOff = this.deps.transcript.subscribe(this.sid(native), (f) =>
+      this.onTranscriptFrame(native, f),
+    )
+  }
+
+  protected scheduleTranscriptDrop(native: string): void {
+    const state = this.live.get(native)
+    if (!state?.transcriptOff) return
+    if ((this.sessionSinks.get(native)?.size ?? 0) > 0) return
+    if (state.transcriptHoldTimer) clearTimeout(state.transcriptHoldTimer)
+    state.transcriptHoldTimer = setTimeout(() => {
+      state.transcriptHoldTimer = undefined
+      state.transcriptOff?.()
+      state.transcriptOff = undefined
+    }, TRANSCRIPT_HOLD_MS)
+    state.transcriptHoldTimer.unref?.()
+  }
+
+  protected onTranscriptFrame(native: string, f: TranscriptWsFrame): void {
+    const state = this.ensureLive(native)
+    const sessionId = this.sid(native)
+    if (f.from === 0) {
+      state.turns = f.turns.slice()
+    } else {
+      const prev = state.turns ?? []
+      state.turns = [...prev.slice(0, f.from), ...f.turns]
+    }
+    const full = state.turns
+    const event: HarnessTranscriptEvent = {
+      type: 'transcript',
+      sessionId,
+      rev: f.rev,
+      from: f.from,
+      total: f.total,
+      turns: f.turns,
+      command: f.command,
+    }
+    if (f.truncatedBefore) event.truncatedBefore = true
+    if (f.from === 0) {
+      const ctx = overlaySessionContext(sessionId, full, f.command)
+      event.contextWindow = ctx.contextWindow
+      event.compactAt = ctx.compactAt
+      event.contextSource = ctx.contextSource
+    }
+    this.emit(native, event)
+
+    state.lastStoreChangeAt = this.now()
+    state.staleIdle = false
+    const edges = state.tracker?.apply(full, f.command)
+    // Un-echoed explicit claim: has the store advanced past it yet?
+    if (state.turnInFlight && state.claimAt !== undefined) {
+      const last = full[full.length - 1]
+      const echoed =
+        state.claimTurns !== undefined
+          ? full.length > state.claimTurns
+          : last !== undefined && (last.role === 'user' || last.complete !== true)
+      if (echoed) {
+        state.claimAt = undefined
+        state.claimTurns = undefined
+      }
+    }
+    const claimPending = state.turnInFlight && state.claimAt !== undefined
+    if (edges?.status) {
+      const statusEvent: HarnessStatusFrame = {
+        type: 'status',
+        sessionId,
+        status: edges.status.status,
+        since: this.now(),
+        source: 'transcript',
+      }
+      if (edges.status.phase) statusEvent.phase = edges.status.phase
+      if (edges.status.tool) statusEvent.tool = edges.status.tool
+      if (edges.status.promptId) statusEvent.promptId = edges.status.promptId
+      // While an explicit claim is un-echoed the tracker describes the previous
+      // turn: forward its status frame (clients see "idle" briefly is wrong too,
+      // so suppress an idle) but never release the lock from it.
+      if (!(claimPending && edges.status.status === 'idle')) this.emit(native, statusEvent)
+      if (edges.status.status === 'working') {
+        state.turnInFlight = true
+        this.armQuietWindow(native)
+      } else if (!claimPending) {
+        state.turnInFlight = false
+      }
+    }
+    if (edges?.turnCompleted && !claimPending) this.endTurn(native, 'end-turn', true)
+    for (const p of edges?.promptsOpened ?? []) {
+      state.pendingPrompts.set(p.promptId, { toolName: p.toolName, questions: p.questions })
+      this.emit(native, {
+        type: 'prompt',
+        sessionId,
+        promptId: p.promptId,
+        kind: 'ask-user',
+        toolName: p.toolName,
+        questions: p.questions,
+      })
+    }
+    for (const p of edges?.promptsResolved ?? []) {
+      const prev = state.pendingPrompts.get(p.promptId)
+      state.pendingPrompts.delete(p.promptId)
+      this.emit(native, {
+        type: 'prompt',
+        sessionId,
+        promptId: p.promptId,
+        kind: 'ask-user',
+        toolName: prev?.toolName ?? '',
+        questions: prev?.questions ?? [],
+        resolved: { at: this.now(), ...(p.answerText ? { answerText: p.answerText } : {}) },
+      })
+    }
+    this.armStaleTimer(native)
+  }
+
+  protected armStaleTimer(native: string): void {
+    const state = this.ensureLive(native)
+    if (state.staleTimer) clearTimeout(state.staleTimer)
+    state.staleTimer = setTimeout(() => {
+      state.staleTimer = undefined
+      if (state.tracker?.inFlight() !== true) return
+      const last = state.turns?.[state.turns.length - 1]
+      if (last?.tools?.some((t) => t.status === 'running')) return
+      this.emit(native, {
+        type: 'status',
+        sessionId: this.sid(native),
+        status: 'idle',
+        since: this.now(),
+        source: 'transcript',
+      })
+      state.staleIdle = true
+      this.endTurn(native, 'stale')
+    }, STALE_TURN_MS)
+    state.staleTimer.unref?.()
   }
 
   /**

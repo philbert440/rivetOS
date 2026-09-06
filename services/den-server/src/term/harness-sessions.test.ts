@@ -8,6 +8,7 @@ import {
   describeKimiSession,
   describeDshSession,
   claudeTurnsFromLines,
+  grokTurnsFromLines,
   listHarnessSessions,
   harnessSessionExists,
   readGrokTranscript,
@@ -322,6 +323,62 @@ describe('listHarnessSessions', () => {
     process.env.HERMES_HOME = base
     const tx = await readHermesTranscript('sess_box')
     expect(tx.turns.map((t) => t.text)).toEqual(['hi', 'The reply.'])
+    delete process.env.HERMES_HOME
+  })
+
+  it('pairs hermes tool_calls with tool rows and stamps complete from finish_reason', async () => {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return
+    }
+    const base = mkdtempSync(join(tmpdir(), 'hermes-tools-'))
+    dirs.push(base)
+    const tools = JSON.stringify([
+      {
+        id: 'call_1',
+        type: 'function',
+        function: { name: 'read_file', arguments: '{"path":"a.ts"}' },
+      },
+    ]).replace(/'/g, "''")
+    const db = new DatabaseSync(join(base, 'state.db'))
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
+      CREATE TABLE messages (
+        session_id TEXT, role TEXT, content TEXT, tool_call_id TEXT, tool_calls TEXT,
+        tool_name TEXT, timestamp INTEGER, finish_reason TEXT, reasoning TEXT,
+        reasoning_content TEXT, active INTEGER, compacted INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess_tools', 1000, 2000);
+      INSERT INTO messages VALUES ('sess_tools','user','read a.ts',NULL,NULL,NULL,1000,NULL,NULL,NULL,1,0);
+      INSERT INTO messages VALUES ('sess_tools','assistant','','call_1','${tools}','read_file',1001,'tool_calls','looking it up',NULL,1,0);
+    `)
+    db.close()
+    process.env.HERMES_HOME = base
+    const running = await readHermesTranscript('sess_tools')
+    const asst = running.turns.find((t) => t.role === 'assistant')
+    expect(asst?.complete).toBeUndefined()
+    expect(asst?.stopReason).toBe('tool_use')
+    expect(asst?.thinking).toBe('looking it up')
+    expect(asst?.tools).toEqual([
+      { name: 'read_file', status: 'running', id: 'call_1', args: { path: 'a.ts' } },
+    ])
+
+    const db2 = new DatabaseSync(join(base, 'state.db'))
+    db2.exec(`
+      INSERT INTO messages VALUES ('sess_tools','tool','export const a = 1','call_1',NULL,'read_file',1002,NULL,NULL,NULL,1,0);
+      INSERT INTO messages VALUES ('sess_tools','assistant','it exports a',NULL,NULL,NULL,1003,'stop',NULL,NULL,1,0);
+    `)
+    db2.close()
+    const full = await readHermesTranscript('sess_tools')
+    const last = full.turns[full.turns.length - 1]
+    expect(last?.role).toBe('assistant')
+    expect(last?.text).toBe('it exports a')
+    expect(last?.stopReason).toBe('end_turn')
+    expect(last?.lastBlock).toBe('text')
+    expect(last?.complete).toBe(true)
+    expect(last?.tools?.[0]?.status).toBe('done')
     delete process.env.HERMES_HOME
   })
 
@@ -677,8 +734,79 @@ describe('readHarnessTranscript', () => {
     expect(t.command).toBe('grok')
     expect(t.turns).toEqual([
       { role: 'user', text: 'plan the migrate' },
-      { role: 'assistant', text: 'ok, planning' },
+      {
+        role: 'assistant',
+        text: 'ok, planning',
+        lastBlock: 'text',
+        stopReason: 'end_turn',
+        complete: true,
+      },
     ])
+  })
+
+  it('folds grok tool_calls/tool_result/reasoning and stamps complete only on the final text line', () => {
+    const lines: Record<string, unknown>[] = [
+      { type: 'system', content: 'boot' },
+      {
+        type: 'user',
+        content: [{ type: 'text', text: 'read the file' }],
+        prompt_index: 0,
+      },
+      {
+        type: 'user',
+        content: [{ type: 'text', text: 'ignore me' }],
+        synthetic_reason: 'system_reminder',
+        prompt_index: 0,
+      },
+      {
+        type: 'reasoning',
+        id: 'rs_1',
+        summary: [{ type: 'summary_text', text: 'need the contents' }],
+        encrypted_content: 'enc',
+        status: 'completed',
+      },
+      {
+        type: 'assistant',
+        content: 'opening it',
+        tool_calls: [
+          {
+            id: 'call-abc-0',
+            name: 'read_file',
+            arguments: '{"target_file":"src/a.ts"}',
+          },
+        ],
+        model_id: 'grok-4.6',
+      },
+      { type: 'tool_result', tool_call_id: 'call-abc-0', content: 'export const a = 1' },
+      { type: 'assistant', content: 'it exports a', model_id: 'grok-4.6' },
+    ]
+    const mid = grokTurnsFromLines(lines.slice(0, 5))
+    const midAsst = mid.find((t) => t.role === 'assistant')
+    expect(midAsst?.complete).toBeUndefined()
+    expect(midAsst?.stopReason).toBe('tool_use')
+    expect(midAsst?.tools).toEqual([
+      { name: 'read_file', status: 'running', id: 'call-abc-0', args: { target_file: 'src/a.ts' } },
+    ])
+    expect(midAsst?.thinking).toBe('need the contents')
+
+    const paired = grokTurnsFromLines(lines.slice(0, 6))
+    expect(paired.find((t) => t.role === 'assistant')?.tools?.[0]?.status).toBe('done')
+    expect(paired.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+
+    const full = grokTurnsFromLines(lines)
+    const last = full[full.length - 1]
+    expect(last?.role).toBe('assistant')
+    expect(last?.text).toBe('opening it\n\nit exports a')
+    expect(last?.stopReason).toBe('end_turn')
+    expect(last?.lastBlock).toBe('text')
+    expect(last?.complete).toBe(true)
+    expect(last?.tools?.[0]).toMatchObject({
+      id: 'call-abc-0',
+      name: 'read_file',
+      status: 'done',
+    })
+    expect(last?.model).toBe('grok-4.6')
+    expect(full.some((t) => t.text === 'ignore me')).toBe(false)
   })
 
   it('returns empty for unknown session ids', async () => {

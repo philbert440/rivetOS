@@ -1,4 +1,4 @@
-import type { HarnessId, HarnessTranscriptTurn } from '@rivetos/types'
+import type { HarnessAskQuestion, HarnessId, HarnessTranscriptTurn } from '@rivetos/types'
 
 /** Resolved on-disk store the transcript watcher / readers parse. */
 export interface HarnessStoreRef {
@@ -24,5 +24,12 @@ export interface HarnessAdapter {
   promptToolNames: readonly string[]
   /** Honest per-harness matrix. liveTurn = the store exposes in-flight turns with tools/thinking. */
   capabilities(): { liveTurn: boolean; prompts: boolean; approvals: boolean }
-  /** Part 2 adds: deriveStatus, detectPrompts, answerKeys, permissionDialog. Leave the interface open for them. */
+  /**
+   * Optional keystroke translation for answering a store-sourced prompt (lane A2).
+   * Absent → the driver falls back to composing a text answer and PTY-injecting it.
+   */
+  answerKeys?(
+    prompt: { promptId: string; toolName: string; questions: HarnessAskQuestion[] },
+    answers: Array<{ question: number; labels: string[]; other?: string }>,
+  ): Uint8Array[]
 }

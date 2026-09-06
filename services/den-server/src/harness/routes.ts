@@ -16,7 +16,9 @@
  *   POST /api/harness-sessions/:enc/turns            sendUserTurn
  *   POST /api/harness-sessions/:enc/interrupt        interrupt
  *   POST /api/harness-sessions/:enc/approvals/:reqId resolveApproval
+ *   POST /api/harness-sessions/:enc/prompts/:promptId answerPrompt
  *   WS   /api/harness-sessions/ws?session=<enc>      subscribe stream
+ *        client → server: {type:'sync'} re-snapshots the transcript watcher
  *
  * Attachment staging for those turns is the third, single-route family, in
  * `uploads.ts` (`POST /api/uploads`): it needs the node's state dir rather
@@ -90,6 +92,20 @@ export interface HarnessTranscriptSource {
   transcript(sessionId: SessionId): Promise<{ turns: HarnessTranscriptTurn[] }>
 }
 
+/** Feature-detected: answer an AskUserQuestion prompt (lane A part 2). */
+export interface HarnessPromptSource {
+  answerPrompt(
+    sessionId: SessionId,
+    promptId: string,
+    answers: Array<{ question: number; labels: string[]; other?: string }>,
+  ): Promise<void>
+}
+
+/** Feature-detected: re-snapshot the per-session transcript watcher. */
+export interface HarnessSyncSource {
+  syncTranscript(sessionId: SessionId): void
+}
+
 /**
  * Drivers that can destroy a session they created (feature-detected). The
  * `HarnessDriver` contract has no delete; the control plane needs one exactly
@@ -106,6 +122,7 @@ const ERROR_STATUS: Record<string, number> = {
   session_id_collision: 409,
   capability_unsupported: 501,
   unknown_approval: 404,
+  unknown_prompt: 404,
   turn_in_flight: 409,
 }
 
@@ -121,6 +138,22 @@ const json = (res: ServerResponse, code: number, body: unknown): boolean => {
   res.writeHead(code, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
   return true
+}
+
+function isPromptAnswers(
+  v: unknown,
+): v is Array<{ question: number; labels: string[]; other?: string }> {
+  if (!Array.isArray(v)) return false
+  return v.every(
+    (a) =>
+      a !== null &&
+      typeof a === 'object' &&
+      typeof (a as { question?: unknown }).question === 'number' &&
+      Array.isArray((a as { labels?: unknown }).labels) &&
+      (a as { labels: unknown[] }).labels.every((l) => typeof l === 'string') &&
+      ((a as { other?: unknown }).other === undefined ||
+        typeof (a as { other?: unknown }).other === 'string'),
+  )
 }
 
 function fail(res: ServerResponse, err: unknown): boolean {
@@ -650,6 +683,34 @@ export function createHarnessRoutes(opts: {
       }
     }
 
+    if (action === 'prompts') {
+      if (!requestId) return json(res, 404, { error: 'promptId is required' })
+      const source = driver as unknown as Partial<HarnessPromptSource>
+      if (typeof source.answerPrompt !== 'function') {
+        return fail(
+          res,
+          new HarnessError(
+            'capability_unsupported',
+            `${driver.harnessId} does not surface prompts`,
+            { harnessId: driver.harnessId, sessionId },
+          ),
+        )
+      }
+      const body = await parseJsonBody(req, res)
+      if (!body) return true
+      if (!isPromptAnswers(body.answers)) {
+        return json(res, 400, {
+          error: 'answers must be {question:number; labels:string[]; other?:string}[]',
+        })
+      }
+      try {
+        await source.answerPrompt(sessionId, requestId, body.answers)
+        return json(res, 202, { ok: true, sessionId, promptId: requestId, ...redirect })
+      } catch (err) {
+        return fail(res, err)
+      }
+    }
+
     return json(res, 404, { error: 'not found' })
   }
 
@@ -763,6 +824,18 @@ export function createHarnessRoutes(opts: {
             // a rotation mid-stream never costs the client its socket
             // (§ Contract semantics, "Subscriptions survive rotation").
             attach(ws, (sink) => registry.subscribeSession(target.sessionId, sink))
+            ws.on('message', (data: Buffer | string) => {
+              let msg: unknown
+              try {
+                msg = JSON.parse(typeof data === 'string' ? data : data.toString('utf8'))
+              } catch {
+                return
+              }
+              if (!msg || typeof msg !== 'object') return
+              if ((msg as { type?: unknown }).type !== 'sync') return
+              const sync = target.driver as unknown as Partial<HarnessSyncSource>
+              sync.syncTranscript?.(target.sessionId)
+            })
           })()
         })
         return true

@@ -197,13 +197,14 @@ den dispatches by literal path prefixes (no dynamic segments). Contract names ma
 | `POST …/turns`                 | `POST /api/harness-sessions/:enc/turns`                |
 | `POST …/interrupt`             | `POST /api/harness-sessions/:enc/interrupt`            |
 | `POST …/approvals/:requestId`  | `POST /api/harness-sessions/:enc/approvals/:requestId` |
+| `POST …/prompts/:promptId`     | `POST /api/harness-sessions/:enc/prompts/:promptId`    |
 | `GET …/transcript`             | `GET /api/harness-sessions/:enc/transcript`            |
 | `GET …/events`                 | `WS /api/harness-sessions/ws?session=<enc>`            |
 | `POST /uploads`                | `POST /api/uploads?name=<filename>[&mime=<type>]`      |
 
 **Why `/api/harness-sessions` not `/api/sessions`:** `/api/sessions` is owned by the gateway chat channel handler. **Why WS on query string:** upgrade mounts match exact paths.
 
-**Stream continuity:** `subscribe` is an at-most-once live tail from attach time, no replay. Clients hard-resync from transcript on every (re)connect.
+**Stream continuity:** `subscribe` is an at-most-once live tail from attach time, no replay. Clients hard-resync from transcript on every (re)connect. The per-session socket also carries `transcript` / `status` / `prompt` frames and accepts `{type:'sync'}` (see `services/den-server/docs/harness-control-plane.md`). The transcript file is the source of truth for the in-flight turn on stores that expose it; hook and herdr events refine status.
 
 ### Clients on the plane
 
