@@ -97,6 +97,7 @@ import {
   type UserTurn,
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
+import type { TranscriptWatcher } from '../term/transcript-watch.js'
 import { isBareNativeUuid } from './alias.js'
 import {
   capabilityDiff,
@@ -190,6 +191,10 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   sheetReaders?: SheetReaders
   /** Full sheet factory — tests that want a fake sheet skip the built-in. */
   sheet?: () => ModelSheet
+  /**
+   * per-session transcript frames from the file watcher; part 2 consumes it
+   */
+  transcript?: Pick<TranscriptWatcher, 'subscribe' | 'sync'>
 }
 
 /** Per-driver identity, supplied by the subclass's constructor. */

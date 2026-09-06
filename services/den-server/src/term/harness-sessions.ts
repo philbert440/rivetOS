@@ -15,13 +15,26 @@ import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
-import { createRequire } from 'node:module'
-import {
-  splitHermesReasoning,
-  type HarnessTranscriptTool,
-  type HarnessTranscriptTurn,
-} from '@rivetos/types'
+import { type HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
+import {
+  adapterForCommand,
+  claudeTurnsFromLines,
+  grokPickTurn,
+  kimiTurnsFromLines,
+  readHermesTurns,
+} from '../harness/adapters/index.js'
+import { extractTurnText } from '../harness/adapters/parse-helpers.js'
+import type { HarnessStoreRef } from '../harness/adapters/types.js'
+import { hermesDbPath, openHermesDb } from './hermes-db.js'
+
+export {
+  claudeTurnsFromLines,
+  grokPickTurn,
+  kimiTurnsFromLines,
+  readHermesTurns,
+} from '../harness/adapters/index.js'
+export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
 /** Cap full transcript reads — multi-MB jsonl is real; chat UI only needs turns. */
 export const DEFAULT_TRANSCRIPT_MAX_BYTES = 8 * 1024 * 1024
@@ -281,41 +294,6 @@ export async function describeGrokSession(id: string): Promise<HarnessSession | 
 }
 
 // ---- Hermes: sessions live in a sqlite DB, not files (~/.hermes/state.db) ----
-
-/** ~/.hermes/state.db (respects HERMES_HOME). */
-function hermesDbPath(): string {
-  const base = process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes')
-  return join(base, 'state.db')
-}
-
-interface SqliteRow {
-  [k: string]: unknown
-}
-interface SqliteStmt {
-  all(...params: unknown[]): SqliteRow[]
-  get(...params: unknown[]): SqliteRow | undefined
-}
-interface SqliteDb {
-  prepare(sql: string): SqliteStmt
-  close(): void
-}
-const require_ = createRequire(import.meta.url)
-
-/** Open the hermes DB read-only. Returns null if the file or node:sqlite
- *  (Node ≥22.5, still experimental) is unavailable — the drawer degrades to
- *  empty for hermes rather than erroring. */
-function openHermesDb(): SqliteDb | null {
-  const dbPath = hermesDbPath()
-  if (!existsSync(dbPath)) return null
-  try {
-    const { DatabaseSync } = require_('node:sqlite') as {
-      DatabaseSync: new (p: string, o?: { readOnly?: boolean }) => SqliteDb
-    }
-    return new DatabaseSync(dbPath, { readOnly: true })
-  } catch {
-    return null
-  }
-}
 
 /** hermes timestamps may be epoch ms, epoch seconds, or an ISO string. */
 function toEpochMs(v: unknown): number {
@@ -882,33 +860,6 @@ export async function listHarnessSessions(
  *  source of truth for server and clients. */
 export type HarnessTurn = HarnessTranscriptTurn
 
-/**
- * Claude Code message.usage → MessageUsage. promptTokens includes cache
- * (input + cache_read + cache_creation), matching den-hook readTurnUsage.
- */
-function extractClaudeUsage(
-  msg: { usage?: unknown; model?: unknown } | undefined,
-): Pick<HarnessTurn, 'usage' | 'model'> {
-  const out: Pick<HarnessTurn, 'usage' | 'model'> = {}
-  if (typeof msg?.model === 'string' && msg.model.trim()) out.model = msg.model.trim()
-  const u = msg?.usage
-  if (!u || typeof u !== 'object') return out
-  const o = u as Record<string, unknown>
-  const input = typeof o.input_tokens === 'number' ? o.input_tokens : 0
-  const cacheRead = typeof o.cache_read_input_tokens === 'number' ? o.cache_read_input_tokens : 0
-  const cacheCreate =
-    typeof o.cache_creation_input_tokens === 'number' ? o.cache_creation_input_tokens : 0
-  const output = typeof o.output_tokens === 'number' ? o.output_tokens : 0
-  const prompt = input + cacheRead + cacheCreate
-  if (prompt <= 0 && output <= 0) return out
-  out.usage = {
-    promptTokens: prompt > 0 ? prompt : input,
-    completionTokens: output,
-    cachedTokens: cacheRead,
-  }
-  return out
-}
-
 export interface HarnessTranscript {
   /** session id that was requested */
   id: string
@@ -917,58 +868,6 @@ export interface HarnessTranscript {
   turns: HarnessTurn[]
   /** Present when the on-disk store exceeded the parse window (tail only). */
   truncated?: true
-}
-
-/**
- * Pull display text out of a message content value (string or content blocks).
- * Keeps `text` blocks; drops thinking / tool_use / tool_result. Returns null
- * for turns with no human-visible text.
- */
-function extractTurnText(content: unknown, role: 'user' | 'assistant'): string | null {
-  let text = ''
-  if (typeof content === 'string') {
-    text = content
-  } else if (Array.isArray(content)) {
-    text = content
-      .map((b) => {
-        if (!b || typeof b !== 'object') return ''
-        const block = b as { type?: unknown; text?: unknown }
-        if (block.type !== 'text' || typeof block.text !== 'string') return ''
-        return block.text
-      })
-      .filter(Boolean)
-      .join('\n')
-  }
-  text = text.trim()
-  if (!text) return null
-  // Skip harness-injected wrappers that aren't real conversational content
-  // (mirrors Android SessionTranscript.extractText). <task-notification> is
-  // Claude Code's background-task completion notice — it reads like tool
-  // output and must never render as something the user typed.
-  if (
-    role === 'user' &&
-    (text.startsWith('<command-') ||
-      text.startsWith('<local-command') ||
-      text.startsWith('<system-reminder') ||
-      text.startsWith('<task-notification') ||
-      text.startsWith('<user_info') ||
-      text.startsWith('Caveat:'))
-  ) {
-    return null
-  }
-  // grok wraps the actual user message in <user_query>…</user_query>
-  if (role === 'user' && text.startsWith('<user_query>')) {
-    const end = text.indexOf('</user_query>')
-    text = (
-      end >= 0 ? text.slice('<user_query>'.length, end) : text.slice('<user_query>'.length)
-    ).trim()
-    if (!text) return null
-  }
-  if (role === 'assistant') {
-    text = splitHermesReasoning(text).text
-    if (!text) return null
-  }
-  return text
 }
 
 async function parseJsonlObjects(
@@ -1034,139 +933,6 @@ function withTruncated<T extends { turns: HarnessTurn[] }>(
   return truncated ? { ...t, truncated: true } : t
 }
 
-/** Keep the recent end of a long thinking trace — the UI collapses it anyway
- *  and whole traces can run to tens of KB per turn. */
-const THINKING_TAIL_CHARS = 8_000
-
-/** Summarize tool input for turn display: primitives only, strings capped —
- *  titles need hints (file_path, command), never payloads or secrets. Local
- *  twin of the live bridge's summarizeBridgeArgs (core is not a dependency
- *  of den-server, and the cap policy must match the wire's expectations). */
-function summarizeTurnArgs(raw: unknown): Record<string, unknown> | undefined {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
-  const out: Record<string, unknown> = {}
-  let keys = 0
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (keys >= 12) break
-    if (typeof v === 'string') {
-      out[k] = v.length > 200 ? v.slice(0, 200) + '…' : v
-    } else if (typeof v === 'number' || typeof v === 'boolean') {
-      out[k] = v
-    } else {
-      continue
-    }
-    keys++
-  }
-  return keys > 0 ? out : undefined
-}
-
-/**
- * Fold Claude Code store lines into LOGICAL turns. One agent turn spans many
- * store lines — one 'assistant' line per committed content block, with
- * 'user'-role tool_result lines interleaved. Only a REAL user text message
- * ends the assistant turn; everything between two user messages coalesces
- * into ONE assistant turn carrying its text, thinking tail, and tool stack
- * (matching what the live bridge streams, so a resynced transcript and a
- * watched-live one look identical).
- */
-function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
-  const turns: HarnessTurn[] = []
-  // tool_use id → entry on the current turn; results arrive on later lines
-  let toolsById = new Map<string, HarnessTranscriptTool>()
-  let cur: HarnessTurn | null = null
-  let outputTokens = 0
-  let thinking = ''
-
-  const finishAssistant = (): void => {
-    if (cur) {
-      if (thinking) {
-        cur.thinking =
-          thinking.length > THINKING_TAIL_CHARS
-            ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
-            : thinking
-      }
-      if (cur.tools && cur.tools.length === 0) delete cur.tools
-      if (cur.usage) cur.usage.completionTokens = outputTokens
-      // a turn with no visible content at all (blocks not flushed yet) is noise
-      if (cur.text || cur.thinking || cur.tools) turns.push(cur)
-    }
-    cur = null
-    outputTokens = 0
-    thinking = ''
-    toolsById = new Map()
-  }
-
-  for (const obj of lines) {
-    if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
-    if (obj.type !== 'user' && obj.type !== 'assistant') continue
-    const msg = obj.message as { content?: unknown; usage?: unknown; model?: unknown } | undefined
-    const content = msg?.content
-
-    if (obj.type === 'user') {
-      // Tool results ride user-role lines: they update the pending tool's
-      // status but must never render as something the user typed.
-      if (Array.isArray(content)) {
-        for (const b of content) {
-          if (!b || typeof b !== 'object') continue
-          const block = b as { type?: unknown; tool_use_id?: unknown; is_error?: unknown }
-          if (block.type !== 'tool_result') continue
-          const entry =
-            typeof block.tool_use_id === 'string' ? toolsById.get(block.tool_use_id) : undefined
-          if (entry) entry.status = block.is_error === true ? 'error' : 'done'
-        }
-      }
-      const text = extractTurnText(content, 'user')
-      if (text) {
-        finishAssistant()
-        turns.push({ role: 'user', text })
-      }
-      continue
-    }
-
-    // assistant line — extend the current turn
-    cur ??= { role: 'assistant', text: '', tools: [] }
-    const blocks = Array.isArray(content)
-      ? content
-      : typeof content === 'string'
-        ? [{ type: 'text', text: content }]
-        : []
-    for (const b of blocks) {
-      if (!b || typeof b !== 'object') continue
-      const block = b as {
-        type?: unknown
-        text?: unknown
-        thinking?: unknown
-        id?: unknown
-        name?: unknown
-        input?: unknown
-      }
-      if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-        cur.text = cur.text ? cur.text + '\n\n' + block.text.trim() : block.text.trim()
-      } else if (block.type === 'thinking') {
-        // stores write the trace as `thinking`; tolerate `text` variants
-        const t = typeof block.thinking === 'string' ? block.thinking : block.text
-        if (typeof t === 'string') thinking += t
-      } else if (block.type === 'tool_use' && typeof block.name === 'string') {
-        const entry: HarnessTranscriptTool = { name: block.name, status: 'running' }
-        const args = summarizeTurnArgs(block.input)
-        if (args) entry.args = args
-        if (typeof block.id === 'string') toolsById.set(block.id, entry)
-        cur.tools?.push(entry)
-      }
-    }
-    // usage: output tokens SUM across the turn's lines; prompt/cached/model
-    // take the last line that carries them (final context size, den-hook parity)
-    const stats = extractClaudeUsage(msg)
-    if (stats.usage) {
-      outputTokens += stats.usage.completionTokens
-      cur.usage = stats.usage
-    }
-    if (stats.model) cur.model = stats.model
-  }
-  finishAssistant()
-  return turns
-}
-
 async function findClaudeJsonl(id: string): Promise<string | undefined> {
   const dir = claudeProjectsDir()
   let slugs: string[]
@@ -1208,36 +974,6 @@ async function findGrokChatHistory(id: string): Promise<string | undefined> {
     }
   }
   return best?.path
-}
-
-function readHermesTurns(id: string): HarnessTurn[] {
-  const db = openHermesDb()
-  if (!db) return []
-  try {
-    const rows = db
-      .prepare(
-        `SELECT role, content FROM messages
-         WHERE session_id = ? AND role IN ('user', 'assistant')
-         ORDER BY timestamp ASC`,
-      )
-      .all(id)
-    const out: HarnessTurn[] = []
-    for (const r of rows) {
-      const role = r.role === 'assistant' ? 'assistant' : r.role === 'user' ? 'user' : null
-      if (!role) continue
-      const text = extractTurnText(r.content, role)
-      if (text) out.push({ role, text })
-    }
-    return out
-  } catch {
-    return []
-  } finally {
-    try {
-      db.close()
-    } catch {
-      /* ignore */
-    }
-  }
 }
 
 /**
@@ -1340,135 +1076,6 @@ export function readHermesTranscript(id: string): Promise<HarnessTranscript> {
 }
 
 /**
- * Fold kimi `wire.jsonl` records into LOGICAL turns.
- *
- * kimi's transcript is an event log of the agent loop, not a message list, and
- * the CLI reconstructs the message view from it at read time. The record
- * semantics are kimi's own (`packages/agent-core` context restore, mirrored in
- * its daemon REST reducer) and the rivet-memory backfill tool in this repo
- * already relies on the same ones:
- *
- *   - `context.append_message`  — a real message. `origin.kind` says whose:
- *     `user` is a human turn, everything else (`injection` permission banners
- *     and todo reminders, `skill_activation`, `background_task`,
- *     `compaction_summary`) is kimi talking to itself.
- *   - `context.append_loop_event` `step.begin` — a new assistant step; later
- *     `content.part` (`text` / `think`) and `tool.call` events on that step
- *     grow the same assistant message, and `step.end` closes it with `usage`.
- *   - `context.append_loop_event` `tool.result` — pairs to a `tool.call` by
- *     `toolCallId` and carries a real `isError` flag, so unlike the den live
- *     stream a kimi transcript CAN report a failed tool honestly.
- *
- * Only a real user message ends the assistant turn, so everything between two
- * human turns coalesces into one — the same folding rule the Claude reader
- * uses, so the two harnesses' transcripts render identically.
- */
-function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
-  const turns: HarnessTurn[] = []
-  let toolsById = new Map<string, HarnessTranscriptTool>()
-  let cur: HarnessTurn | null = null
-  let thinking = ''
-  let prompt = 0
-  let completion = 0
-  let cached = 0
-  let model = ''
-
-  const finishAssistant = (): void => {
-    if (cur) {
-      if (thinking) {
-        cur.thinking =
-          thinking.length > THINKING_TAIL_CHARS
-            ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
-            : thinking
-      }
-      if (cur.tools && cur.tools.length === 0) delete cur.tools
-      if (prompt > 0 || completion > 0) {
-        cur.usage = { promptTokens: prompt, completionTokens: completion, cachedTokens: cached }
-      }
-      if (model) cur.model = model
-      if (cur.text || cur.thinking || cur.tools) turns.push(cur)
-    }
-    cur = null
-    thinking = ''
-    prompt = 0
-    completion = 0
-    cached = 0
-    toolsById = new Map()
-  }
-
-  for (const obj of lines) {
-    // The model actually serving the session — stamped on every llm.request,
-    // and the only place the transcript names it.
-    if (obj.type === 'llm.request' && typeof obj.model === 'string') model = obj.model
-
-    if (obj.type === 'context.append_message') {
-      const msg = obj.message as { role?: unknown; content?: unknown; origin?: unknown } | undefined
-      const origin = (msg?.origin ?? {}) as { kind?: unknown }
-      if (msg?.role !== 'user' || origin.kind !== 'user') continue
-      const text = extractTurnText(msg.content, 'user')
-      if (!text) continue
-      finishAssistant()
-      turns.push({ role: 'user', text })
-      continue
-    }
-
-    if (obj.type !== 'context.append_loop_event') continue
-    const event = obj.event as Record<string, unknown> | undefined
-    if (!event || typeof event !== 'object') continue
-
-    switch (event.type) {
-      case 'content.part': {
-        const part = event.part as { type?: unknown; text?: unknown; think?: unknown } | undefined
-        if (!part) break
-        cur ??= { role: 'assistant', text: '', tools: [] }
-        if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
-          cur.text = cur.text ? cur.text + '\n\n' + part.text.trim() : part.text.trim()
-        } else if (part.type === 'think' && typeof part.think === 'string') {
-          thinking += part.think
-        }
-        break
-      }
-      case 'tool.call': {
-        if (typeof event.name !== 'string') break
-        cur ??= { role: 'assistant', text: '', tools: [] }
-        const entry: HarnessTranscriptTool = { name: event.name, status: 'running' }
-        const args = summarizeTurnArgs(event.args)
-        if (args) entry.args = args
-        if (typeof event.toolCallId === 'string') toolsById.set(event.toolCallId, entry)
-        cur.tools?.push(entry)
-        break
-      }
-      case 'tool.result': {
-        const entry =
-          typeof event.toolCallId === 'string' ? toolsById.get(event.toolCallId) : undefined
-        if (!entry) break
-        const result = event.result as { isError?: unknown } | undefined
-        entry.status = result?.isError === true ? 'error' : 'done'
-        break
-      }
-      case 'step.end': {
-        // kimi's usage split: `inputOther` is the uncached prompt, and the two
-        // cache counters are prompt tokens too — summed the same way the Claude
-        // reader sums input + cache_read + cache_creation, so a token count
-        // means the same thing on both transcripts.
-        const usage = event.usage as Record<string, unknown> | undefined
-        if (!usage) break
-        const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-        const read = num(usage.inputCacheRead)
-        prompt += num(usage.inputOther) + read + num(usage.inputCacheCreation)
-        completion += num(usage.output)
-        cached += read
-        break
-      }
-      default:
-        break
-    }
-  }
-  finishAssistant()
-  return turns
-}
-
-/**
  * Kimi-only transcript read — the `kimi-code` driver's hard-resync source, and
  * the ONLY place a kimi assistant reply or thought is observable at all: its
  * `Stop` hook payload carries no reply text and no hook sees thinking, so the
@@ -1510,14 +1117,6 @@ export async function readGrokTranscript(id: string): Promise<HarnessTranscript>
   return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
 }
 
-function grokPickTurn(obj: Record<string, unknown>): HarnessTurn | null {
-  const type =
-    typeof obj.type === 'string' ? obj.type : typeof obj.role === 'string' ? obj.role : ''
-  if (type !== 'user' && type !== 'assistant') return null
-  const text = extractTurnText(obj.content, type)
-  return text ? { role: type, text } : null
-}
-
 /**
  * Parse a transcript from an ALREADY-RESOLVED store ref — the watcher's hot
  * path. Skips the per-parse store scan (findClaudeJsonl walks every project
@@ -1528,39 +1127,21 @@ export async function readHarnessStoreAt(
   ref: HarnessStoreRef,
   id: string,
 ): Promise<HarnessTranscript> {
-  if (ref.command === 'claude') {
+  const adapter = adapterForCommand(ref.command)
+  if (!adapter) return { id, command: '', turns: [] }
+  if (adapter.store.parseLines) {
     const parsed = await parseJsonlObjects(ref.path)
-    return withTruncated(
-      { id, command: 'claude', turns: claudeTurnsFromLines(parsed.objects) },
-      parsed.truncated,
-    )
+    const turns = adapter.store.parseLines(parsed.objects.map((o) => JSON.stringify(o)))
+    return withTruncated({ id, command: ref.command, turns }, parsed.truncated)
   }
-  if (ref.command === 'grok') {
-    const parsed = await parseJsonlTurns(ref.path, grokPickTurn)
-    return withTruncated({ id, command: 'grok', turns: parsed.turns }, parsed.truncated)
+  if (adapter.store.readTurns) {
+    const turns = await adapter.store.readTurns(ref, transcriptMaxBytes, denJoinKey(id))
+    return { id, command: ref.command, turns }
   }
-  if (ref.command === 'kimi') {
-    const parsed = await parseJsonlObjects(ref.path)
-    return withTruncated(
-      { id, command: 'kimi', turns: kimiTurnsFromLines(parsed.objects) },
-      parsed.truncated,
-    )
-  }
-  if (ref.command === 'dsh') {
-    // zstd transcript — no decompressor in this process. Empty is honest.
-    return { id, command: 'dsh', turns: [] }
-  }
-  // hermes reads by id rather than by path (one sqlite db holds every session)
-  return { id, command: 'hermes', turns: readHermesTurns(denJoinKey(id)) }
+  return { id, command: ref.command, turns: [] }
 }
 
 // ---- Store resolution for the transcript watcher ---------------------------
-
-export interface HarnessStoreRef {
-  command: 'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh'
-  /** The file to watch for changes (jsonl / chat_history / sqlite db). */
-  path: string
-}
 
 /**
  * Resolve which on-disk store file backs a session id — the watch target for

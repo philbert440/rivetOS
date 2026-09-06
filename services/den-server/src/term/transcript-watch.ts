@@ -49,6 +49,9 @@ export interface TranscriptWatcher {
   /** Re-emit a full snapshot for an already-watched session (a client lost
    *  a delta and asked to realign). No refcount change. */
   sync(session: string): void
+  /** watch(session) + add a per-session sink. Returned function removes the
+   *  sink then unwatch(session). Idempotent. */
+  subscribe(session: string, sink: (f: TranscriptWsFrame) => void): () => void
   close(): void
 }
 
@@ -73,6 +76,7 @@ interface Watched {
   wantSnapshot: boolean
   lastSize: number
   lastMtime: number
+  sinks: Set<(f: TranscriptWsFrame) => void>
 }
 
 /** Timing overrides — tests dial these down; production uses the defaults. */
@@ -113,6 +117,22 @@ export function createTranscriptWatcher(
     }
   }
 
+  const fanoutSinks = (s: Watched, frame: TranscriptWsFrame): void => {
+    for (const sink of [...s.sinks]) {
+      try {
+        sink(frame)
+      } catch (err) {
+        s.sinks.delete(sink)
+        console.error('[transcript-watch] dropping throwing sink', err)
+      }
+    }
+  }
+
+  const deliver = (s: Watched, frame: TranscriptWsFrame): void => {
+    emit(frame)
+    fanoutSinks(s, frame)
+  }
+
   const emitFrame = (
     session: string,
     s: Watched,
@@ -125,7 +145,7 @@ export function createTranscriptWatcher(
     s.sigs = turns.map((turn) => JSON.stringify(turn))
     s.command = command
     s.rev += 1
-    emit({
+    const frame: TranscriptWsFrame = {
       kind: 'transcript',
       session,
       rev: s.rev,
@@ -134,7 +154,8 @@ export function createTranscriptWatcher(
       total: turns.length,
       command,
       ...(truncated ? { truncatedBefore: true as const } : {}),
-    })
+    }
+    deliver(s, frame)
   }
 
   const emitDelta = (
@@ -297,70 +318,94 @@ export function createTranscriptWatcher(
     void parseAndEmit(session) // if a pass is running, this marks dirty
   }
 
-  return {
-    watch(session: string): void {
-      if (closed) return
-      // Guard the RESOLVED key, not the raw one: the store readers accept
-      // Claude's path-fallback capture key (`claude-code:<slug>/<uuid>`, which
-      // collapses to the uuid), so screening the raw string for `/` would
-      // silently ignore a shape they would happily serve. The subscription key
-      // stays the client's verbatim id — frames echo what was asked for.
-      const { native } = denSessionRef(session)
-      if (!native || native.includes('/') || native.includes('..')) return
-      const existing = watched.get(session)
-      if (existing) {
-        existing.refs += 1
-        // Late subscriber: emit a full snapshot so it seeds immediately.
-        emitSnapshot(session)
+  const watchSession = (session: string): void => {
+    if (closed) return
+    // Guard the RESOLVED key, not the raw one: the store readers accept
+    // Claude's path-fallback capture key (`claude-code:<slug>/<uuid>`, which
+    // collapses to the uuid), so screening the raw string for `/` would
+    // silently ignore a shape they would happily serve. The subscription key
+    // stays the client's verbatim id — frames echo what was asked for.
+    const { native } = denSessionRef(session)
+    if (!native || native.includes('/') || native.includes('..')) return
+    const existing = watched.get(session)
+    if (existing) {
+      existing.refs += 1
+      // Late subscriber: emit a full snapshot so it seeds immediately.
+      emitSnapshot(session)
+      return
+    }
+    const s: Watched = {
+      refs: 1,
+      rev: 0,
+      turns: [],
+      sigs: [],
+      command: '',
+      parsing: false,
+      dirty: false,
+      wantSnapshot: false,
+      lastSize: -1,
+      lastMtime: -1,
+      sinks: new Set(),
+    }
+    watched.set(session, s)
+    void resolveHarnessStore(session).then((ref) => {
+      const cur = watched.get(session)
+      if (cur !== s || closed) return
+      if (ref) {
+        startFileWatch(session, cur, ref)
+      } else {
+        // no store yet (fresh draft) — emit an explicit empty snapshot so
+        // the client knows the store state, then poll for the file
+        cur.rev += 1
+        deliver(cur, {
+          kind: 'transcript',
+          session,
+          rev: cur.rev,
+          from: 0,
+          turns: [],
+          total: 0,
+          command: '',
+        })
+        cur.resolvePoll = setInterval(() => void tryResolve(session), resolvePollMs)
         return
       }
-      const s: Watched = {
-        refs: 1,
-        rev: 0,
-        turns: [],
-        sigs: [],
-        command: '',
-        parsing: false,
-        dirty: false,
-        wantSnapshot: false,
-        lastSize: -1,
-        lastMtime: -1,
-      }
-      watched.set(session, s)
-      void resolveHarnessStore(session).then((ref) => {
-        const cur = watched.get(session)
-        if (cur !== s || closed) return
-        if (ref) {
-          startFileWatch(session, cur, ref)
-        } else {
-          // no store yet (fresh draft) — emit an explicit empty snapshot so
-          // the client knows the store state, then poll for the file
-          cur.rev += 1
-          emit({
-            kind: 'transcript',
-            session,
-            rev: cur.rev,
-            from: 0,
-            turns: [],
-            total: 0,
-            command: '',
-          })
-          cur.resolvePoll = setInterval(() => void tryResolve(session), resolvePollMs)
-          return
-        }
-        void parseAndEmit(session)
-      })
-    },
+      void parseAndEmit(session)
+    })
+  }
 
-    unwatch(session: string): void {
-      const s = watched.get(session)
-      if (!s) return
-      s.refs -= 1
-      if (s.refs > 0) return
-      if (s.debounce) clearTimeout(s.debounce)
-      if (s.resolvePoll) clearInterval(s.resolvePoll)
-      s.fsWatcher?.close()
-      watched.delete(session)
+  const unwatchSession = (session: string): void => {
+    const s = watched.get(session)
+    if (!s) return
+    s.refs -= 1
+    if (s.refs > 0) return
+    if (s.debounce) clearTimeout(s.debounce)
+    if (s.resolvePoll) clearInterval(s.resolvePoll)
+    s.fsWatcher?.close()
+    watched.delete(session)
+  }
+
+  return {
+    // Named watchSession/unwatchSession inside this scope: a local `watch`
+    // would shadow node:fs `watch` used by the dir + file watchers above.
+    watch: watchSession,
+    unwatch: unwatchSession,
+
+    subscribe(session: string, sink: (f: TranscriptWsFrame) => void): () => void {
+      let released = false
+      const existing = watched.get(session)
+      if (existing) {
+        existing.sinks.add(sink)
+        watchSession(session)
+      } else {
+        watchSession(session)
+        watched.get(session)?.sinks.add(sink)
+      }
+      return () => {
+        if (released) return
+        released = true
+        watched.get(session)?.sinks.delete(sink)
+        unwatchSession(session)
+      }
     },
 
     sync(session: string): void {

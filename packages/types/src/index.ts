@@ -150,6 +150,10 @@ export type {
   ApprovalDecision,
   HarnessEvent,
   HarnessStatusFrame,
+  HarnessAskOption,
+  HarnessAskQuestion,
+  HarnessTranscriptEvent,
+  HarnessPromptEvent,
   StartSessionOpts,
   UserTurn,
   HarnessDriver,
@@ -166,6 +170,7 @@ export {
   SYSTEM_PROMPT_INJECT_HEADING,
   prefixSystemPrompt,
 } from './harness.js'
+export { deriveTurnStatus, isPromptToolName } from './harness-turn-status.js'
 export {
   parseSessionId,
   formatSessionId,

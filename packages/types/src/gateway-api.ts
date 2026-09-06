@@ -637,6 +637,12 @@ export interface HarnessTranscriptTool {
   status: 'running' | 'done' | 'error'
   /** Summarized tool input (primitives only, strings capped) for titles. */
   args?: Record<string, unknown>
+  /** Store tool-call id (Claude tool_use.id / kimi tool id). Lets clients key tool rows and prompts. */
+  id?: string
+  /** Full structured input — ONLY for prompt-class tools (isPromptTool), JSON ≤ 8 KiB after stringify. */
+  input?: unknown
+  /** Tool result text — ONLY for prompt-class tools, ≤ 2 KiB. */
+  resultText?: string
 }
 
 /** One turn from GET /api/terminal/harness-sessions/:id/transcript (TUI store). */
@@ -651,6 +657,12 @@ export interface HarnessTranscriptTurn {
   usage?: MessageUsage
   /** Model id when present on the transcript line (e.g. claude-opus-4). */
   model?: string
+  /** message.stop_reason of the LAST store line folded into this turn ('end_turn' | 'tool_use' | …). */
+  stopReason?: string
+  /** Type of the last content block seen. */
+  lastBlock?: 'thinking' | 'text' | 'tool_use' | 'tool_result'
+  /** stopReason === 'end_turn' && the last line had a text block && no tool is still running. */
+  complete?: true
 }
 
 /** Hard-resync payload: rebuild chat UI from the on-disk harness transcript. */

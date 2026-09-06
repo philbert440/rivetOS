@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionWsFrame, TranscriptWsFrame } from '@rivetos/types'
 import { createTranscriptWatcher, type TranscriptWatcher } from './transcript-watch.js'
 import { setTranscriptMaxBytesForTest } from './harness-sessions.js'
@@ -263,5 +263,98 @@ describe('createTranscriptWatcher', () => {
     watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
     writeFileSync(join(dir, 'bbbbbbbb-0000-0000-0000-000000000005.jsonl'), userLine('new session'))
     await until(() => frames.find((f) => f.kind === 'sessions-dirty'))
+  })
+
+  it('subscribe delivers the snapshot then deltas to its sink', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-0000000000a1'
+    const file = join(dir, `${id}.jsonl`)
+    writeFileSync(file, userLine('hello'))
+
+    const frames: SessionWsFrame[] = []
+    const sink: TranscriptWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.subscribe(id, (f) => sink.push(f))
+
+    const snap = await until(() => sink.find((f) => f.from === 0 && f.total > 0))
+    expect(snap.turns.map((t) => t.text)).toEqual(['hello'])
+    expect(snap.command).toBe('claude')
+
+    appendFileSync(file, assistantLine('hi'))
+    const delta = await until(() => sink.find((f) => f.rev === snap.rev + 1))
+    expect(delta.turns.map((t) => t.text)).toEqual(['hi'])
+    expect(transcripts(frames).some((f) => f.rev === delta.rev)).toBe(true)
+  })
+
+  it('two subscribers on one session share one parse', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-0000000000a2'
+    const file = join(dir, `${id}.jsonl`)
+    writeFileSync(file, userLine('hello'))
+
+    const frames: SessionWsFrame[] = []
+    const a: TranscriptWsFrame[] = []
+    const b: TranscriptWsFrame[] = []
+    watcher = createTranscriptWatcher((f) => frames.push(f), FAST)
+    watcher.subscribe(id, (f) => a.push(f))
+    watcher.subscribe(id, (f) => b.push(f))
+
+    const snapA = await until(() => a.find((f) => f.from === 0 && f.command === 'claude'))
+    await until(() => b.find((f) => f.from === 0 && f.command === 'claude'))
+    const before = transcripts(frames).length
+
+    appendFileSync(file, assistantLine('shared'))
+    const deltaA = await until(() => a.find((f) => f.rev === snapA.rev + 1))
+    const deltaB = await until(() => b.find((f) => f.rev === snapA.rev + 1))
+    expect(deltaA.rev).toBe(deltaB.rev)
+    expect(deltaA.turns.map((t) => t.text)).toEqual(['shared'])
+    expect(deltaB.turns.map((t) => t.text)).toEqual(['shared'])
+    // One parse → one emitFrame (one global transcript frame) per disk change.
+    expect(transcripts(frames).length).toBe(before + 1)
+  })
+
+  it('unsubscribe releases the ref — with refs at 0 the fs watcher closes and no further frames arrive at the sink', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-0000000000a3'
+    const file = join(dir, `${id}.jsonl`)
+    writeFileSync(file, userLine('hello'))
+
+    const sink: TranscriptWsFrame[] = []
+    watcher = createTranscriptWatcher(() => undefined, FAST)
+    const off = watcher.subscribe(id, (f) => sink.push(f))
+    await until(() => sink.find((f) => f.from === 0 && f.command === 'claude'))
+    const count = sink.length
+
+    off()
+    off() // idempotent
+    appendFileSync(file, assistantLine('into the void'))
+    await new Promise((r) => setTimeout(r, 300))
+    expect(sink.length).toBe(count)
+  })
+
+  it('a throwing sink is dropped, the other sink keeps receiving', async () => {
+    const { dir } = claudeStore()
+    const id = 'aaaaaaaa-0000-0000-0000-0000000000a4'
+    const file = join(dir, `${id}.jsonl`)
+    writeFileSync(file, userLine('hello'))
+
+    const good: TranscriptWsFrame[] = []
+    const logged: unknown[] = []
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(args)
+    })
+    watcher = createTranscriptWatcher(() => undefined, FAST)
+    watcher.subscribe(id, () => {
+      throw new Error('boom')
+    })
+    watcher.subscribe(id, (f) => good.push(f))
+
+    await until(() => good.find((f) => f.from === 0 && f.command === 'claude'))
+    expect(logged.length).toBeGreaterThanOrEqual(1)
+
+    appendFileSync(file, assistantLine('still going'))
+    const delta = await until(() => good.find((f) => f.turns.some((t) => t.text === 'still going')))
+    expect(delta.turns.some((t) => t.text === 'still going')).toBe(true)
+    errSpy.mockRestore()
   })
 })

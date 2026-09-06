@@ -7,6 +7,7 @@ import {
   describeGrokSession,
   describeKimiSession,
   describeDshSession,
+  claudeTurnsFromLines,
   listHarnessSessions,
   harnessSessionExists,
   readGrokTranscript,
@@ -530,6 +531,7 @@ describe('readHarnessTranscript', () => {
         role: 'assistant',
         text: 'hi there',
         thinking: 'x', // thinking blocks ride the turn now (text variant tolerated)
+        lastBlock: 'thinking',
         model: 'claude-opus-4',
         // prompt = input + cache_read + cache_creation (den-hook parity)
         usage: { promptTokens: 1250, completionTokens: 40, cachedTokens: 200 },
@@ -605,9 +607,10 @@ describe('readHarnessTranscript', () => {
       {
         role: 'assistant',
         text: 'tests pass, edit failed',
+        lastBlock: 'text',
         tools: [
-          { name: 'Bash', status: 'done', args: { command: 'npm test' } },
-          { name: 'Edit', status: 'error' },
+          { name: 'Bash', status: 'done', args: { command: 'npm test' }, id: 'tu_1' },
+          { name: 'Edit', status: 'error', id: 'tu_2' },
         ],
         model: 'claude-opus-4',
         // output SUMMED across the turn's lines; prompt from the LAST line
@@ -650,7 +653,7 @@ describe('readHarnessTranscript', () => {
     const t = await readHarnessTranscript(id)
     expect(t.turns).toEqual([
       { role: 'user', text: 'real question' },
-      { role: 'assistant', text: 'real answer' },
+      { role: 'assistant', text: 'real answer', lastBlock: 'text' },
     ])
   })
 
@@ -896,8 +899,13 @@ describe('readHarnessTranscript', () => {
           text: 'looks good',
           thinking: 'weighing it',
           tools: [
-            { name: 'Bash', status: 'error', args: { command: 'git diff', timeout: 30 } },
-            { name: 'Read', status: 'done', args: { path: '/tmp/x' } },
+            {
+              name: 'Bash',
+              status: 'error',
+              args: { command: 'git diff', timeout: 30 },
+              id: 'Bash_0',
+            },
+            { name: 'Read', status: 'done', args: { path: '/tmp/x' }, id: 'Read_0' },
           ],
           usage: { promptTokens: 125, completionTokens: 40, cachedTokens: 20 },
           model: 'kimi-k2',
@@ -912,5 +920,137 @@ describe('readHarnessTranscript', () => {
       command: '',
       turns: [],
     })
+  })
+
+  it('stamps stopReason/lastBlock/complete from the real Claude sequence; complete absent in-flight', () => {
+    const asst = (
+      stop: string,
+      block: Record<string, unknown>,
+    ): Record<string, unknown> => ({
+      type: 'assistant',
+      message: { stop_reason: stop, content: [block] },
+    })
+    const toolResults = (...ids: string[]): Record<string, unknown> => ({
+      type: 'user',
+      message: {
+        content: ids.map((id) => ({ type: 'tool_result', tool_use_id: id, content: 'ok' })),
+      },
+    })
+    const lines: Record<string, unknown>[] = [
+      { type: 'user', message: { content: 'do the thing' } },
+      asst('tool_use', { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo 1' } }),
+      asst('tool_use', { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'echo 2' } }),
+      toolResults('t1', 't2'),
+      asst('tool_use', { type: 'thinking', thinking: 'next step' }),
+      asst('tool_use', { type: 'tool_use', id: 't3', name: 'Read', input: { path: 'x' } }),
+      toolResults('t3'),
+      asst('end_turn', { type: 'thinking', thinking: 'done thinking' }),
+      asst('end_turn', { type: 'text', text: 'all done' }),
+    ]
+
+    const early = claudeTurnsFromLines(lines.slice(0, 3))
+    expect(early.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+    expect(early.find((t) => t.role === 'assistant')?.stopReason).toBe('tool_use')
+
+    const prefix = claudeTurnsFromLines(lines.slice(0, -1))
+    const prefixAsst = prefix.filter((t) => t.role === 'assistant')
+    expect(prefixAsst.length).toBeGreaterThan(0)
+    expect(prefixAsst[prefixAsst.length - 1]?.complete).toBeUndefined()
+    expect(prefixAsst[prefixAsst.length - 1]?.stopReason).toBe('end_turn')
+    expect(prefixAsst[prefixAsst.length - 1]?.lastBlock).toBe('thinking')
+
+    const full = claudeTurnsFromLines(lines)
+    const last = full[full.length - 1]
+    expect(last?.role).toBe('assistant')
+    expect(last?.stopReason).toBe('end_turn')
+    expect(last?.lastBlock).toBe('text')
+    expect(last?.complete).toBe(true)
+    expect(last?.text).toBe('all done')
+  })
+
+  it('preserves AskUserQuestion id/input/resultText and stays incomplete while unanswered', () => {
+    const questions = [
+      {
+        question: 'Which auth?',
+        header: 'Auth',
+        multiSelect: false,
+        options: [
+          { label: 'OAuth', description: 'browser' },
+          { label: 'API key', description: 'token' },
+        ],
+      },
+    ]
+    const ask = {
+      type: 'assistant',
+      message: {
+        stop_reason: 'tool_use',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'ask_1',
+            name: 'AskUserQuestion',
+            input: { questions },
+          },
+        ],
+      },
+    }
+    const unanswered = claudeTurnsFromLines([
+      { type: 'user', message: { content: 'ask me' } },
+      ask,
+    ])
+    const tool = unanswered.find((t) => t.role === 'assistant')?.tools?.[0]
+    expect(tool?.id).toBe('ask_1')
+    expect(
+      (tool?.input as { questions: Array<{ options: Array<{ label: string }> }> }).questions[0]
+        .options[1].label,
+    ).toBe('API key')
+    expect(unanswered.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+
+    const answered = claudeTurnsFromLines([
+      { type: 'user', message: { content: 'ask me' } },
+      ask,
+      {
+        type: 'user',
+        toolUseResult: { answers: [{ question: 0, labels: ['API key'] }] },
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'ask_1',
+              content: 'Your questions have been answered: Auth: API key',
+            },
+          ],
+        },
+      },
+    ])
+    const after = answered.find((t) => t.role === 'assistant')?.tools?.[0]
+    expect(after?.resultText).toBe('Your questions have been answered: Auth: API key')
+    expect(after?.status).toBe('done')
+    expect(answered.find((t) => t.role === 'assistant')?.complete).toBeUndefined()
+  })
+
+  it('still summarises away array args on a non-prompt Bash tool', () => {
+    const turns = claudeTurnsFromLines([
+      { type: 'user', message: { content: 'run' } },
+      {
+        type: 'assistant',
+        message: {
+          stop_reason: 'tool_use',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'b1',
+              name: 'Bash',
+              input: { command: 'ls', files: ['a', 'b'] },
+            },
+          ],
+        },
+      },
+    ])
+    const bash = turns.find((t) => t.role === 'assistant')?.tools?.[0]
+    expect(bash?.id).toBe('b1')
+    expect(bash?.args).toEqual({ command: 'ls' })
+    expect(bash?.args).not.toHaveProperty('files')
+    expect(bash?.input).toBeUndefined()
   })
 })

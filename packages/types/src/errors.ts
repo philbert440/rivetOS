@@ -333,6 +333,7 @@ export class RuntimeError extends RivetError {
  *                             an alias chain); never overwrite → HTTP 409
  * - `capability_unsupported`— method called whose capability flag is false → HTTP 501
  * - `unknown_approval`      — unknown/expired approval requestId → HTTP 404
+ * - `unknown_prompt`        — unknown/expired promptId → HTTP 404
  * - `turn_in_flight`        — sendUserTurn while a turn is running → HTTP 409
  */
 export const HARNESS_ERROR_CODES = [
@@ -340,6 +341,7 @@ export const HARNESS_ERROR_CODES = [
   'session_id_collision',
   'capability_unsupported',
   'unknown_approval',
+  'unknown_prompt',
   'turn_in_flight',
 ] as const
 
@@ -368,6 +370,7 @@ export class HarnessError extends RivetError {
       session_id_collision: { severity: 'error', retryable: false },
       capability_unsupported: { severity: 'error', retryable: false },
       unknown_approval: { severity: 'error', retryable: false },
+      unknown_prompt: { severity: 'error', retryable: false },
       turn_in_flight: { severity: 'transient', retryable: true },
     }
 

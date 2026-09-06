@@ -122,6 +122,9 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
           requestId,
         })
       }
+      if (action === 'prompts') {
+        return respond(202, { ok: true, sessionId: decoded, requestId })
+      }
     }
     respond(500, { error: `unhandled ${req.method ?? '?'} ${path}` })
   })
@@ -235,6 +238,19 @@ describe('harness control plane — session operations', () => {
     expect(JSON.parse(captured.body ?? '{}')).toEqual({ decision: 'allow' })
     expect((err as GatewayError).status).toBe(501)
     expect((err as GatewayError).body).toMatchObject({ code: 'capability_unsupported' })
+  })
+
+  it('answers a harness prompt on POST …/prompts/:promptId', async () => {
+    const seg = encodeSessionIdSegment(SID)
+    const accepted = await gw().answerHarnessPrompt(SID, 'prompt-1', {
+      answers: [{ question: 0, labels: ['API key'] }],
+    })
+    expect(captured.method).toBe('POST')
+    expect(captured.path).toBe(`/api/harness-sessions/${seg}/prompts/prompt-1`)
+    expect(JSON.parse(captured.body ?? '{}')).toEqual({
+      answers: [{ question: 0, labels: ['API key'] }],
+    })
+    expect(accepted.ok).toBe(true)
   })
 })
 

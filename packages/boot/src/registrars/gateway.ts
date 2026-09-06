@@ -339,6 +339,7 @@ export async function registerGateway(
     // unaffected; `task:` sessions are skipped inside the bridge.
     onAgentEvent: (ev) => gatewayChannel.bridgeAgentEvent(ev),
     harnessDrivers,
+    transcriptWatcher,
   })
 
   const listening = await new Promise<boolean>((resolve) => {

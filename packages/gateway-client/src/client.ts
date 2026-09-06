@@ -581,6 +581,23 @@ export class RivetGateway {
     )
   }
 
+  /**
+   * Answer a `prompt` event (AskUserQuestion) (202). Route lands in part 2.
+   * 404 `unknown_prompt` / 501 same shape as `resolveHarnessApproval`.
+   */
+  answerHarnessPrompt(
+    sessionId: string,
+    promptId: string,
+    body: { answers: Array<{ question: number; labels: string[]; other?: string }> },
+    signal?: AbortSignal,
+  ): Promise<HarnessApprovalAccepted> {
+    return request(
+      this.config,
+      `/api/harness-sessions/${sessionSegment(sessionId)}/prompts/${encodeURIComponent(promptId)}`,
+      { method: 'POST', body, signal },
+    )
+  }
+
   /** Hard-resync source: the session's committed transcript. Re-read on every
    *  (re)connect — the live tail carries no replay buffer. */
   harnessSessionTranscript(
