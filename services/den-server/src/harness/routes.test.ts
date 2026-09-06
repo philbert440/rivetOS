@@ -976,6 +976,25 @@ describe('WS streams', () => {
   })
 })
 
+describe('POST /api/harness-sessions/:enc/approvals/:reqId', () => {
+  it('202s when capabilities.approvals is true and the driver accepts', async () => {
+    const driver = new FakeDriver({ ...FULL_CAPS, approvals: true })
+    driver.add(SID)
+    const resolved: { sessionId: SessionId; requestId: string; decision: string }[] = []
+    driver.resolveApproval = (sessionId, requestId, decision) => {
+      resolved.push({ sessionId, requestId, decision })
+      return Promise.resolve()
+    }
+    const { base } = await start(driver)
+    const res = await post(base, `/api/harness-sessions/${enc(SID)}/approvals/req-1`, {
+      decision: 'allow',
+    })
+    expect(res.status).toBe(202)
+    expect(await res.json()).toEqual({ ok: true, sessionId: SID, requestId: 'req-1' })
+    expect(resolved).toEqual([{ sessionId: SID, requestId: 'req-1', decision: 'allow' }])
+  })
+})
+
 describe('POST /api/harness-sessions/:enc/prompts/:promptId', () => {
   it('202s a valid answer, 400s a bad body, 404s unknown_prompt, 501s when the driver lacks it', async () => {
     const withPrompt = new FakeDriver()

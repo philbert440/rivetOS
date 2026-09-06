@@ -234,5 +234,5 @@ export const hermesAdapter: HarnessAdapter = {
     },
   },
   promptToolNames: [],
-  capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
+  capabilities: () => ({ liveTurn: true, prompts: false, approvals: false }),
 }

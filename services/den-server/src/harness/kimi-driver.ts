@@ -77,14 +77,12 @@
  * `content.part` `text` and `think` parts out of `wire.jsonl`. A
  * transcript-watch-fed delta stream is the documented follow-up, not a fake.
  *
- * **Honest capabilities.** `approvals` is `false`: kimi owns permission prompts
- * inside its TUI, its den integration deliberately leaves
- * `PermissionRequest`/`PermissionResult` unmapped (protocol v1 has no approval
- * surface), nothing carries a decision back, and the roster runs `kimi --yolo`
- * precisely so ordinary tool calls never block. `interrupt` / `resume` /
- * `liveStream` are true only when the machinery behind them is wired on this
- * node. Esc is kimi's documented interrupt key ("Close dialogs / interrupt
- * streaming" in its own keybinding help), so the base's Esc inject applies
+ * **Honest capabilities.** `approvals` is true when a PTY is available and
+ * herdr is the mux (approval-panel keys, mapping unverified). Under tmux it
+ * stays false (501). `interrupt` / `resume` / `liveStream` are true only when
+ * the machinery behind them is wired on this node. Esc is kimi's documented
+ * interrupt key ("Close dialogs / interrupt streaming" in its own keybinding
+ * help), so the base's Esc inject applies
  * unchanged, and its TUI parses bracketed paste (DEC 2004), which is what the
  * term manager wraps an injected turn in.
  *

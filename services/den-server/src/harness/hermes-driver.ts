@@ -60,12 +60,10 @@
  * starting in the same second, on the same node, under the same agent tag, and
  * drawing the same 24 bits. Ruled in review (PR #477): accept and record.
  *
- * **Honest capabilities.** `approvals` is `false` like the others: the den
- * roster runs `hermes --yolo --accept-hooks` precisely so it never blocks on a
- * prompt, and while a hermes shell hook can *block* a tool call, that is a
- * policy verdict computed on the node — not a request for a human decision, and
- * there is no channel on the den wire to answer one. `interrupt` / `resume` /
- * `liveStream` are true only when the machinery behind them is wired here.
+ * **Honest capabilities.** `approvals` stays false (no permission keys). The
+ * den roster runs `hermes --yolo --accept-hooks` so it never blocks on a
+ * prompt. `interrupt` / `resume` / `liveStream` are true only when the
+ * machinery behind them is wired here.
  *
  * See docs/ARCHITECTURE.md.
  */
