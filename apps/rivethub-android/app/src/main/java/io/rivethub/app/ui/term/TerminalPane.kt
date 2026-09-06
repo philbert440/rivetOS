@@ -77,7 +77,7 @@ import io.rivethub.app.plane.TERM_LINE_HEIGHT
 import io.rivethub.app.plane.TermKeys
 import io.rivethub.app.plane.TermScroll
 import io.rivethub.app.plane.TermStatus
-import io.rivethub.app.plane.imeDelta
+import io.rivethub.app.plane.imeEdit
 import io.rivethub.app.plane.ownerOverlay
 import io.rivethub.app.plane.termCellSizePx
 import io.rivethub.app.plane.termColsRows
@@ -297,13 +297,15 @@ fun TerminalPane(
         BasicTextField(
             value = ime,
             onValueChange = { next ->
-                // Append-only: send the characters that were ADDED since the last value we saw.
-                // Never synthesize backspaces from a shrinking value — Compose state can lag a
-                // fast key stream and a stale value would delete real characters in the TUI.
-                // Deletion reaches the PTY as a hardware Backspace key event (password-type field).
+                // Text-type field (Gboard shows its microphone): deletes and word replacements
+                // arrive as edits to the value, not as Backspace key events, so mirror the field
+                // into the PTY as Backspaces for what it dropped and keystrokes for what it gained.
+                // The diff is against the last value we PROCESSED, so a lagging burst of updates
+                // still replays in order. Hardware/soft Backspace keys keep their key-event path.
                 val cur = next.text
-                val clean = imeDelta(imeSeen, cur, IME_SENTINEL)
-                if (clean.isNotEmpty()) onBytes(TermKeys.ime(clean, ctrl))
+                val edit = imeEdit(imeSeen, cur, IME_SENTINEL)
+                if (edit.backspaces > 0) onBytes(TermKeys.backspaces(edit.backspaces))
+                if (edit.added.isNotEmpty()) onBytes(TermKeys.ime(edit.added, ctrl))
                 if (cur.length > 256 || !cur.startsWith(IME_SENTINEL)) {
                     imeSeen = IME_SENTINEL
                     ime = TextFieldValue(IME_SENTINEL, selection = TextRange(IME_SENTINEL.length))
@@ -335,8 +337,10 @@ fun TerminalPane(
                     } else false
                 },
             keyboardOptions = KeyboardOptions(
-                // Password-type: no composition, no suggestions, no autocorrect — the terminal is the line editor.
-                keyboardType = KeyboardType.Password,
+                // Text-type so Gboard offers voice typing (it hides the mic on password fields).
+                // autoCorrect off; any composition/replacement the IME still does is mirrored
+                // into the PTY by imeEdit above — the terminal stays the line editor.
+                keyboardType = KeyboardType.Text,
                 autoCorrect = false,
                 imeAction = ImeAction.None,
             ),

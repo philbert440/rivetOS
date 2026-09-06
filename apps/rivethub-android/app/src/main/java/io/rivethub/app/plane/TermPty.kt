@@ -83,6 +83,8 @@ fun termColsRows(widthPx: Float, heightPx: Float, cellW: Float, cellH: Float): P
 object TermKeys {
     val ENTER: ByteArray = byteArrayOf(0x0d)
     val BACKSPACE: ByteArray = byteArrayOf(0x7f)
+    /** [n] DEL bytes — one Backspace per character the IME field dropped. */
+    fun backspaces(n: Int): ByteArray = ByteArray(n.coerceAtLeast(0)) { 0x7f }
     val ESC: ByteArray = byteArrayOf(0x1b)
     val TAB: ByteArray = byteArrayOf(0x09)
     val UP: ByteArray = arrow('A', false)
@@ -167,6 +169,31 @@ class TermPtyClient(private val sink: TermSink) {
  * (deletion arrives as a hardware key event on the password-type field), the sentinel is
  * never forwarded, and CRLF / LF both become a single CR for the PTY.
  */
+/** Backspaces to send, then characters to type, to turn what the PTY has into what the field shows. */
+data class ImeEdit(val backspaces: Int, val added: String)
+
+/** Never send more deletes than this in one edit — a runaway diff must not wipe a TUI line. */
+const val IME_MAX_BACKSPACES = 64
+
+/**
+ * Delete-aware version of [imeDelta] for a plain text-type field (Gboard shows its microphone
+ * there, but deletes and word replacements arrive as edits to the field instead of Backspace
+ * key events). The tail after the longest common prefix is what changed: characters the field
+ * dropped become Backspaces (capped at [IME_MAX_BACKSPACES]), characters it gained are typed.
+ * The sentinel prefix is never deleted or forwarded; CRLF / LF both become one CR.
+ */
+fun imeEdit(prev: String, cur: String, sentinel: String): ImeEdit {
+    val anchored = prev.startsWith(sentinel) && cur.startsWith(sentinel)
+    var p = if (anchored) sentinel.length else 0
+    val max = minOf(prev.length, cur.length)
+    while (p < max && prev[p] == cur[p]) p++
+    // Only an anchored field can report real deletes; if the sentinel itself vanished the field
+    // was reset out from under us (the caller re-seeds it) and nothing should be deleted.
+    val removed = if (anchored) (prev.length - p).coerceIn(0, IME_MAX_BACKSPACES) else 0
+    val added = if (cur.length > p) cur.substring(p) else ""
+    return ImeEdit(removed, added.replace(sentinel, "").replace("\r\n", "\r").replace("\n", "\r"))
+}
+
 fun imeDelta(prev: String, cur: String, sentinel: String): String {
     var p = 0
     val max = minOf(prev.length, cur.length)

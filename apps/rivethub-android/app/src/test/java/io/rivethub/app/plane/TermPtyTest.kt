@@ -240,4 +240,19 @@ class RecordingTermSink : TermSink {
         assertEquals("a\rb\r", imeDelta(z, z + "a\r\nb\n", z))     // CRLF collapses
         assertEquals("", imeDelta(z + "x", z + "x" + z, z))       // a re-inserted sentinel is never sent
     }
+
+    @Test fun `imeEdit mirrors deletes and replacements, never deletes the sentinel, caps backspaces`() {
+        val z = "\u200B"
+        assertEquals(ImeEdit(0, "o"), imeEdit(z + "N", z + "No", z))              // typing
+        assertEquals(ImeEdit(1, ""), imeEdit(z + "No", z + "N", z))               // one delete
+        assertEquals(ImeEdit(2, ""), imeEdit(z + "No", z, z))                     // field emptied to the sentinel
+        assertEquals(ImeEdit(1, "w"), imeEdit(z + "No", z + "Nw", z))             // replace last char
+        assertEquals(ImeEdit(5, "Hello"), imeEdit(z + "hello", z + "Hello", z))   // autocorrect rewrote the word
+        assertEquals(ImeEdit(0, "abc"), imeEdit(z, z + "abc", z))                 // paste / dictation commit
+        assertEquals(ImeEdit(0, "\r"), imeEdit(z, z + "\n", z))                   // soft Enter
+        assertEquals(ImeEdit(0, ""), imeEdit(z + "x", z + "x", z))                // no change
+        assertEquals(ImeEdit(0, "abc"), imeEdit(z, "abc", z))                     // sentinel gone: type the tail, delete nothing
+        assertEquals(ImeEdit(IME_MAX_BACKSPACES, ""), imeEdit(z + "x".repeat(200), z, z)) // capped
+        assertEquals(ImeEdit(0, ""), imeEdit(z + "x", z + "x" + z, z))            // re-inserted sentinel never sent
+    }
 }
