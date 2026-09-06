@@ -6,6 +6,7 @@ import { spawn as childSpawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DenConfig, DenTermConfig } from '../config.js'
 import { createTermManager, TermSpawnError, type TermManager } from './manager.js'
+import { resetSessionContextForTest } from './context-window.js'
 import { loadRealPtySpawn, type PtyProc, type PtySpawn, type PtySpawnOpts } from './pty.js'
 import { createRosterProvider, defaultRoster, parseRoster, type TermRoster } from './roster.js'
 import {
@@ -62,6 +63,7 @@ const managers: TermManager[] = []
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllEnvs()
+  resetSessionContextForTest()
   managers.splice(0).forEach((m) => m.close())
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
 })
@@ -241,6 +243,48 @@ describe('term manager', () => {
     )
     noFlag.manager.spawn('claude', 80, 24, '', undefined, undefined, undefined, undefined, 'x', 'y')
     expect(noFlag.spawns[0].argv).toEqual(['claude'])
+  })
+
+  it('stamps contextWindow from the spawn model option (fable 200k / fable[1m] 1M)', () => {
+    const sheet = {
+      models: [
+        { id: 'fable', label: 'Fable' },
+        { id: 'fable[1m]', label: 'Fable 1M' },
+      ],
+      modelFlag: '--model',
+    }
+    const std = makeManager({}, { modelSheetFor: () => sheet })
+    const a = std.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'fable',
+    )
+    expect(a.contextWindow).toBe(200_000)
+    expect(a.compactAt).toBe(165_000)
+    expect(a.contextSource).toBe('spawn')
+
+    const long = makeManager({}, { modelSheetFor: () => sheet })
+    const b = long.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'fable[1m]',
+    )
+    expect(b.contextWindow).toBe(1_000_000)
+    expect(b.compactAt).toBe(965_000)
+    expect(b.contextSource).toBe('spawn')
+    expect(long.spawns[0].argv).toEqual(['claude', '--model', 'fable[1m]'])
   })
 
   it('session join key: denSession IS the session, RIVETOS_SESSION_KEY set, spawn-or-get', () => {

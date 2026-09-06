@@ -78,6 +78,7 @@ import {
   harnessSessionExists,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
+import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes, lookupDeviceName } from './devices.js'
 import { createAgentsRoutes } from './agents.js'
@@ -806,10 +807,27 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // (extra field — viewers that don't know it ignore it)
   const decorateSessions = (
     sessions: ReturnType<typeof listSessions>,
-  ): (ReturnType<typeof listSessions>[number] & { pty?: string })[] =>
+  ): (ReturnType<typeof listSessions>[number] & {
+    pty?: string
+    contextWindow?: number
+    compactAt?: number
+    contextSource?: 'spawn' | 'observed' | 'default'
+  })[] =>
     sessions.map((s) => {
       const pty = termManager?.ptyForSession(s.id)
-      return pty ? { ...s, pty } : s
+      const ctx = sessionContext(s.id)
+      if (!pty && !ctx) return s
+      return {
+        ...s,
+        ...(pty ? { pty } : {}),
+        ...(ctx
+          ? {
+              contextWindow: ctx.contextWindow,
+              compactAt: ctx.compactAt,
+              contextSource: ctx.contextSource,
+            }
+          : {}),
+      }
     })
 
   // Mesh device enrollment (Settings → Devices). mTLS-gated except the
@@ -1362,7 +1380,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // is the whole conversation, not metadata
             if (denyIfForbidden('GET /term/harness-sessions/:id/transcript', id)) return
             const transcript = await readHarnessTranscript(id)
-            return json(res, 200, transcript)
+            const ctx = overlaySessionContext(id, transcript.turns, transcript.command)
+            return json(res, 200, {
+              ...transcript,
+              contextWindow: ctx.contextWindow,
+              compactAt: ctx.compactAt,
+              contextSource: ctx.contextSource,
+            })
           }
         }
 

@@ -83,6 +83,7 @@ import {
 import { isBareNativeUuid } from './alias.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './registry.js'
+import { overlaySessionContext } from '../term/context-window.js'
 
 /** Drivers that can serve the hard-resync transcript (feature-detected). */
 export interface HarnessTranscriptSource {
@@ -538,10 +539,14 @@ export function createHarnessRoutes(opts: {
       }
       try {
         const { turns } = await source.transcript(sessionId)
+        const ctx = overlaySessionContext(sessionId, turns, driver.harnessId)
         return json(res, 200, {
           sessionId,
           harnessId: driver.harnessId,
           turns,
+          contextWindow: ctx.contextWindow,
+          compactAt: ctx.compactAt,
+          contextSource: ctx.contextSource,
           ...redirect,
         })
       } catch (err) {

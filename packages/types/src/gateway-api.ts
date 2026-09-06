@@ -661,6 +661,12 @@ export interface HarnessTranscriptResponse {
   turns: HarnessTranscriptTurn[]
   /** Present when the on-disk store exceeded the parse window (tail only). */
   truncated?: true
+  /** Real max context window for this session's model, tokens. */
+  contextWindow?: number
+  /** Forced-compaction threshold, tokens — the bar's 100%. */
+  compactAt?: number
+  /** Provenance: 'spawn' (from the model option at launch) | 'observed' (learned) | 'default' (guess). */
+  contextSource?: 'spawn' | 'observed' | 'default'
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +710,12 @@ export interface HarnessSessionTranscriptResponse extends HarnessRedirect {
   sessionId: SessionId
   harnessId: HarnessId
   turns: HarnessTranscriptTurn[]
+  /** Real max context window for this session's model, tokens. */
+  contextWindow?: number
+  /** Forced-compaction threshold, tokens — the bar's 100%. */
+  compactAt?: number
+  /** Provenance: 'spawn' (from the model option at launch) | 'observed' (learned) | 'default' (guess). */
+  contextSource?: 'spawn' | 'observed' | 'default'
 }
 
 /** 202 from `POST /api/harness-sessions/:enc/turns` and `…/interrupt`. */
@@ -867,6 +879,12 @@ export interface DenSessionInfo {
   lastEventTs?: number
   /** id of a local PTY currently linked to this session, when one exists */
   pty?: string
+  /** Real max context window for this session's model, tokens. */
+  contextWindow?: number
+  /** Forced-compaction threshold, tokens — the bar's 100%. */
+  compactAt?: number
+  /** Provenance: 'spawn' (from the model option at launch) | 'observed' (learned) | 'default' (guess). */
+  contextSource?: 'spawn' | 'observed' | 'default'
 }
 
 export interface DenSessionsResponse {
