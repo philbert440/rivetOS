@@ -5,23 +5,85 @@ import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.HarnessTranscriptTurn
 import io.rivethub.app.gateway.isFatalHarnessEvent
 import io.rivethub.app.gateway.isFatalTranscriptError
+import io.rivethub.app.gateway.wireJson
 
 const val IDLE_DEADLINE_MS: Long = 3 * 60_000L
 
 /**
- * While a turn is in flight and the session WS is silent, poll the
- * committed transcript on this cadence until [IDLE_DEADLINE_MS].
- */
-const val TRANSCRIPT_POLL_EVERY_MS: Long = 5_000L
-
-/**
  * Grace before the post-turn transcript fetch: the harness store is written
  * as the turn commits, and `turn-complete` can beat the last flush to disk.
- * Twin of `DEFAULT_SETTLE_MS` in rivethub-web `harness-attach.ts`.
+ * Twin of `DEFAULT_SETTLE_MS` in rivethub-web `harness-attach.ts`. Kept for
+ * HOOKS-sourced (text-only) stores; transcript-sourced sessions skip it.
  */
 const val RESYNC_SETTLE_MS: Long = 400L
 
 enum class FrameVerdict { Continue, Fatal }
+
+enum class LiveSource { HOOKS, TRANSCRIPT }
+
+data class AgentStatus(
+    val status: String,
+    val since: Long = 0,
+    val source: String? = null,
+    val phase: String? = null,
+    val toolName: String? = null,
+    val toolCallId: String? = null,
+    val promptId: String? = null,
+)
+
+/**
+ * Stores that expose in-flight turns (tools, thinking, completion) — den's
+ * adapter matrix (#709): claude, kimi, grok, hermes. dsh stays hook-sourced.
+ */
+fun isLiveTurnStore(command: String): Boolean {
+    val c = command.lowercase()
+    return listOf("claude", "kimi", "grok", "hermes").any { c == it || c.startsWith(it) }
+}
+
+/**
+ * Port of web `LiveBubble` activity copy: thinking / running &lt;tool&gt; /
+ * writing / waiting for you.
+ */
+fun agentStatusLine(status: String?, phase: String?, toolName: String?): String? {
+    if (status == "blocked" || phase == "prompt") return "waiting for you"
+    if (status != "working") return null
+    return when (phase) {
+        "thinking" -> "thinking…"
+        "tool" -> "running ${toolName?.takeIf { it.isNotBlank() } ?: "tool"}…"
+        "writing" -> "writing…"
+        "prompt" -> "waiting for you"
+        else -> if (!toolName.isNullOrBlank()) "running $toolName…" else "thinking…"
+    }
+}
+
+/**
+ * Faithful port of `mergeTranscriptWindow` (`packages/types/src/gateway-api.ts`).
+ * When a tail-window snapshot overlaps turns we already have, pin the prefix.
+ */
+fun mergeTranscriptWindow(
+    prev: List<HarnessTranscriptTurn>,
+    next: List<HarnessTranscriptTurn>,
+    truncated: Boolean,
+): List<HarnessTranscriptTurn> {
+    if (!truncated || prev.isEmpty() || next.isEmpty()) return next.toList()
+    val next0 = turnSig(next[0])
+    var overlap = -1
+    for (i in prev.indices) {
+        if (turnSig(prev[i]) == next0) {
+            overlap = i
+            break
+        }
+    }
+    if (overlap < 0) return next.toList()
+    val overlapLen = minOf(prev.size - overlap, next.size)
+    for (j in 1 until overlapLen) {
+        if (turnSig(prev[overlap + j]) != turnSig(next[j])) return next.toList()
+    }
+    return prev.subList(0, overlap) + next
+}
+
+private fun turnSig(t: HarnessTranscriptTurn): String =
+    wireJson.encodeToString(HarnessTranscriptTurn.serializer(), t)
 
 /**
  * Transcript state machine for one harness session.
@@ -40,16 +102,23 @@ class TranscriptMachine(
     private val idleDeadlineMs: Long = IDLE_DEADLINE_MS,
 ) {
     private var committed: List<HarnessTranscriptTurn> = emptyList()
-    /** Turns confirmed by the node (never our optimistic bubble). */
-    val committedTurns: List<HarnessTranscriptTurn> get() = committed
+    /**
+     * Turns confirmed by the node (never our optimistic bubble). While status
+     * is working/blocked and the trailing assistant lacks `complete`, that
+     * turn is held as live and excluded here.
+     */
+    val committedTurns: List<HarnessTranscriptTurn>
+        get() = if (holdTrailingLive()) committed.dropLast(1) else committed
     private val optimistic = ArrayList<HarnessTranscriptTurn>()
 
     /** Committed turns plus any unmatched optimistic user bubbles. */
     val transcript: List<HarnessTranscriptTurn>
-        get() = if (optimistic.isEmpty()) committed else committed + optimistic
+        get() = if (optimistic.isEmpty()) committedTurns else committedTurns + optimistic
     var liveText: String = ""
         private set
     var liveReasoning: String = ""
+        private set
+    var liveTools: List<LiveTool> = emptyList()
         private set
     var inFlight: Boolean = false
         private set
@@ -57,25 +126,128 @@ class TranscriptMachine(
         private set
     var lastFrameTs: Long? = null
         private set
-    /** True once a content session-WS frame arrived this turn (cancels silent poll). */
-    var sawSessionFrame: Boolean = false
+    var rev: Int = -1
         private set
-    /** Committed size at [beginTurn] — poll looks for an assistant past this. */
+    var offset: Int = 0
+        private set
+    var liveSource: LiveSource = LiveSource.HOOKS
+        private set
+    var agentStatus: AgentStatus? = null
+        private set
+    var openPrompt: HarnessEvent.Prompt? = null
+        private set
+    /** Committed size at [beginTurn] — resync looks for an assistant past this. */
     var committedAtTurnStart: Int = 0
         private set
     /** Optimistic user text captured at [beginTurn]; resync completeness keys off this. */
     var pendingUserText: String? = null
         private set
 
+    private fun holdTrailingLive(): Boolean {
+        val st = agentStatus?.status
+        if (st != "working" && st != "blocked") return false
+        val last = committed.lastOrNull() ?: return false
+        return last.role.equals("assistant", ignoreCase = true) && last.complete != true
+    }
+
+    private fun deriveFromTrailing() {
+        val status = agentStatus?.status
+        val busy = status == "working" || status == "blocked"
+        if (status != null) inFlight = busy
+        if (liveSource != LiveSource.TRANSCRIPT) {
+            if (status == "idle") {
+                liveText = ""
+                liveReasoning = ""
+                liveTools = emptyList()
+            }
+            return
+        }
+        if (holdTrailingLive()) {
+            val t = committed.last()
+            liveText = t.text
+            liveReasoning = t.thinking.orEmpty()
+            liveTools = t.tools.orEmpty().map { LiveTool(it.name, it.input ?: it.args, it.status) }
+        } else {
+            liveText = ""
+            liveReasoning = ""
+            liveTools = emptyList()
+        }
+    }
+
+    /**
+     * Apply a pushed transcript frame. Port of web `applyTranscriptFrame`
+     * (`stores/chat.ts`) + `mergeTranscriptWindow`. Returns false when the
+     * caller must send `{"type":"sync"}`.
+     */
+    fun applyTranscriptFrame(f: HarnessEvent.Transcript): Boolean {
+        lastFrameTs = nowMs()
+        if (isLiveTurnStore(f.command)) liveSource = LiveSource.TRANSCRIPT
+        val cur = committed
+        val turns: List<HarnessTranscriptTurn>
+        val nextOffset: Int
+        if (f.from == 0) {
+            if (f.truncatedBefore && cur.isNotEmpty()) {
+                val merged = mergeTranscriptWindow(cur, f.turns, true)
+                val pinned = merged.size > f.turns.size
+                turns = merged
+                nextOffset = if (pinned) merged.size - f.total else 0
+            } else {
+                turns = f.turns
+                nextOffset = 0
+            }
+        } else if (rev >= 0 && f.rev == rev + 1) {
+            val adjustedFrom = f.from + offset
+            if (cur.size >= adjustedFrom) {
+                turns = cur.take(adjustedFrom) + f.turns
+                nextOffset = offset
+            } else {
+                return false
+            }
+        } else {
+            return false
+        }
+        if (turns.size - nextOffset != f.total) return false
+        committed = turns
+        consumeOptimistic(turns)
+        rev = f.rev
+        offset = nextOffset
+        deriveFromTrailing()
+        return true
+    }
+
+    fun onStatus(s: HarnessEvent.Status) {
+        lastFrameTs = nowMs()
+        agentStatus = AgentStatus(
+            status = s.status,
+            since = s.since,
+            source = s.source,
+            phase = s.phase,
+            toolName = s.toolName,
+            toolCallId = s.toolCallId,
+            promptId = s.promptId,
+        )
+        deriveFromTrailing()
+        if (liveSource == LiveSource.HOOKS) {
+            inFlight = s.status == "working" || s.status == "blocked"
+        }
+    }
+
+    fun onPrompt(p: HarnessEvent.Prompt) {
+        lastFrameTs = nowMs()
+        openPrompt = if (p.resolved) null else p
+    }
+
     fun beginTurn() {
         val t = nowMs()
         inFlight = true
         turnStartTs = t
         lastFrameTs = t
-        liveText = ""
-        liveReasoning = ""
-        sawSessionFrame = false
-        committedAtTurnStart = committed.size
+        if (liveSource == LiveSource.HOOKS) {
+            liveText = ""
+            liveReasoning = ""
+            liveTools = emptyList()
+        }
+        committedAtTurnStart = committedTurns.size
         pendingUserText = optimistic.lastOrNull { it.role.equals("user", ignoreCase = true) }?.text
     }
 
@@ -95,6 +267,7 @@ class TranscriptMachine(
         inFlight = false
         liveText = ""
         liveReasoning = ""
+        liveTools = emptyList()
         turnStartTs = null
         pendingUserText = null
     }
@@ -108,33 +281,50 @@ class TranscriptMachine(
     fun onOpen(fullTranscript: List<HarnessTranscriptTurn>) {
         committed = fullTranscript.toList()
         consumeOptimistic(fullTranscript)
-        liveText = ""
-        liveReasoning = ""
+        if (liveSource == LiveSource.HOOKS) {
+            liveText = ""
+            liveReasoning = ""
+            liveTools = emptyList()
+        } else {
+            deriveFromTrailing()
+        }
     }
 
     fun onFrame(event: HarnessEvent): FrameVerdict {
         lastFrameTs = nowMs()
-        if (sessionFrameCancelsPoll(event)) sawSessionFrame = true
         if (isFatalHarnessEvent(event)) {
             inFlight = false
             return FrameVerdict.Fatal
         }
+        val hooks = liveSource == LiveSource.HOOKS
         when (event) {
-            is HarnessEvent.AssistantDelta -> {
+            is HarnessEvent.AssistantDelta -> if (hooks) {
                 liveText += event.text
                 if (!inFlight) {
                     inFlight = true
                     if (turnStartTs == null) turnStartTs = lastFrameTs
                 }
             }
-            is HarnessEvent.ReasoningDelta -> {
+            is HarnessEvent.ReasoningDelta -> if (hooks) {
                 liveReasoning += event.text
                 if (!inFlight) {
                     inFlight = true
                     if (turnStartTs == null) turnStartTs = lastFrameTs
                 }
             }
-            is HarnessEvent.ToolUse, is HarnessEvent.ToolResult -> {
+            is HarnessEvent.ToolUse -> if (hooks) {
+                liveTools = liveTools + LiveTool(event.name, event.input, "running")
+                if (!inFlight) {
+                    inFlight = true
+                    if (turnStartTs == null) turnStartTs = lastFrameTs
+                }
+            }
+            is HarnessEvent.ToolResult -> if (hooks) {
+                liveTools = liveTools.map { t ->
+                    if (t.name == event.name && t.status == "running") {
+                        t.copy(status = if (event.isError) "error" else "done")
+                    } else t
+                }
                 if (!inFlight) {
                     inFlight = true
                     if (turnStartTs == null) turnStartTs = lastFrameTs
@@ -144,8 +334,13 @@ class TranscriptMachine(
                 inFlight = false
             }
             is HarnessEvent.TurnComplete -> {
-                inFlight = false
+                if (hooks) inFlight = false
             }
+            is HarnessEvent.Status -> onStatus(event)
+            is HarnessEvent.Prompt -> onPrompt(event)
+            // The owner applies transcript frames (applyTranscriptFrame) and acts on
+            // its Boolean (sync on a rev gap); a replayed frame here must not lose it.
+            is HarnessEvent.Transcript -> Unit
             else -> Unit
         }
         return FrameVerdict.Continue
@@ -157,6 +352,7 @@ class TranscriptMachine(
         consumeOptimistic(fullTranscript)
         liveText = ""
         liveReasoning = ""
+        liveTools = emptyList()
         inFlight = false
         turnStartTs = null
         lastFrameTs = nowMs()
@@ -164,9 +360,9 @@ class TranscriptMachine(
     }
 
     /**
-     * Apply a silent-poll / registry fetch. [complete] means an assistant
-     * turn is on disk after the pending user (or a turn-complete frame);
-     * otherwise keep inFlight and only fold committed + optimistic.
+     * Apply a registry fetch. [complete] means an assistant turn is on disk
+     * after the pending user; otherwise keep inFlight and only fold committed
+     * + optimistic. Used for HOOKS-sourced (text-only) stores.
      */
     fun applyFetched(turns: List<HarnessTranscriptTurn>, complete: Boolean) {
         if (complete) onTurnComplete(turns)
@@ -248,26 +444,6 @@ fun shouldResyncFromRegistry(
     return false
 }
 
-/**
- * Silent poll: every [everyMs] after send, until a content session frame
- * arrives or [boundMs] (the idle deadline). [elapsedSincePollMs] is null
- * before the first poll. Status/accepted frames do not count.
- */
-fun transcriptPollDue(
-    inFlight: Boolean,
-    sawSessionFrame: Boolean,
-    elapsedSinceTurnMs: Long,
-    elapsedSincePollMs: Long? = null,
-    everyMs: Long = TRANSCRIPT_POLL_EVERY_MS,
-    boundMs: Long = IDLE_DEADLINE_MS,
-): Boolean {
-    if (!inFlight || sawSessionFrame) return false
-    if (elapsedSinceTurnMs < everyMs) return false
-    if (elapsedSinceTurnMs >= boundMs) return false
-    if (elapsedSincePollMs != null && elapsedSincePollMs < everyMs) return false
-    return true
-}
-
 /** Assistant past the prefix captured at [TranscriptMachine.beginTurn]. */
 fun fetchedHasNewAssistant(fetched: List<HarnessTranscriptTurn>, committedPrefix: Int): Boolean {
     val from = committedPrefix.coerceAtLeast(0)
@@ -310,19 +486,6 @@ fun resyncCompletesTurn(
 }
 
 /**
- * Live-tail content: these cancel/replace the silent poll. Status, accepted,
- * session-updated, and other non-content frames must not.
- */
-fun sessionFrameCancelsPoll(event: HarnessEvent): Boolean = when (event) {
-    is HarnessEvent.AssistantDelta,
-    is HarnessEvent.ReasoningDelta,
-    is HarnessEvent.ToolUse,
-    is HarnessEvent.TurnComplete,
-    is HarnessEvent.Error -> true
-    else -> false
-}
-
-/**
  * Drop a poll/registry fetch that raced an adopt: the turns belong to the
  * session id we started the fetch with, and only if that attach is still live.
  */
@@ -345,27 +508,11 @@ fun adoptCanonicalIsNoOp(canonical: String, currentSessionId: String, draft: Boo
 }
 
 /**
- * Silent poll stays armed across an incomplete registry resync. Cancel only
- * when the turn completed, a content session frame arrived, inFlight dropped,
- * or the idle deadline elapsed.
- */
-fun silentPollShouldRemainArmed(
-    inFlight: Boolean,
-    sawSessionFrame: Boolean,
-    complete: Boolean,
-    elapsedSinceTurnMs: Long,
-    boundMs: Long = IDLE_DEADLINE_MS,
-): Boolean {
-    if (complete || !inFlight || sawSessionFrame) return false
-    if (elapsedSinceTurnMs >= boundMs) return false
-    return true
-}
-
-/**
  * Owner of one session attach. Hard-resyncs from [fetchTranscript] on every
- * watch open and after turn-complete (after [RESYNC_SETTLE_MS]). Fatal error
- * frames and 400/404/410/501 on the transcript route stop the watch so it
- * cannot reconnect into a dead session.
+ * watch open. Transcript-sourced sessions skip the post-turn-complete settle
+ * replay — frames are the source of truth. Fatal error frames and
+ * 400/404/410/501 on the transcript route stop the watch so it cannot
+ * reconnect into a dead session.
  *
  * Not thread-safe; confine to a single dispatcher with [TranscriptMachine].
  */
@@ -443,7 +590,8 @@ class SessionAttach(
         if (settling && event !is HarnessEvent.TurnComplete) {
             duringSettle += event
         }
-        if (event is HarnessEvent.TurnComplete) {
+        // Transcript-sourced sessions skip HTTP resync-after-turn-complete.
+        if (event is HarnessEvent.TurnComplete && machine.liveSource == LiveSource.HOOKS) {
             settling = true
             duringSettle.clear()
         }

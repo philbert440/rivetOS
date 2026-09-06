@@ -29,11 +29,13 @@ fun AskUserCardView(
     onSubmit: (Map<Int, List<String>>, String) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val colors = RivetTheme.colors
     var picked by remember { mutableStateOf(mapOf<Int, List<String>>()) }
     var free by remember { mutableStateOf("") }
     val shape = RoundedCornerShape(Radius.md)
+    val optionShape = RoundedCornerShape(Radius.lg)
     Column(
         modifier
             .fillMaxWidth()
@@ -60,7 +62,19 @@ fun AskUserCardView(
                         }
                     },
                     variant = RivetButtonVariant.Outline,
-                    modifier = Modifier.fillMaxWidth(),
+                    enabled = enabled,
+                    textColor = if (selected) colors.em else colors.ink,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(
+                            Dimens.line,
+                            if (selected) colors.em else colors.line,
+                            optionShape,
+                        )
+                        .background(
+                            if (selected) colors.emDim.copy(alpha = 0.25f) else colors.panel2.copy(alpha = 0.4f),
+                            optionShape,
+                        ),
                 )
                 if (selected) {
                     Text(stringResource(R.string.ask_user_selected), color = colors.em, style = RivetType.mono11)
@@ -70,18 +84,20 @@ fun AskUserCardView(
         }
         RivetField(
             value = free,
-            onValueChange = { free = it },
+            onValueChange = { if (enabled) free = it },
             placeholder = stringResource(R.string.ask_user_free),
         )
         RivetButton(
             text = stringResource(R.string.action_submit),
             onClick = { onSubmit(picked, free) },
+            enabled = enabled,
             modifier = Modifier.fillMaxWidth(),
         )
         RivetButton(
             text = stringResource(R.string.action_cancel),
             onClick = onDismiss,
             variant = RivetButtonVariant.Ghost,
+            enabled = enabled,
             modifier = Modifier.fillMaxWidth(),
         )
     }

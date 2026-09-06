@@ -82,4 +82,13 @@ class ChatSendTest {
         assertFalse(serverInFlightIsStale(listOf(u, u)))   // previous turn not answered yet
         assertFalse(serverInFlightIsStale(emptyList()))
     }
+
+    @Test fun `agent status line mirrors the desktop live bubble copy`() {
+        assertEquals("thinking…", agentStatusLine("working", "thinking", null))
+        assertEquals("running Bash…", agentStatusLine("working", "tool", "Bash"))
+        assertEquals("writing…", agentStatusLine("working", "writing", null))
+        assertEquals("waiting for you", agentStatusLine("blocked", "prompt", null))
+        assertEquals("waiting for you", agentStatusLine("working", "prompt", null))
+        assertNull(agentStatusLine("idle", null, null))
+    }
 }

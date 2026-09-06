@@ -62,13 +62,6 @@ class InjectTest {
         assertTrue(gate.isReady())
     }
 
-    @Test fun `bare submit is one-shot at 15s unless already adopted`() {
-        assertFalse(shouldBareSubmit(adopted = false, elapsedMs = BARE_SUBMIT_AFTER_MS - 1, alreadySubmitted = false))
-        assertTrue(shouldBareSubmit(adopted = false, elapsedMs = BARE_SUBMIT_AFTER_MS, alreadySubmitted = false))
-        assertFalse(shouldBareSubmit(adopted = true, elapsedMs = BARE_SUBMIT_AFTER_MS, alreadySubmitted = false))
-        assertFalse(shouldBareSubmit(adopted = false, elapsedMs = 20_000, alreadySubmitted = true))
-    }
-
     @Test fun `sessionMatchesNative compares native halves`() {
         assertTrue(sessionMatchesNative(canonical, uuid))
         assertTrue(sessionMatchesNative(uuid, uuid))
@@ -102,7 +95,5 @@ class InjectTest {
         assertNull(canonicalFromSessions(listOf(miss), uuid))
         assertEquals(canonical, canonicalFromSessions(listOf(miss, hit), uuid))
         assertEquals(canonical, canonicalFromSessions(listOf(summary("x", redirectedTo = canonical)), uuid))
-        assertTrue(shouldPollSessions(SESSION_POLL_BOUND_MS))
-        assertFalse(shouldPollSessions(SESSION_POLL_BOUND_MS + 1))
     }
 }

@@ -244,6 +244,19 @@ fun ThinkingFold(text: String, initiallyOpen: Boolean = false, modifier: Modifie
 }
 
 @Composable
+fun AgentStatusLine(text: String, modifier: Modifier = Modifier) {
+    val colors = RivetTheme.colors
+    Row(
+        modifier.padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(colors.em))
+        Text(text, color = colors.inkDim, style = RivetType.mono11)
+    }
+}
+
+@Composable
 fun ToolStatusRow(tool: ToolRow, modifier: Modifier = Modifier) {
     val colors = RivetTheme.colors
     val shape = RoundedCornerShape(Radius.sm)
