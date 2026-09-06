@@ -14,6 +14,7 @@
  *   max_turns         --max-turns (default 1 = answer only, no tool loop)
  *   no_plan           --no-plan (default true)
  *   system_prompt     prepend|override|off — how the RivetOS system prompt reaches grok (default prepend)
+ *   session           resume|replay — per-conversation grok session (default resume)
  *   allow             list of --allow rules for tool-using turns (max_turns > 1)
  *   tools             --tools pass-through
  *   cwd               working directory for the spawned grok
@@ -29,6 +30,7 @@ import type { JSONObject } from '@ai-sdk/provider'
 import {
   GrokCliModel,
   type GrokReasoningEffort,
+  type GrokSessionMode,
   type GrokSystemPromptMode,
 } from './grok-cli-model.js'
 import { createLogger } from './log.js'
@@ -37,13 +39,25 @@ export {
   GrokCliModel,
   renderPromptForCli,
   composePrompt,
+  newestUserChunk,
   buildUsage,
   finishReasonFor,
   effortFromProviderOptions,
   MAX_PROMPT_BYTES,
 } from './grok-cli-model.js'
 export { buildArgs, parseGrokJson, spawnGrokTurn } from './spawn-turn.js'
-export type { GrokReasoningEffort, GrokSystemPromptMode } from './grok-cli-model.js'
+export {
+  defaultSessionMapPath,
+  loadSessionMap,
+  saveSessionMap,
+  uuidForConversation,
+  SESSION_MAP_FILE,
+} from './session-map.js'
+export type {
+  GrokReasoningEffort,
+  GrokSessionMode,
+  GrokSystemPromptMode,
+} from './grok-cli-model.js'
 export type { GrokSpawnFlags, GrokJsonResult, GrokTurn } from './spawn-turn.js'
 
 export const GROK_CLI_PROVIDER_ID = 'grok-cli'
@@ -66,6 +80,7 @@ export interface GrokCliProviderConfig {
   allow?: string[]
   tools?: string
   cwd?: string
+  session?: GrokSessionMode
   id?: string
   name?: string
   contextWindow?: number
@@ -98,6 +113,7 @@ export class GrokCliProvider implements Provider {
   private maxTurns: number
   private noPlan: boolean
   private systemPromptMode: GrokSystemPromptMode
+  private sessionMode: GrokSessionMode
   private allow: string[] | undefined
   private tools: string | undefined
   private cwd: string | undefined
@@ -115,6 +131,7 @@ export class GrokCliProvider implements Provider {
     this.maxTurns = config.maxTurns && config.maxTurns > 0 ? Math.floor(config.maxTurns) : 1
     this.noPlan = config.noPlan ?? true
     this.systemPromptMode = config.systemPrompt ?? 'prepend'
+    this.sessionMode = config.session === 'replay' ? 'replay' : 'resume'
     this.allow = config.allow && config.allow.length > 0 ? [...config.allow] : undefined
     this.tools = config.tools || undefined
     this.cwd = config.cwd
@@ -173,7 +190,7 @@ export class GrokCliProvider implements Provider {
 
   aiSdkBridge(): ProviderAiSdkBridge {
     return {
-      getModel: ({ modelOverride, agentId }: GetModelInput) =>
+      getModel: ({ modelOverride, agentId, conversationId }: GetModelInput) =>
         new GrokCliModel({
           providerId: this.id,
           modelId: modelOverride ?? this.getModel(),
@@ -187,6 +204,8 @@ export class GrokCliProvider implements Provider {
           tools: this.tools,
           cwd: this.cwd,
           agentId,
+          conversationId,
+          sessionMode: this.sessionMode,
         }),
       buildProviderOptions: (
         _messages: Message[],
@@ -214,6 +233,7 @@ export const manifest: PluginManifest = {
         maxTurns: cfg.max_turns as number | undefined,
         noPlan: cfg.no_plan as boolean | undefined,
         systemPrompt: cfg.system_prompt as GrokSystemPromptMode | undefined,
+        session: cfg.session as GrokSessionMode | undefined,
         allow: cfg.allow as string[] | undefined,
         tools: cfg.tools as string | undefined,
         cwd: cfg.cwd as string | undefined,
