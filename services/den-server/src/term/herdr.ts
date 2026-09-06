@@ -1296,7 +1296,7 @@ export function createRealHerdrCtl(
             binary,
             args,
             { encoding: 'utf8', timeout: 2000, env: envFor() },
-            (err, stdout) => resolve(err ? '' : String(stdout)),
+            (err, stdout) => resolve(err ? '' : stdout),
           )
         })
       return runAsync(herdrAgentReadArgv(name, name, lines).slice(1)).then((agent) =>
