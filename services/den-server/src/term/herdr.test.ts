@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -11,6 +11,8 @@ import {
   classifyExistingHerdrSession,
   createHerdrStatusHub,
   createRealHerdrCtl,
+  findHerdrOnPath,
+  herdrAvailable,
   herdrAgentStartArgv,
   herdrAttachArgv,
   herdrConfigContent,
@@ -166,6 +168,32 @@ describe('herdr --version pin', () => {
     expect(herdrSupported('/bin/herdr', exec('herdr 0.9.0'))).toBe(false)
     expect(herdrSupported('/bin/herdr', exec('herdr 0.8.2-preview.1'))).toBe(false)
     expect(herdrVersion('/bin/herdr', exec('herdr 0.8.2'))).toBe(HERDR_PINNED_VERSION)
+  })
+})
+
+describe('findHerdrOnPath / herdrAvailable (fleet default plumbing)', () => {
+  it('falls back to ~/.local/bin/herdr when the binary is not on PATH', () => {
+    const home = mkdtempSync(join(tmpdir(), 'herdr-home-'))
+    const bin = join(home, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    expect(findHerdrOnPath('/nonexistent-dir', home)).toBeNull()
+    writeFileSync(join(bin, 'herdr'), '#!/bin/sh\necho herdr 0.8.2\n', { mode: 0o755 })
+    expect(findHerdrOnPath('/nonexistent-dir', home)).toBe(join(bin, 'herdr'))
+    rmSync(home, { recursive: true, force: true })
+  })
+  it('herdrAvailable is true only for a reachable binary at the pinned version', () => {
+    const home = mkdtempSync(join(tmpdir(), 'herdr-home-'))
+    const bin = join(home, '.local', 'bin')
+    mkdirSync(bin, { recursive: true })
+    const exec =
+      (out: string): HerdrExec =>
+      () =>
+        out
+    expect(herdrAvailable('/nonexistent-dir', home, exec('herdr 0.8.2'))).toBe(false) // no binary yet
+    writeFileSync(join(bin, 'herdr'), '#!/bin/sh\n', { mode: 0o755 })
+    expect(herdrAvailable('/nonexistent-dir', home, exec('herdr 0.8.2'))).toBe(true)
+    expect(herdrAvailable('/nonexistent-dir', home, exec('herdr 0.9.0'))).toBe(false)
+    rmSync(home, { recursive: true, force: true })
   })
 })
 

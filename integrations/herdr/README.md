@@ -31,12 +31,13 @@ Idempotent. It:
    cache dir (see below), backing up a diverging existing file to
    `<agent>.toml.orig` (the first backup is never clobbered).
 
-`rivetos update` runs the same step non-fatally **only on nodes that opted in**
-(`RIVETOS_DEN_TERM_MUX=herdr` in the process env, else in the unit's
-EnvironmentFile `~/.rivetos/.env`, else YAML `den.terminal.mux`; a shell-launched
-update does not inherit the EnvironmentFile, so it is read explicitly): a node without the staged
-binary (off-fleet, offline) skips quietly; a verification failure warns but
-never blocks the update. `--from-upstream` opts into the unpinned upstream
+`rivetos update` runs the same step non-fatally on every node that has not
+**opted out** (herdr is the fleet default since 2026-09-06: `RIVETOS_DEN_TERM_MUX`
+unset or `herdr` provisions; `tmux`/`none` — in the process env, else in the
+unit's EnvironmentFile `~/.rivetos/.env`, else YAML `den.terminal.mux` — skips;
+a shell-launched update does not inherit the EnvironmentFile, so it is read
+explicitly): a node without the staged binary (off-fleet, offline) skips
+quietly; a verification failure warns but never blocks the update. `--from-upstream` opts into the unpinned upstream
 installer as a fallback and fails unless it lands exactly 0.8.2.
 
 `rivetos doctor` reports the `herdr` row: binary present, version == 0.8.2,
@@ -63,15 +64,18 @@ herdr uses the newest manifest and its updater then leaves it alone
 
 ## Flipping `term.mux`
 
-The den reads the mux from `RIVETOS_DEN_TERM_MUX` (there is no YAML mux key
-on main today):
+**herdr is the default.** With `RIVETOS_DEN_TERM_MUX` unset, den's `loadConfig`
+resolves the mux to `herdr` whenever the pinned 0.8.2 binary is reachable — on
+PATH or at `~/.local/bin/herdr`, where `rivetos install --herdr` puts it (the
+service unit's PATH usually lacks `~/.local/bin`; den looks there explicitly).
+Without the binary the manager auto-detects tmux as before. To opt a node out:
 
 ```sh
-RIVETOS_DEN_TERM=1 RIVETOS_DEN_TERM_MUX=herdr
+RIVETOS_DEN_TERM=1 RIVETOS_DEN_TERM_MUX=tmux
 ```
 
-Requires terminals enabled (`RIVETOS_DEN_TERM=1`) and, for herdr panes, the
-pinned binary provisioned as above. The backend itself lands with
+`rivetos doctor` says which way an unset value resolves (`term.mux: unset (auto →
+herdr …)` / `(auto → tmux …)`). Requires terminals enabled (`RIVETOS_DEN_TERM=1`). The backend itself lands with
 `feat/den-herdr-backend`; on main today any value other than `tmux`/`none`
 fails safe to `none`.
 

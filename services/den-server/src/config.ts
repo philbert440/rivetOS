@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { loadUsersRegistry, sharedDir, type UsersRegistry } from '@rivetos/types'
 import { join } from 'node:path'
 import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
+import { herdrAvailable } from './term/herdr.js'
 
 function intEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   // Read from the PASSED env — loadConfig(env) callers (the embedded
@@ -65,8 +66,10 @@ export interface DenTermConfig {
    *  restarts and browser detaches; 'herdr' uses a pinned herdr 0.8.2 server
    *  (screen-manifest working/blocked/idle) and falls back to tmux if the
    *  binary is missing/wrong version; 'none' is today's direct spawn. Unset =
-   *  detect at manager construction: tmux when the binary is on PATH, else
-   *  none (one log line). herdr is NEVER auto-selected. */
+   *  loadConfig picks 'herdr' when the pinned binary is reachable (PATH or
+   *  ~/.local/bin — the fleet default since 2026-09-06; set
+   *  RIVETOS_DEN_TERM_MUX=tmux to opt out), otherwise the manager detects
+   *  tmux on PATH at construction, else none (one log line). */
   mux?: 'tmux' | 'herdr' | 'none'
   /** Tmux session garbage collection (RIVETOS_DEN_TERM_SESSION_GC_MS). When
    *  > 0, a periodic sweep kills tmux sessions on our socket whose last
@@ -240,7 +243,15 @@ export interface DenDevicesConfig {
   pgDeviceGroup: string
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
+export interface LoadConfigProbes {
+  /** Is a pinned herdr reachable? Tests inject; production probes the binary. */
+  herdr?: () => boolean
+}
+
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  probes: LoadConfigProbes = {},
+): DenConfig {
   // Per-site env overrides keep precedence; RIVETOS_SHARED_DIR only replaces
   // the hardcoded fallback. Honor the passed env map first (embedded gateway
   // builds a synthetic env) then process.env via sharedDir().
@@ -303,7 +314,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): DenConfig {
           )
           return 'none'
         }
-        return undefined
+        // Unset: herdr is the default wherever the pinned binary is present
+        // (status detection for chat needs it); a node without it keeps the
+        // tmux-on-PATH auto-detect in the manager. Explicit 'tmux' opts out.
+        const probe = probes.herdr ?? ((): boolean => herdrAvailable(env.PATH))
+        return probe() ? 'herdr' : undefined
       })(),
       sessionGcMs: intEnv(env, 'RIVETOS_DEN_TERM_SESSION_GC_MS', 0),
       tmuxUserConf: truthyEnv(env.RIVETOS_DEN_TERM_TMUX_USER_CONF),

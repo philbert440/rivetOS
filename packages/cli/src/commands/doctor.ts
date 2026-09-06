@@ -1156,7 +1156,10 @@ function checkTerminalMux(rawConfig: string | null): CheckResult[] {
 
   if (!termEnabled) return results
 
-  const muxRaw = mux?.trim().toLowerCase()
+  // Unset resolves to herdr when the pinned binary is present (fleet default
+  // since 2026-09-06) — mirror den-server loadConfig so the row says what the
+  // runtime will actually do.
+  const muxRaw = mux?.trim().toLowerCase() || (herdrAutoDefault() ? 'herdr' : undefined)
   if (muxRaw === 'none') {
     results.push(check('terminal', 'mux', 'pass', 'Terminal mux: none (tmux disabled by config)'))
     return results
@@ -1350,7 +1353,14 @@ export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {
     }
   }
 
-  results.push(check('terminal', 'herdr-mux', 'pass', `term.mux: ${mux ?? 'unset (auto)'}`))
+  results.push(
+    check(
+      'terminal',
+      'herdr-mux',
+      'pass',
+      `term.mux: ${mux ?? (version === HERDR_VERSION ? 'unset (auto → herdr, the fleet default; RIVETOS_DEN_TERM_MUX=tmux opts out)' : 'unset (auto → tmux; install herdr 0.8.2 for the fleet default)')}`,
+    ),
+  )
 
   return results
 }
@@ -1606,4 +1616,28 @@ export default async function doctor(): Promise<void> {
   if (summary.fail > 0) {
     process.exit(1)
   }
+}
+
+/** Does an unset term.mux resolve to herdr on this host? True when the pinned
+ *  0.8.2 binary sits at ~/.local/bin/herdr (where `rivetos install --herdr`
+ *  puts it) or on PATH. */
+function herdrAutoDefault(): boolean {
+  const candidates = [
+    herdrBinPath(),
+    ...(process.env.PATH ?? '').split(':').map((d) => join(d, 'herdr')),
+  ]
+  for (const bin of candidates) {
+    if (!bin || !existsSync(bin)) continue
+    try {
+      const out = execFileSync(bin, ['--version'], {
+        timeout: 5000,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      return /(?:^|\s)0\.8\.2(?:\s|$)/.test(out)
+    } catch {
+      return false
+    }
+  }
+  return false
 }

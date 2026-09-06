@@ -511,7 +511,7 @@ async function provisionHerdr(): Promise<void> {
     // A shell-launched update does not inherit the unit's EnvironmentFile
     // (~/.rivetos/.env) — read it, or every node would report "not enabled".
     if (!herdrOptedIn(process.env, readRivetosDotEnv(), rawConfig)) {
-      console.log('  ℹ️  herdr not enabled on this node (term.mux≠herdr) — skipping provisioning')
+      console.log('  ℹ️  herdr opted out on this node (term.mux=tmux/none) — skipping provisioning')
       return
     }
     try {

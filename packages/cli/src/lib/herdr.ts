@@ -373,15 +373,17 @@ export function readRivetosDotEnv(home: string = homedir()): string | null {
   }
 }
 
-/** Has this node opted into the herdr mux? `rivetos update` provisions herdr
- *  ONLY when this is true — the staged binary lives on /rivet-shared, which
- *  every fleet node mounts, so "staged" is not a signal of intent. See
- *  resolveHerdrMux for the lookup order (env → ~/.rivetos/.env → YAML); the
- *  argument order is the same as resolveHerdrMux on purpose. */
+/** Should `rivetos update` provision herdr on this node? herdr is the fleet
+ *  default mux since 2026-09-06: true unless the node opted OUT with
+ *  term.mux=tmux or none. See resolveHerdrMux for the lookup order (env →
+ *  ~/.rivetos/.env → YAML); the argument order is the same on purpose. A node
+ *  where the staged binary is unreachable (off-fleet) skips quietly in the
+ *  caller via HerdrUnavailableError. */
 export function herdrOptedIn(
   env: NodeJS.ProcessEnv = process.env,
   dotEnvContents: string | null = null,
   rawConfigYaml: string | null = null,
 ): boolean {
-  return resolveHerdrMux(env, dotEnvContents, rawConfigYaml) === 'herdr'
+  const mux = resolveHerdrMux(env, dotEnvContents, rawConfigYaml)
+  return mux === 'herdr' || mux === undefined
 }

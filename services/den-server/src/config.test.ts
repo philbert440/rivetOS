@@ -83,3 +83,20 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
     expect(owner.ok).toBe(true)
   })
 })
+
+describe('term.mux default (fleet default = herdr when the pinned binary is present)', () => {
+  const base = { RIVETOS_DEN_TERM: '1' }
+  it('unset + herdr reachable → herdr', () => {
+    expect(loadConfig(base, { herdr: () => true }).term.mux).toBe('herdr')
+  })
+  it('unset + no herdr → undefined (manager auto-detects tmux)', () => {
+    expect(loadConfig(base, { herdr: () => false }).term.mux).toBeUndefined()
+  })
+  it('explicit tmux opts out even when herdr is reachable', () => {
+    expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'tmux' }, { herdr: () => true }).term.mux).toBe('tmux')
+    expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'none' }, { herdr: () => true }).term.mux).toBe('none')
+  })
+  it('a garbage value still fails safe to none, never to the herdr default', () => {
+    expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'zellij' }, { herdr: () => true }).term.mux).toBe('none')
+  })
+})

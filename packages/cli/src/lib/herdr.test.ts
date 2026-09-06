@@ -196,7 +196,7 @@ describe('installHerdr', () => {
   })
 })
 
-describe('herdrOptedIn (rivetos update only provisions opted-in nodes)', () => {
+describe('herdrOptedIn (herdr is the default; rivetos update provisions unless opted OUT)', () => {
   it('env RIVETOS_DEN_TERM_MUX=herdr opts in; other values never do', async () => {
     const { herdrOptedIn } = await import('./herdr.js')
     expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'herdr' }, null)).toBe(true)
@@ -205,7 +205,9 @@ describe('herdrOptedIn (rivetos update only provisions opted-in nodes)', () => {
     ).toBe(false)
     expect(herdrOptedIn({}, null, 'den:\n  terminal:\n    mux: herdr\n')).toBe(true)
     expect(herdrOptedIn({}, null, 'den:\n  terminal:\n    mux: tmux\n')).toBe(false)
-    expect(herdrOptedIn({}, null)).toBe(false)
+    // unset = fleet default → provision
+    expect(herdrOptedIn({}, null)).toBe(true)
+    expect(herdrOptedIn({ RIVETOS_DEN_TERM_MUX: 'none' }, null)).toBe(false)
   })
 })
 
@@ -259,6 +261,7 @@ describe('resolveHerdrMux / herdrOptedIn — env → ~/.rivetos/.env → YAML', 
   it('falls back to the scoped YAML key, never a whole-file mux: match', () => {
     expect(resolveHerdrMux({}, null, 'den:\n  terminal:\n    mux: herdr\n')).toBe('herdr')
     expect(resolveHerdrMux({}, null, 'other:\n  mux: herdr\n')).toBeUndefined()
-    expect(herdrOptedIn({}, null, null)).toBe(false)
+    // no value anywhere = the fleet default → provision (herdr is default-on since 2026-09-06)
+    expect(herdrOptedIn({}, null, null)).toBe(true)
   })
 })
