@@ -16,6 +16,7 @@
  *   --mesh             Rolling update across all agents in the mesh
  */
 
+import { existsSync } from 'node:fs'
 import { readFile, access } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -485,17 +486,26 @@ async function verifyDataPersistence(): Promise<void> {
 
 /**
  * Provision herdr (pinned binary + manifest overrides) on this node. Inert
- * for nodes that never set term.mux=herdr — provisioning only, never
- * activation. Non-fatal: a node without the staged binary (off-fleet,
+ * on every node that has not opted out (term.mux=tmux/none) — provisioning
+ * only, never activation. Non-fatal: a node without the staged binary (off-fleet,
  * offline) skips quietly, a verification failure only warns.
  */
 async function provisionHerdr(): Promise<void> {
   try {
-    const { installHerdr, HerdrUnavailableError, herdrOptedIn, readRivetosDotEnv } =
-      await import('../lib/herdr.js')
-    // Opt-in only: never touch a node that did not set term.mux=herdr (the
-    // staged binary is on /rivet-shared, mounted everywhere — a hand-installed
-    // newer herdr must not be silently downgraded by a routine update).
+    const {
+      installHerdr,
+      HerdrUnavailableError,
+      herdrOptedIn,
+      readRivetosDotEnv,
+      readHerdrVersion,
+      herdrBinPath,
+      HERDR_VERSION,
+      herdrProvisionDecision,
+    } = await import('../lib/herdr.js')
+    // Default-on since 2026-09-06: provision unless the node opted OUT
+    // (term.mux=tmux/none). The staged binary is on /rivet-shared, mounted
+    // everywhere — so a hand-installed herdr NEWER than the pin must still not
+    // be silently downgraded by a routine update (guard below).
     let rawConfig: string | null = null
     try {
       const { readFileSync } = await import('node:fs')
@@ -511,7 +521,18 @@ async function provisionHerdr(): Promise<void> {
     // A shell-launched update does not inherit the unit's EnvironmentFile
     // (~/.rivetos/.env) — read it, or every node would report "not enabled".
     if (!herdrOptedIn(process.env, readRivetosDotEnv(), rawConfig)) {
-      console.log('  ℹ️  herdr not enabled on this node (term.mux≠herdr) — skipping provisioning')
+      console.log('  ℹ️  herdr opted out on this node (term.mux=tmux/none) — skipping provisioning')
+      return
+    }
+    const binPath = herdrBinPath()
+    const installed = readHerdrVersion(binPath)
+    const decision = herdrProvisionDecision(existsSync(binPath), installed)
+    if (decision !== 'install') {
+      console.log(
+        decision === 'skip-newer'
+          ? `  ℹ️  herdr ${installed} at ~/.local/bin is newer than the pin ${HERDR_VERSION} — leaving it alone (rivetos install --herdr to force the pin)`
+          : `  ℹ️  herdr at ~/.local/bin reports an unrecognised version — leaving it alone (rivetos install --herdr to force the pin ${HERDR_VERSION})`,
+      )
       return
     }
     try {

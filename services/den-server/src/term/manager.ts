@@ -136,6 +136,9 @@ export interface TermManagerDeps {
    *  tests never spawn a real herdr. Omitted = execFileSync against a
    *  pinned 0.8.2 binary on PATH. */
   herdrCtl?: HerdrCtl
+  /** Locate the herdr binary (PATH, then ~/.local/bin). Tests inject `() => null`
+   *  to simulate a missing binary — PATH alone no longer proves absence. */
+  findHerdr?: () => string | null
   /** herdr `status` frames (working/blocked/idle) for the harness-session WS. */
   onHerdrStatus?: (denSession: string, frame: HarnessStatusFrame) => void
   /** Write a 0600 env file used by the tmux CREATE harness wrapper.
@@ -441,8 +444,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   //   mux: 'none'     → direct PTY (pre-T1)
   //   mux: 'tmux'     → explicit tmux; missing/too-old binary fails every spawn
   //   mux: unset      → auto tmux when ≥3.2 is on PATH, else one fallback log
+  //                     (loadConfig already turned "unset" into 'herdr' when the
+  //                     pinned binary is reachable — the fleet default)
   //   mux: 'herdr'    → pinned herdr 0.8.2; missing/wrong version → one warning
-  //                     and fall back to tmux (never auto-select herdr)
+  //                     and fall back to tmux
   let tmux: TmuxCtl | undefined
   let herdr: HerdrCtl | undefined
   let herdrHome = ''
@@ -485,8 +490,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (deps.herdrCtl) {
         herdr = deps.herdrCtl
       } else {
-        const bin = findHerdrOnPath()
-        if (!bin) herdrUnavailableReason = 'herdr not found on PATH'
+        const bin = (deps.findHerdr ?? findHerdrOnPath)()
+        if (!bin) herdrUnavailableReason = 'herdr not found on PATH or in ~/.local/bin'
         else if (!herdrSupported(bin))
           herdrUnavailableReason = `herdr at ${bin} is not ${HERDR_PINNED_VERSION} (den pins ${HERDR_PINNED_VERSION} / protocol 20)`
         else herdr = createRealHerdrCtl(bin, herdrHome)

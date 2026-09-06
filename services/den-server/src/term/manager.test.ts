@@ -97,6 +97,7 @@ function makeManager(
     sessionExists?: (command: string, id: string) => boolean
     tmuxCtl?: TmuxCtl
     herdrCtl?: HerdrCtl
+    findHerdr?: () => string | null
     onHerdrStatus?: (
       denSession: string,
       frame: import('@rivetos/types').HarnessStatusFrame,
@@ -166,6 +167,7 @@ function makeManager(
     sessionExists: extra.sessionExists,
     tmuxCtl: extra.tmuxCtl,
     herdrCtl: extra.herdrCtl,
+    findHerdr: extra.findHerdr,
     onHerdrStatus: extra.onHerdrStatus,
     writeEnvFile: extra.writeEnvFile,
     modelSheetFor: extra.modelSheetFor,
@@ -2357,7 +2359,12 @@ describe('term manager (herdr mux)', () => {
     const prevPath = process.env.PATH
     process.env.PATH = ''
     try {
-      const { manager, spawns, logs } = makeManager({ mux: 'herdr' }, { tmuxCtl: tmux })
+      // PATH='' alone no longer proves absence (den also looks in ~/.local/bin,
+      // where the fleet's pinned binary lives) — inject "not found".
+      const { manager, spawns, logs } = makeManager(
+        { mux: 'herdr' },
+        { tmuxCtl: tmux, findHerdr: () => null },
+      )
       const pty = manager.spawn('claude', 80, 24, '', uuid)
       expect(logs.some((l) => l.includes("term.mux is 'herdr'") && l.includes('falling back to tmux'))).toBe(
         true,
