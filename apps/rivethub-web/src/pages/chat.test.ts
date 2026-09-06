@@ -37,6 +37,11 @@ describe('narrow full-screen list is gone', () => {
     expect(chat).toContain('aria-label="Conversations"')
   })
 
+  it('does not poll — no refetchInterval — and mounts QueuedStrip', () => {
+    expect(chat).not.toContain('refetchInterval')
+    expect(chat).toContain('<QueuedStrip')
+  })
+
   it('rail Conversations on narrow returns to the chat home — it does not clear the session', () => {
     expect(sidebar).not.toContain('setActive(undefined)')
   })

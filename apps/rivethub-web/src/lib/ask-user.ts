@@ -1,5 +1,12 @@
 /**
  * Extract ask-user prompts from ask-user tool shapes.
+ *
+ * Bound harness sessions get `prompt` frames from den — these heuristics stay
+ * for the legacy (unbound) composer path and the live-tool stash on hook-
+ * sourced sessions. Do not delete `isAskUserTool` / `extractAskUserQuestions`
+ * / `questionsFromLiveTools` while that path still mounts AskUserCard from
+ * the tool stack.
+ *
  * Supports:
  * - Claude AskUserQuestion: { questions: [{ question, header, multiSelect,
  *   options: [{ label, description }] }] }

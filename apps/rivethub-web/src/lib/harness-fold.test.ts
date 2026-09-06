@@ -128,6 +128,42 @@ describe('foldHarnessEvent', () => {
     expect(t?.activity).toBe('⚠ exploded')
   })
 
+  it('sets activity from a status frame', () => {
+    const thinking = foldHarnessEvent(undefined, ev({
+      type: 'status',
+      sessionId: SID,
+      status: 'working',
+      since: 1,
+      phase: 'thinking',
+    }))
+    expect(thinking?.activity).toBe('thinking…')
+    const tool = foldHarnessEvent(thinking, ev({
+      type: 'status',
+      sessionId: SID,
+      status: 'working',
+      since: 2,
+      phase: 'tool',
+      tool: { name: 'Bash' },
+    }))
+    expect(tool?.activity).toBe('running Ran a command…')
+    const writing = foldHarnessEvent(tool, ev({
+      type: 'status',
+      sessionId: SID,
+      status: 'working',
+      since: 3,
+      phase: 'writing',
+    }))
+    expect(writing?.activity).toBe('writing…')
+    const waiting = foldHarnessEvent(writing, ev({
+      type: 'status',
+      sessionId: SID,
+      status: 'blocked',
+      since: 4,
+      phase: 'prompt',
+    }))
+    expect(waiting?.activity).toBe('waiting for you')
+  })
+
   it('leaves the turn untouched for non-turn events', () => {
     const approval = ev({
       type: 'approval-request',
