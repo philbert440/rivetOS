@@ -338,7 +338,9 @@ class TranscriptMachine(
             }
             is HarnessEvent.Status -> onStatus(event)
             is HarnessEvent.Prompt -> onPrompt(event)
-            is HarnessEvent.Transcript -> applyTranscriptFrame(event)
+            // The owner applies transcript frames (applyTranscriptFrame) and acts on
+            // its Boolean (sync on a rev gap); a replayed frame here must not lose it.
+            is HarnessEvent.Transcript -> Unit
             else -> Unit
         }
         return FrameVerdict.Continue

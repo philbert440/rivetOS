@@ -101,6 +101,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
 import java.util.UUID
 
+/** One re-send of a rev-gap sync if no snapshot followed (den throttles syncs to 1 per 2 s). */
+const val SYNC_REARM_MS: Long = 3_000L
+
 class HarnessChatViewModel(
     private val c: AppContainer,
     initialSessionKey: String,
@@ -198,7 +201,9 @@ class HarnessChatViewModel(
                 publishMachine()
             } catch (e: Throwable) {
                 machine.revertOptimisticUser(text)
-                machine.abortTurn()
+                // A 409 means a real turn IS streaming — dropping its bubble would
+                // blank the reply the user is watching. Only a hard failure aborts.
+                if (!isTurnInFlight(e)) machine.abortTurn()
                 publishMachine()
                 throw e
             }
@@ -207,6 +212,22 @@ class HarnessChatViewModel(
     )
 
     private var idleWatch: Job? = null
+    /** Post-turn settle flush for hook-sourced stores (H1). */
+    private var settleJob: Job? = null
+    /** Rev-gap sync: den drops a sync within 2 s of the previous one, silently —
+     *  re-send ONCE after a short wait unless a snapshot arrived (H3). */
+    private var syncRearm: Job? = null
+    private var awaitingSnapshot: Boolean = false
+
+    private fun requestSync() {
+        awaitingSnapshot = true
+        val sent = sessionWatch?.send("""{"type":"sync"}""") == true
+        syncRearm?.cancel()
+        syncRearm = viewModelScope.launch {
+            delay(SYNC_REARM_MS)
+            if (awaitingSnapshot || !sent) sessionWatch?.send("""{"type":"sync"}""")
+        }
+    }
     private val spawnMu = Mutex()
     private var lastRegistryStatus: String? = null
     private var lastRegistryUpdatedAt: String? = null
@@ -386,22 +407,37 @@ class HarnessChatViewModel(
     }
 
     fun cancelQueued(id: String) {
-        val item = pump.cancel(id) ?: return
-        _state.update {
-            val rest = if (it.composer.isBlank()) "" else "\n" + it.composer
-            it.copy(composer = item.text + rest, queued = pump.queued)
+        viewModelScope.launch {
+            val item = pump.cancel(id) ?: return@launch
+            _state.update {
+                val rest = if (it.composer.isBlank()) "" else "\n" + it.composer
+                it.copy(composer = item.text + rest, queued = pump.queued)
+            }
         }
     }
 
     fun injectQueued(id: String) {
         val st = _state.value
+        val item = pump.queued.firstOrNull { it.id == id } ?: return
         viewModelScope.launch {
             if (st.inFlight && st.gate.canInterrupt && !st.draft) {
                 runCatching {
                     withContext(Dispatchers.IO) { c.harness(nodeDenUrl).interrupt(sessionKeyEnc(st.sessionId)) }
                 }
             }
-            runCatching { pump.pump(forceId = id) }
+            try {
+                pump.pump(forceId = id)
+            } catch (e: Throwable) {
+                if (!isTurnInFlight(e)) {
+                    // The pump dropped the item on a hard failure: say so and hand
+                    // the text back instead of letting it vanish from the strip.
+                    AndroidLogger.warn("RivetHub", "inject failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                    _state.update {
+                        val rest = if (it.composer.isBlank()) "" else "\n" + it.composer
+                        it.copy(error = e.message ?: e.javaClass.simpleName, composer = item.text + rest)
+                    }
+                }
+            }
             publishMachine()
         }
     }
@@ -646,6 +682,8 @@ class HarnessChatViewModel(
 
     private fun startAttach(sessionId: String) {
         attach?.detach()
+        settleJob?.cancel()
+        syncRearm?.cancel()
         sessionWatch?.close()
         sessionWatch = null
         frameJob?.cancel()
@@ -688,7 +726,11 @@ class HarnessChatViewModel(
                         when (val e = f.e) {
                             is HarnessEvent.Transcript -> {
                                 val ok = machine.applyTranscriptFrame(e)
-                                if (!ok) sessionWatch?.send("""{"type":"sync"}""")
+                                if (e.from == 0) {
+                                    awaitingSnapshot = false
+                                    syncRearm?.cancel()
+                                }
+                                if (!ok) requestSync()
                                 if (e.from == 0) {
                                     _state.update {
                                         it.copy(
@@ -729,6 +771,16 @@ class HarnessChatViewModel(
                             is HarnessEvent.TurnComplete -> {
                                 machineAttach.onFrame(e)
                                 runCatching { pump.onTurnComplete() }
+                                // Hook-sourced stores: the post-turn hard resync after the
+                                // settle window (one-shot, re-armed by the frame).
+                                if (machine.liveSource == LiveSource.HOOKS) {
+                                    settleJob?.cancel()
+                                    settleJob = viewModelScope.launch {
+                                        delay(machineAttach.settleMs)
+                                        machineAttach.flushCommittedResync()
+                                        publishMachine()
+                                    }
+                                }
                             }
                             else -> {
                                 machineAttach.onFrame(e)

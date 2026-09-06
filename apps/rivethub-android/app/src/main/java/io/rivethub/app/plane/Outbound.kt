@@ -62,11 +62,13 @@ class OutboundPump(
     fun isStalled(now: Long = nowMs()): Boolean =
         awaitingTurnComplete && now - awaitSince > idleDeadlineMs
 
-    fun cancel(id: String): OutboundItem? {
-        val item = q.firstOrNull { it.id == id } ?: return null
+    /** Remove a QUEUED item (never one mid-send) under the same lock as the pump. */
+    suspend fun cancel(id: String): OutboundItem? = lock.withLock {
+        val item = q.firstOrNull { it.id == id && it.status == OutboundItem.Status.QUEUED }
+            ?: return@withLock null
         q.removeAll { it.id == id }
         attempts.remove(id)
-        return item
+        item
     }
 
     suspend fun pump(forceId: String? = null) = lock.withLock { pumpLocked(forceId) }
@@ -77,10 +79,14 @@ class OutboundPump(
         pumpLocked()
     }
 
-    /** Status went idle — retry a 409-pending item once (attempts cap kept). */
+    /**
+     * Status went idle: whatever turn we were waiting on is over — an accepted
+     * one that never got a `turn-complete` (herdr off, text-only store) as much
+     * as a 409-pending one. Drain the queue (attempts cap kept).
+     */
     suspend fun onIdle() = lock.withLock {
-        if (!pendingOnServer) return@withLock
         awaitingTurnComplete = false
+        pendingOnServer = false
         pumpLocked()
     }
 
