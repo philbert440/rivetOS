@@ -143,6 +143,7 @@ export function formatMissingJsonlMessage(file: string, opts?: { agent?: string 
   } else if (
     file.includes('/.grok/sessions/') ||
     file.includes('/.claude/') ||
+    file.includes('/.codex/sessions/') ||
     file.includes('/sessions/')
   ) {
     layoutHint =
@@ -227,6 +228,82 @@ export async function readJsonlLine(file: string, lineIndex: number): Promise<st
   })
 }
 
+/**
+ * Codex rollout `response_item` line → content + toolResult.
+ * Returns null when the line is not a Codex rollout record so callers can
+ * fall through to dsh / grok parsers.
+ */
+export function extractCodexFromLine(
+  j: unknown,
+): { content: string; toolResult: string | null } | null {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  const rec = j as Record<string, unknown>
+  if (rec.type !== 'response_item') return null
+  const payload =
+    rec.payload && typeof rec.payload === 'object' && !Array.isArray(rec.payload)
+      ? (rec.payload as Record<string, unknown>)
+      : null
+  if (!payload) return { content: '', toolResult: null }
+
+  const contentText = (content: unknown, want: 'input_text' | 'output_text'): string => {
+    if (typeof content === 'string') return content
+    if (!Array.isArray(content)) return ''
+    return content
+      .map((b) => {
+        if (!b || typeof b !== 'object' || Array.isArray(b)) return ''
+        const block = b as Record<string, unknown>
+        if (typeof block.text !== 'string') return ''
+        if (block.type !== want && block.type !== 'text') return ''
+        return block.text
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim()
+  }
+
+  switch (payload.type) {
+    case 'message': {
+      const want = payload.role === 'assistant' ? 'output_text' : 'input_text'
+      return { content: contentText(payload.content, want), toolResult: null }
+    }
+    case 'reasoning': {
+      const parts: string[] = []
+      if (typeof payload.text === 'string' && payload.text) parts.push(payload.text)
+      const collect = (raw: unknown): void => {
+        if (!Array.isArray(raw)) return
+        for (const item of raw) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+          const text = (item as Record<string, unknown>).text
+          if (typeof text === 'string' && text) parts.push(text)
+        }
+      }
+      collect(payload.summary)
+      collect(payload.content)
+      const thinking = parts.join('')
+      return { content: thinking ? `[thinking] ${thinking}` : '', toolResult: null }
+    }
+    case 'custom_tool_call': {
+      const name =
+        typeof payload.name === 'string'
+          ? payload.name
+          : typeof payload.tool === 'string'
+            ? payload.tool
+            : 'unknown'
+      const args = payload.input ?? payload.arguments
+      const toolResult =
+        typeof args === 'string' ? args : args != null ? JSON.stringify(args) : null
+      return { content: `[tool] ${name}`, toolResult }
+    }
+    case 'custom_tool_call_output': {
+      const out = payload.output ?? payload.content
+      const toolResult = typeof out === 'string' ? out : out != null ? JSON.stringify(out) : null
+      return { content: '[tool-result]', toolResult }
+    }
+    default:
+      return { content: '', toolResult: null }
+  }
+}
+
 /** Parse one updates.jsonl line and derive the full content + tool result.
  *  Exported for tests. */
 export function extractFullFromLine(raw: string): { content: string; toolResult: string | null } {
@@ -236,6 +313,12 @@ export function extractFullFromLine(raw: string): { content: string; toolResult:
   } catch {
     return { content: '', toolResult: null }
   }
+
+  // Codex rollout jsonl (`response_item` / payload.type message|reasoning|
+  // custom_tool_call|custom_tool_call_output). Detect before dsh: Codex types
+  // have no slash, dsh types do (`user/message`).
+  const codex = extractCodexFromLine(j)
+  if (codex) return codex
 
   // dsh SessionEvent (type is "user/message", "tool/call", …)
   const eventType: unknown = j?.type
@@ -345,7 +428,8 @@ export function createGetFullTool(pool: pg.Pool): Tool {
         )
       // Non-transcript pointer is a corrupt/unexpected metadata shape — treat
       // as unrecoverable rather than a multi-host miss. dsh writes
-      // session.jsonl.zstd (multi-frame zstd); grok writes updates.jsonl.
+      // session.jsonl.zstd (multi-frame zstd); grok writes updates.jsonl;
+      // Codex writes rollout-<ISO>-<uuid>.jsonl.
       if (!isCaptureTranscriptPath(file))
         return `Source JSONL is gone or invalid (${file}) — the elided tail is unrecoverable.`
       if (!existsSync(file)) return formatMissingJsonlMessage(file, { agent: row.agent })

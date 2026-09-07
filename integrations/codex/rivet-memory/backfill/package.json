@@ -1,0 +1,25 @@
+{
+  "name": "@rivetos/codex-rivet-memory-backfill",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "One-shot backfill that replays Codex CLI rollout jsonl transcripts into the shared RivetOS memory store under agent='rivet-gpt'.",
+  "license": "Apache-2.0",
+  "main": "dist/codex-transcript-backfill.js",
+  "bin": {
+    "codex-rivet-memory-backfill": "dist/codex-transcript-backfill.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx test/backfill.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3"
+  }
+}

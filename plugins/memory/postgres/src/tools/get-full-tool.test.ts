@@ -5,12 +5,13 @@ import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
 import {
   createGetFullTool,
+  extractCodexFromLine,
   extractFullFromLine,
   formatMissingJsonlMessage,
   isCaptureTranscriptPath,
   readJsonlLine,
 } from './get-full-tool.js'
-import { truncationHint } from './helpers.js'
+import { isCodexSessionKey, truncationHint } from './helpers.js'
 
 describe('formatMissingJsonlMessage', () => {
   it('never claims the tail is unrecoverable for a multi-host miss', () => {
@@ -28,9 +29,7 @@ describe('formatMissingJsonlMessage', () => {
   })
 
   it('flags desk-user home paths distinctly', () => {
-    const msg = formatMissingJsonlMessage(
-      '/home/philip/.grok/sessions/foo/updates.jsonl',
-    )
+    const msg = formatMissingJsonlMessage('/home/philip/.grok/sessions/foo/updates.jsonl')
     expect(msg).toContain('desk/user home')
     expect(msg).not.toMatch(/unrecoverable/i)
   })
@@ -135,6 +134,68 @@ describe('extractFullFromLine', () => {
     expect(extractFullFromLine(result).content).toBe('[tool-result] bash')
     expect(extractFullFromLine(result).toolResult).toBe('hi\n')
   })
+
+  it('extracts Codex rollout response_item user/assistant/tool/reasoning', () => {
+    const user = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        id: 'rs_user1',
+        content: [{ type: 'input_text', text: 'list the files' }],
+      },
+    })
+    expect(extractFullFromLine(user).content).toBe('list the files')
+    expect(extractFullFromLine(user).toolResult).toBeNull()
+
+    const assistant = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        id: 'rs_asst1',
+        content: [{ type: 'output_text', text: 'here they are' }],
+      },
+    })
+    expect(extractFullFromLine(assistant).content).toBe('here they are')
+
+    const think = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'reasoning',
+        id: 'rs_think1',
+        summary: [{ type: 'summary_text', text: 'I should list' }],
+      },
+    })
+    expect(extractFullFromLine(think).content).toBe('[thinking] I should list')
+
+    const call = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        id: 'ctc_1',
+        name: 'shell',
+        input: JSON.stringify({ command: 'ls' }),
+      },
+    })
+    expect(extractFullFromLine(call)).toEqual({
+      content: '[tool] shell',
+      toolResult: JSON.stringify({ command: 'ls' }),
+    })
+
+    const result = JSON.stringify({
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        id: 'ctco_1',
+        call_id: 'ctc_1',
+        output: 'a.txt\n' + 'z'.repeat(100),
+      },
+    })
+    expect(extractFullFromLine(result).content).toBe('[tool-result]')
+    expect(extractFullFromLine(result).toolResult).toContain('a.txt')
+    expect(extractCodexFromLine({ type: 'session_meta' })).toBeNull()
+  })
 })
 
 describe('isCaptureTranscriptPath', () => {
@@ -144,7 +205,21 @@ describe('isCaptureTranscriptPath', () => {
       isCaptureTranscriptPath('/home/rivet/.dsh/sessions/ws/session-abc/session.jsonl.zstd'),
     ).toBe(true)
     expect(isCaptureTranscriptPath('/tmp/session.jsonl.zst')).toBe(true)
+    expect(
+      isCaptureTranscriptPath(
+        '/home/rivet/.codex/sessions/2026/09/07/rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+      ),
+    ).toBe(true)
     expect(isCaptureTranscriptPath('/tmp/notes.txt')).toBe(false)
+  })
+})
+
+describe('isCodexSessionKey', () => {
+  it('accepts codex:<uuid> and rejects other schemes', () => {
+    expect(isCodexSessionKey('codex:89965427-b96f-4d5e-8ad5-c3dd138e33dc')).toBe(true)
+    expect(isCodexSessionKey('kimi-code:abc')).toBe(false)
+    expect(isCodexSessionKey('codex:not-a-uuid')).toBe(false)
+    expect(isCodexSessionKey(null)).toBe(false)
   })
 })
 
@@ -246,5 +321,45 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
     expect(out).toContain('agent=rivet-claude')
     expect(out).toContain('Next steps')
     expect(out).not.toMatch(/unrecoverable/i)
+  })
+
+  it('recovers a truncated Codex rollout line from disk', async () => {
+    const big = 'z'.repeat(30_000)
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-codex-'))
+    const file = join(dir, 'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl')
+    const lines = [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: { id: '89965427-b96f-4d5e-8ad5-c3dd138e33dc' },
+      }),
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          id: 'ctco_1',
+          call_id: 'ctc_1',
+          output: big,
+        },
+      }),
+    ]
+    writeFileSync(file, lines.join('\n') + '\n', 'utf8')
+
+    const row = {
+      id: 'row-codex',
+      content: '[tool-result] shell',
+      tool_name: 'shell',
+      tool_result: 'preview…',
+      agent: 'rivet-gpt',
+      metadata: {
+        truncated: true,
+        session_jsonl_path: file,
+        session_jsonl_line: 1,
+        full_tool_result_length: big.length,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+    const out = await createGetFullTool(pool).execute({ id: 'row-codex' })
+    expect(out).toContain('## Full payload for row-codex')
+    expect(out).toContain(big)
   })
 })
