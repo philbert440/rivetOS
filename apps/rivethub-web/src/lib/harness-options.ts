@@ -3,7 +3,7 @@
  * A model's own `efforts` wins over harness-wide `efforts`.
  */
 
-import type { EffortOption, HarnessCapabilities } from '@rivetos/types'
+import type { EffortOption, HarnessCapabilities, HarnessId } from '@rivetos/types'
 import type { SelectOption } from '../components/select.js'
 
 export type HarnessSheet = Pick<
@@ -11,17 +11,29 @@ export type HarnessSheet = Pick<
   'models' | 'efforts' | 'modelFlag' | 'effortFlag'
 >
 
-const HARNESS_LABEL: Record<string, string> = {
+const HARNESS_LABEL: Record<HarnessId, string> = {
   'claude-code': 'Claude Code',
   'grok-build': 'grok Build',
   'kimi-code': 'Kimi Code',
   hermes: 'Hermes',
   'deepseek-harness': 'DeepSeek',
+  codex: 'Codex',
+}
+
+/** Client-side Codex sheet — same lists as den `codexSheet()` (no spawn flags). */
+export const CODEX_SHEET: HarnessSheet = {
+  models: [{ id: 'default', label: 'Default', default: true }],
+  efforts: [
+    { id: 'low', label: 'Low' },
+    { id: 'medium', label: 'Medium', default: true },
+    { id: 'high', label: 'High' },
+    { id: 'xhigh', label: 'X-High' },
+  ],
 }
 
 export function harnessLabel(harnessId?: string): string {
   if (!harnessId) return ''
-  return HARNESS_LABEL[harnessId] ?? harnessId
+  return (HARNESS_LABEL as Record<string, string>)[harnessId] ?? harnessId
 }
 
 function toOptions(rows: { id: string; label: string }[] | undefined): SelectOption[] {

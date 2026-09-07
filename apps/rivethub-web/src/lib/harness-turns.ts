@@ -27,7 +27,8 @@ import type { LiveToolEntry, LiveTurn } from './fold-stream.js'
  * Roster / harness tokens whose on-disk store carries in-flight turns
  * (tools + thinking). Matches adapter `capabilities().liveTurn` — the
  * transcript event does not carry that flag, so we key on `command`.
- * `dsh` stays hook-sourced (no decompressor).
+ * `dsh` stays hook-sourced (no decompressor). Codex is on the same branch
+ * as claude/kimi (tools + reasoning in the transcript).
  */
 export function isLiveTurnCommand(command: string): boolean {
   const c = command.toLowerCase()
@@ -38,7 +39,8 @@ export function isLiveTurnCommand(command: string): boolean {
     c === 'kimi-code' ||
     c === 'grok' ||
     c === 'grok-build' ||
-    c === 'hermes'
+    c === 'hermes' ||
+    c === 'codex'
   )
 }
 

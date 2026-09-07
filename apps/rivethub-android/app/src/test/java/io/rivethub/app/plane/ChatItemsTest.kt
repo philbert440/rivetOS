@@ -255,6 +255,11 @@ class ChatItemsTest {
         assertEquals("claude-code", pins[0].harnessId)
     }
 
+    @Test fun `roster command maps kimi-code and codex`() {
+        assertEquals("kimi", rosterCommandFor("kimi-code"))
+        assertEquals("codex", rosterCommandFor("codex"))
+    }
+
     @Test fun `findChatItem matches canonical then native`() {
         val items = chatItems(
             mapOf("claude-code" to Result.success(listOf(summary(uuidA)))),

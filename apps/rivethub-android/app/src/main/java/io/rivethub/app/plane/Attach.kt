@@ -33,11 +33,11 @@ data class AgentStatus(
 
 /**
  * Stores that expose in-flight turns (tools, thinking, completion) — den's
- * adapter matrix (#709): claude, kimi, grok, hermes. dsh stays hook-sourced.
+ * adapter matrix (#709): claude, kimi, grok, hermes, codex. dsh stays hook-sourced.
  */
 fun isLiveTurnStore(command: String): Boolean {
     val c = command.lowercase()
-    return listOf("claude", "kimi", "grok", "hermes").any { c == it || c.startsWith(it) }
+    return listOf("claude", "kimi", "grok", "hermes", "codex").any { c == it || c.startsWith(it) }
 }
 
 /**
