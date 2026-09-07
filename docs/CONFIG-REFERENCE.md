@@ -182,6 +182,20 @@ agents:
 
 LLM provider configuration. Each key is a provider ID referenced by agents.
 
+### OpenAI Codex CLI (ChatGPT subscription)
+
+```yaml
+providers:
+  codex-cli:
+    model: default
+    sandbox: read-only
+    session: resume
+```
+
+Runs `codex exec --json` using the same login as the Codex TUI. Install Codex, run `codex login`, and add `@rivetos/provider-codex-cli` to `plugins`; no `OPENAI_API_KEY` is required. `model: default` follows the CLI's configured model.
+
+Options are `binary`, `model`, `reasoning_effort` (`low` through `xhigh`), `cwd`, `sandbox` (`read-only`, `workspace-write`, or `danger-full-access`), `approve_for_me`, `skip_git_repo_check`, `profile`, `session` (`resume` or `replay`), `context_window`, and `max_output_tokens`. The default sandbox is `read-only`; broaden it deliberately.
+
 ### Anthropic
 
 ```yaml

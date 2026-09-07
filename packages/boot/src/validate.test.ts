@@ -314,7 +314,7 @@ describe('Config Validation', () => {
     })
 
     it('accepts all valid thinking levels', () => {
-      for (const level of ['off', 'low', 'medium', 'high']) {
+      for (const level of ['off', 'low', 'medium', 'high', 'xhigh']) {
         const cfg = validConfig()
         ;(cfg.agents as Record<string, Record<string, unknown>>).opus.default_thinking = level
         const result = validateConfig(cfg)
@@ -356,7 +356,7 @@ describe('Config Validation', () => {
     })
 
     it('allows CLI harness providers without model', () => {
-      for (const name of ['grok-cli', 'hermes-cli', 'kimi-code', 'claude-cli']) {
+      for (const name of ['grok-cli', 'hermes-cli', 'kimi-code', 'claude-cli', 'codex-cli']) {
         const cfg = validConfig()
         ;(cfg.providers as Record<string, unknown>)[name] = {}
         const result = validateConfig(cfg)
@@ -370,6 +370,22 @@ describe('Config Validation', () => {
       ;(cfg.providers as Record<string, unknown>)['grok-cli'] = { session: 'resume' }
       const result = validateConfig(cfg)
       assertError(result, 'providers.anthropic.model', 'missing required field "model"')
+    })
+
+    it('accepts the Codex CLI provider configuration', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>)['codex-cli'] = {
+        model: MODEL_DEFAULTS['codex-cli'],
+        reasoning_effort: 'high',
+        sandbox: 'read-only',
+        session: 'resume',
+      }
+      ;(cfg.agents as Record<string, unknown>).codex = {
+        provider: 'codex-cli',
+        default_thinking: 'xhigh',
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
     })
 
     it('accepts session on grok-cli without an unknown-key warning', () => {

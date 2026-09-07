@@ -135,6 +135,7 @@ interface LLMChunk {
 | vllm | `plugins/providers/vllm/` | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`); folds mid-conversation system messages |
 | llama-server | `plugins/providers/llama-server/` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body`); folds mid-conversation system messages |
 | claude-cli | `plugins/providers/claude-cli/` | Drives the `claude` binary via stream-json; embedded MCP bridge for hybrid tools |
+| codex-cli | `plugins/providers/codex-cli/` | Drives `codex exec --json`; ChatGPT subscription login and per-conversation thread resume |
 
 ---
 

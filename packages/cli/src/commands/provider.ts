@@ -2,6 +2,7 @@
  * rivetos <provider> <action>
  *
  * Provider-specific commands:
+ *   rivetos codex-cli status     — check Codex CLI login
  *   rivetos anthropic status     — check connectivity
  *   rivetos xai status           — check connectivity
  *   rivetos google status        — check connectivity
@@ -9,6 +10,8 @@
  *   rivetos ollama models        — list models
  *   rivetos ollama pull <model>  — pull a model
  */
+
+import { spawn } from 'node:child_process'
 
 interface OllamaModel {
   name: string
@@ -29,6 +32,9 @@ export default async function provider(providerName: string): Promise<void> {
   }
 
   switch (providerName) {
+    case 'codex-cli':
+      await handleCodexCli(action)
+      break
     case 'anthropic':
       await handleAnthropic(action)
       break
@@ -85,6 +91,26 @@ async function handleAnthropic(action: string): Promise<void> {
 
     default:
       showProviderHelp('anthropic')
+  }
+}
+
+async function handleCodexCli(action: string): Promise<void> {
+  if (action !== 'status') {
+    showProviderHelp('codex-cli')
+    return
+  }
+  const result = await new Promise<{ code: number | null; output: string }>((resolve) => {
+    const child = spawn('codex', ['login', 'status'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let output = ''
+    child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()))
+    child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()))
+    child.once('error', (error) => resolve({ code: null, output: error.message }))
+    child.once('close', (code) => resolve({ code, output }))
+  })
+  if (result.code === 0) console.log(`✓ Codex CLI: ${result.output.trim() || 'logged in'}`)
+  else {
+    console.error(`✗ Codex CLI unavailable or not logged in: ${result.output.trim()}`)
+    process.exitCode = 1
   }
 }
 
@@ -245,6 +271,7 @@ async function handleOllama(action: string): Promise<void> {
 
 function showProviderHelp(name: string): void {
   const commands: Record<string, string[]> = {
+    'codex-cli': ['rivetos codex-cli status     Check installed CLI and ChatGPT login'],
     anthropic: ['rivetos anthropic status     Check connectivity'],
     xai: ['rivetos xai status           Check connectivity'],
     google: ['rivetos google status        Check connectivity'],

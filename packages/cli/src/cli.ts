@@ -78,6 +78,7 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   workflow: () => import('./commands/workflow.js').then((m) => m.default()),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
+  'codex-cli': () => import('./commands/provider.js').then((m) => m.default('codex-cli')),
   anthropic: () => import('./commands/provider.js').then((m) => m.default('anthropic')),
   xai: () => import('./commands/provider.js').then((m) => m.default('xai')),
   google: () => import('./commands/provider.js').then((m) => m.default('google')),
@@ -186,6 +187,7 @@ export function helpText(): string {
     rivetos workflow new <name>         Scaffold a workflow directory
 
   Providers:
+    rivetos codex-cli status            Check Codex CLI login
     rivetos anthropic status            Check Anthropic connectivity
     rivetos xai status                  Check xAI connectivity
     rivetos google status               Check Google connectivity

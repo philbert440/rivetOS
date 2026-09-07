@@ -930,7 +930,6 @@ async function checkDNS(rawConfig: string | null): Promise<CheckResult[]> {
       if (providers.anthropic) hosts.push('api.anthropic.com')
       if (providers.xai) hosts.push('api.x.ai')
       if (providers.google) hosts.push('generativelanguage.googleapis.com')
-      if (providers.openai) hosts.push('api.openai.com')
     } catch {
       /* expected */
     }
@@ -1430,6 +1429,17 @@ async function checkProviderConnectivity(
   const timeout = 5000
 
   switch (name) {
+    case 'codex-cli':
+      try {
+        execFileSync((config.binary as string | undefined) ?? 'codex', ['login', 'status'], {
+          stdio: 'ignore',
+          timeout,
+        })
+        return true
+      } catch {
+        return false
+      }
+
     case 'anthropic': {
       const apiKey = (config.api_key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? ''
       if (!apiKey) return false

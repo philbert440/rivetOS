@@ -168,16 +168,35 @@ export const REMOVED_PROVIDERS = new Map<string, string>([
   ],
 ])
 
-export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high'])
+export const VALID_THINKING_LEVELS = new Set(['off', 'low', 'medium', 'high', 'xhigh'])
 
 /**
  * CLI harness providers shell out to a local coding-agent binary that has
  * its own configured default model. `providers.<id>.model` is optional for
  * these; API providers still require it.
  */
-export const CLI_HARNESS_PROVIDERS = new Set(['grok-cli', 'hermes-cli', 'kimi-code', 'claude-cli'])
+export const CLI_HARNESS_PROVIDERS = new Set([
+  'grok-cli',
+  'hermes-cli',
+  'kimi-code',
+  'claude-cli',
+  'codex-cli',
+])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
+  'codex-cli': new Set([
+    'model',
+    'binary',
+    'reasoning_effort',
+    'cwd',
+    'sandbox',
+    'approve_for_me',
+    'skip_git_repo_check',
+    'profile',
+    'session',
+    'context_window',
+    'max_output_tokens',
+  ]),
   anthropic: new Set(['model', 'max_tokens', 'api_key', 'context_window', 'max_output_tokens']),
   'grok-cli': new Set([
     'model',

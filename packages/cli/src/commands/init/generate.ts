@@ -134,9 +134,9 @@ function buildProviderConfig(agent: WizardAgent): Record<string, unknown> {
     model: agent.model,
   }
 
-  // claude-cli doesn't accept max_tokens — the CLI binary owns generation params.
+  // CLI harnesses don't accept max_tokens — their binaries own generation params.
   // Every other provider gets the default cap.
-  if (agent.provider !== 'claude-cli') {
+  if (agent.provider !== 'claude-cli' && agent.provider !== 'codex-cli') {
     config.max_tokens = 8192
   }
 
