@@ -622,6 +622,30 @@ describe('pty-harness-driver transcript tracker', () => {
     }
   }
 
+  it('a later subscriber gets the current status straight away (the first one gets it from the snapshot)', async () => {
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
+    const first: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => first.push(e))
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'claude',
+      turns: [
+        { role: 'user', text: 'go' },
+        { role: 'assistant', text: 'done', lastBlock: 'text', stopReason: 'end_turn', complete: true },
+      ],
+    })
+    expect(first.some((e) => e.type === 'status' && e.status === 'idle')).toBe(true)
+    const later: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => later.push(e))
+    expect(later[0]).toMatchObject({ type: 'status', sessionId: sid, status: 'idle', source: 'transcript' })
+    driver.close()
+  })
+
   it('liveStream is honest: true with a transcript dep on a live-turn store, even without a hook tap', () => {
     const tx = fakeTranscript()
     const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
@@ -990,6 +1014,108 @@ const CLAUDE_PERM_SCREEN = `\
 describe('pty-harness-driver permission prompts', () => {
   const sid = ClaudeCodeDriver.sessionId(UUID)
 
+  it('an already-answered AskUserQuestion in the store does NOT resolve a new screen picker; a newer one does', async () => {
+    const pty = fakePty()
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      transcript: tx,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    const answered = (id: string, text: string) => ({
+      role: 'assistant' as const,
+      text: '',
+      lastBlock: 'tool_result' as const,
+      stopReason: 'tool_use',
+      tools: [{ id, name: 'AskUserQuestion', status: 'done' as const, resultText: text, input: { questions: [] } }],
+    })
+    tx.emit(sid, { kind: 'transcript', session: sid, rev: 1, from: 0, total: 2, command: 'claude', turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')] })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const opened = seen.find((e) => e.type === 'prompt' && !e.resolved)
+    expect(opened).toBeDefined()
+    // a sync re-snapshot carrying the OLD answer again
+    tx.emit(sid, { kind: 'transcript', session: sid, rev: 2, from: 0, total: 2, command: 'claude', turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')] })
+    expect(seen.some((e) => e.type === 'prompt' && e.resolved)).toBe(false)
+    // the NEW question's answer lands
+    tx.emit(sid, { kind: 'transcript', session: sid, rev: 3, from: 2, total: 3, command: 'claude', turns: [answered('q-new', 'Green')] })
+    const resolved = seen.find((e) => e.type === 'prompt' && e.resolved)
+    expect(resolved && resolved.resolved?.answerText).toBe('Green')
+    driver.close()
+  })
+
+  it('a later subscriber gets the open screen prompt replayed (status first, then the prompt)', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const later: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => later.push(e))
+    expect(later[0]).toMatchObject({ type: 'status', status: 'blocked', phase: 'prompt' })
+    expect(later[1]).toMatchObject({ type: 'prompt', kind: 'ask-user', promptId: `screen:${UUID}:1` })
+    driver.close()
+  })
+
+  it('a multi-question picker emits only the current question with its position; answering a non-last single-select presses the digit and resolves it', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_MULTI_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const p = seen.find((e) => e.type === 'prompt' && !e.resolved)
+    expect(p && p.questions.length).toBe(1)
+    expect(p && p.screen).toEqual({ current: 0, total: 2 })
+    await driver.answerPrompt(sid, `screen:${UUID}:1`, [{ question: 0, labels: ['Green'] }])
+    expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
+    expect(seen.some((e) => e.type === 'prompt' && e.resolved && e.promptId === `screen:${UUID}:1`)).toBe(true)
+    driver.close()
+  })
+
+  it('a finished picker lingering above a live permission dialog yields the dialog, not a prompt', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => PICKER_ABOVE_DIALOG_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(true)
+    expect(seen.some((e) => e.type === 'prompt')).toBe(false)
+    driver.close()
+  })
+
   it('blocked → screen → approval-request with options', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({
@@ -1273,6 +1399,217 @@ describe('pty-harness-driver permission prompts', () => {
     grok.close()
     kimi.close()
     hermes.close()
+  })
+})
+
+const CLAUDE_PICKER_SCREEN = `\
+Which color would you like?
+❯ 1. Red
+     The color red
+  2. Green
+     The color green
+  3. Blue
+     The color blue
+  4. Type something.
+────────────────────────────────────────────
+  5. Chat about this
+Enter to select · ↑/↓ to navigate · Esc to cancel
+`
+
+const CLAUDE_PICKER_MULTI_SCREEN = `\
+←  ☐ Color  ☐ Toppings  ✔ Submit  →
+What color would you like?
+❯ 1. Red
+     The color red
+  2. Green
+     The color green
+  3. Blue
+     The color blue
+  4. Type something.
+────────────────────────────────────────────
+  5. Chat about this
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+`
+
+const PICKER_ABOVE_DIALOG_SCREEN = `\
+Which color would you like?
+❯ 1. Red
+  2. Green
+  3. Type something.
+Enter to select · ↑/↓ to navigate · Esc to cancel
+ Bash command
+   mkdir -p zz && rm -r zz && echo done
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don't ask again for mkdir
+   3. No
+ Esc to cancel · Tab to amend
+`
+
+describe('pty-harness-driver screen AskUserQuestion picker', () => {
+  const sid = ClaudeCodeDriver.sessionId(UUID)
+
+  it('blocked → screen picker → prompt event', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.find((e) => e.type === 'prompt')).toMatchObject({
+      type: 'prompt',
+      sessionId: sid,
+      promptId: `screen:${UUID}:1`,
+      kind: 'ask-user',
+      toolName: 'AskUserQuestion',
+      questions: [
+        {
+          question: 'Which color would you like?',
+          multiSelect: false,
+          options: [
+            { label: 'Red', description: 'The color red' },
+            { label: 'Green', description: 'The color green' },
+            { label: 'Blue', description: 'The color blue' },
+          ],
+        },
+      ],
+    })
+    expect(seen.filter((e) => e.type === 'approval-request')).toEqual([])
+    driver.close()
+  })
+
+  it('answerPrompt on a screen id injects the expected keys', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    await driver.answerPrompt(sid, `screen:${UUID}:1`, [{ question: 0, labels: ['Green'] }])
+    expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
+    driver.close()
+  })
+
+  it('leaving blocked resolves the screen prompt', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 2 })
+    const resolved = seen.filter((e) => e.type === 'prompt')
+    expect(resolved).toHaveLength(2)
+    expect(resolved[1]).toMatchObject({
+      type: 'prompt',
+      promptId: `screen:${UUID}:1`,
+      resolved: { at: expect.any(Number) },
+    })
+    expect(
+      resolved[1] && 'resolved' in resolved[1] ? resolved[1].resolved?.answerText : 'missing',
+    ).toBeUndefined()
+    driver.close()
+  })
+
+  it('a later transcript resultText does not emit a second resolved', async () => {
+    const pty = fakePty()
+    const tx = fakeTranscript()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      transcript: tx,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 2 })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'claude',
+      turns: [
+        { role: 'user', text: 'ask' },
+        {
+          role: 'assistant',
+          text: '',
+          lastBlock: 'tool_result',
+          stopReason: 'tool_use',
+          tools: [
+            {
+              name: 'AskUserQuestion',
+              status: 'done',
+              id: 'ask_1',
+              resultText: 'Color: Green',
+            },
+          ],
+        },
+      ],
+    })
+    expect(seen.filter((e) => e.type === 'prompt' && 'resolved' in e && e.resolved)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('blocked while a screen picker is pending stamps promptId and skips approval', async () => {
+    const pty = fakePty()
+    let screen = CLAUDE_PICKER_SCREEN
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => screen,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    screen = CLAUDE_PERM_SCREEN
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 2 })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(
+      seen.find((e) => e.type === 'status' && e.status === 'blocked' && e.since === 2),
+    ).toMatchObject({
+      source: 'herdr',
+      promptId: `screen:${UUID}:1`,
+      phase: 'prompt',
+    })
+    expect(seen.filter((e) => e.type === 'approval-request')).toEqual([])
+    driver.close()
   })
 })
 
