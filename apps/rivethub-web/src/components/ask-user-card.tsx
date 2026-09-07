@@ -1,6 +1,12 @@
 import { useRef, useState, type JSX } from 'react'
 import { MessageSquare, X } from 'lucide-react'
-import { composeAskAnswer, type AskQuestion } from '../lib/ask-user.js'
+import {
+  askCardMode,
+  askErrorMessage,
+  composeAskAnswer,
+  type AskQuestion,
+  type AskScreen,
+} from '../lib/ask-user.js'
 
 /**
  * Ask card — pops up from the top of the composer when the agent prompts the
@@ -30,6 +36,8 @@ export function AskUserCard(props: {
   onDismiss: () => void
   /** Focus the composer textarea ("chat about it"). */
   onFocusComposer?: () => void
+  /** Screen-read picker position. Absent on store-derived AskUserQuestion. */
+  screen?: AskScreen
 }): JSX.Element | null {
   // label selections per question index
   const [picked, setPicked] = useState<Record<number, string[]>>({})
@@ -40,7 +48,18 @@ export function AskUserCard(props: {
   const inFlight = useRef(false)
   if (props.questions.length === 0) return null
 
-  const single = props.questions.length === 1 && !props.questions[0].multiSelect
+  const screen = props.screen
+  const only = props.questions.length === 1 ? props.questions[0] : undefined
+  const cardMode = only ? askCardMode(only, screen) : 'answer'
+  const hideFreeText = (screen !== undefined && screen.total > 1) || cardMode !== 'answer'
+  // A single-select screen question submits on the option click (den presses
+  // the digit) — a footer with a never-enabled button would just be noise.
+  // (only for a multi-question picker: a single screen question still takes a typed answer)
+  const hideSubmit =
+    cardMode !== 'answer' ||
+    (screen !== undefined && screen.total > 1 && only !== undefined && !only.multiSelect)
+  const single =
+    props.questions.length === 1 && !props.questions[0].multiSelect && cardMode === 'answer'
 
   const toggle = (qi: number, label: string, multi: boolean): void => {
     setPicked((p) => {
@@ -71,11 +90,12 @@ export function AskUserCard(props: {
       void props.onAnswerStructured(structured(picks)).then(
         () => {
           inFlight.current = false
+          setSending(false)
         },
         (err: unknown) => {
           inFlight.current = false
           setSending(false)
-          setError(err instanceof Error ? err.message : String(err))
+          setError(askErrorMessage(err))
         },
       )
       return
@@ -102,7 +122,11 @@ export function AskUserCard(props: {
       className="mb-2 rounded-xl border border-em-dim/50 bg-panel shadow-lg shadow-bg/40"
     >
       <div className="flex items-center justify-between border-b border-line/60 px-3 py-1.5">
-        <span className="font-mono text-[11px] text-em">Rivet is asking</span>
+        <span className="font-mono text-[11px] text-em">
+          {screen
+            ? `Question ${String(screen.current + 1)} of ${String(screen.total)}`
+            : 'Rivet is asking'}
+        </span>
         <div className="flex items-center gap-1.5">
           {props.onFocusComposer && (
             <button
@@ -132,10 +156,19 @@ export function AskUserCard(props: {
         </div>
       </div>
       <div className="max-h-72 space-y-3 overflow-y-auto px-3 py-2.5">
+        {screen &&
+          cardMode === 'answer' &&
+          screen.total > 1 &&
+          screen.current < screen.total - 1 && (
+            <div className="font-mono text-[10px] text-ink-dim">
+              answering here moves the terminal to the next question
+            </div>
+          )}
         {props.questions.map((q, qi) => {
           const labelId = `ask-q-${String(qi)}`
           const hintId = `ask-q-hint-${String(qi)}`
           const title = q.question ?? q.header
+          const qMode = askCardMode(q, only ? screen : undefined)
           return (
             <div key={qi}>
               {title && (
@@ -143,88 +176,105 @@ export function AskUserCard(props: {
                   {title}
                 </div>
               )}
-              {q.multiSelect && (
+              {q.multiSelect && qMode === 'answer' && (
                 <div id={hintId} className="mb-1 font-mono text-[10px] text-ink-dim">
                   select all that apply
                 </div>
               )}
-              <div
-                className="flex flex-col gap-1"
-                role={q.multiSelect ? 'group' : 'radiogroup'}
-                aria-labelledby={title ? labelId : undefined}
-                aria-describedby={q.multiSelect ? hintId : undefined}
-              >
-                {q.options.map((o) => {
-                  const selected = (picked[qi] ?? []).includes(o.label)
-                  return (
-                    <button
-                      key={o.label}
-                      type="button"
-                      role={q.multiSelect ? 'checkbox' : 'radio'}
-                      aria-checked={selected}
-                      disabled={props.disabled || sending}
-                      onClick={() => {
-                        // Fast path: one bare single-select click answers now;
-                        // typed text makes the click COMBINE instead of drop it.
-                        if (single) {
-                          submit({ 0: [o.label] })
-                          return
-                        }
-                        toggle(qi, o.label, q.multiSelect)
-                      }}
-                      className={`flex items-start gap-2 rounded-lg border px-3 py-1.5 text-left text-xs transition-colors disabled:opacity-40 ${
-                        selected
-                          ? 'border-em bg-em-dim/25 text-em'
-                          : 'border-line bg-panel-2/40 text-ink hover:border-em-dim hover:bg-em-dim/10'
-                      }`}
-                    >
-                      {/* affordance: square = pick many, circle = pick one */}
-                      <span
-                        aria-hidden
-                        className={`mt-0.5 inline-block size-3 shrink-0 border ${
-                          q.multiSelect ? 'rounded-[3px]' : 'rounded-full'
-                        } ${selected ? 'border-em bg-em' : 'border-ink-dim bg-transparent'}`}
-                      />
-                      <span className="min-w-0">
-                        <span className={selected ? 'text-em' : 'text-ink'}>{o.label}</span>
-                        {o.description && (
-                          <span className="mt-0.5 block text-[11px] leading-snug text-ink-dim">
-                            {o.description}
+              {qMode === 'no-options' ? (
+                <div className="font-mono text-[11px] text-ink-dim">
+                  options not visible — answer in the terminal
+                </div>
+              ) : (
+                <>
+                  {qMode === 'terminal-only' && (
+                    <div className="mb-1 font-mono text-[11px] text-ink-dim">
+                      answer this one in the terminal
+                    </div>
+                  )}
+                  <div
+                    className="flex flex-col gap-1"
+                    role={q.multiSelect ? 'group' : 'radiogroup'}
+                    aria-labelledby={title ? labelId : undefined}
+                    aria-describedby={q.multiSelect && qMode === 'answer' ? hintId : undefined}
+                  >
+                    {q.options.map((o) => {
+                      const selected = (picked[qi] ?? []).includes(o.label)
+                      return (
+                        <button
+                          key={o.label}
+                          type="button"
+                          role={q.multiSelect ? 'checkbox' : 'radio'}
+                          aria-checked={selected}
+                          disabled={props.disabled || sending || qMode === 'terminal-only'}
+                          onClick={() => {
+                            // Fast path: one bare single-select click answers now;
+                            // typed text makes the click COMBINE instead of drop it.
+                            if (single) {
+                              submit({ 0: [o.label] })
+                              return
+                            }
+                            toggle(qi, o.label, q.multiSelect)
+                          }}
+                          className={`flex items-start gap-2 rounded-lg border px-3 py-1.5 text-left text-xs transition-colors disabled:opacity-40 ${
+                            selected
+                              ? 'border-em bg-em-dim/25 text-em'
+                              : 'border-line bg-panel-2/40 text-ink hover:border-em-dim hover:bg-em-dim/10'
+                          }`}
+                        >
+                          {/* affordance: square = pick many, circle = pick one */}
+                          <span
+                            aria-hidden
+                            className={`mt-0.5 inline-block size-3 shrink-0 border ${
+                              q.multiSelect ? 'rounded-[3px]' : 'rounded-full'
+                            } ${selected ? 'border-em bg-em' : 'border-ink-dim bg-transparent'}`}
+                          />
+                          <span className="min-w-0">
+                            <span className={selected ? 'text-em' : 'text-ink'}>{o.label}</span>
+                            {o.description && (
+                              <span className="mt-0.5 block text-[11px] leading-snug text-ink-dim">
+                                {o.description}
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           )
         })}
       </div>
-      <div className="flex items-center gap-2 border-t border-line/60 px-3 py-1.5">
-        <input
-          value={own}
-          onChange={(e) => setOwn(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-          disabled={props.disabled || sending}
-          aria-label="Type your own answer"
-          placeholder="type your own answer…"
-          className="min-w-0 flex-1 rounded border border-line bg-panel-2/40 px-2 py-1 text-xs text-ink placeholder:text-ink-dim focus:border-em-dim focus:outline-none disabled:opacity-40"
-        />
-        <button
-          type="button"
-          disabled={!composed || props.disabled || sending}
-          onClick={() => submit()}
-          className="rounded border border-em bg-em-dim/20 px-3 py-1 text-xs text-em hover:bg-em-dim/40 disabled:opacity-40"
-        >
-          {sending ? 'sending…' : own.trim() ? 'Answer' : 'Send answers'}
-        </button>
-      </div>
+      {!hideSubmit && (
+        <div className="flex items-center gap-2 border-t border-line/60 px-3 py-1.5">
+          {!hideFreeText && (
+            <input
+              value={own}
+              onChange={(e) => setOwn(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              disabled={props.disabled || sending}
+              aria-label="Type your own answer"
+              placeholder="type your own answer…"
+              className="min-w-0 flex-1 rounded border border-line bg-panel-2/40 px-2 py-1 text-xs text-ink placeholder:text-ink-dim focus:border-em-dim focus:outline-none disabled:opacity-40"
+            />
+          )}
+          <button
+            type="button"
+            disabled={!composed || props.disabled || sending}
+            onClick={() => submit()}
+            className="rounded border border-em bg-em-dim/20 px-3 py-1 text-xs text-em hover:bg-em-dim/40 disabled:opacity-40"
+          >
+            {sending ? 'sending…' : own.trim() ? 'Answer' : 'Send answers'}
+          </button>
+        </div>
+      )}
       {error && (
         <p role="alert" className="mt-1 text-xs text-red">
           {error}

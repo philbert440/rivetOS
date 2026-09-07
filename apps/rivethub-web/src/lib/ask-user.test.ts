@@ -4,6 +4,8 @@ import {
   isAskUserTool,
   questionsFromLiveTools,
   composeAskAnswer,
+  askCardMode,
+  askErrorMessage,
   type AskQuestion,
 } from './ask-user.js'
 
@@ -161,5 +163,50 @@ describe('composeAskAnswer', () => {
 
   it('empty picks + empty text compose nothing', () => {
     expect(composeAskAnswer([mk()], {}, '   ')).toBe('')
+  })
+})
+
+describe('askCardMode', () => {
+  const q = (over: Partial<AskQuestion> = {}): AskQuestion => ({
+    multiSelect: false,
+    options: [{ label: 'A' }, { label: 'B' }],
+    ...over,
+  })
+
+  it('answers a normal question with no screen', () => {
+    expect(askCardMode(q())).toBe('answer')
+  })
+
+  it('is no-options when the option list is empty (wins over screen)', () => {
+    expect(askCardMode(q({ options: [] }))).toBe('no-options')
+    expect(askCardMode(q({ options: [] }), { current: 2, total: 3 })).toBe('no-options')
+  })
+
+  it('answers a non-last screen-read question', () => {
+    expect(askCardMode(q(), { current: 0, total: 3 })).toBe('answer')
+    expect(askCardMode(q(), { current: 1, total: 3 })).toBe('answer')
+  })
+
+  it('is terminal-only for the last single-select of several', () => {
+    expect(askCardMode(q(), { current: 2, total: 3 })).toBe('terminal-only')
+  })
+
+  it('still answers the last question when it is multiSelect or the only one', () => {
+    expect(askCardMode(q({ multiSelect: true }), { current: 2, total: 3 })).toBe('answer')
+    expect(askCardMode(q(), { current: 0, total: 1 })).toBe('answer')
+  })
+})
+
+describe('askErrorMessage', () => {
+  it('prefers Error.message (den bad_request text on GatewayError)', () => {
+    expect(askErrorMessage(new Error('answer this one in the terminal'))).toBe(
+      'answer this one in the terminal',
+    )
+  })
+
+  it('reads body.error when message is missing', () => {
+    expect(
+      askErrorMessage({ body: { error: 'free text with several questions is not supported' } }),
+    ).toBe('free text with several questions is not supported')
   })
 })

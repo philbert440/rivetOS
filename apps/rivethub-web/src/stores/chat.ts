@@ -250,6 +250,12 @@ interface ChatState {
   applyHarnessTranscriptEvent: (sessionId: string, event: HarnessTranscriptEvent) => boolean
   applyPromptEvent: (sessionId: string, event: HarnessPromptEvent) => void
   applyAgentStatus: (sessionId: string, event: HarnessStatusFrame) => void
+  /**
+   * Drop open prompts and approvals for a session. Called on every socket
+   * open so a card resolved while disconnected cannot linger (answering it
+   * 404s); den then replays whatever is still open.
+   */
+  clearHarnessPrompts: (sessionId: string) => void
   /** Drop one pending approval (answered locally). */
   clearApproval: (sessionId: string, requestId: string) => void
   connect: (endpointKey: string) => void
@@ -930,9 +936,16 @@ export const useChat = create<ChatState>()(
               },
             }
           }
+          // Idempotent by promptId — replay of an already-open card is a no-op.
           if (pending.some((p) => p.promptId === event.promptId)) return s
           return { prompts: { ...s.prompts, [sessionId]: [...pending, event] } }
         }),
+
+      clearHarnessPrompts: (sessionId) =>
+        set((s) => ({
+          prompts: { ...s.prompts, [sessionId]: undefined },
+          approvals: { ...s.approvals, [sessionId]: undefined },
+        })),
 
       applyAgentStatus: (sessionId, event) =>
         set((s) =>

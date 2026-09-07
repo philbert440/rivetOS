@@ -880,21 +880,63 @@ describe('applyHarnessTranscriptEvent', () => {
 })
 
 describe('applyPromptEvent', () => {
+  const open: HarnessPromptEvent = {
+    type: 'prompt',
+    sessionId: SID,
+    promptId: 'p1',
+    kind: 'ask-user',
+    toolName: 'AskUserQuestion',
+    questions: [{ multiSelect: false, options: [{ label: 'A' }] }],
+  }
+
   it('adds on open (deduped) and removes on resolved', () => {
-    const open: HarnessPromptEvent = {
-      type: 'prompt',
-      sessionId: SID,
-      promptId: 'p1',
-      kind: 'ask-user',
-      toolName: 'AskUserQuestion',
-      questions: [{ multiSelect: false, options: [{ label: 'A' }] }],
-    }
     const chat = useChat.getState()
     chat.applyPromptEvent(KEY, open)
     chat.applyPromptEvent(KEY, open)
     expect(useChat.getState().prompts[KEY]).toHaveLength(1)
     chat.applyPromptEvent(KEY, { ...open, resolved: { at: 2 } })
     expect(useChat.getState().prompts[KEY]).toEqual([])
+  })
+
+  it('is idempotent by promptId even when the payload differs', () => {
+    const chat = useChat.getState()
+    chat.applyPromptEvent(KEY, open)
+    chat.applyPromptEvent(KEY, {
+      ...open,
+      questions: [{ multiSelect: false, options: [{ label: 'B' }] }],
+      screen: { current: 1, total: 3 },
+    })
+    expect(useChat.getState().prompts[KEY]).toEqual([open])
+  })
+
+  it('keeps two open promptIds and preserves screen', () => {
+    const second: HarnessPromptEvent = {
+      ...open,
+      promptId: 'p2',
+      screen: { current: 1, total: 3 },
+    }
+    const chat = useChat.getState()
+    chat.applyPromptEvent(KEY, open)
+    chat.applyPromptEvent(KEY, second)
+    expect(useChat.getState().prompts[KEY]?.map((p) => p.promptId)).toEqual(['p1', 'p2'])
+    expect(useChat.getState().prompts[KEY]?.[1]?.screen).toEqual({ current: 1, total: 3 })
+  })
+
+  it('clearHarnessPrompts drops prompts and approvals so a replay can refill', () => {
+    const chat = useChat.getState()
+    chat.applyPromptEvent(KEY, open)
+    chat.applyApprovalEvent(KEY, {
+      type: 'approval-request',
+      sessionId: SID,
+      requestId: 'r1',
+      name: 'Bash',
+      input: {},
+    })
+    chat.clearHarnessPrompts(KEY)
+    expect(useChat.getState().prompts[KEY]).toBeUndefined()
+    expect(useChat.getState().approvals[KEY]).toBeUndefined()
+    chat.applyPromptEvent(KEY, open)
+    expect(useChat.getState().prompts[KEY]).toEqual([open])
   })
 })
 
