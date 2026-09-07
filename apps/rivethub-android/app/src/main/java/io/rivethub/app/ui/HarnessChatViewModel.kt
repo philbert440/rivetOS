@@ -7,7 +7,6 @@ import io.rivethub.app.AppContainer
 import io.rivethub.app.data.AndroidLogger
 import io.rivethub.app.data.OscFilter
 import io.rivethub.app.data.splitHermesReasoning
-import io.rivethub.app.gateway.GatewayException
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.TermSpawnResponse
@@ -18,9 +17,10 @@ import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
-import io.rivethub.app.plane.AskScreen
 import io.rivethub.app.plane.AskUserCard
-import io.rivethub.app.plane.askErrorMessage
+import io.rivethub.app.plane.PromptSlot
+import io.rivethub.app.plane.askCardError
+import io.rivethub.app.plane.promptSlotAfter
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.CLOSED_GATE
 import io.rivethub.app.plane.ChatSendAction
@@ -41,7 +41,6 @@ import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TranscriptMachine
 import io.rivethub.app.plane.agentStatusLine
-import io.rivethub.app.plane.askQuestionsFromHarness
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
 import io.rivethub.app.plane.adoptCanonicalIsNoOp
@@ -372,6 +371,10 @@ class HarnessChatViewModel(
 
     fun answerAsk(picked: Map<Int, List<String>>, free: String) {
         val st = _state.value
+        // In-flight guard (web keeps the same ref): every option row is a submit
+        // surface now, and a second POST for the same promptId would type the
+        // old answer's digit into the NEXT screen-read question.
+        if (st.answeringPrompt) return
         val card = st.ask ?: return
         val promptId = st.promptId
         if (promptId != null) {
@@ -382,10 +385,10 @@ class HarnessChatViewModel(
                 runCatching {
                     c.harness(nodeDenUrl).answerPrompt(sessionKeyEnc(_state.value.sessionId), promptId, answers)
                 }.onFailure { e ->
-                    val badRequest = e is GatewayException && e.status == 400 && e.code == "bad_request"
+                    val cardError = askCardError(e)
                     _state.update {
-                        if (badRequest) {
-                            it.copy(answeringPrompt = false, askError = askErrorMessage(e))
+                        if (cardError != null) {
+                            it.copy(answeringPrompt = false, askError = cardError)
                         } else {
                             it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName)
                         }
@@ -758,20 +761,21 @@ class HarnessChatViewModel(
                                 if (e.status == "idle") runCatching { pump.onIdle() }
                             }
                             is HarnessEvent.Prompt -> {
-                                machine.applyPrompt(e)
-                                if (e.resolved) {
-                                    if (_state.value.promptId == e.promptId) {
-                                        _state.update {
-                                            it.copy(ask = null, promptId = null, answeringPrompt = false, askError = null)
-                                        }
-                                    }
-                                } else if (_state.value.promptId != e.promptId) {
-                                    val qs = askQuestionsFromHarness(e.questions)
-                                    if (qs.isNotEmpty()) {
-                                        val screen = e.screen?.let { AskScreen(it.current, it.total) }
-                                        _state.update {
-                                            it.copy(ask = AskUserCard(qs, screen), promptId = e.promptId, askError = null)
-                                        }
+                                machine.onPrompt(e)
+                                val cur = _state.value.let { s ->
+                                    val id = s.promptId
+                                    val card = s.ask
+                                    if (id != null && card != null) PromptSlot(id, card) else null
+                                }
+                                val next = promptSlotAfter(cur, e)
+                                if (next !== cur) {
+                                    _state.update {
+                                        it.copy(
+                                            ask = next?.card,
+                                            promptId = next?.promptId,
+                                            answeringPrompt = false,
+                                            askError = null,
+                                        )
                                     }
                                 }
                             }

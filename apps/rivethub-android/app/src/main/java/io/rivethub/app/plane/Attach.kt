@@ -134,8 +134,6 @@ class TranscriptMachine(
         private set
     var agentStatus: AgentStatus? = null
         private set
-    var openPrompt: HarnessEvent.Prompt? = null
-        private set
     /** Committed size at [beginTurn] — resync looks for an assistant past this. */
     var committedAtTurnStart: Int = 0
         private set
@@ -232,30 +230,10 @@ class TranscriptMachine(
         }
     }
 
-    /**
-     * Drop the open prompt so den's replay of still-open frames is the sole
-     * source after a socket open. A card resolved while disconnected must
-     * not linger (answering it 404s).
-     */
-    fun onControlReset() {
-        openPrompt = null
-    }
-
-    /**
-     * Idempotent by [HarnessEvent.Prompt.promptId]: a replay of an already-open
-     * card is a no-op; a resolved frame retires only the matching id.
-     */
-    fun applyPrompt(p: HarnessEvent.Prompt) {
+    /** A prompt frame is a liveness signal only; the open-prompt slot lives on the ViewModel (`promptSlotAfter`). */
+    fun onPrompt(p: HarnessEvent.Prompt) {
         lastFrameTs = nowMs()
-        if (p.resolved) {
-            if (openPrompt?.promptId == p.promptId) openPrompt = null
-            return
-        }
-        if (openPrompt?.promptId == p.promptId) return
-        openPrompt = p
     }
-
-    fun onPrompt(p: HarnessEvent.Prompt) = applyPrompt(p)
 
     fun beginTurn() {
         val t = nowMs()
@@ -357,7 +335,7 @@ class TranscriptMachine(
                 if (hooks) inFlight = false
             }
             is HarnessEvent.Status -> onStatus(event)
-            is HarnessEvent.Prompt -> applyPrompt(event)
+            is HarnessEvent.Prompt -> onPrompt(event)
             // The owner applies transcript frames (applyTranscriptFrame) and acts on
             // its Boolean (sync on a rev gap); a replayed frame here must not lose it.
             is HarnessEvent.Transcript -> Unit
@@ -593,7 +571,6 @@ class SessionAttach(
         if (stopped) return
         // Replay of still-open prompts follows this open. Clear first so a
         // card resolved while disconnected does not linger (POST 404s).
-        machine.onControlReset()
         resync(committed = false)
     }
 

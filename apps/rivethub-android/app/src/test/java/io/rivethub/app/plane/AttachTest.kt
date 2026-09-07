@@ -509,45 +509,6 @@ class AttachTest {
         assertEquals(listOf("hi", "done"), m.transcript.map { it.text })
     }
 
-    @Test fun `prompt open then resolve`() {
-        val m = TranscriptMachine({ 0 })
-        val open = HarnessEvent.Prompt("s", "p1", "AskUserQuestion", emptyList(), resolved = false)
-        m.onPrompt(open)
-        assertEquals("p1", m.openPrompt?.promptId)
-        m.onPrompt(open.copy(resolved = true, answerText = "Yes"))
-        assertNull(m.openPrompt)
-    }
-
-    @Test fun `onWatchOpen clears a stale prompt before replay`() = runBlocking {
-        withTimeout(1_000) {
-            val m = TranscriptMachine({ 0 })
-            val stale = HarnessEvent.Prompt("s", "stale", "AskUserQuestion", emptyList(), resolved = false)
-            m.onPrompt(stale)
-            assertEquals("stale", m.openPrompt?.promptId)
-            val attach = SessionAttach(
-                machine = m,
-                fetchTranscript = { emptyList() },
-                settleMs = 0,
-            )
-            attach.onWatchOpen()
-            assertNull(m.openPrompt)
-        }
-    }
-
-    @Test fun `replay after control reset repopulates and resolved removes it`() {
-        val m = TranscriptMachine({ 0 })
-        val open = HarnessEvent.Prompt("s", "p1", "AskUserQuestion", emptyList(), resolved = false)
-        m.applyPrompt(open)
-        m.onControlReset()
-        assertNull(m.openPrompt)
-        m.applyPrompt(open)
-        assertEquals("p1", m.openPrompt?.promptId)
-        m.applyPrompt(open.copy(toolName = "other"))
-        assertEquals("AskUserQuestion", m.openPrompt?.toolName)
-        m.applyPrompt(open.copy(resolved = true, answerText = "Yes"))
-        assertNull(m.openPrompt)
-    }
-
     @Test fun `hook deltas ignored on a live-turn store`() {
         val m = TranscriptMachine({ 0 })
         val live = HarnessTranscriptTurn(role = "assistant", text = "from-store", complete = null)

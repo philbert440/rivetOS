@@ -1,6 +1,7 @@
 package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.GatewayException
+import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.HarnessAskQuestion
 import io.rivethub.app.gateway.HarnessPromptAnswer
 import kotlinx.serialization.json.Json
@@ -183,13 +184,31 @@ fun askCardMode(question: AskQuestion, screen: AskScreen? = null): AskCardMode {
     return AskCardMode.ANSWER
 }
 
-/** Prefer the wire error string (den `bad_request` message) over a generic fallback. */
-fun askErrorMessage(err: Throwable): String {
-    if (err is GatewayException && err.status == 400 && err.code == "bad_request") {
-        val msg = err.message
-        if (!msg.isNullOrBlank()) return msg
-    }
-    return err.message?.takeIf { it.isNotBlank() } ?: err.javaClass.simpleName
+/**
+ * den's `bad_request` text (e.g. "answer this one in the terminal") belongs on
+ * the ask card's error line; any other failure is null here and goes to the
+ * composer strip as before.
+ */
+fun askCardError(err: Throwable): String? {
+    if (err !is GatewayException || err.status != 400 || err.code != "bad_request") return null
+    return err.message?.takeIf { it.isNotBlank() }
+}
+
+/** The one open prompt the chat screen shows (Android keeps a single slot). */
+data class PromptSlot(val promptId: String, val card: AskUserCard)
+
+/**
+ * Next prompt slot after a `prompt` frame. Idempotent by promptId: a replayed
+ * open frame for the current id returns the SAME slot (so in-flight answer
+ * state survives), a resolved frame retires only the matching id, and a frame
+ * with no renderable questions leaves the slot alone.
+ */
+fun promptSlotAfter(current: PromptSlot?, e: HarnessEvent.Prompt): PromptSlot? {
+    if (e.resolved) return if (current?.promptId == e.promptId) null else current
+    if (current?.promptId == e.promptId) return current
+    val qs = askQuestionsFromHarness(e.questions)
+    if (qs.isEmpty()) return current
+    return PromptSlot(e.promptId, AskUserCard(qs, e.screen?.let { AskScreen(it.current, it.total) }))
 }
 
 fun composeAskAnswer(
