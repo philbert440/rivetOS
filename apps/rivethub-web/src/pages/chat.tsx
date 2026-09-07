@@ -1848,6 +1848,7 @@ function ActiveSession(props: {
             handleRef={composerRef}
             ask={askDismissed ? [] : askQuestions}
             askScreen={canonicalId ? boundPrompt?.screen : undefined}
+            askKey={askKey}
             onDismissAsk={onDismissAsk}
             onAnswerAsk={
               canonicalId

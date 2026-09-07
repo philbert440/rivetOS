@@ -52,7 +52,10 @@ export function AskUserCard(props: {
   const only = props.questions.length === 1 ? props.questions[0] : undefined
   const cardMode = only ? askCardMode(only, screen) : 'answer'
   const hideFreeText = (screen !== undefined && screen.total > 1) || cardMode !== 'answer'
-  const hideSubmit = cardMode !== 'answer'
+  // A single-select screen question submits on the option click (den presses
+  // the digit) — a footer with a never-enabled button would just be noise.
+  const hideSubmit =
+    cardMode !== 'answer' || (screen !== undefined && only !== undefined && !only.multiSelect)
   const single =
     props.questions.length === 1 && !props.questions[0].multiSelect && cardMode === 'answer'
 
@@ -85,6 +88,7 @@ export function AskUserCard(props: {
       void props.onAnswerStructured(structured(picks)).then(
         () => {
           inFlight.current = false
+          setSending(false)
         },
         (err: unknown) => {
           inFlight.current = false

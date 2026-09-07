@@ -82,6 +82,9 @@ export function Composer(props: {
   ask?: AskQuestion[]
   /** Screen-read picker position from the open harness prompt. */
   askScreen?: AskScreen
+  /** Changes per prompt (promptId + position) — remounts the card so no
+   *  picked/own/sending state leaks from one question into the next. */
+  askKey?: string
   onDismissAsk?: () => void
   /** Bound harness: answer via `answerHarnessPrompt` instead of a user turn. */
   onAnswerAsk?: (answers: AskStructuredAnswer[]) => Promise<void>
@@ -344,6 +347,7 @@ export function Composer(props: {
           freeform reply below works too (the send retires the card). */}
       {(props.ask?.length ?? 0) > 0 && (
         <AskUserCard
+          key={props.askKey ?? 'ask'}
           questions={props.ask ?? []}
           screen={props.askScreen}
           disabled={!connected || sending}
