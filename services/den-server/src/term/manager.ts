@@ -379,6 +379,9 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // launcher pin — there is no --session-id. Fresh spawn: `dsh --profile tui`;
   // reopen: `dsh --profile tui --resume <native-id>`.
   dsh: { resumeFlag: '--resume' },
+  // Codex resume is a subcommand, not a dashed flag: `codex resume <uuid>`.
+  // There is no --session-id; a fresh spawn is just `codex`.
+  codex: { resumeFlag: 'resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:

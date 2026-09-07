@@ -121,6 +121,7 @@ describe('herdr argv builders', () => {
     expect(herdrKindForCommand('claude')).toBe('claude')
     expect(herdrKindForCommand('grok')).toBe('grok')
     expect(herdrKindForCommand('kimi')).toBe('kimi')
+    expect(herdrKindForCommand('codex')).toBe('codex')
     expect(herdrKindForCommand('hermes')).toBe('hermes')
     expect(herdrKindForCommand('dsh')).toBeUndefined()
     expect(herdrKindForCommand('deepseek')).toBeUndefined()

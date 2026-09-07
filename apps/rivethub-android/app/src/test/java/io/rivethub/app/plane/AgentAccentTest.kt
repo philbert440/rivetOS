@@ -2,6 +2,7 @@ package io.rivethub.app.plane
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentAccentTest {
@@ -25,6 +26,16 @@ class AgentAccentTest {
         assertEquals(ACCENT_LOCAL, harnessAccentHex("hermes", null))
         assertEquals(ACCENT_CLAUDE, harnessAccentHex(null, "claude"))
         assertEquals(ACCENT_GROK, harnessAccentHex("grok-build", "claude"))
+    }
+
+    @Test
+    fun `codex accent is distinct`() {
+        assertEquals(ACCENT_CODEX, harnessAccentHex("codex", null))
+        assertEquals(ACCENT_CODEX, harnessAccentHex(null, "codex"))
+        assertEquals(ACCENT_CODEX, accentFor(null, "codex", null))
+        assertTrue(ACCENT_CODEX != ACCENT_CLAUDE)
+        assertTrue(ACCENT_CODEX != ACCENT_GROK)
+        assertTrue(ACCENT_CODEX != ACCENT_LOCAL)
     }
 
     @Test

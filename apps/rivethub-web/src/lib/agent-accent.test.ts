@@ -43,6 +43,8 @@ describe('accentFor', () => {
   it('uses the harness palette for claude, grok, and everything else', () => {
     expect(accentFor({ command: 'claude' })).toBe('#CC785C')
     expect(accentFor({ harnessId: 'grok-build' })).toBe('#9ca3af')
+    expect(accentFor({ harnessId: 'codex' })).toBe('#5b8def')
+    expect(accentFor({ command: 'codex' })).toBe('#5b8def')
     expect(accentFor({})).toBe('#34d399')
     expect(accentFor({ command: 'hermes' })).toBe('#34d399')
   })

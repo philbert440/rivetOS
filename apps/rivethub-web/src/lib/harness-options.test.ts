@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  CODEX_SHEET,
   defaultEffort,
   defaultModel,
   effortOptionsFor,
@@ -64,6 +65,7 @@ describe('rowPillText', () => {
     expect(rowPillText({}, { model: 'opus' }, 'claude-code')).toBe('opus')
     expect(rowPillText({}, { model: '' }, 'claude-code')).toBe('Claude Code')
     expect(rowPillText(undefined, undefined, 'grok-build')).toBe('grok Build')
+    expect(rowPillText(undefined, undefined, 'codex')).toBe('Codex')
     expect(rowPillText(undefined, undefined, 'unknown-harness')).toBe('unknown-harness')
   })
 })
@@ -72,7 +74,22 @@ describe('harnessLabel', () => {
   it('uses the friendly name', () => {
     expect(harnessLabel('claude-code')).toBe('Claude Code')
     expect(harnessLabel('deepseek-harness')).toBe('DeepSeek')
+    expect(harnessLabel('codex')).toBe('Codex')
     expect(harnessLabel('nope')).toBe('nope')
+  })
+})
+
+describe('CODEX_SHEET', () => {
+  it('mirrors the den default model and low/medium/high/xhigh efforts', () => {
+    expect(defaultModel(CODEX_SHEET)).toBe('default')
+    expect(modelOptionsFor(CODEX_SHEET).map((o) => o.value)).toEqual(['default'])
+    expect(effortOptionsFor(CODEX_SHEET, 'default').map((o) => o.value)).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ])
+    expect(defaultEffort(CODEX_SHEET, 'default')).toBe('medium')
   })
 })
 

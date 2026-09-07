@@ -381,6 +381,14 @@ describe('term manager', () => {
       'session-86ffe759-cd7b-49a7-955d-c282631a935d',
     ])
 
+    // Codex: resume is a subcommand (`codex resume <uuid>`), no sessionFlag.
+    const codexNew = makeManager({}, { sessionExists: () => false })
+    codexNew.manager.spawn('codex', 80, 24, '', uuid)
+    expect(codexNew.spawns[0].argv).toEqual(['codex'])
+    const codexResume = makeManager({}, { sessionExists: () => true })
+    codexResume.manager.spawn('codex', 80, 24, '', uuid)
+    expect(codexResume.spawns[0].argv).toEqual(['codex', 'resume', uuid])
+
     // a non-harness command gets no flags; a claude non-UUID that isn't in the
     // store gets no flag either (no --session-id on a non-UUID).
     const shell = makeManager({})

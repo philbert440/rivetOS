@@ -93,6 +93,7 @@ export const ROSTER_COMMAND: Record<HarnessId, string> = {
   'kimi-code': 'kimi',
   hermes: 'hermes',
   'deepseek-harness': 'dsh',
+  codex: 'codex',
 }
 
 export function rosterCommandFor(harnessId: string | undefined): string | undefined {

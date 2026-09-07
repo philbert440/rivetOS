@@ -12,6 +12,7 @@ describe('catalogAgentToHarness', () => {
 
   it('maps already-canonical harness ids and leaves real model ids alone', () => {
     expect(catalogAgentToHarness('claude-code')).toBe('claude-code')
+    expect(catalogAgentToHarness('codex')).toBe('codex')
     expect(catalogAgentToHarness('fable')).toBeUndefined()
     expect(catalogAgentToHarness('grok-4.6')).toBeUndefined()
   })

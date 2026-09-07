@@ -49,6 +49,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   kimi: 'kimi-code',
   hermes: 'hermes',
   dsh: 'deepseek-harness',
+  codex: 'codex',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -70,6 +71,14 @@ const HERMES_EFFORTS: EffortOption[] = [
   { id: 'low', label: 'Low' },
   { id: 'medium', label: 'Medium', default: true },
   { id: 'high', label: 'High' },
+]
+
+/** Codex CLI reasoning efforts — same vocabulary as the #719 `codex-cli` provider. */
+const CODEX_EFFORTS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium', default: true },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
 ]
 
 function defaultReadJson(path: string): unknown {
@@ -326,6 +335,20 @@ export function deepseekSheet(): ModelSheet {
   return {}
 }
 
+/**
+ * Codex — static sheet. The CLI's model list is not queryable here; `default`
+ * is the picker placeholder. Effort ids match #719 (`low|medium|high|xhigh`).
+ * No spawn flags: Codex effort is `-c model_reasoning_effort=…`, which does
+ * not fit the two-token `[flag, value]` append, and `--model default` would
+ * be a lie. Lane A2 / spawn follow-up can add real flags.
+ */
+export function codexSheet(): ModelSheet {
+  return {
+    models: [{ id: 'default', label: 'Default', default: true }],
+    efforts: CODEX_EFFORTS,
+  }
+}
+
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
   const home = readers?.home
   const readJson = readers?.readJson
@@ -341,6 +364,8 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return hermesSheet()
     case 'deepseek-harness':
       return deepseekSheet()
+    case 'codex':
+      return codexSheet()
   }
 }
 

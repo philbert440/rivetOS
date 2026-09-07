@@ -1,7 +1,7 @@
 /**
  * `AdoptingPtyHarnessDriver` — the shared body of the PTY harness drivers that
- * cannot be told what to call a new session: `hermes`, `kimi-code` and
- * `deepseek-harness`.
+ * cannot be told what to call a new session: `hermes`, `kimi-code`,
+ * `deepseek-harness` and `codex`.
  *
  * Extraction history, because both were rule-of-three calls: `PtyHarnessDriver`
  * was pulled out at driver THREE so its shape had three data points. The

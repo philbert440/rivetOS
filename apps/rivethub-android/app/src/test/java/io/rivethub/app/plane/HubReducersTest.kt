@@ -13,6 +13,7 @@ class HubReducersTest {
         assertEquals("kimi-code", harnessIdForAgent("kimi-code", null))
         assertEquals("hermes", harnessIdForAgent("hermes", null))
         assertEquals("deepseek-harness", harnessIdForAgent("dsh", null))
+        assertEquals("codex", harnessIdForAgent("codex", null))
         assertEquals(null, harnessIdForAgent("wiki", "local"))
     }
 

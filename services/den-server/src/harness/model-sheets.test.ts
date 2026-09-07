@@ -6,6 +6,7 @@ import {
   appendModelEffortArgv,
   applySheetOverride,
   claudeSheet,
+  codexSheet,
   deepseekSheet,
   EFFORT_TOKEN_RE,
   grokSheet,
@@ -195,6 +196,19 @@ describe('hermesSheet / deepseekSheet', () => {
 
   it('deepseek is empty', () => {
     expect(deepseekSheet()).toEqual({})
+  })
+})
+
+describe('codexSheet', () => {
+  it('advertises default model and #719 reasoning efforts without spawn flags', () => {
+    const sheet = codexSheet()
+    expect(sheet.models).toEqual([{ id: 'default', label: 'Default', default: true }])
+    expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
+    expect(sheet.modelFlag).toBeUndefined()
+    expect(sheet.effortFlag).toBeUndefined()
+    expect(sheetForHarness('codex')).toEqual(sheet)
+    expect(appendModelEffortArgv(['codex'], sheet, 'default', 'high')).toEqual(['codex'])
   })
 })
 

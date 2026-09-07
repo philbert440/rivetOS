@@ -88,6 +88,9 @@ export function extractTurnText(content: unknown, role: 'user' | 'assistant'): s
       text.startsWith('<system-reminder') ||
       text.startsWith('<task-notification') ||
       text.startsWith('<user_info') ||
+      text.startsWith('<environment_context>') ||
+      text.startsWith('<skills_instructions>') ||
+      text.startsWith('<multi_agent_') ||
       text.startsWith('Caveat:'))
   ) {
     return null
