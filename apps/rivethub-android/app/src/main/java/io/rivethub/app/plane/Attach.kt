@@ -569,8 +569,8 @@ class SessionAttach(
 
     suspend fun onWatchOpen() {
         if (stopped) return
-        // Replay of still-open prompts follows this open. Clear first so a
-        // card resolved while disconnected does not linger (POST 404s).
+        // den replays still-open prompts/approvals after this open; the
+        // ViewModel already dropped its ask/approval slots on WsStatus.OPEN.
         resync(committed = false)
     }
 
