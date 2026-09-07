@@ -14,7 +14,7 @@ import org.junit.Test
 class UpdateManifestTest {
     private fun good(
         version: String = "0.5.1",
-        versionCode: Int = 501,
+        versionCode: Int = 5001,
         file: String = "RivetHub-0.5.1.apk",
         sha256: String = "a".repeat(64),
         sizeBytes: Long = 112000000,
@@ -26,10 +26,14 @@ class UpdateManifestTest {
         put("sizeBytes", sizeBytes)
     }
 
+    /** Pure ordering fixtures: built directly, bypassing the feed-side code/version rule. */
+    private fun entry(version: String, versionCode: Int) =
+        AndroidManifestEntry(version, versionCode, "RivetHub-$version.apk", "a".repeat(64), 1)
+
     @Test fun `accepts a well-formed entry`() {
         val e = validateManifestEntry(good(), "android")
         assertEquals("0.5.1", e.version)
-        assertEquals(501, e.versionCode)
+        assertEquals(5001, e.versionCode)
         assertEquals("RivetHub-0.5.1.apk", e.file)
         assertEquals("a".repeat(64), e.sha256)
         assertEquals(112000000L, e.sizeBytes)
@@ -129,7 +133,7 @@ class UpdateManifestTest {
     @Test fun `refuses missing or non-positive sizeBytes`() {
         val missing = buildJsonObject {
             put("version", "0.5.1")
-            put("versionCode", 501)
+            put("versionCode", 5001)
             put("file", "RivetHub-0.5.1.apk")
             put("sha256", "a".repeat(64))
         }
@@ -141,7 +145,7 @@ class UpdateManifestTest {
         }
         val fractional = buildJsonObject {
             put("version", "0.5.1")
-            put("versionCode", 501)
+            put("versionCode", 5001)
             put("file", "RivetHub-0.5.1.apk")
             put("sha256", "a".repeat(64))
             put("sizeBytes", 1.5)
@@ -178,19 +182,19 @@ class UpdateManifestTest {
     }
 
     @Test fun `isNewer is versionCode-first`() {
-        val highCode = validateManifestEntry(good(version = "0.4.0", versionCode = 5023), "android")
+        val highCode = entry(version = "0.4.0", versionCode = 5023)
         assertTrue(isNewer(highCode, 5022, "0.5.22"))
-        val lowCode = validateManifestEntry(good(version = "9.0.0", versionCode = 5000), "android")
+        val lowCode = entry(version = "9.0.0", versionCode = 5000)
         assertFalse(isNewer(lowCode, 5022, "0.5.22"))
-        val same = validateManifestEntry(good(version = "0.5.22", versionCode = 5022), "android")
+        val same = entry(version = "0.5.22", versionCode = 5022)
         assertFalse(isNewer(same, 5022, "0.5.22"))
         assertFalse(isNewer(same, 5022, "0.5.22-debug"))
     }
 
     @Test fun `isNewer uses semver as a tie-breaker`() {
-        val bump = validateManifestEntry(good(version = "0.5.23", versionCode = 5022), "android")
+        val bump = entry(version = "0.5.23", versionCode = 5022)
         assertTrue(isNewer(bump, 5022, "0.5.22"))
-        val olderName = validateManifestEntry(good(version = "0.5.21", versionCode = 5022), "android")
+        val olderName = entry(version = "0.5.21", versionCode = 5022)
         assertFalse(isNewer(olderName, 5022, "0.5.22"))
     }
 
@@ -220,5 +224,17 @@ class UpdateManifestTest {
         )!!
         assertEquals(5022, parsed.versionCode)
         assertEquals("0.5.22", parsed.version)
+    }
+
+    @Test fun `validateManifestEntry refuses a versionCode that breaks the rule`() {
+        val bad = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"version":"0.5.22","versionCode":99000000,"file":"RivetHub-0.5.22.apk","sha256":"${"a".repeat(64)}","sizeBytes":10}""",
+        )
+        val err = runCatching { validateManifestEntry(bad, "android") }.exceptionOrNull()
+        assertTrue(err?.message?.contains("does not match version") == true)
+        val good = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"version":"0.5.22","versionCode":5022,"file":"RivetHub-0.5.22.apk","sha256":"${"a".repeat(64)}","sizeBytes":10}""",
+        )
+        assertEquals(5022, validateManifestEntry(good, "android").versionCode)
     }
 }

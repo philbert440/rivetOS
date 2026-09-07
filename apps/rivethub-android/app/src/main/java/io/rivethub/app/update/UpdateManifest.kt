@@ -76,6 +76,14 @@ fun validateManifestEntry(raw: JsonElement?, platform: String): AndroidManifestE
         ?: throw IllegalArgumentException("manifest $platform: versionCode is not a positive int")
     val sizeBytes = e.strictPositiveLong("sizeBytes")
         ?: throw IllegalArgumentException("manifest $platform: sizeBytes is not a positive int")
+    // Feed-side guard for the same brick as a wrong local bump: a published code
+    // above the rule would install once and then never see a "newer" build again.
+    val expectedCode = versionCodeFor(version)
+    if (versionCode != expectedCode) {
+        throw IllegalArgumentException(
+            "manifest $platform: versionCode $versionCode does not match version $version (expected $expectedCode)",
+        )
+    }
     return AndroidManifestEntry(
         version = version,
         versionCode = versionCode,

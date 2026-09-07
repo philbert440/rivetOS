@@ -54,7 +54,7 @@ class UpdaterTest {
     private fun sha(bytes: ByteArray): String = Updater.hexLower(MessageDigest.getInstance("SHA-256").digest(bytes))
 
     private fun manifest(versionCode: Int, sha256: String = payloadSha, sizeBytes: Long = payload.size.toLong(), file: String = apkName): String =
-        """{"android":{"version":"0.5.22","versionCode":$versionCode,"file":"$file","sha256":"$sha256","sizeBytes":$sizeBytes}}"""
+        """{"android":{"version":"0.${versionCode / 1000}.${versionCode % 1000}","versionCode":$versionCode,"file":"$file","sha256":"$sha256","sizeBytes":$sizeBytes}}"""
 
     private fun gw(handler: (Request) -> Response) = HarnessGateway(client(handler), base)
 
@@ -380,6 +380,34 @@ class UpdaterTest {
             } finally {
                 dir.deleteRecursively()
             }
+        }
+    }
+
+    @Test fun `reuseVerified re-hashes the file — a tampered artifact is refused and deleted`() = runBlocking {
+        val dir = tempDir()
+        try {
+            val updates = File(dir, Updater.UPDATES_DIR).apply { mkdirs() }
+            val file = File(updates, apkName)
+            file.writeBytes(payload + byteArrayOf(0x42))
+            val entry = AndroidManifestEntry("0.5.22", 5022, apkName, payloadSha, payload.size.toLong())
+            val err = runCatching { updater(dir).reuseVerified(file, entry) }.exceptionOrNull()
+            assertTrue(err?.message?.contains("sha256 mismatch") == true)
+            assertFalse(file.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun `reuseVerified fails when the verified file is gone`() = runBlocking {
+        val dir = tempDir()
+        try {
+            val entry = AndroidManifestEntry("0.5.22", 5022, apkName, payloadSha, payload.size.toLong())
+            val err = runCatching {
+                updater(dir).reuseVerified(File(File(dir, Updater.UPDATES_DIR), apkName), entry)
+            }.exceptionOrNull()
+            assertTrue(err?.message?.contains("gone") == true)
+        } finally {
+            dir.deleteRecursively()
         }
     }
 }

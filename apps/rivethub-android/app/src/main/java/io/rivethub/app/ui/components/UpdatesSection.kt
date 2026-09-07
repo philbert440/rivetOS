@@ -52,7 +52,8 @@ fun UpdatesSection(c: AppContainer) {
     var hintUnknownSources by remember { mutableStateOf(false) }
     var confirm by remember { mutableStateOf<AndroidManifestEntry?>(null) }
 
-    val busy = state is UpdateState.Checking || progressPct != null
+    var reusing by remember { mutableStateOf(false) }
+    val busy = state is UpdateState.Checking || progressPct != null || reusing
     val available = when (val s = state) {
         is UpdateState.Available -> s.entry
         is UpdateState.NeedsInstallPermission -> s.entry
@@ -95,7 +96,8 @@ fun UpdatesSection(c: AppContainer) {
                     text = stringResource(R.string.action_install_update, available.version),
                     onClick = {
                         val reuse = verified
-                        if (reuse != null) {
+                        if (reuse != null && !reusing) {
+                            reusing = true
                             scope.launch {
                                 hintUnknownSources = false
                                 actionError = null
@@ -111,6 +113,8 @@ fun UpdatesSection(c: AppContainer) {
                                 } catch (e: Exception) {
                                     actionError = e.message ?: e.javaClass.simpleName
                                     state = UpdateState.Available(reuse.entry)
+                                } finally {
+                                    reusing = false
                                 }
                             }
                         } else {
