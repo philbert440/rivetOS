@@ -9,6 +9,7 @@ import io.rivethub.app.data.Settings
 import io.rivethub.app.gateway.HarnessGateway
 import io.rivethub.app.transport.DirectTransport
 import io.rivethub.app.transport.NodeTransport
+import io.rivethub.app.update.Updater
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,6 +30,7 @@ class AppContainer(app: Application) {
         private set
 
     val transport: NodeTransport = DirectTransport("", emptySet(), clients)
+    val updater = Updater(app.cacheDir, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)
 
     init {
         // Seed the TLS posture synchronously so the first request honours it.

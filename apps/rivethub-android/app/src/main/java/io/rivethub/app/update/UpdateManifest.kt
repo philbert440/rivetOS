@@ -23,6 +23,22 @@ data class AndroidManifestEntry(
 const val MANIFEST_PATH = "builds/rivethub/latest.json"
 const val BUILDS_PREFIX = "builds/rivethub"
 
+/**
+ * Android `versionCode` for a version name: `major*1_000_000 + minor*1_000 + patch`.
+ * Prerelease / build-metadata / AGP `-debug` suffixes are ignored.
+ * Keep in sync with `app/build.gradle.kts`.
+ */
+fun versionCodeFor(name: String): Int {
+    val core = name.substringBefore('+').substringBefore('-')
+    val parts = core.split('.')
+    require(parts.size == 3) { "not major.minor.patch: $name" }
+    val major = parts[0].toInt()
+    val minor = parts[1].toInt()
+    val patch = parts[2].toInt()
+    require(major >= 0 && minor >= 0 && patch >= 0) { "negative component in $name" }
+    return major * 1_000_000 + minor * 1_000 + patch
+}
+
 private val VERSION_RE = Regex("""^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$""")
 private val SHA256_RE = Regex("^[0-9a-f]{64}$")
 /** Artifact basename fence: no separators, no dot-prefix, no traversal. */

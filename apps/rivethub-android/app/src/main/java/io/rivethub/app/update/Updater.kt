@@ -9,9 +9,13 @@ import io.rivethub.app.gateway.GatewayException
 import io.rivethub.app.gateway.HarnessGateway
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import java.io.File
 import java.security.MessageDigest
 import kotlin.math.ceil
@@ -22,12 +26,18 @@ sealed class UpdateState {
     data class Available(val entry: AndroidManifestEntry) : UpdateState()
     data object NoAndroidBuild : UpdateState()
     data class Error(val message: String) : UpdateState()
+    /** Verified APK is on disk; unknown-sources permission is still missing. */
+    data class NeedsInstallPermission(val file: File, val entry: AndroidManifestEntry) : UpdateState()
 }
 
 /**
  * Mesh-feed updater. Fetches `builds/rivethub/latest.json` through the
- * connected gateway, streams the APK to cacheDir/updates, verifies sha256,
- * then hands the file to the system installer.
+ * connected gateway, streams the APK to cacheDir/updates/<file>.part,
+ * verifies sha256 over the bytes written, then renameTo(<file>) and
+ * hands that file to the system installer.
+ *
+ * One instance per process (constructed in AppContainer): the Mutex and
+ * the cache dir are owned here, not per Settings composition.
  */
 class Updater(
     private val cacheDir: File,
@@ -36,6 +46,8 @@ class Updater(
 ) {
     private val flight = Mutex()
 
+    private fun currentLabel(): String = currentName.removeSuffix("-debug")
+
     suspend fun check(gateway: HarnessGateway): UpdateState = flight.withLock {
         try {
             val body = gateway.filesDownload(MANIFEST_PATH) { res ->
@@ -43,7 +55,7 @@ class Updater(
             }
             val entry = parseAndroidEntry(body) ?: return@withLock UpdateState.NoAndroidBuild
             if (isNewer(entry, currentCode, currentName)) UpdateState.Available(entry)
-            else UpdateState.UpToDate(currentName.removeSuffix("-debug"))
+            else UpdateState.UpToDate(currentLabel())
         } catch (e: CancellationException) {
             throw e
         } catch (e: GatewayException) {
@@ -54,8 +66,23 @@ class Updater(
     }
 
     /**
-     * Stream [entry.file] to `cacheDir/updates/`, deleting stale files first.
-     * Byte cap is min(sizeBytes*1.05, 512 MiB). sha256 mismatch deletes the file.
+     * Re-fetch the manifest at install time (no stale check-time state).
+     * A missing `android` entry is UpToDate — the published build is gone.
+     */
+    suspend fun prepareInstall(gateway: HarnessGateway): UpdateState {
+        val latest = check(gateway)
+        return when (latest) {
+            is UpdateState.NoAndroidBuild -> UpdateState.UpToDate(currentLabel())
+            else -> latest
+        }
+    }
+
+    /**
+     * Stream [entry.file] to `cacheDir/updates/<file>.part`. Digest is created
+     * inside the download lambda so a client-failover retry starts clean.
+     * renameTo(<file>) only after the sha matches. Failure deletes the owned
+     * `.part` File, never a completed sibling `<file>`.
+     * Byte cap is min(sizeBytes*1.05, 512 MiB).
      */
     suspend fun download(
         gateway: HarnessGateway,
@@ -64,20 +91,23 @@ class Updater(
     ): File = flight.withLock {
         withContext(Dispatchers.IO) {
             val dir = File(cacheDir, UPDATES_DIR).apply { mkdirs() }
-            dir.listFiles()?.forEach { it.delete() }
             val dest = File(dir, entry.file)
             val cap = minOf(
                 ceil(entry.sizeBytes * 1.05).toLong().coerceAtLeast(1L),
                 HARD_MAX_BYTES,
             )
-            val digest = MessageDigest.getInstance("SHA-256")
+            var ownedPart: File? = null
             try {
                 gateway.filesDownload("$BUILDS_PREFIX/${entry.file}") { res ->
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    val part = File(dir, "${entry.file}.part")
+                    ownedPart = part
                     val src = res.body.byteStream()
                     val buf = ByteArray(64 * 1024)
                     var received = 0L
-                    dest.outputStream().use { out ->
+                    part.outputStream().use { out ->
                         while (true) {
+                            coroutineContext.ensureActive()
                             val n = src.read(buf)
                             if (n < 0) break
                             received += n
@@ -89,26 +119,60 @@ class Updater(
                             onProgress(progress(received, entry.sizeBytes))
                         }
                     }
+                    val hex = hexLower(digest.digest())
+                    if (hex != entry.sha256) {
+                        error("sha256 mismatch — refusing to run the artifact")
+                    }
+                    if (!part.renameTo(dest)) {
+                        error("could not promote verified update")
+                    }
+                    dest
                 }
             } catch (e: CancellationException) {
-                dest.delete()
+                ownedPart?.delete()
                 throw e
             } catch (e: Exception) {
-                dest.delete()
+                ownedPart?.delete()
+                // OkHttp reports a cancelled call as IOException("canceled");
+                // once our coroutine is cancelled that is cancellation, not failure.
+                if (!coroutineContext.isActive) {
+                    throw CancellationException("update download cancelled").apply { initCause(e) }
+                }
                 throw e
+            }
+        }
+    }
+
+    /**
+     * Re-hash [file] and return it only when the digest matches [entry].
+     * Used to reuse a verified APK after the user grants unknown-sources.
+     */
+    suspend fun reuseVerified(file: File, entry: AndroidManifestEntry): File = flight.withLock {
+        withContext(Dispatchers.IO) {
+            if (!file.isFile) error("verified update is gone")
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { ins ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = ins.read(buf)
+                    if (n < 0) break
+                    digest.update(buf, 0, n)
+                }
             }
             val hex = hexLower(digest.digest())
             if (hex != entry.sha256) {
-                dest.delete()
+                file.delete()
                 error("sha256 mismatch — refusing to run the artifact")
             }
-            dest
+            file
         }
     }
 
     /**
      * Launch the system package installer. Returns false when unknown-sources
-     * permission is missing (and the settings screen has been opened).
+     * permission is missing (settings page opened; caller must keep [file]).
+     * true means startActivity was accepted, not that the system installer
+     * completed (signature mismatch / downgrade refusal is a residual).
      */
     fun install(context: Context, file: File): Boolean {
         if (!context.packageManager.canRequestPackageInstalls()) {
@@ -152,16 +216,18 @@ class Updater(
             return String(out)
         }
 
-        fun readCapped(src: java.io.InputStream, max: Int): String {
+        suspend fun readCapped(src: java.io.InputStream, max: Int): String {
             val buf = ByteArray(8 * 1024)
             val out = java.io.ByteArrayOutputStream()
             var n = 0
             while (true) {
+                coroutineContext.ensureActive()
                 val r = src.read(buf)
                 if (r < 0) break
                 n += r
                 if (n > max) error("update manifest is implausibly large")
                 out.write(buf, 0, r)
+                yield()
             }
             return out.toString(Charsets.UTF_8)
         }

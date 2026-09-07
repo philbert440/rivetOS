@@ -194,6 +194,24 @@ class UpdateManifestTest {
         assertFalse(isNewer(olderName, 5022, "0.5.22"))
     }
 
+    @Test fun `versionCodeFor 0_5_22 is 5022`() {
+        assertEquals(5022, versionCodeFor("0.5.22"))
+    }
+
+    @Test fun `versionCodeFor 1_0_0 is 1_000_000`() {
+        assertEquals(1_000_000, versionCodeFor("1.0.0"))
+    }
+
+    @Test fun `versionCodeFor 0_6_0 is 6000`() {
+        assertEquals(6000, versionCodeFor("0.6.0"))
+    }
+
+    @Test fun `versionCodeFor ignores prerelease suffix`() {
+        assertEquals(1_000_000, versionCodeFor("1.0.0-beta.1"))
+        assertEquals(5022, versionCodeFor("0.5.22-debug"))
+        assertEquals(6000, versionCodeFor("0.6.0+build.9"))
+    }
+
     @Test fun `parseAndroidEntry is null when android key is absent`() {
         assertNull(parseAndroidEntry("""{"linux":{"version":"0.5.1","file":"x","sha256":"${"a".repeat(64)}"}}"""))
         assertNull(parseAndroidEntry("""{"android":null}"""))

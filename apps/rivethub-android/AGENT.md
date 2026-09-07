@@ -218,8 +218,8 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 502 (C3 updater: +12 UpdateManifestTest
-  +7 UpdaterTest on a 484-test tree; FLOOR = real count − 1).
+  (`.github/workflows/android.yml`) enforces a floor of 523 (C3 updater review-fixes: +4
+  versionCodeFor +6 UpdaterTest on a 514-test stacked tree; FLOOR = real count − 1).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -259,9 +259,14 @@ is the detach.
 - `EncryptedSharedPreferences` is deprecated upstream; keep it until a Keystore-wrapped blob exists.
 - In-app update is Settings → Updates (manual Check only, like desktop). Manifest is
   `GET /api/files/download?path=builds/rivethub/latest.json` on the connected entry node;
-  APK lands in `cacheDir/updates/` and is installed via FileProvider
-  `${applicationId}.fileprovider` + `REQUEST_INSTALL_PACKAGES`. Version comes from
-  `apps/rivethub-android/version.properties` (fallback 0.1.0 / 1).
+  APK lands in `cacheDir/updates/<file>.part`, sha256 is verified, then renameTo `<file>`;
+  installed via FileProvider `${applicationId}.fileprovider` + `REQUEST_INSTALL_PACKAGES`.
+  Version comes from `apps/rivethub-android/version.properties`.
+  `VERSION_CODE = major*1_000_000 + minor*1_000 + patch` (0.5.22 → 5022); the code is
+  monotonic and never reused. `app/build.gradle.kts` errors at configuration time if
+  VERSION_CODE disagrees with VERSION_NAME. Fallback if the file is missing: 0.1.0 / 1.
+  One `Updater` per process (`AppContainer`). Install re-fetches the manifest. Unknown-sources
+  keeps the verified file (`NeedsInstallPermission`) and reuses it.
 - Never send `{type:kill}` on terminal leave — detach only. `ui/term/AnsiTerminal.kt`,
   `ui/term/TerminalPane.kt`, `gateway/TermWs.kt`, `data/TermClient.kt`, `ui/components/KeyToolbar.kt`
   are the attach surface. `DesktopView.kt` (noVNC) was a plan §1 non-goal; correct to stay deleted.

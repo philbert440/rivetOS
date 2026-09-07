@@ -1,7 +1,10 @@
 package io.rivethub.app.gateway
 
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonObject
@@ -16,7 +19,6 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.Closeable
-import kotlin.coroutines.coroutineContext
 
 /**
  * Typed harness-plane client over one node's gateway. Intentionally has no
@@ -294,7 +296,8 @@ class HarnessGateway(
 
     /**
      * GET /api/files/download?path= — streams the body. [handle] must consume
-     * the response before returning. The call is cancelled if the coroutine is.
+     * the response before returning. The OkHttp call is cancelled if the
+     * coroutine is, including while [handle] is blocked in a read.
      * Redirects are refused (the mesh filestore path is the trust root).
      */
     suspend fun <T> filesDownload(path: String, handle: suspend (Response) -> T): T =
@@ -312,19 +315,23 @@ class HarnessGateway(
                     .callTimeout(java.time.Duration.ofMinutes(10))
                     .build()
                 val call = client.newCall(req)
-                val cancel = coroutineContext[Job]?.invokeOnCompletion { cause ->
-                    if (cause != null) call.cancel()
-                }
-                try {
-                    call.execute().use { res ->
-                        if (!res.isSuccessful) {
-                            val text = res.body.string()
-                            throw GatewayException(res.code, errorText(res, text))
+                coroutineScope {
+                    val watch = launch(start = CoroutineStart.UNDISPATCHED) {
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            cont.invokeOnCancellation { call.cancel() }
                         }
-                        handle(res)
                     }
-                } finally {
-                    cancel?.dispose()
+                    try {
+                        call.execute().use { res ->
+                            if (!res.isSuccessful) {
+                                val text = res.body.string()
+                                throw GatewayException(res.code, errorText(res, text))
+                            }
+                            handle(res)
+                        }
+                    } finally {
+                        watch.cancel()
+                    }
                 }
             }
         }

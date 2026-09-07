@@ -27,7 +27,6 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import io.rivethub.app.update.AndroidManifestEntry
 import io.rivethub.app.update.UpdateState
-import io.rivethub.app.update.Updater
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -44,9 +43,7 @@ fun UpdatesSection(c: AppContainer) {
     val scope = rememberCoroutineScope()
     val colors = RivetTheme.colors
     val prefs by c.settings.prefs.collectAsState(initial = io.rivethub.app.data.Prefs())
-    val updater = remember(ctx.cacheDir) {
-        Updater(ctx.cacheDir, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)
-    }
+    val updater = c.updater
     val appVersion = remember { BuildConfig.VERSION_NAME.removeSuffix("-debug") }
 
     var state by remember { mutableStateOf<UpdateState?>(null) }
@@ -56,7 +53,12 @@ fun UpdatesSection(c: AppContainer) {
     var confirm by remember { mutableStateOf<AndroidManifestEntry?>(null) }
 
     val busy = state is UpdateState.Checking || progressPct != null
-    val available = (state as? UpdateState.Available)?.entry
+    val available = when (val s = state) {
+        is UpdateState.Available -> s.entry
+        is UpdateState.NeedsInstallPermission -> s.entry
+        else -> null
+    }
+    val verified = state as? UpdateState.NeedsInstallPermission
 
     Column(Modifier.fillMaxWidth()) {
         SettingsH2(stringResource(R.string.section_updates))
@@ -91,7 +93,30 @@ fun UpdatesSection(c: AppContainer) {
             if (available != null) {
                 RivetButton(
                     text = stringResource(R.string.action_install_update, available.version),
-                    onClick = { confirm = available },
+                    onClick = {
+                        val reuse = verified
+                        if (reuse != null) {
+                            scope.launch {
+                                hintUnknownSources = false
+                                actionError = null
+                                try {
+                                    val file = updater.reuseVerified(reuse.file, reuse.entry)
+                                    val launched = updater.install(ctx, file)
+                                    if (!launched) {
+                                        hintUnknownSources = true
+                                        state = UpdateState.NeedsInstallPermission(file, reuse.entry)
+                                    }
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    actionError = e.message ?: e.javaClass.simpleName
+                                    state = UpdateState.Available(reuse.entry)
+                                }
+                            }
+                        } else {
+                            confirm = available
+                        }
+                    },
                     enabled = !busy,
                 )
             }
@@ -149,15 +174,33 @@ fun UpdatesSection(c: AppContainer) {
                     actionError = null
                     progressPct = 0
                     try {
-                        val file = updater.download(c.harness(url), pending) { frac ->
-                            withContext(Dispatchers.Main.immediate) {
-                                progressPct = (frac * 100).toInt().coerceIn(0, 99)
+                        val gw = c.harness(url)
+                        val latest = updater.prepareInstall(gw)
+                        when (latest) {
+                            is UpdateState.Available -> {
+                                state = latest
+                                if (latest.entry != pending) {
+                                    progressPct = null
+                                    return@launch
+                                }
+                                val file = updater.download(gw, latest.entry) { frac ->
+                                    withContext(Dispatchers.Main.immediate) {
+                                        progressPct = (frac * 100).toInt().coerceIn(0, 99)
+                                    }
+                                }
+                                progressPct = 100
+                                val launched = updater.install(ctx, file)
+                                progressPct = null
+                                if (!launched) {
+                                    hintUnknownSources = true
+                                    state = UpdateState.NeedsInstallPermission(file, latest.entry)
+                                }
+                            }
+                            else -> {
+                                progressPct = null
+                                state = latest
                             }
                         }
-                        progressPct = 100
-                        val launched = updater.install(ctx, file)
-                        progressPct = null
-                        if (!launched) hintUnknownSources = true
                     } catch (e: CancellationException) {
                         progressPct = null
                         throw e
@@ -186,6 +229,10 @@ private fun statusLine(state: UpdateState?, progressPct: Int?): StatusLine? {
         UpdateState.Checking -> StatusLine(stringResource(R.string.updates_checking)) { it.inkDim }
         is UpdateState.UpToDate -> StatusLine(stringResource(R.string.updates_current, state.current)) { it.em }
         is UpdateState.Available -> {
+            val mb = round(state.entry.sizeBytes / 1e6).toInt()
+            StatusLine(stringResource(R.string.updates_available_size, state.entry.version, mb)) { it.em }
+        }
+        is UpdateState.NeedsInstallPermission -> {
             val mb = round(state.entry.sizeBytes / 1e6).toInt()
             StatusLine(stringResource(R.string.updates_available_size, state.entry.version, mb)) { it.em }
         }
