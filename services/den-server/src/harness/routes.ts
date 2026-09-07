@@ -504,6 +504,15 @@ export function createHarnessRoutes(opts: {
 
   // -- /api/harness-sessions -------------------------------------------------
 
+  /** `decodeURIComponent` that leaves a malformed segment as-is instead of throwing. */
+  const decodeSegment = (part: string): string => {
+    try {
+      return decodeURIComponent(part)
+    } catch {
+      return part
+    }
+  }
+
   const handleSessions = async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -511,7 +520,9 @@ export function createHarnessRoutes(opts: {
   ): Promise<boolean> => {
     const rest = url.pathname.slice('/api/harness-sessions'.length).replace(/^\//, '')
     if (rest === '') return json(res, 404, { error: 'not found' })
-    const parts: (string | undefined)[] = rest.split('/')
+    // Path segments arrive percent-encoded (clients `encodeURIComponent` ids such as
+    // `screen:<native>:1` / `perm:<native>:2`); decode each one before matching.
+    const parts: (string | undefined)[] = rest.split('/').map(decodeSegment)
     const [segment = '', action, requestId, ...extra] = parts
     if (extra.length > 0) return json(res, 404, { error: 'not found' })
 

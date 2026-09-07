@@ -51,6 +51,44 @@ function promptInput(raw: unknown): unknown {
 }
 
 /**
+ * Claude Code 2.1.263 writes the raw slash line (`/compact`, `/exit`, `/model x`)
+ * as a plain user message BEFORE the `<command-name>` echo that
+ * `extractTurnText` already drops. The TUI never sends a leading-slash input
+ * to the model (unknown commands are rejected at the prompt), so for THIS
+ * store a bare slash line is never conversation. Claude-only on purpose —
+ * other harness stores have no such line and get no filter.
+ */
+export function isBareSlashCommand(text: string): boolean {
+  return /^\/[A-Za-z][\w:-]*(?:[ \t][^\n]*)?$/.test(text)
+}
+
+/** `system`/`compact_boundary` → a complete assistant marker turn carrying the post-compaction context size. */
+function compactMarker(meta: unknown): HarnessTurn {
+  const m = (meta ?? {}) as { postTokens?: unknown; preTokens?: unknown }
+  const post = typeof m.postTokens === 'number' && m.postTokens >= 0 ? m.postTokens : undefined
+  const pre = typeof m.preTokens === 'number' && m.preTokens > 0 ? m.preTokens : undefined
+  const turn: HarnessTurn = {
+    role: 'assistant',
+    text:
+      pre !== undefined && post !== undefined
+        ? `Conversation compacted (${tokensLabel(pre)} → ${tokensLabel(post)})`
+        : 'Conversation compacted',
+    stopReason: 'end_turn',
+    lastBlock: 'text',
+    complete: true,
+    compact: true,
+  }
+  if (post !== undefined) turn.usage = { promptTokens: post, completionTokens: 0, cachedTokens: 0 }
+  return turn
+}
+
+function tokensLabel(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tokens`
+  if (n >= 1000) return `${Math.round(n / 1000).toString()}k tokens`
+  return `${String(n)} tokens`
+}
+
+/**
  * Fold Claude Code store lines into LOGICAL turns. One agent turn spans many
  * store lines — one 'assistant' line per committed content block, with
  * 'user'-role tool_result lines interleaved. Only a REAL user text message
@@ -69,6 +107,12 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
   // Distinct from lastBlock: a tool_result after a text line must not un-complete.
   let lastLineHadTextBlock = false
 
+  const assistantComplete = (): boolean =>
+    cur !== null &&
+    cur.stopReason === 'end_turn' &&
+    lastLineHadTextBlock &&
+    !(cur.tools ?? []).some((t) => t.status === 'running')
+
   const finishAssistant = (): void => {
     if (cur) {
       if (thinking) {
@@ -79,13 +123,7 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
       }
       if (cur.tools && cur.tools.length === 0) delete cur.tools
       if (cur.usage) cur.usage.completionTokens = outputTokens
-      if (
-        cur.stopReason === 'end_turn' &&
-        lastLineHadTextBlock &&
-        !(cur.tools ?? []).some((t) => t.status === 'running')
-      ) {
-        cur.complete = true
-      }
+      if (assistantComplete()) cur.complete = true
       // a turn with no visible content at all (blocks not flushed yet) is noise
       if (cur.text || cur.thinking || cur.tools) turns.push(cur)
     }
@@ -98,6 +136,21 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
 
   for (const obj of lines) {
     if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
+    if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
+      // Context compaction. Between turns (manual /compact, or auto at the
+      // start of a turn): close the finished turn and drop a complete marker
+      // whose usage is the POST-compaction context size — without it the
+      // pre-compaction peak stays on the context meter until the next reply.
+      // Mid-turn (auto compaction lands right after a tool_result, or before
+      // the first assistant line of a turn): leave the pending turn alone — a
+      // marker would split the live turn / sit behind the user turn and read
+      // as a false turn-complete; the reply's own usage lines reset the meter
+      // within seconds anyway.
+      if (cur ? !assistantComplete() : turns[turns.length - 1]?.role === 'user') continue
+      finishAssistant()
+      turns.push(compactMarker(obj.compactMetadata))
+      continue
+    }
     if (obj.type !== 'user' && obj.type !== 'assistant') continue
     const msg = obj.message as
       { content?: unknown; usage?: unknown; model?: unknown; stop_reason?: unknown } | undefined
@@ -129,7 +182,7 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
         }
       }
       const text = extractTurnText(content, 'user')
-      if (text) {
+      if (text && !isBareSlashCommand(text)) {
         finishAssistant()
         turns.push({ role: 'user', text })
       }
