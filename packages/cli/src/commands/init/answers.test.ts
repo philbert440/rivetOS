@@ -52,6 +52,30 @@ describe('isDefaultMarker', () => {
 })
 
 describe('interpretAnswers', () => {
+  it('accepts Codex CLI with its configured default model and xhigh reasoning', () => {
+    const result = interpretAnswers(
+      happy({
+        agents: [
+          {
+            name: 'codex',
+            provider: 'codex-cli',
+            model: { default: true },
+            thinking: 'xhigh',
+          },
+        ],
+      }),
+      ENV,
+    )
+    expect(result.agents[0]).toEqual({
+      name: 'codex',
+      provider: 'codex-cli',
+      apiKey: undefined,
+      model: 'default',
+      thinking: 'xhigh',
+      baseUrl: undefined,
+    })
+  })
+
   it('happy path: full explicit answers without mesh', () => {
     const result = interpretAnswers(happy(), ENV)
     expect(result.deployment).toBe('manual')
@@ -153,15 +177,15 @@ describe('interpretAnswers', () => {
   })
 
   it('requires existingConfig when a config already exists', () => {
-    expect(() =>
-      interpretAnswers(happy(), { configExists: true, dockerAvailable: true }),
-    ).toThrow(/missing required key "existingConfig"/)
+    expect(() => interpretAnswers(happy(), { configExists: true, dockerAvailable: true })).toThrow(
+      /missing required key "existingConfig"/,
+    )
   })
 
   it('rejects { default: true } on a prompt with no default', () => {
-    expect(() =>
-      interpretAnswers(happy({ deployment: { default: true } }), ENV),
-    ).toThrow(/requested default but this prompt has no default/)
+    expect(() => interpretAnswers(happy({ deployment: { default: true } }), ENV)).toThrow(
+      /requested default but this prompt has no default/,
+    )
   })
 
   it('overwriteConfirm { default: true } is false (interactive initialValue)', () => {

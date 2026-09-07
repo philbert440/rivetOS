@@ -111,7 +111,7 @@ rivetOS/
 │   └── nx-plugin/      # @rivetos/nx — generators, executors, dev tooling
 ├── plugins/
 │   ├── channels/       # agent (mesh); social bots removed Phase 5
-│   ├── providers/      # anthropic, google, xai, ollama, vllm, llama-server, claude-cli
+│   ├── providers/      # API, local, and subscription-backed CLI adapters
 │   ├── memory/         # postgres (pgvector + FTS + summary DAG + workers)
 │   ├── tools/          # shell, file, search, web-search, interaction, mcp-client
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
@@ -134,6 +134,7 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 
 | Plugin                  | Description                                                                                                |
 | ----------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `provider-codex-cli`    | GPT models through Codex CLI using the node's ChatGPT subscription login                                   |
 | `provider-anthropic`    | Claude models — streaming, adaptive thinking, prompt caching                                               |
 | `provider-google`       | Gemini models via Generative Language API (thought signatures)                                             |
 | `provider-xai`          | Grok models with live search and caching                                                                   |

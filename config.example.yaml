@@ -14,6 +14,11 @@ agents:
     default_thinking: medium
 
 providers:
+  # codex-cli:
+  #   model: default # follows the model selected by Codex
+  #   sandbox: read-only
+  #   session: resume
+
   anthropic:
     model: claude-opus-4-7
     max_tokens: 8192
@@ -61,6 +66,7 @@ providers:
 # from a checkout.
 # ---------------------------------------------------------------------------
 # plugins:
+#   - "@rivetos/provider-codex-cli"
 #   - "@rivetos/provider-anthropic"
 #   - "@rivetos/provider-claude-cli"
 #   - "@rivetos/provider-google"

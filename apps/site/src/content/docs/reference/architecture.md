@@ -465,7 +465,7 @@ rivetOS/
       agent/                     ← mesh agent-to-agent (social channels removed Phase 5)
     providers/                   ← headless / AI-SDK interactive demotion
       anthropic/ google/ xai/ ollama/ vllm/ llama-server/
-      claude-cli/                ← provider + claude-code task executor
+      claude-cli/ codex-cli/     ← subscription-backed CLI providers
     memory/postgres/
     tools/   shell/ file/ search/ web-search/ interaction/ mcp-client/
     transports/mcp-server/

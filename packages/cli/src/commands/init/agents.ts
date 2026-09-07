@@ -14,6 +14,7 @@ function bail<T>(v: T | symbol): asserts v is T {
 
 /** Default models per provider */
 export const DEFAULT_MODELS: Record<string, string> = {
+  'codex-cli': 'default',
   anthropic: 'claude-opus-4-7',
   'claude-cli': 'opus',
   xai: 'grok-4-1-fast-reasoning',
@@ -63,6 +64,11 @@ export async function configureAgents(): Promise<WizardAgent[]> {
     const providerResult = await p.select({
       message: 'AI provider',
       options: [
+        {
+          value: 'codex-cli' as const,
+          label: 'OpenAI Codex CLI',
+          hint: 'GPT via ChatGPT subscription — uses local `codex` login',
+        },
         { value: 'anthropic' as const, label: 'Anthropic', hint: 'Claude (API key)' },
         {
           value: 'claude-cli' as const,
@@ -91,11 +97,13 @@ export async function configureAgents(): Promise<WizardAgent[]> {
     let apiKey: string | undefined
     let baseUrl: string | undefined
 
-    if (provider === 'claude-cli') {
+    if (provider === 'claude-cli' || provider === 'codex-cli') {
       // No API key — the local `claude` binary owns auth via its OAuth keychain.
       // Just remind the user to make sure the CLI is installed and logged in.
-      p.log.info('Claude Code CLI uses your Claude.ai subscription via OAuth — no API key needed.')
-      p.log.info('Make sure the `claude` binary is installed and `claude login` has been run.')
+      const cli = provider === 'codex-cli' ? 'Codex CLI' : 'Claude Code CLI'
+      const login = provider === 'codex-cli' ? 'codex login' : 'claude login'
+      p.log.info(`${cli} uses your subscription login — no API key needed.`)
+      p.log.info(`Make sure the binary is installed and \`${login}\` has been run.`)
     } else if (provider === 'ollama') {
       const urlResult = await p.text({
         message: 'Ollama base URL',
@@ -169,6 +177,7 @@ export async function configureAgents(): Promise<WizardAgent[]> {
         { value: 'low' as const, label: 'Low' },
         { value: 'medium' as const, label: 'Medium', hint: 'recommended' },
         { value: 'high' as const, label: 'High', hint: 'slower, more thorough' },
+        { value: 'xhigh' as const, label: 'Extra high', hint: 'maximum supported reasoning' },
       ],
       initialValue: 'medium' as const,
     })

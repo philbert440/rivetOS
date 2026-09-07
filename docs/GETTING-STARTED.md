@@ -78,7 +78,7 @@ Every prompt that would fire on this run must be present as a key. A missing key
 | `agents` | wizard runs | non-empty array; each entry is one agent (no add-another loop) |
 | `agents[].name` | each agent | `{ "default": true }` → `rivet` on the first agent |
 | `agents[].provider` | each agent | no default |
-| `agents[].apiKey` | providers that need a key | `{ "default": true }` uses `$ANTHROPIC_API_KEY` / `$XAI_API_KEY` / `$GOOGLE_API_KEY` when set. Optional for `vllm` / `llama-server` (omit or empty = unauthenticated server; ignored when blank). Not collected for `claude-cli`. |
+| `agents[].apiKey` | providers that need a key | `{ "default": true }` uses `$ANTHROPIC_API_KEY` / `$XAI_API_KEY` / `$GOOGLE_API_KEY` when set. Optional for `vllm` / `llama-server` (omit or empty = unauthenticated server; ignored when blank). Not collected for `claude-cli` or `codex-cli`. |
 | `agents[].baseUrl` | `ollama` / `vllm` / `llama-server` | interactive URL defaults |
 | `agents[].model` | each agent, including `claude-cli` | provider default model |
 | `agents[].thinking` | each agent | `{ "default": true }` → `medium` |
@@ -368,7 +368,7 @@ rivetos model                         # Show providers + current models
 rivetos model <provider> <model>      # Switch default model (persistent)
 
 # Providers
-rivetos <provider> status             # anthropic | xai | google | ollama
+rivetos <provider> status             # codex-cli | anthropic | xai | google | ollama
 rivetos ollama models                 # List local Ollama models
 
 # Mesh (multi-node)

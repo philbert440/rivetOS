@@ -241,6 +241,7 @@ jobs:
             packages/boot
             plugins/channels/agent
             plugins/memory/postgres
+            plugins/providers/codex-cli
             plugins/providers/anthropic
             plugins/providers/claude-cli
             plugins/providers/google
