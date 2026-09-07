@@ -56,6 +56,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 ├── plugins/                     # Extensions (19 plugins across 5 categories)
 │   ├── providers/               # LLM provider adapters
 │   │   ├── anthropic/           # Claude (streaming, adaptive thinking, prompt caching)
+│   │   ├── codex-cli/           # GPT through `codex exec` + ChatGPT login
 │   │   ├── google/              # Gemini (thought signatures for function calling)
 │   │   ├── xai/                 # Grok (streaming, live search)
 │   │   ├── ollama/              # Local Ollama models
