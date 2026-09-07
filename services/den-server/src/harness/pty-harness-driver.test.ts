@@ -1096,6 +1096,33 @@ describe('pty-harness-driver permission prompts', () => {
     driver.close()
   })
 
+  it('a later subscriber gets a pending permission dialog replayed as approval-request', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: true,
+      turnQuietMs: 0,
+      screen: () => CLAUDE_PERM_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    driver.subscribe(sid, () => undefined)
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await Promise.resolve()
+    await Promise.resolve()
+    const later: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => later.push(e))
+    const replayed = later.find((e) => e.type === 'approval-request')
+    expect(replayed).toMatchObject({
+      type: 'approval-request',
+      requestId: `perm:${UUID}:1`,
+      name: 'Bash',
+      reason: expect.stringContaining('mkdir -p zz'),
+      options: [{ key: '1', label: 'Yes' }, { key: '2', label: expect.any(String) }, { key: '3', label: 'No' }],
+    })
+    driver.close()
+  })
+
   it('a finished picker lingering above a live permission dialog yields the dialog, not a prompt', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({
