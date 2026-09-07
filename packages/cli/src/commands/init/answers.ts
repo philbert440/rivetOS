@@ -12,7 +12,7 @@ import type { DeploymentTarget, EnvDetection, WizardAgent, WizardMeshJoin } from
 import { parseUserHost, validateNodeName } from '../../lib/mesh-enroll.js'
 
 const PROVIDERS = new Set(Object.keys(DEFAULT_MODELS))
-const THINKING = new Set(['off', 'low', 'medium', 'high'])
+const THINKING = new Set(['off', 'low', 'medium', 'high', 'xhigh'])
 const DEPLOYMENTS = new Set(['docker', 'proxmox', 'manual'])
 const EXISTING_ACTIONS = new Set(['deploy', 'reconfigure', 'validate', 'overwrite', 'cancel'])
 
@@ -188,7 +188,7 @@ function interpretAgent(raw: unknown, index: number, usedNames: Set<string>): Wi
   let apiKey: string | undefined
   let baseUrl: string | undefined
 
-  if (provider === 'claude-cli') {
+  if (provider === 'claude-cli' || provider === 'codex-cli') {
     // no credentials
   } else if (provider === 'ollama') {
     baseUrl = readString(obj, 'baseUrl', `${path}.baseUrl`, 'http://localhost:11434')
@@ -213,7 +213,9 @@ function interpretAgent(raw: unknown, index: number, usedNames: Set<string>): Wi
   const model = readString(obj, 'model', `${path}.model`, DEFAULT_MODELS[provider] ?? 'default')
   const thinking = readString(obj, 'thinking', `${path}.thinking`, 'medium')
   if (!THINKING.has(thinking)) {
-    throw new Error(`answers-file key "${path}.thinking" must be one of: off, low, medium, high`)
+    throw new Error(
+      `answers-file key "${path}.thinking" must be one of: off, low, medium, high, xhigh`,
+    )
   }
 
   return { name, provider, model, thinking, apiKey, baseUrl }

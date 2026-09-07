@@ -2,6 +2,7 @@
  * rivetos <provider> <action>
  *
  * Provider-specific commands:
+ *   rivetos codex-cli status     — check Codex CLI login
  *   rivetos anthropic status     — check connectivity
  *   rivetos xai status           — check connectivity
  *   rivetos google status        — check connectivity
@@ -9,6 +10,11 @@
  *   rivetos ollama models        — list models
  *   rivetos ollama pull <model>  — pull a model
  */
+
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { spawn } from 'node:child_process'
+import { parse as parseYaml } from 'yaml'
 
 interface OllamaModel {
   name: string
@@ -29,6 +35,9 @@ export default async function provider(providerName: string): Promise<void> {
   }
 
   switch (providerName) {
+    case 'codex-cli':
+      await handleCodexCli(action)
+      break
     case 'anthropic':
       await handleAnthropic(action)
       break
@@ -85,6 +94,59 @@ async function handleAnthropic(action: string): Promise<void> {
 
     default:
       showProviderHelp('anthropic')
+  }
+}
+
+/** Match the provider: a stray OPENAI_API_KEY must not make `codex login status` succeed. */
+function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
+}
+
+async function resolveCodexBinary(): Promise<string> {
+  try {
+    const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+    const parsed = parseYaml(await readFile(configPath, 'utf-8')) as Record<string, unknown>
+    const providers = (parsed.providers ?? {}) as Record<string, Record<string, unknown>>
+    const binary = providers['codex-cli']?.binary
+    if (typeof binary === 'string' && binary.trim()) return binary.trim()
+  } catch {
+    /* missing or unreadable config — fall back to PATH */
+  }
+  return 'codex'
+}
+
+async function handleCodexCli(action: string): Promise<void> {
+  if (action !== 'status') {
+    showProviderHelp('codex-cli')
+    return
+  }
+  const binary = await resolveCodexBinary()
+  const result = await new Promise<{ code: number | null; output: string }>((done) => {
+    const child = spawn(binary, ['login', 'status'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: envWithoutOpenAI(),
+    })
+    let output = ''
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      done({ code: null, output: output.trim() || 'timed out' })
+    }, 5000)
+    timer.unref()
+    child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()))
+    child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()))
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      done({ code: null, output: error.message })
+    })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      done({ code, output })
+    })
+  })
+  if (result.code === 0) console.log(`✓ Codex CLI: ${result.output.trim() || 'logged in'}`)
+  else {
+    console.error(`✗ Codex CLI unavailable or not logged in: ${result.output.trim()}`)
+    process.exitCode = 1
   }
 }
 
@@ -245,6 +307,7 @@ async function handleOllama(action: string): Promise<void> {
 
 function showProviderHelp(name: string): void {
   const commands: Record<string, string[]> = {
+    'codex-cli': ['rivetos codex-cli status     Check installed CLI and ChatGPT login'],
     anthropic: ['rivetos anthropic status     Check connectivity'],
     xai: ['rivetos xai status           Check connectivity'],
     google: ['rivetos google status        Check connectivity'],

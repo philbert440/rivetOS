@@ -313,7 +313,7 @@ rivetos model                         # Show providers + current models
 rivetos model <provider> <model>      # Switch default model (persistent)
 
 # Providers
-rivetos <provider> status             # anthropic | xai | google | ollama
+rivetos <provider> status             # codex-cli | anthropic | xai | google | ollama
 rivetos ollama models                 # List local Ollama models
 
 # Mesh (multi-node)

@@ -930,7 +930,6 @@ async function checkDNS(rawConfig: string | null): Promise<CheckResult[]> {
       if (providers.anthropic) hosts.push('api.anthropic.com')
       if (providers.xai) hosts.push('api.x.ai')
       if (providers.google) hosts.push('generativelanguage.googleapis.com')
-      if (providers.openai) hosts.push('api.openai.com')
     } catch {
       /* expected */
     }
@@ -1423,6 +1422,11 @@ export async function checkLeafCert(rawConfig: string | null, now?: Date): Promi
 // Provider Connectivity (kept from original)
 // ---------------------------------------------------------------------------
 
+/** Match the provider: a stray OPENAI_API_KEY must not make `codex login status` succeed. */
+function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
+}
+
 async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
@@ -1430,6 +1434,18 @@ async function checkProviderConnectivity(
   const timeout = 5000
 
   switch (name) {
+    case 'codex-cli':
+      try {
+        execFileSync((config.binary as string | undefined) ?? 'codex', ['login', 'status'], {
+          stdio: 'ignore',
+          timeout,
+          env: envWithoutOpenAI(),
+        })
+        return true
+      } catch {
+        return false
+      }
+
     case 'anthropic': {
       const apiKey = (config.api_key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? ''
       if (!apiKey) return false

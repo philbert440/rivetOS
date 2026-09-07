@@ -14,7 +14,9 @@ mesh:
 
 const baseState = (): WizardState => ({
   deployment: 'manual',
-  agents: [{ name: 'rivet', provider: 'xai', model: 'grok-4-1-fast-reasoning', thinking: 'medium' }],
+  agents: [
+    { name: 'rivet', provider: 'xai', model: 'grok-4-1-fast-reasoning', thinking: 'medium' },
+  ],
   channels: [],
   postgresPassword: 'secret',
   postgresUrl: 'postgres://u:p@localhost:5432/rivetos',
@@ -23,10 +25,7 @@ const baseState = (): WizardState => ({
 
 describe('meshSectionFromEnroll', () => {
   it('builds a valid mesh section from a fixture enroll result', () => {
-    const section = meshSectionFromEnroll(
-      { name: 'ct110', snippet: SNIPPET },
-      '192.0.2.11',
-    )
+    const section = meshSectionFromEnroll({ name: 'ct110', snippet: SNIPPET }, '192.0.2.11')
     expect(section).toEqual({
       enabled: true,
       node_name: 'ct110',
@@ -55,6 +54,23 @@ describe('meshSectionFromEnroll', () => {
 })
 
 describe('buildConfigYaml mesh branch', () => {
+  it('generates a valid Codex CLI node without max_tokens', () => {
+    const yaml = buildConfigYaml({
+      ...baseState(),
+      agents: [
+        {
+          name: 'codex',
+          provider: 'codex-cli',
+          model: 'default',
+          thinking: 'xhigh',
+        },
+      ],
+    })
+    expect(yaml).toMatch(/codex:\n\s+provider: codex-cli\n\s+default_thinking: xhigh/)
+    expect(yaml).toMatch(/codex-cli:\n\s+model: default/)
+    expect(yaml).not.toContain('max_tokens')
+  })
+
   it('omits mesh when enroll was not requested', () => {
     const yaml = buildConfigYaml(baseState())
     expect(yaml).not.toMatch(/^mesh:/m)
@@ -62,10 +78,7 @@ describe('buildConfigYaml mesh branch', () => {
   })
 
   it('writes the enroll mesh section into generated config', () => {
-    const meshSection = meshSectionFromEnroll(
-      { name: 'ct110', snippet: SNIPPET },
-      '192.0.2.11',
-    )
+    const meshSection = meshSectionFromEnroll({ name: 'ct110', snippet: SNIPPET }, '192.0.2.11')
     const yaml = buildConfigYaml({ ...baseState(), meshSection })
     expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
     expect(yaml).toMatch(/^mesh:/m)
