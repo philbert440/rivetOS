@@ -45,7 +45,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
-import { validateConfig } from '@rivetos/boot'
+import { resolveEmbeddedPg, validateConfig, type RivetConfig } from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
@@ -529,6 +529,77 @@ async function checkMemoryBackend(): Promise<{
   close?: () => Promise<void>
 }> {
   const results: CheckResult[] = []
+  const embedded = loadEmbeddedResolved()
+
+  if (embedded) {
+    const size = formatBytes(dirSizeBytes(embedded.dataDir))
+    const lock = readEmbeddedLock(embedded.dataDir)
+    const running = lock ? embeddedLockAlive(lock.pid) : false
+    if (!running || !lock) {
+      results.push(
+        check(
+          'memory',
+          'embedded',
+          'warn',
+          `embedded PGlite: ${embedded.dataDir} (${size}), not running — start the node`,
+        ),
+      )
+      return { results }
+    }
+    const pgUrl = process.env.RIVETOS_PG_URL ?? embedded.pgUrl
+    try {
+      const { default: pg } = await import('pg')
+      const client = new pg.Client({ connectionString: pgUrl })
+      try {
+        await client.connect()
+        await client.query('SELECT 1')
+      } catch (err) {
+        try {
+          await client.end()
+        } catch {
+          /* ignore */
+        }
+        results.push(
+          check(
+            'memory',
+            'embedded',
+            'fail',
+            `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused`,
+            (err as Error).message,
+          ),
+        )
+        return { results }
+      }
+      results.push(
+        check(
+          'memory',
+          'embedded',
+          'pass',
+          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)}`,
+        ),
+      )
+      return {
+        results,
+        query: async (sql) => {
+          const res = await client.query(sql)
+          return { rows: res.rows as Array<Record<string, unknown>> }
+        },
+        close: () => client.end(),
+      }
+    } catch (err) {
+      results.push(
+        check(
+          'memory',
+          'embedded',
+          'fail',
+          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused`,
+          (err as Error).message,
+        ),
+      )
+      return { results }
+    }
+  }
+
   const pgUrl = process.env.RIVETOS_PG_URL
 
   if (!pgUrl) {
@@ -581,6 +652,71 @@ async function checkMemoryBackend(): Promise<{
     )
     return { results }
   }
+}
+
+function loadEmbeddedResolved(): ReturnType<typeof resolveEmbeddedPg> {
+  const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+  try {
+    const raw = readFileSync(configPath, 'utf-8')
+    const parsed = parseYaml(raw) as RivetConfig
+    return resolveEmbeddedPg(parsed)
+  } catch {
+    return undefined
+  }
+}
+
+function readEmbeddedLock(dataDir: string): { pid: number; port: number } | undefined {
+  const lockPath = join(dataDir, 'rivetos-owner.lock')
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: unknown; port?: unknown }
+    if (typeof parsed.pid !== 'number' || typeof parsed.port !== 'number') return undefined
+    return { pid: parsed.pid, port: parsed.port }
+  } catch {
+    return undefined
+  }
+}
+
+function embeddedLockAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false
+    return true
+  }
+}
+
+function dirSizeBytes(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let total = 0
+  const walk = (p: string): void => {
+    let st
+    try {
+      st = statSync(p)
+    } catch {
+      return
+    }
+    if (st.isFile()) {
+      total += st.size
+      return
+    }
+    if (!st.isDirectory()) return
+    let entries: string[]
+    try {
+      entries = readdirSync(p)
+    } catch {
+      return
+    }
+    for (const name of entries) walk(join(p, name))
+  }
+  walk(dir)
+  return total
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${String(n)} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // ---------------------------------------------------------------------------

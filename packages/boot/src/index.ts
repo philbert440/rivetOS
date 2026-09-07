@@ -18,9 +18,29 @@ import { registerPlugins } from './registrars/plugins.js'
 import { registerAgentTools } from './registrars/agents.js'
 import { registerGateway } from './registrars/gateway.js'
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js'
+import {
+  acquireEmbeddedPg,
+  applyEmbeddedPgUrl,
+  migrateEmbedded,
+  resolveEmbeddedPg,
+  type EmbeddedPgHandle,
+} from './embedded-pg.js'
 
 // Re-export config types for consumers
-export { loadConfig, type RivetConfig, ConfigValidationError } from './config.js'
+export {
+  loadConfig,
+  type RivetConfig,
+  type MemoryPostgresEmbeddedSection,
+  ConfigValidationError,
+} from './config.js'
+export {
+  resolveEmbeddedPg,
+  acquireEmbeddedPg,
+  applyEmbeddedPgUrl,
+  migrateEmbedded,
+  type ResolvedEmbeddedPg,
+  type EmbeddedPgHandle,
+} from './embedded-pg.js'
 export {
   validateConfig,
   formatValidationResult,
@@ -105,6 +125,22 @@ export async function boot(configPath?: string): Promise<void> {
   log.info(`Loading config from ${configPath}`)
 
   const config = await loadConfig(configPath)
+
+  // Embedded PGlite (optional): acquire the loopback socket and inject the
+  // URL before plugin discovery so memory / gateway / Runtime.getPgUrl() see it.
+  const embedded = resolveEmbeddedPg(config)
+  let embeddedHandle: EmbeddedPgHandle | undefined
+  if (embedded) {
+    embeddedHandle = await acquireEmbeddedPg(embedded, { log })
+    applyEmbeddedPgUrl(config, embeddedHandle.pgUrl)
+    if (embedded.autoMigrate && embeddedHandle.owned) {
+      await migrateEmbedded(embeddedHandle.pgUrl)
+    }
+    if (embedded.liteMode && embeddedHandle.owned) {
+      await embeddedHandle.exec?.(`SET rivet.defer_embed_enqueue = 'on'`)
+    }
+  }
+
   const workspaceDir = config.runtime.workspace.replace('~', process.env.HOME ?? '.')
 
   // 0. Discover plugins
@@ -185,9 +221,11 @@ export async function boot(configPath?: string): Promise<void> {
   //      task-engine route families mounted behind its bearer gate.
   await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
 
-  // 5. Lifecycle
+  // 5. Lifecycle — close embedded PG after runtime.stop (den/plugins first).
   await writePidFile()
-  registerShutdownHandlers(runtime)
+  registerShutdownHandlers(runtime, undefined, async () => {
+    await embeddedHandle?.close()
+  })
 
   // 6. Start
   await runtime.start()

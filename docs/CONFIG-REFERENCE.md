@@ -494,10 +494,42 @@ memory:
 | `connection_string` | string | `${RIVETOS_PG_URL}` | PostgreSQL connection URL. |
 | `embed_endpoint` | string | — | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default. |
 | `delegation_tracking` | boolean | `false` | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing. |
+| `embedded` | object | — | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
 
 **Required extensions:** `pgvector` (for embedding storage and similarity search).
 
 The memory plugin handles schema creation and migration automatically on first boot.
+
+### Embedded PGlite
+
+Presence of `memory.postgres.embedded` starts Postgres-in-WASM inside `rivetos start` and exposes it on a loopback wire socket. Existing `pg` clients keep using `RIVETOS_PG_URL` (injected at boot). Do not set `connection_string` in the same block — that is a validation error.
+
+```yaml
+memory:
+  postgres:
+    embedded:
+      data_dir: ~/.rivetos/pglite
+      port: 5433
+      auto_migrate: true
+      max_connections: 96
+```
+
+Effective URL: `postgres://postgres:postgres@127.0.0.1:<port>/postgres`.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `data_dir` | string | `~/.rivetos/pglite` | File-backed PGlite directory (`~` expanded). |
+| `port` | integer | `5433` | Loopback TCP port (5432 may already be a host Postgres). |
+| `auto_migrate` | boolean | `true` | Run memory migrations in-process after the owner starts. |
+| `max_connections` | integer | `96` | Socket multiplexer cap. The library default is 1. |
+
+Contract:
+
+- The socket exists only while the node process runs. A second process on the same `data_dir` attaches (does not open the directory twice) via `rivetos-owner.lock`.
+- Single owner. Stale lock (dead pid) is unlinked and replaced.
+- `LISTEN`/`NOTIFY` is not delivered across socket connections — task completion waiter and graphile-worker use polling.
+- Export with `pg_dump` ≥ 18 (this engine is PostgreSQL 18.3). RSS is about 650 MB per 170 MB on-disk database.
+- Without `RIVETOS_EMBED_URL` / `embed_endpoint`, boot sets `rivet.defer_embed_enqueue=on` so capture INSERTs do not require the graphile schema.
 
 ---
 
