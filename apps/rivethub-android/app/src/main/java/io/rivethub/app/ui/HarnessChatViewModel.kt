@@ -18,6 +18,9 @@ import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
 import io.rivethub.app.plane.AskUserCard
+import io.rivethub.app.plane.PromptSlot
+import io.rivethub.app.plane.askCardError
+import io.rivethub.app.plane.promptSlotAfter
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.CLOSED_GATE
 import io.rivethub.app.plane.ChatSendAction
@@ -38,7 +41,6 @@ import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TranscriptMachine
 import io.rivethub.app.plane.agentStatusLine
-import io.rivethub.app.plane.askQuestionsFromHarness
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
 import io.rivethub.app.plane.adoptCanonicalIsNoOp
@@ -134,6 +136,8 @@ class HarnessChatViewModel(
         val ask: AskUserCard? = null,
         val promptId: String? = null,
         val answeringPrompt: Boolean = false,
+        /** Card-local error (den `bad_request` text). Not the composer strip. */
+        val askError: String? = null,
         val approval: PendingApproval? = null,
         val queued: List<OutboundItem> = emptyList(),
         val agentStatusText: String? = null,
@@ -367,6 +371,10 @@ class HarnessChatViewModel(
 
     fun answerAsk(picked: Map<Int, List<String>>, free: String) {
         val st = _state.value
+        // In-flight guard (web keeps the same ref): every option row is a submit
+        // surface now, and a second POST for the same promptId would type the
+        // old answer's digit into the NEXT screen-read question.
+        if (st.answeringPrompt) return
         val card = st.ask ?: return
         val promptId = st.promptId
         if (promptId != null) {
@@ -377,9 +385,16 @@ class HarnessChatViewModel(
                 runCatching {
                     c.harness(nodeDenUrl).answerPrompt(sessionKeyEnc(_state.value.sessionId), promptId, answers)
                 }.onFailure { e ->
-                    _state.update { it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName) }
+                    val cardError = askCardError(e)
+                    _state.update {
+                        if (cardError != null) {
+                            it.copy(answeringPrompt = false, askError = cardError)
+                        } else {
+                            it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName)
+                        }
+                    }
                 }.onSuccess {
-                    _state.update { it.copy(answeringPrompt = false) }
+                    _state.update { it.copy(answeringPrompt = false, askError = null) }
                 }
             }
             return
@@ -391,7 +406,7 @@ class HarnessChatViewModel(
     }
 
     fun dismissAsk() {
-        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false) }
+        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false, askError = null) }
     }
 
     fun decideApproval(reqId: String, decision: String) {
@@ -747,14 +762,20 @@ class HarnessChatViewModel(
                             }
                             is HarnessEvent.Prompt -> {
                                 machine.onPrompt(e)
-                                if (e.resolved) {
-                                    if (_state.value.promptId == e.promptId) {
-                                        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false) }
-                                    }
-                                } else {
-                                    val qs = askQuestionsFromHarness(e.questions)
-                                    if (qs.isNotEmpty()) {
-                                        _state.update { it.copy(ask = AskUserCard(qs), promptId = e.promptId) }
+                                val cur = _state.value.let { s ->
+                                    val id = s.promptId
+                                    val card = s.ask
+                                    if (id != null && card != null) PromptSlot(id, card) else null
+                                }
+                                val next = promptSlotAfter(cur, e)
+                                if (next !== cur) {
+                                    _state.update {
+                                        it.copy(
+                                            ask = next?.card,
+                                            promptId = next?.promptId,
+                                            answeringPrompt = false,
+                                            askError = null,
+                                        )
                                     }
                                 }
                             }
@@ -791,8 +812,21 @@ class HarnessChatViewModel(
                         rearmIdleWatch()
                     }
                     is Frame.St -> {
-                        _state.update { it.copy(ws = f.s) }
-                        if (f.s == WsStatus.OPEN) machineAttach.onWatchOpen()
+                        if (f.s == WsStatus.OPEN) {
+                            _state.update {
+                                it.copy(
+                                    ws = f.s,
+                                    ask = null,
+                                    promptId = null,
+                                    answeringPrompt = false,
+                                    approval = null,
+                                    askError = null,
+                                )
+                            }
+                            machineAttach.onWatchOpen()
+                        } else {
+                            _state.update { it.copy(ws = f.s) }
+                        }
                         publishMachine()
                     }
                 }

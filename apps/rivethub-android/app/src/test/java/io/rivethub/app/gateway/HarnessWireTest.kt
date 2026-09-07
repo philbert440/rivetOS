@@ -149,6 +149,28 @@ class HarnessWireTest {
         ) as HarnessEvent.Prompt
         assertTrue(done.resolved)
         assertEquals("Yes", done.answerText)
+        assertNull(open.screen)
+        assertNull(done.screen)
+    }
+
+    @Test fun `parse prompt with screen current and total`() {
+        val e = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p2","kind":"ask-user","toolName":"AskUserQuestion","questions":[{"question":"Go?","multiSelect":false,"options":[{"label":"Yes"}]}],"screen":{"current":0,"total":3}}""",
+        ) as HarnessEvent.Prompt
+        assertEquals("p2", e.promptId)
+        assertEquals(0, e.screen!!.current)
+        assertEquals(3, e.screen!!.total)
+        assertEquals("Go?", e.questions.single().question)
+    }
+
+    @Test fun `parse prompt without screen still parses`() {
+        val e = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p3","kind":"ask-user","toolName":"AskUserQuestion","questions":[{"question":"Go?","options":[{"label":"A"},{"label":"B"}]}]}""",
+        ) as HarnessEvent.Prompt
+        assertEquals("p3", e.promptId)
+        assertNull(e.screen)
+        assertFalse(e.resolved)
+        assertEquals(2, e.questions.single().options.size)
     }
 
     @Test fun `parse approval-request and approval-resolved`() {
@@ -167,12 +189,13 @@ class HarnessWireTest {
     }
 
     @Test fun `transcript turn round-trips id input resultText stopReason lastBlock complete`() {
-        val json = """{"sessionId":"$sid","harnessId":"claude-code","turns":[{"role":"assistant","text":"done","stopReason":"end_turn","lastBlock":"text","complete":true,"tools":[{"name":"AskUserQuestion","status":"done","id":"toolu_1","input":{"questions":[1]},"resultText":"Yes"}]}]}"""
+        val json = """{"sessionId":"$sid","harnessId":"claude-code","turns":[{"role":"assistant","text":"done","stopReason":"end_turn","lastBlock":"text","complete":true,"compact":true,"tools":[{"name":"AskUserQuestion","status":"done","id":"toolu_1","input":{"questions":[1]},"resultText":"Yes"}]}]}"""
         val body = wireJson.decodeFromString(HarnessSessionTranscriptResponse.serializer(), json)
         val turn = body.turns.single()
         assertEquals("end_turn", turn.stopReason)
         assertEquals("text", turn.lastBlock)
         assertEquals(true, turn.complete)
+        assertEquals(true, turn.compact)
         val tool = turn.tools!!.single()
         assertEquals("toolu_1", tool.id)
         assertEquals("Yes", tool.resultText)

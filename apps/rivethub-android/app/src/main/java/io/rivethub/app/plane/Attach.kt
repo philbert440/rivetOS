@@ -134,8 +134,6 @@ class TranscriptMachine(
         private set
     var agentStatus: AgentStatus? = null
         private set
-    var openPrompt: HarnessEvent.Prompt? = null
-        private set
     /** Committed size at [beginTurn] — resync looks for an assistant past this. */
     var committedAtTurnStart: Int = 0
         private set
@@ -232,9 +230,9 @@ class TranscriptMachine(
         }
     }
 
+    /** A prompt frame is a liveness signal only; the open-prompt slot lives on the ViewModel (`promptSlotAfter`). */
     fun onPrompt(p: HarnessEvent.Prompt) {
         lastFrameTs = nowMs()
-        openPrompt = if (p.resolved) null else p
     }
 
     fun beginTurn() {
@@ -571,6 +569,8 @@ class SessionAttach(
 
     suspend fun onWatchOpen() {
         if (stopped) return
+        // den replays still-open prompts/approvals after this open; the
+        // ViewModel already dropped its ask/approval slots on WsStatus.OPEN.
         resync(committed = false)
     }
 

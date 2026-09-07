@@ -22,7 +22,7 @@ import java.io.Closeable
 import java.io.IOException
 import kotlin.random.Random
 
-open class GatewayException(val status: Int, message: String) : IOException(message)
+open class GatewayException(val status: Int, message: String, val code: String? = null) : IOException(message)
 
 /**
  * Typed client over one node's gateway — the Kotlin twin of

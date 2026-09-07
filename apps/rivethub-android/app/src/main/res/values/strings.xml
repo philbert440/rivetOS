@@ -137,6 +137,10 @@
     <string name="node_picker">Node</string>
     <string name="action_stop">Stop</string>
     <string name="ask_rivet_asking">Rivet is asking</string>
+    <string name="ask_question_of">Question %1$d of %2$d</string>
+    <string name="ask_moves_terminal">answering here moves the terminal to the next question</string>
+    <string name="ask_terminal_only">answer this one in the terminal</string>
+    <string name="ask_no_options">options not visible — answer in the terminal</string>
 
     <string name="enroll_blurb">Point at the datahub gateway and hand the phone its device certificate.</string>
     <string name="label_entry_url">Entry URL</string>

@@ -1,5 +1,10 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.GatewayException
+import io.rivethub.app.gateway.PromptScreen
+import io.rivethub.app.gateway.HarnessEvent
+import io.rivethub.app.gateway.HarnessAskQuestion
+import io.rivethub.app.gateway.HarnessAskOption
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonObject
@@ -262,5 +267,87 @@ class AskUserTest {
         assertTrue(qs.single().multiSelect)
         assertEquals("Yes", qs.single().options[0].label)
         assertEquals("do it", qs.single().options[0].description)
+    }
+
+    private fun q(
+        multiSelect: Boolean = false,
+        options: List<AskOption> = listOf(AskOption("A"), AskOption("B")),
+    ) = AskQuestion(multiSelect = multiSelect, options = options)
+
+    @Test fun `askCardMode answers a normal question with no screen`() {
+        assertEquals(AskCardMode.ANSWER, askCardMode(q()))
+    }
+
+    @Test fun `askCardMode is no-options when the option list is empty`() {
+        assertEquals(AskCardMode.NO_OPTIONS, askCardMode(q(options = emptyList())))
+        assertEquals(AskCardMode.NO_OPTIONS, askCardMode(q(options = emptyList()), AskScreen(2, 3)))
+    }
+
+    @Test fun `askCardMode is terminal-only for the last single-select of several`() {
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(0, 3)))
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(1, 3)))
+        assertEquals(AskCardMode.TERMINAL_ONLY, askCardMode(q(), AskScreen(2, 3)))
+    }
+
+    @Test fun `askCardMode still answers the last question when multiSelect or the only one`() {
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(multiSelect = true), AskScreen(2, 3)))
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(0, 1)))
+    }
+
+    @Test fun `askCardError carries den bad_request text to the card`() {
+        val err = GatewayException(400, "answer this one in the terminal", "bad_request")
+        assertEquals("answer this one in the terminal", askCardError(err))
+    }
+
+    @Test fun `askCardError is null for every other failure so it goes to the strip`() {
+        assertNull(askCardError(GatewayException(400, "answers must be …", null)))
+        assertNull(askCardError(GatewayException(404, "unknown prompt", "unknown_prompt")))
+        assertNull(askCardError(GatewayException(500, "HTTP 500", "upstream")))
+        assertNull(askCardError(RuntimeException("boom")))
+        assertNull(askCardError(GatewayException(400, "", "bad_request")))
+    }
+
+    private fun promptEvent(id: String, resolved: Boolean = false, screen: PromptScreen? = null) =
+        HarnessEvent.Prompt(
+            sessionId = "s",
+            promptId = id,
+            toolName = "AskUserQuestion",
+            questions = listOf(
+                HarnessAskQuestion(
+                    question = "Which color?",
+                    header = "Color",
+                    options = listOf(HarnessAskOption("Red"), HarnessAskOption("Green")),
+                ),
+            ),
+            resolved = resolved,
+            screen = screen,
+        )
+
+    @Test fun `promptSlotAfter opens a slot and carries the screen position`() {
+        val slot = promptSlotAfter(null, promptEvent("p1", screen = PromptScreen(1, 3)))
+        assertEquals("p1", slot?.promptId)
+        assertEquals(AskScreen(1, 3), slot?.card?.screen)
+        assertEquals(listOf("Red", "Green"), slot?.card?.questions?.single()?.options?.map { it.label })
+    }
+
+    @Test fun `promptSlotAfter is idempotent by promptId (den replays on every open)`() {
+        val first = promptSlotAfter(null, promptEvent("p1"))
+        val again = promptSlotAfter(first, promptEvent("p1"))
+        assertTrue(first === again)
+    }
+
+    @Test fun `promptSlotAfter resolved retires only the matching id`() {
+        val slot = promptSlotAfter(null, promptEvent("p1"))
+        assertTrue(promptSlotAfter(slot, promptEvent("other", resolved = true)) === slot)
+        assertNull(promptSlotAfter(slot, promptEvent("p1", resolved = true)))
+        assertNull(promptSlotAfter(null, promptEvent("p1", resolved = true)))
+    }
+
+    @Test fun `promptSlotAfter replaces the slot for a new id and ignores an empty frame`() {
+        val slot = promptSlotAfter(null, promptEvent("p1"))
+        val next = promptSlotAfter(slot, promptEvent("p2"))
+        assertEquals("p2", next?.promptId)
+        val empty = promptEvent("p3").copy(questions = emptyList())
+        assertTrue(promptSlotAfter(next, empty) === next)
     }
 }

@@ -509,15 +509,6 @@ class AttachTest {
         assertEquals(listOf("hi", "done"), m.transcript.map { it.text })
     }
 
-    @Test fun `prompt open then resolve`() {
-        val m = TranscriptMachine({ 0 })
-        val open = HarnessEvent.Prompt("s", "p1", "AskUserQuestion", emptyList(), resolved = false)
-        m.onPrompt(open)
-        assertEquals("p1", m.openPrompt?.promptId)
-        m.onPrompt(open.copy(resolved = true, answerText = "Yes"))
-        assertNull(m.openPrompt)
-    }
-
     @Test fun `hook deltas ignored on a live-turn store`() {
         val m = TranscriptMachine({ 0 })
         val live = HarnessTranscriptTurn(role = "assistant", text = "from-store", complete = null)
