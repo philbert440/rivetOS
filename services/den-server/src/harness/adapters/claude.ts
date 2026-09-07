@@ -141,11 +141,12 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
       // start of a turn): close the finished turn and drop a complete marker
       // whose usage is the POST-compaction context size — without it the
       // pre-compaction peak stays on the context meter until the next reply.
-      // Mid-turn (auto compaction lands right after a tool_result): leave the
-      // running turn alone — a marker would split the live turn and read as a
-      // false turn-complete; the continuation's own usage lines reset the
-      // meter within seconds anyway.
-      if (cur && !assistantComplete()) continue
+      // Mid-turn (auto compaction lands right after a tool_result, or before
+      // the first assistant line of a turn): leave the pending turn alone — a
+      // marker would split the live turn / sit behind the user turn and read
+      // as a false turn-complete; the reply's own usage lines reset the meter
+      // within seconds anyway.
+      if (cur ? !assistantComplete() : turns[turns.length - 1]?.role === 'user') continue
       finishAssistant()
       turns.push(compactMarker(obj.compactMetadata))
       continue

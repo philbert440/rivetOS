@@ -781,11 +781,19 @@ describe('readHarnessTranscript', () => {
       join(dir, `${id}.jsonl`),
       [
         JSON.stringify({ type: 'user', message: { role: 'user', content: 'q' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            stop_reason: 'end_turn',
+            content: [{ type: 'text', text: 'a' }],
+          },
+        }),
         JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
       ].join('\n') + '\n',
     )
     const bare = await readHarnessTranscript(id)
-    expect(bare.turns[1]).toEqual({
+    expect(bare.turns[2]).toEqual({
       role: 'assistant',
       text: 'Conversation compacted',
       stopReason: 'end_turn',
@@ -857,6 +865,28 @@ describe('readHarnessTranscript', () => {
     expect(after.turns[1]?.complete).toBe(true)
     expect(after.turns[1]?.usage?.promptTokens).toBe(31_000)
     expect(after.turns[1]?.text).toBe('done')
+  })
+
+  it('an auto compact_boundary BEFORE the first assistant line of a turn adds no marker', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-precompact-'))
+    dirs.push(base)
+    const id = 'abababab-abab-abab-abab-abababababab'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'huge paste' } }),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'compact_boundary',
+          compactMetadata: { trigger: 'auto', preTokens: 900_000, postTokens: 40_000 },
+        }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+    const t = await readHarnessTranscript(id)
+    expect(t.turns).toEqual([{ role: 'user', text: 'huge paste' }])
   })
 
   it('a bare slash line in a Claude store is a command, not a user turn (claude-only filter)', () => {
