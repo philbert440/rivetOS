@@ -27,6 +27,22 @@ describe('deriveTurnStatus', () => {
     })
   })
 
+  it('trailing compaction marker (complete) → idle, even right after a user turn', () => {
+    const turns: HarnessTranscriptTurn[] = [
+      { role: 'user', text: 'big question' },
+      {
+        role: 'assistant',
+        text: 'Conversation compacted (950k tokens → 20k tokens)',
+        stopReason: 'end_turn',
+        lastBlock: 'text',
+        complete: true,
+        compact: true,
+        usage: { promptTokens: 19_624, completionTokens: 0, cachedTokens: 0 },
+      },
+    ]
+    expect(deriveTurnStatus(turns, 'claude')).toEqual({ inFlight: false })
+  })
+
   it('trailing assistant with a running tool → in-flight tool', () => {
     const turns: HarnessTranscriptTurn[] = [
       {

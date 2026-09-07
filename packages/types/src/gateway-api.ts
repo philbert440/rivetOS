@@ -663,6 +663,10 @@ export interface HarnessTranscriptTurn {
   lastBlock?: 'thinking' | 'text' | 'tool_use' | 'tool_result'
   /** stopReason === 'end_turn' && the last line had a text block && no tool is still running. */
   complete?: true
+  /** Synthetic marker for a context compaction (Claude Code `compact_boundary`):
+   *  `usage.promptTokens` is the post-compaction context size, so a context
+   *  meter reading the last usage resets without waiting for the next reply. */
+  compact?: true
 }
 
 /** Hard-resync payload: rebuild chat UI from the on-disk harness transcript. */

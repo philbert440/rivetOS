@@ -50,6 +50,30 @@ function promptInput(raw: unknown): unknown {
   }
 }
 
+/** `system`/`compact_boundary` → a complete assistant marker turn carrying the post-compaction context size. */
+function compactMarker(meta: unknown): HarnessTurn {
+  const m = (meta ?? {}) as { postTokens?: unknown; preTokens?: unknown }
+  const post = typeof m.postTokens === 'number' && m.postTokens >= 0 ? m.postTokens : undefined
+  const pre = typeof m.preTokens === 'number' && m.preTokens > 0 ? m.preTokens : undefined
+  const turn: HarnessTurn = {
+    role: 'assistant',
+    text:
+      pre !== undefined && post !== undefined
+        ? `Conversation compacted (${tokensLabel(pre)} → ${tokensLabel(post)})`
+        : 'Conversation compacted',
+    stopReason: 'end_turn',
+    lastBlock: 'text',
+    complete: true,
+    compact: true,
+  }
+  if (post !== undefined) turn.usage = { promptTokens: post, completionTokens: 0, cachedTokens: 0 }
+  return turn
+}
+
+function tokensLabel(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k tokens` : `${String(n)} tokens`
+}
+
 /**
  * Fold Claude Code store lines into LOGICAL turns. One agent turn spans many
  * store lines — one 'assistant' line per committed content block, with
@@ -98,6 +122,15 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
 
   for (const obj of lines) {
     if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
+    if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
+      // Context compaction: close the running turn and drop a marker whose
+      // usage is the POST-compaction context size (the summary line itself
+      // is skipped above). Without it the last real usage — the pre-compaction
+      // peak — stays on the context meter until the next reply.
+      finishAssistant()
+      turns.push(compactMarker(obj.compactMetadata))
+      continue
+    }
     if (obj.type !== 'user' && obj.type !== 'assistant') continue
     const msg = obj.message as
       { content?: unknown; usage?: unknown; model?: unknown; stop_reason?: unknown } | undefined

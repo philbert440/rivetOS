@@ -311,7 +311,9 @@ describe('listHarnessSessions', () => {
       '└──────────────────────────────────────────────────────────────────────────────────────────────────┘',
       '',
       'The reply.',
-    ].join('\n').replace(/'/g, "''")
+    ]
+      .join('\n')
+      .replace(/'/g, "''")
     const db = new DatabaseSync(join(base, 'state.db'))
     db.exec(`
       CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
@@ -704,6 +706,15 @@ describe('readHarnessTranscript', () => {
           type: 'assistant',
           message: { content: [{ type: 'text', text: 'real answer' }] },
         }),
+        // Claude Code 2.1.263 writes the raw slash line BEFORE the <command-name> echo;
+        // neither is conversation, and a trailing bare "/compact" must not read as a
+        // pending user turn (status stuck on "thinking" until the stale release).
+        JSON.stringify({ type: 'user', message: { role: 'user', content: '/compact' } }),
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: '<command-name>/compact</command-name>' },
+        }),
+        JSON.stringify({ type: 'system', subtype: 'local_command', content: 'x' }),
       ].join('\n') + '\n',
     )
     process.env.CLAUDE_CONFIG_DIR = base
@@ -713,6 +724,73 @@ describe('readHarnessTranscript', () => {
       { role: 'user', text: 'real question' },
       { role: 'assistant', text: 'real answer', lastBlock: 'text' },
     ])
+  })
+
+  it('turns a compact_boundary into a complete marker carrying the post-compaction context size', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-compact-'))
+    dirs.push(base)
+    const id = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    const usage = { input_tokens: 900_000, output_tokens: 5, cache_read_input_tokens: 0 }
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'big question' } }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            stop_reason: 'end_turn',
+            usage,
+            content: [{ type: 'text', text: 'big answer' }],
+          },
+        }),
+        JSON.stringify({ type: 'user', message: { role: 'user', content: '/compact' } }),
+        JSON.stringify({
+          type: 'system',
+          subtype: 'compact_boundary',
+          content: 'Conversation compacted',
+          compactMetadata: { trigger: 'manual', preTokens: 949_579, postTokens: 19_624 },
+        }),
+        JSON.stringify({
+          type: 'user',
+          isCompactSummary: true,
+          message: { role: 'user', content: 'This session is being continued…' },
+        }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const t = await readHarnessTranscript(id)
+    expect(t.turns.map((x) => x.role)).toEqual(['user', 'assistant', 'assistant'])
+    expect(t.turns[1]?.usage?.promptTokens).toBe(900_000)
+    expect(t.turns[2]).toEqual({
+      role: 'assistant',
+      text: 'Conversation compacted (950k tokens → 20k tokens)',
+      stopReason: 'end_turn',
+      lastBlock: 'text',
+      complete: true,
+      compact: true,
+      usage: { promptTokens: 19_624, completionTokens: 0, cachedTokens: 0 },
+    })
+    // a boundary without metadata still closes the turn and marks the compaction
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'q' } }),
+        JSON.stringify({ type: 'system', subtype: 'compact_boundary' }),
+      ].join('\n') + '\n',
+    )
+    const bare = await readHarnessTranscript(id)
+    expect(bare.turns[1]).toEqual({
+      role: 'assistant',
+      text: 'Conversation compacted',
+      stopReason: 'end_turn',
+      lastBlock: 'text',
+      complete: true,
+      compact: true,
+    })
   })
 
   it('reads Grok chat_history and unwraps <user_query>', async () => {
@@ -1055,10 +1133,7 @@ describe('readHarnessTranscript', () => {
   })
 
   it('stamps stopReason/lastBlock/complete from the real Claude sequence; complete absent in-flight', () => {
-    const asst = (
-      stop: string,
-      block: Record<string, unknown>,
-    ): Record<string, unknown> => ({
+    const asst = (stop: string, block: Record<string, unknown>): Record<string, unknown> => ({
       type: 'assistant',
       message: { stop_reason: stop, content: [block] },
     })
@@ -1126,10 +1201,7 @@ describe('readHarnessTranscript', () => {
         ],
       },
     }
-    const unanswered = claudeTurnsFromLines([
-      { type: 'user', message: { content: 'ask me' } },
-      ask,
-    ])
+    const unanswered = claudeTurnsFromLines([{ type: 'user', message: { content: 'ask me' } }, ask])
     const tool = unanswered.find((t) => t.role === 'assistant')?.tools?.[0]
     expect(tool?.id).toBe('ask_1')
     expect(
@@ -1191,7 +1263,11 @@ describe('kimi completion (hook-free turn-complete)', () => {
   const step = { stepId: 's1' }
   const user = {
     type: 'context.append_message',
-    message: { role: 'user', content: [{ type: 'text', text: 'run it' }], origin: { kind: 'user' } },
+    message: {
+      role: 'user',
+      content: [{ type: 'text', text: 'run it' }],
+      origin: { kind: 'user' },
+    },
   }
   const ev = (event: Record<string, unknown>): Record<string, unknown> => ({
     type: 'context.append_loop_event',

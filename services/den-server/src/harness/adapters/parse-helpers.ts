@@ -81,9 +81,13 @@ export function extractTurnText(content: unknown, role: 'user' | 'assistant'): s
   // (mirrors Android SessionTranscript.extractText). <task-notification> is
   // Claude Code's background-task completion notice — it reads like tool
   // output and must never render as something the user typed.
+  // Claude Code 2.1.263 also writes the raw slash line (`/compact`, `/exit`)
+  // as a plain user message BEFORE the <command-name> echo — a leading slash
+  // is always a command to the TUI, never conversation.
   if (
     role === 'user' &&
-    (text.startsWith('<command-') ||
+    (/^\/[A-Za-z][\w:-]*(?:\s|$)/.test(text) ||
+      text.startsWith('<command-') ||
       text.startsWith('<local-command') ||
       text.startsWith('<system-reminder') ||
       text.startsWith('<task-notification') ||
