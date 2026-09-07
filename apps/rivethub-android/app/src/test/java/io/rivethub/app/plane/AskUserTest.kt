@@ -1,5 +1,6 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.GatewayException
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonObject
@@ -262,5 +263,38 @@ class AskUserTest {
         assertTrue(qs.single().multiSelect)
         assertEquals("Yes", qs.single().options[0].label)
         assertEquals("do it", qs.single().options[0].description)
+    }
+
+    private fun q(
+        multiSelect: Boolean = false,
+        options: List<AskOption> = listOf(AskOption("A"), AskOption("B")),
+    ) = AskQuestion(multiSelect = multiSelect, options = options)
+
+    @Test fun `askCardMode answers a normal question with no screen`() {
+        assertEquals(AskCardMode.ANSWER, askCardMode(q()))
+    }
+
+    @Test fun `askCardMode is no-options when the option list is empty`() {
+        assertEquals(AskCardMode.NO_OPTIONS, askCardMode(q(options = emptyList())))
+        assertEquals(AskCardMode.NO_OPTIONS, askCardMode(q(options = emptyList()), AskScreen(2, 3)))
+    }
+
+    @Test fun `askCardMode is terminal-only for the last single-select of several`() {
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(0, 3)))
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(1, 3)))
+        assertEquals(AskCardMode.TERMINAL_ONLY, askCardMode(q(), AskScreen(2, 3)))
+    }
+
+    @Test fun `askCardMode still answers the last question when multiSelect or the only one`() {
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(multiSelect = true), AskScreen(2, 3)))
+        assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(0, 1)))
+    }
+
+    @Test fun `askErrorMessage prefers den bad_request error text`() {
+        val err = GatewayException(400, "answer this one in the terminal", "bad_request")
+        assertEquals("answer this one in the terminal", askErrorMessage(err))
+        val generic = GatewayException(500, "HTTP 500", "upstream")
+        assertEquals("HTTP 500", askErrorMessage(generic))
+        assertEquals("boom", askErrorMessage(RuntimeException("boom")))
     }
 }

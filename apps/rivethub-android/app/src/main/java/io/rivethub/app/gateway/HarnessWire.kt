@@ -142,6 +142,8 @@ data class HarnessTranscriptTurn(
     val stopReason: String? = null,
     val lastBlock: String? = null,
     val complete: Boolean? = null,
+    /** Synthetic "Conversation compacted" assistant turn — available on the wire, ignored for rendering. */
+    val compact: Boolean? = null,
 )
 
 @Serializable
@@ -284,6 +286,8 @@ sealed class HarnessEvent {
         val questions: List<HarnessAskQuestion>,
         val resolved: Boolean,
         val answerText: String? = null,
+        /** Screen-read picker (herdr): `questions` has the current item; this says where it sits. */
+        val screen: PromptScreen? = null,
     ) : HarnessEvent()
     data class ApprovalRequest(
         val sessionId: String,
@@ -300,6 +304,9 @@ sealed class HarnessEvent {
     ) : HarnessEvent()
     data class Unknown(val type: String, val raw: JsonObject) : HarnessEvent()
 }
+
+/** `HarnessPromptEvent.screen` — 0-based [current] of [total] herdr picker questions. */
+data class PromptScreen(val current: Int, val total: Int)
 
 /**
  * Attach-failure codes: the den sends the error frame and closes. Reconnecting
@@ -447,6 +454,7 @@ fun parseHarnessEvent(el: JsonObject): HarnessEvent {
                 questions = parseAskQuestions(el["questions"]),
                 resolved = resolved,
                 answerText = resolvedObj?.str("answerText"),
+                screen = parsePromptScreen(el["screen"]),
             )
         }
         "approval-request" -> HarnessEvent.ApprovalRequest(
@@ -489,6 +497,13 @@ private fun parseTurns(el: JsonElement?): List<HarnessTranscriptTurn> {
     return arr.mapNotNull {
         runCatching { wireJson.decodeFromJsonElement(HarnessTranscriptTurn.serializer(), it) }.getOrNull()
     }
+}
+
+private fun parsePromptScreen(el: JsonElement?): PromptScreen? {
+    val obj = el as? JsonObject ?: return null
+    val current = obj.int("current") ?: return null
+    val total = obj.int("total") ?: return null
+    return PromptScreen(current, total)
 }
 
 private fun parseAskQuestions(el: JsonElement?): List<HarnessAskQuestion> {

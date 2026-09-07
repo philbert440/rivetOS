@@ -268,6 +268,8 @@ fun HarnessChatScreen(
                             onSubmit = { picked, free -> vm.answerAsk(picked, free) },
                             onDismiss = vm::dismissAsk,
                             enabled = !st.answeringPrompt,
+                            error = st.askError,
+                            promptId = st.promptId,
                         )
                         st.approval != null -> ApprovalCard(
                             approval = st.approval!!,

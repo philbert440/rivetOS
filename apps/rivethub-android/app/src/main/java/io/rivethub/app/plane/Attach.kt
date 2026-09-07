@@ -232,10 +232,30 @@ class TranscriptMachine(
         }
     }
 
-    fun onPrompt(p: HarnessEvent.Prompt) {
-        lastFrameTs = nowMs()
-        openPrompt = if (p.resolved) null else p
+    /**
+     * Drop the open prompt so den's replay of still-open frames is the sole
+     * source after a socket open. A card resolved while disconnected must
+     * not linger (answering it 404s).
+     */
+    fun onControlReset() {
+        openPrompt = null
     }
+
+    /**
+     * Idempotent by [HarnessEvent.Prompt.promptId]: a replay of an already-open
+     * card is a no-op; a resolved frame retires only the matching id.
+     */
+    fun applyPrompt(p: HarnessEvent.Prompt) {
+        lastFrameTs = nowMs()
+        if (p.resolved) {
+            if (openPrompt?.promptId == p.promptId) openPrompt = null
+            return
+        }
+        if (openPrompt?.promptId == p.promptId) return
+        openPrompt = p
+    }
+
+    fun onPrompt(p: HarnessEvent.Prompt) = applyPrompt(p)
 
     fun beginTurn() {
         val t = nowMs()
@@ -337,7 +357,7 @@ class TranscriptMachine(
                 if (hooks) inFlight = false
             }
             is HarnessEvent.Status -> onStatus(event)
-            is HarnessEvent.Prompt -> onPrompt(event)
+            is HarnessEvent.Prompt -> applyPrompt(event)
             // The owner applies transcript frames (applyTranscriptFrame) and acts on
             // its Boolean (sync on a rev gap); a replayed frame here must not lose it.
             is HarnessEvent.Transcript -> Unit
@@ -571,6 +591,9 @@ class SessionAttach(
 
     suspend fun onWatchOpen() {
         if (stopped) return
+        // Replay of still-open prompts follows this open. Clear first so a
+        // card resolved while disconnected does not linger (POST 404s).
+        machine.onControlReset()
         resync(committed = false)
     }
 

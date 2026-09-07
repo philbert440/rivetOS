@@ -201,7 +201,7 @@ class HarnessGateway(
             withClients { c ->
                 c.newCall(req).execute().use { res ->
                     val text = res.body.string()
-                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
+                    if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text), bodyCode(text))
                     runCatching { wireJson.decodeFromString(HarnessTurnAccepted.serializer(), text) }
                         .getOrDefault(HarnessTurnAccepted(true))
                 }

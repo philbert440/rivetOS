@@ -1,5 +1,6 @@
 package io.rivethub.app.plane
 
+import io.rivethub.app.gateway.GatewayException
 import io.rivethub.app.gateway.HarnessAskQuestion
 import io.rivethub.app.gateway.HarnessPromptAnswer
 import kotlinx.serialization.json.Json
@@ -19,7 +20,11 @@ data class AskQuestion(
     val options: List<AskOption> = emptyList(),
 )
 
-data class AskUserCard(val questions: List<AskQuestion>)
+data class AskScreen(val current: Int, val total: Int)
+
+data class AskUserCard(val questions: List<AskQuestion>, val screen: AskScreen? = null)
+
+enum class AskCardMode { ANSWER, TERMINAL_ONLY, NO_OPTIONS }
 
 data class PendingApproval(
     val requestId: String,
@@ -163,6 +168,28 @@ fun promptAnswers(
             other = other.takeIf { attachOther },
         )
     }
+}
+
+/**
+ * How the ask card should treat one question. den refuses (400) the last
+ * single-select of a multi-question picker and free text on any multi-question
+ * picker; empty option lists are not on the captured screen.
+ */
+fun askCardMode(question: AskQuestion, screen: AskScreen? = null): AskCardMode {
+    if (question.options.isEmpty()) return AskCardMode.NO_OPTIONS
+    if (screen != null && screen.total > 1 && screen.current == screen.total - 1 && !question.multiSelect) {
+        return AskCardMode.TERMINAL_ONLY
+    }
+    return AskCardMode.ANSWER
+}
+
+/** Prefer the wire error string (den `bad_request` message) over a generic fallback. */
+fun askErrorMessage(err: Throwable): String {
+    if (err is GatewayException && err.status == 400 && err.code == "bad_request") {
+        val msg = err.message
+        if (!msg.isNullOrBlank()) return msg
+    }
+    return err.message?.takeIf { it.isNotBlank() } ?: err.javaClass.simpleName
 }
 
 fun composeAskAnswer(

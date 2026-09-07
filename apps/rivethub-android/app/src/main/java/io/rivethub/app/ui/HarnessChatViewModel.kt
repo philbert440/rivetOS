@@ -7,6 +7,7 @@ import io.rivethub.app.AppContainer
 import io.rivethub.app.data.AndroidLogger
 import io.rivethub.app.data.OscFilter
 import io.rivethub.app.data.splitHermesReasoning
+import io.rivethub.app.gateway.GatewayException
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.TermSpawnResponse
@@ -17,7 +18,9 @@ import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
+import io.rivethub.app.plane.AskScreen
 import io.rivethub.app.plane.AskUserCard
+import io.rivethub.app.plane.askErrorMessage
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.CLOSED_GATE
 import io.rivethub.app.plane.ChatSendAction
@@ -134,6 +137,8 @@ class HarnessChatViewModel(
         val ask: AskUserCard? = null,
         val promptId: String? = null,
         val answeringPrompt: Boolean = false,
+        /** Card-local error (den `bad_request` text). Not the composer strip. */
+        val askError: String? = null,
         val approval: PendingApproval? = null,
         val queued: List<OutboundItem> = emptyList(),
         val agentStatusText: String? = null,
@@ -377,9 +382,16 @@ class HarnessChatViewModel(
                 runCatching {
                     c.harness(nodeDenUrl).answerPrompt(sessionKeyEnc(_state.value.sessionId), promptId, answers)
                 }.onFailure { e ->
-                    _state.update { it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName) }
+                    val badRequest = e is GatewayException && e.status == 400 && e.code == "bad_request"
+                    _state.update {
+                        if (badRequest) {
+                            it.copy(answeringPrompt = false, askError = askErrorMessage(e))
+                        } else {
+                            it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName)
+                        }
+                    }
                 }.onSuccess {
-                    _state.update { it.copy(answeringPrompt = false) }
+                    _state.update { it.copy(answeringPrompt = false, askError = null) }
                 }
             }
             return
@@ -391,7 +403,7 @@ class HarnessChatViewModel(
     }
 
     fun dismissAsk() {
-        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false) }
+        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false, askError = null) }
     }
 
     fun decideApproval(reqId: String, decision: String) {
@@ -746,15 +758,20 @@ class HarnessChatViewModel(
                                 if (e.status == "idle") runCatching { pump.onIdle() }
                             }
                             is HarnessEvent.Prompt -> {
-                                machine.onPrompt(e)
+                                machine.applyPrompt(e)
                                 if (e.resolved) {
                                     if (_state.value.promptId == e.promptId) {
-                                        _state.update { it.copy(ask = null, promptId = null, answeringPrompt = false) }
+                                        _state.update {
+                                            it.copy(ask = null, promptId = null, answeringPrompt = false, askError = null)
+                                        }
                                     }
-                                } else {
+                                } else if (_state.value.promptId != e.promptId) {
                                     val qs = askQuestionsFromHarness(e.questions)
                                     if (qs.isNotEmpty()) {
-                                        _state.update { it.copy(ask = AskUserCard(qs), promptId = e.promptId) }
+                                        val screen = e.screen?.let { AskScreen(it.current, it.total) }
+                                        _state.update {
+                                            it.copy(ask = AskUserCard(qs, screen), promptId = e.promptId, askError = null)
+                                        }
                                     }
                                 }
                             }
@@ -791,8 +808,21 @@ class HarnessChatViewModel(
                         rearmIdleWatch()
                     }
                     is Frame.St -> {
-                        _state.update { it.copy(ws = f.s) }
-                        if (f.s == WsStatus.OPEN) machineAttach.onWatchOpen()
+                        if (f.s == WsStatus.OPEN) {
+                            _state.update {
+                                it.copy(
+                                    ws = f.s,
+                                    ask = null,
+                                    promptId = null,
+                                    answeringPrompt = false,
+                                    approval = null,
+                                    askError = null,
+                                )
+                            }
+                            machineAttach.onWatchOpen()
+                        } else {
+                            _state.update { it.copy(ws = f.s) }
+                        }
                         publishMachine()
                     }
                 }
