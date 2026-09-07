@@ -253,6 +253,9 @@ export function herdrConfigContent(): string {
     'pane_gaps = false',
     '# pass the agent\'s own title through instead of "{hostname}: {workspace}"',
     'window_title = "{terminal_title}"',
+    '# herdr switches to a single-column "mobile" layout with its own header at',
+    '# <= 64 columns (phones): the den client is the whole terminal at any width',
+    'mobile_width_threshold = 0',
   ]
   return lines.join('\n') + '\n'
 }

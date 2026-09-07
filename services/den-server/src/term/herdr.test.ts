@@ -633,6 +633,9 @@ describe('herdr config.toml (den-owned, chrome off)', () => {
     expect(conf).toContain('pane_outer_borders = false')
     expect(conf).toContain('pane_scrollbars = false')
     expect(conf).toContain('window_title = "{terminal_title}"')
+    // herdr's <=64-column "mobile" layout draws its own header (seen on the
+    // phone 2026-09-06) — the den client must be the terminal at any width
+    expect(conf).toContain('mobile_width_threshold = 0')
     // never re-enable chrome by accident
     expect(conf).not.toMatch(/sidebar_collapsed_mode = "compact"/)
     expect(conf.endsWith('\n')).toBe(true)
