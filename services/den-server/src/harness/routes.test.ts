@@ -992,6 +992,15 @@ describe('POST /api/harness-sessions/:enc/approvals/:reqId', () => {
     expect(res.status).toBe(202)
     expect(await res.json()).toEqual({ ok: true, sessionId: SID, requestId: 'req-1' })
     expect(resolved).toEqual([{ sessionId: SID, requestId: 'req-1', decision: 'allow' }])
+
+    const permId = 'perm:f1191d56-d41b-4126-b07d-d0c4f92ea3da:2'
+    const encoded = await post(
+      base,
+      `/api/harness-sessions/${enc(SID)}/approvals/${encodeURIComponent(permId)}`,
+      { decision: 'deny' },
+    )
+    expect(encoded.status).toBe(202)
+    expect(resolved.at(-1)).toEqual({ sessionId: SID, requestId: permId, decision: 'deny' })
   })
 })
 
@@ -1021,6 +1030,17 @@ describe('POST /api/harness-sessions/:enc/prompts/:promptId', () => {
     expect(ok.status).toBe(202)
     expect(await ok.json()).toEqual({ ok: true, sessionId: SID, promptId: 'ask_1' })
 
+    // Screen-read prompt ids carry colons; clients percent-encode the path segment and the
+    // driver must see the decoded id (a raw `screen%3A…` lookup 404s as unknown_prompt).
+    const screenId = 'screen:f1191d56-d41b-4126-b07d-d0c4f92ea3da:1'
+    const encoded = await post(
+      base,
+      `/api/harness-sessions/${enc(SID)}/prompts/${encodeURIComponent(screenId)}`,
+      { answers: [{ question: 0, labels: ['Green'] }] },
+    )
+    expect(encoded.status).toBe(202)
+    expect(await encoded.json()).toEqual({ ok: true, sessionId: SID, promptId: screenId })
+
     expect(
       (await post(base, `/api/harness-sessions/${enc(SID)}/prompts/ask_1`, { answers: 'nope' }))
         .status,
@@ -1038,11 +1058,9 @@ describe('POST /api/harness-sessions/:enc/prompts/:promptId', () => {
     const bare = new FakeDriver()
     bare.add(SID)
     const other = await start(bare)
-    const unsupported = await post(
-      other.base,
-      `/api/harness-sessions/${enc(SID)}/prompts/ask_1`,
-      { answers: [{ question: 0, labels: ['x'] }] },
-    )
+    const unsupported = await post(other.base, `/api/harness-sessions/${enc(SID)}/prompts/ask_1`, {
+      answers: [{ question: 0, labels: ['x'] }],
+    })
     expect(unsupported.status).toBe(501)
     expect(((await unsupported.json()) as { code: string }).code).toBe('capability_unsupported')
   })
