@@ -54,6 +54,7 @@ import io.rivethub.app.ui.components.RivetToggle
 import io.rivethub.app.ui.components.SegmentedControl
 import io.rivethub.app.ui.components.SettingsH2
 import io.rivethub.app.ui.components.ThemeGroup
+import io.rivethub.app.ui.components.UpdatesSection
 import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -343,6 +344,8 @@ fun SettingsScreen(
                     checked = prefs.expWorkflows,
                     onChange = { v -> scope.launch { c.settings.setExpWorkflows(v) } },
                 )
+
+                UpdatesSection(c)
 
                 Spacer(Modifier.height(32.dp))
             }

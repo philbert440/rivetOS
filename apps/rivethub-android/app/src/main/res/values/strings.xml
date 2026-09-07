@@ -193,4 +193,20 @@
     <string name="approval_allow">Allow</string>
     <string name="approval_allow_session">Allow for session</string>
     <string name="approval_deny">Deny</string>
+
+    <string name="section_updates">Updates</string>
+    <string name="updates_helper">Checks builds/rivethub/latest.json on the connected node\'s shared filestore. The shell downloads, verifies, and installs — RivetHub quits during the install; reopen it when the installer finishes.</string>
+    <string name="action_check_updates">Check for updates</string>
+    <string name="action_install_update">Install v%1$s</string>
+    <string name="updates_checking">checking…</string>
+    <string name="updates_current">✓ up to date (v%1$s)</string>
+    <string name="updates_available_size">v%1$s available (%2$d MB)</string>
+    <string name="updates_downloading">downloading + verifying…</string>
+    <string name="updates_error">✗ %1$s</string>
+    <string name="updates_shell_version">shell v%1$s</string>
+    <string name="updates_no_android">no Android build published yet</string>
+    <string name="updates_install_title">Install RivetHub v%1$s?</string>
+    <string name="updates_install_body">The build is downloaded from the connected node (%1$s), verified, and the installer is launched — RivetHub will QUIT and you reopen it when the install finishes.</string>
+    <string name="updates_install_confirm">Install v%1$s</string>
+    <string name="updates_hint_unknown_sources">allow installs from RivetHub</string>
 </resources>

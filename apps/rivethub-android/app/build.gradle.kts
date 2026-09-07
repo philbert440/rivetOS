@@ -1,3 +1,5 @@
+import java.io.File
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -11,12 +13,43 @@ android {
     namespace = "io.rivethub.app"
     compileSdk = 37
 
+    val versionFile = rootProject.file("version.properties")
+    val versionProps = Properties()
+    if (versionFile.isFile) {
+        versionFile.inputStream().use { stream -> versionProps.load(stream) }
+    }
+    val rivetVersionName: String = versionProps.getProperty("VERSION_NAME") ?: "0.1.0"
+    val rivetVersionCode: Int = versionProps.getProperty("VERSION_CODE")?.toIntOrNull() ?: 1
+
     defaultConfig {
         applicationId = "io.rivethub.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = rivetVersionCode
+        versionName = rivetVersionName
+    }
+
+    val ksPath = System.getenv("RIVETHUB_ANDROID_KEYSTORE")
+    val ksPass = System.getenv("RIVETHUB_ANDROID_KEYSTORE_PASS")
+    val keyAliasEnv = System.getenv("RIVETHUB_ANDROID_KEY_ALIAS")
+    val keyPassEnv = System.getenv("RIVETHUB_ANDROID_KEY_PASS")
+    val ksFile: File? = ksPath?.let { p ->
+        listOf(File(p), rootProject.file(p), file(p)).firstOrNull { it.isFile }
+    }
+    val releaseSigning = if (
+        ksFile != null &&
+        !ksPass.isNullOrBlank() &&
+        !keyAliasEnv.isNullOrBlank() &&
+        !keyPassEnv.isNullOrBlank()
+    ) {
+        signingConfigs.create("release") {
+            storeFile = ksFile
+            storePassword = ksPass
+            keyAlias = keyAliasEnv
+            keyPassword = keyPassEnv
+        }
+    } else {
+        null
     }
 
     buildTypes {
@@ -27,6 +60,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (releaseSigning != null) {
+                signingConfig = releaseSigning
+            }
         }
         debug {
             applicationIdSuffix = ".debug"

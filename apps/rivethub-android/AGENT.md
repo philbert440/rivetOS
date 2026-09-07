@@ -59,7 +59,7 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left ModalNavigationDrawer shared with Chat; Forget calls `shutdown()` on the same instance. Conversations tab = `ChatLaunchScreen` (launch/loading surface, NOT a list); Settings tab = Settings |
 | ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the right history drawer |
 | Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered DenBot with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
-| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font; title long-press → gallery |
+| Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font, mesh-feed Updates; title long-press → gallery |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; BOTH drawers `gesturesEnabled = false` — ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
 | Memory | `ui/screens/MemoryScreen.kt` | `MemoryViewModel` (activity-scoped `key=memory`) | NATIVE wiki hub over datahub `GET /api/wiki` (mirror of the merged responsive web Memory hub: MemoryHubPage + pages/memory.tsx): TopBar (☰ + `Memory`) + Search/Wiki/Browse/Stats tab row + search field + compact topic rows (title + staleness badge). Pure layer `plane/MemoryWiki.kt` (tabs, rows, stats, TOC, staleness, datahub-node pick) mirrors web `lib/memory-hub.ts` + `lib/wiki-base.ts`; wire shapes in `gateway/Wire.kt`, calls `Gateway.wikiPages/wikiSearch/wikiTopic`. Datahub = mesh node named datahub, else `transport.entry()`; load failure = the web "Point RivetHub at datahub" pointer copy, never a spinner |
 | Memory topic | `ui/screens/MemoryTopicScreen.kt` | same `MemoryViewModel` | Pushed over Memory (its slug in `Screen.MemoryTopic`); header = Back + title (session-row vocabulary, no TopBar); lead + `MarkdownBody` body (`wikiBody` = currentState else full file), collapsible full-width Contents from the parsed ##/### headings; 404 = the web red-link state. Back pops to the hub list |
@@ -218,9 +218,8 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 466 (context-bar: +2 ContextWindowTest,
-  +4 ChatChromeTest, +2 HarnessWireTest; the floor tracks `grep -rc @Test app/src/test` exactly — the
-  earlier 431/436 notes had drifted from the real count).
+  (`.github/workflows/android.yml`) enforces a floor of 502 (C3 updater: +12 UpdateManifestTest
+  +7 UpdaterTest on a 484-test tree; FLOOR = real count − 1).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
@@ -258,6 +257,11 @@ is the detach.
 - Never cache a `Network` handle into anything long-lived; never freeze `Network.socketFactory` onto a client.
 - No private IPs anywhere in this tree (CI secret-scan + private-net rule); placeholders use 192.0.2.x.
 - `EncryptedSharedPreferences` is deprecated upstream; keep it until a Keystore-wrapped blob exists.
+- In-app update is Settings → Updates (manual Check only, like desktop). Manifest is
+  `GET /api/files/download?path=builds/rivethub/latest.json` on the connected entry node;
+  APK lands in `cacheDir/updates/` and is installed via FileProvider
+  `${applicationId}.fileprovider` + `REQUEST_INSTALL_PACKAGES`. Version comes from
+  `apps/rivethub-android/version.properties` (fallback 0.1.0 / 1).
 - Never send `{type:kill}` on terminal leave — detach only. `ui/term/AnsiTerminal.kt`,
   `ui/term/TerminalPane.kt`, `gateway/TermWs.kt`, `data/TermClient.kt`, `ui/components/KeyToolbar.kt`
   are the attach surface. `DesktopView.kt` (noVNC) was a plan §1 non-goal; correct to stay deleted.
