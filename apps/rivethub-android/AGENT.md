@@ -218,7 +218,7 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 523 (C3 updater review-fixes: +4
+  (`.github/workflows/android.yml`) enforces a floor of 526 (C3 updater review-fixes: +4
   versionCodeFor +6 UpdaterTest on a 514-test stacked tree; FLOOR = real count − 1).
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
