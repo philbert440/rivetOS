@@ -120,9 +120,39 @@ function parseKimi(lines: string[]): ParsedPermissionPrompt | undefined {
   }
 }
 
+/** Codex CLI 0.153.4, captured on rivet-gpt 2026-09-07. */
+function parseCodex(lines: string[]): ParsedPermissionPrompt | undefined {
+  const start = lines.findLastIndex((l) =>
+    /^\s*Would you like to run the following command\?\s*$/.test(l),
+  )
+  if (start < 0) return undefined
+  const end = lines.findIndex(
+    (l, i) => i > start && /Press enter to confirm or esc to cancel/.test(l),
+  )
+  if (end < 0) return undefined
+  const body: string[] = []
+  const rows: string[] = []
+  for (const line of lines.slice(start + 1, end)) {
+    const match = /^\s*(?:›\s*)?\d\.\s+(.+)$/.exec(line)
+    if (match) rows.push(match[1])
+    else if (rows.length && line.trim()) rows[rows.length - 1] += ` ${line.trim()}`
+    else if (line.trim()) body.push(line.trim())
+  }
+  const options: { key: string; label: string }[] = []
+  for (const label of rows) {
+    if (/^Yes, proceed \(y\)$/.test(label)) options.push({ key: 'y', label })
+    // Prefix rules persist beyond this session. Do not offer this as allow-session.
+    if (/^No,.*\(esc\)$/.test(label)) options.push({ key: '\u001b', label })
+  }
+  if (options.length !== 2 || !body.some((l) => l.startsWith('$ '))) return undefined
+  return { toolName: 'shell', text: body.join('\n'), options }
+}
+
 export function parsePermissionPrompt(screen: string): ParsedPermissionPrompt | undefined {
   if (!screen) return undefined
   const lines = screenLines(screen)
+  const codex = parseCodex(lines)
+  if (codex) return codex
   const proceedIdx = lines.findIndex((l) => /^\s*Do you want to proceed\?\s*$/.test(l))
   if (proceedIdx >= 0) return parseClaude(lines, proceedIdx)
   const grok = parseGrok(lines)

@@ -1243,6 +1243,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && !ptyEnvDeny.test(k)) env[k] = v
       }
+      // Service managers do not source login profiles. Include user-installed
+      // harnesses before spawning any PTY, including an existing mux server.
+      const localBin = join(homedir(), '.local', 'bin')
+      if (!(env.PATH ?? '').split(':').includes(localBin)) {
+        env.PATH = [env.PATH, localBin].filter(Boolean).join(':')
+      }
+      tmuxEnvKeys.add('PATH')
       Object.assign(env, roster.env, entry.env ?? {})
       for (const k of Object.keys(roster.env ?? {})) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)
       for (const k of Object.keys(entry.env ?? {})) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)

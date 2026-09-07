@@ -75,6 +75,7 @@ function makeDriver(
     withEvents?: boolean
     cwd?: () => string | undefined
     herdrStatus?: boolean | (() => boolean)
+    screen?: () => Promise<string>
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -95,6 +96,7 @@ function makeDriver(
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
     herdrStatus: opts.herdrStatus,
+    screen: opts.screen,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
@@ -517,4 +519,34 @@ runHarnessRotationConformance('codex', () => {
       fakes.driver.close()
     },
   }
+})
+
+
+describe('Codex screen approvals', () => {
+  const screen = async () => `Would you like to run the following command?
+  Reason: Approval UI smoke test
+  $ touch /tmp/rivetos-codex-approval-smoke
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with touch (p)
+  3. No, and tell Codex what to do differently (esc)
+  Press enter to confirm or esc to cancel`
+
+  it.each([['allow', 'y'], ['deny', '\x1b']] as const)('routes %s from a blocked screen to the actual TUI shortcut', async (decision, key) => {
+    const f = makeDriver({ herdrStatus: true, screen })
+    const seen: HarnessEvent[] = []
+    f.driver.subscribeEvents((e) => seen.push(e))
+    f.driver.subscribe(SID, (e) => seen.push(e))
+    adopt(f, ROOM, NAT)
+    await vi.waitFor(() => expect(seen.some((e) => e.type === 'session-created')).toBe(true))
+    f.driver.applyHerdrStatus(ROOM, { type: 'status', sessionId: SID, status: 'blocked', since: Date.now(), source: 'herdr' })
+    await vi.waitFor(() => expect(seen.some((e) => e.type === 'approval-request')).toBe(true))
+    const request = seen.find((e) => e.type === 'approval-request')!
+    if (request.type !== 'approval-request') throw new Error('missing approval')
+    await expect(f.driver.resolveApproval(SID, request.requestId, 'allow-session')).rejects.toMatchObject({ code: 'bad_request' })
+    expect(seen.some((e) => e.type === 'approval-resolved')).toBe(false)
+    await f.driver.resolveApproval(SID, request.requestId, decision)
+    expect(f.pty.injects.at(-1)).toMatchObject({ text: key, submit: false })
+    expect(seen.some((e) => e.type === 'approval-resolved')).toBe(true)
+    f.driver.close()
+  })
 })

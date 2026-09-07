@@ -36,7 +36,11 @@ export function HarnessApprovalCard(props: {
 
   const choices: { label: string; decision: ApprovalDecision; accent: boolean }[] = [
     { label: 'Allow', decision: 'allow', accent: true },
-    { label: 'Allow for session', decision: 'allow-session', accent: false },
+    // Codex only exposes allow-once and deny; its prefix rule is persistent.
+    ...(scrapedOptions.length === 0 ||
+    scrapedOptions.some((label) => /don't ask|always|this session/i.test(label))
+      ? [{ label: 'Allow for session', decision: 'allow-session' as const, accent: false }]
+      : []),
     { label: 'Deny', decision: 'deny', accent: false },
   ]
 

@@ -132,3 +132,35 @@ describe('parsePermissionPrompt — review fixes', () => {
     expect(parsePermissionPrompt(screen)?.options.map((o) => o.key)).toEqual(['3', '4'])
   })
 })
+
+/** Codex 0.153.4 screen capture; allow-prefix wraps onto a second line. */
+const CODEX_COMMAND = `
+Would you like to run the following command?
+
+  Environment: local
+  Reason: Do you approve creating the approval smoke-test file?
+  $ touch /tmp/rivetos-codex-approval-smoke
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with \`touch /tmp/
+     rivetos-codex-approval-smoke\` (p)
+  3. No, and tell Codex what to do differently (esc)
+
+  Press enter to confirm or esc to cancel
+`
+
+it('parses Codex command/reason and its allow-once/deny shortcuts without a persistent rule', () => {
+  const parsed = parsePermissionPrompt(CODEX_COMMAND)
+  expect(parsed?.toolName).toBe('shell')
+  expect(parsed?.text).toContain('$ touch /tmp/rivetos-codex-approval-smoke')
+  expect(parsed?.text).toContain('Reason:')
+  expect(parsed?.options).toEqual([
+    { key: 'y', label: 'Yes, proceed (y)' },
+    { key: '\x1b', label: 'No, and tell Codex what to do differently (esc)' },
+  ])
+})
+
+it('refuses incomplete Codex panels and ordinary numbered prose', () => {
+  expect(parsePermissionPrompt(CODEX_COMMAND.replace('Press enter to confirm or esc to cancel', ''))).toBeUndefined()
+  expect(parsePermissionPrompt(CODEX_COMMAND.replace('  $ touch /tmp/rivetos-codex-approval-smoke', ''))).toBeUndefined()
+})

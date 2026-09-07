@@ -282,6 +282,7 @@ export function extractCodexFromLine(
       const thinking = parts.join('')
       return { content: thinking ? `[thinking] ${thinking}` : '', toolResult: null }
     }
+    case 'function_call':
     case 'custom_tool_call': {
       const name =
         typeof payload.name === 'string'
@@ -294,6 +295,7 @@ export function extractCodexFromLine(
         typeof args === 'string' ? args : args != null ? JSON.stringify(args) : null
       return { content: `[tool] ${name}`, toolResult }
     }
+    case 'function_call_output':
     case 'custom_tool_call_output': {
       const out = payload.output ?? payload.content
       const toolResult = typeof out === 'string' ? out : out != null ? JSON.stringify(out) : null

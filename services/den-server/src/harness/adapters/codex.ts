@@ -1,4 +1,8 @@
-import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
+import {
+  HarnessError,
+  type HarnessTranscriptTool,
+  type HarnessTranscriptTurn,
+} from '@rivetos/types'
 import {
   objectsFromLines,
   summarizeTurnArgs,
@@ -96,6 +100,7 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
   let completion = 0
   let cached = 0
   let hadText = false
+  let hadFinalText = false
 
   const finishAssistant = (complete: boolean): void => {
     if (cur) {
@@ -110,12 +115,13 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         cur.usage = { promptTokens: prompt, completionTokens: completion, cachedTokens: cached }
       }
       const running = cur.tools?.some((t) => t.status === 'running') === true
-      cur.stopReason = running ? 'tool_use' : hadText ? 'end_turn' : cur.stopReason
+      cur.stopReason = running ? 'tool_use' : complete && hadText ? 'end_turn' : cur.stopReason
       if (complete && hadText && !running) cur.complete = true
       if (cur.text || cur.thinking || cur.tools) turns.push(cur)
     }
     cur = null
     hadText = false
+    hadFinalText = false
     thinking = ''
     prompt = 0
     completion = 0
@@ -164,6 +170,7 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         asst.text = asst.text ? asst.text + '\n\n' + text : text
         asst.lastBlock = 'text'
         hadText = true
+        hadFinalText = payload.phase !== 'commentary'
         break
       }
       case 'reasoning': {
@@ -174,6 +181,7 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         asst.lastBlock = 'thinking'
         break
       }
+      case 'function_call':
       case 'custom_tool_call': {
         const name =
           typeof payload.name === 'string'
@@ -184,9 +192,15 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         if (!name) break
         const asst = ensureAssistant()
         const entry: HarnessTranscriptTool = { name, status: 'running' }
-        const args = summarizeTurnArgs(parseToolInput(payload.input ?? payload.arguments))
+        const input = parseToolInput(payload.input ?? payload.arguments)
+        const args = summarizeTurnArgs(typeof input === 'string' ? { input } : input)
         if (args) entry.args = args
-        const id = typeof payload.id === 'string' ? payload.id : undefined
+        const id =
+          typeof payload.call_id === 'string'
+            ? payload.call_id
+            : typeof payload.id === 'string'
+              ? payload.id
+              : undefined
         if (id) {
           entry.id = id
           toolsById.set(id, entry)
@@ -195,6 +209,7 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         asst.lastBlock = 'tool_use'
         break
       }
+      case 'function_call_output':
       case 'custom_tool_call_output': {
         const callId =
           typeof payload.call_id === 'string'
@@ -214,7 +229,8 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         break
     }
   }
-  finishAssistant(true)
+  // A file tail is only a snapshot: commentary does not end an active turn.
+  finishAssistant(hadFinalText)
   return turns
 }
 
@@ -230,8 +246,11 @@ export const codexAdapter: HarnessAdapter = {
   },
   promptToolNames: [],
   capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
-  // TODO(A2): Codex approval TUI keys — capture via `herdr agent read` on rivet-gpt.
+  // Only use shortcuts parsed from the current, version-pinned dialog.
   approvalKeys() {
-    return []
+    throw new HarnessError(
+      'bad_request',
+      'This Codex approval choice is not available from the captured screen; answer it in the terminal.',
+    )
   },
 }

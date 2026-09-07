@@ -194,6 +194,12 @@ describe('extractFullFromLine', () => {
     })
     expect(extractFullFromLine(result).content).toBe('[tool-result]')
     expect(extractFullFromLine(result).toolResult).toContain('a.txt')
+    expect(extractFullFromLine(call.replace('custom_tool_call', 'function_call'))).toEqual(
+      extractFullFromLine(call),
+    )
+    expect(
+      extractFullFromLine(result.replace('custom_tool_call_output', 'function_call_output')),
+    ).toEqual(extractFullFromLine(result))
     expect(extractCodexFromLine({ type: 'session_meta' })).toBeNull()
   })
 })

@@ -29,6 +29,7 @@ import {
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
+import { findCodexRoomRollout } from './codex-room.js'
 
 export {
   claudeTurnsFromLines,
@@ -1264,6 +1265,10 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     const codex = await readCodexTranscript(native)
     if (codex.turns.length > 0) return { ...codex, id }
   }
+  if (command === undefined) {
+    const path = await findCodexRoomRollout(native, codexSessionsDir())
+    if (path) return readHarnessStoreAt({ command: 'codex', path }, id)
+  }
 
   if (wants('hermes')) {
     const hermes = readHermesTurns(native)
@@ -1430,6 +1435,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
   }
   if (wants('codex') && CODEX_NATIVE_RE.test(native)) {
     const path = findCodexRolloutSync(native)
+    if (path) return { command: 'codex', path }
+  }
+  if (command === undefined) {
+    const path = await findCodexRoomRollout(native, codexSessionsDir())
     if (path) return { command: 'codex', path }
   }
   if (wants('hermes') && hermesSessionExists(native)) {

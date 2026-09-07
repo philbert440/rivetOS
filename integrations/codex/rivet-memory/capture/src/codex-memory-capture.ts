@@ -391,9 +391,10 @@ export function parseRolloutText(
         })
         break
       }
+      case 'function_call':
       case 'custom_tool_call': {
         const name = asString(payload.name) || asString(payload.tool) || 'unknown'
-        const callId = asString(payload.id)
+        const callId = asString(payload.call_id) || asString(payload.id)
         if (callId) toolNameById.set(callId, name)
         const args = parseToolInput(payload.input ?? payload.arguments)
         push({
@@ -405,13 +406,14 @@ export function parseRolloutText(
           eventTs,
           lineIndex: i,
           extra: {
-            sourceEvent: 'response_item:custom_tool_call',
+            sourceEvent: `response_item:${payload.type}`,
             source: CAPTURE_SOURCE,
             callId: callId,
           },
         })
         break
       }
+      case 'function_call_output':
       case 'custom_tool_call_output': {
         const callId = asString(payload.call_id) || asString(payload.id)
         const name = (callId && toolNameById.get(callId)) || 'unknown'
@@ -428,7 +430,7 @@ export function parseRolloutText(
           eventTs,
           lineIndex: i,
           extra: {
-            sourceEvent: 'response_item:custom_tool_call_output',
+            sourceEvent: `response_item:${payload.type}`,
             source: CAPTURE_SOURCE,
             callId,
             failure: isFailure,
@@ -647,7 +649,10 @@ export async function insertMessage(
   if (m.toolArgs != null) {
     const raw = typeof m.toolArgs === 'string' ? m.toolArgs : JSON.stringify(m.toolArgs)
     const argCap = capForStorage(raw, pointer)
-    toolArgsStored = argCap.stored
+    // tool_args is jsonb. Free-form code and truncated object previews must
+    // be encoded as JSON strings instead of sent as invalid JSON.
+    toolArgsStored =
+      typeof m.toolArgs === 'string' || argCap.truncated ? JSON.stringify(argCap.stored) : raw
     toolArgsTruncated = argCap.truncated
     toolArgsFullLength = raw.length
   }
@@ -722,6 +727,8 @@ export async function ingestMessages(
   } = {},
 ): Promise<{ inserted: number; skipped: number; conversationId: string; sessionKey: string }> {
   const sessionKey = deriveSessionKey(sessionId)
+  // Publish dedup progress only after commit so rolled-back INSERTs replay.
+  const seen = opts.seen ? new Set(opts.seen) : undefined
   if (opts.lock !== false) {
     await client.query('BEGIN')
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
@@ -741,21 +748,21 @@ export async function ingestMessages(
 
     // Prime the in-memory dedup set once for an existing conversation, then let it
     // be the authority — no per-message SELECT on subsequent ticks.
-    if (opts.seen && !conv.created && opts.seen.size === 0) {
+    if (seen && !conv.created && seen.size === 0) {
       const prior = await client.query(
         `SELECT metadata->>'event_id' AS e FROM ros_messages
           WHERE conversation_id = $1 AND metadata->>'event_id' IS NOT NULL`,
         [conv.id],
       )
       for (const row of prior.rows as Array<{ e?: string | null }>) {
-        if (typeof row.e === 'string' && row.e) opts.seen.add(row.e)
+        if (typeof row.e === 'string' && row.e) seen.add(row.e)
       }
     }
 
     let inserted = 0
     let skipped = 0
     for (const m of messages) {
-      const result = await insertMessage(client, conv.id, m, opts.transcriptPath ?? null, opts.seen)
+      const result = await insertMessage(client, conv.id, m, opts.transcriptPath ?? null, seen)
       if (result === 'inserted') inserted++
       else skipped++
     }
@@ -772,6 +779,7 @@ export async function ingestMessages(
     }
 
     if (opts.lock !== false) await client.query('COMMIT')
+    if (opts.seen && seen) for (const id of seen) opts.seen.add(id)
     return { inserted, skipped, conversationId: conv.id, sessionKey }
   } catch (err) {
     if (opts.lock !== false) await client.query('ROLLBACK').catch(() => undefined)
@@ -870,6 +878,7 @@ export async function scanOnce(
     }
     state.known.add(file)
     const cursor = state.cursors.get(file)!
+    const before = { ...cursor }
     try {
       const r = await ingestNewLines(file, cursor, client, state.seen)
       if (r) {
@@ -877,6 +886,8 @@ export async function scanOnce(
         skipped += r.skipped
       }
     } catch (err) {
+      // Retry even if the file stops growing after a database failure.
+      Object.assign(cursor, before)
       log(`scan ${file} failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
