@@ -25,7 +25,9 @@ describe('formatEmptySearchResult', () => {
     })
     expect(msg).toContain('since="2026-08-01T00:00:00.000Z"')
     expect(msg).toContain('before="2026-08-02T00:00:00.000Z"')
-    expect(msg).toContain('memory_browse(since="2026-08-01T00:00:00.000Z", before="2026-08-02T00:00:00.000Z")')
+    expect(msg).toContain(
+      'memory_browse(since="2026-08-01T00:00:00.000Z", before="2026-08-02T00:00:00.000Z")',
+    )
     expect(msg).toContain('no FTS match required')
   })
 

@@ -1,0 +1,13 @@
+{"type":"session_meta","payload":{"id":"89965427-b96f-4d5e-8ad5-c3dd138e33dc","cwd":"/tmp/demo"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<environment_context>cwd=/tmp</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skills_instructions>never show this</skills_instructions>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<multi_agent_foo>also skip</multi_agent_foo>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","id":"rs_user1","content":[{"type":"input_text","text":"list the files"}]}}
+{"type":"event_msg","payload":{"type":"task_started"}}
+{"type":"response_item","payload":{"type":"reasoning","id":"rs_think1","summary":[{"type":"summary_text","text":"I should list"}]}}
+{"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_1","name":"shell","input":"{\"command\":\"ls\",\"extra\":{\"nested\":true}}"}}
+{"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_1","call_id":"ctc_1","output":"a.txt"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","id":"rs_asst1","content":[{"type":"output_text","text":"here they are"}]}}
+{"type":"token_usage_record","payload":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5}}
+{"type":"event_msg","payload":{"type":"task_complete"}}
+{"type":"turn_context","payload":{}}

@@ -4,11 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import {
-  formatBrowseMessageBody,
-  formatSearchMessageBody,
-  truncationHint,
-} from './helpers.js'
+import { formatBrowseMessageBody, formatSearchMessageBody, truncationHint } from './helpers.js'
 
 describe('formatBrowseMessageBody', () => {
   it('returns short content unchanged when no tool_result', () => {
@@ -77,7 +73,9 @@ describe('formatBrowseMessageBody', () => {
     })
     expect(body).toContain('z'.repeat(500) + '…')
     expect(body).not.toContain('display-truncated')
-    expect(body).toContain(truncationHint({ truncated: true, full_tool_result_length: 40000 }, 'm5').trim())
+    expect(body).toContain(
+      truncationHint({ truncated: true, full_tool_result_length: 40000 }, 'm5').trim(),
+    )
   })
 
   it('omits empty tool_result strings', () => {

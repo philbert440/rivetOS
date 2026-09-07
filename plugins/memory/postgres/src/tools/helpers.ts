@@ -285,6 +285,14 @@ export function isHeartbeatSessionKey(key: string | null | undefined): boolean {
   return typeof key === 'string' && key.startsWith(HEARTBEAT_SESSION_PREFIX)
 }
 
+/** True when a conversation session_key was minted by Codex capture / backfill. */
+export function isCodexSessionKey(key: string | null | undefined): boolean {
+  return (
+    typeof key === 'string' &&
+    /^codex:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key)
+  )
+}
+
 /** SQL predicate: conversation alias `c` is not a heartbeat session. */
 export function sqlNotHeartbeatConversation(alias = 'c'): string {
   return `(${alias}.session_key IS NULL OR ${alias}.session_key NOT LIKE '${HEARTBEAT_SESSION_PREFIX}%')`
