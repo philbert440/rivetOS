@@ -15,6 +15,7 @@
  * Missing/malformed args → empty array (never throws).
  */
 
+import type { HarnessPromptEvent } from '@rivetos/types'
 import { normalizeToolName } from './tool-titles.js'
 
 const ASK_TOOL_NAMES = new Set(['ask_user', 'ask_user_question', 'askuserquestion'])
@@ -154,6 +155,47 @@ export function composeAskAnswer(
   const free = own.trim()
   if (free) parts.push(free)
   return parts.join('\n')
+}
+
+/** Screen-read picker position from `HarnessPromptEvent.screen`. */
+export type AskScreen = NonNullable<HarnessPromptEvent['screen']>
+
+export type AskCardMode = 'answer' | 'terminal-only' | 'no-options'
+
+/**
+ * How the ask card should treat one question. den refuses (400) the last
+ * single-select of a multi-question picker and free text on any multi-question
+ * picker; empty option lists are not on the captured screen.
+ */
+export function askCardMode(
+  question: Pick<AskQuestion, 'multiSelect' | 'options'>,
+  screen?: AskScreen,
+): AskCardMode {
+  if (question.options.length === 0) return 'no-options'
+  if (
+    screen !== undefined &&
+    screen.total > 1 &&
+    screen.current === screen.total - 1 &&
+    !question.multiSelect
+  ) {
+    return 'terminal-only'
+  }
+  return 'answer'
+}
+
+/** Prefer the wire error string (den `bad_request` message) over a generic fallback. */
+export function askErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message
+  if (typeof err === 'object' && err !== null) {
+    const rec = err as { message?: unknown; body?: unknown }
+    if (typeof rec.message === 'string' && rec.message) return rec.message
+    const body = rec.body
+    if (typeof body === 'object' && body !== null) {
+      const error = (body as { error?: unknown }).error
+      if (typeof error === 'string' && error) return error
+    }
+  }
+  return String(err)
 }
 
 /**

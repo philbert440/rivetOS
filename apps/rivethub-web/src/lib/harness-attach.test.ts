@@ -175,6 +175,53 @@ describe('attachHarnessSession', () => {
     att.close()
   })
 
+  it('clears prompts on every open so replay can repopulate', async () => {
+    const h = fakeGateway()
+    const stale: HarnessPromptEvent = {
+      type: 'prompt',
+      sessionId: SID,
+      promptId: 'stale',
+      kind: 'ask-user',
+      toolName: 'AskUserQuestion',
+      questions: [{ multiSelect: false, options: [{ label: 'old' }] }],
+    }
+    const replay: HarnessPromptEvent = {
+      type: 'prompt',
+      sessionId: SID,
+      promptId: 'p1',
+      kind: 'ask-user',
+      toolName: 'AskUserQuestion',
+      questions: [{ multiSelect: false, options: [{ label: 'A' }] }],
+      screen: { current: 0, total: 3 },
+    }
+    let prompts: HarnessPromptEvent[] = [stale]
+    const att = attachHarnessSession({
+      gateway: h.gateway,
+      sessionId: SID,
+      onResync: () => {},
+      onLive: () => {},
+      onControlReset: () => {
+        prompts = []
+      },
+      onPrompt: (e) => {
+        prompts.push(e)
+      },
+    })
+    h.status('open')
+    await flush()
+    expect(prompts).toEqual([])
+    h.emit(replay)
+    expect(prompts).toEqual([replay])
+
+    h.status('closed')
+    h.status('open')
+    await flush()
+    expect(prompts).toEqual([])
+    h.emit(replay)
+    expect(prompts).toEqual([replay])
+    att.close()
+  })
+
   it('routes status and prompt to their sinks', async () => {
     const h = fakeGateway()
     const statuses: HarnessStatusFrame[] = []

@@ -5,7 +5,7 @@ import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
 import type { SelectOption } from './select.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
-import type { AskQuestion } from '../lib/ask-user.js'
+import type { AskQuestion, AskScreen } from '../lib/ask-user.js'
 import { useChat } from '../stores/chat.js'
 import { useConnection } from '../stores/connection.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
@@ -80,6 +80,8 @@ export function Composer(props: {
   gatewayBase?: string
   /** Ask-user card content (agent prompted the user). Empty hides the card. */
   ask?: AskQuestion[]
+  /** Screen-read picker position from the open harness prompt. */
+  askScreen?: AskScreen
   onDismissAsk?: () => void
   /** Bound harness: answer via `answerHarnessPrompt` instead of a user turn. */
   onAnswerAsk?: (answers: AskStructuredAnswer[]) => Promise<void>
@@ -343,6 +345,7 @@ export function Composer(props: {
       {(props.ask?.length ?? 0) > 0 && (
         <AskUserCard
           questions={props.ask ?? []}
+          screen={props.askScreen}
           disabled={!connected || sending}
           onAnswer={async (label) => {
             if (!(await sendBody(label, { bare: true }))) throw new Error('answer not sent')

@@ -62,6 +62,12 @@ export interface HarnessAttachOptions {
   onTranscript?: (event: HarnessTranscriptEvent) => boolean
   onAgentStatus?: (event: HarnessStatusFrame) => void
   onPrompt?: (event: HarnessPromptEvent) => void
+  /**
+   * Socket just opened (first attach or reconnect). den then replays
+   * still-open prompts; drop stale cards first so a prompt resolved while
+   * we were gone cannot linger (answering it 404s).
+   */
+  onControlReset?: () => void
   /** Live turn state, `undefined` when the slot should clear. */
   onLive: (turn: LiveTurn | undefined) => void
   /** Approval request/resolution — outlives the turn, so not part of the fold. */
@@ -239,6 +245,11 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
     {
       onStatus: (status) => {
         if (closed) return
+        if (status === 'open') {
+          // Replay of still-open prompts follows this open. Clear first so a
+          // card resolved while disconnected does not linger (POST 404s).
+          opts.onControlReset?.()
+        }
         opts.onStatus?.(status)
         if (status !== 'open') return
         // Fresh attach (first or Nth): everything between the drop and now is
