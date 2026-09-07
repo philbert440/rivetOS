@@ -64,6 +64,7 @@ class OptionsTest {
         assertEquals("Kimi Code", rowPillText(null, null, "kimi-code"))
         assertEquals("Hermes", rowPillText(null, null, "hermes"))
         assertEquals("DeepSeek", rowPillText(null, null, "deepseek-harness"))
+        assertEquals("Codex", rowPillText(null, null, "codex"))
     }
 
     @Test fun `unknown harness id is the label`() {
@@ -140,5 +141,19 @@ class OptionsTest {
         assertEquals("k2p5", defaultModel(kimi))
         assertEquals("", defaultEffort(kimi, "k2p5"))
         assertEquals("medium", defaultEffort(hermes, ""))
+    }
+
+    @Test fun `codex sheet is default plus low medium high xhigh`() {
+        val sheet = codexSheet()
+        assertEquals("default", defaultModel(sheet))
+        assertEquals(listOf("low", "medium", "high", "xhigh"), effortListFor(sheet, "default").map { it.id })
+        assertEquals("medium", defaultEffort(sheet, "default"))
+    }
+
+    @Test fun `spawn codex sends nothing - no modelFlag or effortFlag`() {
+        assertEquals(
+            SpawnFlags(),
+            spawnModelEffort(codexSheet(), "codex", "default", "medium"),
+        )
     }
 }

@@ -265,6 +265,11 @@ class HarnessWireTest {
         assertNull(nativeIdOf("not-a-session-id"))
     }
 
+    @Test fun `nativeIdOf accepts codex`() {
+        assertEquals("a1b2c3d4-1111-4222-8333-444455556666", nativeIdOf("codex:a1b2c3d4-1111-4222-8333-444455556666"))
+        assertTrue("codex" in HARNESS_IDS)
+    }
+
     @Test fun `isTurnInFlight matches only the typed 409`() {
         assertTrue(isTurnInFlight(TurnInFlight()))
         assertTrue(isTurnInFlightStatus(409, "turn_in_flight"))

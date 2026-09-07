@@ -20,6 +20,18 @@ private val HARNESS_LABEL: Map<String, String> = mapOf(
     "kimi-code" to "Kimi Code",
     "hermes" to "Hermes",
     "deepseek-harness" to "DeepSeek",
+    "codex" to "Codex",
+)
+
+/** Client-side Codex sheet — same lists as den `codexSheet()` (no spawn flags). */
+fun codexSheet(): HarnessSheet = HarnessSheet(
+    models = listOf(ModelOption("default", "Default", default = true)),
+    efforts = listOf(
+        EffortOption("low", "Low"),
+        EffortOption("medium", "Medium", default = true),
+        EffortOption("high", "High"),
+        EffortOption("xhigh", "X-High"),
+    ),
 )
 
 fun harnessLabel(harnessId: String?): String {

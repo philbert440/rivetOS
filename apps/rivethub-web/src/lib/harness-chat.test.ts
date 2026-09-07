@@ -20,6 +20,7 @@ import {
   patchSessionUpdated,
   shortNativeId,
   chatItemFromSummary,
+  ROSTER_COMMAND,
 } from './harness-chat.js'
 
 const UUID_A = 'a1b2c3d4-1111-4222-8333-444455556666'
@@ -359,8 +360,14 @@ describe('typed-error and id helpers', () => {
   it('splits the native half on the first colon only', () => {
     expect(nativeIdOf(`claude-code:${UUID_A}`)).toBe(UUID_A)
     expect(nativeIdOf('grok-build:sess:42')).toBe('sess:42')
+    expect(nativeIdOf(`codex:${UUID_A}`)).toBe(UUID_A)
     expect(nativeIdOf(`claude-code:proj/slug/${UUID_A}`)).toBe(`proj/slug/${UUID_A}`)
     expect(nativeIdOf(UUID_A)).toBeUndefined()
+  })
+
+  it('maps every known harness onto a roster command, including codex', () => {
+    expect(ROSTER_COMMAND['kimi-code']).toBe('kimi')
+    expect(ROSTER_COMMAND.codex).toBe('codex')
   })
 
   it('shortens a native id for the drawer badge', () => {

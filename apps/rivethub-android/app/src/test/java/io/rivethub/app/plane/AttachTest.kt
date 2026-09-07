@@ -509,6 +509,13 @@ class AttachTest {
         assertEquals(listOf("hi", "done"), m.transcript.map { it.text })
     }
 
+    @Test fun `codex is a live-turn store like kimi`() {
+        assertTrue(isLiveTurnStore("kimi"))
+        assertTrue(isLiveTurnStore("kimi-code"))
+        assertTrue(isLiveTurnStore("codex"))
+        assertFalse(isLiveTurnStore("dsh"))
+    }
+
     @Test fun `hook deltas ignored on a live-turn store`() {
         val m = TranscriptMachine({ 0 })
         val live = HarnessTranscriptTurn(role = "assistant", text = "from-store", complete = null)
