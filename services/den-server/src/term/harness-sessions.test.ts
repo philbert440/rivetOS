@@ -2,6 +2,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { isBareSlashCommand } from '../harness/adapters/claude.js'
+import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import {
   describeClaudeSession,
   describeGrokSession,
@@ -791,6 +793,81 @@ describe('readHarnessTranscript', () => {
       complete: true,
       compact: true,
     })
+  })
+
+  it('an auto compact_boundary MID-turn (after a tool_result) neither splits the turn nor completes it', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-autocompact-'))
+    dirs.push(base)
+    const id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    const lines = [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'do the thing' } }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 800_000, output_tokens: 5 },
+          content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'compact_boundary',
+        compactMetadata: { trigger: 'auto', preTokens: 800_000, postTokens: 30_000 },
+      }),
+      JSON.stringify({
+        type: 'user',
+        isCompactSummary: true,
+        message: { role: 'user', content: 'This session is being continued…' },
+      }),
+    ]
+    writeFileSync(join(dir, `${id}.jsonl`), lines.join('\n') + '\n')
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const mid = await readHarnessTranscript(id)
+    expect(mid.turns.map((x) => x.role)).toEqual(['user', 'assistant'])
+    expect(mid.turns[1]?.complete).toBeUndefined()
+    expect(mid.turns[1]?.compact).toBeUndefined()
+    expect(mid.turns[1]?.tools?.[0]?.status).toBe('done')
+
+    // the continuation folds into the SAME turn and its usage resets the meter
+    lines.push(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 31_000, output_tokens: 7 },
+          content: [{ type: 'text', text: 'done' }],
+        },
+      }),
+    )
+    writeFileSync(join(dir, `${id}.jsonl`), lines.join('\n') + '\n')
+    const after = await readHarnessTranscript(id)
+    expect(after.turns.map((x) => x.role)).toEqual(['user', 'assistant'])
+    expect(after.turns[1]?.complete).toBe(true)
+    expect(after.turns[1]?.usage?.promptTokens).toBe(31_000)
+    expect(after.turns[1]?.text).toBe('done')
+  })
+
+  it('a bare slash line in a Claude store is a command, not a user turn (claude-only filter)', () => {
+    expect(isBareSlashCommand('/compact')).toBe(true)
+    expect(isBareSlashCommand('/model haiku')).toBe(true)
+    expect(isBareSlashCommand('/exit')).toBe(true)
+    expect(isBareSlashCommand('//not a command')).toBe(false)
+    expect(isBareSlashCommand('/opt/rivetos is the runtime')).toBe(false)
+    expect(isBareSlashCommand('see /compact for details')).toBe(false)
+    expect(isBareSlashCommand('/compact\nthen more text')).toBe(false)
+    expect(extractTurnText('/tmp is full, clean it', 'user')).toBe('/tmp is full, clean it')
   })
 
   it('reads Grok chat_history and unwraps <user_query>', async () => {

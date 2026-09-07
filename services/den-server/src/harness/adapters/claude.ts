@@ -50,6 +50,18 @@ function promptInput(raw: unknown): unknown {
   }
 }
 
+/**
+ * Claude Code 2.1.263 writes the raw slash line (`/compact`, `/exit`, `/model x`)
+ * as a plain user message BEFORE the `<command-name>` echo that
+ * `extractTurnText` already drops. The TUI never sends a leading-slash input
+ * to the model (unknown commands are rejected at the prompt), so for THIS
+ * store a bare slash line is never conversation. Claude-only on purpose —
+ * other harness stores have no such line and get no filter.
+ */
+export function isBareSlashCommand(text: string): boolean {
+  return /^\/[A-Za-z][\w:-]*(?:[ \t][^\n]*)?$/.test(text)
+}
+
 /** `system`/`compact_boundary` → a complete assistant marker turn carrying the post-compaction context size. */
 function compactMarker(meta: unknown): HarnessTurn {
   const m = (meta ?? {}) as { postTokens?: unknown; preTokens?: unknown }
@@ -71,7 +83,9 @@ function compactMarker(meta: unknown): HarnessTurn {
 }
 
 function tokensLabel(n: number): string {
-  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k tokens` : `${String(n)} tokens`
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tokens`
+  if (n >= 1000) return `${Math.round(n / 1000).toString()}k tokens`
+  return `${String(n)} tokens`
 }
 
 /**
@@ -93,6 +107,12 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
   // Distinct from lastBlock: a tool_result after a text line must not un-complete.
   let lastLineHadTextBlock = false
 
+  const assistantComplete = (): boolean =>
+    cur !== null &&
+    cur.stopReason === 'end_turn' &&
+    lastLineHadTextBlock &&
+    !(cur.tools ?? []).some((t) => t.status === 'running')
+
   const finishAssistant = (): void => {
     if (cur) {
       if (thinking) {
@@ -103,13 +123,7 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
       }
       if (cur.tools && cur.tools.length === 0) delete cur.tools
       if (cur.usage) cur.usage.completionTokens = outputTokens
-      if (
-        cur.stopReason === 'end_turn' &&
-        lastLineHadTextBlock &&
-        !(cur.tools ?? []).some((t) => t.status === 'running')
-      ) {
-        cur.complete = true
-      }
+      if (assistantComplete()) cur.complete = true
       // a turn with no visible content at all (blocks not flushed yet) is noise
       if (cur.text || cur.thinking || cur.tools) turns.push(cur)
     }
@@ -123,10 +137,15 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
   for (const obj of lines) {
     if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
     if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
-      // Context compaction: close the running turn and drop a marker whose
-      // usage is the POST-compaction context size (the summary line itself
-      // is skipped above). Without it the last real usage — the pre-compaction
-      // peak — stays on the context meter until the next reply.
+      // Context compaction. Between turns (manual /compact, or auto at the
+      // start of a turn): close the finished turn and drop a complete marker
+      // whose usage is the POST-compaction context size — without it the
+      // pre-compaction peak stays on the context meter until the next reply.
+      // Mid-turn (auto compaction lands right after a tool_result): leave the
+      // running turn alone — a marker would split the live turn and read as a
+      // false turn-complete; the continuation's own usage lines reset the
+      // meter within seconds anyway.
+      if (cur && !assistantComplete()) continue
       finishAssistant()
       turns.push(compactMarker(obj.compactMetadata))
       continue
@@ -162,7 +181,7 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
         }
       }
       const text = extractTurnText(content, 'user')
-      if (text) {
+      if (text && !isBareSlashCommand(text)) {
         finishAssistant()
         turns.push({ role: 'user', text })
       }
