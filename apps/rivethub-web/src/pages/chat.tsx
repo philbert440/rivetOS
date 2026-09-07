@@ -1289,6 +1289,7 @@ function ActiveSession(props: {
           if (ev.status === 'idle') outboundPumpFor(props.sessionId).pump.onIdle()
         },
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
+        onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
         onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
         onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
@@ -1517,9 +1518,15 @@ function ActiveSession(props: {
       : (pendingAsk ?? [])
   // Covers every question, not just the head — a same-count replacement set
   // must also reset a dismissal.
-  const askKey = askQuestions
-    .map((q) => `${q.question ?? ''}#${String(q.options.length)}#${q.multiSelect ? 'm' : 's'}`)
-    .join('|')
+  const askKey = [
+    boundPrompt?.promptId ?? '',
+    boundPrompt?.screen
+      ? `${String(boundPrompt.screen.current)}/${String(boundPrompt.screen.total)}`
+      : '',
+    ...askQuestions.map(
+      (q) => `${q.question ?? ''}#${String(q.options.length)}#${q.multiSelect ? 'm' : 's'}`,
+    ),
+  ].join('|')
   useEffect(() => setAskDismissed(false), [askKey])
   const onDismissAsk = (): void => {
     setAskDismissed(true)
@@ -1840,6 +1847,8 @@ function ActiveSession(props: {
             onSend={sendToHarness}
             handleRef={composerRef}
             ask={askDismissed ? [] : askQuestions}
+            askScreen={canonicalId ? boundPrompt?.screen : undefined}
+            askKey={askKey}
             onDismissAsk={onDismissAsk}
             onAnswerAsk={
               canonicalId
