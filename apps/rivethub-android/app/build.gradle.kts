@@ -1,3 +1,5 @@
+import java.io.File
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
@@ -11,12 +13,72 @@ android {
     namespace = "io.rivethub.app"
     compileSdk = 37
 
+    val versionFile = rootProject.file("version.properties")
+    val versionProps = Properties()
+    if (versionFile.isFile) {
+        versionFile.inputStream().use { stream -> versionProps.load(stream) }
+    }
+    val rivetVersionName: String = versionProps.getProperty("VERSION_NAME") ?: "0.1.0"
+    val rivetVersionCode: Int = versionProps.getProperty("VERSION_CODE")?.toIntOrNull() ?: 1
+    // Keep in sync with UpdateManifest.versionCodeFor: major*1_000_000 + minor*1_000 + patch.
+    if (versionFile.isFile) {
+        val core = rivetVersionName.substringBefore('+').substringBefore('-')
+        val parts = core.split('.')
+        if (parts.size != 3) {
+            error("VERSION_NAME=$rivetVersionName is not major.minor.patch")
+        }
+        val expectedCode = parts[0].toInt() * 1_000_000 + parts[1].toInt() * 1_000 + parts[2].toInt()
+        if (rivetVersionCode != expectedCode) {
+            error(
+                "VERSION_CODE=$rivetVersionCode disagrees with VERSION_NAME=$rivetVersionName " +
+                    "(expected $expectedCode = major*1_000_000 + minor*1_000 + patch)",
+            )
+        }
+    }
+
     defaultConfig {
         applicationId = "io.rivethub.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = rivetVersionCode
+        versionName = rivetVersionName
+    }
+
+    val ksPath = System.getenv("RIVETHUB_ANDROID_KEYSTORE")
+    val ksPass = System.getenv("RIVETHUB_ANDROID_KEYSTORE_PASS")
+    val keyAliasEnv = System.getenv("RIVETHUB_ANDROID_KEY_ALIAS")
+    val keyPassEnv = System.getenv("RIVETHUB_ANDROID_KEY_PASS")
+    val signingVars = listOf(
+        "RIVETHUB_ANDROID_KEYSTORE" to ksPath,
+        "RIVETHUB_ANDROID_KEYSTORE_PASS" to ksPass,
+        "RIVETHUB_ANDROID_KEY_ALIAS" to keyAliasEnv,
+        "RIVETHUB_ANDROID_KEY_PASS" to keyPassEnv,
+    )
+    val anySigning = signingVars.any { !it.second.isNullOrBlank() }
+    val allSigning = signingVars.all { !it.second.isNullOrBlank() }
+    if (anySigning && !allSigning) {
+        val missing = signingVars.filter { it.second.isNullOrBlank() }.joinToString { it.first }
+        error("RIVETHUB_ANDROID_* signing env is incomplete — missing $missing")
+    }
+    val ksFile: File? = ksPath?.let { p ->
+        listOf(File(p), rootProject.file(p), file(p)).firstOrNull { it.isFile }
+    }
+    if (anySigning && ksFile == null) {
+        error("RIVETHUB_ANDROID_KEYSTORE is set but the keystore file does not exist: $ksPath")
+    }
+    val releaseSigning = if (allSigning && ksFile != null) {
+        val store = ksFile
+        val pass = ksPass!!
+        val alias = keyAliasEnv!!
+        val keyPass = keyPassEnv!!
+        signingConfigs.create("release") {
+            storeFile = store
+            storePassword = pass
+            keyAlias = alias
+            keyPassword = keyPass
+        }
+    } else {
+        null
     }
 
     buildTypes {
@@ -27,6 +89,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (releaseSigning != null) {
+                signingConfig = releaseSigning
+            }
         }
         debug {
             applicationIdSuffix = ".debug"

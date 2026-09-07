@@ -6,6 +6,7 @@
          this uid's packets to RFC1918 destinations — the mesh — with no error
          beyond a connect timeout (SYN-SENT, zero packets on the wire). -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Temporary: household noVNC desktop is plain HTTP. Flip usesCleartextTraffic back to false when that VM sits behind TLS. -->
     <application
@@ -29,5 +30,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

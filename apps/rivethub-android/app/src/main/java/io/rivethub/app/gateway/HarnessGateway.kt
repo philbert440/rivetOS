@@ -1,6 +1,10 @@
 package io.rivethub.app.gateway
 
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.JsonObject
@@ -37,6 +41,24 @@ class HarnessGateway(
     }
 
     private inline fun <T> withClients(block: (OkHttpClient) -> T): T {
+        val order = clients()
+        var last: Exception? = null
+        for ((i, c) in order.withIndex()) {
+            try {
+                val out = block(c)
+                if (i == 1) preferFallback = c === fallback
+                return out
+            } catch (e: Exception) {
+                val connectFailure = e is java.net.SocketTimeoutException || e is java.net.ConnectException ||
+                    e is java.net.NoRouteToHostException
+                if (!connectFailure || i == order.lastIndex) throw e
+                last = e
+            }
+        }
+        throw last!!
+    }
+
+    private suspend fun <T> withClientsSuspend(block: suspend (OkHttpClient) -> T): T {
         val order = clients()
         var last: Exception? = null
         for ((i, c) in order.withIndex()) {
@@ -268,6 +290,48 @@ class HarnessGateway(
                     val text = res.body.string()
                     if (!res.isSuccessful) throw GatewayException(res.code, errorText(res, text))
                     wireJson.decodeFromString(StagedUploadResponse.serializer(), text)
+                }
+            }
+        }
+
+    /**
+     * GET /api/files/download?path= — streams the body. [handle] must consume
+     * the response before returning. The OkHttp call is cancelled if the
+     * coroutine is, including while [handle] is blocked in a read.
+     * Redirects are refused (the mesh filestore path is the trust root).
+     */
+    suspend fun <T> filesDownload(path: String, handle: suspend (Response) -> T): T =
+        withContext(Dispatchers.IO) {
+            withClientsSuspend { c ->
+                val req = Request.Builder()
+                    .url(url(listOf("api", "files", "download"), mapOf("path" to path)))
+                    .header("Cache-Control", "no-store")
+                    .get()
+                    .build()
+                val client = c.newBuilder()
+                    .followRedirects(false)
+                    .followSslRedirects(false)
+                    .readTimeout(java.time.Duration.ofMinutes(10))
+                    .callTimeout(java.time.Duration.ofMinutes(10))
+                    .build()
+                val call = client.newCall(req)
+                coroutineScope {
+                    val watch = launch(start = CoroutineStart.UNDISPATCHED) {
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            cont.invokeOnCancellation { call.cancel() }
+                        }
+                    }
+                    try {
+                        call.execute().use { res ->
+                            if (!res.isSuccessful) {
+                                val text = res.body.string()
+                                throw GatewayException(res.code, errorText(res, text))
+                            }
+                            handle(res)
+                        }
+                    } finally {
+                        watch.cancel()
+                    }
                 }
             }
         }
