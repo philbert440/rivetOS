@@ -18,10 +18,12 @@ import {
   describeDshSession,
   describeGrokSession,
   describeHermesSession,
+  describeCodexSession,
   describeKimiSession,
   harnessSessionExists,
   listHarnessSessions,
   readClaudeTranscript,
+  readCodexTranscript,
   readDshTranscript,
   readGrokTranscript,
   readHermesTranscript,
@@ -33,10 +35,11 @@ import { CLAUDE_ROSTER_COMMAND, type ClaudeStoreHost } from './claude-driver.js'
 import { DEEPSEEK_ROSTER_COMMAND, type DeepseekStoreHost } from './deepseek-driver.js'
 import { GROK_ROSTER_COMMAND, type GrokStoreHost } from './grok-driver.js'
 import { HERMES_ROSTER_COMMAND, type HermesStoreHost } from './hermes-driver.js'
+import { CODEX_ROSTER_COMMAND, type CodexStoreHost } from './codex-driver.js'
 import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
-export type HarnessStoreName = 'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek'
+export type HarnessStoreName = 'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex'
 
 type StoreByName = {
   claude: ClaudeStoreHost
@@ -44,6 +47,7 @@ type StoreByName = {
   hermes: HermesStoreHost
   kimi: KimiStoreHost
   deepseek: DeepseekStoreHost
+  codex: CodexStoreHost
 }
 
 type Adapter = {
@@ -77,6 +81,11 @@ const ADAPTERS: Record<HarnessStoreName, Adapter> = {
     roster: DEEPSEEK_ROSTER_COMMAND,
     describe: describeDshSession,
     transcript: readDshTranscript,
+  },
+  codex: {
+    roster: CODEX_ROSTER_COMMAND,
+    describe: describeCodexSession,
+    transcript: readCodexTranscript,
   },
 }
 

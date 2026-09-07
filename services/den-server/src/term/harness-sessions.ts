@@ -7,12 +7,13 @@
 // Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl), grok Build
 // (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
 // ~/.hermes/state.db), Kimi Code
-// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/) and DeepSeek
-// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/). An unknown harness
+// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), DeepSeek
+// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/) and Codex
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { type HarnessTranscriptTurn } from '@rivetos/types'
@@ -23,6 +24,7 @@ import {
   grokTurnsFromLines,
   kimiTurnsFromLines,
   readHermesTurns,
+  codexTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
@@ -34,6 +36,7 @@ export {
   grokTurnsFromLines,
   kimiTurnsFromLines,
   readHermesTurns,
+  codexTurnsFromLines,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -791,6 +794,249 @@ function dshSessionExists(id: string): boolean {
   return dshSessionDir(id) !== undefined
 }
 
+// ---- Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl --------
+
+/** ~/.codex (respects CODEX_HOME, which the CLI itself reads). */
+function codexHome(): string {
+  return process.env.CODEX_HOME?.trim() || join(homedir(), '.codex')
+}
+
+function codexSessionsDir(): string {
+  return join(codexHome(), 'sessions')
+}
+
+/** Bare rollout UUID — no `session_` prefix. */
+const CODEX_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function uuidFromRolloutName(name: string): string | undefined {
+  const m = name.match(
+    /^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i,
+  )
+  return m?.[1]
+}
+
+function isDateDir(name: string, width: number): boolean {
+  return name.length === width && /^\d+$/.test(name)
+}
+
+/**
+ * Walk YYYY/MM/DD looking for a rollout whose filename ends with `-<id>.jsonl`.
+ * Newest mtime wins if the same uuid appears twice.
+ */
+function findCodexRolloutSync(id: string): string | undefined {
+  if (!id || !CODEX_NATIVE_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
+  const root = codexSessionsDir()
+  let years: string[]
+  try {
+    years = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number } | undefined
+  const suffix = `-${id}.jsonl`
+  for (const year of years) {
+    if (!isDateDir(year, 4)) continue
+    let months: string[]
+    try {
+      months = readdirSync(join(root, year))
+    } catch {
+      continue
+    }
+    for (const month of months) {
+      if (!isDateDir(month, 2)) continue
+      let days: string[]
+      try {
+        days = readdirSync(join(root, year, month))
+      } catch {
+        continue
+      }
+      for (const day of days) {
+        if (!isDateDir(day, 2)) continue
+        const dir = join(root, year, month, day)
+        let files: string[]
+        try {
+          files = readdirSync(dir)
+        } catch {
+          continue
+        }
+        for (const f of files) {
+          if (!f.endsWith(suffix)) continue
+          const path = join(dir, f)
+          try {
+            const st = statSync(path)
+            if (st.isFile() && (!best || st.mtimeMs > best.mtime)) {
+              best = { path, mtime: st.mtimeMs }
+            }
+          } catch {
+            /* vanished */
+          }
+        }
+      }
+    }
+  }
+  return best?.path
+}
+
+async function listCodexRollouts(): Promise<
+  { id: string; path: string; mtime: number; birth: number }[]
+> {
+  const root = codexSessionsDir()
+  let years: string[]
+  try {
+    years = await readdir(root)
+  } catch {
+    return []
+  }
+  const found: { id: string; path: string; mtime: number; birth: number }[] = []
+  for (const year of years) {
+    if (!isDateDir(year, 4)) continue
+    let months: string[]
+    try {
+      months = await readdir(join(root, year))
+    } catch {
+      continue
+    }
+    for (const month of months) {
+      if (!isDateDir(month, 2)) continue
+      let days: string[]
+      try {
+        days = await readdir(join(root, year, month))
+      } catch {
+        continue
+      }
+      for (const day of days) {
+        if (!isDateDir(day, 2)) continue
+        const dir = join(root, year, month, day)
+        let files: string[]
+        try {
+          files = await readdir(dir)
+        } catch {
+          continue
+        }
+        for (const f of files) {
+          const id = uuidFromRolloutName(f)
+          if (!id) continue
+          const path = join(dir, f)
+          try {
+            const st = await stat(path)
+            if (st.isFile()) {
+              found.push({
+                id,
+                path,
+                mtime: st.mtimeMs,
+                birth: st.birthtimeMs || st.ctimeMs || st.mtimeMs,
+              })
+            }
+          } catch {
+            /* vanished */
+          }
+        }
+      }
+    }
+  }
+  return found
+}
+
+async function codexRolloutTitle(file: string): Promise<string> {
+  const fh = await open(file, 'r')
+  try {
+    const buf = Buffer.alloc(64 * 1024)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
+      if (!line.trim().startsWith('{')) continue
+      let d: Record<string, unknown>
+      try {
+        d = JSON.parse(line) as Record<string, unknown>
+      } catch {
+        continue
+      }
+      if (d.type !== 'response_item') continue
+      const payload = d.payload as { type?: unknown; role?: unknown; content?: unknown } | undefined
+      if (payload?.type !== 'message' || payload.role !== 'user') continue
+      const content = payload.content
+      let text = ''
+      if (typeof content === 'string') text = content
+      else if (Array.isArray(content)) {
+        text = content
+          .map((b) =>
+            b &&
+            typeof b === 'object' &&
+            ((b as { type?: unknown }).type === 'input_text' ||
+              (b as { type?: unknown }).type === 'text') &&
+            typeof (b as { text?: unknown }).text === 'string'
+              ? (b as { text: string }).text
+              : '',
+          )
+          .join('')
+      }
+      text = text.trim()
+      if (
+        !text ||
+        text.startsWith('<environment_context>') ||
+        text.startsWith('<skills_instructions>') ||
+        text.startsWith('<multi_agent_')
+      ) {
+        continue
+      }
+      return text.slice(0, 120)
+    }
+  } finally {
+    await fh.close()
+  }
+  return ''
+}
+
+async function readCodexSession(
+  path: string,
+  id: string,
+  mtime: number,
+  birth: number,
+): Promise<HarnessSession> {
+  const title = await codexRolloutTitle(path).catch(() => '')
+  return {
+    id,
+    command: 'codex',
+    title: title.replace(/\s+/g, ' ').trim().slice(0, 120) || id,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
+}
+
+async function listCodexSessions(limit: number): Promise<HarnessSession[]> {
+  const found = await listCodexRollouts()
+  found.sort((a, b) => b.mtime - a.mtime)
+  const out: HarnessSession[] = []
+  for (const f of found.slice(0, limit)) {
+    out.push(await readCodexSession(f.path, f.id, f.mtime, f.birth))
+  }
+  return out
+}
+
+/**
+ * Describe ONE Codex session by rollout UUID — the `codex` driver's
+ * `getSession`, without paying a whole-store title scan of every day dir
+ * beyond the path lookup.
+ */
+export async function describeCodexSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const path = findCodexRolloutSync(id)
+  if (!path) return undefined
+  let mtime: number
+  let birth: number
+  try {
+    const s = await stat(path)
+    mtime = s.mtimeMs
+    birth = s.birthtimeMs || s.ctimeMs || s.mtimeMs
+  } catch {
+    return undefined
+  }
+  return readCodexSession(path, id, mtime, birth)
+}
+
+function codexSessionExists(id: string): boolean {
+  return findCodexRolloutSync(id) !== undefined
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -811,6 +1057,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'hermes') return hermesSessionExists(id) // sqlite lookup
   if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
   if (command === 'dsh') return dshSessionExists(id) // session DIR under any cwd-slug bucket
+  if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -850,6 +1097,7 @@ export async function listHarnessSessions(
   if (commands.includes('hermes')) all.push(...listHermesSessions(limit))
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
+  if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1012,6 +1260,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     }
   }
 
+  if (wants('codex') && CODEX_NATIVE_RE.test(native)) {
+    const codex = await readCodexTranscript(native)
+    if (codex.turns.length > 0) return { ...codex, id }
+  }
+
   if (wants('hermes')) {
     const hermes = readHermesTurns(native)
     if (hermes.length > 0) return { id, command: 'hermes', turns: hermes }
@@ -1090,6 +1343,22 @@ export async function readKimiTranscript(id: string): Promise<HarnessTranscript>
 }
 
 /**
+ * Codex-only transcript read — the `codex` driver's hard-resync source.
+ * Codex has no den hooks, so assistant text and thinking are only observable
+ * here (rollout jsonl).
+ */
+export async function readCodexTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = findCodexRolloutSync(id)
+  if (!path) return { id, command: '', turns: [] }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'codex', turns: codexTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
+}
+
+/**
  * Grok-only transcript read — the `grok-build` driver's hard-resync source.
  *
  * `readHarnessTranscript` probes claude → grok → hermes and returns the first
@@ -1159,6 +1428,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const grokPath = await findGrokChatHistory(native)
     if (grokPath) return { command: 'grok', path: grokPath }
   }
+  if (wants('codex') && CODEX_NATIVE_RE.test(native)) {
+    const path = findCodexRolloutSync(native)
+    if (path) return { command: 'codex', path }
+  }
   if (wants('hermes') && hermesSessionExists(native)) {
     return { command: 'hermes', path: hermesDbPath() }
   }
@@ -1182,6 +1455,7 @@ export function harnessStoreDirs(): string[] {
     join(hermesDbPath(), '..'),
     kimiSessionsDir(),
     dshSessionsDir(),
+    codexSessionsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

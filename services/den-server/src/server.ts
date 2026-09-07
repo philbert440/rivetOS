@@ -87,6 +87,7 @@ import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-drive
 import { GrokBuildDriver } from './harness/grok-driver.js'
 import { HermesDriver } from './harness/hermes-driver.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
+import { CodexDriver } from './harness/codex-driver.js'
 import { DeepseekHarnessDriver } from './harness/deepseek-driver.js'
 import { createHarnessStore } from './harness/harness-store.js'
 import { createHarnessRoutes } from './harness/routes.js'
@@ -114,7 +115,7 @@ export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcri
 
 // Harness control plane (docs/ARCHITECTURE.md) — the registry,
 // the `claude-code` reference driver, the `grok-build`, `hermes`,
-// `kimi-code` and `deepseek-harness` drivers, the `PtyHarnessDriver` base
+// `kimi-code`, `deepseek-harness` and `codex` drivers, the `PtyHarnessDriver` base
 // they share, and the alias/codec helpers around them. Re-exported here so
 // consumers have one entry point.
 export {
@@ -189,6 +190,14 @@ export {
   type DeepseekPtyHost,
   type DeepseekStoreHost,
 } from './harness/deepseek-driver.js'
+export {
+  CodexDriver,
+  CODEX_HARNESS_ID,
+  CODEX_ROSTER_COMMAND,
+  type CodexDriverDeps,
+  type CodexPtyHost,
+  type CodexStoreHost,
+} from './harness/codex-driver.js'
 export { createHarnessStore, type HarnessStoreName } from './harness/harness-store.js'
 export {
   PtyHarnessDriver,
@@ -275,9 +284,9 @@ export interface DenServer {
   state(): DenState
   /**
    * Harness control plane (docs/ARCHITECTURE.md): the node's
-   * `HarnessDriver` registry. The five built-in drivers (`claude-code`,
-   * `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`) register here at
-   * boot. Extra drivers can still be added via `DenServerOptions.harnessDrivers`.
+   * `HarnessDriver` registry. The six built-in drivers (`claude-code`,
+   * `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`, `codex`) register
+   * here at boot. Extra drivers can still be added via `DenServerOptions.harnessDrivers`.
    */
   harnesses: HarnessRegistry
   /**
@@ -337,14 +346,14 @@ export interface DenServerOptions {
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
   /**
-   * Extra HarnessDrivers to register alongside the five built-in drivers
-   * (`claude-code`, `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`).
+   * Extra HarnessDrivers to register alongside the six built-in drivers
+   * (`claude-code`, `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`, `codex`).
    */
   harnessDrivers?: HarnessDriver[]
   /**
    * Skip registering the built-in `claude-code` + `grok-build` + `hermes` +
-   * `kimi-code` + `deepseek-harness` drivers — tests that drive the registry
-   * with a fake, and nodes that want their own wiring. They are skipped
+   * `kimi-code` + `deepseek-harness` + `codex` drivers — tests that drive the
+   * registry with a fake, and nodes that want their own wiring. They are skipped
    * together: they share the PTY host and the den event tap, so a node that
    * replaces one is replacing that wiring for all of them.
    */
@@ -596,16 +605,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     return entry.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
-  // All five built-in drivers formalize the machinery right above them — the
+  // All six built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
   // the den AgentEvent stream — behind the one contract, and share it through
   // `PtyHarnessDriver`. Capability flags follow what is ACTUALLY wired here: no
   // terminals on this node means no interrupt/resume, no den tap means no
-  // liveStream, and `approvals` is false for all five regardless (their
-  // permission prompts live inside their TUIs and never reach the den wire).
-  // `hermes`, `kimi-code` and `deepseek-harness` cannot pin a new session's id,
-  // so they refuse `startSession`, adopt sessions (den stream and/or store),
-  // and report a room whose session changed as a rotation.
+  // liveStream, and `approvals` is true only with PTY + herdr + adapter keys
+  // (lane A2 for Codex). `hermes`, `kimi-code`, `deepseek-harness` and `codex`
+  // cannot pin a new session's id, so they refuse `startSession`, adopt
+  // sessions (den stream and/or store), and report a room whose session
+  // changed as a rotation.
   const harnesses = createHarnessRegistry({ log: console.error })
   onHerdrStatusRef = (denSession, frame): void => {
     const applyTo = (driver: HarnessDriver): boolean => {
@@ -714,6 +723,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('dsh'),
         log: console.error,
         sheetOverride: config.harnesses?.['deepseek-harness'],
+        transcript: opts.transcriptWatcher,
+        screen: screenFor,
+      }),
+      new CodexDriver({
+        store: createHarnessStore('codex'),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
+        cwd: rosterCwdFor('codex'),
+        log: console.error,
+        sheetOverride: config.harnesses?.codex,
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),

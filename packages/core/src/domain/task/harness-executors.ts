@@ -3,7 +3,7 @@
  * harness control plane.
  *
  * The executor registry keys `harness-session` on a HARNESS ID, the same
- * `claude-code | grok-build | kimi-code | hermes | deepseek-harness`
+ * `claude-code | grok-build | kimi-code | hermes | deepseek-harness | codex`
  * vocabulary `SessionId`,
  * `HarnessDriver` and the gateway already speak. Before this, the one CLI
  * executor registered under the PROVIDER name `claude-cli`, so a task row and
@@ -229,6 +229,10 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'to pin a new one) and capture is out-of-band via the Cordis session/event plugin. ' +
     'The den term manager spawns the interactive TUI (`dsh --profile tui [--resume]`); ' +
     'a headless profile exists but is not wired as a HarnessExecutor',
+  codex:
+    'the codex driver cannot START a session for a task to run in: Codex mints its own ' +
+    'rollout UUID and `codex resume` references existing sessions only (no --session-id). ' +
+    'The den term manager spawns the interactive TUI; a headless executor is not wired',
 })
 
 /** The recorded gap for a harness, or a generic one for an unlisted id. */

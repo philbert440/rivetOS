@@ -81,7 +81,7 @@ describe('normalizeSessionId', () => {
     ['empty', ''],
     ['whitespace-padded', ` claude-code:${UUID} `],
     ['agent nickname prefix', `claude:${UUID}`],
-    ['unknown harness', `codex:${UUID}`],
+    ['unknown harness', `gemini:${UUID}`],
     ['no native half', 'claude-code:'],
   ])('rejects %s', (_label, value) => {
     expect(() => normalizeSessionId(value)).toThrowError(HarnessError)

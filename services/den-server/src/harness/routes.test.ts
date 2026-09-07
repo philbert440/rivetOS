@@ -212,7 +212,7 @@ const post = (base: string, path: string, body?: unknown): Promise<Response> =>
   })
 
 describe('GET /api/harnesses', () => {
-  it('lists the five built-in drivers a real node boots with', async () => {
+  it('lists the six built-in drivers a real node boots with', async () => {
     // No fakes: this is what `createDenServer` actually registers. Reading the
     // capability sheet touches no harness store, so it is safe to boot for
     // real here.
@@ -226,6 +226,7 @@ describe('GET /api/harnesses', () => {
       'hermes',
       'kimi-code',
       'deepseek-harness',
+      'codex',
     ])
     // Terminals are off in this config, so interrupt/resume are honestly false
     // and nobody claims approvals.
@@ -1091,7 +1092,7 @@ describe('capability runtime truthing', () => {
     const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
       harnesses: { harnessId: string; capabilities: HarnessCapabilities }[]
     }
-    expect(body.harnesses).toHaveLength(5)
+    expect(body.harnesses).toHaveLength(6)
     for (const h of body.harnesses) {
       expect(h.capabilities).toMatchObject({ interrupt: false, resume: false })
     }

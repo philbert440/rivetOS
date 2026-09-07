@@ -8,6 +8,7 @@ import {
   describeClaudeSession,
   describeGrokSession,
   describeKimiSession,
+  describeCodexSession,
   describeDshSession,
   claudeTurnsFromLines,
   grokTurnsFromLines,
@@ -17,6 +18,7 @@ import {
   readHarnessTranscript,
   readHermesTranscript,
   readKimiTranscript,
+  readCodexTranscript,
   resolveHarnessStore,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
@@ -31,6 +33,7 @@ afterEach(() => {
   delete process.env.HERMES_HOME
   delete process.env.KIMI_CODE_HOME
   delete process.env.DSH_HOME
+  delete process.env.CODEX_HOME
 })
 
 /**
@@ -499,12 +502,16 @@ describe('listHarnessSessions', () => {
     process.env.HERMES_HOME = join(tmpdir(), 'no-hermes-' + String(process.pid))
     process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
     process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
-    expect(await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh'])).toEqual([])
+    process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
+    expect(await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex'])).toEqual(
+      [],
+    )
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
     delete process.env.KIMI_CODE_HOME
     delete process.env.DSH_HOME
+    delete process.env.CODEX_HOME
   })
 
   it('reads dsh sessions from ~/.dsh/sessions/<cwd-slug>/session-<uuid>/', async () => {
@@ -898,6 +905,9 @@ describe('readHarnessTranscript', () => {
     expect(isBareSlashCommand('see /compact for details')).toBe(false)
     expect(isBareSlashCommand('/compact\nthen more text')).toBe(false)
     expect(extractTurnText('/tmp is full, clean it', 'user')).toBe('/tmp is full, clean it')
+    expect(extractTurnText('<environment_context>cwd</environment_context>', 'user')).toBeNull()
+    expect(extractTurnText('<skills_instructions>x</skills_instructions>', 'user')).toBeNull()
+    expect(extractTurnText('<multi_agent_foo>x</multi_agent_foo>', 'user')).toBeNull()
   })
 
   it('reads Grok chat_history and unwraps <user_query>', async () => {
@@ -1410,5 +1420,113 @@ describe('kimi completion (hook-free turn-complete)', () => {
     expect(last.stopReason).toBe('end_turn')
     expect(last.lastBlock).toBe('text')
     expect(last.complete).toBe(true)
+  })
+})
+
+describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
+  const ID = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+  const ID2 = '42accb06-524a-47a6-b4b3-0991552914d7'
+
+  function fakeCodexStore(): string {
+    const home = mkdtempSync(join(tmpdir(), 'codex-store-'))
+    dirs.push(home)
+    process.env.CODEX_HOME = home
+    const day = join(home, 'sessions', '2026', '09', '07')
+    mkdirSync(day, { recursive: true })
+    const lines = [
+      { type: 'session_meta', payload: { id: ID } },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'developer',
+          content: [{ type: 'input_text', text: '<environment_context>skip</environment_context>' }],
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'review the rollout parser' }],
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'ok' }],
+        },
+      },
+    ]
+    writeFileSync(
+      join(day, `rollout-2026-09-07T12-00-00-${ID}.jsonl`),
+      lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
+    )
+    return home
+  }
+
+  it('lists newest-first by mtime and titles from the first user input_text', async () => {
+    const home = fakeCodexStore()
+    const older = join(home, 'sessions', '2026', '09', '06')
+    mkdirSync(older, { recursive: true })
+    const olderFile = join(older, `rollout-2026-09-06T01-00-00-${ID2}.jsonl`)
+    writeFileSync(
+      olderFile,
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'older session' }],
+        },
+      }) + '\n',
+    )
+    const newer = join(home, 'sessions', '2026', '09', '07', `rollout-2026-09-07T12-00-00-${ID}.jsonl`)
+    utimesSync(newer, 2_000_000_000, 2_000_000_000)
+    utimesSync(olderFile, 1_000_000_000, 1_000_000_000)
+
+    const sessions = await listHarnessSessions(['codex'])
+    expect(sessions.map((s) => s.id)).toEqual([ID, ID2])
+    expect(sessions[0]).toMatchObject({
+      id: ID,
+      command: 'codex',
+      title: 'review the rollout parser',
+    })
+    expect(sessions[1].title).toBe('older session')
+  })
+
+  it('agrees with describeCodexSession on the same session', async () => {
+    fakeCodexStore()
+    const listed = await listHarnessSessions(['codex'])
+    expect(await describeCodexSession(ID)).toEqual(listed.find((s) => s.id === ID))
+    expect(await describeCodexSession('00000000-0000-4000-8000-000000000000')).toBeUndefined()
+    expect(await describeCodexSession('../../etc/passwd')).toBeUndefined()
+    expect(await describeCodexSession('session_' + ID)).toBeUndefined()
+  })
+
+  it('harnessSessionExists: codex checks the rollout file', () => {
+    fakeCodexStore()
+    expect(harnessSessionExists('codex', ID)).toBe(true)
+    expect(harnessSessionExists('codex', '00000000-0000-4000-8000-000000000000')).toBe(false)
+    expect(harnessSessionExists('codex', 'not-a-uuid')).toBe(false)
+  })
+
+  it('readCodexTranscript folds the rollout and resolveHarnessStore names the file', async () => {
+    fakeCodexStore()
+    const t = await readCodexTranscript(ID)
+    expect(t.command).toBe('codex')
+    expect(t.turns[0]).toEqual({ role: 'user', text: 'review the rollout parser' })
+    expect(t.turns[1]).toMatchObject({ role: 'assistant', text: 'ok', complete: true })
+    const ref = await resolveHarnessStore(`codex:${ID}`)
+    expect(ref?.command).toBe('codex')
+    expect(ref?.path).toContain(ID)
+    expect(ref?.path).toContain('rollout-')
+  })
+
+  it('empty when CODEX_HOME has no sessions', async () => {
+    process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
+    expect(await listHarnessSessions(['codex'])).toEqual([])
   })
 })
