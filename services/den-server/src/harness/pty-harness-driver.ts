@@ -264,7 +264,13 @@ export interface LiveState {
   transcriptHoldTimer?: NodeJS.Timeout
   tracker?: TurnTracker
   pendingPrompts: Map<string, { toolName: string; questions: HarnessAskQuestion[] }>
-  pendingApproval?: { requestId: string; name: string; options?: { key: string; label: string }[] }
+  pendingApproval?: {
+    requestId: string
+    name: string
+    options?: { key: string; label: string }[]
+    /** The scraped dialog text — replayed to a reconnecting client. */
+    reason?: string
+  }
   /** AskUserQuestion parsed off the pane while herdr is `blocked`. Claude
    *  2.1.263 does not write the tool_use line until the picker completes, so
    *  the store cannot source this `prompt` event. */
@@ -1519,7 +1525,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (!parsed) return
     state.approvalSeq += 1
     const requestId = `perm:${native}:${String(state.approvalSeq)}`
-    state.pendingApproval = { requestId, name: parsed.toolName, options: parsed.options }
+    state.pendingApproval = {
+      requestId,
+      name: parsed.toolName,
+      options: parsed.options,
+      reason: parsed.text,
+    }
     this.emit(native, {
       type: 'approval-request',
       sessionId: this.sid(native),
@@ -1600,6 +1611,25 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected replayPendingPrompts(native: string, sink: (e: HarnessEvent) => void): void {
     const state = this.live.get(native)
     if (!state) return
+    // A pending permission dialog too: the client clears its cards on every
+    // socket open and nothing else re-mints an approval (the capture guard
+    // returns while one is pending) — without this a wifi blip loses the card.
+    const approval = state.pendingApproval
+    if (approval) {
+      try {
+        sink({
+          type: 'approval-request',
+          sessionId: this.sid(native),
+          requestId: approval.requestId,
+          name: approval.name,
+          input: { text: approval.reason ?? '' },
+          reason: approval.reason ?? '',
+          ...(approval.options ? { options: approval.options } : {}),
+        })
+      } catch {
+        // the socket's problem
+      }
+    }
     for (const id of this.pendingPromptIds(state)) {
       const p = state.pendingPrompts.get(id)
       if (!p) continue
