@@ -244,6 +244,8 @@ export interface CodexCliModelConfig extends CodexSpawnFlags {
   conversationId?: string
   sessionMode: CodexSessionMode
   sessionMapPath?: string
+  /** Test seam: replaces node:child_process spawn for the turn child. */
+  spawnImpl?: typeof spawn
 }
 
 export class CodexCliModel implements LanguageModelV3 {
@@ -328,7 +330,7 @@ export class CodexCliModel implements LanguageModelV3 {
           }
         }
         enqueue({ type: 'stream-start', warnings: [] })
-        const child = spawn(flags.binary, args, {
+        const child = (this.config.spawnImpl ?? spawn)(flags.binary, args, {
           cwd: flags.cwd,
           env: buildChildEnv(),
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -340,6 +342,9 @@ export class CodexCliModel implements LanguageModelV3 {
         let usage = emptyUsage()
         let threadId = resumeId
         let failed = ''
+        // stdin EPIPE is a symptom (codex exited without draining the prompt);
+        // the real cause is on stderr / in the exit code, so it ranks last.
+        let stdinError = ''
         let sawThreadStarted = false
         let killTimer: ReturnType<typeof setTimeout> | undefined
         const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
@@ -446,7 +451,10 @@ export class CodexCliModel implements LanguageModelV3 {
           if (textOpen) enqueue({ type: 'text-end', id: 'codex-text' })
           const error = aborted
             ? ''
-            : failed || (code !== 0 ? stderr.trim() || `codex exited ${String(code)}` : '')
+            : failed ||
+              stderr.trim() ||
+              (code !== 0 ? `codex exited ${String(code)}` : '') ||
+              stdinError
           if (error && !sawText) enqueue({ type: 'error', error: new Error(error.slice(0, 1000)) })
           enqueue({
             type: 'finish',
@@ -459,15 +467,10 @@ export class CodexCliModel implements LanguageModelV3 {
           })
           closeStream()
         })
-        const stdin = child.stdin
-        if (stdin) {
-          stdin.on('error', (err: Error) => {
-            failed = failed || err.message
-          })
-          stdin.end(prompt)
-        } else {
-          failed = failed || 'codex stdin is not available'
-        }
+        child.stdin.on('error', (err: Error) => {
+          stdinError = stdinError || err.message
+        })
+        child.stdin.end(prompt)
       },
       cancel: () => {
         closed = true

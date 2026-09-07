@@ -1,3 +1,6 @@
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import type { spawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -282,25 +285,41 @@ describe('Codex CLI protocol', () => {
     }
   })
 
-  it('finishes with an error part when the child exits without reading a large stdin', async () => {
-    const binary = fakeCodex('#!/usr/bin/env bash\nexit 3\n')
-    const big: LanguageModelV3Prompt = [
+  it('survives a stdin error (EPIPE) from a child that exits without reading the prompt', async () => {
+    // A fake child whose stdin emits 'error' — with no listener a stream's
+    // emit('error') THROWS synchronously, so this test fails on revert.
+    const child = new EventEmitter() as EventEmitter & {
+      stdin: PassThrough
+      stdout: PassThrough
+      stderr: PassThrough
+      exitCode: number | null
+      signalCode: string | null
+      killed: boolean
+      kill: () => boolean
+    }
+    child.stdin = new PassThrough()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.exitCode = null
+    child.signalCode = null
+    child.killed = false
+    child.kill = () => true
+    const spawnImpl = ((): typeof child => {
+      queueMicrotask(() => {
+        child.stderr.write('not logged in\n')
+        const err = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })
+        child.stdin.emit('error', err)
+        child.exitCode = 3
+        child.emit('close', 3)
+      })
+      return child
+    }) as unknown as typeof spawn
+    const parts = await collect(new CodexCliModel({ ...config('/nonexistent/codex'), spawnImpl }), [
       { role: 'user', content: [{ type: 'text', text: 'x'.repeat(110_000) }] },
-    ]
-    const uncaught: unknown[] = []
-    const onUncaught = (err: unknown): void => {
-      uncaught.push(err)
-    }
-    process.on('uncaughtException', onUncaught)
-    try {
-      const parts = await collect(new CodexCliModel(config(binary)), big)
-      await new Promise((r) => setTimeout(r, 50))
-      expect(uncaught).toEqual([])
-      expect(parts.some((p) => p.type === 'error')).toBe(true)
-      expect(parts.some((p) => p.type === 'finish')).toBe(true)
-    } finally {
-      process.off('uncaughtException', onUncaught)
-    }
+    ])
+    const error = parts.find((p) => p.type === 'error') as { error: Error } | undefined
+    expect(error?.error.message).toBe('not logged in') // the cause, not the EPIPE symptom
+    expect(parts.some((p) => p.type === 'finish')).toBe(true)
   })
 
   it('kills the child when the stream reader is cancelled', async () => {
