@@ -20,9 +20,21 @@ export function loadSessionMap(path = defaultSessionMapPath()): SessionMap {
   }
 }
 
-export function saveSessionMap(path: string, map: SessionMap): void {
+function writeSessionMapFile(path: string, map: SessionMap): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
   const tmp = `${path}.${process.pid}.tmp`
   writeFileSync(tmp, `${JSON.stringify(map, null, 2)}\n`, { mode: 0o600 })
   renameSync(tmp, path)
+}
+
+/** Re-load, merge `{...fresh, ...changes}`, then atomic write. May throw. */
+export function saveSessionMap(path: string, changes: SessionMap): void {
+  writeSessionMapFile(path, { ...loadSessionMap(path), ...changes })
+}
+
+/** Re-load, drop `key`, then atomic write. May throw. */
+export function deleteSessionMapKey(path: string, key: string): void {
+  const fresh = loadSessionMap(path)
+  if (!(key in fresh)) return
+  writeSessionMapFile(path, Object.fromEntries(Object.entries(fresh).filter(([k]) => k !== key)))
 }

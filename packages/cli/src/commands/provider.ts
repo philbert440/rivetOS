@@ -11,7 +11,10 @@
  *   rivetos ollama pull <model>  — pull a model
  */
 
+import { readFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import { parse as parseYaml } from 'yaml'
 
 interface OllamaModel {
   name: string
@@ -94,18 +97,51 @@ async function handleAnthropic(action: string): Promise<void> {
   }
 }
 
+/** Match the provider: a stray OPENAI_API_KEY must not make `codex login status` succeed. */
+function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
+}
+
+async function resolveCodexBinary(): Promise<string> {
+  try {
+    const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+    const parsed = parseYaml(await readFile(configPath, 'utf-8')) as Record<string, unknown>
+    const providers = (parsed.providers ?? {}) as Record<string, Record<string, unknown>>
+    const binary = providers['codex-cli']?.binary
+    if (typeof binary === 'string' && binary.trim()) return binary.trim()
+  } catch {
+    /* missing or unreadable config — fall back to PATH */
+  }
+  return 'codex'
+}
+
 async function handleCodexCli(action: string): Promise<void> {
   if (action !== 'status') {
     showProviderHelp('codex-cli')
     return
   }
-  const result = await new Promise<{ code: number | null; output: string }>((resolve) => {
-    const child = spawn('codex', ['login', 'status'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  const binary = await resolveCodexBinary()
+  const result = await new Promise<{ code: number | null; output: string }>((done) => {
+    const child = spawn(binary, ['login', 'status'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: envWithoutOpenAI(),
+    })
     let output = ''
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      done({ code: null, output: output.trim() || 'timed out' })
+    }, 5000)
+    timer.unref()
     child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()))
     child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()))
-    child.once('error', (error) => resolve({ code: null, output: error.message }))
-    child.once('close', (code) => resolve({ code, output }))
+    child.once('error', (error) => {
+      clearTimeout(timer)
+      done({ code: null, output: error.message })
+    })
+    child.once('close', (code) => {
+      clearTimeout(timer)
+      done({ code, output })
+    })
   })
   if (result.code === 0) console.log(`✓ Codex CLI: ${result.output.trim() || 'logged in'}`)
   else {

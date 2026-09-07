@@ -192,9 +192,9 @@ providers:
     session: resume
 ```
 
-Runs `codex exec --json` using the same login as the Codex TUI. Install Codex, run `codex login`, and add `@rivetos/provider-codex-cli` to `plugins`; no `OPENAI_API_KEY` is required. `model: default` follows the CLI's configured model.
+Runs `codex exec --json` using the same login as the Codex TUI. Install Codex, run `codex login`, and add `@rivetos/provider-codex-cli` to `plugins`; no `OPENAI_API_KEY` is required. RivetOS unsets every `OPENAI_*` variable in the child environment so a stray API key cannot silently bill the API instead of the ChatGPT subscription. `model: default` follows the CLI's configured model. Codex uses its own tools in the sandbox — RivetOS tools are not forwarded.
 
-Options are `binary`, `model`, `reasoning_effort` (`low` through `xhigh`), `cwd`, `sandbox` (`read-only`, `workspace-write`, or `danger-full-access`), `approve_for_me`, `skip_git_repo_check`, `profile`, `session` (`resume` or `replay`), `context_window`, and `max_output_tokens`. The default sandbox is `read-only`; broaden it deliberately.
+Options are `binary`, `model`, `reasoning_effort` (`low` through `xhigh`), `cwd`, `sandbox` (`read-only`, `workspace-write`, or `danger-full-access`), `approve_for_me`, `skip_git_repo_check`, `profile`, `session` (`resume` or `replay`), `context_window`, and `max_output_tokens`. The default sandbox is `read-only`; broaden it deliberately. `skip_git_repo_check` defaults to `true` only for `read-only`; for `workspace-write` and `danger-full-access` it defaults to `false` (set the key explicitly to override). Prefer an explicit `cwd` when widening the sandbox.
 
 ### Anthropic
 

@@ -1422,6 +1422,11 @@ export async function checkLeafCert(rawConfig: string | null, now?: Date): Promi
 // Provider Connectivity (kept from original)
 // ---------------------------------------------------------------------------
 
+/** Match the provider: a stray OPENAI_API_KEY must not make `codex login status` succeed. */
+function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
+}
+
 async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
@@ -1434,6 +1439,7 @@ async function checkProviderConnectivity(
         execFileSync((config.binary as string | undefined) ?? 'codex', ['login', 'status'], {
           stdio: 'ignore',
           timeout,
+          env: envWithoutOpenAI(),
         })
         return true
       } catch {
