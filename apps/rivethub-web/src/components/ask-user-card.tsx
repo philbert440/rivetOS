@@ -54,8 +54,10 @@ export function AskUserCard(props: {
   const hideFreeText = (screen !== undefined && screen.total > 1) || cardMode !== 'answer'
   // A single-select screen question submits on the option click (den presses
   // the digit) — a footer with a never-enabled button would just be noise.
+  // (only for a multi-question picker: a single screen question still takes a typed answer)
   const hideSubmit =
-    cardMode !== 'answer' || (screen !== undefined && only !== undefined && !only.multiSelect)
+    cardMode !== 'answer' ||
+    (screen !== undefined && screen.total > 1 && only !== undefined && !only.multiSelect)
   const single =
     props.questions.length === 1 && !props.questions[0].multiSelect && cardMode === 'answer'
 
