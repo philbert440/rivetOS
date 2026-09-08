@@ -313,6 +313,35 @@ class AskUserTest {
         assertEquals(AskCardMode.ANSWER, askCardMode(both, AskScreen(0, 1)))
     }
 
+    @Test fun `unmarked option questions keep a custom-answer field`() {
+        val q = AskQuestion(options = listOf(AskOption("Red"), AskOption("Blue"), AskOption("Other")))
+        assertFalse(q.freeText)
+        assertEquals(AskCardMode.ANSWER, askCardMode(q))
+        assertTrue(showsAskCustomAnswer(q))
+        assertTrue(showsAskCustomAnswer(q, AskScreen(0, 1)))
+    }
+
+    @Test fun `freeText with options keeps options and a per-question field`() {
+        val q = AskQuestion(freeText = true, options = listOf(AskOption("A"), AskOption("B")))
+        assertEquals(AskCardMode.ANSWER, askCardMode(q))
+        assertTrue(showsAskCustomAnswer(q))
+        assertTrue(showsAskCustomAnswer(q, AskScreen(0, 1)))
+    }
+
+    @Test fun `freeText without options is a text-only card`() {
+        val q = AskQuestion(question = "Name?", options = emptyList(), freeText = true)
+        assertEquals(AskCardMode.FREE_TEXT, askCardMode(q))
+        assertTrue(showsAskCustomAnswer(q))
+        assertTrue(showsAskCustomAnswer(q, AskScreen(0, 1)))
+    }
+
+    @Test fun `custom-answer is hidden on a multi-question screen`() {
+        val unmarked = AskQuestion(options = listOf(AskOption("Red"), AskOption("Blue")))
+        assertFalse(showsAskCustomAnswer(unmarked, AskScreen(0, 3)))
+        val marked = AskQuestion(freeText = true, options = listOf(AskOption("A")))
+        assertFalse(showsAskCustomAnswer(marked, AskScreen(0, 3)))
+    }
+
     @Test fun `askCardMode is terminal-only for the last single-select of several`() {
         assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(0, 3)))
         assertEquals(AskCardMode.ANSWER, askCardMode(q(), AskScreen(1, 3)))

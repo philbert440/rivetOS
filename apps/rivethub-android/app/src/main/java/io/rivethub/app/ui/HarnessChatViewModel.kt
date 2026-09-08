@@ -72,6 +72,8 @@ import io.rivethub.app.plane.nativeImageTurn
 import io.rivethub.app.plane.nativeTurnModels
 import io.rivethub.app.plane.optimisticUserText
 import io.rivethub.app.plane.readyAttachments
+import io.rivethub.app.plane.reconcileSummaryControls
+import io.rivethub.app.plane.restoreQueuedComposer
 import io.rivethub.app.plane.harnessGate
 import io.rivethub.app.plane.nextInjectTry
 import io.rivethub.app.plane.parseSessionMode
@@ -460,8 +462,12 @@ class HarnessChatViewModel(
         viewModelScope.launch {
             val item = pump.cancel(id) ?: return@launch
             _state.update {
-                val rest = if (it.composer.isBlank()) "" else "\n" + it.composer
-                it.copy(composer = item.text + rest, queued = pump.queued)
+                val restored = restoreQueuedComposer(it.composer, it.attachments, item.text, item.attachments)
+                it.copy(
+                    composer = restored.text,
+                    attachments = restored.attachments,
+                    queued = pump.queued,
+                )
             }
         }
     }
@@ -480,11 +486,15 @@ class HarnessChatViewModel(
             } catch (e: Throwable) {
                 if (!isTurnInFlight(e)) {
                     // The pump dropped the item on a hard failure: say so and hand
-                    // the text back instead of letting it vanish from the strip.
+                    // the text and chips back instead of letting them vanish.
                     AndroidLogger.warn("RivetHub", "inject failed: ${e.javaClass.simpleName}: ${e.message}", e)
                     _state.update {
-                        val rest = if (it.composer.isBlank()) "" else "\n" + it.composer
-                        it.copy(error = e.message ?: e.javaClass.simpleName, composer = item.text + rest)
+                        val restored = restoreQueuedComposer(it.composer, it.attachments, item.text, item.attachments)
+                        it.copy(
+                            error = e.message ?: e.javaClass.simpleName,
+                            composer = restored.text,
+                            attachments = restored.attachments,
+                        )
                     }
                 }
             }
@@ -740,6 +750,7 @@ class HarnessChatViewModel(
                         )
                     }
                     _state.update { it.copy(sheet = event.capabilities.toSheet()) }
+                    applySummaryControls(null, null, null)
                     recomputeGate()
                 }
             }
@@ -1228,23 +1239,16 @@ class HarnessChatViewModel(
 
     private fun applySummaryControls(transport: String?, model: String?, effort: String?) {
         _state.update { st ->
-            val nextTransport = transport ?: st.transport
-            val sheet = st.sheet
-            val native = nativeTurnModels(sheet, nextTransport)
-            val nextModel = when {
-                native.isEmpty() -> st.model
-                native.any { it.id == st.model } -> st.model
-                native.any { it.id == model } -> model!!
-                else -> native.find { it.default }?.id ?: native.firstOrNull()?.id ?: st.model
-            }
-            val efforts = native.find { it.id == nextModel }?.efforts.orEmpty()
-            val nextEffort = when {
-                efforts.isEmpty() -> st.effort
-                efforts.any { it.id == st.effort } -> st.effort
-                efforts.any { it.id == effort } -> effort!!
-                else -> efforts.find { it.default }?.id ?: efforts.firstOrNull()?.id ?: st.effort
-            }
-            st.copy(transport = nextTransport, model = nextModel, effort = nextEffort)
+            val next = reconcileSummaryControls(
+                sheet = st.sheet,
+                currentTransport = st.transport,
+                currentModel = st.model,
+                currentEffort = st.effort,
+                incomingTransport = transport,
+                incomingModel = model,
+                incomingEffort = effort,
+            )
+            st.copy(transport = next.transport, model = next.model, effort = next.effort)
         }
     }
 

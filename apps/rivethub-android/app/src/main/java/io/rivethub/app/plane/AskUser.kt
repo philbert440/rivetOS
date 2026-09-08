@@ -183,6 +183,20 @@ fun askCardMode(question: AskQuestion, screen: AskScreen? = null): AskCardMode {
 }
 
 /**
+ * Type-your-own-answer field on an answerable question. Unmarked option
+ * questions keep the historical custom-answer entry; freeText questions
+ * with options get a per-question field. den 400s free text on a
+ * multi-question screen-read picker, so that stays hidden. FREE_TEXT
+ * (marker, no options) is the field-only card.
+ */
+fun showsAskCustomAnswer(question: AskQuestion, screen: AskScreen? = null): Boolean {
+    val mode = askCardMode(question, screen)
+    if (mode == AskCardMode.FREE_TEXT) return true
+    if (mode != AskCardMode.ANSWER) return false
+    return screen == null || screen.total <= 1
+}
+
+/**
  * den's `bad_request` text (e.g. "answer this one in the terminal") belongs on
  * the ask card's error line; any other failure is null here and goes to the
  * composer strip as before.

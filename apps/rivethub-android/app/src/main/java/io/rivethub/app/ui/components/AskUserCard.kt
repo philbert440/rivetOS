@@ -20,6 +20,7 @@ import io.rivethub.app.R
 import io.rivethub.app.plane.AskCardMode
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.askCardMode
+import io.rivethub.app.plane.showsAskCustomAnswer
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
@@ -43,8 +44,6 @@ fun AskUserCardView(
     val screen = card.screen
     val only = card.questions.singleOrNull()
     val cardMode = if (only != null) askCardMode(only, screen) else AskCardMode.ANSWER
-    val hideFreeText = (screen != null && screen.total > 1) ||
-        (cardMode != AskCardMode.ANSWER && cardMode != AskCardMode.FREE_TEXT)
     val hideSubmit = (cardMode != AskCardMode.ANSWER && cardMode != AskCardMode.FREE_TEXT) ||
         (screen != null && screen.total > 1 && only != null && !only.multiSelect && cardMode != AskCardMode.FREE_TEXT)
     val clickSubmits = screen != null && screen.total > 1 && only != null &&
@@ -139,7 +138,7 @@ fun AskUserCardView(
                         }
                         opt.description?.let { Text(it, color = colors.inkDim, style = RivetType.xs) }
                     }
-                    if (!hideFreeText && q.freeText) {
+                    if (showsAskCustomAnswer(q, screen)) {
                         RivetField(
                             value = freeByQ[qi].orEmpty(),
                             onValueChange = { if (enabled) freeByQ = freeByQ + (qi to it) },
