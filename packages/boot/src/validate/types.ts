@@ -83,6 +83,7 @@ export const KNOWN_DEN_KEYS = new Set([
   'files_root',
   'files_open',
   'devices',
+  'advertise_mdns',
 ])
 
 export const KNOWN_DEN_DEVICES_KEYS = new Set([
