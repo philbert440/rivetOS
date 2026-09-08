@@ -384,9 +384,11 @@ class HarnessChatViewModel(
                         AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
                         publishMachine()
                         _state.update {
+                            val restored = restoreQueuedComposer(it.composer, it.attachments, keptComposer, enqueueAtts)
                             it.copy(
                                 error = e.message ?: e.javaClass.simpleName,
-                                composer = if (it.composer.isBlank()) keptComposer else it.composer,
+                                composer = restored.text,
+                                attachments = restored.attachments,
                             )
                         }
                     }
