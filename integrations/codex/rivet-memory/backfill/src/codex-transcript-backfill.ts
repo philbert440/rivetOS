@@ -595,19 +595,30 @@ export async function runSession(
   if (plan.rows.length === 0) return { inserted: 0, skipped: 0 }
 
   if (dryRun) {
-    const conv = await client.query(
-      `SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2`,
-      [plan.sessionKey, CAPTURE_AGENT],
-    )
-    if (conv.rows.length === 0) {
-      return splitByEventId(plan.rows, new Set<string>())
+    // SET LOCAL only lives for this transaction; a session SET would leak
+    // read-only onto every other client sharing the PGlite session.
+    await client.query('BEGIN')
+    try {
+      await client.query('SET LOCAL default_transaction_read_only = on')
+      const conv = await client.query(
+        `SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2`,
+        [plan.sessionKey, CAPTURE_AGENT],
+      )
+      if (conv.rows.length === 0) {
+        await client.query('ROLLBACK')
+        return splitByEventId(plan.rows, new Set<string>())
+      }
+      const existing = await client.query(
+        `SELECT metadata->>'event_id' AS event_id FROM ros_messages
+          WHERE conversation_id = $1 AND metadata->>'event_id' = ANY($2::text[])`,
+        [conv.rows[0].id, plan.rows.map((r) => r.eventId)],
+      )
+      await client.query('ROLLBACK')
+      return splitByEventId(plan.rows, new Set(existing.rows.map((r) => String(r.event_id))))
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw err
     }
-    const existing = await client.query(
-      `SELECT metadata->>'event_id' AS event_id FROM ros_messages
-        WHERE conversation_id = $1 AND metadata->>'event_id' = ANY($2::text[])`,
-      [conv.rows[0].id, plan.rows.map((r) => r.eventId)],
-    )
-    return splitByEventId(plan.rows, new Set(existing.rows.map((r) => String(r.event_id))))
   }
 
   await client.query('BEGIN')
@@ -785,9 +796,6 @@ async function main(): Promise<number> {
     const { default: pg } = await import('pg')
     const c = new pg.Client({ connectionString: resolvePgUrl(opts.pgUrl) })
     await c.connect()
-    if (opts.dryRun) {
-      await c.query('SET default_transaction_read_only = on')
-    }
     client = c
     close = async () => {
       await c.end()

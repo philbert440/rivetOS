@@ -60,7 +60,7 @@ class RivetMemoryClient:
             min_size=min_size,
             max_size=max_size,
             timeout=timeout,
-            kwargs={"autocommit": False},
+            kwargs={"autocommit": False, "prepare_threshold": None},
             configure=_set_utf8,
             open=False,
         )
