@@ -9,6 +9,7 @@ const boot = vi.hoisted(() => ({
   migrateEmbedded: vi.fn(),
   readEmbeddedPgLock: vi.fn(),
   embeddedPgLockAlive: vi.fn(),
+  resolveEnvVars: <T>(obj: T): T => obj,
 }))
 
 const spawnMock = vi.hoisted(() => vi.fn())
@@ -31,14 +32,16 @@ vi.mock('pg', () => ({ default: { Client: pg.Client } }))
 
 import { runDbMigrate, runDbStatus } from './db.js'
 
-const PGURL = 'postgres://postgres:postgres@127.0.0.1:5433/postgres'
+// Config port 5433 vs owner lock/handle port 5599 — Client + status must use the owner.
+const CONFIG_PGURL = 'postgres://postgres:postgres@127.0.0.1:5433/postgres'
+const OWNER_PGURL = 'postgres://postgres:postgres@127.0.0.1:5599/postgres'
 const CONFIG = { memory: { postgres: { embedded: {} } } }
 const RESOLVED = {
   dataDir: '/tmp/pglite-db-status',
   port: 5433,
   autoMigrate: true,
   maxConnections: 96,
-  pgUrl: PGURL,
+  pgUrl: CONFIG_PGURL,
   liteMode: true,
 }
 import { mkdtempSync, writeFileSync } from 'node:fs'
@@ -65,7 +68,7 @@ function closeHandle(owned: boolean): {
   close: ReturnType<typeof vi.fn>
 } {
   return {
-    pgUrl: PGURL,
+    pgUrl: OWNER_PGURL,
     owned,
     close: vi.fn().mockResolvedValue(undefined),
   }
@@ -79,7 +82,7 @@ beforeEach(() => {
   boot.migrateEmbedded.mockReset().mockResolvedValue(undefined)
   boot.readEmbeddedPgLock
     .mockReset()
-    .mockReturnValue({ pid: 4242, port: 5433, startedAt: '2026-01-01' })
+    .mockReturnValue({ pid: 4242, port: 5599, startedAt: '2026-01-01' })
   boot.embeddedPgLockAlive.mockReset().mockReturnValue(true)
   spawnMock.mockReset().mockImplementation(() => fakeChild(0))
   resolveScript.mockReturnValue('/fake/migrate.js')
@@ -103,9 +106,9 @@ describe('runDbMigrate embedded', () => {
     expect(boot.acquireEmbeddedPg).toHaveBeenCalled()
     expect(boot.applyEmbeddedPgUrl).toHaveBeenCalledWith(
       expect.objectContaining({ memory: expect.anything() }),
-      PGURL,
+      OWNER_PGURL,
     )
-    expect(boot.migrateEmbedded).toHaveBeenCalledWith(PGURL)
+    expect(boot.migrateEmbedded).toHaveBeenCalledWith(OWNER_PGURL)
     expect(handle.close).toHaveBeenCalled()
     expect(spawnMock).not.toHaveBeenCalled()
 
@@ -130,7 +133,7 @@ describe('runDbMigrate embedded', () => {
     expect(spawnMock).toHaveBeenCalled()
     expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/fake/migrate.js', '--dir', '/x/migrations'])
     const env = spawnMock.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv
-    expect(env.RIVETOS_PG_URL).toBe(PGURL)
+    expect(env.RIVETOS_PG_URL).toBe(OWNER_PGURL)
     expect(handle.close).toHaveBeenCalled()
     // order: acquire < apply < spawn < close
     expect(boot.acquireEmbeddedPg.mock.invocationCallOrder[0]).toBeLessThan(
@@ -155,7 +158,7 @@ describe('runDbMigrate embedded', () => {
     expect(boot.migrateEmbedded).not.toHaveBeenCalled()
     expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/fake/migrate.js', '--baseline'])
     const env = spawnMock.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv
-    expect(env.RIVETOS_PG_URL).toBe(PGURL)
+    expect(env.RIVETOS_PG_URL).toBe(OWNER_PGURL)
     expect(handle.close).toHaveBeenCalled()
   })
 
@@ -205,11 +208,14 @@ describe('runDbStatus embedded', () => {
     expect(text).toContain('[db status] embedded PGlite')
     expect(text).toContain('data_dir: /tmp/pglite-db-status')
     expect(text).toContain('owner_pid: 4242 (alive)')
-    expect(text).toContain('port: 5433')
+    expect(text).toContain('port: 5599')
+    expect(text).not.toContain('port: 5433')
     expect(text).toContain('migrations_applied: 1')
     expect(text).toContain('0001_init.sql')
-    // dials the handle's URL (the owner's port from the lock), not anything from config
-    expect(pg.Client).toHaveBeenCalledWith({ connectionString: handle.pgUrl })
+    // dials the handle's URL (the owner's port from the lock), not the config URL
+    expect(handle.pgUrl).toBe(OWNER_PGURL)
+    expect(pg.Client).toHaveBeenCalledWith({ connectionString: OWNER_PGURL })
+    expect(pg.Client).not.toHaveBeenCalledWith({ connectionString: CONFIG_PGURL })
     expect(boot.applyEmbeddedPgUrl).toHaveBeenCalled()
     expect(handle.close).toHaveBeenCalled()
     expect(boot.acquireEmbeddedPg.mock.invocationCallOrder[0]).toBeLessThan(

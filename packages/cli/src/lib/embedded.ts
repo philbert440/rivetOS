@@ -14,6 +14,7 @@ import {
   applyEmbeddedPgUrl,
   loadConfig,
   resolveEmbeddedPg,
+  resolveEnvVars,
   type EmbeddedPgHandle,
   type RivetConfig,
 } from '@rivetos/boot'
@@ -55,7 +56,9 @@ export function readEmbeddedConfig(
     return undefined
   }
   if (!parsed || typeof parsed !== 'object') return undefined
-  const config = parsed as RivetConfig
+  // Same ${ENV_VAR} expansion as loadConfig — without it, data_dir: '${HOME}/…'
+  // is passed through literally and acquire opens a different directory than boot.
+  const config = resolveEnvVars(parsed as RivetConfig)
   const resolved = resolveEmbeddedPg(config)
   return resolved ? { config, resolved } : undefined
 }

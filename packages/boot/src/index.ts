@@ -29,6 +29,7 @@ import {
 // Re-export config types for consumers
 export {
   loadConfig,
+  resolveEnvVars,
   type RivetConfig,
   type MemoryPostgresEmbeddedSection,
   ConfigValidationError,

@@ -9,6 +9,7 @@ const boot = vi.hoisted(() => ({
   migrateEmbedded: vi.fn(),
   readEmbeddedPgLock: vi.fn(),
   embeddedPgLockAlive: vi.fn(),
+  resolveEnvVars: <T>(obj: T): T => obj,
   boot: vi.fn(),
 }))
 
