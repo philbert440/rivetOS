@@ -22,6 +22,7 @@ import {
   type MemoryStatsResponse,
 } from '@rivetos/types'
 import type pg from 'pg'
+import { queryEmbeddingHealth, queryCompactionHealth, queryQueueHealth } from '../health.js'
 import {
   SearchEngine,
   type SearchEngineConfig,
@@ -34,6 +35,36 @@ import { applyWindowArgs } from '../tools/helpers.js'
  *  cache survive across HTTP requests. Keyed by pool identity (owner vs each
  *  routed user). First config for a given pool wins. */
 const enginesByPool = new WeakMap<pg.Pool, SearchEngine>()
+
+/** Cache successful diagnostics for 60 s; pending work always shares one promise.
+ * Separate caches keep worker queries behind the owner gate even if pools alias.
+ * Rejections are evicted so a transient database failure can recover immediately.
+ */
+function cachePerPool<T>(query: (pool: pg.Pool) => Promise<T>): (pool: pg.Pool) => Promise<T> {
+  const cache = new WeakMap<pg.Pool, { promise: Promise<T>; expiresAt: number }>()
+  return (pool) => {
+    const cached = cache.get(pool)
+    if (cached && Date.now() < cached.expiresAt) return cached.promise
+    const entry = {
+      promise: query(pool).then(
+        (result) => {
+          entry.expiresAt = Date.now() + 60_000
+          return result
+        },
+        (error: unknown) => {
+          cache.delete(pool)
+          throw error
+        },
+      ),
+      expiresAt: Infinity,
+    }
+    cache.set(pool, entry)
+    return entry.promise
+  }
+}
+const cachedEmbeddingHealth = cachePerPool(queryEmbeddingHealth)
+const cachedCompactionHealth = cachePerPool(queryCompactionHealth)
+const cachedQueueHealth = cachePerPool((pool) => queryQueueHealth((sql) => pool.query(sql)))
 
 function engineForPool(pool: pg.Pool, config: SearchEngineConfig): SearchEngine {
   const cached = enginesByPool.get(pool)
@@ -94,8 +125,13 @@ function emptyFor(rawUrl: string): unknown {
     } satisfies MemoryStatsResponse
   }
   return {
-    status: 'ok',
-    embeddings: { status: 'unavailable' },
+    status: 'degraded',
+    observedAt: new Date().toISOString(),
+    queueStatus: 'unavailable',
+    embeddings: {
+      status: 'unavailable',
+      impact: 'Memory schema is unavailable; health could not be checked.',
+    },
     embedQueueDepth: 0,
   } satisfies MemoryHealthResponse
 }
@@ -166,7 +202,13 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
         if (head === 'search') return await handleSearch(url, res, search, pool, embedOk)
         if (head === 'browse') return await handleBrowse(url, res, pool)
         if (head === 'stats') return await handleStats(res, pool)
-        if (head === 'health') return await handleHealth(res, pool, embedOk)
+        if (head === 'health')
+          return await handleHealth(
+            res,
+            pool,
+            engineForPool(pool, engineConfig),
+            routed.kind === 'owner',
+          )
         return json(res, 404, { error: 'unknown memory resource' })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -320,12 +362,7 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
       `SELECT COUNT(*)::text AS n FROM ros_messages WHERE role = 'tool' OR tool_name IS NOT NULL`,
     ),
     pool.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ros_summaries`),
-    pool.query<{ n: string }>(`
-      SELECT (
-        (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 0)
-        + (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND content IS NOT NULL)
-      )::text AS n
-    `),
+    cachedEmbeddingHealth(pool),
     pool.query<{ n: string }>(`SELECT COUNT(embedding)::text AS n FROM ros_messages`),
     pool.query<{ tool: string; n: string }>(`
       SELECT tool_name AS tool, COUNT(*)::text AS n
@@ -356,9 +393,9 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
     messages: Number(msg.rows[0]?.n ?? 0),
     toolCalls: Number(tools.rows[0]?.n ?? 0),
     summaries: Number(sums.rows[0]?.n ?? 0),
-    embedQueueDepth: Number(queue.rows[0]?.n ?? 0),
+    embedQueueDepth: Number(queue.rows[0]?.msg_queue ?? 0) + Number(queue.rows[0]?.sum_queue ?? 0),
     embeddedMessages: Number(embedded.rows[0]?.n ?? 0),
-    failedEmbeddings: 0,
+    failedEmbeddings: Number(queue.rows[0]?.failed ?? 0),
     topTools: topTools.rows.map((r) => ({ tool: r.tool, count: Number(r.n) })),
     recentSessions: recent.rows.map((r) => ({
       sessionId: r.session_key,
@@ -371,23 +408,59 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
   json(res, 200, body)
 }
 
-async function handleHealth(res: ServerResponse, pool: pg.Pool, embedOk: boolean): Promise<void> {
-  const queue = await pool.query<{ n: string }>(`
-    SELECT (
-      (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND content IS NOT NULL AND LENGTH(content) > 0)
-      + (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND content IS NOT NULL)
-    )::text AS n
-  `)
-  const embedQueueDepth = Number(queue.rows[0]?.n ?? 0)
+async function handleHealth(
+  res: ServerResponse,
+  pool: pg.Pool,
+  engine: SearchEngine,
+  owner: boolean,
+): Promise<void> {
+  const [embedding, counts, compaction, queues] = await Promise.all([
+    engine.checkEmbeddingHealth(),
+    cachedEmbeddingHealth(pool),
+    cachedCompactionHealth(pool),
+    owner ? cachedQueueHealth(pool) : Promise.resolve(null),
+  ])
+  const row = counts.rows[0]
+  const b = compaction.rows[0]
+  const failedEmbeddings = Number(row.failed)
+  const queueRows = queues?.map((q) => ({
+    task: q.task,
+    pending: Number(q.pending),
+    running: Number(q.running ?? 0),
+    scheduled: Number(q.scheduled ?? 0),
+    dead: Number(q.dead),
+    oldestPendingMinutes: q.oldest_pending_age_min,
+  }))
   const body: MemoryHealthResponse = {
-    status: embedOk ? 'ok' : 'degraded',
-    embeddings: embedOk
-      ? { status: 'ok' }
+    status:
+      embedding.available &&
+      Number(row.recent_failed) === 0 &&
+      !queues?.some((q) => Number(q.recent_dead) > 0)
+        ? 'ok'
+        : 'degraded',
+    observedAt: new Date().toISOString(),
+    embeddings: embedding.available
+      ? { status: 'ok', checkedAt: embedding.checkedAt }
       : {
           status: 'unavailable',
+          checkedAt: embedding.checkedAt,
+          error: embedding.reason,
           impact: 'Keyword matching still works; meaning-based ranking is offline.',
         },
-    embedQueueDepth,
+    embedQueueDepth: Number(row.msg_queue) + Number(row.sum_queue),
+    failedEmbeddings,
+    skippedEmbeddings: Number(row.unembeddable),
+    queueStatus: !owner ? 'restricted' : queues === null ? 'unavailable' : 'available',
+    ...(queueRows ? { queues: queueRows } : {}),
+    compaction: {
+      eligible: Number(b.eligible_msgs),
+      activeTail: Number(b.active_tail_msgs),
+      belowFloor: Number(b.below_floor_msgs),
+    },
+    capture: {
+      status: 'unknown',
+      impact: 'Capture progress is not measured by this endpoint yet.',
+    },
   }
   json(res, 200, body)
 }

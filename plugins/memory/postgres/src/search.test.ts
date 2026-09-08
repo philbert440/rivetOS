@@ -695,3 +695,82 @@ describe('hnsw.ef_search truncation', () => {
     expect(clientQueries[1]).toBe('SET LOCAL hnsw.ef_search = 40')
   })
 })
+
+it('probes configured embeddings, coalesces requests and refreshes failure observations', async () => {
+  const fetcher = vi.fn().mockRejectedValue(new Error('offline'))
+  vi.stubGlobal('fetch', fetcher)
+  const engine = new SearchEngine({} as pg.Pool, {
+    embedEndpoint: 'http://192.0.2.1',
+    embedModel: 'test',
+  })
+  const [a, b] = await Promise.all([engine.checkEmbeddingHealth(), engine.checkEmbeddingHealth()])
+  expect(a.available).toBe(false)
+  expect(a.reason).toBe('network')
+  expect(b).toEqual(a)
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  const date = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000)
+  fetcher.mockResolvedValue({ ok: true, json: async () => ({ data: [{ embedding: [0.1, 0.2] }] }) })
+  expect((await engine.checkEmbeddingHealth()).available).toBe(true)
+  expect(fetcher).toHaveBeenCalledTimes(2)
+  date.mockRestore()
+})
+
+it('caps the health probe at five seconds', async () => {
+  vi.useFakeTimers()
+  try {
+    vi.stubGlobal(
+      'fetch',
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal!.addEventListener('abort', () =>
+            reject(new DOMException('Aborted', 'AbortError')),
+          )
+        }),
+    )
+    const eng = engine(fakePool(), {
+      embedEndpoint: 'http://192.0.2.1',
+      embedModel: 'test',
+      embedTimeoutMs: 8000,
+    })
+    let settled = false
+    const probe = eng.checkEmbeddingHealth().then((result) => {
+      settled = true
+      return result
+    })
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await probe).toMatchObject({ available: false, reason: 'timeout' })
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('bypasses search vectors and leaves the search cache intact', async () => {
+  stubEmbedOk()
+  const eng = engine(fakePool(), { embedEndpoint: 'http://192.0.2.1', embedModel: 'test' })
+  await eng.search('memory health check', { mode: 'vector' })
+  const fetcher = vi.fn().mockRejectedValue(new Error('offline'))
+  vi.stubGlobal('fetch', fetcher)
+  expect((await eng.checkEmbeddingHealth()).available).toBe(false)
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  await eng.search('memory health check', { mode: 'vector' })
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(eng.getRuntimeStats().queryEmbedCacheHits).toBe(1)
+})
+
+it('does not seed search vectors from a health probe or await probes during search', async () => {
+  stubEmbedOk()
+  const eng = engine(fakePool(), { embedEndpoint: 'http://192.0.2.1', embedModel: 'test' })
+  await eng.checkEmbeddingHealth()
+  const probe = vi.spyOn(eng, 'checkEmbeddingHealth').mockImplementation(() => {
+    throw new Error('search must not probe')
+  })
+  const fetcher = vi.fn().mockRejectedValue(new Error('offline'))
+  vi.stubGlobal('fetch', fetcher)
+  await eng.search('memory health check', { mode: 'vector' })
+  await eng.search('another query', { mode: 'hybrid' })
+  expect(fetcher).toHaveBeenCalledTimes(2)
+  expect(probe).not.toHaveBeenCalled()
+  expect(eng.getRuntimeStats().queryEmbedCacheHits).toBe(0)
+})
