@@ -6,6 +6,7 @@
  * Usage:
  *   rivetos plugins list       Show all configured plugins with status
  *   rivetos plugins sync       Refresh per-user TUI plugin installs from source
+ *   rivetos plugins install    Detect harnesses and install memory capture
  */
 
 import { readFile, readdir, access } from 'node:fs/promises'
@@ -133,13 +134,20 @@ export default async function plugins(): Promise<void> {
     console.log('  list       Show all plugins with status')
     console.log('  sync       Refresh TUI plugin installs (claude-code/grok/hermes) from source')
     console.log('             [--dry-run] [--tui <name>] [--root <dir>]')
+    console.log('  install    Detect harnesses and install memory capture + recall')
+    console.log('             [--harness <id>…] [--dry-run] [--root <dir>] [--force]')
     return
   }
 
   switch (subcommand) {
     case 'sync': {
       const { default: pluginsSync } = await import('./plugins-sync.js')
-      pluginsSync(process.argv.slice(4))
+      await pluginsSync(process.argv.slice(4))
+      break
+    }
+    case 'install': {
+      const { default: pluginsInstall } = await import('./plugins-install.js')
+      await pluginsInstall(process.argv.slice(4))
       break
     }
     case 'list': {

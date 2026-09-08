@@ -181,6 +181,7 @@ export function helpText(): string {
   Plugins:
     rivetos plugins list                Show configured plugins with status
     rivetos plugins sync                Refresh TUI plugin installs from source
+    rivetos plugins install             Detect harnesses and install memory capture
     rivetos plugin init <type> <name>   Scaffold a new plugin
 
   Workflows:

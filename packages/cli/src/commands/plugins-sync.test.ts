@@ -13,7 +13,7 @@ const EXCLUDES = [
   '.pytest_cache',
 ]
 
-const { execFileSyncMock, mkdirSyncMock, vfs } = vi.hoisted(() => {
+const { execFileAsyncMock, mkdirSyncMock, vfs } = vi.hoisted(() => {
   const dirs = new Set<string>()
   const files = new Map<string, string>()
   // A real fs has implicit parent directories: when /a/b/c exists, every
@@ -23,7 +23,7 @@ const { execFileSyncMock, mkdirSyncMock, vfs } = vi.hoisted(() => {
     for (let i = p.indexOf('/', 1); i > 0; i = p.indexOf('/', i + 1)) dirs.add(p.slice(0, i))
   }
   return {
-    execFileSyncMock: vi.fn((_cmd: string, _args: string[]): string => ''),
+    execFileAsyncMock: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
     mkdirSyncMock: vi.fn(),
     vfs: {
       dirs,
@@ -44,7 +44,7 @@ const { execFileSyncMock, mkdirSyncMock, vfs } = vi.hoisted(() => {
   }
 })
 
-vi.mock('node:child_process', () => ({ execFileSync: execFileSyncMock }))
+vi.mock('../lib/harness-detect.js', () => ({ execFileAsync: execFileAsyncMock }))
 vi.mock('node:os', () => ({ homedir: () => '/home/test' }))
 vi.mock('node:fs', () => ({
   existsSync: (p: string) => vfs.dirs.has(p) || vfs.files.has(p),
@@ -72,7 +72,9 @@ vi.mock('node:fs', () => ({
   readFileSync: (p: string) => {
     const content = vfs.files.get(p)
     if (content === undefined) {
-      const err = new Error(`ENOENT: no such file or directory, open '${p}'`) as NodeJS.ErrnoException
+      const err = new Error(
+        `ENOENT: no such file or directory, open '${p}'`,
+      ) as NodeJS.ErrnoException
       err.code = 'ENOENT'
       throw err
     }
@@ -84,14 +86,15 @@ import pluginsSync, { parseItemized, rsyncDirArgs, rsyncFileArgs } from './plugi
 
 beforeEach(() => {
   vfs.reset()
-  execFileSyncMock.mockClear()
+  execFileAsyncMock.mockClear()
+  execFileAsyncMock.mockResolvedValue({ stdout: '', stderr: '', code: 0, timedOut: false })
   mkdirSyncMock.mockClear()
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 
 function rsyncCalls(): string[][] {
-  return execFileSyncMock.mock.calls
+  return execFileAsyncMock.mock.calls
     .filter(([cmd]) => cmd === 'rsync')
     .map(([, args]) => args as string[])
 }
@@ -161,7 +164,7 @@ describe('parseItemized', () => {
 })
 
 describe('plugins sync — rsync argv per mapping', () => {
-  it('claude-code: mirrors each installed cache version with --delete', () => {
+  it('claude-code: mirrors each installed cache version with --delete', async () => {
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(`${ROOT}/integrations/claude-code/rivet-memory`)
     vfs.file(
@@ -171,7 +174,7 @@ describe('plugins sync — rsync argv per mapping', () => {
     vfs.dir(`${HOME}/.claude`)
     vfs.dir(`${HOME}/.claude/plugins/cache/rivetos/rivet-memory/1.0.0`)
 
-    pluginsSync(['--root', ROOT, '--tui', 'claude-code'])
+    await pluginsSync(['--root', ROOT, '--tui', 'claude-code'])
 
     expect(rsyncCalls()).toEqual([
       [
@@ -186,7 +189,7 @@ describe('plugins sync — rsync argv per mapping', () => {
     ])
   })
 
-  it('grok: skills --delete, commands without, single-file hooks + GROK.md renames', () => {
+  it('grok: skills --delete, commands without, single-file hooks + GROK.md renames', async () => {
     const plugin = `${ROOT}/integrations/grok/rivet-memory`
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(plugin)
@@ -199,7 +202,7 @@ describe('plugins sync — rsync argv per mapping', () => {
     vfs.file(`${plugin}/GROK.md`, '# grok')
     vfs.dir(`${HOME}/.grok`)
 
-    pluginsSync(['--root', ROOT, '--tui', 'grok'])
+    await pluginsSync(['--root', ROOT, '--tui', 'grok'])
 
     expect(rsyncCalls()).toEqual([
       [
@@ -217,13 +220,13 @@ describe('plugins sync — rsync argv per mapping', () => {
     ])
   })
 
-  it('hermes: two managed dirs with --delete, no rivet-den when absent', () => {
+  it('hermes: two managed dirs with --delete, no rivet-den when absent', async () => {
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(`${ROOT}/integrations/hermes/rivet-memory`)
     vfs.dir(`${ROOT}/integrations/hermes/memory-recall`)
     vfs.dir(`${HOME}/.hermes`)
 
-    pluginsSync(['--root', ROOT, '--tui', 'hermes'])
+    await pluginsSync(['--root', ROOT, '--tui', 'hermes'])
 
     expect(rsyncCalls()).toEqual([
       [
@@ -247,12 +250,12 @@ describe('plugins sync — rsync argv per mapping', () => {
     ])
   })
 
-  it('--dry-run maps to rsync -n and never mkdirs', () => {
+  it('--dry-run maps to rsync -n and never mkdirs', async () => {
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(`${ROOT}/integrations/hermes/rivet-memory`)
     vfs.dir(`${HOME}/.hermes`)
 
-    pluginsSync(['--root', ROOT, '--tui', 'hermes', '--dry-run'])
+    await pluginsSync(['--root', ROOT, '--tui', 'hermes', '--dry-run'])
 
     const calls = rsyncCalls()
     expect(calls).toHaveLength(1)
@@ -260,40 +263,42 @@ describe('plugins sync — rsync argv per mapping', () => {
     expect(mkdirSyncMock).not.toHaveBeenCalled()
   })
 
-  it('real run creates dest dirs before spawning', () => {
+  it('real run creates dest dirs before spawning', async () => {
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(`${ROOT}/integrations/hermes/rivet-memory`)
     vfs.dir(`${HOME}/.hermes`)
 
-    pluginsSync(['--root', ROOT, '--tui', 'hermes'])
+    await pluginsSync(['--root', ROOT, '--tui', 'hermes'])
 
     expect(mkdirSyncMock).toHaveBeenCalledWith(`${HOME}/.hermes/plugins/rivet_memory`, {
       recursive: true,
     })
     expect(rsyncCalls()[0]).not.toContain('-n')
+    expect(execFileAsyncMock.mock.calls[0][2]).toMatchObject({ timeoutMs: 60_000 })
   })
 })
 
 describe('missing rsync binary', () => {
-  it('fails with a clear install hint on ENOENT — real run AND dry-run', () => {
+  it('fails with a clear install hint on ENOENT — real run AND dry-run', async () => {
     vfs.dir(`${ROOT}/integrations`)
     vfs.dir(`${ROOT}/integrations/hermes/rivet-memory`)
     vfs.dir(`${HOME}/.hermes`)
-    execFileSyncMock.mockImplementation(() => {
-      const err = new Error('spawnSync rsync ENOENT') as NodeJS.ErrnoException
-      err.code = 'ENOENT'
-      throw err
-    })
+    execFileAsyncMock.mockImplementation(async () => ({
+      stdout: '',
+      stderr: 'spawn rsync ENOENT',
+      code: null,
+      timedOut: false,
+    }))
     try {
-      expect(() => pluginsSync(['--root', ROOT, '--tui', 'hermes'])).toThrow(
+      await expect(pluginsSync(['--root', ROOT, '--tui', 'hermes'])).rejects.toThrow(
         /rsync not found on PATH — install rsync/,
       )
       // dry-run must hit the same binary check (rsync -n still needs rsync)
-      expect(() => pluginsSync(['--root', ROOT, '--tui', 'hermes', '--dry-run'])).toThrow(
+      await expect(pluginsSync(['--root', ROOT, '--tui', 'hermes', '--dry-run'])).rejects.toThrow(
         /rsync not found on PATH — install rsync/,
       )
     } finally {
-      execFileSyncMock.mockImplementation(() => '')
+      execFileAsyncMock.mockResolvedValue({ stdout: '', stderr: '', code: 0, timedOut: false })
     }
   })
 })

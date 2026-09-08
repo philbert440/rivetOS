@@ -380,7 +380,7 @@ export default async function update(): Promise<void> {
   // installed copies — a stale den-hook silently broke session linkage once.
   try {
     const { default: pluginsSync } = await import('./plugins-sync.js')
-    pluginsSync(['--root', ROOT])
+    await pluginsSync(['--root', ROOT])
   } catch (err: unknown) {
     console.warn(`  ⚠️  plugins sync failed (non-fatal): ${(err as Error).message}`)
   }
@@ -887,7 +887,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
 
       try {
         const { default: pluginsSync } = await import('./plugins-sync.js')
-        pluginsSync(['--root', ROOT])
+        await pluginsSync(['--root', ROOT])
       } catch (err: unknown) {
         console.warn(`  ⚠️  plugins sync failed (non-fatal): ${(err as Error).message}`)
       }
