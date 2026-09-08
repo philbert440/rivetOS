@@ -51,6 +51,21 @@ const FIXTURE = path.join(
   'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
 )
 
+const mappingDir = mkdtempSync(path.join(tmpdir(), 'codex-bindings-'))
+try {
+  const bindingsFile = path.join(mappingDir, 'codex-threads.json')
+  const room = '11111111-1111-4111-8111-111111111111'
+  writeFileSync(bindingsFile, JSON.stringify({ version: 1, bindings: [{ id: room, threadId: 'native-thread' }] }))
+  if (deriveSessionKey('native-thread', bindingsFile) !== `codex:${room}`)
+    throw new Error('native rollout did not resolve to Rivet room')
+  console.log('✓ protocol native rollout maps to Rivet room')
+  if (deriveSessionKey('standalone', bindingsFile) !== 'codex:standalone')
+    throw new Error('standalone identity changed')
+  console.log('✓ standalone rollout identity remains unchanged')
+} finally {
+  rmSync(mappingDir, { recursive: true, force: true })
+}
+
 const SESSION = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 
 let failed = 0
