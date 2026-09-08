@@ -55,14 +55,3 @@ nx apk @rivetos/rivet-android
 4. Avoid `/*` inside KDoc (nested block-comment trap).
 5. Do not reintroduce Firebase or baked mesh BuildConfig fields.
 6. Secrets never go in `Settings` — that whole object is serialized to `settings.json` and uploaded by the WebDAV/S3 backup. Use the `rivet_node_tokens` prefs file, and keep it in the backup exclusion rules.
-
-## Codex native controls (opt-in app-server nodes)
-
-Protocol session summaries carry `transport: protocol`; older PTY sessions keep
-their existing behavior. HarnessChatBinder exposes model/effort, prompts and
-approvals through HarnessControlsState, and ChatPage renders HarnessControls
-above the composer. Choices come from the node catalog. Local image attachments
-are staged on the bound node and remain attached to the outbound queue entry.
-Native questions use the prompt-answer endpoint rather than becoming user turns.
-Other attachment kinds still report unsupported. Java/Android SDK compilation
-and device acceptance are required before shipping these controls.

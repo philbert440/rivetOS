@@ -61,7 +61,6 @@ interface HarnessAttachSink {
 
     /** Approval request/resolution — outlives the turn, so not part of the fold. */
     fun onApproval(event: HarnessEvent) {}
-    fun onPrompt(event: HarnessEvent.Prompt) {}
 
     /** Transient resync failure (node offline, node restarting). */
     fun onError(err: Throwable) {}
@@ -120,10 +119,6 @@ class HarnessAttachment private constructor(
 
                 override fun onEvent(event: HarnessEvent) {
                     if (closed.get()) return
-                    if (event is HarnessEvent.Prompt) {
-                        sink.onPrompt(event)
-                        return
-                    }
                     if (event is HarnessEvent.ApprovalRequest ||
                         event is HarnessEvent.ApprovalResolved
                     ) {
