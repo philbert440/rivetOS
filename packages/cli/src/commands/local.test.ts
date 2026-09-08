@@ -542,14 +542,18 @@ describe('formatBanner + readPersistedDen + waitHealthz', () => {
 
 describe('runInit / runUp / runBackup / runReset', () => {
   const origEmbed = process.env.RIVETOS_EMBED_URL
+  const origModel = process.env.RIVETOS_EMBED_MODEL
 
   beforeEach(() => {
     delete process.env.RIVETOS_EMBED_URL
+    delete process.env.RIVETOS_EMBED_MODEL
   })
 
   afterEach(() => {
     if (origEmbed === undefined) delete process.env.RIVETOS_EMBED_URL
     else process.env.RIVETOS_EMBED_URL = origEmbed
+    if (origModel === undefined) delete process.env.RIVETOS_EMBED_MODEL
+    else process.env.RIVETOS_EMBED_MODEL = origModel
     if (ORIG_SHARED === undefined) delete process.env.RIVETOS_SHARED_DIR
     else process.env.RIVETOS_SHARED_DIR = ORIG_SHARED
   })
@@ -600,7 +604,36 @@ describe('runInit / runUp / runBackup / runReset', () => {
             }),
           pluginsInstall: async () => undefined,
         }),
-      ).rejects.toThrow(/RIVETOS_EMBED_URL/)
+      ).rejects.toThrow(/RIVETOS_EMBED_URL and RIVETOS_EMBED_MODEL/)
+
+      process.env.RIVETOS_EMBED_URL = 'https://example.test/v1'
+      await expect(
+        runInit(parseLocalArgs(['init', '--yes', '--no-lan', '--memory', 'full', '--no-service']), {
+          home,
+          hostname: 'testhost',
+          platform: 'linux',
+          detectEnv: async () => ({
+            nodeVersion: '22.0.0',
+            nodeOk: true,
+            dockerAvailable: false,
+            configExists: false,
+            configPath: '',
+            rivetDir: '',
+          }),
+          detectHarnesses: async () => [grokHarness()],
+          findRoot: () => null,
+          exec: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
+          withEmbeddedPg: async (_cfg, fn) =>
+            fn({
+              pgUrl: 'postgres://postgres:postgres@127.0.0.1:5433/postgres',
+              owned: false,
+              close: async () => undefined,
+              backup: async () => undefined,
+            }),
+          pluginsInstall: async () => undefined,
+        }),
+      ).rejects.toThrow(/RIVETOS_EMBED_MODEL/)
+      delete process.env.RIVETOS_EMBED_URL
 
       const exec = vi.fn(async () => {
         writeFakeCa(home, 'testhost')

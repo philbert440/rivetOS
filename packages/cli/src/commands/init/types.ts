@@ -48,6 +48,7 @@ export interface WizardLocal {
   memory?: 'lite' | 'full'
   muxNone?: boolean
   embedEndpoint?: string
+  embedModel?: string
 }
 
 export interface WizardState {

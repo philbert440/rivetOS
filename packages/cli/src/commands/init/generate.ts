@@ -134,6 +134,7 @@ export function buildConfigYaml(state: WizardState): string {
     }
     if (state.local.memory === 'full' && state.local.embedEndpoint) {
       postgres.embed_endpoint = state.local.embedEndpoint
+      if (state.local.embedModel) postgres.embed_model = state.local.embedModel
     }
     config.memory = { postgres }
   } else {
@@ -366,6 +367,11 @@ export function buildEnvFile(state: WizardState): EnvEntry[] {
         key: 'RIVETOS_EMBED_URL',
         value: state.local.embedEndpoint,
         comment: 'embed endpoint (memory full)',
+      })
+      entries.push({
+        key: 'RIVETOS_EMBED_MODEL',
+        value: state.local.embedModel ?? '',
+        comment: 'embed model id (memory full)',
       })
     } else {
       entries.push({

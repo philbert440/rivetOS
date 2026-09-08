@@ -496,11 +496,14 @@ async function runExec(
 
 function unitMissing(result: ExecResult): boolean {
   const text = `${result.stderr} ${result.stdout}`.toLowerCase()
+  if (result.code === null && !result.timedOut) return true
   return (
     result.code === 5 ||
     text.includes('not found') ||
     text.includes('not loaded') ||
-    text.includes('could not be found')
+    text.includes('could not be found') ||
+    text.includes('failed to connect to bus') ||
+    text.includes('no medium found')
   )
 }
 
@@ -609,13 +612,17 @@ async function installLinuxService(opts: {
   const reload = await runExec(opts.exec, 'systemctl', ['--user', 'daemon-reload'])
   if (execFailed(reload)) {
     throw new Error(
-      `systemctl --user daemon-reload failed: ${(reload.stderr || reload.stdout).trim().slice(0, 300)}`,
+      unitMissing(reload)
+        ? 'systemctl --user is unavailable (no user bus or systemd). Re-run with --no-service.'
+        : `systemctl --user daemon-reload failed: ${(reload.stderr || reload.stdout).trim().slice(0, 300)}`,
     )
   }
   const enable = await runExec(opts.exec, 'systemctl', ['--user', 'enable', 'rivetos'])
   if (execFailed(enable)) {
     throw new Error(
-      `systemctl --user enable rivetos failed: ${(enable.stderr || enable.stdout).trim().slice(0, 300)}`,
+      unitMissing(enable)
+        ? 'systemctl --user is unavailable (no user bus or systemd). Re-run with --no-service.'
+        : `systemctl --user enable rivetos failed: ${(enable.stderr || enable.stdout).trim().slice(0, 300)}`,
     )
   }
   const restart = await runExec(opts.exec, 'systemctl', ['--user', 'restart', 'rivetos'])
@@ -656,13 +663,15 @@ async function runInit(
   caPem?: string
 }> {
   // Config-level flags/env before identity install (else missing CA masks this).
-  if (flags.memory === 'full' && !process.env.RIVETOS_EMBED_URL?.trim()) {
-    throw new Error(
-      '--memory full requires RIVETOS_EMBED_URL (embed endpoint); omit --memory or use --memory lite',
-    )
-  }
-  if (flags.memory !== 'full') {
+  if (flags.memory === 'full') {
+    if (!process.env.RIVETOS_EMBED_URL?.trim() || !process.env.RIVETOS_EMBED_MODEL?.trim()) {
+      throw new Error(
+        '--memory full requires RIVETOS_EMBED_URL and RIVETOS_EMBED_MODEL; omit --memory or use --memory lite',
+      )
+    }
+  } else {
     delete process.env.RIVETOS_EMBED_URL
+    delete process.env.RIVETOS_EMBED_MODEL
   }
 
   const home = deps.home ?? homedir()
@@ -728,6 +737,8 @@ async function runInit(
     muxNone,
     embedEndpoint:
       flags.memory === 'full' ? process.env.RIVETOS_EMBED_URL?.trim() || undefined : undefined,
+    embedModel:
+      flags.memory === 'full' ? process.env.RIVETOS_EMBED_MODEL?.trim() || undefined : undefined,
   }
   const state = localWizardState(interpreted, local)
   await generateConfig(state, dir)
