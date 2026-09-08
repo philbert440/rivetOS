@@ -92,8 +92,7 @@ export interface RotationConformanceContext {
 }
 
 export type RotationConformanceSetup = () =>
-  | Promise<RotationConformanceContext>
-  | RotationConformanceContext
+  Promise<RotationConformanceContext> | RotationConformanceContext
 
 /** `previousSessionId` is optional on the union; narrow once, read everywhere. */
 function rotationsIn(events: HarnessEvent[]): HarnessEvent[] {

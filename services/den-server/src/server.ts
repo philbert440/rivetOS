@@ -547,8 +547,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   let codexProtocol: CodexProtocolDriver | undefined
   let termManager: TermManager | null = null
   let onHerdrStatusRef:
-    | ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void)
-    | undefined = undefined
+    ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
+    undefined
   // memoized as a promise: concurrent first requests must share ONE backend
   // load + manager, and a failed node-pty import stays failed (503) for the
   // life of the process — it logs once inside loadRealPtySpawn

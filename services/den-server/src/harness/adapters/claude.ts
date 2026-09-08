@@ -153,8 +153,7 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
     }
     if (obj.type !== 'user' && obj.type !== 'assistant') continue
     const msg = obj.message as
-      | { content?: unknown; usage?: unknown; model?: unknown; stop_reason?: unknown }
-      | undefined
+      { content?: unknown; usage?: unknown; model?: unknown; stop_reason?: unknown } | undefined
     const content = msg?.content
 
     if (obj.type === 'user') {
