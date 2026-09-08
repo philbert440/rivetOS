@@ -4,6 +4,12 @@
 > not a separate agent runtime.
 >
 > Architecture frame: [ARCHITECTURE.md](ARCHITECTURE.md).
+>
+> **Laptop first-install:** `curl -fsSL https://get.rivethub.io/local.sh | bash`
+> (stable bits on [rivethub.io](https://rivethub.io/)). Published desktop and
+> Android downloads are on that site. Dev/nightly builds for in-app Updates
+> live on `/rivet-shared/builds/rivethub/`. GitHub tags are source pins, not
+> the app feed. This page is the source-build path.
 
 ---
 
