@@ -547,8 +547,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   let codexProtocol: CodexProtocolDriver | undefined
   let termManager: TermManager | null = null
   let onHerdrStatusRef:
-    ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
-    undefined
+    | ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void)
+    | undefined = undefined
   // memoized as a promise: concurrent first requests must share ONE backend
   // load + manager, and a failed node-pty import stays failed (503) for the
   // life of the process — it logs once inside loadRealPtySpawn
@@ -1356,16 +1356,24 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               (p.command ?? rosterProvider.get().default) === 'codex' &&
               !(sessionKey && manager.ptyForSession(sessionKey))
             ) {
-              const requested = sessionKey ?? resumeKey
-              if (requested && codexProtocol.manages(requested)) {
-                await codexProtocol.resumeSession(CodexDriver.sessionId(requested))
-                sessionKey = requested
-              } else if (!resumeKey && !(requested && harnessSessionExists('codex', requested))) {
-                const created = await codexProtocol.startSession({
-                  nativeSessionId: requested,
-                  model: modelTok,
+              try {
+                const requested = sessionKey ?? resumeKey
+                if (requested && codexProtocol.manages(requested)) {
+                  await codexProtocol.resumeSession(CodexDriver.sessionId(requested))
+                  sessionKey = requested
+                } else if (!resumeKey && !(requested && harnessSessionExists('codex', requested))) {
+                  const created = await codexProtocol.startSession({
+                    nativeSessionId: requested,
+                    model: modelTok,
+                    effort: effortTok,
+                  })
+                  sessionKey = denJoinKey(created.sessionId)
+                }
+              } catch (error) {
+                const status = harnessErrorStatus(error)
+                return json(res, status === 500 ? 503 : status, {
+                  error: error instanceof Error ? error.message : String(error),
                 })
-                sessionKey = denJoinKey(created.sessionId)
               }
             }
             const userEnv = captureEnvFor(userCtx)
@@ -1536,6 +1544,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (denyIfForbidden('POST /term/inject', injectKey)) return
           if (codexProtocol?.manages(injectKey)) {
             try {
+              if (p.text && p.submit === false)
+                return json(res, 400, {
+                  error: 'Protocol sessions do not support text without submit',
+                })
               const sid = CodexDriver.sessionId(injectKey)
               if (p.interrupt === true) await codexProtocol.interrupt(sid)
               if (p.text && p.submit !== false)

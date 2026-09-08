@@ -120,9 +120,9 @@ export interface DenConfig {
   token: string
   /** HTTPS + mTLS client auth. Empty paths = plain HTTP (loopback only). */
   tls: DenTlsFileConfig
-  /** Directory for persisted state (per-viewer layouts). */
   /** Dedicated owner-only Codex app-server, loopback WebSocket. */
   codexAppServerUrl?: string
+  /** Directory for persisted state (per-viewer layouts). */
   stateDir: string
   /** Built hub app to serve at / (optional). */
   staticDir: string

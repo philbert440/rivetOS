@@ -105,7 +105,11 @@ import type { HarnessStatusFrame } from '@rivetos/types'
 export class TermSpawnError extends Error {
   constructor(
     public readonly code:
-      'unknown-command' | 'cap' | 'user-mismatch' | 'tmux-unavailable' | 'herdr',
+      | 'unknown-command'
+      | 'cap'
+      | 'user-mismatch'
+      | 'tmux-unavailable'
+      | 'herdr',
     message: string,
   ) {
     super(message)

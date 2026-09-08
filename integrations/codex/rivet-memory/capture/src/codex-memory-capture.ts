@@ -111,7 +111,34 @@ export function codexSessionsDir(home = codexHome()): string {
   return path.join(home, 'sessions')
 }
 
-export function deriveSessionKey(sessionId: string): string {
+export function deriveSessionKey(
+  sessionId: string,
+  bindingsFile = path.join(
+    process.env.RIVETOS_DEN_STATE_DIR ?? path.join(os.homedir(), '.rivetos', 'den'),
+    'codex-threads.json',
+  ),
+): string {
+  try {
+    const data = JSON.parse(fs.readFileSync(bindingsFile, 'utf8')) as {
+      version?: number
+      bindings?: Array<{ id?: unknown; threadId?: unknown }>
+    }
+    if (data.version !== 1 || !Array.isArray(data.bindings))
+      throw new Error('Invalid Codex bindings file')
+    const binding = data.bindings.find((entry) => entry.threadId === sessionId)
+    if (binding) {
+      if (
+        typeof binding.id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(binding.id)
+      )
+        throw new Error('Invalid Codex session binding')
+      return `codex:${binding.id}`
+    }
+  } catch (error) {
+    // A missing map is a standalone installation. Never silently split
+    // identity when an existing map is unreadable or malformed.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
   return `codex:${sessionId}`
 }
 

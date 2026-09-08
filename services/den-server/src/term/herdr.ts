@@ -511,7 +511,8 @@ export function parseWorkspaceCreateValue(raw: unknown): { paneId: string } {
     (typeof root?.id === 'string' && root.id) ||
     (Array.isArray(asRecord(result.workspace)?.panes)
       ? (asRecord((asRecord(result.workspace)?.panes as unknown[])[0])?.pane_id as
-          string | undefined)
+          | string
+          | undefined)
       : undefined)
   if (typeof pane === 'string' && pane) return { paneId: pane }
   return { paneId: HERDR_DEFAULT_PANE }

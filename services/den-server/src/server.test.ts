@@ -2,8 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
-import { EventEmitter } from 'node:events'
-import { WebSocket } from 'ws'
+import { EventEmitter, once } from 'node:events'
+import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
@@ -60,6 +60,8 @@ async function start(
       ) => void
     }>
     term?: boolean
+    codexAppServerUrl?: string
+    codexCmd?: string[]
   } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
@@ -81,6 +83,15 @@ async function start(
       injectReadyMs: 10,
     },
   })
+  config.codexAppServerUrl = opts.codexAppServerUrl
+  if (opts.codexCmd)
+    writeFileSync(
+      config.term.configFile,
+      JSON.stringify({
+        default: 'codex',
+        commands: { codex: { label: 'Codex', cmd: opts.codexCmd, room: true } },
+      }),
+    )
   let pid = 2000
   const den = createDenServer(config, {
     extraRoutes: opts.extraRoutes,
@@ -654,4 +665,42 @@ describe('gateway API aliases (G2/G3/G6) + SPA carve-out', () => {
     // the SPA still serves everywhere else
     expect(await (await fetch(`${base}/some/route`)).text()).toContain('SPA')
   })
+})
+
+it('refuses app-server configuration on a multi-user node', () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'den-codex-owner-'))
+  dirs.push(stateDir)
+  const config = baseTestDenConfig(stateDir, { codexAppServerUrl: 'ws://127.0.0.1:5175' })
+  config.codexAppServerUrl = 'ws://127.0.0.1:5175'
+  config.usersRegistry = { users: [] } as unknown as NonNullable<DenConfig['usersRegistry']>
+  expect(() => createDenServer(config)).toThrow('single-owner')
+})
+
+it('returns actionable 503 errors when Codex disconnects during terminal creation', async () => {
+  const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(upstream, 'listening')
+  upstream.on('connection', (socket) => socket.terminate())
+  try {
+    const address = upstream.address() as AddressInfo
+    const { base } = await start('', 60000, {
+      term: true,
+      codexAppServerUrl: `ws://127.0.0.1:${address.port}`,
+    })
+    const response = await post(base, '/term', { command: 'codex' })
+    expect(response.status).toBe(503)
+    expect(await response.json()).toEqual({ error: expect.stringContaining('Codex connection') })
+  } finally {
+    upstream.close()
+  }
+})
+
+it('returns the unsupported roster setting when creating a Codex terminal', async () => {
+  const { base } = await start('', 60000, {
+    term: true,
+    codexAppServerUrl: 'ws://127.0.0.1:5175',
+    codexCmd: ['codex', '--unsupported'],
+  })
+  const response = await post(base, '/term', { command: 'codex' })
+  expect(response.status).toBe(503)
+  expect(await response.json()).toEqual({ error: expect.stringContaining('cannot translate') })
 })

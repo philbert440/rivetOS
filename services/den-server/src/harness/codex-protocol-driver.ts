@@ -24,12 +24,15 @@ interface Binding {
   model?: string
   updatedAt?: string
   systemPromptApplied?: boolean
+  fresh?: boolean
 }
 interface Runtime {
   generation?: number
   turnId?: string
   sending?: boolean
   completedTurnId?: string
+  recoveryBlocked?: boolean
+  outageReported?: boolean
   rev: number
   approvals: Map<
     string,
@@ -51,6 +54,7 @@ export interface CodexProtocolDeps extends CodexDriverDeps {
  */
 export class CodexProtocolDriver extends CodexDriver {
   private readonly bindings = new Map<string, Binding>()
+  private readonly byThread = new Map<string, Binding>()
   private readonly runtime = new Map<string, Runtime>()
   private readonly creating = new Set<string>()
   private readonly fresh = new Set<string>()
@@ -81,6 +85,8 @@ export class CodexProtocolDriver extends CodexDriver {
           throw new Error('Invalid Codex session binding')
         }
         this.bindings.set(b.id, b as unknown as Binding)
+        this.byThread.set(b.threadId, b as unknown as Binding)
+        if (b.fresh === true) this.fresh.add(b.id)
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -104,7 +110,7 @@ export class CodexProtocolDriver extends CodexDriver {
   }
 
   ownsNativeThread(id: string): boolean {
-    return [...this.bindings.values()].some((b) => b.threadId === id)
+    return this.byThread.has(id)
   }
 
   terminalArgv(id: string, binary: string): string[] | undefined {
@@ -159,6 +165,9 @@ export class CodexProtocolDriver extends CodexDriver {
   }
 
   private failure(id: string, error: unknown): void {
+    const state = this.state(id)
+    if (state.outageReported) return
+    state.outageReported = true
     this.publish(id, {
       type: 'error',
       sessionId: this.sid(id),
@@ -168,9 +177,10 @@ export class CodexProtocolDriver extends CodexDriver {
     })
   }
 
-  override async startSession(opts: StartSessionOpts = {}): Promise<SessionSummary> {
+  override async startSession(
+    opts: StartSessionOpts & { effort?: string } = {},
+  ): Promise<SessionSummary> {
     const id = opts.sessionId ? this.native(opts.sessionId) : (opts.nativeSessionId ?? randomUUID())
-    this.native(this.sid(id))
     if (!CODEX_NATIVE_RE.test(id))
       throw new HarnessError('invalid_session_id', 'Codex requires a UUID session id')
     if (this.bindings.has(id) || this.creating.has(id)) {
@@ -180,8 +190,12 @@ export class CodexProtocolDriver extends CodexDriver {
     try {
       if (await super.getSession(this.sid(id)))
         throw new HarnessError('session_id_collision', 'Codex session already exists')
+      const defaults = this.protocol.threadDefaults?.()
       const result = await this.protocol.rpc.request('thread/start', {
-        ...this.protocol.threadDefaults?.(),
+        ...defaults,
+        ...(opts.effort
+          ? { config: { ...record(defaults?.config), model_reasoning_effort: opts.effort } }
+          : {}),
         cwd: opts.cwd ?? this.protocol.cwd?.(),
         ...(opts.model && opts.model !== 'default' ? { model: opts.model } : {}),
       })
@@ -193,13 +207,16 @@ export class CodexProtocolDriver extends CodexDriver {
         threadId: thread.id,
         cwd: stringValue(result.cwd) || stringValue(thread.cwd) || opts.cwd || '',
         createdAt: new Date().toISOString(),
+        fresh: true,
         ...(typeof result.model === 'string' ? { model: result.model } : {}),
       }
       this.bindings.set(id, binding)
+      this.byThread.set(binding.threadId, binding)
       try {
         this.save()
       } catch (error) {
         this.bindings.delete(id)
+        this.byThread.delete(binding.threadId)
         await this.protocol.rpc
           .request('thread/archive', { threadId: thread.id })
           .catch(() => undefined)
@@ -220,10 +237,26 @@ export class CodexProtocolDriver extends CodexDriver {
     let promise = this.loading.get(binding.id)
     if (!promise) {
       promise = this.protocol.rpc
-        .request('thread/resume', { threadId: binding.threadId })
+        .request('thread/resume', {
+          ...this.protocol.threadDefaults?.(),
+          threadId: binding.threadId,
+        })
         .then((result) => {
           this.state(binding.id).generation = this.protocol.rpc.generation
           this.observeThread(binding.id, record(result.thread))
+          const state = this.state(binding.id)
+          state.recoveryBlocked = Boolean(state.turnId && !state.approvals.size)
+          if (state.recoveryBlocked) {
+            this.publish(binding.id, {
+              type: 'error',
+              sessionId: this.sid(binding.id),
+              code: 'approval_recovery_required',
+              retryable: true,
+              message:
+                'Recovered an active Codex turn; approvals may need recovery. Attach a terminal or interrupt the turn.',
+            })
+          }
+          this.publishStatus(binding.id)
         })
         .finally(() => {
           this.loading.delete(binding.id)
@@ -264,28 +297,30 @@ export class CodexProtocolDriver extends CodexDriver {
       b = this.bindings.get(id)
     if (!b) return super.sendUserTurn(sessionId, turn)
     const state = this.state(id)
-    if (state.sending || state.turnId)
+    if (state.sending || (state.generation === this.protocol.rpc.generation && state.turnId))
       throw new HarnessError('turn_in_flight', 'A Codex turn is already running')
     state.sending = true
     try {
       await this.ensureLoaded(b)
       if (state.turnId) throw new HarnessError('turn_in_flight', 'A Codex turn is already running')
       const params = await this.turnParams(turn)
-      if (turn.systemPrompt && !b.systemPromptApplied) {
-        const result = await this.protocol.rpc.request('thread/resume', {
-          threadId: b.threadId,
-          developerInstructions: turn.systemPrompt.slice(0, 16_384),
-        })
-        this.observeThread(id, record(result.thread))
-        if (state.turnId)
-          throw new HarnessError('turn_in_flight', 'A Codex turn is already running')
-        b.systemPromptApplied = true
-        this.save()
+      const includePrompt = Boolean(turn.systemPrompt && !b.systemPromptApplied)
+      if (includePrompt) {
+        // Loaded threads can silently ignore resume overrides. Deliver context
+        // in the first input, like the PTY path, and mark only after acceptance.
+        params.input = [
+          { type: 'text', text: turn.systemPrompt!.slice(0, 16_384) },
+          ...(Array.isArray(params.input) ? (params.input as unknown[]) : []),
+        ]
       }
       const result = await this.protocol.rpc.request('turn/start', {
         threadId: b.threadId,
         ...params,
       })
+      this.fresh.delete(id)
+      b.fresh = false
+      if (includePrompt) b.systemPromptApplied = true
+      this.save()
       const remoteTurn = record(result.turn)
       if (
         typeof remoteTurn.id === 'string' &&
@@ -307,9 +342,24 @@ export class CodexProtocolDriver extends CodexDriver {
     const id = this.native(sessionId),
       b = this.bindings.get(id)
     if (!b) return super.interrupt(sessionId)
+    const state = this.state(id)
+    const deadline = Date.now() + 5000
+    while (state.sending) {
+      if (Date.now() >= deadline)
+        throw new HarnessError('turn_in_flight', 'Timed out waiting for the Codex turn to start')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
     await this.ensureLoaded(b)
-    const turnId = this.state(id).turnId
-    if (turnId) await this.protocol.rpc.request('turn/interrupt', { threadId: b.threadId, turnId })
+    const turnId = state.turnId
+    if (turnId) {
+      await this.protocol.rpc.request('turn/interrupt', { threadId: b.threadId, turnId })
+      // Release on the acknowledged interrupt, not the later notification.
+      if (state.turnId === turnId) state.turnId = undefined
+      state.completedTurnId = turnId
+      state.recoveryBlocked = false
+      this.clearApprovals(id)
+      this.publishStatus(id)
+    }
   }
 
   private observeThread(id: string, thread: Record<string, unknown>): void {
@@ -318,7 +368,14 @@ export class CodexProtocolDriver extends CodexDriver {
       binding.updatedAt = new Date(thread.updatedAt * 1000).toISOString()
     const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : []
     const active = turns.find((t) => t.status === 'inProgress')
-    this.state(id).turnId = typeof active?.id === 'string' ? active.id : undefined
+    const state = this.state(id)
+    state.turnId = typeof active?.id === 'string' ? active.id : undefined
+    if (!state.turnId) state.recoveryBlocked = false
+    if (turns.length && binding?.fresh) {
+      binding.fresh = false
+      this.fresh.delete(id)
+      this.save()
+    }
   }
 
   override async transcript(sessionId: SessionId): Promise<{ turns: HarnessTranscriptTurn[] }> {
@@ -381,7 +438,8 @@ export class CodexProtocolDriver extends CodexDriver {
     this.publish(id, {
       type: 'status',
       sessionId: this.sid(id),
-      status: state.approvals.size ? 'blocked' : active ? 'working' : 'idle',
+      status:
+        state.approvals.size || state.recoveryBlocked ? 'blocked' : active ? 'working' : 'idle',
       since: Date.now(),
       source: 'protocol',
     })
@@ -389,7 +447,7 @@ export class CodexProtocolDriver extends CodexDriver {
       type: 'session-updated',
       sessionId: this.sid(id),
       status: active ? 'active' : 'idle',
-      ...(state.approvals.size ? { blocked: true } : {}),
+      ...(state.approvals.size || state.recoveryBlocked ? { blocked: true } : {}),
     })
   }
 
@@ -443,22 +501,29 @@ export class CodexProtocolDriver extends CodexDriver {
 
   protected onFrame(frame: CodexFrame): void {
     if (frame.method === '$connected') {
+      for (const state of this.runtime.values()) state.outageReported = false
       for (const id of this.sinks.keys()) this.syncTranscript(this.sid(id))
       return
     }
     if (frame.method === '$disconnected') {
       for (const [id, state] of this.runtime) {
         state.generation = undefined
-        this.fresh.delete(id)
+        state.recoveryBlocked = Boolean(state.turnId || state.approvals.size)
+        state.turnId = undefined
         this.clearApprovals(id)
-        this.failure(id, new Error('Codex disconnected; reconnecting without replaying the turn'))
+        if (!state.outageReported) {
+          this.failure(id, new Error('Codex disconnected; reconnecting without replaying the turn'))
+        }
+        this.publishStatus(id)
       }
       return
     }
     const p = frame.params
     const threadId = p.threadId ?? record(p.thread).id
-    const binding = [...this.bindings.values()].find((b) => b.threadId === threadId)
+    const binding = typeof threadId === 'string' ? this.byThread.get(threadId) : undefined
     if (!binding) {
+      if (frame.id !== undefined)
+        this.protocol.rpc.reject(frame.id, 'No managed thread for request')
       return
     }
     const id = binding.id,
@@ -471,6 +536,7 @@ export class CodexProtocolDriver extends CodexDriver {
     switch (frame.method) {
       case 'turn/started':
         this.fresh.delete(id)
+        if (String(record(p.turn).id) === state.completedTurnId) break
         state.turnId = String(record(p.turn).id)
         this.publishStatus(id)
         break
@@ -478,6 +544,7 @@ export class CodexProtocolDriver extends CodexDriver {
         this.fresh.delete(id)
         state.completedTurnId = String(record(p.turn).id)
         if (state.turnId === state.completedTurnId) state.turnId = undefined
+        state.recoveryBlocked = false
         this.clearApprovals(id)
         this.publish(id, {
           type: 'turn-complete',

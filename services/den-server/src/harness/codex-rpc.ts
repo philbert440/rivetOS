@@ -26,6 +26,7 @@ export class CodexRpcClient implements CodexRpc {
   private nextId = 0
   private closed = false
   private reconnect?: NodeJS.Timeout
+  private reconnectDelay = 1000
   private readonly sinks = new Set<(frame: CodexFrame) => void>()
   private readonly pending = new Map<
     number,
@@ -74,6 +75,8 @@ export class CodexRpcClient implements CodexRpc {
     if (this.closed) return Promise.reject(new Error('Codex connection is closed'))
     if (this.connecting) return this.connecting
     if (this.socket?.readyState === WebSocket.OPEN) return Promise.resolve()
+    if (this.reconnect) clearTimeout(this.reconnect)
+    this.reconnect = undefined
     this.connecting = new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(this.url, {
         handshakeTimeout: this.timeoutMs,
@@ -128,6 +131,7 @@ export class CodexRpcClient implements CodexRpc {
         }).then(
           () => {
             ws.send(JSON.stringify({ method: 'initialized', params: {} }))
+            this.reconnectDelay = 1000
             this.generation++
             this.emit({ method: '$connected', params: {} })
             resolve()
@@ -151,9 +155,11 @@ export class CodexRpcClient implements CodexRpc {
         this.pending.clear()
         this.emit({ method: '$disconnected', params: {} })
         if (!this.closed && this.sinks.size > 0) {
+          if (this.reconnect) clearTimeout(this.reconnect)
           this.reconnect = setTimeout(() => {
             void this.connect().catch(() => undefined)
-          }, 1000)
+          }, this.reconnectDelay)
+          this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30_000)
           this.reconnect.unref()
         }
       })
