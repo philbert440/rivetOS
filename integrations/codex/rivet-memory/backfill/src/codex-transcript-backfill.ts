@@ -273,9 +273,10 @@ export function parseRollout(
         })
         break
       }
+      case 'function_call':
       case 'custom_tool_call': {
         const name = asString(payload.name) || asString(payload.tool) || 'unknown'
-        const callId = asString(payload.id)
+        const callId = asString(payload.call_id) || asString(payload.id)
         if (callId) toolNameById.set(callId, name)
         rows.push({
           role: 'tool',
@@ -290,6 +291,7 @@ export function parseRollout(
         })
         break
       }
+      case 'function_call_output':
       case 'custom_tool_call_output': {
         const callId = asString(payload.call_id) || asString(payload.id)
         const name = (callId && toolNameById.get(callId)) || 'unknown'

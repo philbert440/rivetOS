@@ -131,6 +131,7 @@ memory:
 #                            # (no output/inject/write) with no viewer attached;
 #                            # 0 disables (default 30m)
 #   # static_dir: /opt/rivetos/apps/rivethub-web/dist   # default: hub dist
+#   advertise_mdns: false    # LAN mDNS (_rivethub._tcp); default false
 
 # ---------------------------------------------------------------------------
 # Deployment (optional) — declares the intended target for tooling.

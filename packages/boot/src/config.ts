@@ -268,6 +268,11 @@ export interface DenSection {
   /** Explicit opt-out of the tokenless files security gate (trusted LAN
    *  only). Defaults to terminal.open when unset. */
   files_open?: boolean
+  /**
+   * Publish `_rivethub._tcp` via mDNS so LAN apps can find this node.
+   * Default false. No-op unless the embedded gateway actually started.
+   */
+  advertise_mdns?: boolean
   /** Mesh device enrollment (Settings → Devices). Off unless `enabled`.
    *  With a shared roster (default when a shared export mount is present),
    *  any mesh node can add/revoke; each node still needs relay_ssh to mutate
@@ -455,7 +460,8 @@ export async function loadConfig(path: string): Promise<RivetConfig> {
 // Env Var Resolution
 // ---------------------------------------------------------------------------
 
-function resolveEnvVars<T>(obj: T): T {
+/** Resolve `${ENV_VAR}` references in string values (missing names → empty string). */
+export function resolveEnvVars<T>(obj: T): T {
   if (typeof obj === 'string') {
     return obj.replace(/\$\{(\w+)\}/g, (_, name: string) => {
       return process.env[name] ?? ''

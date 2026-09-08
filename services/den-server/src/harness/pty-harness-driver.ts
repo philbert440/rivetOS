@@ -771,6 +771,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const keys = fromScreen
       ? [new TextEncoder().encode(fromScreen)]
       : adapter.approvalKeys(decision)
+    if (keys.length === 0) throw new HarnessError('bad_request', 'No approval keystrokes available')
     this.injectKeys(pty, ptyId, keys)
     state.pendingApproval = undefined
     // The dialog is being answered: the next `blocked` may be a NEW prompt —
@@ -1492,7 +1493,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // permission dialog (or the reverse): whichever anchor is LOWER on the
     // screen is the live one.
     const pickerAt = raw.lastIndexOf('Type something')
-    const dialogAt = raw.lastIndexOf('Do you want to proceed?')
+    const dialogAt = Math.max(
+      raw.lastIndexOf('Do you want to proceed?'),
+      raw.lastIndexOf('Would you like to run the following command?'),
+    )
     if (picker && (!parsed || pickerAt > dialogAt)) {
       if (this.storePromptHasQuestion(state, picker.questions)) return
       const total = picker.questions.length

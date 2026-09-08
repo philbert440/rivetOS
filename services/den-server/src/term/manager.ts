@@ -127,6 +127,8 @@ export interface TermManagerDeps {
   /** Does this harness already have an on-disk session with this id? Decides
    *  --resume vs --session-id on re-spawn (#318 review). Default: never. */
   sessionExists?: (command: string, id: string) => boolean
+  /** Attach an existing protocol session through the harness native TUI. */
+  harnessArgv?: (command: string, session: string, argv: string[]) => string[] | undefined
   /** tmux control seam (T1): injected by tests so unit tests never spawn a
    *  real tmux. Omitted = the execFileSync implementation on a per-den
    *  `-L rivet-<hash>` socket (when mux resolves to tmux). Its presence also
@@ -1243,6 +1245,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       for (const [k, v] of Object.entries(process.env)) {
         if (v !== undefined && !ptyEnvDeny.test(k)) env[k] = v
       }
+      // Service managers do not source login profiles. Include user-installed
+      // harnesses before spawning any PTY, including an existing mux server.
+      const localBin = join(homedir(), '.local', 'bin')
+      if (!(env.PATH ?? '').split(':').includes(localBin)) {
+        env.PATH = [env.PATH, localBin].filter(Boolean).join(':')
+      }
+      tmuxEnvKeys.add('PATH')
       Object.assign(env, roster.env, entry.env ?? {})
       for (const k of Object.keys(roster.env ?? {})) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)
       for (const k of Object.keys(entry.env ?? {})) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)
@@ -1300,6 +1309,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (!persisted) {
         const sheet = deps.modelSheetFor?.(key) ?? sheetForRosterCommand(key, config.harnesses)
         argv = appendModelEffortArgv(argv, sheet, model, effort, deps.log)
+        if (session) argv = deps.harnessArgv?.(key, session, argv) ?? argv
       }
 
       // Per-user routing (device→user, server.ts): the override lands last so

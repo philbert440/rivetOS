@@ -104,3 +104,7 @@ Full flow and the terminal security model: [docs/DEN.md](../../docs/DEN.md),
 Harness adapters (Claude Code plugin, Grok Build hooks, rivetos-native
 emitters) live in `integrations/` and the core harness layer — they translate
 harness activity into protocol events and POST here.
+
+Owner-only Codex protocol sessions can be enabled with
+`RIVETOS_CODEX_APP_SERVER_URL=ws://127.0.0.1:5175`. See
+[the app-server guide](../../docs/CODEX-APP-SERVER.md).

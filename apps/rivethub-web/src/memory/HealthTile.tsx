@@ -1,3 +1,4 @@
+import { HEALTH_REFRESH_MS, memoryHealthState } from './health.js'
 import type { JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
@@ -13,10 +14,12 @@ export function HealthTile(props: {
   compact?: boolean
 }): JSX.Element {
   const health = useQuery({
+    refetchInterval: HEALTH_REFRESH_MS,
     queryKey: ['memory-health', props.baseUrl],
     queryFn: ({ signal }) => props.gateway.memoryHealth(signal),
   })
   const stats = useQuery({
+    refetchInterval: HEALTH_REFRESH_MS,
     queryKey: ['memory-stats', props.baseUrl],
     queryFn: ({ signal }) => props.gateway.memoryStats(signal),
   })
@@ -24,15 +27,19 @@ export function HealthTile(props: {
   const h = health.data
   const s = stats.data
   const embedOk = h?.embeddings.status === 'ok'
-  const tone = health.error ? 'bad' : embedOk ? 'good' : 'warn'
+  const { tone, label } = memoryHealthState(h, Boolean(health.error))
 
   if (props.compact) {
     return (
       <div className="health compact">
         <div className="health-row">
-          <span className={`dot ${tone}`} />
-          <span className="muted small">
-            {health.error ? 'offline' : s ? `${compactNumber(s.conversations)} sess` : '…'}
+          <span className={`dot ${tone}`} title={label} />
+          <span className="muted small" title={label}>
+            {s
+              ? `${compactNumber(s.conversations)} sess`
+              : health.error
+                ? 'unavailable'
+                : 'checking…'}
           </span>
           {!health.error && h && !embedOk && (
             <span className="tag tag-warn small" title="Meaning-based ranking is offline">
@@ -47,8 +54,8 @@ export function HealthTile(props: {
   return (
     <div className="health">
       <div className="health-row">
-        <span className={`dot ${tone}`} />
-        <strong>Memory</strong>
+        <span className={`dot ${tone}`} title={label} />
+        <strong>{label}</strong>
         {health.error ? (
           <span className="muted">unreachable</span>
         ) : s ? (

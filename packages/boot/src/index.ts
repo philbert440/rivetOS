@@ -16,7 +16,8 @@ import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
 import { registerPlugins } from './registrars/plugins.js'
 import { registerAgentTools } from './registrars/agents.js'
-import { registerGateway } from './registrars/gateway.js'
+import { registerGateway, denTlsConfigured } from './registrars/gateway.js'
+import { registerMdnsAdvertiser } from './registrars/mdns.js'
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js'
 import {
   acquireEmbeddedPg,
@@ -29,6 +30,7 @@ import {
 // Re-export config types for consumers
 export {
   loadConfig,
+  resolveEnvVars,
   type RivetConfig,
   type MemoryPostgresEmbeddedSection,
   ConfigValidationError,
@@ -257,7 +259,21 @@ async function bootWithConfig(
 
   // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
   //      task-engine route families mounted behind its bearer gate.
-  await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+  const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+
+  // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
+  // One shutdown hook: unpublish (goodbye) first, then den.close(). Hooks run
+  // FIFO; registerGateway no longer registers den.close itself.
+  if (gateway) {
+    const stopMdns = await registerMdnsAdvertiser(config, gateway.port, denTlsConfigured(config))
+    runtime.addShutdownHook(async () => {
+      try {
+        if (stopMdns) await stopMdns()
+      } finally {
+        await gateway.close()
+      }
+    })
+  }
 
   // 5. Lifecycle — close embedded PG after runtime.stop (den/plugins first).
   await writePidFile()

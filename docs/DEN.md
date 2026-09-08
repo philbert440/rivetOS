@@ -218,3 +218,7 @@ aliases). Two G7 knobs:
   ambient capability; note that processes the agent spawns, including den
   terminals, inherit it), set `den.port: 443`, restart. `rivetos gateway token` prints the bearer token
   for non-loopback clients when `den.token: gateway-token-file` is set.
+
+Owner-only Codex protocol sessions can be enabled with
+`RIVETOS_CODEX_APP_SERVER_URL=ws://127.0.0.1:5175`. See
+[the app-server guide](CODEX-APP-SERVER.md).

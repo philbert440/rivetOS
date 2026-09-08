@@ -884,6 +884,14 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     })
   }
 
+  if (den.advertise_mdns !== undefined && typeof den.advertise_mdns !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: `${path}.advertise_mdns`,
+      message: '"den.advertise_mdns" must be a boolean',
+    })
+  }
+
   // SECURITY GATE — TLS required when terminals are exposed off loopback.
   // Only enforced when den.enabled (a disabled section deploys nothing);
   // den-server's own runtime gate remains the backstop.
