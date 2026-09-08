@@ -10,17 +10,12 @@
  */
 
 import { spawn } from 'node:child_process'
-import {
-  migrateEmbedded,
-  readEmbeddedPgLock,
-  embeddedPgLockAlive,
-  resolveEmbeddedPg,
-} from '@rivetos/boot'
+import { migrateEmbedded, readEmbeddedPgLock, embeddedPgLockAlive } from '@rivetos/boot'
 import {
   dirSizeBytes,
   findRivetConfigPath,
   formatBytes,
-  loadRivetConfig,
+  readEmbeddedConfig,
   withEmbeddedPg,
 } from '../lib/embedded.js'
 import { loadRivetEnv } from '../lib/env-file.js'
@@ -51,19 +46,24 @@ async function spawnMigrateChild(args: string[], pgUrl?: string): Promise<void> 
 }
 
 export async function runDbMigrate(args: string[], explicitConfig?: string): Promise<void> {
+  // `--url <pg>` targets an explicit (external) database: never touch the embedded engine.
+  if (args.includes('--url')) {
+    await spawnMigrateChild(args)
+    return
+  }
   const configPath = findRivetConfigPath(explicitConfig)
-  if (configPath) {
-    const config = await loadRivetConfig(configPath)
-    if (resolveEmbeddedPg(config)) {
-      await withEmbeddedPg(config, async (handle) => {
-        if (handle.owned) {
-          await migrateEmbedded(handle.pgUrl)
-          return
-        }
-        await spawnMigrateChild(args, handle.pgUrl)
-      })
-      return
-    }
+  const embedded = configPath ? readEmbeddedConfig(configPath) : undefined
+  if (embedded) {
+    await withEmbeddedPg(embedded.config, async (handle) => {
+      // Owned + no runner arguments → in-process. Any runner argument (--baseline, --dir, …)
+      // goes through the real runner as an ASYNC child — the socket host keeps serving.
+      if (handle.owned && args.length === 0) {
+        await migrateEmbedded(handle.pgUrl)
+        return
+      }
+      await spawnMigrateChild(args, handle.pgUrl)
+    })
+    return
   }
   await spawnMigrateChild(args)
 }
@@ -71,9 +71,10 @@ export async function runDbMigrate(args: string[], explicitConfig?: string): Pro
 export async function runDbStatus(explicitConfig?: string): Promise<void> {
   const configPath = findRivetConfigPath(explicitConfig)
   if (configPath) {
-    const config = await loadRivetConfig(configPath)
-    const resolved = resolveEmbeddedPg(config)
-    if (resolved) {
+    const embedded = readEmbeddedConfig(configPath)
+    const config = embedded?.config
+    const resolved = embedded?.resolved
+    if (config && resolved) {
       await withEmbeddedPg(config, async (handle) => {
         printEmbeddedStatusHeader(resolved.dataDir, resolved.port, handle.owned)
         await printMigrationStatus(handle.pgUrl, { embedded: true })

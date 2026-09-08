@@ -31,7 +31,12 @@ const RESOLVED = {
   pgUrl: PGURL,
   liteMode: true,
 }
-const CONFIG_PATH = '/tmp/rivetos-test-config.yaml'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const CONFIG_DIR = mkdtempSync(join(tmpdir(), 'rivet-start-test-'))
+const CONFIG_PATH = join(CONFIG_DIR, 'config.yaml')
+writeFileSync(CONFIG_PATH, 'memory:\n  postgres:\n    embedded: { port: 5433 }\n')
 
 function fakeChild(code = 0): EventEmitter {
   const child = new EventEmitter()
@@ -39,7 +44,11 @@ function fakeChild(code = 0): EventEmitter {
   return child
 }
 
-function closeHandle(owned: boolean): { pgUrl: string; owned: boolean; close: ReturnType<typeof vi.fn> } {
+function closeHandle(owned: boolean): {
+  pgUrl: string
+  owned: boolean
+  close: ReturnType<typeof vi.fn>
+} {
   return {
     pgUrl: PGURL,
     owned,
@@ -69,7 +78,10 @@ describe('runMigrate embedded', () => {
     await runMigrate(CONFIG_PATH)
 
     expect(boot.acquireEmbeddedPg).toHaveBeenCalled()
-    expect(boot.applyEmbeddedPgUrl).toHaveBeenCalledWith(CONFIG, PGURL)
+    expect(boot.applyEmbeddedPgUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ memory: expect.anything() }),
+      PGURL,
+    )
     expect(boot.migrateEmbedded).toHaveBeenCalledWith(PGURL)
     expect(handle.close).toHaveBeenCalled()
     expect(spawnMock).not.toHaveBeenCalled()

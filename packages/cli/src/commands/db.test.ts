@@ -41,7 +41,17 @@ const RESOLVED = {
   pgUrl: PGURL,
   liteMode: true,
 }
-const CONFIG_PATH = '/tmp/rivetos-test-config.yaml'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+// A REAL file: the maintenance path reads config.yaml leniently (no schema validation) and only
+// looks at memory.postgres.embedded — an unrelated invalid section must not block `db migrate`.
+const CONFIG_DIR = mkdtempSync(join(tmpdir(), 'rivet-db-test-'))
+const CONFIG_PATH = join(CONFIG_DIR, 'config.yaml')
+writeFileSync(
+  CONFIG_PATH,
+  'memory:\n  postgres:\n    embedded: { port: 5433 }\nproviders:\n  bogus: { this_is: invalid }\n',
+)
 
 function fakeChild(code = 0): EventEmitter {
   const child = new EventEmitter()
@@ -49,7 +59,11 @@ function fakeChild(code = 0): EventEmitter {
   return child
 }
 
-function closeHandle(owned: boolean): { pgUrl: string; owned: boolean; close: ReturnType<typeof vi.fn> } {
+function closeHandle(owned: boolean): {
+  pgUrl: string
+  owned: boolean
+  close: ReturnType<typeof vi.fn>
+} {
   return {
     pgUrl: PGURL,
     owned,
@@ -63,7 +77,9 @@ beforeEach(() => {
   boot.acquireEmbeddedPg.mockReset()
   boot.applyEmbeddedPgUrl.mockReset()
   boot.migrateEmbedded.mockReset().mockResolvedValue(undefined)
-  boot.readEmbeddedPgLock.mockReset().mockReturnValue({ pid: 4242, port: 5433, startedAt: '2026-01-01' })
+  boot.readEmbeddedPgLock
+    .mockReset()
+    .mockReturnValue({ pid: 4242, port: 5433, startedAt: '2026-01-01' })
   boot.embeddedPgLockAlive.mockReset().mockReturnValue(true)
   spawnMock.mockReset().mockImplementation(() => fakeChild(0))
   resolveScript.mockReturnValue('/fake/migrate.js')
@@ -85,7 +101,10 @@ describe('runDbMigrate embedded', () => {
     await runDbMigrate([], CONFIG_PATH)
 
     expect(boot.acquireEmbeddedPg).toHaveBeenCalled()
-    expect(boot.applyEmbeddedPgUrl).toHaveBeenCalledWith(CONFIG, PGURL)
+    expect(boot.applyEmbeddedPgUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ memory: expect.anything() }),
+      PGURL,
+    )
     expect(boot.migrateEmbedded).toHaveBeenCalledWith(PGURL)
     expect(handle.close).toHaveBeenCalled()
     expect(spawnMock).not.toHaveBeenCalled()
@@ -105,14 +124,51 @@ describe('runDbMigrate embedded', () => {
     const handle = closeHandle(false)
     boot.acquireEmbeddedPg.mockResolvedValue(handle)
 
-    await runDbMigrate(['--url', 'ignored'], CONFIG_PATH)
+    await runDbMigrate(['--dir', '/x/migrations'], CONFIG_PATH)
 
     expect(boot.migrateEmbedded).not.toHaveBeenCalled()
     expect(spawnMock).toHaveBeenCalled()
-    expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/fake/migrate.js', '--url', 'ignored'])
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/fake/migrate.js', '--dir', '/x/migrations'])
     const env = spawnMock.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv
     expect(env.RIVETOS_PG_URL).toBe(PGURL)
     expect(handle.close).toHaveBeenCalled()
+    // order: acquire < apply < spawn < close
+    expect(boot.acquireEmbeddedPg.mock.invocationCallOrder[0]).toBeLessThan(
+      boot.applyEmbeddedPgUrl.mock.invocationCallOrder[0],
+    )
+    expect(boot.applyEmbeddedPgUrl.mock.invocationCallOrder[0]).toBeLessThan(
+      spawnMock.mock.invocationCallOrder[0],
+    )
+    expect(spawnMock.mock.invocationCallOrder[0]).toBeLessThan(
+      handle.close.mock.invocationCallOrder[0],
+    )
+    // lenient config read: the schema validator is never consulted for maintenance
+    expect(boot.loadConfig).not.toHaveBeenCalled()
+  })
+
+  it('owned + runner arguments (--baseline) go through the real runner as an async child', async () => {
+    const handle = closeHandle(true)
+    boot.acquireEmbeddedPg.mockResolvedValue(handle)
+
+    await runDbMigrate(['--baseline'], CONFIG_PATH)
+
+    expect(boot.migrateEmbedded).not.toHaveBeenCalled()
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual(['/fake/migrate.js', '--baseline'])
+    const env = spawnMock.mock.calls[0]?.[2]?.env as NodeJS.ProcessEnv
+    expect(env.RIVETOS_PG_URL).toBe(PGURL)
+    expect(handle.close).toHaveBeenCalled()
+  })
+
+  it('--url targets an external database and never touches the embedded engine', async () => {
+    await runDbMigrate(['--url', 'postgres://u:p@198.51.100.7:5432/other'], CONFIG_PATH)
+
+    expect(boot.acquireEmbeddedPg).not.toHaveBeenCalled()
+    expect(boot.migrateEmbedded).not.toHaveBeenCalled()
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([
+      '/fake/migrate.js',
+      '--url',
+      'postgres://u:p@198.51.100.7:5432/other',
+    ])
   })
 })
 
@@ -152,6 +208,8 @@ describe('runDbStatus embedded', () => {
     expect(text).toContain('port: 5433')
     expect(text).toContain('migrations_applied: 1')
     expect(text).toContain('0001_init.sql')
+    // dials the handle's URL (the owner's port from the lock), not anything from config
+    expect(pg.Client).toHaveBeenCalledWith({ connectionString: handle.pgUrl })
     expect(boot.applyEmbeddedPgUrl).toHaveBeenCalled()
     expect(handle.close).toHaveBeenCalled()
     expect(boot.acquireEmbeddedPg.mock.invocationCallOrder[0]).toBeLessThan(

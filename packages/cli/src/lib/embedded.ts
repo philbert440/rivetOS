@@ -6,7 +6,8 @@
  * while `owned`, and only `spawn` (async) when attaching to a live owner.
  */
 
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { parse as parseYaml } from 'yaml'
 import { join, resolve } from 'node:path'
 import {
   acquireEmbeddedPg,
@@ -35,6 +36,28 @@ export function findRivetConfigPath(explicit?: string): string | undefined {
 
 export async function loadRivetConfig(path: string): Promise<RivetConfig> {
   return loadConfig(path)
+}
+
+/**
+ * Maintenance commands (db migrate/status, start --role migrate) must not be blocked
+ * by an unrelated validation error elsewhere in config.yaml: read the file leniently and
+ * only look at `memory.postgres.embedded`. Unreadable/unparseable → undefined (fall
+ * through to the external-Postgres path).
+ */
+export function readEmbeddedConfig(
+  path: string,
+):
+  { config: RivetConfig; resolved: NonNullable<ReturnType<typeof resolveEmbeddedPg>> } | undefined {
+  let parsed: unknown
+  try {
+    parsed = parseYaml(readFileSync(path, 'utf-8'))
+  } catch {
+    return undefined
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const config = parsed as RivetConfig
+  const resolved = resolveEmbeddedPg(config)
+  return resolved ? { config, resolved } : undefined
 }
 
 /**

@@ -97,6 +97,7 @@ function parseEnvLine(raw: string): { key: string; value: string } | undefined {
 
 function unquoteEnvValue(raw: string): string {
   const s = raw.trim()
+  if (s.startsWith('#')) return '' // `KEY= # disabled` is an intentionally empty value
   if (s.startsWith('"')) return decodeDoubleQuoted(s)
   if (s.startsWith("'")) {
     const end = s.indexOf("'", 1)

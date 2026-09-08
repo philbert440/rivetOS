@@ -26,6 +26,7 @@ QUOTED="hello world"
 SINGLE='keep # hash'
 INLINE=value # trailing
 EMPTY=
+DISABLED= # intentionally empty
 SPACES = padded
 `)
     expect(parsed).toEqual({
@@ -35,6 +36,7 @@ SPACES = padded
       SINGLE: 'keep # hash',
       INLINE: 'value',
       EMPTY: '',
+      DISABLED: '',
       SPACES: 'padded',
     })
   })

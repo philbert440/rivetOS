@@ -10,8 +10,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { migrateEmbedded, resolveEmbeddedPg } from '@rivetos/boot'
-import { findRivetConfigPath, loadRivetConfig, withEmbeddedPg } from '../lib/embedded.js'
+import { migrateEmbedded } from '@rivetos/boot'
+import { findRivetConfigPath, readEmbeddedConfig, withEmbeddedPg } from '../lib/embedded.js'
 import { loadRivetEnv } from '../lib/env-file.js'
 import { resolveMemoryMigrateScript } from '../paths.js'
 
@@ -103,18 +103,16 @@ async function spawnMigrateChild(extraArgs: string[] = [], pgUrl?: string): Prom
  */
 export async function runMigrate(explicitConfig?: string): Promise<void> {
   const configPath = findRivetConfigPath(explicitConfig)
-  if (configPath) {
-    const config = await loadRivetConfig(configPath)
-    if (resolveEmbeddedPg(config)) {
-      await withEmbeddedPg(config, async (handle) => {
-        if (handle.owned) {
-          await migrateEmbedded(handle.pgUrl)
-          return
-        }
-        await spawnMigrateChild([], handle.pgUrl)
-      })
-      return
-    }
+  const embedded = configPath ? readEmbeddedConfig(configPath) : undefined
+  if (embedded) {
+    await withEmbeddedPg(embedded.config, async (handle) => {
+      if (handle.owned) {
+        await migrateEmbedded(handle.pgUrl)
+        return
+      }
+      await spawnMigrateChild([], handle.pgUrl)
+    })
+    return
   }
   await spawnMigrateChild()
 }
