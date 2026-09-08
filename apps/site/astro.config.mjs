@@ -6,10 +6,10 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'RivetOS',
+      favicon: '/favicon.png',
       description: 'AI agent infrastructure that runs anywhere',
       logo: {
-        light: './src/assets/logo-light.svg',
-        dark: './src/assets/logo-dark.svg',
+        src: './src/assets/robot.png',
         replacesTitle: false,
       },
       social: [
