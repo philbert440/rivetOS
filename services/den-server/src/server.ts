@@ -1450,7 +1450,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const limRaw = url.searchParams.get('limit')
           const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
           const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 500) : 100
-          const sessions = await listHarnessSessions(Object.keys(roster.commands), limit)
+          const sessions = (await listHarnessSessions(Object.keys(roster.commands), limit)).filter(
+            (session) =>
+              session.command !== 'codex' || !codexProtocol?.ownsNativeThread(session.id),
+          )
           return json(res, 200, {
             sessions: userCtx ? sessionOwners.filter(sessions, userCtx) : sessions,
           })
