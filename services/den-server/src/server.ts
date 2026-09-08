@@ -480,7 +480,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     getLocalLatest: () => {
       const sessions = listSessions(state)
       if (sessions.length === 0) return null
-      const room = state.rooms[sessions[0].id] as typeof initialRoomState | undefined
+      const room = state.rooms[sessions[0].id]
       return room ? { activity: room.activity, title: room.title } : null
     },
   })
@@ -504,7 +504,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // into ingest.
     if (opts.onAgentEvent) {
       try {
-        opts.onAgentEvent(ev as unknown as { session: string; type: string })
+        opts.onAgentEvent(ev)
       } catch {
         /* bridge errors must not break den ingest */
       }
@@ -565,7 +565,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (ev) ingest(ev)
         },
         roomOpen: (s) => {
-          const room = state.rooms[s] as typeof initialRoomState | undefined
+          const room = state.rooms[s]
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
@@ -1581,7 +1581,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const id = rawId ? denJoinKey(rawId) : rawId
         if (!rawId || !id) return json(res, 404, { error: 'unknown session' })
         if (denyIfForbidden('GET /state', id)) return
-        const room = state.rooms[id] as typeof initialRoomState | undefined
+        const room = state.rooms[id]
         if (!room) return json(res, 404, { error: 'unknown session' })
         return json(res, 200, { session: rawId, state: room })
       }
