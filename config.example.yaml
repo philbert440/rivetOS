@@ -97,6 +97,14 @@ memory:
     #
     # Optional: persist delegation events into memory
     # delegation_tracking: true
+    #
+    # Local mode — in-process PGlite on a loopback socket. Mutually exclusive
+    # with connection_string. Socket lives only while `rivetos start` runs.
+    # embedded:
+    #   data_dir: ~/.rivetos/pglite
+    #   port: 5433
+    #   auto_migrate: true
+    #   max_connections: 96
 
 # ---------------------------------------------------------------------------
 # den (optional) — embedded node gateway (docs/DEN.md).

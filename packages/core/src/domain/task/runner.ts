@@ -558,6 +558,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
         concurrency: opts.concurrency ?? envInt('RIVETOS_TASKS_CONCURRENCY', 4),
         pollInterval: opts.pollIntervalMs ?? envInt('RIVETOS_TASKS_POLL_MS', 2_000),
         noHandleSignals: true,
+        ...(process.env.RIVETOS_PG_EMBEDDED === '1' ? { noPreparedStatements: true } : {}),
         taskList: (() => {
           const runJob = async (payload: unknown): Promise<void> => {
             const taskId = (payload as { taskId?: string } | null)?.taskId
