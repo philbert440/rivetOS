@@ -20,6 +20,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { createRequire } from 'node:module'
+import net from 'node:net'
 import { homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -37,6 +38,8 @@ export const EMBEDDED_PG_LOCKFILE = 'rivetos-owner.lock'
 const DEFAULT_DATA_DIR = '~/.rivetos/pglite'
 const DEFAULT_PORT = 5433
 const DEFAULT_MAX_CONNECTIONS = 96
+const ATTACH_TIMEOUT_MS = 20_000
+const HYGIENE_TXN_WAIT_MS = 5_000
 const LISTEN_NOTICE =
   'embedded postgres: LISTEN/NOTIFY does not cross the socket; task waiter + graphile poll'
 
@@ -85,7 +88,7 @@ export function resolveEmbeddedPg(
       : DEFAULT_MAX_CONNECTIONS
 
   const dataDir = resolvePath(expandTilde(dataDirRaw, home))
-  const pgUrl = `postgres://postgres:postgres@127.0.0.1:${String(port)}/postgres`
+  const pgUrl = embeddedPgUrl(port)
 
   const embedEndpoint = typeof pg.embed_endpoint === 'string' ? pg.embed_endpoint.trim() : ''
   const embedUrl = process.env.RIVETOS_EMBED_URL?.trim() ?? ''
@@ -112,8 +115,9 @@ export async function migrateEmbedded(pgUrl: string, migrationsDir?: string): Pr
 
 export async function acquireEmbeddedPg(
   resolved: ResolvedEmbeddedPg,
-  opts: { log: EmbeddedPgLog },
+  opts: { log: EmbeddedPgLog; attachTimeoutMs?: number },
 ): Promise<EmbeddedPgHandle> {
+  const attachTimeoutMs = opts.attachTimeoutMs ?? ATTACH_TIMEOUT_MS
   mkdirSync(resolved.dataDir, { recursive: true })
   const lockPath = join(resolved.dataDir, EMBEDDED_PG_LOCKFILE)
 
@@ -125,10 +129,26 @@ export async function acquireEmbeddedPg(
       const code = (err as NodeJS.ErrnoException).code
       if (code !== 'EEXIST') throw err
       const attached = tryAttach(lockPath, resolved, opts.log)
-      if (attached === 'alive') {
-        return { pgUrl: resolved.pgUrl, owned: false, close: () => Promise.resolve() }
+      if (attached.state === 'alive') {
+        // The owner publishes the lock before PGlite finishes booting (4–6 s): wait for the
+        // socket it recorded to actually listen before handing anyone a URL.
+        const port = attached.port
+        if (port !== resolved.port) {
+          opts.log.warn?.(
+            `embedded postgres: owner pid ${String(attached.pid)} listens on ${String(port)}, config says ${String(resolved.port)} — using the owner's port`,
+          )
+        }
+        const pgUrl = embeddedPgUrl(port)
+        const ready = await waitForPort(port, attachTimeoutMs)
+        if (!ready) {
+          throw new Error(
+            `embedded postgres: owner pid ${String(attached.pid)} holds ${lockPath} but nothing listens on 127.0.0.1:${String(port)} after ${String(attachTimeoutMs)}ms — if that process is dead, remove the lock`,
+            { cause: err },
+          )
+        }
+        return { pgUrl, owned: false, close: () => Promise.resolve() }
       }
-      if (attached === 'stale') {
+      if (attached.state === 'stale') {
         try {
           unlinkSync(lockPath)
         } catch {
@@ -177,10 +197,37 @@ export async function startEmbeddedPg(
   opts: { log: EmbeddedPgLog },
   lockPath?: string,
 ): Promise<EmbeddedPgHandle> {
-  const { PGlite } = await import('@electric-sql/pglite')
-  const { vector } = await import('@electric-sql/pglite-pgvector')
-  const { pg_trgm } = await import('@electric-sql/pglite/contrib/pg_trgm')
-  const { PGLiteSocketServer } = await import('@electric-sql/pglite-socket')
+  // ESM-only packages loaded from CJS boot; declared as optionalDependencies (fleet nodes never load them).
+  const loadEngine = async () => {
+    const [pglite, pgvector, trgm, socket] = await Promise.all([
+      // eslint-disable-next-line @nx/enforce-module-boundaries -- optionalDependencies
+      import('@electric-sql/pglite'),
+      // eslint-disable-next-line @nx/enforce-module-boundaries -- optionalDependencies
+      import('@electric-sql/pglite-pgvector'),
+      // eslint-disable-next-line @nx/enforce-module-boundaries -- optionalDependencies
+      import('@electric-sql/pglite/contrib/pg_trgm'),
+      // eslint-disable-next-line @nx/enforce-module-boundaries -- optionalDependencies
+      import('@electric-sql/pglite-socket'),
+    ])
+    return {
+      PGlite: pglite.PGlite,
+      vector: pgvector.vector,
+      pg_trgm: trgm.pg_trgm,
+      PGLiteSocketServer: socket.PGLiteSocketServer,
+    }
+  }
+  let engine: Awaited<ReturnType<typeof loadEngine>>
+  try {
+    engine = await loadEngine()
+  } catch (err) {
+    throw new Error(
+      'memory.postgres.embedded needs @electric-sql/pglite, @electric-sql/pglite-pgvector and ' +
+        '@electric-sql/pglite-socket (optionalDependencies of @rivetos/boot) — install them: ' +
+        (err instanceof Error ? err.message : String(err)),
+      { cause: err },
+    )
+  }
+  const { PGlite, vector, pg_trgm, PGLiteSocketServer } = engine
 
   mkdirSync(resolved.dataDir, { recursive: true })
 
@@ -207,11 +254,9 @@ export async function startEmbeddedPg(
   opts.log.info(LISTEN_NOTICE)
 
   // PGLiteSocketServer keeps `handlers` private; the hygiene hook only needs the structural surface.
-  installSessionHygiene(server as unknown as SessionHygieneServer, db, resolved.liteMode)
-
-  if (resolved.liteMode) {
-    await db.exec(`SET rivet.defer_embed_enqueue = 'on'`).catch(() => undefined)
-  }
+  // `handlers` is private in the published .d.ts but a plain Set at runtime — verified against
+  // @electric-sql/pglite-socket 0.2.11. embedded-pg.test.ts's reset assertions catch a future change.
+  installSessionHygiene(server as unknown as SessionHygieneServer, db, resolved.liteMode, opts.log)
 
   let closed = false
   const close = async (): Promise<void> => {
@@ -256,16 +301,19 @@ function resolveBuiltMigrationsDir(): string {
   return join(dirname(migrateJs), 'migrations')
 }
 
+type AttachProbe =
+  { state: 'alive'; pid: number; port: number } | { state: 'stale' } | { state: 'missing' }
+
 function tryAttach(
   lockPath: string,
   resolved: ResolvedEmbeddedPg,
   log: EmbeddedPgLog,
-): 'alive' | 'stale' | 'missing' {
+): AttachProbe {
   let raw: string
   try {
     raw = readFileSync(lockPath, 'utf8')
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'missing' }
     throw err
   }
 
@@ -273,21 +321,52 @@ function tryAttach(
   try {
     parsed = JSON.parse(raw) as { pid?: unknown; port?: unknown }
   } catch {
-    return 'stale'
+    return { state: 'stale' }
   }
   if (typeof parsed.pid !== 'number' || !Number.isInteger(parsed.pid) || parsed.pid <= 0) {
-    return 'stale'
+    return { state: 'stale' }
   }
+  const port =
+    typeof parsed.port === 'number' && Number.isInteger(parsed.port) && parsed.port > 0
+      ? parsed.port
+      : resolved.port
 
   try {
     process.kill(parsed.pid, 0)
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return 'stale'
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return { state: 'stale' }
     // EPERM: process exists but is not signalable — treat as alive.
   }
 
-  log.info(`embedded postgres: attaching to owner pid ${String(parsed.pid)} on ${resolved.pgUrl}`)
-  return 'alive'
+  log.info(
+    `embedded postgres: attaching to owner pid ${String(parsed.pid)} on 127.0.0.1:${String(port)}`,
+  )
+  return { state: 'alive', pid: parsed.pid, port }
+}
+
+export function embeddedPgUrl(port: number): string {
+  return `postgres://postgres:postgres@127.0.0.1:${String(port)}/postgres`
+}
+
+/** Connect-with-timeout retry until the loopback port accepts, or the deadline passes. */
+export async function waitForPort(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const open = await new Promise<boolean>((resolveOpen) => {
+      const sock = net.connect({ host: '127.0.0.1', port })
+      const done = (v: boolean) => {
+        sock.removeAllListeners()
+        sock.destroy()
+        resolveOpen(v)
+      }
+      sock.setTimeout(500, () => done(false))
+      sock.once('connect', () => done(true))
+      sock.once('error', () => done(false))
+    })
+    if (open) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, 200))
+  }
 }
 
 interface SessionHygieneServer {
@@ -295,27 +374,57 @@ interface SessionHygieneServer {
   addEventListener?(type: string, listener: () => void): void
 }
 
+interface HygieneDb {
+  exec: (sql: string) => Promise<unknown>
+  isInTransaction?: () => boolean
+}
+
 function installSessionHygiene(
   server: SessionHygieneServer,
-  db: { exec: (sql: string) => Promise<unknown> },
+  db: HygieneDb,
   liteMode: boolean,
+  log: EmbeddedPgLog,
 ): void {
   const hooked = new WeakSet<object>()
   const sql = liteMode
     ? `RESET ALL; DEALLOCATE ALL; SET rivet.defer_embed_enqueue = 'on';`
     : `RESET ALL; DEALLOCATE ALL;`
 
+  // The socket's query queue serialises whole transactions, but a raw db.exec is not
+  // queue-aware: never run the reset while another client's transaction is open
+  // (RESET ALL would wipe its SET LOCALs; an aborted txn would fail the script).
+  const runReset = async (): Promise<void> => {
+    const deadline = Date.now() + HYGIENE_TXN_WAIT_MS
+    while (db.isInTransaction?.() === true) {
+      if (Date.now() >= deadline) {
+        log.warn?.('embedded postgres: session reset skipped — a transaction stayed open for 5s')
+        return
+      }
+      await new Promise((r) => setTimeout(r, 10))
+    }
+    try {
+      await db.exec(sql)
+    } catch (err) {
+      log.warn?.(
+        `embedded postgres: session reset failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   const hookHandlers = (): void => {
     for (const handler of listHandlers(server.handlers)) {
       if (hooked.has(handler)) continue
       hooked.add(handler)
       handler.addEventListener('close', () => {
-        void db.exec(sql).catch(() => undefined)
+        void runReset()
       })
     }
   }
 
+  // The handler is added to the Set before `connection` is dispatched, so hook synchronously;
+  // the setImmediate pass covers any implementation that adds it afterwards.
   server.addEventListener?.('connection', () => {
+    hookHandlers()
     setImmediate(hookHandlers)
   })
 }

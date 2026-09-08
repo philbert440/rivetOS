@@ -45,7 +45,14 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
-import { resolveEmbeddedPg, validateConfig, type RivetConfig } from '@rivetos/boot'
+import {
+  embeddedPgLockAlive,
+  embeddedPgUrl,
+  readEmbeddedPgLock,
+  resolveEmbeddedPg,
+  validateConfig,
+  type RivetConfig,
+} from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
@@ -533,8 +540,8 @@ async function checkMemoryBackend(): Promise<{
 
   if (embedded) {
     const size = formatBytes(dirSizeBytes(embedded.dataDir))
-    const lock = readEmbeddedLock(embedded.dataDir)
-    const running = lock ? embeddedLockAlive(lock.pid) : false
+    const lock = readEmbeddedPgLock(embedded.dataDir)
+    const running = lock ? embeddedPgLockAlive(lock) : false
     if (!running || !lock) {
       results.push(
         check(
@@ -546,7 +553,8 @@ async function checkMemoryBackend(): Promise<{
       )
       return { results }
     }
-    const pgUrl = process.env.RIVETOS_PG_URL ?? embedded.pgUrl
+    // Dial the port the OWNER recorded in the lock, not the config's — they can differ.
+    const pgUrl = lock ? embeddedPgUrl(lock.port) : (process.env.RIVETOS_PG_URL ?? embedded.pgUrl)
     try {
       const { default: pg } = await import('pg')
       const client = new pg.Client({ connectionString: pgUrl })
@@ -662,27 +670,6 @@ function loadEmbeddedResolved(): ReturnType<typeof resolveEmbeddedPg> {
     return resolveEmbeddedPg(parsed)
   } catch {
     return undefined
-  }
-}
-
-function readEmbeddedLock(dataDir: string): { pid: number; port: number } | undefined {
-  const lockPath = join(dataDir, 'rivetos-owner.lock')
-  try {
-    const parsed = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: unknown; port?: unknown }
-    if (typeof parsed.pid !== 'number' || typeof parsed.port !== 'number') return undefined
-    return { pid: parsed.pid, port: parsed.port }
-  } catch {
-    return undefined
-  }
-}
-
-function embeddedLockAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false
-    return true
   }
 }
 

@@ -11,7 +11,7 @@ import { Runtime } from '@rivetos/core'
 import { logger } from '@rivetos/core'
 import type { ThinkingLevel } from '@rivetos/types'
 
-import { loadConfig } from './config.js'
+import { loadConfig, type RivetConfig } from './config.js'
 import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
 import { registerPlugins } from './registrars/plugins.js'
@@ -38,8 +38,14 @@ export {
   acquireEmbeddedPg,
   applyEmbeddedPgUrl,
   migrateEmbedded,
+  readEmbeddedPgLock,
+  embeddedPgLockAlive,
+  embeddedPgUrl,
+  waitForPort,
+  EMBEDDED_PG_LOCKFILE,
   type ResolvedEmbeddedPg,
   type EmbeddedPgHandle,
+  type EmbeddedPgLock,
 } from './embedded-pg.js'
 export {
   validateConfig,
@@ -133,6 +139,38 @@ export async function boot(configPath?: string): Promise<void> {
   if (embedded) {
     embeddedHandle = await acquireEmbeddedPg(embedded, { log })
     applyEmbeddedPgUrl(config, embeddedHandle.pgUrl)
+  }
+
+  // Everything below runs with the embedded DB held: if boot fails or is signalled before
+  // the shutdown handlers exist, release the socket + lock instead of leaking them.
+  const releaseOnFailure = async (): Promise<void> => {
+    await embeddedHandle?.close()
+  }
+  const onEarlySignal = (): void => {
+    void releaseOnFailure().finally(() => process.exit(1))
+  }
+  if (embeddedHandle) {
+    process.once('SIGINT', onEarlySignal)
+    process.once('SIGTERM', onEarlySignal)
+  }
+  try {
+    await bootWithConfig(config, configPath, embedded, embeddedHandle)
+  } catch (err) {
+    await releaseOnFailure()
+    throw err
+  } finally {
+    process.off('SIGINT', onEarlySignal)
+    process.off('SIGTERM', onEarlySignal)
+  }
+}
+
+async function bootWithConfig(
+  config: RivetConfig,
+  configPath: string,
+  embedded: ReturnType<typeof resolveEmbeddedPg>,
+  embeddedHandle: EmbeddedPgHandle | undefined,
+): Promise<void> {
+  if (embedded && embeddedHandle) {
     if (embedded.autoMigrate && embeddedHandle.owned) {
       await migrateEmbedded(embeddedHandle.pgUrl)
     }

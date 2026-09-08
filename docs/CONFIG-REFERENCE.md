@@ -529,7 +529,7 @@ Contract:
 - Single owner. Stale lock (dead pid) is unlinked and replaced.
 - `LISTEN`/`NOTIFY` is not delivered across socket connections — task completion waiter and graphile-worker use polling.
 - Export with `pg_dump` ≥ 18 (this engine is PostgreSQL 18.3). RSS is about 650 MB per 170 MB on-disk database.
-- Without `RIVETOS_EMBED_URL` / `embed_endpoint`, boot sets `rivet.defer_embed_enqueue=on` so capture INSERTs do not require the graphile schema.
+- Without `RIVETOS_EMBED_URL` / `embed_endpoint` (lite mode), boot sets `rivet.defer_embed_enqueue=on` so capture INSERTs do not require the graphile schema. In lite mode nothing ever enqueues embed jobs: rows are stored un-embedded (full-text + trigram recall only). When you later configure an embedding endpoint, restart the node — the embedding worker's `enqueue-idle` cron backfills every un-embedded row.
 
 ---
 
