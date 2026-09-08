@@ -58,6 +58,9 @@ export interface AgentChannelConfig {
   /** Port to listen on (default: 3000) */
   port?: number
 
+  /** Bind address. Omitted = all interfaces (https.Server.listen default). */
+  host?: string
+
   /** TLS configuration — required. Mesh = TLS, no plaintext fallback. */
   tls: AgentChannelTlsConfig
 
@@ -177,10 +180,16 @@ export class AgentChannelServer {
         }
       })
 
-      this.server.listen(this.port, () => {
-        log.info(`Agent channel listening on :${this.port} (TLS, CN=${cn})`)
+      const onListening = (): void => {
+        const where = this.config.host ? `${this.config.host}:${this.port}` : `:${this.port}`
+        log.info(`Agent channel listening on ${where} (TLS, CN=${cn})`)
         resolve()
-      })
+      }
+      if (this.config.host) {
+        this.server.listen(this.port, this.config.host, onListening)
+      } else {
+        this.server.listen(this.port, onListening)
+      }
     })
   }
 

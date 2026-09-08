@@ -110,6 +110,11 @@ function killProcessGroup(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/** Spawn errors/signals (`code: null`), timeouts, and non-zero exits are failures. */
+export function execFailed(result: ExecResult): boolean {
+  return result.timedOut || result.code !== 0
+}
+
 /**
  * Async `execFile` with a timeout. Never `spawnSync` — a local-mode node
  * hosts the PGlite socket in-process and a blocking spawn starves it.
