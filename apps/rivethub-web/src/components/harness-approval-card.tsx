@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import { ShieldQuestion } from 'lucide-react'
 import type { ApprovalDecision } from '@rivetos/types'
 import type { PendingApproval } from '../stores/chat.js'
+import { supportsSessionApproval } from '../lib/approval-options.js'
 import { humanToolTitle } from '../lib/tool-titles.js'
 
 /**
@@ -36,7 +37,9 @@ export function HarnessApprovalCard(props: {
 
   const choices: { label: string; decision: ApprovalDecision; accent: boolean }[] = [
     { label: 'Allow', decision: 'allow', accent: true },
-    { label: 'Allow for session', decision: 'allow-session', accent: false },
+    ...(supportsSessionApproval(scrapedOptions)
+      ? [{ label: 'Allow for session', decision: 'allow-session' as const, accent: false }]
+      : []),
     { label: 'Deny', decision: 'deny', accent: false },
   ]
 

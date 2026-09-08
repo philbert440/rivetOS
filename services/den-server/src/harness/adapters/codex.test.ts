@@ -21,13 +21,55 @@ const assistant = (text: string): Record<string, unknown> =>
   })
 
 describe('codexTurnsFromLines', () => {
+  it('pairs modern calls by call_id and keeps commentary snapshots in flight', () => {
+    const lines = [
+      user('check it'),
+      item({
+        type: 'message',
+        role: 'assistant',
+        phase: 'commentary',
+        content: [{ type: 'output_text', text: 'Checking now.' }],
+      }),
+    ]
+    expect(codexTurnsFromLines(lines)[1].complete).toBeUndefined()
+    lines.push(
+      item({
+        type: 'custom_tool_call',
+        id: 'item-1',
+        call_id: 'call-1',
+        name: 'exec',
+        input: 'text(1)',
+      }),
+      item({ type: 'custom_tool_call_output', id: 'result-1', call_id: 'call-1', output: '1' }),
+      item({
+        type: 'function_call',
+        id: 'item-2',
+        call_id: 'call-2',
+        name: 'shell',
+        arguments: '{"command":"pwd"}',
+      }),
+      item({ type: 'function_call_output', call_id: 'call-2', output: '/tmp' }),
+    )
+    const pending = codexTurnsFromLines(lines)[1]
+    expect(pending.tools).toEqual([
+      { id: 'call-1', name: 'exec', status: 'done', args: { input: 'text(1)' } },
+      { id: 'call-2', name: 'shell', status: 'done', args: { command: 'pwd' } },
+    ])
+    expect(pending.complete).toBeUndefined()
+    expect(pending.stopReason).toBeUndefined()
+    lines.push({ type: 'event_msg', payload: { type: 'task_complete' } })
+    expect(codexTurnsFromLines(lines)[1].complete).toBe(true)
+  })
+
   it('folds user → reasoning + tool + assistant into one complete turn and drops injections', () => {
     const turns = codexTurnsFromLines([
       { type: 'session_meta', payload: { id: '89965427-b96f-4d5e-8ad5-c3dd138e33dc' } },
       item({
         type: 'message',
         role: 'developer',
-        content: [{ type: 'input_text', text: '<environment_context>cwd=/tmp</environment_context>' }],
+        content: [
+          { type: 'input_text', text: '<environment_context>cwd=/tmp</environment_context>' },
+        ],
       }),
       user('<skills_instructions>never show this</skills_instructions>'),
       user('<multi_agent_foo>also skip</multi_agent_foo>'),
@@ -105,6 +147,21 @@ describe('codexTurnsFromLines', () => {
     ])
     expect(failed[1].tools?.[0].status).toBe('error')
     expect(failed[1].complete).toBe(true)
+  })
+
+  it('keeps final completion when commentary follows final text', () => {
+    const turns = codexTurnsFromLines([
+      user('run it'),
+      assistant('done'),
+      item({
+        type: 'message',
+        role: 'assistant',
+        phase: 'commentary',
+        content: [{ type: 'output_text', text: 'extra context' }],
+      }),
+    ])
+    expect(turns[1].complete).toBe(true)
+    expect(turns[1].stopReason).toBe('end_turn')
   })
 
   it('does not treat a developer-only rollout as a human turn', () => {

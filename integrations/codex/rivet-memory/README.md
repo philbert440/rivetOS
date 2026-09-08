@@ -66,7 +66,7 @@ Root `package.json` `workspaces` must include
 ### 2. One-command setup (recommended)
 
 ```bash
-$RIVETOS_ROOT/integrations/codex/rivet-memory/bin/setup-codex-rivet-memory.sh
+$RIVETOS_ROOT/integrations/codex/rivet-memory/bin/setup-codex-rivet-memory.sh --apply
 ```
 
 ### 3. Start capture on the Codex node
@@ -82,3 +82,15 @@ Logs: `~/.rivetos/codex-memory-capture.log`.
 Capture caps stored bodies at 16K and keeps `metadata.session_jsonl_path` +
 `session_jsonl_line` pointing at the rollout file. `memory_get_full` re-reads
 that line (Codex `response_item` shape).
+
+## Agent-facing recall
+
+Setup registers `rivetos` in Codex `config.toml` using `codex mcp add` and preserves
+other servers and settings. Existing registration is retained unless `--force`
+is supplied. Start a new session after registering; `codex mcp list` should show
+`rivetos` enabled. The capture watcher alone does not provide agent tools.
+
+Recall tools: `memory_search`, `memory_browse`, `memory_get_full`, `memory_stats`,
+`wiki_search`, and `wiki_read`. See `workspace-templates/MEMORY.md` for arguments
+and selection guidance. The launcher loads database/embedding settings from
+`~/.rivetos/.env`; without a database URL the server starts without recall tools.

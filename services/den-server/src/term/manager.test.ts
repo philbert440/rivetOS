@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { hostname, tmpdir } from 'node:os'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn as childSpawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -423,7 +423,21 @@ describe('term manager', () => {
     expect(spawns[0].opts.env.LAYER_B).toBe('entry')
     expect(spawns[0].opts.cwd).toBe('/') // entry cwd overrides roster cwd
     // inherited service env still present
-    expect(spawns[0].opts.env.PATH).toBe(process.env.PATH)
+    expect(spawns[0].opts.env.PATH?.split(':')).toContain(join(homedir(), '.local', 'bin'))
+  })
+
+  it('adds user binaries to a fresh service PATH and respects roster overrides', () => {
+    const previous = process.env.PATH
+    process.env.PATH = '/usr/bin:/bin'
+    try {
+      const { manager, spawns } = makeManager()
+      manager.spawn('shell', 80, 24, '')
+      expect(spawns[0].opts.env.PATH).toBe(`/usr/bin:/bin:${join(homedir(), '.local', 'bin')}`)
+      manager.close()
+    } finally {
+      if (previous === undefined) delete process.env.PATH
+      else process.env.PATH = previous
+    }
   })
 
   it('404s unknown keys; an exited pty frees its slot while its record lingers', () => {
@@ -526,6 +540,16 @@ describe('term manager', () => {
       '\x1b[200~again\x1b[201~',
       '\r',
     ])
+  })
+
+  it('preserves a fresh Codex chat prompt without adding a slash', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 300, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('codex', 80, 24, '', 'codex-first-prompt')
+    manager.inject(pty.id, 'Inspect this integration', true)
+    procs[0].emitData('OpenAI Codex')
+    vi.advanceTimersByTime(380)
+    expect(procs[0].writes).toEqual(['\x1b[200~Inspect this integration\x1b[201~', '\r'])
   })
 
   it('ready-path injects serialize: two turns within one delay keep paste/CR pairs', () => {

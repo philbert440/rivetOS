@@ -12,7 +12,14 @@
  *   5. Fold-parity against den-server `codexTurnsFromLines` when that module
  *      is importable from this worktree.
  */
-import { mkdtempSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  rmSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,6 +33,8 @@ import {
   capForStorage,
   consumeNewLines,
   ingestMessages,
+  createWatcherState,
+  scanOnce,
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
   MAX_CONTENT,
@@ -163,6 +172,29 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 // =============================================================================
 // Truncation
 // =============================================================================
+console.log('\n— modern tool call identity —')
+{
+  for (const kind of ['custom_tool_call', 'function_call']) {
+    const text = [
+      { type: 'session_meta', payload: { id: SESSION } },
+      {
+        type: 'response_item',
+        payload: { type: kind, id: 'item-id', call_id: 'call-id', name: 'exec', input: 'text(1)' },
+      },
+      {
+        type: 'response_item',
+        payload: { type: `${kind}_output`, id: 'output-id', call_id: 'call-id', output: '1' },
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join('\n')
+    const messages = parseRolloutText(text).messages
+    eq(`${kind} preserves free-form input`, messages[0]?.toolArgs, 'text(1)')
+    eq(`${kind} pairs output by call_id`, messages[1]?.toolName, 'exec')
+    eq(`${kind} retains item id for dedup`, messages[0]?.eventId, 'item-id')
+  }
+}
+
 console.log('\n— capForStorage —')
 {
   const small = capForStorage('hello', { sessionJsonlPath: '/x.jsonl', lineIndex: 0 })
@@ -208,11 +240,25 @@ console.log('\n— stub pool ingest —')
   const convs: Conv[] = []
   const msgs: Msg[] = []
   let ids = 0
+  let snapshot: { convs: number; msgs: number } | undefined
+  let failEvent: string | undefined
+  const storedArgs = new Map<string, unknown>()
 
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
-      if (s.startsWith('BEGIN') || s.startsWith('COMMIT') || s.startsWith('ROLLBACK')) {
+      if (s === 'BEGIN') {
+        snapshot = { convs: convs.length, msgs: msgs.length }
+        return { rows: [], rowCount: 0 }
+      }
+      if (s === 'ROLLBACK' && snapshot) {
+        convs.length = snapshot.convs
+        msgs.length = snapshot.msgs
+        snapshot = undefined
+        return { rows: [], rowCount: 0 }
+      }
+      if (s === 'COMMIT') {
+        snapshot = undefined
         return { rows: [], rowCount: 0 }
       }
       if (s.startsWith('SELECT pg_advisory_xact_lock')) {
@@ -255,6 +301,9 @@ console.log('\n— stub pool ingest —')
       if (s.startsWith('INSERT INTO ros_messages')) {
         const meta =
           typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
+        if (meta.event_id === failEvent) throw new Error('injected transient database failure')
+        // Emulate jsonb input validation, which the original stub omitted.
+        if (params[6] !== null) storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
         msgs.push({
           id: `msg-${String(++ids)}`,
           conversation_id: String(params[0]),
@@ -314,6 +363,80 @@ console.log('\n— stub pool ingest —')
   eq('re-ingest inserts nothing', second.inserted, 0)
   eq('still one conversation', convs.length, 1)
   eq('message count unchanged', msgs.length, parsed.messages.length)
+
+  const argsRows: PendingMessage[] = [
+    {
+      role: 'tool',
+      content: '[tool] exec',
+      eventId: 'freeform',
+      toolArgs: 'text("hello")',
+      lineIndex: 0,
+    },
+    {
+      role: 'tool',
+      content: '[tool] shell',
+      eventId: 'array',
+      toolArgs: ['one', 'two'],
+      lineIndex: 0,
+    },
+    {
+      role: 'tool',
+      content: '[tool] shell',
+      eventId: 'long-object',
+      toolArgs: { value: 'x'.repeat(MAX_CONTENT * 2) },
+      lineIndex: 0,
+    },
+  ]
+  await ingestMessages(client, SESSION, argsRows, { transcriptPath: FIXTURE })
+  eq('free-form input survives jsonb encoding', storedArgs.get('freeform'), 'text("hello")')
+  check('array arguments remain JSON arrays', Array.isArray(storedArgs.get('array')))
+  check(
+    'truncated object is a valid JSON string preview',
+    String(storedArgs.get('long-object')).endsWith('…[truncated]'),
+  )
+
+  const retryRows: PendingMessage[] = [
+    { role: 'user', content: 'first row', eventId: 'retry-first' },
+    { role: 'assistant', content: 'second row', eventId: 'retry-second' },
+  ]
+  const seen = new Set(['already-committed'])
+  const before = msgs.length
+  failEvent = 'retry-second'
+  let rejected = false
+  try {
+    await ingestMessages(client, SESSION, retryRows, { seen })
+  } catch {
+    rejected = true
+  }
+  check('batch reports the database failure', rejected)
+  eq('rollback removes the first insert', msgs.length, before)
+  eq('failed batch does not publish dedup progress', seen.size, 1)
+  failEvent = undefined
+  const replay = await ingestMessages(client, SESSION, retryRows, { seen })
+  eq('retry recovers both rolled-back rows', replay.inserted, 2)
+  eq('committed batch publishes dedup progress', seen.size, 3)
+
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-retry-'))
+  try {
+    const day = path.join(dir, '2026', '09', '07')
+    mkdirSync(day, { recursive: true })
+    const file = path.join(day, path.basename(FIXTURE))
+    writeFileSync(
+      file,
+      readFileSync(FIXTURE, 'utf8')
+        .replaceAll('rs_user1', 'watch-retry-user')
+        .replaceAll('rs_asst1', 'watch-retry-assistant'),
+    )
+    const state = createWatcherState()
+    failEvent = 'watch-retry-assistant'
+    await scanOnce(dir, client, state, true)
+    eq('failed watch preserves its file offset for retry', state.cursors.get(file)?.offset, 0)
+    failEvent = undefined
+    const retried = await scanOnce(dir, client, state, false)
+    eq('watch retries without requiring another file append', retried.inserted, 2)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 // =============================================================================

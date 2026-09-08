@@ -11,7 +11,7 @@
 #
 # Flags:
 #   --link    Create symlinks for bin scripts into /usr/local/bin (uses sudo).
-#   --apply   Best-effort write of mcp.json, skills link, and AGENTS.md into
+#   --apply   Best-effort registration in config.toml, skills copy, and AGENTS.md into
 #             the detected Codex config home (skips if already present unless
 #             --force). Codex has no lifecycle hooks — capture is a watcher.
 #   --force   With --apply, overwrite existing files.
@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
+RIVETOS_ROOT="${RIVETOS_ROOT:-$(cd "$PLUGIN_DIR/../../.." && pwd)}"
 PLUGIN_PATH="$RIVETOS_ROOT/integrations/codex/rivet-memory"
 
 DO_LINK=0
@@ -73,21 +73,15 @@ fi
 
 echo
 echo "=== 1. MCP Server Configuration ==="
-echo "Codex reads MCP servers from $CODEX_HOME_DIR/config.toml (preferred) or mcp.json."
+echo "Codex reads MCP servers from $CODEX_HOME_DIR/config.toml."
 cat <<EOF
 
 # config.toml
 [mcp_servers.rivetos]
-command = "$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
+command = "bash"
+args = ["$PLUGIN_PATH/bin/rivet-memory-mcp.sh"]
 
-# or mcp.json:
-{
-  "mcpServers": {
-    "rivetos": {
-      "command": "$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
-    }
-  }
-}
+
 EOF
 
 echo
@@ -134,20 +128,14 @@ if [ "$DO_APPLY" -eq 1 ]; then
   echo "=== Applying config (--apply) ==="
   mkdir -p "$CODEX_HOME_DIR"
 
-  MCP_DEST="$CODEX_HOME_DIR/mcp.json"
-  if [ ! -f "$MCP_DEST" ] || [ "$DO_FORCE" -eq 1 ]; then
-    cat > "$MCP_DEST" <<EOF
-{
-  "mcpServers": {
-    "rivetos": {
-      "command": "$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
-    }
-  }
-}
-EOF
-    echo "✅ Wrote $MCP_DEST"
+  if ! command -v codex >/dev/null 2>&1; then
+    echo "codex is required to register the MCP server in config.toml" >&2
+    exit 1
+  fi
+  if codex mcp get rivetos >/dev/null 2>&1 && [ "$DO_FORCE" -ne 1 ]; then
+    echo "RivetOS MCP registration already exists (use --force to replace it)"
   else
-    echo "⚠️  $MCP_DEST exists (use --force to overwrite)"
+    codex mcp add rivetos -- bash "$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
   fi
 
   AGENTS_DEST="$CODEX_HOME_DIR/AGENTS.md"
@@ -177,7 +165,7 @@ fi
 
 echo
 echo "=== Next Steps ==="
-echo "1. Configure the MCP server ($CODEX_HOME_DIR/config.toml or mcp.json)"
+echo "1. Configure the MCP server ($CODEX_HOME_DIR/config.toml)"
 echo "2. Install skills"
 echo "3. Add CODEX.md / AGENTS.md reflex"
 echo "4. (Recommended) run the capture watcher on the Codex node"

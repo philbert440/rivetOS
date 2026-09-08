@@ -10,7 +10,8 @@ the vendor-neutral `AGENTS.md` convention, the installer copies this content to
 ## Memory Is Your Source of Truth
 
 You have access to persistent, cross-agent memory via the RivetOS MCP server
-(`memory_search`, `memory_browse`, `memory_stats`).
+(`memory_search`, `memory_browse`, `memory_get_full`, `memory_stats`,
+`wiki_search`, `wiki_read`).
 
 This memory contains every meaningful interaction across all Rivet agents
 (`rivet-claude`, `rivet-hermes`, `rivet-grok`, `rivet-kimi`, `rivet-gpt`, etc.).

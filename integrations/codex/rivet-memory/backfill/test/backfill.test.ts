@@ -75,11 +75,7 @@ console.log('— identity —')
     eventIdFromItem(SESSION, { id: 'rs_user1' }, 4),
     captureEventId(SESSION, { id: 'rs_user1' }, 4),
   )
-  eq(
-    'line-index fallback matches',
-    eventIdFromItem(SESSION, {}, 9),
-    captureEventId(SESSION, {}, 9),
-  )
+  eq('line-index fallback matches', eventIdFromItem(SESSION, {}, 9), captureEventId(SESSION, {}, 9))
 }
 
 console.log('\n— parseRollout fixture —')
@@ -95,16 +91,36 @@ console.log('\n— parseRollout fixture —')
   eq('first user text', r.firstUserText, 'list the files')
   eq('user event id', r.rows.find((x) => x.role === 'user')?.eventId, 'rs_user1')
   eq('tool call event id', r.rows.find((x) => x.eventId === 'ctc_1')?.content, '[tool] shell')
-  eq(
-    'tool result event id',
-    r.rows.find((x) => x.eventId === 'ctco_1')?.toolResult,
-    'a.txt',
-  )
+  eq('tool result event id', r.rows.find((x) => x.eventId === 'ctco_1')?.toolResult, 'a.txt')
   check('developer dropped', (r.skipped.developer ?? 0) >= 1)
   check('wrapper users dropped', (r.skipped['user:wrapper-or-empty'] ?? 0) >= 2)
 }
 
 console.log('\n— parse parity with capture —')
+{
+  for (const kind of ['custom_tool_call', 'function_call']) {
+    const text = [
+      {
+        type: 'response_item',
+        payload: { type: kind, id: 'item-id', call_id: 'call-id', name: 'exec', input: 'text(1)' },
+      },
+      {
+        type: 'response_item',
+        payload: { type: `${kind}_output`, id: 'output-id', call_id: 'call-id', output: '1' },
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join('\n')
+    const back = parseRollout(text, { sessionId: SESSION, file: FIXTURE })
+    const cap = captureParse(text, SESSION, FIXTURE)
+    eq(`${kind} output has the paired tool name`, back.rows[1]?.toolName, 'exec')
+    eq(
+      `${kind} agrees with capture`,
+      JSON.stringify(back.rows.map((r) => [r.eventId, r.toolName, r.toolArgs, r.toolResult])),
+      JSON.stringify(cap.messages.map((r) => [r.eventId, r.toolName, r.toolArgs, r.toolResult])),
+    )
+  }
+}
 {
   const back = parseRollout(fixtureText, { sessionId: SESSION, file: FIXTURE })
   const cap = captureParse(fixtureText, SESSION, FIXTURE)
@@ -244,10 +260,7 @@ console.log('\n— discovery —')
   const root = mkdtempSync(path.join(tmpdir(), 'codex-bf-'))
   const day = path.join(root, '2026', '09', '07')
   mkdirSync(day, { recursive: true })
-  const dest = path.join(
-    day,
-    `rollout-2026-09-07T12-00-00-${SESSION}.jsonl`,
-  )
+  const dest = path.join(day, `rollout-2026-09-07T12-00-00-${SESSION}.jsonl`)
   writeFileSync(dest, fixtureText)
   writeFileSync(path.join(day, 'notes.txt'), 'ignore')
   const found = discoverTranscripts(root)
