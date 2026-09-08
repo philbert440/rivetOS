@@ -88,9 +88,11 @@ import { GrokBuildDriver } from './harness/grok-driver.js'
 import { HermesDriver } from './harness/hermes-driver.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
 import { CodexDriver } from './harness/codex-driver.js'
+import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
+import { CodexRpcClient } from './harness/codex-rpc.js'
 import { DeepseekHarnessDriver } from './harness/deepseek-driver.js'
 import { createHarnessStore } from './harness/harness-store.js'
-import { createHarnessRoutes } from './harness/routes.js'
+import { createHarnessRoutes, harnessErrorStatus } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
 import { createVoiceRoutes } from './voice-proxy.js'
@@ -537,6 +539,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     )
 
   const rosterProvider = createRosterProvider(config.term.configFile)
+  if (config.codexAppServerUrl && config.usersRegistry) {
+    throw new Error(
+      'Codex app-server requires a single-owner node; per-user app-server isolation is not configured',
+    )
+  }
+  let codexProtocol: CodexProtocolDriver | undefined
   let termManager: TermManager | null = null
   let onHerdrStatusRef:
     ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
@@ -561,6 +569,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
+        harnessArgv: (command, session, argv) =>
+          command === 'codex' ? codexProtocol?.terminalArgv(session, argv[0]) : undefined,
         tmuxCtl: opts.tmuxCtl,
         herdrCtl: opts.herdrCtl,
         onHerdrStatus: (denSession, frame) => onHerdrStatusRef?.(denSession, frame),
@@ -726,7 +736,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
-      new CodexDriver({
+      ((deps: ConstructorParameters<typeof CodexDriver>[0]) =>
+        config.codexAppServerUrl
+          ? (codexProtocol = new CodexProtocolDriver({
+              ...deps,
+              rpc: new CodexRpcClient(config.codexAppServerUrl),
+              endpoint: config.codexAppServerUrl,
+              bindingsFile: join(config.stateDir, 'codex-threads.json'),
+              threadDefaults: () =>
+                codexThreadDefaults(rosterProvider.get().commands.codex?.cmd ?? []),
+            }))
+          : new CodexDriver(deps))({
         store: createHarnessStore('codex'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
@@ -1318,7 +1338,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // (§ Legacy keys).
             // Per-user routing: a mapped device's terminals capture to (and
             // search) that user's memory DB, not the node owner's.
-            const sessionKey = p.session === undefined ? undefined : denJoinKey(p.session)
+            let sessionKey = p.session === undefined ? undefined : denJoinKey(p.session)
             const resumeKey = p.resume === undefined ? undefined : denJoinKey(p.resume)
             if (userCtx) {
               if (resumeKey && denyIfForbidden('POST /term (resume)', resumeKey)) return
@@ -1330,6 +1350,23 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 denyIfForbidden('POST /term (session)', sessionKey)
               )
                 return
+            }
+            if (
+              codexProtocol &&
+              (p.command ?? rosterProvider.get().default) === 'codex' &&
+              !(sessionKey && manager.ptyForSession(sessionKey))
+            ) {
+              const requested = sessionKey ?? resumeKey
+              if (requested && codexProtocol.manages(requested)) {
+                await codexProtocol.resumeSession(CodexDriver.sessionId(requested))
+                sessionKey = requested
+              } else if (!resumeKey && !(requested && harnessSessionExists('codex', requested))) {
+                const created = await codexProtocol.startSession({
+                  nativeSessionId: requested,
+                  model: modelTok,
+                })
+                sessionKey = denJoinKey(created.sessionId)
+              }
             }
             const userEnv = captureEnvFor(userCtx)
             const pty = await manager.spawn(
@@ -1359,6 +1396,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 201, {
               id: pty.id,
               denSession: pty.denSession,
+              ...(codexProtocol?.manages(pty.denSession)
+                ? { harnessSessionId: CodexDriver.sessionId(pty.denSession) }
+                : {}),
               command: pty.command,
               pid: pty.pid,
               createdAt: pty.createdAt,
@@ -1426,7 +1466,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // the list is filtered; the resource must be too — a transcript
             // is the whole conversation, not metadata
             if (denyIfForbidden('GET /term/harness-sessions/:id/transcript', id)) return
-            const transcript = await readHarnessTranscript(id)
+            const transcript = codexProtocol?.manages(id)
+              ? {
+                  id,
+                  command: 'codex',
+                  ...(await codexProtocol.transcript(CodexDriver.sessionId(denJoinKey(id)))),
+                }
+              : await readHarnessTranscript(id)
             const ctx = overlaySessionContext(id, transcript.turns, transcript.command)
             return json(res, 200, {
               ...transcript,
@@ -1485,6 +1531,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           // writing a turn into another user's live harness is the worst
           // cross-user primitive there is — guard before any PTY lookup
           if (denyIfForbidden('POST /term/inject', injectKey)) return
+          if (codexProtocol?.manages(injectKey)) {
+            try {
+              const sid = CodexDriver.sessionId(injectKey)
+              if (p.interrupt === true) await codexProtocol.interrupt(sid)
+              if (p.text && p.submit !== false)
+                await codexProtocol.sendUserTurn(sid, { text: p.text })
+              return json(res, 202, { ok: true, ptyId: manager.ptyForSession(injectKey) })
+            } catch (error) {
+              const mapped = harnessErrorStatus(error)
+              return json(res, mapped, {
+                error: error instanceof Error ? error.message : String(error),
+              })
+            }
+          }
           const ptyId = manager.ptyForSession(injectKey)
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           const submit = p.submit !== false // default true

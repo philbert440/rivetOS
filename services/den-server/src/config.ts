@@ -121,6 +121,8 @@ export interface DenConfig {
   /** HTTPS + mTLS client auth. Empty paths = plain HTTP (loopback only). */
   tls: DenTlsFileConfig
   /** Directory for persisted state (per-viewer layouts). */
+  /** Dedicated owner-only Codex app-server, loopback WebSocket. */
+  codexAppServerUrl?: string
   stateDir: string
   /** Built hub app to serve at / (optional). */
   staticDir: string
@@ -282,6 +284,9 @@ export function loadConfig(
       caPath: defaultCa,
       requireClientCert,
     },
+    ...(env.RIVETOS_CODEX_APP_SERVER_URL
+      ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
+      : {}),
     stateDir: env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',
     rootRedirect: env.RIVETOS_DEN_ROOT_REDIRECT ?? '',

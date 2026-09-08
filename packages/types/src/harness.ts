@@ -257,7 +257,7 @@ export interface HarnessStatusFrame {
   status: 'working' | 'blocked' | 'idle'
   /** epoch ms of this status sample */
   since: number
-  source?: 'herdr' | 'transcript' | 'hooks'
+  source?: 'herdr' | 'transcript' | 'hooks' | 'protocol'
   phase?: 'thinking' | 'tool' | 'writing' | 'prompt'
   tool?: { name: string; toolCallId?: string }
   promptId?: string
