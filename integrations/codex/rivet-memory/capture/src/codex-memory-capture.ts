@@ -19,7 +19,8 @@
  * Truncation: 16K cap only when the row carries an absolute rollout path +
  * line offset so memory_get_full can re-read from disk.
  *
- * Best-effort: never throw to the caller. Failures go to
+ * Best-effort ticks: ingest/connect failures are logged and retried. Uncaught
+ * fatals exit 1 so systemd/launchd can restart the watcher. Log:
  * ~/.rivetos/codex-memory-capture.log.
  */
 
@@ -958,14 +959,18 @@ export async function runWatch(sessionsDir?: string): Promise<void> {
   log(`watch starting on ${root}`)
 
   const tick = async (fromStart: boolean): Promise<void> => {
-    const client = await pool.connect()
+    let client: PoolClient | undefined
     try {
+      // pool.connect() must sit inside the try: a boot race against PGlite
+      // (ECONNREFUSED :5433) used to reject runWatch, and main() then exited 0
+      // so systemd Restart=on-failure never came back.
+      client = await pool.connect()
       await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
       await scanOnce(root, client, state, fromStart)
     } catch (err) {
       log(`watch tick failed: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      client.release()
+      client?.release()
     }
   }
 
@@ -1071,6 +1076,6 @@ const invokedDirectly =
 if (invokedDirectly) {
   main().catch((err: unknown) => {
     log(`fatal: ${err instanceof Error ? err.stack : String(err)}`)
-    process.exitCode = 0
+    process.exitCode = 1
   })
 }
