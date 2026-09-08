@@ -15,6 +15,7 @@ import {
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
+  KNOWN_MEMORY_EMBEDDED_KEYS,
   REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
@@ -535,6 +536,87 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
           message: '"delegation_tracking" must be a boolean (true/false)',
         })
       }
+      if (pg.embedded !== undefined) {
+        validateMemoryEmbedded(pg, issues)
+      }
+    }
+  }
+}
+
+function validateMemoryEmbedded(pg: Record<string, unknown>, issues: ValidationIssue[]): void {
+  if (typeof pg.embedded !== 'object' || pg.embedded === null || Array.isArray(pg.embedded)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.postgres.embedded',
+      message: '"memory.postgres.embedded" must be an object',
+    })
+    return
+  }
+
+  if (pg.connection_string !== undefined) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.postgres',
+      message:
+        '"embedded" and "connection_string" cannot both be set — embedded owns the loopback URL',
+    })
+  }
+
+  const embedded = pg.embedded as Record<string, unknown>
+  for (const key of Object.keys(embedded)) {
+    if (!KNOWN_MEMORY_EMBEDDED_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.postgres.embedded.${key}`,
+        message: `Unknown memory.postgres.embedded key "${key}"`,
+      })
+    }
+  }
+
+  if (embedded.data_dir !== undefined) {
+    if (typeof embedded.data_dir !== 'string' || embedded.data_dir.trim() === '') {
+      issues.push({
+        severity: 'error',
+        path: 'memory.postgres.embedded.data_dir',
+        message: '"data_dir" must be a non-empty string',
+      })
+    }
+  }
+
+  if (embedded.port !== undefined) {
+    if (
+      typeof embedded.port !== 'number' ||
+      !Number.isInteger(embedded.port) ||
+      embedded.port < 1 ||
+      embedded.port > 65535
+    ) {
+      issues.push({
+        severity: 'error',
+        path: 'memory.postgres.embedded.port',
+        message: '"port" must be an integer between 1 and 65535',
+      })
+    }
+  }
+
+  if (embedded.auto_migrate !== undefined && typeof embedded.auto_migrate !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.postgres.embedded.auto_migrate',
+      message: '"auto_migrate" must be a boolean',
+    })
+  }
+
+  if (embedded.max_connections !== undefined) {
+    if (
+      typeof embedded.max_connections !== 'number' ||
+      !Number.isInteger(embedded.max_connections) ||
+      embedded.max_connections < 1
+    ) {
+      issues.push({
+        severity: 'error',
+        path: 'memory.postgres.embedded.max_connections',
+        message: '"max_connections" must be a positive integer',
+      })
     }
   }
 }

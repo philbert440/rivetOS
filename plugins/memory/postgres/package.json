@@ -36,6 +36,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js"
+    },
+    "./schema/migrate": {
+      "types": "./dist/schema/migrate.d.ts",
+      "import": "./dist/schema/migrate.js",
+      "require": "./dist/schema/migrate.js"
     }
   },
   "files": [

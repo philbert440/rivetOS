@@ -353,6 +353,14 @@ export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'embed_endpoint',
   'embed_model',
   'delegation_tracking',
+  'embedded',
+])
+
+export const KNOWN_MEMORY_EMBEDDED_KEYS = new Set([
+  'data_dir',
+  'port',
+  'auto_migrate',
+  'max_connections',
 ])
 
 /**

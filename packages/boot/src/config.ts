@@ -50,6 +50,14 @@ export interface RivetConfig {
   plugins?: string[]
 }
 
+/** `memory.postgres.embedded` — loopback PGlite transport for the postgres backend. */
+export interface MemoryPostgresEmbeddedSection {
+  data_dir?: string
+  port?: number
+  auto_migrate?: boolean
+  max_connections?: number
+}
+
 /** Workflows engine host config (YAML snake_case). */
 export interface WorkflowsSection {
   /** Absolute path for run caseDirs (default /rivet-shared/workflows/runs). */

@@ -34,12 +34,25 @@ export async function removePidFile(pidDir: string = DEFAULT_PID_DIR): Promise<v
 
 /**
  * Register SIGINT/SIGTERM handlers for graceful shutdown.
- * Stops the runtime, removes PID file, then exits.
+ * Stops the runtime, then optional afterStop (embedded PG — Runtime.stop
+ * runs shutdown hooks FIFO, not LIFO, so the socket must close after
+ * den/plugins), removes PID file, then exits.
  */
-export function registerShutdownHandlers(runtime: Runtime, pidDir: string = DEFAULT_PID_DIR): void {
+export function registerShutdownHandlers(
+  runtime: Runtime,
+  pidDir: string = DEFAULT_PID_DIR,
+  afterStop?: () => Promise<void>,
+): void {
   const shutdown = async () => {
     log.info('Shutting down...')
     await runtime.stop()
+    if (afterStop) {
+      try {
+        await afterStop()
+      } catch (err: unknown) {
+        log.error(`After-stop hook failed: ${(err as Error).message}`)
+      }
+    }
     await removePidFile(pidDir)
     process.exit(0)
   }
