@@ -3,8 +3,14 @@ import { mkdtemp, rm, readFile, access, readdir, writeFile, mkdir, utimes } from
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
-import { buildConfigYaml, generateConfig, meshSectionFromEnroll } from './generate.js'
-import type { WizardState } from './types.js'
+import {
+  buildConfigYaml,
+  buildEnvFile,
+  buildLocalPluginList,
+  generateConfig,
+  meshSectionFromEnroll,
+} from './generate.js'
+import type { WizardLocal, WizardState } from './types.js'
 
 const SNIPPET = `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.
 mesh:
@@ -94,6 +100,66 @@ describe('buildConfigYaml mesh branch', () => {
     expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
     expect(yaml).toMatch(/tls:\s*true/)
     expect(yaml).not.toMatch(/advertise_host:/)
+  })
+})
+
+describe('buildConfigYaml / buildEnvFile local branch', () => {
+  const local = (): WizardLocal => ({
+    pgPort: 5433,
+    dataDir: '~/.rivetos/pglite',
+    denPort: 5174,
+    exposeLan: true,
+    tls: true,
+    harnesses: [
+      { id: 'grok-build', binary: '/usr/bin/grok', providerKey: 'grok-cli' },
+      { id: 'codex', binary: '/usr/bin/codex', providerKey: 'codex-cli' },
+    ],
+    sharedDir: '/tmp/rivetos-shared',
+    hostname: 'testhost',
+    root: '/opt/rivetos',
+    memory: 'lite',
+  })
+
+  const localState = (): WizardState => ({
+    ...baseState(),
+    agents: [{ name: 'rivet', provider: 'grok-cli', model: 'default', thinking: 'off' }],
+    postgresUrl: 'postgres://postgres:postgres@127.0.0.1:5433/postgres',
+    local: local(),
+  })
+
+  it('emits plugins for memory, den/gateway, and detected harness providers', () => {
+    const state = localState()
+    expect(buildLocalPluginList(state)).toEqual([
+      '@rivetos/memory-postgres',
+      '@rivetos/channel-agent',
+      '@rivetos/mcp-server',
+      '@rivetos/provider-grok-cli',
+      '@rivetos/provider-codex-cli',
+    ])
+    const yaml = buildConfigYaml(state)
+    expect(yaml).toMatch(/^plugins:/m)
+    expect(yaml).toContain('@rivetos/memory-postgres')
+    expect(yaml).toContain('@rivetos/channel-agent')
+    expect(yaml).toContain('@rivetos/mcp-server')
+    expect(yaml).toContain('@rivetos/provider-grok-cli')
+    expect(yaml).toContain('@rivetos/provider-codex-cli')
+  })
+
+  it('does not emit plugins or RIVETOS_MODE for a non-local wizard', () => {
+    const yaml = buildConfigYaml(baseState())
+    expect(yaml).not.toMatch(/^plugins:/m)
+    const entries = buildEnvFile(baseState())
+    expect(entries.some((e) => e.key === 'RIVETOS_MODE')).toBe(false)
+  })
+
+  it('emits RIVETOS_MODE=workspace next to RIVETOS_ROOT', () => {
+    const entries = buildEnvFile(localState())
+    const map = Object.fromEntries(entries.map((e) => [e.key, e.value]))
+    expect(map.RIVETOS_ROOT).toBe('/opt/rivetos')
+    expect(map.RIVETOS_MODE).toBe('workspace')
+    expect(entries.find((e) => e.key === 'RIVETOS_MODE')?.comment).toBe(
+      'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
+    )
   })
 })
 

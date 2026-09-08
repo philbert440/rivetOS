@@ -13,12 +13,15 @@ import { createInterface } from 'node:readline'
 import { homedir, hostname as osHostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { readFile } from 'node:fs/promises'
+import { parse as parseYaml } from 'yaml'
 import {
   ATTACH_BACKUP_ERROR,
   embeddedPgLockAlive,
   embeddedPgUrl,
+  formatValidationResult,
   migrateEmbedded,
   readEmbeddedPgLock,
+  validateConfig,
 } from '@rivetos/boot'
 import { interpretAnswers } from './init/answers.js'
 import { DEFAULT_MODELS, PROVIDER_ENV_KEYS } from './init/agents.js'
@@ -47,7 +50,7 @@ import {
 } from '../lib/hub-identity.js'
 import { envFileToRecord, installLaunchdAgent, stopLaunchdAgent } from '../lib/launchd.js'
 
-export { buildConfigYaml, buildEnvFile } from './init/generate.js'
+export { buildConfigYaml, buildEnvFile, buildLocalPluginList } from './init/generate.js'
 
 const DEFAULT_PORT = 5174
 const DEFAULT_PG_PORT = 5433
@@ -257,6 +260,46 @@ export function localWizardState(
   }
 }
 
+/**
+ * In-process dry boot check. `rivetos start --check` does not exist; validate
+ * the generated YAML and refuse an empty `plugins:` list (production discovery
+ * crash-loops with "No plugins configured").
+ */
+export function assertLocalConfigReady(parsed: unknown): void {
+  const result = validateConfig(parsed)
+  if (!result.valid) {
+    throw new Error(`generated config is invalid:\n${formatValidationResult(result)}`)
+  }
+  const plugins =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).plugins
+      : undefined
+  if (!Array.isArray(plugins) || plugins.length === 0) {
+    throw new Error(
+      'generated config has an empty `plugins:` list. Production deployments require an explicit plugins list (boot will crash-loop with "No plugins configured").',
+    )
+  }
+}
+
+function checkGeneratedConfigFile(configPath: string): void {
+  if (!existsSync(configPath)) {
+    throw new Error(`generated config missing at ${configPath}`)
+  }
+  let parsed: unknown
+  try {
+    parsed = parseYaml(readFileSync(configPath, 'utf-8'))
+  } catch (err) {
+    throw new Error(`generated config is not valid YAML: ${(err as Error).message}`)
+  }
+  assertLocalConfigReady(parsed)
+}
+
+export function lastNLines(text: string, n: number): string {
+  const lines = text.replace(/\n+$/, '').split(/\r?\n/)
+  if (lines.length <= n) return lines.join('\n')
+  return lines.slice(-n).join('\n')
+}
+
 export function renderSystemdUserUnit(opts: {
   workingDir: string
   envFile: string
@@ -390,6 +433,35 @@ async function runExec(
   return exec(file, args, { timeoutMs })
 }
 
+async function readServiceLogTail(opts: {
+  platform: NodeJS.Platform
+  workingDir: string
+  exec: typeof execFileAsync
+}): Promise<string> {
+  if (opts.platform === 'darwin') {
+    const errPath = join(opts.workingDir, 'launchd.err.log')
+    const outPath = join(opts.workingDir, 'launchd.out.log')
+    const path = existsSync(errPath) ? errPath : outPath
+    if (!existsSync(path)) return `(no launchd log at ${errPath} or ${outPath})`
+    try {
+      return lastNLines(readFileSync(path, 'utf-8'), 20)
+    } catch (err) {
+      return `(could not read ${path}: ${(err as Error).message})`
+    }
+  }
+  if (opts.platform === 'win32') {
+    return '(Windows has no user service log in v1)'
+  }
+  const result = await runExec(
+    opts.exec,
+    'journalctl',
+    ['--user', '-u', 'rivetos', '-n', '20', '--no-pager'],
+    8_000,
+  )
+  const text = (result.stdout || result.stderr).trim()
+  return text || '(journalctl --user -u rivetos -n 20 produced no output)'
+}
+
 async function installLinuxService(opts: {
   home: string
   workingDir: string
@@ -508,6 +580,7 @@ async function runInit(
   }
   const state = localWizardState(interpreted, local)
   await generateConfig(state, dir)
+  checkGeneratedConfigFile(join(dir, 'config.yaml'))
 
   await seedUsersJson(interpreted.ownerId)
   const deviceIds = [`desktop-${hostname}`, ...flags.devices]
@@ -594,6 +667,8 @@ async function runUp(
   const exec = deps.exec ?? execFileAsync
   const platform = deps.platform ?? process.platform
 
+  checkGeneratedConfigFile(join(dir, 'config.yaml'))
+
   if (!flags.service) {
     console.log('Start the node with: rivetos start')
   } else if (platform === 'darwin') {
@@ -638,8 +713,9 @@ async function runUp(
     timeoutMs: HEALTHZ_TIMEOUT_MS,
   })
   if (!ok) {
+    const log = await readServiceLogTail({ platform, workingDir, exec })
     throw new Error(
-      `den did not become ready at https://localhost:${String(port)}/healthz within 60s`,
+      `den did not become ready at https://localhost:${String(port)}/healthz within 60s\nLast 20 lines of service log:\n${log}`,
     )
   }
   const lanAddrs = fromInit?.lanAddrs ?? listLanIpv4()

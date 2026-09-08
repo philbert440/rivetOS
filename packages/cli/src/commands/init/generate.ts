@@ -96,6 +96,13 @@ export function buildConfigYaml(state: WizardState): string {
   }
   config.providers = providers
 
+  // Local mode: an explicit plugins list so boot still works if RIVETOS_ROOT
+  // is treated as production (no workspace scan). Shape is a flat array of
+  // npm package names — same as config.example.yaml / validateConfig.
+  if (state.local) {
+    config.plugins = buildLocalPluginList(state)
+  }
+
   // Channels: social bots removed in Phase 5. Human UX is RivetHub.
   if (state.meshSection) {
     config.mesh = state.meshSection
@@ -170,6 +177,55 @@ export function buildConfigYaml(state: WizardState): string {
   }
 
   return header + body
+}
+
+/** npm package for each provider key we emit in local-mode config. */
+const PROVIDER_PLUGIN_PACKAGES: Record<string, string> = {
+  'claude-cli': '@rivetos/provider-claude-cli',
+  'grok-cli': '@rivetos/provider-grok-cli',
+  'codex-cli': '@rivetos/provider-codex-cli',
+  'kimi-code': '@rivetos/provider-kimi-code',
+  'hermes-cli': '@rivetos/provider-hermes-cli',
+  anthropic: '@rivetos/provider-anthropic',
+  xai: '@rivetos/provider-xai',
+  google: '@rivetos/provider-google',
+  ollama: '@rivetos/provider-ollama',
+  vllm: '@rivetos/provider-vllm',
+  'llama-server': '@rivetos/provider-llama-server',
+}
+
+/** Memory + den/gateway pieces always present in local-mode `plugins:`. */
+const LOCAL_CORE_PLUGINS = [
+  '@rivetos/memory-postgres',
+  '@rivetos/channel-agent',
+  '@rivetos/mcp-server',
+] as const
+
+/**
+ * Explicit `plugins:` list for `rivetos local`. Production discovery requires
+ * this (empty list → crash-loop); workspace mode unions it with a scan.
+ */
+export function buildLocalPluginList(state: WizardState): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const add = (name: string): void => {
+    if (seen.has(name)) return
+    seen.add(name)
+    out.push(name)
+  }
+  for (const name of LOCAL_CORE_PLUGINS) add(name)
+  for (const agent of state.agents) {
+    const pkg = PROVIDER_PLUGIN_PACKAGES[agent.provider]
+    if (pkg) add(pkg)
+  }
+  if (state.local) {
+    for (const h of state.local.harnesses) {
+      if (!h.providerKey) continue
+      const pkg = PROVIDER_PLUGIN_PACKAGES[h.providerKey]
+      if (pkg) add(pkg)
+    }
+  }
+  return out
 }
 
 function buildProviderConfig(agent: WizardAgent, local?: WizardLocal): Record<string, unknown> {
@@ -283,6 +339,14 @@ export function buildEnvFile(state: WizardState): EnvEntry[] {
         comment: 'RivetOS source checkout',
       })
     }
+    // Boot treats a set RIVETOS_ROOT as production unless this is workspace
+    // (packages/boot/src/index.ts plugin discovery). Systemd loads this via
+    // EnvironmentFile; launchd copies the parsed .env into the plist.
+    entries.push({
+      key: 'RIVETOS_MODE',
+      value: 'workspace',
+      comment: 'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
+    })
     if (state.local.muxNone) {
       entries.push({
         key: 'RIVETOS_DEN_TERM_MUX',

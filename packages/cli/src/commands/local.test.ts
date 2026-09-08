@@ -2,15 +2,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parse as parseYaml } from 'yaml'
+import { validateConfig } from '@rivetos/boot'
 import { interpretAnswers } from './init/answers.js'
 import { appendOwnerDevices, seedUsersJson } from './init/users.js'
-import { buildConfigYaml, buildEnvFile } from './init/generate.js'
+import { buildConfigYaml, buildEnvFile, buildLocalPluginList } from './init/generate.js'
 import type { WizardLocal, WizardState } from './init/types.js'
 import {
+  assertLocalConfigReady,
   buildLocalAnswers,
   chooseProvider,
+  lastNLines,
   localWizardState,
   parseLocalArgs,
+  renderSystemdUserUnit,
   sanitizeHostname,
 } from './local.js'
 import type { DetectedHarness } from '../lib/harness-detect.js'
@@ -191,6 +196,15 @@ describe('config/env emission lan vs no-lan', () => {
     expect(yaml).toContain('testhost')
     expect(yaml).toContain('/tmp/rivetos-shared')
     expect(yaml).not.toContain('connection_string')
+    expect(yaml).toMatch(/^plugins:/m)
+    expect(yaml).toContain('@rivetos/memory-postgres')
+    expect(yaml).toContain('@rivetos/channel-agent')
+    expect(yaml).toContain('@rivetos/mcp-server')
+    expect(yaml).toContain('@rivetos/provider-grok-cli')
+    const parsed = parseYaml(yaml)
+    expect(validateConfig(parsed).valid).toBe(true)
+    expect(validateConfig(parsed).errors).toEqual([])
+    assertLocalConfigReady(parsed)
   })
 
   it('no-lan binds 127.0.0.1; tls omitted when local.tls is false', () => {
@@ -207,6 +221,11 @@ describe('config/env emission lan vs no-lan', () => {
     expect(map.RIVETOS_PG_URL).toBe('postgres://postgres:postgres@127.0.0.1:5433/postgres')
     expect(map.RIVETOS_SHARED_DIR).toBe('/tmp/rivetos-shared')
     expect(map.RIVETOS_ROOT).toBe('/opt/rivetos')
+    expect(map.RIVETOS_MODE).toBe('workspace')
+    const mode = entries.find((e) => e.key === 'RIVETOS_MODE')
+    expect(mode?.comment).toBe(
+      'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
+    )
   })
 
   it('muxNone writes RIVETOS_DEN_TERM_MUX=none', () => {
@@ -218,6 +237,69 @@ describe('config/env emission lan vs no-lan', () => {
     const yaml = buildConfigYaml(stateFrom(localFixture(), 'anthropic'))
     expect(yaml).toMatch(/anthropic:\s*\n\s+model:/)
     expect(yaml).toMatch(/grok-cli:\s*\{\}/)
+    expect(yaml).toContain('@rivetos/provider-anthropic')
+    expect(yaml).toContain('@rivetos/provider-grok-cli')
+  })
+
+  it('plugins list covers every detected harness provider', () => {
+    const local = localFixture({
+      harnesses: [
+        { id: 'claude-code', binary: '/usr/bin/claude', providerKey: 'claude-cli' },
+        { id: 'grok-build', binary: '/usr/bin/grok', providerKey: 'grok-cli' },
+        { id: 'codex', binary: '/usr/bin/codex', providerKey: 'codex-cli' },
+        { id: 'kimi-code', binary: '/usr/bin/kimi', providerKey: 'kimi-code' },
+        { id: 'hermes', binary: '/usr/bin/hermes', providerKey: 'hermes-cli' },
+      ],
+    })
+    const state = stateFrom(local, 'claude-cli')
+    const plugins = buildLocalPluginList(state)
+    expect(plugins).toEqual([
+      '@rivetos/memory-postgres',
+      '@rivetos/channel-agent',
+      '@rivetos/mcp-server',
+      '@rivetos/provider-claude-cli',
+      '@rivetos/provider-grok-cli',
+      '@rivetos/provider-codex-cli',
+      '@rivetos/provider-kimi-code',
+      '@rivetos/provider-hermes-cli',
+    ])
+    const yaml = buildConfigYaml(state)
+    for (const name of plugins) {
+      expect(yaml).toContain(name)
+    }
+    assertLocalConfigReady(parseYaml(yaml))
+  })
+})
+
+describe('dry boot check + service env', () => {
+  it('assertLocalConfigReady rejects an empty plugins list', () => {
+    const yaml = buildConfigYaml(stateFrom(localFixture()))
+    const parsed = parseYaml(yaml) as Record<string, unknown>
+    parsed.plugins = []
+    expect(() => assertLocalConfigReady(parsed)).toThrow(/empty `plugins:` list/)
+  })
+
+  it('assertLocalConfigReady rejects missing plugins', () => {
+    const yaml = buildConfigYaml(stateFrom(localFixture()))
+    const parsed = parseYaml(yaml) as Record<string, unknown>
+    delete parsed.plugins
+    expect(() => assertLocalConfigReady(parsed)).toThrow(/empty `plugins:` list/)
+  })
+
+  it('systemd user unit still loads EnvironmentFile (RIVETOS_MODE from .env)', () => {
+    const unit = renderSystemdUserUnit({
+      workingDir: '/opt/rivetos',
+      envFile: '/home/tester/.rivetos/.env',
+      execStart: '/usr/bin/node /opt/rivetos/packages/cli/dist/index.js start',
+    })
+    expect(unit).toContain('EnvironmentFile=/home/tester/.rivetos/.env')
+  })
+
+  it('lastNLines keeps the tail', () => {
+    const text = Array.from({ length: 25 }, (_, i) => `line-${String(i + 1)}`).join('\n')
+    expect(lastNLines(text, 20).split('\n')).toEqual(
+      Array.from({ length: 20 }, (_, i) => `line-${String(i + 6)}`),
+    )
   })
 })
 
