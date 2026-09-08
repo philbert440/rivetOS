@@ -96,6 +96,13 @@ class ChatVM(
      * thread, and a `bound = true` frozen at bind time would keep the legacy
      * poll suppressed and keep a Stop button over a dead socket.
      */
+    val harnessControls = chatService.harnessBinder.controlsFlow(_conversationId)
+    fun selectHarnessModel(model: String) = chatService.harnessBinder.selectModel(_conversationId, model)
+    fun selectHarnessEffort(effort: String) = chatService.harnessBinder.selectEffort(_conversationId, effort)
+    fun answerHarnessPrompt(promptId: String, answers: List<dev.rivet.app.data.harness.HarnessQuestionAnswer>) =
+        chatService.harnessBinder.answerPrompt(_conversationId, promptId, answers)
+    fun resolveHarnessApproval(requestId: String, decision: dev.rivet.app.data.harness.ApprovalDecision) =
+        chatService.harnessBinder.resolveApproval(_conversationId, requestId, decision)
     val harnessGate: StateFlow<HarnessGate> = chatService.harnessGateFlow(_conversationId)
 
     /** True while a bound thread has a turn in flight worth a Stop button. */

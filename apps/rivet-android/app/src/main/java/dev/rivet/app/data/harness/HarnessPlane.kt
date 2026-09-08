@@ -49,6 +49,9 @@ data class HarnessChatRow(
     val status: HarnessStatus? = null,
     /** epoch ms, for ordering */
     val updatedAt: Long = 0L,
+    val transport: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
 )
 
 /** What the UI may offer for a row; every field is a driver capability flag. */
@@ -91,6 +94,8 @@ object HarnessPlane {
                 harnessId = summary.harnessId,
                 command = legacy?.command ?: HarnessIds.rosterCommand(summary.harnessId),
                 status = summary.status,
+                transport = summary.transport,
+                model = summary.model, effort = summary.effort,
                 updatedAt = parseIsoMillis(summary.updatedAt) ?: legacy?.updatedAt ?: 0L,
             )
         }

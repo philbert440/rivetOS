@@ -53,6 +53,8 @@ export type ChatItemKind =
   | 'legacy'
 
 export interface ChatItem {
+  effort?: string
+  transport?: HarnessSessionSummary['transport']
   /**
    * Thread key. Chat state (store records, persisted name/settings, the
    * drawer's React key, `active`) is filed under this. Canonical
@@ -168,6 +170,8 @@ export function chatItems(input: {
       harnessId: summary.harnessId,
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
       model: summary.model,
+      transport: summary.transport,
+      effort: summary.effort,
       status: summary.status,
       updatedAt: Date.parse(summary.updatedAt) || legacy?.updatedAt || 0,
     })
@@ -212,6 +216,8 @@ export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | 
     harnessId: summary.harnessId,
     command: ROSTER_COMMAND[summary.harnessId],
     model: summary.model,
+    transport: summary.transport,
+    effort: summary.effort,
     status: summary.status,
     updatedAt: Date.parse(summary.updatedAt) || 0,
   }

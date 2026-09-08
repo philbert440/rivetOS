@@ -639,10 +639,25 @@ export function createHarnessRoutes(opts: {
     if (action === 'turns') {
       const body = await parseJsonBody(req, res)
       if (!body) return true
-      const { text, attachments, systemPrompt } = body
-      if (typeof text !== 'string' || text === '')
+      const { text, attachments, systemPrompt, model, effort } = body
+      if (
+        typeof text !== 'string' ||
+        (text === '' && !(Array.isArray(attachments) && attachments.length))
+      )
         return json(res, 400, { error: 'text (non-empty string) is required' })
       const turn: UserTurn = { text }
+      for (const [key, value] of [
+        ['model', model],
+        ['effort', effort],
+      ] as const) {
+        if (value !== undefined) {
+          if (typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(value))
+            return json(res, 400, { error: `${key} must be a valid token` })
+          if (!driver.capabilities.turnOptions)
+            return json(res, 501, { error: 'This harness does not support per-turn options' })
+          turn[key] = value
+        }
+      }
       if (typeof systemPrompt === 'string' && systemPrompt.trim()) {
         turn.systemPrompt = systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
       }

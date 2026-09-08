@@ -743,6 +743,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               rpc: new CodexRpcClient(config.codexAppServerUrl),
               endpoint: config.codexAppServerUrl,
               bindingsFile: join(config.stateDir, 'codex-threads.json'),
+              uploadsDir: config.uploads?.dir || join(config.stateDir, 'uploads'),
               threadDefaults: () =>
                 codexThreadDefaults(rosterProvider.get().commands.codex?.cmd ?? []),
             }))

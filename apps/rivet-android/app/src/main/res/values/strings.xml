@@ -1131,5 +1131,12 @@
   <string name="setting_model_page_prompt_suggestion">Chat Reply Suggestions</string>
   <string name="setting_model_page_prompt_ocr">OCR Recognition</string>
   <string name="setting_model_page_prompt_compress">Context Compression</string>
+    <string name="harness_native_model">Model</string>
+    <string name="harness_native_effort">Effort</string>
+    <string name="harness_native_allow">Allow</string>
+    <string name="harness_native_deny">Deny</string>
+    <string name="harness_native_choice">Choose</string>
+    <string name="harness_native_answer">Answer</string>
+    <string name="harness_native_submit">Submit answers</string>
 </resources>
 

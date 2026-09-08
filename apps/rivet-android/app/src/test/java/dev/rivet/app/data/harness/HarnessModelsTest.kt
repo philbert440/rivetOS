@@ -9,6 +9,18 @@ import org.junit.Test
 
 /** Wire → model parsing for the control plane's responses and event frames. */
 class HarnessModelsTest {
+    @Test
+    fun `native controls use the server model catalog and prompt ids`() {
+        val caps = HarnessCapabilities.from(JSONObject("""{"turnOptions":true,"imageAttachments":true,"models":[{"id":"test","label":"Test","default":true,"efforts":[{"id":"high","default":true}]}]}"""))
+        assertTrue(caps.turnOptions)
+        assertTrue(caps.imageAttachments)
+        assertEquals("high", caps.models.single().defaultEffort)
+        val prompt = HarnessEvent.from(JSONObject("""{"type":"prompt","sessionId":"codex:abc","promptId":"number:7","questions":[{"question":"Choose","options":[{"label":"Blue"}]}]}""")) as HarnessEvent.Prompt
+        assertEquals("number:7", prompt.promptId)
+        assertEquals(listOf("Blue"), prompt.questions.single().options)
+        assertFalse(prompt.resolved)
+    }
+
 
     @Test
     fun `harness list reads capability flags honestly`() {

@@ -62,6 +62,7 @@ function catalogAgentOptions(agents: CatalogAgent[]): SelectOption[] {
 
 export function Composer(props: {
   sessionId: string
+  nativeControls?: boolean
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
@@ -73,7 +74,10 @@ export function Composer(props: {
    *  (inject into its PTY) instead of the chat-loop postMessage — so chat,
    *  terminal, and den are one conversation. The reply streams back via the
    *  den→sessions-WS bridge. */
-  onSend?: (text: string) => Promise<void>
+  onSend?: (
+    text: string,
+    attachments?: import('@rivetos/types').UserTurn['attachments'],
+  ) => Promise<void>
   /** Node this session lives on when it is not the connected one — uploads
    *  and chat-loop posts must land there (the harness reads staged paths on
    *  ITS node). Absent = the global gateway. */
@@ -214,16 +218,26 @@ export function Composer(props: {
     // out verbatim — never with leftover chips appended, and never blocked by
     // an in-flight upload that has nothing to do with the question.
     const bare = opts?.bare === true
-    const trimmed = bare ? body.trim() : withAttachmentText(body.trim(), atts)
+    const structured = !bare && Boolean(props.onSend)
+    const readyAttachments = structured
+      ? atts
+          .filter((a) => a.status === 'ready' && a.uri)
+          .map((a) => ({ mime: a.mime, pathOrUri: a.uri!, name: a.name }))
+      : []
+    const trimmed = bare || structured ? body.trim() : withAttachmentText(body.trim(), atts)
     // Seamless queue path: allow stacking while a prior turn is in flight
     // (onSend enqueues and returns). Chat-loop path still serializes via sending.
-    if (!trimmed) return false
+    if (!trimmed && !readyAttachments.length) return false
     if (sending && !props.onSend) {
       if (bare) setError('previous send still in flight — try again')
       return false
     }
     if (!bare && anyUploading(atts)) {
       setError('still uploading an attachment…')
+      return false
+    }
+    if (!bare && atts.some((a) => a.status === 'failed')) {
+      setError('Remove or retry the failed attachment before sending')
       return false
     }
     setError(undefined)
@@ -236,7 +250,7 @@ export function Composer(props: {
       if (props.onSend) {
         // Enqueue + pump (returns immediately). Messages show as queued/sending
         // in the transcript until the harness injects them.
-        await props.onSend(trimmed)
+        await props.onSend(trimmed, readyAttachments.length ? readyAttachments : undefined)
       } else {
         // Fire-and-forget; the reply (and this message's echo) arrive on the
         // sessions WS. Model (agent) + effort (thinking) ride the request and
@@ -252,7 +266,10 @@ export function Composer(props: {
       }
     } catch (err) {
       setError((err as Error).message)
-      if (!bare) setText(trimmed) // give the draft back (answers never clobber it)
+      if (!bare) {
+        setText(body)
+        setAtts(atts)
+      } // give the draft back (answers never clobber it)
       return false
     } finally {
       setSending(false)
@@ -424,14 +441,18 @@ export function Composer(props: {
             Claude-app style, in the input shell, persisted per-conversation. */}
         <div className="flex max-md:flex-wrap items-center gap-1">
           <NodePicker />
-          <ModelPicker
-            value={props.agent ?? ''}
-            options={models}
-            onChange={(v) => props.onSetting({ agent: v })}
-            disabled={catalog.isError}
-            unavailable={catalog.isError}
-          />
-          <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          {!props.nativeControls && (
+            <ModelPicker
+              value={props.agent ?? ''}
+              options={models}
+              onChange={(v) => props.onSetting({ agent: v })}
+              disabled={catalog.isError}
+              unavailable={catalog.isError}
+            />
+          )}
+          {!props.nativeControls && (
+            <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          )}
           <div className="flex-1" />
           <input
             ref={fileRef}

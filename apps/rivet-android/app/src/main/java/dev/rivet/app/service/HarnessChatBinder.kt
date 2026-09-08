@@ -1,6 +1,12 @@
 package dev.rivet.app.service
 
 import android.util.Log
+import dev.rivet.app.data.harness.HarnessControlsState
+import dev.rivet.app.data.harness.HarnessCapabilities
+import dev.rivet.app.data.harness.HarnessQuestionAnswer
+import dev.rivet.app.data.harness.StagedAttachment
+import dev.rivet.app.data.harness.ApprovalDecision
+import kotlinx.coroutines.flow.update
 import dev.rivet.app.data.harness.HarnessAttachSink
 import dev.rivet.app.data.harness.HarnessAttachment
 import dev.rivet.app.data.harness.HarnessChatRow
@@ -68,6 +74,41 @@ class HarnessChatBinder(
     private val bindings = ConcurrentHashMap<Uuid, Binding>()
     private val liveFlows = ConcurrentHashMap<Uuid, MutableStateFlow<LiveTurn?>>()
     private val gateFlows = ConcurrentHashMap<Uuid, MutableStateFlow<HarnessGate>>()
+    private val controls = ConcurrentHashMap<Uuid, MutableStateFlow<HarnessControlsState>>()
+    private fun controlState(id: Uuid) = controls.computeIfAbsent(id) { MutableStateFlow(HarnessControlsState()) }
+    fun controlsFlow(id: Uuid): StateFlow<HarnessControlsState> = controlState(id).asStateFlow()
+    fun selectModel(id: Uuid, model: String) {
+        controlState(id).update { state ->
+            val selected = state.models.firstOrNull { it.id == model } ?: return@update state
+            state.copy(model = model, effort = selected.defaultEffort ?: selected.efforts.firstOrNull())
+        }
+    }
+    fun selectEffort(id: Uuid, effort: String) {
+        controlState(id).update { state ->
+            if (state.models.firstOrNull { it.id == state.model }?.efforts?.contains(effort) == true) state.copy(effort = effort) else state
+        }
+    }
+    fun answerPrompt(id: Uuid, promptId: String, answers: List<HarnessQuestionAnswer>) = controlAction(id) { binding ->
+        binding.gateway.answerPrompt(binding.sessionId, promptId, answers)
+    }
+    fun resolveApproval(id: Uuid, requestId: String, decision: ApprovalDecision) = controlAction(id) { binding ->
+        binding.gateway.resolveApproval(binding.sessionId, requestId, decision)
+    }
+    private fun controlAction(id: Uuid, action: (Binding) -> Unit) {
+        val binding = bindings[id] ?: return
+        val state = controlState(id)
+        if (state.value.submitting) return
+        state.update { it.copy(submitting = true, error = null) }
+        scope.launch(io) {
+            val error = runCatching { action(binding) }.exceptionOrNull()
+            state.update { it.copy(submitting = false, error = error?.message) }
+        }
+    }
+    suspend fun upload(id: Uuid, name: String, mime: String, bytes: ByteArray): StagedAttachment = withContext(io) {
+        val binding = bindings[id] ?: error("Harness session is no longer bound")
+        if (!controlState(id).value.imageAttachments) error("This session does not support image attachments")
+        binding.gateway.upload(name, mime, bytes)
+    }
     private val turnIds = AtomicLong(0)
 
     /** True while the control plane owns this thread's send/stream path. */
@@ -124,6 +165,14 @@ class HarnessChatBinder(
         if (existing != null) return existing.gate
         gateFlows.computeIfAbsent(conversationId) { MutableStateFlow(HarnessGate.CLOSED) }.value =
             gate
+        val caps = snapshot.descriptors.firstOrNull { it.harnessId == row.harnessId }?.capabilities ?: HarnessCapabilities()
+        if (row.transport == "protocol") {
+            val model = caps.models.firstOrNull { it.id == row.model } ?: caps.models.firstOrNull { it.isDefault } ?: caps.models.firstOrNull()
+            controlState(conversationId).value = HarnessControlsState(
+                models = if (caps.turnOptions) caps.models else emptyList(), model = model?.id,
+                effort = row.effort ?: model?.defaultEffort ?: model?.efforts?.firstOrNull(), imageAttachments = caps.imageAttachments,
+            )
+        }
         binding.start()
         log("bound $conversationId to $sessionId (${row.harnessId})")
         return gate
@@ -139,6 +188,7 @@ class HarnessChatBinder(
         val binding = bindings.remove(conversationId)
         gateFlows[conversationId]?.value = HarnessGate.CLOSED
         liveFlows[conversationId]?.value = null
+        controlState(conversationId).value = HarnessControlsState()
         binding?.stop()
     }
 
@@ -153,9 +203,9 @@ class HarnessChatBinder(
      * is retried on a bounded backoff while everything behind it waits rather
      * than racing past it.
      */
-    suspend fun send(conversationId: Uuid, text: String): Boolean {
+    suspend fun send(conversationId: Uuid, text: String, attachments: List<StagedAttachment> = emptyList()): Boolean {
         val binding = bindings[conversationId] ?: return false
-        binding.enqueue(text)
+        binding.enqueue(text, attachments)
         return true
     }
 
@@ -182,7 +232,7 @@ class HarnessChatBinder(
      * this was queued — the floor for matching it against a committed turn, so
      * two identical texts cannot both be retired by one commit.
      */
-    private class PendingTurn(val id: Long, val text: String, var baseline: Int) {
+    private class PendingTurn(val id: Long, val text: String, var baseline: Int, val attachments: List<StagedAttachment>, val model: String?, val effort: String?) {
         var attempts = 0
 
         /** Epoch ms the driver accepted it, or 0 while it is still queued. */
@@ -255,12 +305,14 @@ class HarnessChatBinder(
             paint()
         }
 
-        fun enqueue(text: String) {
+        fun enqueue(text: String, attachments: List<StagedAttachment>) {
+            val options = controlState(conversationId).value
             synchronized(pending) {
                 pending.add(
                     PendingTurn(
                         id = turnIds.incrementAndGet(),
                         text = text,
+                        attachments = attachments, model = options.model, effort = options.effort,
                         baseline = turns.count { it.role == "user" },
                     ),
                 )
@@ -285,7 +337,7 @@ class HarnessChatBinder(
             while (true) {
                 val next = synchronized(pending) { pending.firstOrNull { it.sentAtMs == 0L } }
                     ?: return
-                val error = runCatching { gateway.sendTurn(sessionId, next.text) }.exceptionOrNull()
+                val error = runCatching { gateway.sendTurn(sessionId, next.text, next.attachments, next.model, next.effort) }.exceptionOrNull()
                 when (val outcome = HarnessTurnPolicy.classify(error, next.attempts)) {
                     is TurnOutcome.Sent -> {
                         next.sentAtMs = nowMs()
@@ -357,7 +409,7 @@ class HarnessChatBinder(
                     if (turn.sentAtMs == 0L) break
                     cursor = maxOf(cursor, turn.baseline)
                     val hit = (cursor until userTexts.size)
-                        .firstOrNull { userTexts[it] == turn.text.trim() }
+                        .firstOrNull { userTexts[it] == (turn.text + if (turn.attachments.isEmpty()) "" else "\n" + turn.attachments.joinToString("\n") { "[Image]" }).trim() }
                         ?: break
                     iterator.remove()
                     cursor = hit + 1
@@ -418,12 +470,19 @@ class HarnessChatBinder(
             }
 
             override fun onApproval(event: HarnessEvent) {
-                // claude-code and grok-build both report approvals:false, so no
-                // driver can reach this yet. Recorded, not rendered: a card the
-                // user could not answer would be worse than none, and the
-                // contract has no way to recover a pending approval after a
-                // reconnect anyway (Phase 3 driver requirement).
-                log("approval event on $sessionId: $event")
+                controlState(conversationId).update { state -> when (event) {
+                    is HarnessEvent.ApprovalRequest -> state.copy(approvals = state.approvals.filterNot { it.requestId == event.requestId } + event)
+                    is HarnessEvent.ApprovalResolved -> state.copy(approvals = state.approvals.filterNot { it.requestId == event.requestId })
+                    else -> state
+                } }
+            }
+            override fun onPrompt(event: HarnessEvent.Prompt) {
+                controlState(conversationId).update { state -> state.copy(
+                    prompts = state.prompts.filterNot { it.promptId == event.promptId } + if (event.resolved) emptyList() else listOf(event),
+                ) }
+            }
+            override fun onStatus(open: Boolean) {
+                if (!open) controlState(conversationId).update { it.copy(prompts = emptyList(), approvals = emptyList()) }
             }
 
             override fun onError(err: Throwable) {

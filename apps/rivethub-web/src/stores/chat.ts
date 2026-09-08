@@ -60,6 +60,7 @@ export interface OutboundItem {
   /** Same id as the optimistic SessionMessage (`optim:…`). */
   id: string
   text: string
+  attachments?: import('@rivetos/types').UserTurn['attachments']
   status: OutboundStatus
 }
 
@@ -194,7 +195,11 @@ interface ChatState {
   /** Seamless modes: show the user's turn immediately. Returns optim id. */
   addOptimisticUser: (sessionId: string, text: string, id?: string) => string
   /** Enqueue a user turn (queue only — the bubble is minted at send). Returns optim id. */
-  enqueueOutbound: (sessionId: string, text: string) => string
+  enqueueOutbound: (
+    sessionId: string,
+    text: string,
+    attachments?: import('@rivetos/types').UserTurn['attachments'],
+  ) => string
   markOutboundSending: (sessionId: string, id: string) => void
   /** Put a sending item back in the queue — the harness answered
    *  `turn_in_flight`, which is a "not yet", not a failure. */
@@ -659,12 +664,15 @@ export const useChat = create<ChatState>()(
         return msgId
       },
 
-      enqueueOutbound: (sessionId, text) => {
+      enqueueOutbound: (sessionId, text, attachments) => {
         const id = `optim:${uuidv4()}`
         set((s) => ({
           outbound: {
             ...s.outbound,
-            [sessionId]: [...(s.outbound[sessionId] ?? []), { id, text, status: 'queued' }],
+            [sessionId]: [
+              ...(s.outbound[sessionId] ?? []),
+              { id, text, ...(attachments?.length ? { attachments } : {}), status: 'queued' },
+            ],
           },
           // whatever the user sent IS the answer — retire the ask card
           ask: { ...s.ask, [sessionId]: undefined },

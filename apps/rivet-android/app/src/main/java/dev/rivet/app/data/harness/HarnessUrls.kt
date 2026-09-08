@@ -43,6 +43,9 @@ class HarnessUrls(denBaseUrl: String) {
     fun approval(sessionId: String, requestId: String): String =
         "${session(sessionId)}/approvals/${HarnessSessionIds.urlEncode(requestId)}"
 
+    fun prompt(sessionId: String, promptId: String): String =
+        "${session(sessionId)}/prompts/${HarnessSessionIds.urlEncode(promptId)}"
+
     fun transcript(sessionId: String): String = "${session(sessionId)}/transcript"
 
     fun upload(name: String, mime: String?): String {

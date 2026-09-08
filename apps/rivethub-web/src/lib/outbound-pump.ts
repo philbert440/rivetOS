@@ -60,7 +60,11 @@ export interface OutboundPumpOptions {
   sessionId: string
   store: OutboundPumpStore
   /** Inject one user turn into the harness (control-plane or PTY path). */
-  inject: (text: string, interrupt: boolean) => Promise<void>
+  inject: (
+    text: string,
+    interrupt: boolean,
+    attachments?: OutboundItem['attachments'],
+  ) => Promise<void>
   /** The driver's "a turn is already running" rejection. */
   isTurnInFlight: (err: unknown) => boolean
 }
@@ -125,7 +129,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     store.markSending(sessionId, next.id)
     store.beginLive(sessionId, 'working…')
     try {
-      await opts.inject(next.text, pumpOpts?.interrupt === true)
+      await opts.inject(next.text, pumpOpts?.interrupt === true, next.attachments)
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
       if (superseded()) return

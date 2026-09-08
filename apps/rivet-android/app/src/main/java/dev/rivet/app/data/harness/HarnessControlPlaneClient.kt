@@ -75,14 +75,20 @@ class HarnessControlPlaneClient(
      * Send a user turn. Rejects with `turn_in_flight` (409) while a turn is
      * running — v1 drivers never silently queue, so the caller owns the queue.
      */
-    fun sendTurn(sessionId: String, text: String, attachments: List<StagedAttachment> = emptyList()) {
+    fun sendTurn(sessionId: String, text: String, attachments: List<StagedAttachment> = emptyList(), model: String? = null, effort: String? = null) {
         val body = JSONObject().put("text", text)
+        model?.let { body.put("model", it) }
+        effort?.let { body.put("effort", it) }
         if (attachments.isNotEmpty()) {
             val arr = org.json.JSONArray()
             attachments.forEach { arr.put(it.toJson()) }
             body.put("attachments", arr)
         }
         postJson(urls.turns(sessionId), body)
+    }
+
+    fun answerPrompt(sessionId: String, promptId: String, answers: List<HarnessQuestionAnswer>) {
+        postJson(urls.prompt(sessionId, promptId), JSONObject().put("answers", org.json.JSONArray(answers.map { it.toJson() })))
     }
 
     /** Cancel the in-flight turn. Idempotent; 501 when the driver has none. */
@@ -223,6 +229,13 @@ class HarnessHttpException(
  */
 interface HarnessSessionGateway : HarnessAttachGateway {
     fun sendTurn(sessionId: String, text: String)
+    fun sendTurn(sessionId: String, text: String, attachments: List<StagedAttachment>, model: String?, effort: String?) {
+        if (attachments.isNotEmpty() || model != null || effort != null) throw UnsupportedOperationException("Native turn controls unavailable")
+        sendTurn(sessionId, text)
+    }
+    fun upload(name: String, mime: String?, bytes: ByteArray): StagedAttachment = throw UnsupportedOperationException("Uploads unavailable")
+    fun answerPrompt(sessionId: String, promptId: String, answers: List<HarnessQuestionAnswer>): Unit = throw UnsupportedOperationException("Questions unavailable")
+    fun resolveApproval(sessionId: String, requestId: String, decision: ApprovalDecision): Unit = throw UnsupportedOperationException("Approvals unavailable")
     fun interrupt(sessionId: String)
 }
 
@@ -239,5 +252,9 @@ class ClientSessionGateway(
 
     override fun sendTurn(sessionId: String, text: String) = client.sendTurn(sessionId, text)
 
+    override fun sendTurn(sessionId: String, text: String, attachments: List<StagedAttachment>, model: String?, effort: String?) = client.sendTurn(sessionId, text, attachments, model, effort)
+    override fun upload(name: String, mime: String?, bytes: ByteArray) = client.upload(name, mime, bytes)
+    override fun answerPrompt(sessionId: String, promptId: String, answers: List<HarnessQuestionAnswer>) = client.answerPrompt(sessionId, promptId, answers)
+    override fun resolveApproval(sessionId: String, requestId: String, decision: ApprovalDecision) = client.resolveApproval(sessionId, requestId, decision)
     override fun interrupt(sessionId: String) = client.interrupt(sessionId)
 }

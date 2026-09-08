@@ -26,11 +26,17 @@ data class HarnessCapabilities(
     val approvals: Boolean = false,
     val liveStream: Boolean = false,
     val listSessions: Boolean = false,
+    val turnOptions: Boolean = false,
+    val imageAttachments: Boolean = false,
+    val models: List<HarnessModelChoice> = emptyList(),
 ) {
     companion object {
         fun from(json: JSONObject?): HarnessCapabilities {
             if (json == null) return HarnessCapabilities()
             return HarnessCapabilities(
+                turnOptions = json.optBoolean("turnOptions"),
+                imageAttachments = json.optBoolean("imageAttachments"),
+                models = json.optJSONArray("models").objects().map { HarnessModelChoice.from(it) },
                 interrupt = json.optBoolean("interrupt", false),
                 resume = json.optBoolean("resume", false),
                 approvals = json.optBoolean("approvals", false),
@@ -82,6 +88,9 @@ data class HarnessSessionSummary(
     val createdAt: String?,
     val updatedAt: String?,
     val status: HarnessStatus,
+    val transport: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
 ) {
     /** Bare native id — the den join key Android files conversations under. */
     val nativeSessionId: String? get() = HarnessSessionIds.nativeIdOf(sessionId)
@@ -101,6 +110,9 @@ data class HarnessSessionSummary(
                 createdAt = json.optStringOrNull("createdAt"),
                 updatedAt = json.optStringOrNull("updatedAt"),
                 status = HarnessStatus.from(json.optStringOrNull("status")),
+                transport = json.optStringOrNull("transport"),
+                model = json.optStringOrNull("model"),
+                effort = json.optStringOrNull("effort"),
             )
         }
 
@@ -197,6 +209,13 @@ sealed class HarnessEvent {
         val isError: Boolean,
     ) : HarnessEvent()
 
+    data class Prompt(
+        override val sessionId: String,
+        val promptId: String,
+        val questions: List<HarnessQuestion>,
+        val resolved: Boolean,
+    ) : HarnessEvent()
+
     data class ApprovalRequest(
         override val sessionId: String,
         val requestId: String,
@@ -255,6 +274,12 @@ sealed class HarnessEvent {
                     json.optBoolean("isError", false),
                 )
 
+                "prompt" -> Prompt(
+                    sessionId, json.optString("promptId"),
+                    json.optJSONArray("questions").objects().map { q -> HarnessQuestion(
+                        q.optString("question"), q.optJSONArray("options").objects().map { it.optString("label") },
+                    ) }, json.optJSONObject("resolved") != null,
+                )
                 "approval-request" -> ApprovalRequest(
                     sessionId,
                     json.optString("requestId", ""),

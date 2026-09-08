@@ -1073,33 +1073,40 @@ class ChatService(
         }?.text
     }
 
-    /**
-     * Send one turn on a bound thread.
-     *
-     * Attachments are refused rather than dropped: both PTY drivers answer
-     * `capability_unsupported` for a turn carrying files (a paste has no way to
-     * hand a file to a TUI), and silently sending only the caption would be a
-     * different message than the one the user wrote. Staging through
-     * `POST /api/uploads` is wired in the client and waits on a driver that can
-     * consume a staged URI.
-     */
+    /** Stage local images on the session's own node before enqueueing a native turn. */
     private fun sendBoundHarnessTurn(conversationId: Uuid, content: List<UIMessagePart>) {
-        val text = content.filterIsInstance<UIMessagePart.Text>()
-            .joinToString("\n") { it.text }
-            .trim()
-        val hasAttachments = content.any { it !is UIMessagePart.Text }
-        appScope.launch {
-            if (hasAttachments) {
-                addError(
-                    IOException(context.getString(R.string.harness_attachments_unsupported)),
-                    conversationId,
-                    title = context.getString(R.string.harness_session_title),
-                )
-                return@launch
+        val text = content.filterIsInstance<UIMessagePart.Text>().joinToString("\n") { it.text }.trim()
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                val attachments = content.filter { it !is UIMessagePart.Text }.mapIndexed { index, part ->
+                    require(part is UIMessagePart.Image) { context.getString(R.string.harness_attachments_unsupported) }
+                    val uri = part.url.toUri()
+                    require(uri.scheme == "content" || uri.scheme == "file") { "Attach a local image before sending" }
+                    val mime = context.contentResolver.getType(uri) ?: when (uri.lastPathSegment?.substringAfterLast('.')?.lowercase()) {
+                        "jpg", "jpeg" -> "image/jpeg"
+                        "webp" -> "image/webp"
+                        "gif" -> "image/gif"
+                        else -> "image/png"
+                    }
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (out.size() <= 25 * 1024 * 1024) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            out.write(buffer, 0, count)
+                        }
+                        out.toByteArray()
+                    }
+                        ?: error("Unable to read attachment")
+                    require(bytes.size <= 25 * 1024 * 1024) { "Attachment exceeds 25 MB" }
+                    harnessBinder.upload(conversationId, "image-$index", mime, bytes)
+                }
+                if (text.isNotEmpty() || attachments.isNotEmpty()) harnessBinder.send(conversationId, text, attachments)
+                _generationDoneFlow.emit(conversationId)
+            }.onFailure { error ->
+                addError(error, conversationId, title = context.getString(R.string.harness_session_title))
             }
-            if (text.isEmpty()) return@launch
-            harnessBinder.send(conversationId, text)
-            _generationDoneFlow.emit(conversationId)
         }
     }
 
