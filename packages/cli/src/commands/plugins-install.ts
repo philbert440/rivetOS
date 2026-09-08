@@ -366,7 +366,7 @@ export function marketplaceRootWarning(root: string): string | null {
 }
 
 function skipTomlWs(s: string, i: number): number {
-  while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i += 1
+  while (i < s.length && (s[i] === ' ' || s[i] === '\t' || s[i] === '\r')) i += 1
   return i
 }
 
@@ -513,10 +513,6 @@ export function tomlHasUncommentedTable(text: string, table: string): boolean {
       continue
     }
     if (text[i] === '[') {
-      if (arrayDepth === 0 && text[i + 1] === '[') {
-        while (i < n && text[i] !== '\n') i += 1
-        continue
-      }
       if (arrayDepth === 0) {
         const nl = text.indexOf('\n', i)
         const line = nl === -1 ? text.slice(i) : text.slice(i, nl)

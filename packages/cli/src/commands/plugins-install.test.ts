@@ -200,6 +200,20 @@ describe('ensureGrokMcpBlock', () => {
     expect(out).not.toBe(existing)
     expect(tomlHasUncommentedTable(out, 'mcp_servers.rivetos')).toBe(true)
   })
+
+  it('ignores the compact nested-array multiline form', () => {
+    const existing = 'instructions = [["""\n[mcp_servers.rivetos]\n"""]]\n'
+    expect(tomlHasUncommentedTable(existing, 'mcp_servers.rivetos')).toBe(false)
+    const out = ensureGrokMcpBlock(existing, root)
+    expect(out).not.toBe(existing)
+    expect(tomlHasUncommentedTable(out, 'mcp_servers.rivetos')).toBe(true)
+  })
+
+  it('treats CRLF table headers as present and does not duplicate', () => {
+    const existing = '[mcp_servers.rivetos]\r\ncommand = "x"\r\n'
+    expect(tomlHasUncommentedTable(existing, 'mcp_servers.rivetos')).toBe(true)
+    expect(ensureGrokMcpBlock(existing, root)).toBe(existing)
+  })
 })
 
 describe('ensureEnvKey / readEnvKey', () => {
