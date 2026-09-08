@@ -1091,7 +1091,7 @@ function ActiveSession(props: {
     retry: 1,
   })
   const remoteRegistry = useQuery({
-    queryKey: ['harnesses', sessionBase, epochForNode],
+    queryKey: isRemote ? ['harnesses', sessionBase, epochForNode] : ['harnesses', sessionBase],
     queryFn: async ({ signal }) => (await gatewayFor(sessionBase)).harnesses(signal),
     staleTime: 300_000,
   })
@@ -1259,9 +1259,7 @@ function ActiveSession(props: {
     (h) => h.harnessId === nativeHarnessId,
   )?.capabilities
   const nativeModels =
-    nativeSheet?.turnOptions && (item?.transport === 'protocol' || !canonicalId)
-      ? (nativeSheet.models ?? [])
-      : []
+    nativeSheet?.turnOptions && item?.transport === 'protocol' ? (nativeSheet.models ?? []) : []
   const nativeModel =
     nativeModels.find((m) => m.id === settings?.model) ??
     nativeModels.find((m) => m.id === item?.model) ??
@@ -1598,9 +1596,12 @@ function ActiveSession(props: {
     )
     const sendProtocol = async (sid: string): Promise<void> => {
       const harnessId = sid.split(':')[0] as import('@rivetos/types').HarnessId
-      const { capabilities } = await gw.harnessCapabilities(harnessId)
+      const capabilities =
+        remoteRegistry.data?.harnesses.find((h) => h.harnessId === harnessId)?.capabilities ??
+        (await gw.harnessCapabilities(harnessId)).capabilities
       const protocolOwned =
         protocolSessionRef.current === sid ||
+        (canonicalId === sid && item?.transport === 'protocol') ||
         (await gw.getHarnessSession(sid)).transport === 'protocol'
       const nativeAttachments =
         protocolOwned &&

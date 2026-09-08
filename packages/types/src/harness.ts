@@ -216,6 +216,8 @@ export interface HarnessAskQuestion {
   question?: string
   header?: string
   multiSelect: boolean
+  /** Native questions allow text even when no options are offered. */
+  freeText?: boolean
   options: HarnessAskOption[]
 }
 
@@ -276,8 +278,8 @@ export interface HarnessStatusFrame {
  *  `gateway-api.ts`. */
 export type SessionSummary = {
   effort?: string
-  /** Session-specific transport; a driver can also serve older PTY sessions. */
-  transport?: 'protocol' | 'pty'
+  /** Protocol-owned session; absent for legacy PTY sessions. */
+  transport?: 'protocol'
   sessionId: SessionId
   harnessId: HarnessId
   title?: string

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { realpath, lstat } from 'node:fs/promises'
 import {
   HarnessError,
@@ -124,6 +124,7 @@ export class CodexProtocolDriver extends CodexDriver {
       let cursor: string | undefined
       const seen = new Set<string>()
       do {
+        if (seen.size >= 100) throw new Error('Codex model catalog exceeded 100 pages')
         const result = await this.protocol.rpc.request('model/list', {
           ...(cursor ? { cursor } : {}),
           includeHidden: false,
@@ -162,7 +163,9 @@ export class CodexProtocolDriver extends CodexDriver {
     })().finally(() => {
       this.catalogLoading = undefined
     })
-    await this.catalogLoading
+    await this.catalogLoading.catch((error: unknown) => {
+      if (!this.capabilities.models?.length) throw error
+    })
   }
 
   manages(id: string): boolean {
@@ -357,7 +360,9 @@ export class CodexProtocolDriver extends CodexDriver {
     for (const attachment of turn.attachments ?? []) {
       if (
         !this.protocol.uploadsDir ||
-        !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(attachment.mime)
+        !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(
+          attachment.mime === 'image/jpg' ? 'image/jpeg' : attachment.mime,
+        )
       )
         throw new HarnessError(
           'capability_unsupported',
@@ -366,12 +371,13 @@ export class CodexProtocolDriver extends CodexDriver {
       const root = await realpath(this.protocol.uploadsDir)
       const path = resolve(attachment.pathOrUri)
       const stat = await lstat(path).catch(() => undefined)
-      if (dirname(path) !== root || !stat?.isFile() || (await realpath(path)) !== path)
+      const canonical = await realpath(path).catch(() => undefined)
+      if (!stat?.isFile() || canonical !== join(root, basename(path)))
         throw new HarnessError(
           'bad_request',
           'Attachment must be a regular file staged on this node',
         )
-      input.push({ type: 'localImage', path })
+      input.push({ type: 'localImage', path: canonical })
     }
     if (!input.length) throw new HarnessError('bad_request', 'A turn requires text or an image')
     return { ...params, input }
@@ -404,9 +410,12 @@ export class CodexProtocolDriver extends CodexDriver {
         threadId: b.threadId,
         ...params,
       })
+      const changed =
+        (typeof params.model === 'string' && params.model !== b.model) ||
+        (typeof params.effort === 'string' && params.effort !== b.effort)
       if (typeof params.model === 'string') b.model = params.model
       if (typeof params.effort === 'string') b.effort = params.effort
-      if (params.model || params.effort) this.save()
+      if (changed) this.save()
       const remoteTurn = record(result.turn)
       if (
         typeof remoteTurn.id === 'string' &&
@@ -527,7 +536,7 @@ export class CodexProtocolDriver extends CodexDriver {
       ) {
         this.protocol.rpc.reject(
           frame.id,
-          'Unsupported or secret question; answer it in the Codex terminal',
+          'Unsupported or secret question is not supported by this client',
         )
         return
       }
@@ -542,6 +551,7 @@ export class CodexProtocolDriver extends CodexDriver {
           question: stringValue(q.question),
           header: stringValue(q.header),
           multiSelect: false,
+          freeText: true,
           options: (Array.isArray(q.options) ? q.options : [])
             .map(record)
             .map((o) => ({ label: stringValue(o.label), description: stringValue(o.description) })),
@@ -733,14 +743,11 @@ export class CodexProtocolDriver extends CodexDriver {
       if (!Number.isInteger(answer.question) || !key || Object.hasOwn(out, key))
         throw new HarnessError('bad_request', 'Invalid question index')
       const options = pending.event.questions[answer.question].options
-      if (
-        answer.labels.length > 1 ||
-        answer.labels.some((label) => !options.some((o) => o.label === label))
-      )
-        throw new HarnessError('bad_request', 'Choose one offered answer or enter text')
+      if (answer.labels.some((label) => !options.some((o) => o.label === label)))
+        throw new HarnessError('bad_request', 'Choose offered answers or enter text')
       const values = [...answer.labels, ...(answer.other?.trim() ? [answer.other.trim()] : [])]
-      if (values.length !== 1)
-        throw new HarnessError('bad_request', 'Each question needs one answer')
+      if (values.length < 1)
+        throw new HarnessError('bad_request', 'Each question needs at least one answer')
       out[key] = { answers: values }
     }
     this.protocol.rpc.respond(pending.rpcId, { answers: out })
@@ -788,6 +795,7 @@ export function codexThreadTurns(thread: Record<string, unknown>): HarnessTransc
                 ? '[Image]'
                 : '',
           )
+          .filter(Boolean)
           .join('\n')
         if (text) result.push({ role: 'user', text })
       } else if (item.type === 'agentMessage') {

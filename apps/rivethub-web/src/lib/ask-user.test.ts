@@ -1,3 +1,4 @@
+import { structuredAskAnswers } from './ask-user.js'
 import { describe, it, expect } from 'vitest'
 import {
   extractAskUserQuestions,
@@ -27,10 +28,7 @@ describe('extractAskUserQuestions', () => {
           question: 'Which auth method?',
           header: 'Auth method',
           multiSelect: false,
-          options: [
-            { label: 'JWT', description: 'Stateless tokens' },
-            { label: 'Sessions' },
-          ],
+          options: [{ label: 'JWT', description: 'Stateless tokens' }, { label: 'Sessions' }],
         },
         {
           question: 'Enable features?',
@@ -209,4 +207,23 @@ describe('askErrorMessage', () => {
       askErrorMessage({ body: { error: 'free text with several questions is not supported' } }),
     ).toBe('free text with several questions is not supported')
   })
+})
+
+it('native text questions remain answerable without visible options', () => {
+  expect(askCardMode({ options: [], multiSelect: false, freeText: true })).toBe('answer')
+})
+it('keeps text with its question and combines it with selected labels', () => {
+  expect(
+    structuredAskAnswers(
+      [
+        { options: [{ label: 'Blue' }], multiSelect: false, freeText: true },
+        { options: [], multiSelect: false, freeText: true },
+      ],
+      { 0: ['Blue'] },
+      { 0: ' ocean ', 1: ' Rivet ' },
+    ),
+  ).toEqual([
+    { question: 0, labels: ['Blue'], other: 'ocean' },
+    { question: 1, labels: [], other: 'Rivet' },
+  ])
 })

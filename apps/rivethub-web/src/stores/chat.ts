@@ -682,7 +682,15 @@ export const useChat = create<ChatState>()(
 
       markOutboundSending: (sessionId, id) => {
         const item = get().outbound[sessionId]?.find((o) => o.id === id)
-        if (item) get().addOptimisticUser(sessionId, item.text, id)
+        if (item) {
+          const text =
+            item.text ||
+            (item.attachments ?? [])
+              .filter((a) => a.mime.startsWith('image/'))
+              .map(() => '[Image]')
+              .join('\n')
+          get().addOptimisticUser(sessionId, text, id)
+        }
         set((s) => ({
           outbound: {
             ...s.outbound,

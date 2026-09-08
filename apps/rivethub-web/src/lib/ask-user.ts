@@ -51,6 +51,8 @@ export interface AskQuestion {
    *  when multiple questions are answered at once. */
   header?: string
   multiSelect: boolean
+  /** Native questions allow text even when no options are offered. */
+  freeText?: boolean
   options: AskOption[]
 }
 
@@ -168,9 +170,10 @@ export type AskCardMode = 'answer' | 'terminal-only' | 'no-options'
  * picker; empty option lists are not on the captured screen.
  */
 export function askCardMode(
-  question: Pick<AskQuestion, 'multiSelect' | 'options'>,
+  question: Pick<AskQuestion, 'multiSelect' | 'options' | 'freeText'>,
   screen?: AskScreen,
 ): AskCardMode {
+  if (question.freeText) return 'answer'
   if (question.options.length === 0) return 'no-options'
   if (
     screen !== undefined &&
@@ -213,4 +216,17 @@ export function questionsFromLiveTools(
     if (qs.length) return qs
   }
   return []
+}
+
+/** Preserve the question index for native choice-plus-text responses. */
+export function structuredAskAnswers(
+  questions: AskQuestion[],
+  picked: Record<number, string[]>,
+  text: Record<number, string>,
+): Array<{ question: number; labels: string[]; other?: string }> {
+  return questions.map((_, question) => ({
+    question,
+    labels: picked[question] ?? [],
+    ...(text[question]?.trim() ? { other: text[question].trim() } : {}),
+  }))
 }
