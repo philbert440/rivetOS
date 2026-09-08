@@ -158,8 +158,8 @@ export function helpText(): string {
     rivetos memory retry-failed         Reset dead graphile jobs (after a code fix)
 
   Database:
-    rivetos db migrate                  Apply pending migrations (Postgres or embedded)
-    rivetos db status                   Show applied migrations (embedded: data dir, owner)
+    rivetos db migrate [--config <path>] Apply pending migrations (Postgres or embedded)
+    rivetos db status [--config <path>] Show applied migrations (embedded: data dir, owner)
 
   Users:
     rivetos user list                   Show the tenancy registry

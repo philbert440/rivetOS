@@ -43,7 +43,8 @@ export async function loadRivetConfig(path: string): Promise<RivetConfig> {
  * Maintenance commands (db migrate/status, start --role migrate) must not be blocked
  * by an unrelated validation error elsewhere in config.yaml: read the file leniently and
  * only look at `memory.postgres.embedded`. Unreadable/unparseable → undefined (fall
- * through to the external-Postgres path).
+ * through to the external-Postgres path). A present-but-invalid `embedded.port`
+ * throws rather than silently defaulting to 5433.
  */
 export function readEmbeddedConfig(
   path: string,
@@ -59,8 +60,25 @@ export function readEmbeddedConfig(
   // Same ${ENV_VAR} expansion as loadConfig — without it, data_dir: '${HOME}/…'
   // is passed through literally and acquire opens a different directory than boot.
   const config = resolveEnvVars(parsed as RivetConfig)
+  assertEmbeddedPort(config)
   const resolved = resolveEmbeddedPg(config)
   return resolved ? { config, resolved } : undefined
+}
+
+/**
+ * Boot's schema rejects a non-integer port; the lenient reader used to swallow
+ * it and silently default to 5433, so CLI and node could disagree. Fail loudly.
+ */
+function assertEmbeddedPort(config: RivetConfig): void {
+  const embedded = config.memory?.postgres?.['embedded']
+  if (!embedded || typeof embedded !== 'object' || Array.isArray(embedded)) return
+  const port = (embedded as { port?: unknown }).port
+  if (port === undefined || port === null) return
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `memory.postgres.embedded.port must be an integer between 1 and 65535 (got ${JSON.stringify(port)})`,
+    )
+  }
 }
 
 /**

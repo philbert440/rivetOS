@@ -21,13 +21,36 @@ import {
 import { loadRivetEnv } from '../lib/env-file.js'
 import { resolveMemoryMigrateScript } from '../paths.js'
 
+/**
+ * Strip `--config`/`-c` from argv so it is never forwarded to the child
+ * migrator (which only understands `--url` / `--baseline`).
+ */
+export function takeConfigFlag(argv: string[]): { configPath?: string; rest: string[] } {
+  const rest: string[] = []
+  let configPath: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--config' || arg === '-c') {
+      const next = argv[i + 1]
+      if (!next || next.startsWith('-')) {
+        throw new Error('db: --config requires a path')
+      }
+      configPath = next
+      i++
+      continue
+    }
+    rest.push(arg)
+  }
+  return { configPath, rest }
+}
+
 async function spawnMigrateChild(args: string[], pgUrl?: string): Promise<void> {
   const script = resolveMemoryMigrateScript()
   if (!script) {
-    console.error(
+    // Throw (do not process.exit) so withEmbeddedPg's finally still closes the engine.
+    throw new Error(
       '[db migrate] cannot locate @rivetos/memory-postgres migrate runner — is the package installed and built?',
     )
-    process.exit(1)
   }
 
   const env = pgUrl ? { ...process.env, RIVETOS_PG_URL: pgUrl } : process.env
@@ -93,17 +116,19 @@ export async function runDbStatus(explicitConfig?: string): Promise<void> {
 
 function printEmbeddedStatusHeader(dataDir: string, configPort: number, owned: boolean): void {
   const lock = readEmbeddedPgLock(dataDir)
-  const alive = lock ? embeddedPgLockAlive(lock) : owned
+  const alive = lock ? embeddedPgLockAlive(lock) : false
   const size = formatBytes(dirSizeBytes(dataDir))
   const port = lock?.port ?? configPort
-  const pid = lock?.pid ?? (owned ? process.pid : undefined)
   console.log('[db status] embedded PGlite')
   console.log(`  data_dir: ${dataDir}`)
   console.log(`  size: ${size}`)
-  if (pid == null) {
+  if (owned) {
+    // Status itself opened the dir; printing our pid as "alive" looks like a node is running.
+    console.log('  owner: this command (no node running)')
+  } else if (lock?.pid == null) {
     console.log('  owner_pid: none')
   } else {
-    console.log(`  owner_pid: ${String(pid)} (${alive ? 'alive' : 'dead'})`)
+    console.log(`  owner_pid: ${String(lock.pid)} (${alive ? 'alive' : 'dead'})`)
   }
   console.log(`  port: ${String(port)}`)
 }
@@ -145,22 +170,25 @@ async function printMigrationStatus(
 export default async function dbCommand(): Promise<void> {
   loadRivetEnv()
   const sub = process.argv[3]
-  const rest = process.argv.slice(4)
+  const { configPath, rest } = takeConfigFlag(process.argv.slice(4))
 
   switch (sub) {
     case 'migrate':
-      await runDbMigrate(rest)
+      await runDbMigrate(rest, configPath)
       break
     case 'status':
-      await runDbStatus()
+      await runDbStatus(configPath)
       break
     default:
       console.log(`
 rivetos db — schema migration commands (Postgres or embedded PGlite)
 
 Usage:
-  rivetos db migrate [--url <pg>]   Apply pending migrations (embedded: acquire or attach)
-  rivetos db status                 Show applied migrations (embedded: data dir, size, owner, port)
+  rivetos db migrate [--config <path>] [--url <pg>]   Apply pending migrations (embedded: acquire or attach)
+  rivetos db status [--config <path>]                 Show applied migrations (embedded: data dir, size, owner, port)
+
+  --config / -c   Path to config.yaml (not forwarded to the migrator)
+  --url           Bypass the embedded engine and target that Postgres URL
 `)
       if (sub) process.exit(1)
   }

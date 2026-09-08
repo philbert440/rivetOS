@@ -49,9 +49,7 @@ import {
   embeddedPgLockAlive,
   embeddedPgUrl,
   readEmbeddedPgLock,
-  resolveEmbeddedPg,
   validateConfig,
-  type RivetConfig,
 } from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
@@ -66,6 +64,12 @@ import {
   readRivetosDotEnv,
   resolveHerdrMux,
 } from '../lib/herdr.js'
+import {
+  dirSizeBytes,
+  findRivetConfigPath,
+  formatBytes,
+  readEmbeddedConfig,
+} from '../lib/embedded.js'
 import { loadRivetEnv } from '../lib/env-file.js'
 
 // ---------------------------------------------------------------------------
@@ -535,7 +539,7 @@ function checkContainers(): CheckResult[] {
 
 type DoctorPgQuery = (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>
 
-async function checkMemoryBackend(): Promise<{
+export async function checkMemoryBackend(): Promise<{
   results: CheckResult[]
   query?: DoctorPgQuery
   close?: () => Promise<void>
@@ -667,48 +671,16 @@ async function checkMemoryBackend(): Promise<{
   }
 }
 
-function loadEmbeddedResolved(): ReturnType<typeof resolveEmbeddedPg> {
-  const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+function loadEmbeddedResolved():
+  NonNullable<ReturnType<typeof readEmbeddedConfig>>['resolved'] | undefined {
+  const configPath = findRivetConfigPath()
+  if (!configPath) return undefined
   try {
-    const raw = readFileSync(configPath, 'utf-8')
-    const parsed = parseYaml(raw) as RivetConfig
-    return resolveEmbeddedPg(parsed)
+    return readEmbeddedConfig(configPath)?.resolved
   } catch {
+    // Malformed embedded.port throws from the lenient reader; do not crash doctor.
     return undefined
   }
-}
-
-function dirSizeBytes(dir: string): number {
-  if (!existsSync(dir)) return 0
-  let total = 0
-  const walk = (p: string): void => {
-    let st
-    try {
-      st = statSync(p)
-    } catch {
-      return
-    }
-    if (st.isFile()) {
-      total += st.size
-      return
-    }
-    if (!st.isDirectory()) return
-    let entries: string[]
-    try {
-      entries = readdirSync(p)
-    } catch {
-      return
-    }
-    for (const name of entries) walk(join(p, name))
-  }
-  walk(dir)
-  return total
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${String(n)} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // ---------------------------------------------------------------------------

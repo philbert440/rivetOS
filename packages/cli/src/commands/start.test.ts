@@ -125,6 +125,15 @@ describe('runMigrate embedded', () => {
     await expect(runMigrate(CONFIG_PATH)).rejects.toThrow('boom')
     expect(handle.close).toHaveBeenCalled()
   })
+
+  it('still closes when the migrator script is missing', async () => {
+    const handle = closeHandle(false)
+    boot.acquireEmbeddedPg.mockResolvedValue(handle)
+    resolveScript.mockReturnValueOnce('')
+
+    await expect(runMigrate(CONFIG_PATH)).rejects.toThrow(/cannot locate/)
+    expect(handle.close).toHaveBeenCalled()
+  })
 })
 
 describe('runMigrate non-embedded', () => {

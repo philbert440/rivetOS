@@ -70,4 +70,14 @@ describe('readEmbeddedConfig', () => {
     })
     expect(result?.resolved).toBe(resolved)
   })
+
+  it('throws a clear error when embedded.port is not an integer', () => {
+    const path = join(CONFIG_DIR, 'bad-port.yaml')
+    writeFileSync(path, 'memory:\n  postgres:\n    embedded: { port: "abc" }\n')
+
+    expect(() => readEmbeddedConfig(path)).toThrow(
+      /memory\.postgres\.embedded\.port must be an integer between 1 and 65535/,
+    )
+    expect(boot.resolveEmbeddedPg).not.toHaveBeenCalled()
+  })
 })

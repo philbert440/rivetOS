@@ -82,8 +82,8 @@ async function startAgent(configPath: string): Promise<void> {
 async function spawnMigrateChild(extraArgs: string[] = [], pgUrl?: string): Promise<void> {
   const script = resolveMemoryMigrateScript()
   if (!script) {
-    console.error('[migrate] cannot locate @rivetos/memory-postgres migrate runner')
-    process.exit(1)
+    // Throw (do not process.exit) so withEmbeddedPg's finally still closes the engine.
+    throw new Error('[migrate] cannot locate @rivetos/memory-postgres migrate runner')
   }
   const env = pgUrl ? { ...process.env, RIVETOS_PG_URL: pgUrl } : process.env
   await new Promise<void>((res, rej) => {
