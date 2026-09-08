@@ -1,8 +1,8 @@
 /**
  * Settings persistence sync: hydrate localStorage from the Electron shell's
- * settings.json on boot if Chromium store is empty, and persist writes back
- * to the file. Survives localStorage wipes (Linux updates emptying the
- * app://bundle origin's store).
+ * settings.json on boot (per-key; existing Chromium values win), and persist
+ * writes back to the file. Survives localStorage wipes (Linux updates
+ * emptying the app://bundle origin's store).
  */
 
 import { isElectronShell, rivetShell as getRivetShell } from './shell-bridge.js'
@@ -20,10 +20,15 @@ const SETTINGS_KEYS = [
 ] as const
 
 /**
- * Hydrate localStorage from the shell's settings.json if Chromium store is
- * empty. Ignores the "already migrated" flag — the file is the source of
- * truth, and an empty localStorage after a wipe should restore from the file
- * even if a prior migration succeeded.
+ * Hydrate localStorage from the shell's settings.json. Ignores the
+ * "already migrated" flag — the file is the source of truth, and an empty
+ * localStorage after a wipe should restore from the file even if a prior
+ * migration succeeded.
+ *
+ * Merge rule: copy each SETTINGS_KEYS entry from the file that
+ * localStorage does not already have. Existing localStorage values win.
+ * A renderer that only saved a theme still picks up an adopted baseUrl
+ * and roster.
  *
  * Also seeds settings.json from localStorage if the file is empty but
  * localStorage has keys (manual restore, first run with existing data). This
@@ -63,22 +68,19 @@ export async function hydrateSettingsIfEmpty(): Promise<void> {
       return
     }
 
-    // Case 2: localStorage is empty, file has keys — hydrate from file
-    if (!hasLocalStorage && hasFileSettings) {
-      for (const key of SETTINGS_KEYS) {
-        const value = settings[key]
-        if (value !== undefined) {
-          try {
-            localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value))
-          } catch {
-            /* storage full / disabled */
-          }
-        }
+    // Fill localStorage with any file keys it does not already have.
+    // Empty localStorage hydrates fully; a partial store (e.g. theme only)
+    // still picks up adopted baseUrl + roster. Existing values win.
+    for (const key of SETTINGS_KEYS) {
+      if (localStorageData[key] !== undefined) continue
+      const value = settings[key]
+      if (value === undefined) continue
+      try {
+        localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value))
+      } catch {
+        /* storage full / disabled */
       }
-      return
     }
-
-    // Case 3: both empty or both have keys — no-op
   } catch {
     /* shell API unavailable or failed — graceful fallback to empty localStorage */
   }

@@ -1,3 +1,5 @@
+import * as http from 'node:http'
+import type { AddressInfo, Socket } from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { adoptLocalDenIfUnconfigured, probeLocalDen, type ProbeGet } from './local-den.js'
 
@@ -74,11 +76,15 @@ describe('probeLocalDen', () => {
     expect(await probeLocalDen({}, { get })).toBeNull()
   })
 
-  it('returns null on non-2xx, junk JSON, and ok:false', async () => {
+  it('returns null on non-2xx, junk JSON, ok:false, and nameless healthz', async () => {
     const cases = [
       [{ statusCode: 500, body: '{"ok":true}' }],
       [{ body: 'not-json' }],
       [{ body: '{"ok":false,"name":"x"}' }],
+      [{ body: '{"ok":true}' }],
+      [{ body: '{"ok":true,"name":42}' }],
+      [{ body: '{"ok":true,"name":""}' }],
+      [{ body: '{"ok":true,"name":"   "}' }],
     ]
     for (const script of cases) {
       const get = scriptedGet(script)
@@ -127,9 +133,47 @@ describe('probeLocalDen', () => {
     await expect(probeLocalDen({}, { get })).resolves.toBeNull()
   })
 
-  it('omits name when healthz has none', async () => {
-    const get = scriptedGet([{ body: '{"ok":true}' }])
-    expect(await probeLocalDen({}, { get })).toEqual({ baseUrl: 'https://localhost:5174' })
+  it('aborts a trickling response at the wall-clock deadline', async () => {
+    const sockets = new Set<Socket>()
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      const id = setInterval(() => {
+        try {
+          res.write('x')
+        } catch {
+          /* destroyed */
+        }
+      }, 15)
+      const stop = (): void => clearInterval(id)
+      req.on('close', stop)
+      res.on('close', stop)
+    })
+    server.on('connection', (socket) => {
+      sockets.add(socket)
+      socket.on('close', () => sockets.delete(socket))
+    })
+    await new Promise<void>((resolve) => {
+      server.listen(0, 'localhost', () => resolve())
+    })
+    const addr = server.address() as AddressInfo
+    try {
+      const t0 = Date.now()
+      const hit = await probeLocalDen({ port: addr.port, timeoutMs: 60 })
+      const elapsed = Date.now() - t0
+      expect(hit).toBeNull()
+      expect(elapsed).toBeGreaterThanOrEqual(40)
+      expect(elapsed).toBeLessThan(800)
+      const drainUntil = Date.now() + 200
+      while (sockets.size > 0 && Date.now() < drainUntil) {
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      expect(sockets.size).toBe(0)
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()))
+      })
+    }
   })
 })
 
@@ -145,12 +189,45 @@ describe('adoptLocalDenIfUnconfigured', () => {
     })
   })
 
-  it('uses roster name "local" when healthz has no name', async () => {
+  it('does not adopt {"ok":true} without a name', async () => {
     const store = memStore()
     const get = scriptedGet([{ body: '{"ok":true}' }])
-    await adoptLocalDenIfUnconfigured(store, {}, { get })
+    expect(await adoptLocalDenIfUnconfigured(store, {}, { get })).toBeNull()
+    expect(store.snapshot()).toEqual({})
+  })
+
+  it('writes baseUrl + roster when other settings already exist', async () => {
+    const store = memStore({ 'rivethub.theme': 'dark' })
+    const get = scriptedGet([{ body: OK }])
+    await adoptLocalDenIfUnconfigured(store, { caPem: 'ca' }, { get })
+    expect(store.snapshot()).toEqual({
+      'rivethub.theme': 'dark',
+      'rivethub.baseUrl': 'https://localhost:5174',
+      'rivethub.roster': [{ name: 'rivet-grok', baseUrl: 'https://localhost:5174' }],
+    })
+  })
+
+  it('does not clobber an existing roster entry with the same baseUrl', async () => {
+    const store = memStore({
+      'rivethub.roster': [{ name: 'already', baseUrl: 'https://localhost:5174' }],
+    })
+    const get = scriptedGet([{ body: OK }])
+    await adoptLocalDenIfUnconfigured(store, { caPem: 'ca' }, { get })
     expect(store.snapshot()['rivethub.roster']).toEqual([
-      { name: 'local', baseUrl: 'https://localhost:5174' },
+      { name: 'already', baseUrl: 'https://localhost:5174' },
+    ])
+    expect(store.snapshot()['rivethub.baseUrl']).toBe('https://localhost:5174')
+  })
+
+  it('appends a new roster row when the adopted baseUrl is not present', async () => {
+    const store = memStore({
+      'rivethub.roster': [{ name: 'other', baseUrl: 'https://other:5174' }],
+    })
+    const get = scriptedGet([{ body: OK }])
+    await adoptLocalDenIfUnconfigured(store, { caPem: 'ca' }, { get })
+    expect(store.snapshot()['rivethub.roster']).toEqual([
+      { name: 'other', baseUrl: 'https://other:5174' },
+      { name: 'rivet-grok', baseUrl: 'https://localhost:5174' },
     ])
   })
 

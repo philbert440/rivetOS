@@ -1,10 +1,13 @@
 /**
  * First-run local den probe. When RivetHub has no saved gateway, the shell
  * asks localhost:5174 /healthz and, on a hit, writes baseUrl + roster so
- * the renderer hydrates both (settings-sync). Real traffic still rides
- * mtls-pipe (CA-pinned, localhost allowed); this path is probe-only.
+ * the renderer hydrates missing keys (settings-sync per-key merge). Real
+ * traffic still rides mtls-pipe (CA-pinned, localhost allowed); this path
+ * is probe-only.
  *
- * Never throws. Total wall time is ~2× timeoutMs (default ≤ ~3 s).
+ * Never throws. Total wall time is ~2× timeoutMs (default ≤ ~3 s). A
+ * timed-out attempt aborts the in-flight request so a trickling body
+ * cannot outlive the cap.
  */
 
 import * as http from 'node:http'
@@ -13,7 +16,7 @@ import type { IncomingMessage, RequestOptions } from 'node:http'
 
 export interface LocalDenHit {
   baseUrl: string
-  name?: string
+  name: string
 }
 
 export interface ProbeLocalDenOpts {
@@ -34,6 +37,7 @@ export type ProbeGet = (
     ca?: string
     rejectUnauthorized: boolean
     timeoutMs: number
+    signal?: AbortSignal
   },
 ) => Promise<{ statusCode: number; body: string }>
 
@@ -79,13 +83,13 @@ export async function probeLocalDen(
       const insecure = await attempt(get, 'https', port, timeoutMs, deadline, {
         rejectUnauthorized: false,
       })
-      if (insecure?.hit) return insecure.hit
+      if (insecure.hit) return insecure.hit
     }
 
     const plain = await attempt(get, 'http', port, timeoutMs, deadline, {
       rejectUnauthorized: false,
     })
-    return plain?.hit ?? null
+    return plain.hit ?? null
   } catch {
     return null
   }
@@ -93,7 +97,8 @@ export async function probeLocalDen(
 
 /**
  * If settings have no rivethub.baseUrl and a local den answers, persist
- * baseUrl + a one-row roster. Existing non-empty baseUrl is left alone.
+ * baseUrl + a roster row. Existing non-empty baseUrl is left alone. An
+ * existing roster is merged: a row with the same baseUrl is kept as-is.
  */
 export async function adoptLocalDenIfUnconfigured(
   settings: LocalDenSettings,
@@ -106,7 +111,10 @@ export async function adoptLocalDenIfUnconfigured(
     if (!hit) return null
     settings.setAll({
       'rivethub.baseUrl': hit.baseUrl,
-      'rivethub.roster': [{ name: hit.name ?? 'local', baseUrl: hit.baseUrl }],
+      'rivethub.roster': mergeRoster(settings.get('rivethub.roster'), {
+        name: hit.name,
+        baseUrl: hit.baseUrl,
+      }),
     })
     return hit
   } catch {
@@ -116,6 +124,31 @@ export async function adoptLocalDenIfUnconfigured(
 
 function hasBaseUrl(value: unknown): boolean {
   return typeof value === 'string' && value.trim() !== ''
+}
+
+/** Saved-node row written to `rivethub.roster` (same shape as the renderer RosterNode). */
+interface RosterEntry {
+  name: string
+  baseUrl: string
+}
+
+function isRosterEntry(value: unknown): value is RosterEntry {
+  if (value === null || typeof value !== 'object') return false
+  if (!('name' in value) || !('baseUrl' in value)) return false
+  return typeof value.name === 'string' && typeof value.baseUrl === 'string'
+}
+
+/** Array.isArray narrows to any[]; recast then filter so the merge spread is typed. */
+function parseRoster(value: unknown): RosterEntry[] {
+  if (!Array.isArray(value)) return []
+  const items: unknown[] = value as unknown[]
+  return items.filter(isRosterEntry)
+}
+
+function mergeRoster(existing: unknown, row: RosterEntry): RosterEntry[] {
+  const roster = parseRoster(existing)
+  if (roster.some((entry) => entry.baseUrl === row.baseUrl)) return roster
+  return [...roster, row]
 }
 
 function remaining(deadline: number): number {
@@ -129,8 +162,7 @@ function isTimeout(err: unknown): boolean {
 }
 
 type AttemptResult =
-  | { hit: LocalDenHit; timeout?: undefined }
-  | { hit?: undefined; timeout: boolean }
+  { hit: LocalDenHit; timeout?: undefined } | { hit?: undefined; timeout: boolean }
 
 async function attempt(
   get: ProbeGet,
@@ -142,6 +174,7 @@ async function attempt(
 ): Promise<AttemptResult> {
   const budget = Math.min(timeoutMs, remaining(deadline))
   if (budget <= 0) return { timeout: true }
+  const abort = new AbortController()
   try {
     const res = await timed(
       get(kind, {
@@ -151,20 +184,22 @@ async function attempt(
         ca: tls.ca,
         rejectUnauthorized: tls.rejectUnauthorized,
         timeoutMs: budget,
+        signal: abort.signal,
       }),
       budget,
+      abort,
     )
     const parsed = parseHealthz(res.statusCode, res.body)
     if (!parsed) return { timeout: false }
-    const hit: LocalDenHit = { baseUrl: `${kind}://localhost:${String(port)}` }
-    if (parsed.name) hit.name = parsed.name
-    return { hit }
+    return {
+      hit: { baseUrl: `${kind}://localhost:${String(port)}`, name: parsed.name },
+    }
   } catch (err) {
     return { timeout: isTimeout(err) }
   }
 }
 
-function parseHealthz(statusCode: number, body: string): { name?: string } | null {
+function parseHealthz(statusCode: number, body: string): { name: string } | null {
   if (statusCode < 200 || statusCode >= 300) return null
   let parsed: unknown
   try {
@@ -175,13 +210,14 @@ function parseHealthz(statusCode: number, body: string): { name?: string } | nul
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
   const rec = parsed as { ok?: unknown; name?: unknown }
   if (rec.ok !== true) return null
-  const name = typeof rec.name === 'string' && rec.name.trim() !== '' ? rec.name.trim() : undefined
-  return name ? { name } : {}
+  if (typeof rec.name !== 'string' || rec.name.trim() === '') return null
+  return { name: rec.name.trim() }
 }
 
-function timed<T>(work: Promise<T>, ms: number): Promise<T> {
+function timed<T>(work: Promise<T>, ms: number, abort?: AbortController): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => {
+      abort?.abort()
       reject(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }))
     }, ms)
     work.then(
@@ -206,6 +242,7 @@ async function defaultGet(
     ca?: string
     rejectUnauthorized: boolean
     timeoutMs: number
+    signal?: AbortSignal
   },
 ): Promise<{ statusCode: number; body: string }> {
   const request = kind === 'https' ? https.request : http.request
@@ -228,6 +265,7 @@ async function defaultGet(
     const finish = (err: Error | null, result?: { statusCode: number; body: string }): void => {
       if (settled) return
       settled = true
+      options.signal?.removeEventListener('abort', onAbort)
       if (err) reject(err)
       else resolve(result as { statusCode: number; body: string })
     }
@@ -252,11 +290,22 @@ async function defaultGet(
       })
       res.on('error', (err: Error) => finish(err))
     })
+    const onAbort = (): void => {
+      req.destroy()
+      finish(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }))
+    }
     req.on('timeout', () => {
       req.destroy()
       finish(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }))
     })
     req.on('error', (err: Error) => finish(err))
+    if (options.signal) {
+      if (options.signal.aborted) {
+        onAbort()
+        return
+      }
+      options.signal.addEventListener('abort', onAbort)
+    }
     req.end()
   })
 }

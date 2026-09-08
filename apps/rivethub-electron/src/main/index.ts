@@ -521,9 +521,13 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(async () => {
     try {
-      // Before the first window: renderer hydrates baseUrl + roster from
-      // settings.json on load. Existing baseUrl is left alone.
-      await adoptLocalDenIfUnconfigured(settingsStore, { caPem: readIdentityCaPem() })
+      // Before the first window: renderer hydrates missing keys from
+      // settings.json (per-key; existing localStorage values win). Existing
+      // non-empty baseUrl is left alone.
+      const adopted = await adoptLocalDenIfUnconfigured(settingsStore, {
+        caPem: readIdentityCaPem(),
+      })
+      if (adopted) logFault('local-den', `adopted ${adopted.name} ${adopted.baseUrl}`)
       startup()
     } catch (err) {
       // One bad step must not abort startup with no window and no trail —
