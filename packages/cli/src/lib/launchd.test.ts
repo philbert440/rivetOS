@@ -35,7 +35,7 @@ describe('renderLaunchdPlist', () => {
 })
 
 describe('installLaunchdAgent / stopLaunchdAgent', () => {
-  it('writes the plist 0600, bootout then bootstrap, and disable on stop', async () => {
+  it('writes the plist 0600, bootout then enable then bootstrap, and disable on stop', async () => {
     const home = mkdtempSync(join(tmpdir(), 'launchd-'))
     try {
       const calls: string[][] = []
@@ -58,9 +58,10 @@ describe('installLaunchdAgent / stopLaunchdAgent', () => {
       expect(body).toContain('RIVETOS_MODE')
       expect(body).toContain('/home/tester/.local/bin')
       expect(calls[0]).toEqual(['bootout', `gui/501/${LAUNCHD_LABEL}`])
-      expect(calls[1]?.[0]).toBe('bootstrap')
-      expect(calls[1]?.[1]).toBe('gui/501')
-      expect(calls[1]?.[2]).toBe(plistPath)
+      expect(calls[1]).toEqual(['enable', `gui/501/${LAUNCHD_LABEL}`])
+      expect(calls[2]?.[0]).toBe('bootstrap')
+      expect(calls[2]?.[1]).toBe('gui/501')
+      expect(calls[2]?.[2]).toBe(plistPath)
 
       await stopLaunchdAgent({ uid: 501, exec })
       expect(calls.some((a) => a[0] === 'bootout')).toBe(true)
@@ -68,5 +69,50 @@ describe('installLaunchdAgent / stopLaunchdAgent', () => {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
+  })
+
+  it('treats spawn error (code null) on bootstrap as failure', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'launchd-null-'))
+    try {
+      const exec = vi.fn(async (_file: string, args: string[]) => {
+        if (args[0] === 'enable') {
+          return { stdout: '', stderr: '', code: 0, timedOut: false }
+        }
+        return { stdout: '', stderr: 'spawn launchctl ENOENT', code: null, timedOut: false }
+      })
+      await expect(
+        installLaunchdAgent({
+          home,
+          uid: 501,
+          nodePath: '/usr/bin/node',
+          cliEntry: '/opt/rivetos/packages/cli/dist/index.js',
+          workingDir: '/opt/rivetos',
+          env: {},
+          exec,
+        }),
+      ).rejects.toThrow(/launchctl bootstrap failed/)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('stopLaunchdAgent ignores a missing job and fails on a real bootout error', async () => {
+    const missing = vi.fn(async (_file: string, args: string[]) => {
+      if (args[0] === 'bootout') {
+        return { stdout: '', stderr: 'Could not find specified service', code: 5, timedOut: false }
+      }
+      return { stdout: '', stderr: '', code: 0, timedOut: false }
+    })
+    await stopLaunchdAgent({ uid: 501, exec: missing })
+
+    const boom = vi.fn(async () => ({
+      stdout: '',
+      stderr: 'permission denied',
+      code: 1,
+      timedOut: false,
+    }))
+    await expect(stopLaunchdAgent({ uid: 501, exec: boom })).rejects.toThrow(
+      /launchctl bootout failed/,
+    )
   })
 })

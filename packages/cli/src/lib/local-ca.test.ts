@@ -1,15 +1,63 @@
 import { describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   desktopClientId,
+  ensureLocalCa,
   issueClientDevice,
+  listBannerLanIpv4,
+  listLanIpv4,
   localCaPaths,
   localNodeSans,
   planLocalCa,
   writeBothChains,
 } from './local-ca.js'
+
+function ipv4(
+  address: string,
+  internal = false,
+): NonNullable<ReturnType<typeof networkInterfaces>[string]>[number] {
+  return {
+    address,
+    family: 'IPv4',
+    internal,
+    netmask: '255.255.255.0',
+    mac: '00:00:00:00:00:00',
+    cidr: `${address}/24`,
+  }
+}
+
+describe('listLanIpv4 / listBannerLanIpv4', () => {
+  const nics: ReturnType<typeof networkInterfaces> = {
+    eth0: [ipv4('192.0.2.10')],
+    wlan0: [ipv4('198.51.100.4')],
+    docker0: [ipv4('203.0.113.10')],
+    'br-abc123': [ipv4('203.0.113.11')],
+    veth0: [ipv4('203.0.113.12')],
+    tailscale0: [ipv4('203.0.113.13')],
+    tun0: [ipv4('203.0.113.14')],
+    wg0: [ipv4('203.0.113.15')],
+    virbr0: [ipv4('203.0.113.16')],
+    lo: [ipv4('127.0.0.1', true)],
+    'eth0:linklocal': [ipv4('169.254.1.1')],
+  }
+
+  it('keeps virtual ifaces in SANs and drops them from the banner list', () => {
+    expect(listLanIpv4(nics)).toEqual([
+      '192.0.2.10',
+      '198.51.100.4',
+      '203.0.113.10',
+      '203.0.113.11',
+      '203.0.113.12',
+      '203.0.113.13',
+      '203.0.113.14',
+      '203.0.113.15',
+      '203.0.113.16',
+    ])
+    expect(listBannerLanIpv4(nics)).toEqual(['192.0.2.10', '198.51.100.4'])
+  })
+})
 
 describe('localNodeSans', () => {
   it('always includes loopback IP + localhost DNS + hostname.local', () => {
@@ -138,6 +186,38 @@ describe('writeBothChains + issueClientDevice skip', () => {
       })
       expect(result.id).toBe('phone')
       expect(result.cert).toContain('device-phone.crt')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('treats spawn error (code null) as a CA issuance failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'local-ca-null-'))
+    try {
+      const exec = async () => ({
+        stdout: '',
+        stderr: 'spawn bash ENOENT',
+        code: null,
+        timedOut: false,
+      })
+      await expect(
+        ensureLocalCa({
+          home: dir,
+          hostname: 'testhost',
+          lanAddrs: ['192.0.2.10'],
+          exec,
+          scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+          exists: () => false,
+        }),
+      ).rejects.toThrow(/rivet-ca.sh init failed/)
+      await expect(
+        issueClientDevice({
+          home: dir,
+          name: 'phone',
+          exec,
+          scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+        }),
+      ).rejects.toThrow(/issue-client phone failed/)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

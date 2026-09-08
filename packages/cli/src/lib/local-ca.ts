@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { execFileAsync, type ExecResult } from './harness-detect.js'
+import { execFailed, execFileAsync, type ExecResult } from './harness-detect.js'
 import { findRoot } from '../commands/plugins-sync.js'
 
 export interface LocalCaSans {
@@ -50,11 +50,27 @@ export interface EnsureLocalCaOpts {
   root?: string | null
 }
 
-export function listLanIpv4(
-  nics: ReturnType<typeof networkInterfaces> = networkInterfaces(),
-): string[] {
+/** Virtual/container/VPN ifaces — keep in cert SANs, omit from the LAN URL banner. */
+const LAN_BANNER_SKIP_PREFIXES = [
+  'br-',
+  'docker',
+  'veth',
+  'tailscale',
+  'tun',
+  'wg',
+  'virbr',
+  'lo',
+] as const
+
+function skipLanBannerIface(name: string): boolean {
+  const n = name.toLowerCase()
+  return LAN_BANNER_SKIP_PREFIXES.some((p) => n.startsWith(p))
+}
+
+function collectLanIpv4(nics: ReturnType<typeof networkInterfaces>, forBanner: boolean): string[] {
   const out: string[] = []
-  for (const addrs of Object.values(nics ?? {})) {
+  for (const [name, addrs] of Object.entries(nics ?? {})) {
+    if (forBanner && skipLanBannerIface(name)) continue
     for (const a of addrs ?? []) {
       if (a.family !== 'IPv4') continue
       if (a.internal) continue
@@ -63,6 +79,19 @@ export function listLanIpv4(
     }
   }
   return out
+}
+
+export function listLanIpv4(
+  nics: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): string[] {
+  return collectLanIpv4(nics, false)
+}
+
+/** Real LAN addresses only — no bridge/VPN/docker/loopback ifaces. */
+export function listBannerLanIpv4(
+  nics: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): string[] {
+  return collectLanIpv4(nics, true)
 }
 
 /** SANs for `issue-node <hostname>` — extras must be `IP:` / `DNS:` prefixed. */
@@ -266,7 +295,7 @@ export async function ensureLocalCa(opts: EnsureLocalCaOpts): Promise<LocalCaPla
   for (const step of plan.steps) {
     if (step.skip) continue
     const result = await runCa(exec, plan, step.argv)
-    if (result.timedOut || (result.code !== 0 && result.code !== null)) {
+    if (execFailed(result)) {
       const detail = (result.stderr || result.stdout).trim().slice(0, 400)
       throw new Error(
         `rivet-ca.sh ${step.argv.join(' ')} failed (exit ${String(result.code)}${result.timedOut ? ', timed out' : ''}): ${detail}`,
@@ -313,7 +342,7 @@ export async function issueClientDevice(opts: {
   }
   const exec = opts.exec ?? execFileAsync
   const result = await runCa(exec, plan, ['issue-client', id])
-  if (result.timedOut || (result.code !== 0 && result.code !== null)) {
+  if (execFailed(result)) {
     const detail = (result.stderr || result.stdout).trim().slice(0, 400)
     throw new Error(`rivet-ca.sh issue-client ${id} failed: ${detail}`)
   }

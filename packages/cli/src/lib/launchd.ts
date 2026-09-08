@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parseRivetEnv } from './env-file.js'
-import { execFileAsync } from './harness-detect.js'
+import { execFailed, execFileAsync, type ExecResult } from './harness-detect.js'
 
 export const LAUNCHD_LABEL = 'dev.rivetos.node'
 
@@ -114,17 +114,35 @@ export async function installLaunchdAgent(opts: {
     timeoutMs: 10_000,
   })
   void bootout
+  const enable = await exec('launchctl', ['enable', `${domain}/${LAUNCHD_LABEL}`], {
+    timeoutMs: 10_000,
+  })
+  if (execFailed(enable)) {
+    const detail = (enable.stderr || enable.stdout).trim().slice(0, 400)
+    throw new Error(`launchctl enable failed: ${detail}`)
+  }
   const boot = await exec('launchctl', ['bootstrap', domain, plistPath], { timeoutMs: 15_000 })
-  if (boot.timedOut || (boot.code !== 0 && boot.code !== null)) {
+  if (execFailed(boot)) {
     const kick = await exec('launchctl', ['kickstart', '-k', `${domain}/${LAUNCHD_LABEL}`], {
       timeoutMs: 10_000,
     })
-    if (kick.timedOut || (kick.code !== 0 && kick.code !== null)) {
+    if (execFailed(kick)) {
       const detail = (boot.stderr || boot.stdout || kick.stderr).trim().slice(0, 400)
       throw new Error(`launchctl bootstrap failed: ${detail}`)
     }
   }
   return { plistPath }
+}
+
+function launchctlAbsent(result: ExecResult): boolean {
+  const text = `${result.stderr} ${result.stdout}`.toLowerCase()
+  return (
+    result.code === 5 ||
+    text.includes('not found') ||
+    text.includes('not loaded') ||
+    text.includes('could not find') ||
+    text.includes('could not be found')
+  )
 }
 
 export async function stopLaunchdAgent(opts: {
@@ -134,10 +152,20 @@ export async function stopLaunchdAgent(opts: {
   const uid = opts.uid ?? process.getuid?.() ?? 0
   const exec = opts.exec ?? execFileAsync
   const domain = `gui/${String(uid)}`
-  await exec('launchctl', ['bootout', `${domain}/${LAUNCHD_LABEL}`], {
+  const bootout = await exec('launchctl', ['bootout', `${domain}/${LAUNCHD_LABEL}`], {
     timeoutMs: 10_000,
   })
-  await exec('launchctl', ['disable', `${domain}/${LAUNCHD_LABEL}`], {
+  const disable = await exec('launchctl', ['disable', `${domain}/${LAUNCHD_LABEL}`], {
     timeoutMs: 10_000,
   })
+  if (execFailed(bootout) && !launchctlAbsent(bootout)) {
+    throw new Error(
+      `launchctl bootout failed: ${(bootout.stderr || bootout.stdout).trim().slice(0, 300)}`,
+    )
+  }
+  if (execFailed(disable) && !launchctlAbsent(disable)) {
+    throw new Error(
+      `launchctl disable failed: ${(disable.stderr || disable.stdout).trim().slice(0, 300)}`,
+    )
+  }
 }

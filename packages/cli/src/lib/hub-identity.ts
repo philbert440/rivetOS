@@ -9,7 +9,7 @@ import { randomBytes } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { execFileAsync } from './harness-detect.js'
+import { execFailed, execFileAsync } from './harness-detect.js'
 import { issueClientDevice, localCaPaths } from './local-ca.js'
 
 export function rivethubUserDataDir(
@@ -156,7 +156,7 @@ export async function mintDeviceP12(opts: MintDeviceP12Opts): Promise<MintedDevi
     timeoutMs: 15_000,
     env: { ...process.env, RIVETOS_P12_PASS: passphrase },
   })
-  if (result.timedOut || (result.code !== 0 && result.code !== null)) {
+  if (execFailed(result)) {
     const detail = (result.stderr || result.stdout).trim().slice(0, 400)
     throw new Error(`openssl pkcs12 -export failed for ${opts.name}: ${detail}`)
   }

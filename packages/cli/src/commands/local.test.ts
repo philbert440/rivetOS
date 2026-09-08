@@ -478,6 +478,21 @@ describe('formatBanner + readPersistedDen + waitHealthz', () => {
     expect(text).toContain('https://localhost:6000')
     expect(text).not.toContain('192.0.2.10')
     expect(text).toContain('/tmp/phone.p12')
+    expect(text).toContain('RivetHub local is up.')
+  })
+
+  it('formatBanner prepared path does not claim the hub is up', () => {
+    const text = formatBanner({
+      port: 5174,
+      exposeLan: true,
+      lanAddrs: ['192.0.2.10'],
+      p12Paths: [],
+      prepared: true,
+    })
+    expect(text).not.toContain('RivetHub local is up.')
+    expect(text).toContain('RivetHub local is prepared; run `rivetos start`.')
+    expect(text).toContain('https://localhost:5174')
+    expect(text).toContain('192.0.2.10')
   })
 
   it('readPersistedDen reads den.port and loopback host', () => {
@@ -667,6 +682,37 @@ describe('runInit / runUp / runBackup / runReset', () => {
     }
   })
 
+  it('runUp --no-service prints a prepared banner, not "is up"', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-nosvc-'))
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map(String).join(' '))
+    })
+    try {
+      mkdirSync(join(home, '.rivetos'), { recursive: true })
+      writeFileSync(
+        join(home, '.rivetos', 'config.yaml'),
+        buildConfigYaml(stateFrom(localFixture({ exposeLan: false, tls: true }))),
+      )
+      writeFileSync(join(home, '.rivetos', '.env'), 'RIVETOS_MODE=workspace\n', { mode: 0o600 })
+      await runUp(parseLocalArgs(['up', '--no-service', '--no-lan']), {
+        home,
+        platform: 'linux',
+        findRoot: () => null,
+        exec: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
+        waitHealthz: async () => {
+          throw new Error('waitHealthz must not run for --no-service')
+        },
+      })
+      const text = logs.join('\n')
+      expect(text).not.toContain('RivetHub local is up.')
+      expect(text).toContain('RivetHub local is prepared; run `rivetos start`.')
+    } finally {
+      spy.mockRestore()
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('runBackup writes 0600 and runReset stops+disables without touching RivetHub mtls', async () => {
     const home = mkdtempSync(join(tmpdir(), 'local-reset-'))
     try {
@@ -760,6 +806,75 @@ describe('runInit / runUp / runBackup / runReset', () => {
           exec: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
         }),
       ).rejects.toThrow(/still running/)
+      expect(existsSync(join(home, '.rivetos', 'config.yaml'))).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('runReset checks the default pglite lock when config is missing or invalid', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-lock-noconfig-'))
+    try {
+      const pglite = join(home, '.rivetos', 'pglite')
+      mkdirSync(pglite, { recursive: true })
+      writeFileSync(join(home, '.rivetos', 'config.yaml'), '{{{{not yaml')
+      writeFileSync(
+        join(pglite, EMBEDDED_PG_LOCKFILE),
+        JSON.stringify({ pid: process.pid, port: 5433, startedAt: new Date().toISOString() }),
+      )
+      await expect(
+        runReset(parseLocalArgs(['reset', '--yes']), {
+          home,
+          platform: 'linux',
+          exec: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
+        }),
+      ).rejects.toThrow(/still running/)
+      expect(existsSync(pglite)).toBe(true)
+
+      rmSync(join(home, '.rivetos', 'config.yaml'))
+      await expect(
+        runReset(parseLocalArgs(['reset', '--yes']), {
+          home,
+          platform: 'linux',
+          exec: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
+        }),
+      ).rejects.toThrow(/still running/)
+      expect(existsSync(pglite)).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('runReset checks ~/.rivetos/pglite even when config data_dir points elsewhere', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-lock-otherdir-'))
+    try {
+      const pglite = join(home, '.rivetos', 'pglite')
+      const other = join(home, '.rivetos', 'other-pg')
+      mkdirSync(pglite, { recursive: true })
+      mkdirSync(other, { recursive: true })
+      writeFileSync(
+        join(home, '.rivetos', 'config.yaml'),
+        [
+          'memory:',
+          '  postgres:',
+          '    embedded:',
+          `      data_dir: ${other}`,
+          '      port: 5433',
+          '',
+        ].join('\n'),
+      )
+      writeFileSync(
+        join(pglite, EMBEDDED_PG_LOCKFILE),
+        JSON.stringify({ pid: process.pid, port: 5433, startedAt: new Date().toISOString() }),
+      )
+      await expect(
+        runReset(parseLocalArgs(['reset', '--yes']), {
+          home,
+          platform: 'linux',
+          exec: vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false })),
+        }),
+      ).rejects.toThrow(/still running/)
+      expect(existsSync(pglite)).toBe(true)
       expect(existsSync(join(home, '.rivetos', 'config.yaml'))).toBe(true)
     } finally {
       rmSync(home, { recursive: true, force: true })

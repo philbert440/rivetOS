@@ -54,15 +54,15 @@ all interfaces). The node leaf is `issued/<hostname>.crt`, matching
 
 ## Layout
 
-| Path | Role |
-|---|---|
-| `~/.rivetos/config.yaml` | Generated config (`memory.postgres.embedded`, `den`, `mesh`, harness binaries) |
-| `~/.rivetos/.env` | `RIVETOS_PG_URL`, `RIVETOS_SHARED_DIR`, `RIVETOS_ROOT`, API keys (mode 0600; rewritten on every init) |
-| `~/.rivetos/pglite` | PGlite data dir (WASM files) |
-| `~/.rivetos/shared` | `RIVETOS_SHARED_DIR` — users.json, CA, filestore |
-| `~/.rivetos/ca/root` | Offline-ish root key (this laptop only) |
-| `~/.rivetos/shared/rivet-ca` | Intermediate + issued leaves (`chain.pem` for den, `ca-chain.pem` for CLI helpers) |
-| `~/.rivetos/devices/<name>.p12` | Extra device bundles |
+| Path                            | Role                                                                                                  |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `~/.rivetos/config.yaml`        | Generated config (`memory.postgres.embedded`, `den`, `mesh`, harness binaries)                        |
+| `~/.rivetos/.env`               | `RIVETOS_PG_URL`, `RIVETOS_SHARED_DIR`, `RIVETOS_ROOT`, API keys (mode 0600; rewritten on every init) |
+| `~/.rivetos/pglite`             | PGlite data dir (WASM files)                                                                          |
+| `~/.rivetos/shared`             | `RIVETOS_SHARED_DIR` — users.json, CA, filestore                                                      |
+| `~/.rivetos/ca/root`            | Offline-ish root key (this laptop only)                                                               |
+| `~/.rivetos/shared/rivet-ca`    | Intermediate + issued leaves (`chain.pem` for den, `ca-chain.pem` for CLI helpers)                    |
+| `~/.rivetos/devices/<name>.p12` | Extra device bundles                                                                                  |
 
 `RIVETOS_SHARED_DIR` is set to `~/.rivetos/shared` before any `sharedPath()`
 call so this machine is a mesh of one, not a client of `/rivet-shared`.
@@ -73,11 +73,13 @@ Linux installs a systemd **user** unit (`~/.config/systemd/user/rivetos.service`
 with `EnvironmentFile=~/.rivetos/.env` and tries `loginctl enable-linger`.
 
 macOS installs `~/Library/LaunchAgents/dev.rivetos.node.plist` (`KeepAlive`,
-`RunAtLoad`, mode 0600) and `launchctl bootstrap gui/$UID`. Logs go to
-`~/.rivetos/logs/`. Both the systemd unit and the plist include `PATH` with
-the node directory and `~/.local/bin`. `--no-service` prints `rivetos start`
-and still prints the up banner (desktop URL, devices) without waiting on
-healthz.
+`RunAtLoad`, mode 0600) and `launchctl enable` then `launchctl bootstrap gui/$UID`
+(so a previous `reset` disable can reinstall). Logs go to `~/.rivetos/logs/`.
+Both the systemd unit and the plist include `PATH` with the node directory and
+`~/.local/bin`. `--no-service` prints a prepared banner (run `rivetos start`)
+with desktop/LAN/device URLs and does not wait on healthz or claim the hub is
+up. LAN URLs omit bridge/VPN/docker interfaces; those addresses can still
+appear on the node cert.
 
 When `tmux` is not on PATH, `.env` gets `RIVETOS_DEN_TERM_MUX=none` so den
 does not wait on a multiplexer.
@@ -94,15 +96,17 @@ rivetos local status     # den /healthz + embedded DB row + harness plugin rows
 rivetos local backup [--out path]  # PGlite dumpDataDir gzip → ~/.rivetos/backups/
                                    # stop the node first (attach mode cannot dump)
 rivetos local reset      # stop AND disable the service; delete pglite, config, env, CA
-                         # under ~/.rivetos (RivetHub mtls and backups are kept)
+                         # under ~/.rivetos (RivetHub mtls and backups are kept).
+                         # Refuses if any deletion-target data dir has a live owner lock.
 rivetos local reset --yes
 rivetos local up [--port N]  # restart the user service and wait for /healthz (60s)
                              # port defaults to den.port in config.yaml
 ```
 
 Backup cannot run against a live owner: `handle.exec` is SQL, not a filesystem
-dump. Stop the node first so this process owns the engine. Tarballs are mode
-0600. Re-running `init` rewrites `.env` so `--pg-port` / `--api-key` cannot
+dump. Stop the node first so this process owns the engine. Tarballs are created
+mode 0600 (temp file + rename), not chmod after a world-readable write.
+Re-running `init` rewrites `.env` so `--pg-port` / `--api-key` cannot
 split-brain against `config.yaml`. Linux `up` uses `systemctl --user restart`
 so renewed certs and config apply.
 

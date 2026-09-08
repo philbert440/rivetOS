@@ -143,6 +143,22 @@ describe('mintDeviceP12', () => {
       } catch (err) {
         expect((err as Error).message).not.toContain('secret-pass')
       }
+
+      const spawnFail = vi.fn(async () => ({
+        stdout: '',
+        stderr: 'spawn openssl ENOENT',
+        code: null,
+        timedOut: false,
+      }))
+      await expect(
+        mintDeviceP12({
+          home,
+          name: 'phone',
+          passphrase: 'secret-pass',
+          exec: spawnFail,
+          scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+        }),
+      ).rejects.toThrow(/openssl pkcs12/)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

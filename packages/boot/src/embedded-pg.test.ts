@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -16,6 +16,7 @@ import {
   applyEmbeddedPgUrl,
   migrateEmbedded,
   resolveEmbeddedPg,
+  writeFile0600,
   type EmbeddedPgHandle,
 } from './embedded-pg.js'
 
@@ -351,4 +352,17 @@ describe('acquireEmbeddedPg lock edges', () => {
       await rm(dir, { recursive: true, force: true })
     }
   }, 60_000)
+})
+
+describe('writeFile0600', () => {
+  it('creates the archive with mode 0600 from the first byte', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rivet-backup-mode-'))
+    try {
+      const out = join(dir, 'pglite.tar.gz')
+      writeFile0600(out, Buffer.from('gz'))
+      expect(statSync(out).mode & 0o777).toBe(0o600)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

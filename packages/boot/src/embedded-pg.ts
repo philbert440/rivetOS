@@ -11,12 +11,12 @@
  */
 
 import {
-  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
@@ -305,14 +305,22 @@ export async function startEmbeddedPg(
         db as { dumpDataDir: (compression: 'gzip' | 'none') => Promise<unknown> }
       ).dumpDataDir('gzip')
       const bytes = await dumpToBuffer(dumped)
-      writeFileSync(outPath, bytes)
-      try {
-        chmodSync(outPath, 0o600)
-      } catch {
-        // Windows may ignore mode bits
-      }
+      writeFile0600(outPath, bytes)
     },
   }
+}
+
+/** Create `path` with mode 0600 from the first byte (temp + rename). */
+export function writeFile0600(path: string, bytes: Uint8Array): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const tmpPath = `${path}.${String(process.pid)}.tmp`
+  try {
+    unlinkSync(tmpPath)
+  } catch {
+    /* no leftover */
+  }
+  writeFileSync(tmpPath, bytes, { mode: 0o600 })
+  renameSync(tmpPath, path)
 }
 
 async function dumpToBuffer(dumped: unknown): Promise<Buffer> {

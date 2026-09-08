@@ -37,12 +37,19 @@ import { dirSizeBytes, formatBytes, readEmbeddedConfig, withEmbeddedPg } from '.
 import { loadRivetEnv } from '../lib/env-file.js'
 import {
   detectHarnesses,
+  execFailed,
   execFileAsync,
   findOnPath,
   type DetectedHarness,
   type ExecResult,
 } from '../lib/harness-detect.js'
-import { ensureLocalCa, listLanIpv4, localCaPaths, localNodeSans } from '../lib/local-ca.js'
+import {
+  ensureLocalCa,
+  listBannerLanIpv4,
+  listLanIpv4,
+  localCaPaths,
+  localNodeSans,
+} from '../lib/local-ca.js'
 import {
   extraDeviceP12Path,
   identityPathsToReset,
@@ -421,10 +428,12 @@ export function formatBanner(opts: {
   exposeLan: boolean
   lanAddrs: string[]
   p12Paths: string[]
+  /** `--no-service`: files are written but nothing was started. */
+  prepared?: boolean
 }): string {
   const lines = [
     '',
-    'RivetHub local is up.',
+    opts.prepared ? 'RivetHub local is prepared; run `rivetos start`.' : 'RivetHub local is up.',
     '',
     `  Desktop  https://localhost:${String(opts.port)}`,
   ]
@@ -483,10 +492,6 @@ async function runExec(
   timeoutMs = 10_000,
 ): Promise<ExecResult> {
   return exec(file, args, { timeoutMs })
-}
-
-function execFailed(result: ExecResult): boolean {
-  return result.timedOut || result.code !== 0
 }
 
 function unitMissing(result: ExecResult): boolean {
@@ -704,6 +709,7 @@ async function runInit(
 
   const muxNone = !findOnPath('tmux', { home })
   const lanAddrs = listLanIpv4()
+  const bannerLanAddrs = listBannerLanIpv4()
   const local: WizardLocal = {
     pgPort: flags.pgPort,
     dataDir: join(dir, 'pglite'),
@@ -790,7 +796,7 @@ async function runInit(
     home,
     hostname,
     p12Paths,
-    lanAddrs,
+    lanAddrs: bannerLanAddrs,
     port: flags.port,
     exposeLan: flags.exposeLan,
     caPem: existsSync(ca.caChainPem)
@@ -825,9 +831,7 @@ async function runUp(
     : (fromInit?.exposeLan ?? persisted.exposeLan)
   const pathEnv = servicePathEnv({ home, nodePath: process.execPath })
 
-  if (!flags.service) {
-    console.log('Start the node with: rivetos start')
-  } else if (platform === 'darwin') {
+  if (flags.service && platform === 'darwin') {
     let env: Record<string, string>
     try {
       env = envFileToRecord(await readFile(envFile, 'utf-8'))
@@ -844,9 +848,9 @@ async function runUp(
       env,
       exec,
     })
-  } else if (platform === 'win32') {
+  } else if (flags.service && platform === 'win32') {
     console.log('Windows service install is not in v1 — start the node with: rivetos start')
-  } else {
+  } else if (flags.service) {
     await installLinuxService({
       home,
       workingDir,
@@ -861,7 +865,7 @@ async function runUp(
   const paths = localCaPaths(home)
   const caPath = existsSync(paths.caChainPem) ? paths.caChainPem : paths.chainPem
   const caPem = fromInit?.caPem ?? (existsSync(caPath) ? readFileSync(caPath, 'utf-8') : undefined)
-  const lanAddrs = fromInit?.lanAddrs ?? listLanIpv4()
+  const lanAddrs = fromInit?.lanAddrs ?? listBannerLanIpv4()
   const p12Paths =
     fromInit?.p12Paths ??
     flags.devices.map((n) => extraDeviceP12Path(home, n)).filter((p) => existsSync(p))
@@ -870,6 +874,7 @@ async function runUp(
     exposeLan,
     lanAddrs,
     p12Paths,
+    prepared: !flags.service,
   })
 
   if (!flags.service) {
@@ -968,6 +973,27 @@ function assertUnderRivetDir(home: string, target: string): void {
   }
 }
 
+function assertEmbeddedNotLive(dataDir: string): void {
+  const lock = readEmbeddedPgLock(dataDir)
+  if (lock && embeddedPgLockAlive(lock)) {
+    throw new Error(
+      `embedded PGlite is still running (pid ${String(lock.pid)}) — stop the node first`,
+    )
+  }
+}
+
+/** Default pglite (always deleted) plus any data_dir from a readable config. */
+function embeddedDataDirsForReset(home: string): string[] {
+  const defaultDir = join(rivetDir(home), 'pglite')
+  const dirs = new Set<string>([defaultDir])
+  const configPath = join(rivetDir(home), 'config.yaml')
+  if (existsSync(configPath)) {
+    const embedded = readEmbeddedConfig(configPath)
+    if (embedded?.resolved?.dataDir) dirs.add(embedded.resolved.dataDir)
+  }
+  return [...dirs]
+}
+
 async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   const ok = await confirmReset(flags.yes, deps.confirm)
   if (!ok) {
@@ -984,15 +1010,8 @@ async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   }
 
   const dir = rivetDir(home)
-  const configPath = join(dir, 'config.yaml')
-  const embedded = existsSync(configPath) ? readEmbeddedConfig(configPath) : undefined
-  if (embedded?.resolved) {
-    const lock = readEmbeddedPgLock(embedded.resolved.dataDir)
-    if (lock && embeddedPgLockAlive(lock)) {
-      throw new Error(
-        `embedded PGlite is still running (pid ${String(lock.pid)}) — stop the node first`,
-      )
-    }
+  for (const dataDir of embeddedDataDirsForReset(home)) {
+    assertEmbeddedNotLive(dataDir)
   }
 
   const targets = [
