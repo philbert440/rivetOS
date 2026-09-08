@@ -524,10 +524,19 @@ if (!app.requestSingleInstanceLock()) {
       // Before the first window: renderer hydrates missing keys from
       // settings.json (per-key; existing localStorage values win). Existing
       // non-empty baseUrl is left alone.
+      const started = Date.now()
       const adopted = await adoptLocalDenIfUnconfigured(settingsStore, {
         caPem: readIdentityCaPem(),
       })
-      if (adopted) logFault('local-den', `adopted ${adopted.name} ${adopted.baseUrl}`)
+      const elapsedMs = Date.now() - started
+      if (adopted) {
+        logFault('local-den', `adopted ${adopted.name} ${adopted.baseUrl} ${elapsedMs}ms`)
+      } else {
+        const existing = settingsStore.get('rivethub.baseUrl')
+        if (typeof existing !== 'string' || existing.trim() === '') {
+          logFault('local-den', `miss ${elapsedMs}ms`)
+        }
+      }
       startup()
     } catch (err) {
       // One bad step must not abort startup with no window and no trail —

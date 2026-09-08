@@ -72,7 +72,7 @@ export async function hydrateSettingsIfEmpty(): Promise<void> {
     // Empty localStorage hydrates fully; a partial store (e.g. theme only)
     // still picks up adopted baseUrl + roster. Existing values win.
     for (const key of SETTINGS_KEYS) {
-      if (localStorageData[key] !== undefined) continue
+      if (key in localStorageData) continue
       const value = settings[key]
       if (value === undefined) continue
       try {

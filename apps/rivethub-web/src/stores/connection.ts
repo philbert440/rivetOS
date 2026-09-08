@@ -53,6 +53,11 @@ interface ConnectionState {
    */
   updateNode: (oldBaseUrl: string, node: RosterNode) => void
   removeNode: (baseUrl: string) => void
+  /**
+   * Fill empty live baseUrl/roster from localStorage. Settings hydrate
+   * writes storage after this module's initializer already ran.
+   */
+  hydrateFromStorage: () => void
 }
 
 const normalize = (url: string): string => url.trim().replace(/\/+$/, '')
@@ -221,6 +226,25 @@ export const useConnection = create<ConnectionState>((set, get) => {
       const roster = get().roster.filter((n) => normalize(n.baseUrl) !== url)
       saveRoster(roster)
       set({ roster })
+    },
+
+    hydrateFromStorage(): void {
+      const current = get()
+      const patch: Partial<ConnectionState> = {}
+      if (!current.baseUrl) {
+        const stored = defaultBaseUrl()
+        if (stored) {
+          patch.baseUrl = stored
+          patch.gateway = makeGateway(stored)
+        }
+      }
+      if (current.roster.length === 0) {
+        const stored = loadRoster()
+        if (stored.length > 0) patch.roster = stored
+      }
+      if (patch.baseUrl === undefined && patch.roster === undefined) return
+      set(patch)
+      if (patch.baseUrl) upgradeTransport(patch.baseUrl, set, get)
     },
   }
 })
