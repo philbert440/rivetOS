@@ -580,6 +580,69 @@ describe('Config Validation', () => {
       cfg.memory = { postgres: { embed_model: 'nemotron' } }
       assertValid(validateConfig(cfg))
     })
+
+    it('accepts embedded with defaults', () => {
+      const cfg = validConfig()
+      cfg.memory = { postgres: { embedded: {} } }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('accepts a full embedded shape', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embedded: {
+            data_dir: '~/.rivetos/pglite',
+            port: 5433,
+            auto_migrate: true,
+            max_connections: 96,
+          },
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('errors when embedded and connection_string are both set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embedded: { port: 5433 },
+          connection_string: 'postgres://postgres:postgres@127.0.0.1:5433/postgres',
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres', 'cannot both be set')
+    })
+
+    it('errors on invalid embedded port / data_dir / booleans / max_connections', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embedded: {
+            port: 70000,
+            data_dir: 12,
+            auto_migrate: 'yes',
+            max_connections: 0,
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embedded.port', 'integer between 1 and 65535')
+      assertError(result, 'memory.postgres.embedded.data_dir', 'must be a non-empty string')
+      assertError(result, 'memory.postgres.embedded.auto_migrate', 'must be a boolean')
+      assertError(result, 'memory.postgres.embedded.max_connections', 'must be a positive integer')
+    })
+
+    it('warns on unknown embedded keys', () => {
+      const cfg = validConfig()
+      cfg.memory = { postgres: { embedded: { socket: '/tmp/pg.sock' } } }
+      const result = validateConfig(cfg)
+      assertWarning(
+        result,
+        'memory.postgres.embedded.socket',
+        'Unknown memory.postgres.embedded key',
+      )
+    })
   })
 
   // =========================================================================
