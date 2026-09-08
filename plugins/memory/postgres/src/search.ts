@@ -1282,12 +1282,31 @@ export class SearchEngine {
   // Query embedding — call Nemotron at search time
   // -----------------------------------------------------------------------
 
+  private healthProbe?: Promise<{ available: boolean; checkedAt: string; reason?: string }>
+  private healthProbeAt = 0
+
+  /** Bounded, coalesced probe; never sends conversation content or trusts cached vectors. */
+  checkEmbeddingHealth(): Promise<{ available: boolean; checkedAt: string; reason?: string }> {
+    if (!this.healthProbe || Date.now() - this.healthProbeAt >= 60_000) {
+      this.healthProbeAt = Date.now()
+      this.healthProbe = this.embedQuery('memory health check', true).then((result) => ({
+        available: Boolean(result.vec),
+        checkedAt: new Date().toISOString(),
+        ...(result.reason ? { reason: result.reason } : {}),
+      }))
+    }
+    return this.healthProbe
+  }
+
   /**
    * Embed a query string via the configured embedding endpoint.
    * Failures return a reason + elapsed ms so callers can signal degraded mode
    * instead of dropping the vector arm silently. Successful vectors are cached.
    */
-  private async embedQuery(text: string): Promise<{
+  private async embedQuery(
+    text: string,
+    healthProbe = false,
+  ): Promise<{
     vec: number[] | null
     reason?: string
     elapsedMs: number
@@ -1299,14 +1318,17 @@ export class SearchEngine {
     const now = Date.now()
     const normalized = normalizeQueryText(text)
     const cacheKey = `${this.embedQueryInstruction}\0${normalized}`
-    const cached = this.queryEmbedCache.get(cacheKey, now)
+    const cached = healthProbe ? undefined : this.queryEmbedCache.get(cacheKey, now)
     if (cached) {
       return { vec: cached, elapsedMs: 0 }
     }
 
     const started = Date.now()
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), this.embedTimeoutMs)
+    const timeout = setTimeout(
+      () => controller.abort(),
+      healthProbe ? Math.min(this.embedTimeoutMs, 5000) : this.embedTimeoutMs,
+    )
     try {
       const response = await fetch(`${this.embedEndpoint}/v1/embeddings`, {
         method: 'POST',
@@ -1330,7 +1352,12 @@ export class SearchEngine {
         return { vec: null, reason: 'bad response', elapsedMs }
       }
       const vec = data.data?.[0]?.embedding
-      if (!vec || !Array.isArray(vec) || vec.length === 0) {
+      if (
+        !vec ||
+        !Array.isArray(vec) ||
+        vec.length === 0 ||
+        !vec.every((n) => typeof n === 'number' && Number.isFinite(n))
+      ) {
         return { vec: null, reason: 'empty vector', elapsedMs }
       }
 
@@ -1339,7 +1366,7 @@ export class SearchEngine {
       // Must match to avoid "different halfvec dimensions" errors on <=>.
       const EMBED_DIMS = 4000
       const clipped = vec.length > EMBED_DIMS ? vec.slice(0, EMBED_DIMS) : vec
-      this.queryEmbedCache.set(cacheKey, clipped, Date.now())
+      if (!healthProbe) this.queryEmbedCache.set(cacheKey, clipped, Date.now())
       return { vec: clipped, elapsedMs }
     } catch (err: unknown) {
       const elapsedMs = Date.now() - started

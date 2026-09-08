@@ -6,7 +6,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { SearchHit } from '../search.js'
+import { SearchEngine, type SearchHit } from '../search.js'
 import { createMemoryApiRoute } from './memory-api.js'
 
 const CONV = '8f3a0000-0000-4000-8000-000000000001'
@@ -26,12 +26,49 @@ function fakePool(opts?: {
   browse?: Array<Record<string, unknown>>
   counts?: Record<string, string>
   missing?: boolean
+  recentFailed?: string
+  recentDead?: string
+  dead?: boolean
+  queueMissing?: boolean
 }): pg.Pool {
   const sessionKey = opts?.sessionKey ?? 'claude-code:native-1'
   return {
     query: async (sql: string, params?: unknown[]) => {
       if (opts?.missing) throw new Error('relation "ros_messages" does not exist')
       const text = sql.replace(/\s+/g, ' ')
+      if (text.includes('AS msg_queue'))
+        return {
+          rows: [
+            {
+              msg_queue: opts?.counts?.n ?? '3',
+              sum_queue: '0',
+              failed: '2',
+              recent_failed: opts?.recentFailed ?? '0',
+              unembeddable: '4',
+            },
+          ],
+        }
+      if (text.includes('graphile_worker._private_jobs')) {
+        if (opts?.queueMissing) throw Object.assign(new Error('missing queue'), { code: '42P01' })
+        return {
+          rows: opts?.dead
+            ? [
+                {
+                  task: 'extract-wiki',
+                  pending: '5',
+                  dead: '2',
+                  recent_dead: opts?.recentDead ?? '0',
+                  running: '1',
+                  scheduled: '3',
+                  oldest_pending_age_min: '90.5',
+                  last_error: 'private error',
+                },
+              ]
+            : [],
+        }
+      }
+      if (text.includes('WITH per_conv'))
+        return { rows: [{ eligible_msgs: '10', active_tail_msgs: '3', below_floor_msgs: '1' }] }
       if (text.includes('FROM ros_conversations WHERE id = ANY')) {
         const ids = (params?.[0] as string[]) ?? []
         return {
@@ -96,6 +133,138 @@ async function serve(opts: Parameters<typeof createMemoryApiRoute>[0]): Promise<
 }
 
 describe('/api/memory', () => {
+  it('exposes dead work and normalizes queue ages without exposing raw errors', async () => {
+    vi.spyOn(SearchEngine.prototype, 'checkEmbeddingHealth').mockResolvedValue({
+      available: true,
+      checkedAt: new Date().toISOString(),
+    })
+    const base = await serve({ pool: fakePool({ dead: true, recentDead: '1' }) })
+    const health = await (await fetch(`${base}/api/memory/health`)).json()
+    expect(health).toMatchObject({
+      status: 'degraded',
+      queueStatus: 'available',
+      queues: [
+        {
+          task: 'extract-wiki',
+          pending: 5,
+          dead: 2,
+          running: 1,
+          scheduled: 3,
+          oldestPendingMinutes: 90.5,
+        },
+      ],
+    })
+    expect(JSON.stringify(health)).not.toContain('private error')
+  })
+  it.each([
+    ['historical failures', '0', '0', 'ok'],
+    ['recent embedding failures', '1', '0', 'degraded'],
+    ['recent dead jobs', '0', '1', 'degraded'],
+  ])(
+    'uses recent thresholds for %s while retaining totals',
+    async (_label, recentFailed, recentDead, status) => {
+      vi.spyOn(SearchEngine.prototype, 'checkEmbeddingHealth').mockResolvedValue({
+        available: true,
+        checkedAt: new Date().toISOString(),
+      })
+      const base = await serve({ pool: fakePool({ dead: true, recentFailed, recentDead }) })
+      const health = await (await fetch(`${base}/api/memory/health`)).json()
+      expect(health).toMatchObject({
+        status,
+        failedEmbeddings: 2,
+        queues: [{ dead: 2 }],
+        capture: { status: 'unknown' },
+      })
+    },
+  )
+
+  it('coalesces all diagnostic queries per pool, shares embedding counts with stats, and expires at 60 s', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+    const pool = fakePool()
+    const original = pool.query.bind(pool)
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const query = vi.spyOn(pool, 'query').mockImplementation((async (sql: string) => {
+      await gate
+      return original(sql)
+    }) as typeof pool.query)
+    const base = await serve({ pool })
+    const first = fetch(`${base}/api/memory/health`)
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(3))
+    now.mockReturnValue(170_000) // Still coalesces if the query outlives the TTL.
+    const second = fetch(`${base}/api/memory/health`)
+    const stats = fetch(`${base}/api/memory/stats`)
+    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(10))
+    release()
+    expect((await Promise.all([first, second, stats])).map((r) => r.status)).toEqual([
+      200, 200, 200,
+    ])
+    const diagnostics = () =>
+      query.mock.calls.filter(([sql]) =>
+        /AS msg_queue|WITH per_conv|graphile_worker/.test(String(sql)),
+      )
+    expect(diagnostics()).toHaveLength(3)
+    now.mockReturnValue(229_999)
+    await fetch(`${base}/api/memory/health`)
+    expect(diagnostics()).toHaveLength(3)
+    now.mockReturnValue(230_000)
+    await fetch(`${base}/api/memory/health`)
+    expect(diagnostics()).toHaveLength(6)
+  })
+
+  it('evicts rejected counts so the next request can recover', async () => {
+    const pool = fakePool()
+    const query = vi.spyOn(pool, 'query').mockRejectedValueOnce(new Error('temporary failure'))
+    const base = await serve({ pool })
+    expect((await fetch(`${base}/api/memory/health`)).status).toBe(500)
+    expect((await fetch(`${base}/api/memory/health`)).status).toBe(200)
+    expect(query.mock.calls.filter(([sql]) => String(sql).includes('AS msg_queue'))).toHaveLength(2)
+  })
+
+  it('does not expose cached owner queues when a routed pool aliases the owner pool', async () => {
+    const pool = fakePool({ dead: true })
+    const query = vi.spyOn(pool, 'query')
+    const base = await serve({ pool, userPools: new Map([['coco', pool]]) })
+    await fetch(`${base}/api/memory/health`)
+    query.mockClear()
+    const health = await (
+      await fetch(`${base}/api/memory/health`, { headers: { 'x-rivetos-user': 'coco' } })
+    ).json()
+    expect(health.queueStatus).toBe('restricted')
+    expect(health.queues).toBeUndefined()
+    expect(query).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes unavailable queue schema from an empty queue', async () => {
+    const base = await serve({ pool: fakePool({ queueMissing: true }) })
+    const health = await (await fetch(`${base}/api/memory/health`)).json()
+    expect(health.queueStatus).toBe('unavailable')
+    expect(health.queues).toBeUndefined()
+  })
+
+  it('reports real embedding failures, compaction buckets, and owner-only queues', async () => {
+    const userPool = fakePool()
+    const query = vi.spyOn(userPool, 'query')
+    const base = await serve({ pool: fakePool(), userPools: new Map([['coco', userPool]]) })
+    const stats = await (await fetch(`${base}/api/memory/stats`)).json()
+    expect(stats).toMatchObject({ embedQueueDepth: 3, failedEmbeddings: 2 })
+    const health = await (
+      await fetch(`${base}/api/memory/health`, { headers: { 'x-rivetos-user': 'coco' } })
+    ).json()
+    expect(health).toMatchObject({
+      queueStatus: 'restricted',
+      failedEmbeddings: 2,
+      skippedEmbeddings: 4,
+      compaction: { eligible: 10, activeTail: 3, belowFloor: 1 },
+      capture: { status: 'unknown' },
+    })
+    expect(health.queues).toBeUndefined()
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('graphile_worker'))).toBe(false)
+    expect(Number.isFinite(Date.parse(health.observedAt))).toBe(true)
+  })
+
   it('rejects POST and unknown paths', async () => {
     const base = await serve({ pool: fakePool(), search: async () => [] })
     expect((await fetch(`${base}/api/memory/search`, { method: 'POST' })).status).toBe(405)
@@ -172,7 +341,7 @@ describe('/api/memory', () => {
   it('marks search undegraded when embed endpoint is set', async () => {
     const base = await serve({
       pool: fakePool(),
-      embedEndpoint: 'http://192.168.1.9:9401',
+      embedEndpoint: 'http://192.0.2.9:9401',
       search: async () => [HIT],
     })
     const body = (await (await fetch(`${base}/api/memory/search?q=x`)).json()) as {
@@ -193,7 +362,7 @@ describe('/api/memory', () => {
     })
     const base = await serve({
       pool: fakePool(),
-      embedEndpoint: 'http://192.168.1.9:9401',
+      embedEndpoint: 'http://192.0.2.9:9401',
       embedTimeoutMs: '900',
       hnswEfSearch: '80',
       search: async () => hits,
