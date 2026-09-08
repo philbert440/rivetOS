@@ -51,6 +51,8 @@ export interface InstalledDesktopIdentity {
   cert: string
   key: string
   ca: string
+  /** Previous RivetHub mtls copied aside before overwrite, if any. */
+  preservedDir?: string
 }
 
 /**
@@ -75,13 +77,22 @@ export function installDesktopIdentity(opts: InstallDesktopIdentityOpts): Instal
   const cert = join(destDir, 'device.crt')
   const key = join(destDir, 'device.key')
   const ca = join(destDir, 'ca.pem')
+  let preservedDir: string | undefined
+  if (existsSync(cert) || existsSync(key) || existsSync(ca)) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    preservedDir = join(destDir, `previous-${stamp}`)
+    mkdirSync(preservedDir, { recursive: true })
+    if (existsSync(cert)) copyFileSync(cert, join(preservedDir, 'device.crt'))
+    if (existsSync(key)) copyFileSync(key, join(preservedDir, 'device.key'))
+    if (existsSync(ca)) copyFileSync(ca, join(preservedDir, 'ca.pem'))
+  }
   copyFileSync(srcCert, cert)
   copyFileSync(srcKey, key)
   copyFileSync(srcCa, ca)
   chmod600(cert)
   chmod600(key)
   chmod600(ca)
-  return { destDir, cert, key, ca }
+  return { destDir, cert, key, ca, preservedDir }
 }
 
 export function generateDevicePassphrase(): string {
@@ -136,12 +147,15 @@ export async function mintDeviceP12(opts: MintDeviceP12Opts): Promise<MintedDevi
     '-out',
     p12Path,
     '-passout',
-    `pass:${passphrase}`,
+    'env:RIVETOS_P12_PASS',
   ]
   if (existsSync(chain)) {
     args.push('-certfile', chain)
   }
-  const result = await exec('openssl', args, { timeoutMs: 15_000 })
+  const result = await exec('openssl', args, {
+    timeoutMs: 15_000,
+    env: { ...process.env, RIVETOS_P12_PASS: passphrase },
+  })
   if (result.timedOut || (result.code !== 0 && result.code !== null)) {
     const detail = (result.stderr || result.stdout).trim().slice(0, 400)
     throw new Error(`openssl pkcs12 -export failed for ${opts.name}: ${detail}`)
@@ -154,16 +168,11 @@ export function extraDeviceP12Path(home: string, name: string): string {
   return join(home, '.rivetos', 'devices', `${name}.p12`)
 }
 
-/** Used by `local reset` — identity dirs to wipe. */
-export function identityPathsToReset(
-  home: string,
-  platform: NodeJS.Platform = process.platform,
-  appData?: string,
-): string[] {
+/** Used by `local reset` — identity dirs under `~/.rivetos` only. */
+export function identityPathsToReset(home: string): string[] {
   return [
     join(home, '.rivetos', 'ca'),
     join(home, '.rivetos', 'shared', 'rivet-ca'),
     join(home, '.rivetos', 'devices'),
-    rivethubMtlsDir(platform, home, appData),
   ]
 }

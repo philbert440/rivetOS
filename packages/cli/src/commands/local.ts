@@ -8,12 +8,13 @@
  * PGlite socket in-process.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { homedir, hostname as osHostname } from 'node:os'
-import { dirname, join } from 'node:path'
+import { homedir, hostname as osHostname, userInfo } from 'node:os'
+import { dirname, join, resolve as resolvePath, sep } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
+import { fetch as undiciFetch, Agent as UndiciAgent } from 'undici'
 import {
   ATTACH_BACKUP_ERROR,
   embeddedPgLockAlive,
@@ -50,7 +51,13 @@ import {
 } from '../lib/hub-identity.js'
 import { envFileToRecord, installLaunchdAgent, stopLaunchdAgent } from '../lib/launchd.js'
 
-export { buildConfigYaml, buildEnvFile, buildLocalPluginList } from './init/generate.js'
+export {
+  buildConfigYaml,
+  buildEnvFile,
+  buildLocalPluginList,
+  LOCAL_AGENT_CHANNEL_HOST,
+  LOCAL_AGENT_CHANNEL_PORT,
+} from './init/generate.js'
 
 const DEFAULT_PORT = 5174
 const DEFAULT_PG_PORT = 5433
@@ -84,10 +91,10 @@ Options:
   --api-key K           Provider API key (written to .env)
   --port 5174           Den listen port
   --pg-port 5433        Embedded Postgres loopback port
-  --no-lan              Bind den to 127.0.0.1 (no TLS required)
+  --no-lan              Bind den to 127.0.0.1 (still HTTPS)
   --no-service          Print \`rivetos start\` instead of installing a user service
   --device <name>       Extra PKCS#12 at ~/.rivetos/devices/<name>.p12 (repeatable)
-  --memory lite|full    lite (default) = FTS/trigram; full needs an embed endpoint
+  --memory lite|full    lite (default) = FTS/trigram; full requires RIVETOS_EMBED_URL
   --out <path>          backup destination
   -h, --help            Show this help
 `
@@ -100,8 +107,10 @@ export interface LocalFlags {
   provider?: string
   apiKey?: string
   port: number
+  portExplicit: boolean
   pgPort: number
   exposeLan: boolean
+  lanExplicit: boolean
   service: boolean
   devices: string[]
   memory: 'lite' | 'full'
@@ -120,6 +129,15 @@ export interface LocalDeps {
   findRoot?: typeof findRoot
   now?: () => Date
   confirm?: () => Promise<boolean>
+  withEmbeddedPg?: typeof withEmbeddedPg
+  pluginsInstall?: (args: string[]) => Promise<void>
+  scriptPath?: string
+  waitHealthz?: (opts: {
+    port: number
+    caPem?: string
+    timeoutMs?: number
+    https?: boolean
+  }) => Promise<boolean>
 }
 
 export function parseLocalArgs(args: string[]): LocalFlags {
@@ -127,8 +145,10 @@ export function parseLocalArgs(args: string[]): LocalFlags {
     command: 'all',
     yes: false,
     port: DEFAULT_PORT,
+    portExplicit: false,
     pgPort: DEFAULT_PG_PORT,
     exposeLan: true,
+    lanExplicit: false,
     service: true,
     devices: [],
     memory: 'lite',
@@ -142,6 +162,7 @@ export function parseLocalArgs(args: string[]): LocalFlags {
       flags.yes = true
     } else if (a === '--no-lan') {
       flags.exposeLan = false
+      flags.lanExplicit = true
     } else if (a === '--no-service') {
       flags.service = false
     } else if (a === '--provider' && args[i + 1]) {
@@ -150,6 +171,7 @@ export function parseLocalArgs(args: string[]): LocalFlags {
       flags.apiKey = args[++i]
     } else if (a === '--port' && args[i + 1]) {
       flags.port = parsePort(args[++i], '--port')
+      flags.portExplicit = true
     } else if (a === '--pg-port' && args[i + 1]) {
       flags.pgPort = parsePort(args[++i], '--pg-port')
     } else if (a === '--device' && args[i + 1]) {
@@ -289,7 +311,7 @@ function checkGeneratedConfigFile(configPath: string): void {
   try {
     parsed = parseYaml(readFileSync(configPath, 'utf-8'))
   } catch (err) {
-    throw new Error(`generated config is not valid YAML: ${(err as Error).message}`)
+    throw new Error(`generated config is not valid YAML: ${(err as Error).message}`, { cause: err })
   }
   assertLocalConfigReady(parsed)
 }
@@ -304,7 +326,9 @@ export function renderSystemdUserUnit(opts: {
   workingDir: string
   envFile: string
   execStart: string
+  path?: string
 }): string {
+  const pathLine = opts.path ? `Environment="PATH=${opts.path.replace(/"/g, '')}"\n` : ''
   return `[Unit]
 Description=RivetOS Agent Runtime
 After=network.target
@@ -314,7 +338,7 @@ Type=simple
 WorkingDirectory=${opts.workingDir}
 ExecStart=${opts.execStart}
 EnvironmentFile=${opts.envFile}
-Environment=RIVETOS_LOG_LEVEL=info
+${pathLine}Environment=RIVETOS_LOG_LEVEL=info
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -323,6 +347,33 @@ StandardError=journal
 [Install]
 WantedBy=default.target
 `
+}
+
+/** PATH for the user service: node dir + ~/.local/bin ahead of the invoking PATH. */
+export function servicePathEnv(opts: { home: string; nodePath: string; pathEnv?: string }): string {
+  const extras = [
+    dirname(opts.nodePath),
+    join(opts.home, '.local', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ]
+  const current = (opts.pathEnv ?? process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(':')
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const p of [...extras, ...current]) {
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    out.push(p)
+  }
+  return out.join(':')
+}
+
+function chmod600(path: string): void {
+  try {
+    chmodSync(path, 0o600)
+  } catch {
+    // Windows may ignore mode bits
+  }
 }
 
 function rivetDir(home: string): string {
@@ -407,10 +458,11 @@ export async function waitHealthz(opts: {
 
   while (Date.now() < deadline) {
     try {
-      const { fetch: undiciFetch, Agent } = await import('undici')
-      const req: Record<string, unknown> = { signal: AbortSignal.timeout(2000) }
+      const req: { signal: AbortSignal; dispatcher?: InstanceType<typeof UndiciAgent> } = {
+        signal: AbortSignal.timeout(2000),
+      }
       if (useHttps && opts.caPem) {
-        req.dispatcher = new Agent({
+        req.dispatcher = new UndiciAgent({
           connect: { ca: opts.caPem, rejectUnauthorized: true },
         })
       }
@@ -433,14 +485,50 @@ async function runExec(
   return exec(file, args, { timeoutMs })
 }
 
+function execFailed(result: ExecResult): boolean {
+  return result.timedOut || result.code !== 0
+}
+
+function unitMissing(result: ExecResult): boolean {
+  const text = `${result.stderr} ${result.stdout}`.toLowerCase()
+  return (
+    result.code === 5 ||
+    text.includes('not found') ||
+    text.includes('not loaded') ||
+    text.includes('could not be found')
+  )
+}
+
+export function readPersistedDen(configPath: string): { port: number; exposeLan: boolean } {
+  let port = DEFAULT_PORT
+  let exposeLan = true
+  try {
+    const embedded = readEmbeddedConfig(configPath)
+    const den = (embedded?.config as { den?: { port?: number; host?: string } } | undefined)?.den
+    if (typeof den?.port === 'number') port = den.port
+    if (den?.host === '127.0.0.1' || den?.host === 'localhost' || den?.host === '::1') {
+      exposeLan = false
+    }
+  } catch {
+    /* defaults */
+  }
+  return { port, exposeLan }
+}
+
 async function readServiceLogTail(opts: {
   platform: NodeJS.Platform
   workingDir: string
+  home: string
   exec: typeof execFileAsync
 }): Promise<string> {
   if (opts.platform === 'darwin') {
-    const errPath = join(opts.workingDir, 'launchd.err.log')
-    const outPath = join(opts.workingDir, 'launchd.out.log')
+    const logDir = join(opts.home, '.rivetos', 'logs')
+    const errPath = existsSync(join(logDir, 'launchd.err.log'))
+      ? join(logDir, 'launchd.err.log')
+      : join(opts.workingDir, 'launchd.err.log')
+    const outPath = existsSync(join(logDir, 'launchd.out.log'))
+      ? join(logDir, 'launchd.out.log')
+      : join(opts.workingDir, 'launchd.out.log')
     const path = existsSync(errPath) ? errPath : outPath
     if (!existsSync(path)) return `(no launchd log at ${errPath} or ${outPath})`
     try {
@@ -462,6 +550,14 @@ async function readServiceLogTail(opts: {
   return text || '(journalctl --user -u rivetos -n 20 produced no output)'
 }
 
+function currentUsername(): string {
+  try {
+    return userInfo().username
+  } catch {
+    return process.env.USER ?? process.env.LOGNAME ?? ''
+  }
+}
+
 async function installLinuxService(opts: {
   home: string
   workingDir: string
@@ -469,38 +565,77 @@ async function installLinuxService(opts: {
   nodePath: string
   cliEntry: string
   exec: typeof execFileAsync
+  pathEnv?: string
 }): Promise<string> {
   const unitPath = join(opts.home, '.config', 'systemd', 'user', 'rivetos.service')
   mkdirSync(dirname(unitPath), { recursive: true })
-  const execStart = `${opts.nodePath} ${opts.cliEntry} start`
+  const execStart = `"${opts.nodePath}" "${opts.cliEntry}" start`
+  const path = servicePathEnv({
+    home: opts.home,
+    nodePath: opts.nodePath,
+    pathEnv: opts.pathEnv,
+  })
   writeFileSync(
     unitPath,
     renderSystemdUserUnit({
       workingDir: opts.workingDir,
       envFile: opts.envFile,
       execStart,
+      path,
     }),
   )
-  const user = process.env.USER ?? ''
+  const user = currentUsername()
   if (user) {
     const linger = await runExec(opts.exec, 'loginctl', ['enable-linger', user], 8_000)
-    if (linger.code !== 0) {
-      await runExec(opts.exec, 'sudo', ['-n', 'loginctl', 'enable-linger', user], 8_000)
+    if (execFailed(linger)) {
+      const viaSudo = await runExec(
+        opts.exec,
+        'sudo',
+        ['-n', 'loginctl', 'enable-linger', user],
+        8_000,
+      )
+      if (execFailed(viaSudo)) {
+        console.error(
+          `loginctl enable-linger failed — the service may not survive logout: ${(viaSudo.stderr || linger.stderr || linger.stdout).trim().slice(0, 200)}`,
+        )
+      }
     }
   }
-  await runExec(opts.exec, 'systemctl', ['--user', 'daemon-reload'])
-  await runExec(opts.exec, 'systemctl', ['--user', 'enable', 'rivetos'])
-  const start = await runExec(opts.exec, 'systemctl', ['--user', 'start', 'rivetos'])
-  if (start.code !== 0 && start.code !== null) {
+  const reload = await runExec(opts.exec, 'systemctl', ['--user', 'daemon-reload'])
+  if (execFailed(reload)) {
     throw new Error(
-      `systemctl --user start rivetos failed: ${(start.stderr || start.stdout).trim().slice(0, 300)}`,
+      `systemctl --user daemon-reload failed: ${(reload.stderr || reload.stdout).trim().slice(0, 300)}`,
+    )
+  }
+  const enable = await runExec(opts.exec, 'systemctl', ['--user', 'enable', 'rivetos'])
+  if (execFailed(enable)) {
+    throw new Error(
+      `systemctl --user enable rivetos failed: ${(enable.stderr || enable.stdout).trim().slice(0, 300)}`,
+    )
+  }
+  const restart = await runExec(opts.exec, 'systemctl', ['--user', 'restart', 'rivetos'])
+  if (execFailed(restart)) {
+    throw new Error(
+      `systemctl --user restart rivetos failed: ${(restart.stderr || restart.stdout).trim().slice(0, 300)}`,
     )
   }
   return unitPath
 }
 
-async function stopLinuxService(exec: typeof execFileAsync): Promise<void> {
-  await runExec(exec, 'systemctl', ['--user', 'stop', 'rivetos'])
+async function stopAndDisableLinux(exec: typeof execFileAsync): Promise<void> {
+  const stop = await runExec(exec, 'systemctl', ['--user', 'stop', 'rivetos'])
+  const disable = await runExec(exec, 'systemctl', ['--user', 'disable', 'rivetos'])
+  await runExec(exec, 'systemctl', ['--user', 'daemon-reload'])
+  if (execFailed(stop) && !unitMissing(stop)) {
+    throw new Error(
+      `systemctl --user stop rivetos failed: ${(stop.stderr || stop.stdout).trim().slice(0, 300)}`,
+    )
+  }
+  if (execFailed(disable) && !unitMissing(disable)) {
+    throw new Error(
+      `systemctl --user disable rivetos failed: ${(disable.stderr || disable.stdout).trim().slice(0, 300)}`,
+    )
+  }
 }
 
 async function runInit(
@@ -515,6 +650,16 @@ async function runInit(
   exposeLan: boolean
   caPem?: string
 }> {
+  // Config-level flags/env before identity install (else missing CA masks this).
+  if (flags.memory === 'full' && !process.env.RIVETOS_EMBED_URL?.trim()) {
+    throw new Error(
+      '--memory full requires RIVETOS_EMBED_URL (embed endpoint); omit --memory or use --memory lite',
+    )
+  }
+  if (flags.memory !== 'full') {
+    delete process.env.RIVETOS_EMBED_URL
+  }
+
   const home = deps.home ?? homedir()
   const hostname = sanitizeHostname(deps.hostname ?? osHostname())
   const shared = applySharedDir(home)
@@ -594,12 +739,16 @@ async function runInit(
     sans: localNodeSans({ hostname, lanAddrs }),
     exec,
     root,
+    scriptPath: deps.scriptPath,
   })
-  installDesktopIdentity({
+  const desktop = installDesktopIdentity({
     home,
     hostname,
     platform: deps.platform ?? process.platform,
   })
+  if (desktop.preservedDir) {
+    console.log(`preserved previous RivetHub identity in ${desktop.preservedDir}`)
+  }
 
   const p12Paths: string[] = []
   for (const name of flags.devices) {
@@ -611,6 +760,7 @@ async function runInit(
       name,
       exec,
       root,
+      scriptPath: deps.scriptPath,
     })
     p12Paths.push(minted.p12Path)
     console.log(`Device ${name} PKCS#12: ${minted.p12Path}`)
@@ -622,17 +772,16 @@ async function runInit(
   if (!embedded) {
     throw new Error('generated config is missing memory.postgres.embedded')
   }
-  await withEmbeddedPg(embedded.config, async (handle) => {
+  const warm = deps.withEmbeddedPg ?? withEmbeddedPg
+  await warm(embedded.config, async (handle) => {
     if (handle.owned) {
       await migrateEmbedded(handle.pgUrl)
-      if (flags.memory !== 'full' && handle.exec) {
-        await handle.exec(`SET rivet.defer_embed_enqueue = 'on'`).catch(() => undefined)
-      }
     }
   })
 
   try {
-    await pluginsInstall([])
+    const install = deps.pluginsInstall ?? pluginsInstall
+    await install(['--force'])
   } catch (err) {
     console.error(`plugins install: ${(err as Error).message}`)
   }
@@ -669,6 +818,13 @@ async function runUp(
 
   checkGeneratedConfigFile(join(dir, 'config.yaml'))
 
+  const persisted = readPersistedDen(join(dir, 'config.yaml'))
+  const port = flags.portExplicit ? flags.port : (fromInit?.port ?? persisted.port)
+  const exposeLan = flags.lanExplicit
+    ? flags.exposeLan
+    : (fromInit?.exposeLan ?? persisted.exposeLan)
+  const pathEnv = servicePathEnv({ home, nodePath: process.execPath })
+
   if (!flags.service) {
     console.log('Start the node with: rivetos start')
   } else if (platform === 'darwin') {
@@ -678,6 +834,7 @@ async function runUp(
     } catch {
       env = {}
     }
+    env.PATH = pathEnv
     await installLaunchdAgent({
       home,
       uid: deps.uid,
@@ -697,53 +854,50 @@ async function runUp(
       nodePath: process.execPath,
       cliEntry,
       exec,
+      pathEnv,
     })
   }
-
-  if (!flags.service) return
 
   const paths = localCaPaths(home)
   const caPath = existsSync(paths.caChainPem) ? paths.caChainPem : paths.chainPem
   const caPem = fromInit?.caPem ?? (existsSync(caPath) ? readFileSync(caPath, 'utf-8') : undefined)
-  const port = flags.port
-  const ok = await waitHealthz({
+  const lanAddrs = fromInit?.lanAddrs ?? listLanIpv4()
+  const p12Paths =
+    fromInit?.p12Paths ??
+    flags.devices.map((n) => extraDeviceP12Path(home, n)).filter((p) => existsSync(p))
+  const banner = formatBanner({
+    port,
+    exposeLan,
+    lanAddrs,
+    p12Paths,
+  })
+
+  if (!flags.service) {
+    console.log(banner)
+    return
+  }
+
+  const probe = deps.waitHealthz ?? waitHealthz
+  const ok = await probe({
     port,
     caPem,
     https: Boolean(caPem),
     timeoutMs: HEALTHZ_TIMEOUT_MS,
   })
   if (!ok) {
-    const log = await readServiceLogTail({ platform, workingDir, exec })
+    const log = await readServiceLogTail({ platform, workingDir, home, exec })
     throw new Error(
       `den did not become ready at https://localhost:${String(port)}/healthz within 60s\nLast 20 lines of service log:\n${log}`,
     )
   }
-  const lanAddrs = fromInit?.lanAddrs ?? listLanIpv4()
-  const p12Paths =
-    fromInit?.p12Paths ??
-    flags.devices.map((n) => extraDeviceP12Path(home, n)).filter((p) => existsSync(p))
-  console.log(
-    formatBanner({
-      port,
-      exposeLan: flags.exposeLan,
-      lanAddrs,
-      p12Paths,
-    }),
-  )
+  console.log(banner)
 }
 
 async function runStatus(deps: LocalDeps): Promise<void> {
   const home = deps.home ?? homedir()
   applySharedDir(home)
   const configPath = join(home, '.rivetos', 'config.yaml')
-  let port = DEFAULT_PORT
-  try {
-    const embedded = readEmbeddedConfig(configPath)
-    const den = (embedded?.config as { den?: { port?: number } } | undefined)?.den
-    if (typeof den?.port === 'number') port = den.port
-  } catch {
-    /* use default */
-  }
+  const { port } = readPersistedDen(configPath)
   const paths = localCaPaths(home)
   const caPath = existsSync(paths.caChainPem) ? paths.caChainPem : paths.chainPem
   const caPem = existsSync(caPath) ? readFileSync(caPath, 'utf-8') : undefined
@@ -795,13 +949,23 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   const now: () => Date = deps.now ?? ((): Date => new Date())
   const stamp = now().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const out = flags.out ?? join(home, '.rivetos', 'backups', `pglite-${stamp}.tar.gz`)
-  await withEmbeddedPg(embedded.config, async (handle) => {
+  const warm = deps.withEmbeddedPg ?? withEmbeddedPg
+  await warm(embedded.config, async (handle) => {
     if (!handle.owned) {
       throw new Error(ATTACH_BACKUP_ERROR)
     }
     await handle.backup(out)
   })
+  chmod600(out)
   console.log(`✅ backup wrote ${out}`)
+}
+
+function assertUnderRivetDir(home: string, target: string): void {
+  const base = resolvePath(rivetDir(home))
+  const resolved = resolvePath(target)
+  if (resolved !== base && !resolved.startsWith(base + sep)) {
+    throw new Error(`reset refuses to delete ${target} (outside ~/.rivetos)`)
+  }
 }
 
 async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
@@ -813,30 +977,58 @@ async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   const home = deps.home ?? homedir()
   const exec = deps.exec ?? execFileAsync
   const platform = deps.platform ?? process.platform
-  try {
-    if (platform === 'darwin') await stopLaunchdAgent({ uid: deps.uid, exec })
-    else if (platform !== 'win32') await stopLinuxService(exec)
-  } catch {
-    // not installed
+  if (platform === 'darwin') {
+    await stopLaunchdAgent({ uid: deps.uid, exec })
+  } else if (platform !== 'win32') {
+    await stopAndDisableLinux(exec)
   }
+
   const dir = rivetDir(home)
+  const configPath = join(dir, 'config.yaml')
+  const embedded = existsSync(configPath) ? readEmbeddedConfig(configPath) : undefined
+  if (embedded?.resolved) {
+    const lock = readEmbeddedPgLock(embedded.resolved.dataDir)
+    if (lock && embeddedPgLockAlive(lock)) {
+      throw new Error(
+        `embedded PGlite is still running (pid ${String(lock.pid)}) — stop the node first`,
+      )
+    }
+  }
+
   const targets = [
     join(dir, 'pglite'),
     join(dir, 'config.yaml'),
     join(dir, '.env'),
-    ...identityPathsToReset(home, platform),
+    ...identityPathsToReset(home),
+  ]
+  const errors: string[] = []
+  for (const t of targets) {
+    assertUnderRivetDir(home, t)
+    try {
+      rmSync(t, { recursive: true, force: true })
+    } catch (err) {
+      errors.push(`${t}: ${(err as Error).message}`)
+    }
+  }
+  const serviceFiles = [
     join(home, '.config', 'systemd', 'user', 'rivetos.service'),
     join(home, 'Library', 'LaunchAgents', 'dev.rivetos.node.plist'),
   ]
-  for (const t of targets) {
+  for (const t of serviceFiles) {
+    if (!existsSync(t)) continue
     try {
-      rmSync(t, { recursive: true, force: true })
-    } catch {
-      /* best-effort */
+      rmSync(t, { force: true })
+    } catch (err) {
+      errors.push(`${t}: ${(err as Error).message}`)
     }
+  }
+  if (errors.length > 0) {
+    throw new Error(`reset failed to delete:\n${errors.join('\n')}`)
   }
   console.log('✅ local-mode data removed')
 }
+
+export { runInit, runUp, runBackup, runReset }
 
 export async function runLocal(args: string[], deps: LocalDeps = {}): Promise<void> {
   const flags = parseLocalArgs(args)

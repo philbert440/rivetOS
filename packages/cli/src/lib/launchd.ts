@@ -5,7 +5,7 @@
  * bootstrap: `launchctl bootstrap gui/$UID <plist>`
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { parseRivetEnv } from './env-file.js'
@@ -31,6 +31,8 @@ export interface LaunchdPlistOpts {
   workingDir: string
   env: Record<string, string>
   label?: string
+  /** stdout/stderr log dir (default: workingDir). Prefer ~/.rivetos/logs. */
+  logDir?: string
 }
 
 export function renderLaunchdPlist(opts: LaunchdPlistOpts): string {
@@ -42,6 +44,7 @@ export function renderLaunchdPlist(opts: LaunchdPlistOpts): string {
     .filter(([k, v]) => k && v !== undefined)
     .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(v)}</string>`)
     .join('\n')
+  const logDir = opts.logDir ?? opts.workingDir
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -63,9 +66,9 @@ ${envLines}
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${xmlEscape(join(opts.workingDir, 'launchd.out.log'))}</string>
+  <string>${xmlEscape(join(logDir, 'launchd.out.log'))}</string>
   <key>StandardErrorPath</key>
-  <string>${xmlEscape(join(opts.workingDir, 'launchd.err.log'))}</string>
+  <string>${xmlEscape(join(logDir, 'launchd.err.log'))}</string>
 </dict>
 </plist>
 `
@@ -83,17 +86,26 @@ export async function installLaunchdAgent(opts: {
   workingDir: string
   env: Record<string, string>
   exec?: typeof execFileAsync
+  logDir?: string
 }): Promise<{ plistPath: string }> {
   const home = opts.home ?? homedir()
   const plistPath = launchdPlistPath(home)
   mkdirSync(dirname(plistPath), { recursive: true })
+  const logDir = opts.logDir ?? join(home, '.rivetos', 'logs')
+  mkdirSync(logDir, { recursive: true })
   const body = renderLaunchdPlist({
     nodePath: opts.nodePath,
     cliEntry: opts.cliEntry,
     workingDir: opts.workingDir,
     env: opts.env,
+    logDir,
   })
-  writeFileSync(plistPath, body, { encoding: 'utf-8', mode: 0o644 })
+  writeFileSync(plistPath, body, { encoding: 'utf-8', mode: 0o600 })
+  try {
+    chmodSync(plistPath, 0o600)
+  } catch {
+    // Windows may ignore mode bits
+  }
 
   const uid = opts.uid ?? process.getuid?.() ?? 0
   const domain = `gui/${String(uid)}`
@@ -121,7 +133,11 @@ export async function stopLaunchdAgent(opts: {
 }): Promise<void> {
   const uid = opts.uid ?? process.getuid?.() ?? 0
   const exec = opts.exec ?? execFileAsync
-  await exec('launchctl', ['bootout', `gui/${String(uid)}/${LAUNCHD_LABEL}`], {
+  const domain = `gui/${String(uid)}`
+  await exec('launchctl', ['bootout', `${domain}/${LAUNCHD_LABEL}`], {
+    timeoutMs: 10_000,
+  })
+  await exec('launchctl', ['disable', `${domain}/${LAUNCHD_LABEL}`], {
     timeoutMs: 10_000,
   })
 }

@@ -11,6 +11,7 @@
  */
 
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -305,6 +306,11 @@ export async function startEmbeddedPg(
       ).dumpDataDir('gzip')
       const bytes = await dumpToBuffer(dumped)
       writeFileSync(outPath, bytes)
+      try {
+        chmodSync(outPath, 0o600)
+      } catch {
+        // Windows may ignore mode bits
+      }
     },
   }
 }

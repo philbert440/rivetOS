@@ -65,7 +65,7 @@ export function listLanIpv4(
   return out
 }
 
-/** SANs for `issue-node local` — extras must be `IP:` / `DNS:` prefixed. */
+/** SANs for `issue-node <hostname>` — extras must be `IP:` / `DNS:` prefixed. */
 export function localNodeSans(opts: LocalCaSans): string[] {
   const sans = ['IP:127.0.0.1', 'DNS:localhost']
   for (const ip of opts.lanAddrs) {
@@ -77,7 +77,10 @@ export function localNodeSans(opts: LocalCaSans): string[] {
   return sans
 }
 
-export function localCaPaths(home: string): {
+export function localCaPaths(
+  home: string,
+  nodeName = 'local',
+): {
   rootDir: string
   sharedDir: string
   chainPem: string
@@ -92,8 +95,8 @@ export function localCaPaths(home: string): {
     sharedDir,
     chainPem: join(sharedDir, 'intermediate', 'chain.pem'),
     caChainPem: join(sharedDir, 'intermediate', 'ca-chain.pem'),
-    nodeCert: join(sharedDir, 'issued', 'local.crt'),
-    nodeKey: join(sharedDir, 'issued', 'local.key'),
+    nodeCert: join(sharedDir, 'issued', `${nodeName}.crt`),
+    nodeKey: join(sharedDir, 'issued', `${nodeName}.key`),
   }
 }
 
@@ -129,33 +132,44 @@ export function planLocalCa(opts: {
   scriptPath: string
 }): LocalCaPlan {
   const exists = opts.exists ?? existsSync
-  const paths = localCaPaths(opts.home)
+  const paths = localCaPaths(opts.home, opts.hostname)
   const desktopId = desktopClientId(opts.hostname)
   const desktopCert = join(paths.sharedDir, 'issued', `device-${desktopId}.crt`)
   const desktopKey = join(paths.sharedDir, 'issued', `device-${desktopId}.key`)
   const caKey = join(paths.rootDir, 'ca.key')
+  const caCrt = join(paths.rootDir, 'ca.crt')
   const intKey = join(paths.sharedDir, 'intermediate', 'int.key')
+  const intCrt = join(paths.sharedDir, 'intermediate', 'int.crt')
+
+  const rootComplete = pairComplete(exists, caKey, caCrt, 'root CA')
+  const intComplete = pairComplete(exists, intKey, intCrt, 'intermediate CA')
+  const desktopComplete = pairComplete(
+    exists,
+    desktopKey,
+    desktopCert,
+    `desktop client ${desktopId}`,
+  )
 
   const steps: LocalCaStep[] = [
     {
       argv: ['init'],
-      skip: exists(caKey),
-      reason: exists(caKey) ? 'root already exists' : undefined,
+      skip: rootComplete,
+      reason: rootComplete ? 'root already exists' : undefined,
     },
     {
       argv: ['issue-intermediate'],
-      skip: exists(intKey),
-      reason: exists(intKey) ? 'intermediate already exists' : undefined,
+      skip: intComplete,
+      reason: intComplete ? 'intermediate already exists' : undefined,
     },
     {
-      argv: ['issue-node', 'local', ...opts.sans],
+      argv: ['issue-node', opts.hostname, ...opts.sans],
       skip: false,
       reason: 're-issue every run (DHCP SANs)',
     },
     {
       argv: ['issue-client', desktopId],
-      skip: exists(desktopCert),
-      reason: exists(desktopCert) ? 'desktop client already issued' : undefined,
+      skip: desktopComplete,
+      reason: desktopComplete ? 'desktop client already issued' : undefined,
     },
   ]
 
@@ -195,7 +209,27 @@ async function runCa(
   })
 }
 
-function writeBothChains(plan: LocalCaPlan): void {
+/**
+ * Skip only when both halves of a key/cert pair exist. A lone key (or lone
+ * cert) is an interrupted run — `rivet-ca.sh init` / `issue-intermediate`
+ * refuse existing keys, so we fail with a recovery hint instead of skipping.
+ */
+function pairComplete(
+  exists: (path: string) => boolean,
+  keyPath: string,
+  crtPath: string,
+  label: string,
+): boolean {
+  const hasKey = exists(keyPath)
+  const hasCrt = exists(crtPath)
+  if (hasKey && hasCrt) return true
+  if (!hasKey && !hasCrt) return false
+  throw new Error(
+    `incomplete ${label}: ${hasKey ? keyPath : crtPath} exists without its pair — delete ${keyPath} and ${crtPath} and re-run rivetos local init`,
+  )
+}
+
+export function writeBothChains(plan: LocalCaPlan): void {
   if (!existsSync(plan.chainPem)) return
   if (!existsSync(plan.caChainPem)) {
     mkdirSync(dirname(plan.caChainPem), { recursive: true })
@@ -271,7 +305,12 @@ export async function issueClientDevice(opts: {
   const id = opts.name
   const cert = join(plan.sharedDir, 'issued', `device-${id}.crt`)
   const key = join(plan.sharedDir, 'issued', `device-${id}.key`)
-  if (existsSync(cert)) return { cert, key, id }
+  if (existsSync(cert) && existsSync(key)) return { cert, key, id }
+  if (existsSync(cert) || existsSync(key)) {
+    throw new Error(
+      `incomplete client ${id}: ${cert} / ${key} exist without a pair — delete both and re-run`,
+    )
+  }
   const exec = opts.exec ?? execFileAsync
   const result = await runCa(exec, plan, ['issue-client', id])
   if (result.timedOut || (result.code !== 0 && result.code !== null)) {

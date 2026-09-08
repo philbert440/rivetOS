@@ -111,6 +111,11 @@ export interface MeshSection {
       }
   /** Port for the agent channel HTTP server (default: 3000) */
   agent_channel_port?: number
+  /**
+   * Bind address for the agent channel HTTP server. Omitted = all interfaces
+   * (existing mesh default). Local mode sets `127.0.0.1`.
+   */
+  agent_channel_host?: string
 
   /**
    * Mesh delegation transport (cutover step g1). Default: 'postgres' when

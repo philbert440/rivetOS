@@ -1,5 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, readFile, access, readdir, writeFile, mkdir, utimes } from 'node:fs/promises'
+import {
+  mkdtemp,
+  rm,
+  readFile,
+  access,
+  readdir,
+  writeFile,
+  mkdir,
+  utimes,
+  stat,
+} from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ENROLL_SNIPPET_MARKER } from '../../lib/mesh-enroll.js'
@@ -160,6 +170,25 @@ describe('buildConfigYaml / buildEnvFile local branch', () => {
     expect(entries.find((e) => e.key === 'RIVETOS_MODE')?.comment).toBe(
       'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
     )
+  })
+
+  it('rewrites local-mode .env keys and sets mode 0600', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'rivetos-local-env-'))
+    try {
+      await writeFile(
+        join(dir, '.env'),
+        'RIVETOS_PG_URL=postgres://old:5433/postgres\nEXTRA=keep\n',
+      )
+      await generateConfig(localState(), dir)
+      const env = await readFile(join(dir, '.env'), 'utf-8')
+      expect(env).toContain('RIVETOS_PG_URL=postgres://postgres:postgres@127.0.0.1:5433/postgres')
+      expect(env).not.toContain('postgres://old:5433')
+      expect(env).not.toContain('EXTRA=keep')
+      expect(env).toContain('RIVETOS_EMBED_URL=')
+      expect((await stat(join(dir, '.env'))).mode & 0o777).toBe(0o600)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })
 
