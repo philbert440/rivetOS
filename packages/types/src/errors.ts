@@ -205,10 +205,7 @@ export class ConfigError extends RivetError {
 // ---------------------------------------------------------------------------
 
 export type ToolErrorCode =
-  | 'TOOL_EXECUTION_FAILED'
-  | 'TOOL_NOT_FOUND'
-  | 'TOOL_TIMEOUT'
-  | 'TOOL_BLOCKED'
+  'TOOL_EXECUTION_FAILED' | 'TOOL_NOT_FOUND' | 'TOOL_TIMEOUT' | 'TOOL_BLOCKED'
 
 export class ToolError extends RivetError {
   readonly toolName?: string
@@ -252,9 +249,7 @@ export class ToolError extends RivetError {
 // ---------------------------------------------------------------------------
 
 export type DelegationErrorCode =
-  | 'DELEGATION_TIMEOUT'
-  | 'DELEGATION_AGENT_NOT_FOUND'
-  | 'DELEGATION_FAILED'
+  'DELEGATION_TIMEOUT' | 'DELEGATION_AGENT_NOT_FOUND' | 'DELEGATION_FAILED'
 
 export class DelegationError extends RivetError {
   readonly fromAgent?: string

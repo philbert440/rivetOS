@@ -239,10 +239,7 @@ export interface MeshDelegationRoute {
 // ---------------------------------------------------------------------------
 
 export type MeshParseErrorCode =
-  | 'MESH_JSON_INVALID'
-  | 'MESH_FLAT_ARRAY'
-  | 'MESH_INVALID_SHAPE'
-  | 'MESH_NODE_INVALID'
+  'MESH_JSON_INVALID' | 'MESH_FLAT_ARRAY' | 'MESH_INVALID_SHAPE' | 'MESH_NODE_INVALID'
 
 export class MeshParseError extends RivetError {
   readonly path: string

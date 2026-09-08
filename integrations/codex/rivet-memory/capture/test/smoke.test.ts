@@ -55,10 +55,7 @@ const mappingDir = mkdtempSync(path.join(tmpdir(), 'codex-bindings-'))
 try {
   const bindingsFile = path.join(mappingDir, 'codex-threads.json')
   const room = '11111111-1111-4111-8111-111111111111'
-  writeFileSync(
-    bindingsFile,
-    JSON.stringify({ version: 1, bindings: [{ id: room, threadId: 'native-thread' }] }),
-  )
+  writeFileSync(bindingsFile, JSON.stringify({ version: 1, bindings: [{ id: room, threadId: 'native-thread' }] }))
   if (deriveSessionKey('native-thread', bindingsFile) !== `codex:${room}`)
     throw new Error('native rollout did not resolve to Rivet room')
   console.log('✓ protocol native rollout maps to Rivet room')
