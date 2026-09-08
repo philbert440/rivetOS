@@ -10,7 +10,7 @@ import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.TermSpawnResponse
-import io.rivethub.app.gateway.UserTurn
+import io.rivethub.app.gateway.HARNESS_IDS
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.WsSubscription
 import io.rivethub.app.gateway.sessionKeyEnc
@@ -36,6 +36,7 @@ import io.rivethub.app.plane.PTY_READY_BOUND_MS
 import io.rivethub.app.plane.PTY_READY_QUIET_MS
 import io.rivethub.app.plane.PendingAttachment
 import io.rivethub.app.plane.PendingApproval
+import io.rivethub.app.plane.StagedTurnAttachment
 import io.rivethub.app.plane.PtyReadyGate
 import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
@@ -50,22 +51,32 @@ import io.rivethub.app.plane.promptAnswers
 import io.rivethub.app.plane.resyncCompletesTurn
 import io.rivethub.app.plane.resyncStillApplies
 import io.rivethub.app.plane.shouldResyncFromRegistry
+import io.rivethub.app.plane.anyFailed
 import io.rivethub.app.plane.anyUploading
+import io.rivethub.app.plane.buildUserTurn
 import io.rivethub.app.plane.cardFromLiveTools
 import io.rivethub.app.plane.chatItemForGate
 import io.rivethub.app.plane.chatSendAction
 import io.rivethub.app.plane.composerOnInput
 import io.rivethub.app.plane.composerOnSendAttempt
+import io.rivethub.app.plane.composerSendText
 import io.rivethub.app.plane.composeAskAnswer
 import io.rivethub.app.plane.defaultEffort
 import io.rivethub.app.plane.defaultModel
 import io.rivethub.app.plane.effortListFor
+import io.rivethub.app.plane.isNativeImageMime
+import io.rivethub.app.plane.mimeFromName
+import io.rivethub.app.plane.modelAcceptsImage
+import io.rivethub.app.plane.nativeImageAttachments
+import io.rivethub.app.plane.nativeImageTurn
+import io.rivethub.app.plane.nativeTurnModels
+import io.rivethub.app.plane.optimisticUserText
+import io.rivethub.app.plane.readyAttachments
 import io.rivethub.app.plane.harnessGate
 import io.rivethub.app.plane.nextInjectTry
 import io.rivethub.app.plane.parseSessionMode
 import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.ptySpawnIsFresh
-import io.rivethub.app.plane.readyUris
 import io.rivethub.app.plane.rosterCommandFor
 import io.rivethub.app.plane.sessionMatchesNative
 import io.rivethub.app.plane.spawnAttempts
@@ -79,7 +90,6 @@ import io.rivethub.app.plane.TermWatchFactory
 import io.rivethub.app.plane.toSheet
 import io.rivethub.app.plane.uploadBaseUrl
 import io.rivethub.app.plane.uploadTooLarge
-import io.rivethub.app.plane.withAttachmentText
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
@@ -115,6 +125,7 @@ class HarnessChatViewModel(
     initialDraft: Boolean,
     private val presetModel: String = "",
     private val presetEffort: String = "",
+    initialTransport: String? = null,
     private val openStream: (Uri) -> java.io.InputStream? = { null },
     private val agentId: String = "",
     private val onAdoptPointer: ((from: String, canonical: String) -> Unit)? = null,
@@ -126,6 +137,7 @@ class HarnessChatViewModel(
         val mode: SessionMode = SessionMode.Chat,
         val model: String = "",
         val effort: String = "",
+        val transport: String? = null,
         val nodeName: String,
         val nodeDenUrl: String,
         val turns: List<io.rivethub.app.gateway.HarnessTranscriptTurn> = emptyList(),
@@ -172,6 +184,7 @@ class HarnessChatViewModel(
             nodeDenUrl = nodeDenUrl,
             model = presetModel,
             effort = presetEffort,
+            transport = initialTransport,
         ),
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -193,18 +206,19 @@ class HarnessChatViewModel(
     }
 
     private val pump = OutboundPump(
-        send = { text ->
-            machine.appendOptimisticUser(text)
+        send = { text, attachments ->
+            val bubble = optimisticUserText(text, attachments)
+            machine.appendOptimisticUser(bubble)
             machine.beginTurn()
             injectCompleted = false
             publishMachine()
             rearmIdleWatch()
             try {
-                actuallySend(text)
+                actuallySend(text, attachments)
                 injectCompleted = true
                 publishMachine()
             } catch (e: Throwable) {
-                machine.revertOptimisticUser(text)
+                machine.revertOptimisticUser(bubble)
                 // A 409 means a real turn IS streaming — dropping its bubble would
                 // blank the reply the user is watching. Only a hard failure aborts.
                 if (!isTurnInFlight(e)) machine.abortTurn()
@@ -330,11 +344,29 @@ class HarnessChatViewModel(
             _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_UPLOADING) }
             return
         }
-        val text = withAttachmentText(st.composer.trim(), readyUris(st.attachments))
-        if (text.isBlank()) return
+        if (anyFailed(st.attachments)) {
+            _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_FAILED_ATTACHMENT) }
+            return
+        }
+        val nativeImages = nativeImageAttachments(st.sheet, st.transport)
+        val staged = readyAttachments(st.attachments)
+        if (nativeImages && staged.isNotEmpty()) {
+            if (staged.any { !isNativeImageMime(it.mime) }) {
+                _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_IMAGE_ONLY) }
+                return
+            }
+            val selected = st.sheet?.models?.find { it.id == st.model }
+            if (!modelAcceptsImage(selected)) {
+                _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_IMAGE_UNSUPPORTED) }
+                return
+            }
+        }
+        val text = composerSendText(st.composer, st.attachments, nativeImages)
+        val enqueueAtts = if (nativeImageTurn(staged, nativeImages)) staged else emptyList()
+        if (text.isBlank() && enqueueAtts.isEmpty()) return
         val keptComposer = st.composer
         _state.update { it.copy(composer = "", attachments = emptyList(), error = composerOnSendAttempt(), errorCode = null) }
-        when (pump.tryEnqueue(text)) {
+        when (pump.tryEnqueue(text, enqueueAtts)) {
             is EnqueueResult.Uploading -> {
                 _state.update { it.copy(composer = keptComposer, attachments = st.attachments, errorCode = ERR_UPLOADING) }
             }
@@ -369,7 +401,7 @@ class HarnessChatViewModel(
         }
     }
 
-    fun answerAsk(picked: Map<Int, List<String>>, free: String) {
+    fun answerAsk(picked: Map<Int, List<String>>, freeByQuestion: Map<Int, String>) {
         val st = _state.value
         // In-flight guard (web keeps the same ref): every option row is a submit
         // surface now, and a second POST for the same promptId would type the
@@ -378,7 +410,7 @@ class HarnessChatViewModel(
         val card = st.ask ?: return
         val promptId = st.promptId
         if (promptId != null) {
-            val answers = promptAnswers(card.questions, picked, free)
+            val answers = promptAnswers(card.questions, picked, freeByQuestion)
             if (answers.all { it.labels.isEmpty() && it.other.isNullOrBlank() }) return
             _state.update { it.copy(answeringPrompt = true) }
             viewModelScope.launch(Dispatchers.IO) {
@@ -399,6 +431,9 @@ class HarnessChatViewModel(
             }
             return
         }
+        val free = card.questions.indices.mapNotNull { i ->
+            freeByQuestion[i]?.trim()?.takeIf { it.isNotEmpty() }
+        }.joinToString("\n")
         val text = composeAskAnswer(card.questions, picked, free)
         if (text.isBlank()) return
         _state.update { it.copy(ask = null, composer = text) }
@@ -459,6 +494,7 @@ class HarnessChatViewModel(
 
     fun stageUri(uri: Uri, name: String, mime: String?, size: Long) {
         val id = UUID.randomUUID().toString()
+        val resolvedMime = mime?.takeIf { it.isNotBlank() } ?: mimeFromName(name)
         if (uploadTooLarge(size)) {
             _state.update {
                 it.copy(
@@ -468,22 +504,32 @@ class HarnessChatViewModel(
             }
             return
         }
+        val nativeImages = nativeImageAttachments(_state.value.sheet, _state.value.transport)
+        if (nativeImages && !isNativeImageMime(resolvedMime)) {
+            _state.update {
+                it.copy(
+                    attachments = it.attachments + PendingAttachment(id, name, AttachmentStatus.FAILED, mime = resolvedMime),
+                    errorCode = ERR_IMAGE_ONLY,
+                )
+            }
+            return
+        }
         _state.update {
-            it.copy(attachments = it.attachments + PendingAttachment(id, name, AttachmentStatus.UPLOADING), errorCode = null)
+            it.copy(attachments = it.attachments + PendingAttachment(id, name, AttachmentStatus.UPLOADING, mime = resolvedMime), errorCode = null)
         }
         viewModelScope.launch {
             val entry = c.settings.snapshot().entryUrl
             val base = uploadBaseUrl(nodeDenUrl, entry)
             try {
                 val staged = withContext(Dispatchers.IO) {
-                    c.harness(base).stageUpload(if (size >= 0) size else -1L, name, mime) {
+                    c.harness(base).stageUpload(if (size >= 0) size else -1L, name, resolvedMime) {
                         openStream(uri) ?: throw java.io.IOException("could not open attachment")
                     }
                 }
                 _state.update { s ->
                     s.copy(
                         attachments = s.attachments.map { a ->
-                            if (a.id == id) a.copy(status = AttachmentStatus.READY, uri = staged.uri) else a
+                            if (a.id == id) a.copy(status = AttachmentStatus.READY, uri = staged.uri, mime = resolvedMime ?: a.mime) else a
                         },
                     )
                 }
@@ -502,6 +548,7 @@ class HarnessChatViewModel(
 
     fun stageBytes(bytes: ByteArray, name: String, mime: String?) {
         val id = UUID.randomUUID().toString()
+        val resolvedMime = mime?.takeIf { it.isNotBlank() } ?: mimeFromName(name)
         if (uploadTooLarge(bytes.size.toLong())) {
             _state.update {
                 it.copy(
@@ -511,20 +558,30 @@ class HarnessChatViewModel(
             }
             return
         }
+        val nativeImages = nativeImageAttachments(_state.value.sheet, _state.value.transport)
+        if (nativeImages && !isNativeImageMime(resolvedMime)) {
+            _state.update {
+                it.copy(
+                    attachments = it.attachments + PendingAttachment(id, name, AttachmentStatus.FAILED, mime = resolvedMime),
+                    errorCode = ERR_IMAGE_ONLY,
+                )
+            }
+            return
+        }
         _state.update {
-            it.copy(attachments = it.attachments + PendingAttachment(id, name, AttachmentStatus.UPLOADING))
+            it.copy(attachments = it.attachments + PendingAttachment(id, name, AttachmentStatus.UPLOADING, mime = resolvedMime))
         }
         viewModelScope.launch {
             val entry = c.settings.snapshot().entryUrl
             val base = uploadBaseUrl(nodeDenUrl, entry)
             try {
                 val staged = withContext(Dispatchers.IO) {
-                    c.harness(base).stageUpload(bytes, name, mime)
+                    c.harness(base).stageUpload(bytes, name, resolvedMime)
                 }
                 _state.update { s ->
                     s.copy(
                         attachments = s.attachments.map { a ->
-                            if (a.id == id) a.copy(status = AttachmentStatus.READY, uri = staged.uri) else a
+                            if (a.id == id) a.copy(status = AttachmentStatus.READY, uri = staged.uri, mime = resolvedMime ?: a.mime) else a
                         },
                     )
                 }
@@ -594,10 +651,45 @@ class HarnessChatViewModel(
             val hg = c.harness(nodeDenUrl)
             val desc = withContext(Dispatchers.IO) { runCatching { hg.listHarnesses() }.getOrDefault(emptyList()) }
             descriptors = desc
-            val sheet = desc.find { it.harnessId == harnessId }?.capabilities?.toSheet()
-            val model = presetModel.ifBlank { defaultModel(sheet) }
-            val effort = presetEffort.ifBlank { defaultEffort(sheet, model) }
-            _state.update { it.copy(sheet = sheet, model = model, effort = effort) }
+            val hid = resolvedHarnessId()
+            val caps = desc.find { it.harnessId == hid }?.capabilities
+            val sheet = caps?.toSheet()
+            var transport = _state.value.transport
+            var summaryModel: String? = null
+            var summaryEffort: String? = null
+            if (!_state.value.draft && hid != null && caps != null) {
+                val sessions = withContext(Dispatchers.IO) {
+                    runCatching { hg.listSessions(hid, caps) }.getOrDefault(emptyList())
+                }
+                val row = sessions.find { sessionMatchesNative(it.sessionId, _state.value.sessionId) }
+                if (row != null) {
+                    transport = row.transport ?: transport
+                    summaryModel = row.model
+                    summaryEffort = row.effort
+                }
+            }
+            val nativeModels = nativeTurnModels(sheet, transport)
+            val model = when {
+                nativeModels.isNotEmpty() ->
+                    nativeModels.find { it.id == presetModel }?.id
+                        ?: nativeModels.find { it.id == summaryModel }?.id
+                        ?: nativeModels.find { it.default }?.id
+                        ?: nativeModels.first().id
+                else -> presetModel.ifBlank { defaultModel(sheet) }
+            }
+            val effort = when {
+                nativeModels.isNotEmpty() -> {
+                    val selected = nativeModels.find { it.id == model }
+                    val efforts = selected?.efforts.orEmpty()
+                    efforts.find { it.id == presetEffort }?.id
+                        ?: efforts.find { it.id == summaryEffort }?.id
+                        ?: efforts.find { it.default }?.id
+                        ?: efforts.firstOrNull()?.id
+                        ?: ""
+                }
+                else -> presetEffort.ifBlank { defaultEffort(sheet, model) }
+            }
+            _state.update { it.copy(sheet = sheet, model = model, effort = effort, transport = transport) }
             recomputeGate()
         } catch (e: Exception) {
             _state.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
@@ -632,8 +724,23 @@ class HarnessChatViewModel(
                     sessionMatchesNative(event.supersedes, native) ||
                     sessionMatchesNative(event.summary.redirectedTo, native)
                 ) {
+                    applySummaryControls(event.summary.transport, event.summary.model, event.summary.effort)
                     adoptCanonical(sid)
                     maybeRegistryResync(event)
+                }
+            }
+            is HarnessEvent.CapabilitiesChanged -> {
+                if (event.harnessId == resolvedHarnessId()) {
+                    descriptors = descriptors.map { d ->
+                        if (d.harnessId == event.harnessId) d.copy(capabilities = event.capabilities) else d
+                    }
+                    if (descriptors.none { it.harnessId == event.harnessId }) {
+                        descriptors = descriptors + io.rivethub.app.gateway.HarnessDescriptor(
+                            event.harnessId, event.capabilities,
+                        )
+                    }
+                    _state.update { it.copy(sheet = event.capabilities.toSheet()) }
+                    recomputeGate()
                 }
             }
             is HarnessEvent.SessionUpdated -> {
@@ -863,7 +970,7 @@ class HarnessChatViewModel(
         }
     }
 
-    private suspend fun actuallySend(text: String) {
+    private suspend fun actuallySend(text: String, attachments: List<StagedTurnAttachment>) {
         if (c.identity.generation() != identityGen) {
             AndroidLogger.debug("RivetHub", "send dropped: identity generation changed", null)
             return
@@ -872,15 +979,17 @@ class HarnessChatViewModel(
         val st = _state.value
         when (val action = chatSendAction(st.draft, st.sessionId, text)) {
             is ChatSendAction.Inject -> injectDraft(action)
-            is ChatSendAction.SendTurn -> sendAdopted(action)
+            is ChatSendAction.SendTurn -> sendAdopted(action, attachments)
         }
     }
 
-    private suspend fun sendAdopted(action: ChatSendAction.SendTurn) {
+    private suspend fun sendAdopted(action: ChatSendAction.SendTurn, attachments: List<StagedTurnAttachment>) {
         val hg = c.harness(nodeDenUrl)
+        val st = _state.value
+        val turn = buildUserTurn(action.text, attachments, st.sheet, st.transport, st.model, st.effort)
         val accepted = try {
             withContext(Dispatchers.IO) {
-                hg.sendTurn(sessionKeyEnc(action.sessionId), UserTurn(action.text))
+                hg.sendTurn(sessionKeyEnc(action.sessionId), turn)
             }
         } catch (e: Exception) {
             // The den holds a turn "in flight" for up to 5 min when its hook events are
@@ -1093,11 +1202,57 @@ class HarnessChatViewModel(
 
     fun effortOptions(): List<Pair<String, String>> {
         val st = _state.value
+        val native = nativeTurnModels(st.sheet, st.transport)
+        if (native.isNotEmpty()) {
+            val selected = native.find { it.id == st.model } ?: native.firstOrNull()
+            return selected?.efforts.orEmpty().map { it.id to it.label }
+        }
         return effortListFor(st.sheet, st.model).map { it.id to it.label }
+    }
+
+    fun nativeModels(): List<Pair<String, String>> {
+        val st = _state.value
+        return nativeTurnModels(st.sheet, st.transport).map { it.id to it.label }
+    }
+
+    fun nativeImagesEnabled(): Boolean = nativeImageAttachments(_state.value.sheet, _state.value.transport)
+
+    private fun resolvedHarnessId(): String? {
+        if (!harnessId.isNullOrBlank()) return harnessId
+        val sid = _state.value.sessionId
+        val i = sid.indexOf(':')
+        if (i <= 0) return null
+        val hid = sid.substring(0, i)
+        return hid.takeIf { it in HARNESS_IDS }
+    }
+
+    private fun applySummaryControls(transport: String?, model: String?, effort: String?) {
+        _state.update { st ->
+            val nextTransport = transport ?: st.transport
+            val sheet = st.sheet
+            val native = nativeTurnModels(sheet, nextTransport)
+            val nextModel = when {
+                native.isEmpty() -> st.model
+                native.any { it.id == st.model } -> st.model
+                native.any { it.id == model } -> model!!
+                else -> native.find { it.default }?.id ?: native.firstOrNull()?.id ?: st.model
+            }
+            val efforts = native.find { it.id == nextModel }?.efforts.orEmpty()
+            val nextEffort = when {
+                efforts.isEmpty() -> st.effort
+                efforts.any { it.id == st.effort } -> st.effort
+                efforts.any { it.id == effort } -> effort!!
+                else -> efforts.find { it.default }?.id ?: efforts.firstOrNull()?.id ?: st.effort
+            }
+            st.copy(transport = nextTransport, model = nextModel, effort = nextEffort)
+        }
     }
 
     companion object {
         const val ERR_UPLOADING = "uploading"
         const val ERR_TOO_LARGE = "too_large"
+        const val ERR_FAILED_ATTACHMENT = "failed_attachment"
+        const val ERR_IMAGE_ONLY = "image_only"
+        const val ERR_IMAGE_UNSUPPORTED = "image_unsupported"
     }
 }

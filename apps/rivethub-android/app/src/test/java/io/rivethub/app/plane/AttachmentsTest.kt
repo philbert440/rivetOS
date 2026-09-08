@@ -72,4 +72,33 @@ class AttachmentsTest {
         assertFalse(uploadTooLarge(MAX_UPLOAD_BYTES))
         assertTrue(uploadTooLarge(MAX_UPLOAD_BYTES + 1))
     }
+
+    @Test fun `readyAttachments keep mime path and name`() {
+        val atts = listOf(
+            PendingAttachment("a", "a.png", AttachmentStatus.READY, "/up/a.png", "image/png"),
+            PendingAttachment("b", "b.png", AttachmentStatus.UPLOADING, mime = "image/png"),
+        )
+        assertEquals(
+            listOf(StagedTurnAttachment("image/png", "/up/a.png", "a.png")),
+            readyAttachments(atts),
+        )
+        assertFalse(anyFailed(atts))
+        assertTrue(anyFailed(atts + PendingAttachment("c", "c", AttachmentStatus.FAILED)))
+    }
+
+    @Test fun `mimeFromName infers image types`() {
+        assertEquals("image/jpeg", mimeFromName("pic.JPG"))
+        assertEquals("image/png", mimeFromName("a.png"))
+        assertEquals("image/webp", mimeFromName("x.webp"))
+        assertEquals("image/gif", mimeFromName("y.gif"))
+        assertEquals(null, mimeFromName("notes.txt"))
+        assertEquals("application/pdf", mimeFromName("notes.txt", "application/pdf"))
+    }
+
+    @Test fun `composerSendText keeps a native image caption bare`() {
+        val atts = listOf(PendingAttachment("a", "a.png", AttachmentStatus.READY, "/up/a.png", "image/png"))
+        assertEquals("look", composerSendText("look", atts, nativeImages = true))
+        assertEquals("look\n[attached: /up/a.png]", composerSendText("look", atts, nativeImages = false))
+        assertEquals("", composerSendText("  ", atts, nativeImages = true))
+    }
 }

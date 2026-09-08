@@ -40,6 +40,7 @@ data class ModelOption(
     val label: String,
     val default: Boolean = false,
     val efforts: List<EffortOption>? = null,
+    val inputModalities: List<String>? = null,
 )
 
 @Serializable
@@ -49,6 +50,10 @@ data class HarnessCapabilities(
     val approvals: Boolean = false,
     val liveStream: Boolean = false,
     val listSessions: Boolean = false,
+    /** Native per-turn model/effort settings (not CLI spawn flags). */
+    val turnOptions: Boolean = false,
+    /** Structured staged image inputs. */
+    val imageAttachments: Boolean = false,
     val models: List<ModelOption>? = null,
     val efforts: List<EffortOption>? = null,
     val modelFlag: String? = null,
@@ -75,6 +80,9 @@ data class HarnessSessionSummary(
     val status: String = "idle",
     val supersedes: String? = null,
     val model: String? = null,
+    val effort: String? = null,
+    /** Session-specific transport; a driver can also serve older PTY sessions. */
+    val transport: String? = null,
     /**
      * Present when the request id was superseded; [sessionId] is already the
      * canonical. A request under a bare id answers with the canonical — the
@@ -99,14 +107,26 @@ data class LegacyHarnessSession(
 data class LegacyHarnessSessionsResponse(val sessions: List<LegacyHarnessSession> = emptyList())
 
 /**
- * Control-plane turn body. Never carries an attachments field — every PTY
- * driver rejects UserTurn.attachments with capability_unsupported. Stage
- * files via POST /api/uploads and inject `[attached: uri]` lines in [text].
+ * Control-plane turn body. PTY drivers reject [attachments] with
+ * capability_unsupported — those sessions still stage via POST /api/uploads
+ * and inject `[attached: uri]` lines in [text]. Protocol-owned Codex
+ * sessions send structured [attachments] plus optional [model]/[effort]
+ * when the sheet advertises turnOptions / imageAttachments.
  */
+@Serializable
+data class UserTurnAttachment(
+    val mime: String,
+    val pathOrUri: String,
+    val name: String? = null,
+)
+
 @Serializable
 data class UserTurn(
     val text: String,
     val systemPrompt: String? = null,
+    val model: String? = null,
+    val effort: String? = null,
+    val attachments: List<UserTurnAttachment>? = null,
 )
 
 @Serializable
@@ -159,6 +179,12 @@ data class HarnessAskQuestion(
     val header: String? = null,
     val multiSelect: Boolean = false,
     val options: List<HarnessAskOption> = emptyList(),
+    /**
+     * Text-entry question (Codex `options: null`, or an explicit marker).
+     * Distinct from an empty option list on a herdr picker, which stays
+     * terminal-only.
+     */
+    val freeText: Boolean = false,
 )
 
 @Serializable
@@ -511,11 +537,15 @@ private fun parseAskQuestions(el: JsonElement?): List<HarnessAskQuestion> {
     val arr = el as? JsonArray ?: return emptyList()
     return arr.mapNotNull { item ->
         val obj = item as? JsonObject ?: return@mapNotNull null
+        val optionsEl = obj["options"] ?: obj["choices"]
+        val optionsMissing = optionsEl == null || optionsEl is JsonNull
+        val freeText = obj["freeText"]?.jsonPrimitive?.booleanOrNull == true || optionsMissing
         HarnessAskQuestion(
             question = obj.str("question"),
             header = obj.str("header"),
             multiSelect = obj["multiSelect"]?.jsonPrimitive?.booleanOrNull == true,
-            options = parseAskOptions(obj["options"] ?: obj["choices"]),
+            options = parseAskOptions(optionsEl),
+            freeText = freeText,
         )
     }
 }

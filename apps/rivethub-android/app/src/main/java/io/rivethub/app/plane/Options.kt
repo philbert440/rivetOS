@@ -10,9 +10,42 @@ data class HarnessSheet(
     val efforts: List<EffortOption>? = null,
     val modelFlag: String? = null,
     val effortFlag: String? = null,
+    val turnOptions: Boolean = false,
+    val imageAttachments: Boolean = false,
 )
 
-fun HarnessCapabilities.toSheet(): HarnessSheet = HarnessSheet(models, efforts, modelFlag, effortFlag)
+fun HarnessCapabilities.toSheet(): HarnessSheet =
+    HarnessSheet(models, efforts, modelFlag, effortFlag, turnOptions, imageAttachments)
+
+/** Protocol-owned native catalog. Absent unless the session is already bound to protocol. */
+fun nativeTurnModels(sheet: HarnessSheet?, transport: String?): List<ModelOption> {
+    if (sheet?.turnOptions != true) return emptyList()
+    if (transport != "protocol") return emptyList()
+    return sheet.models.orEmpty()
+}
+
+fun nativeImageAttachments(sheet: HarnessSheet?, transport: String?): Boolean =
+    sheet?.imageAttachments == true && transport == "protocol"
+
+/** PNG / JPEG / WebP / GIF — the den's native image allowlist. */
+val NATIVE_IMAGE_MIMES: Set<String> = setOf(
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/gif",
+)
+
+fun isNativeImageMime(mime: String?): Boolean {
+    val m = mime?.trim()?.lowercase() ?: return false
+    return m in NATIVE_IMAGE_MIMES || m == "image/jpg"
+}
+
+fun modelAcceptsImage(model: ModelOption?): Boolean {
+    val mods = model?.inputModalities ?: return true
+    if (mods.isEmpty()) return false
+    return mods.any { it.equals("image", ignoreCase = true) }
+}
 
 private val HARNESS_LABEL: Map<String, String> = mapOf(
     "claude-code" to "Claude Code",

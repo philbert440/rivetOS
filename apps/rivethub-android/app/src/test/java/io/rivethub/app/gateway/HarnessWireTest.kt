@@ -43,14 +43,48 @@ class HarnessWireTest {
         assertEquals(1000L, row.updatedAt)
     }
 
-    @Test fun `UserTurn has no attachments field`() {
+    @Test fun `UserTurn omits attachments model and effort on a text-only encode`() {
         val names = (0 until UserTurn.serializer().descriptor.elementsCount).map {
             UserTurn.serializer().descriptor.getElementName(it)
         }
-        assertFalse(names.contains("attachments"))
+        assertTrue(names.contains("attachments"))
+        assertTrue(names.contains("model"))
+        assertTrue(names.contains("effort"))
         val encoded = wireJson.encodeToString(UserTurn.serializer(), UserTurn("hi"))
         assertFalse(encoded.contains("attachments"))
+        assertFalse(encoded.contains("model"))
+        assertFalse(encoded.contains("effort"))
         assertTrue(encoded.contains("hi"))
+    }
+
+    @Test fun `UserTurn round-trips native model effort and staged image`() {
+        val t = UserTurn(
+            text = "look",
+            model = "gpt-5",
+            effort = "high",
+            attachments = listOf(UserTurnAttachment("image/png", "/node/uploads/a.png", "a.png")),
+        )
+        val json = wireJson.encodeToString(UserTurn.serializer(), t)
+        assertTrue(json.contains("pathOrUri"))
+        val back = wireJson.decodeFromString(UserTurn.serializer(), json)
+        assertEquals(t, back)
+    }
+
+    @Test fun `descriptor round-trips turnOptions imageAttachments and inputModalities`() {
+        val json = """{"harnessId":"codex","capabilities":{"interrupt":true,"resume":true,"approvals":true,"liveStream":true,"listSessions":true,"turnOptions":true,"imageAttachments":true,"models":[{"id":"gpt-5","label":"gpt-5","default":true,"inputModalities":["text","image"],"efforts":[{"id":"high","label":"High","default":true}]}]}}"""
+        val d = wireJson.decodeFromString(HarnessDescriptor.serializer(), json)
+        assertTrue(d.capabilities.turnOptions)
+        assertTrue(d.capabilities.imageAttachments)
+        assertEquals(listOf("text", "image"), d.capabilities.models!!.single().inputModalities)
+        assertEquals("high", d.capabilities.models!!.single().efforts!!.single().id)
+    }
+
+    @Test fun `session summary round-trips transport and effort`() {
+        val json = """{"sessionId":"codex:abc","harnessId":"codex","createdAt":"2026-08-08T00:00:00.000Z","updatedAt":"2026-08-08T00:05:00.000Z","status":"idle","model":"gpt-5","effort":"high","transport":"protocol"}"""
+        val s = wireJson.decodeFromString(HarnessSessionSummary.serializer(), json)
+        assertEquals("protocol", s.transport)
+        assertEquals("high", s.effort)
+        assertEquals("gpt-5", s.model)
     }
 
     @Test fun `UserTurn round-trips optional systemPrompt`() {
@@ -144,6 +178,7 @@ class HarnessWireTest {
         assertFalse(open.resolved)
         assertEquals("Go?", open.questions.single().question)
         assertEquals("Yes", open.questions.single().options[0].label)
+        assertFalse(open.questions.single().freeText)
         val done = parseHarnessEvent(
             """{"type":"prompt","sessionId":"$sid","promptId":"p1","kind":"ask-user","toolName":"AskUserQuestion","questions":[],"resolved":{"at":1,"answerText":"Yes"}}""",
         ) as HarnessEvent.Prompt
@@ -171,6 +206,23 @@ class HarnessWireTest {
         assertNull(e.screen)
         assertFalse(e.resolved)
         assertEquals(2, e.questions.single().options.size)
+        assertFalse(e.questions.single().freeText)
+    }
+
+    @Test fun `parse prompt treats missing options as free-text`() {
+        val e = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p4","kind":"ask-user","toolName":"requestUserInput","questions":[{"question":"Describe it","freeText":true}]}""",
+        ) as HarnessEvent.Prompt
+        assertTrue(e.questions.single().freeText)
+        assertTrue(e.questions.single().options.isEmpty())
+        val nullOpts = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p5","kind":"ask-user","toolName":"requestUserInput","questions":[{"question":"Name?","options":null}]}""",
+        ) as HarnessEvent.Prompt
+        assertTrue(nullOpts.questions.single().freeText)
+        val empty = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p6","kind":"ask-user","toolName":"AskUserQuestion","questions":[{"question":"Go?","options":[]}]}""",
+        ) as HarnessEvent.Prompt
+        assertFalse(empty.questions.single().freeText)
     }
 
     @Test fun `parse approval-request and approval-resolved`() {

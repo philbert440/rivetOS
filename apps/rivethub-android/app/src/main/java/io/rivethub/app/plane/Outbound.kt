@@ -9,6 +9,7 @@ data class OutboundItem(
     val id: String,
     val text: String,
     val status: Status,
+    val attachments: List<StagedTurnAttachment> = emptyList(),
 ) {
     enum class Status { QUEUED, SENDING, FAILED }
 }
@@ -34,7 +35,7 @@ const val TURN_RETRY_ATTEMPTS: Int = 6
  * that item even while awaiting.
  */
 class OutboundPump(
-    private val send: suspend (text: String) -> Unit,
+    private val send: suspend (text: String, attachments: List<StagedTurnAttachment>) -> Unit,
     private val attachmentsUploading: () -> Boolean = { false },
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val nowMs: () -> Long = { System.currentTimeMillis() },
@@ -52,9 +53,9 @@ class OutboundPump(
 
     val queued: List<OutboundItem> get() = q.toList()
 
-    fun tryEnqueue(text: String): EnqueueResult {
+    fun tryEnqueue(text: String, attachments: List<StagedTurnAttachment> = emptyList()): EnqueueResult {
         if (attachmentsUploading()) return EnqueueResult.Uploading
-        val item = OutboundItem(newId(), text, OutboundItem.Status.QUEUED)
+        val item = OutboundItem(newId(), text, OutboundItem.Status.QUEUED, attachments)
         q.addLast(item)
         return EnqueueResult.Accepted(item.id)
     }
@@ -121,7 +122,7 @@ class OutboundPump(
         if (forceId == null && (attempts[next.id] ?: 0) >= TURN_RETRY_ATTEMPTS) return
         replace(next, next.copy(status = OutboundItem.Status.SENDING))
         try {
-            send(next.text)
+            send(next.text, next.attachments)
             q.removeAll { it.id == next.id }
             attempts.remove(next.id)
             awaitingTurnComplete = true

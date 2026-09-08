@@ -66,9 +66,12 @@ import io.rivethub.app.ui.theme.ThemeMode
 import io.rivethub.app.ui.theme.blueprintGrid
 
 class MainActivity : ComponentActivity() {
+    private var pendingShare by mutableStateOf<List<android.net.Uri>>(emptyList())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        pendingShare = extractShareUris(intent)
         // Compose UI 1.8+ reports every text field to the Autofill framework, so password
         // managers (1Password) kept offering themselves on the chat composer and the terminal
         // field. Nothing here takes a credential — tokens come from the mesh — so opt the whole
@@ -98,8 +101,21 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !dark
                 }
             }
-            RivetTheme(mode) { App(container, openStream = { uri -> contentResolver.openInputStream(uri) }) }
+            RivetTheme(mode) {
+                App(
+                    container,
+                    openStream = { uri -> contentResolver.openInputStream(uri) },
+                    shareUris = pendingShare,
+                    onShareConsumed = { pendingShare = emptyList() },
+                )
+            }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingShare = extractShareUris(intent)
     }
 
     /**
@@ -114,6 +130,18 @@ class MainActivity : ComponentActivity() {
         if (checkSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
             .launch(perm)
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun extractShareUris(intent: android.content.Intent?): List<android.net.Uri> {
+    if (intent == null) return emptyList()
+    return when (intent.action) {
+        android.content.Intent.ACTION_SEND ->
+            listOfNotNull(intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM) as? android.net.Uri)
+        android.content.Intent.ACTION_SEND_MULTIPLE ->
+            intent.getParcelableArrayListExtra<android.net.Uri>(android.content.Intent.EXTRA_STREAM).orEmpty()
+        else -> emptyList()
     }
 }
 
@@ -143,7 +171,12 @@ private fun Screen.storeKey(): String? = when (this) {
 }
 
 @Composable
-fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? = { null }) {
+fun App(
+    c: AppContainer,
+    openStream: (android.net.Uri) -> java.io.InputStream? = { null },
+    shareUris: List<android.net.Uri> = emptyList(),
+    onShareConsumed: () -> Unit = {},
+) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
     val p = prefs
     val colors = RivetTheme.colors
@@ -236,7 +269,9 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                 title = displayTitle(row.item, hubVm.state.value.titleOverrides),
                 draft = row.item.kind == ChatItemKind.DRAFT || isDraftSessionId(row.item.key),
                 model = row.item.model.orEmpty(),
+                effort = row.item.effort.orEmpty(),
                 agentId = hubVm.agentForSession(row.item.key).orEmpty(),
+                transport = row.item.transport,
             ),
             replaceAll,
         )
@@ -413,7 +448,8 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                 val vm: HarnessChatViewModel = viewModel {
                     HarnessChatViewModel(
                         c, s.sessionKey, s.nodeDenUrl, s.harnessId, s.title, s.draft,
-                        presetModel = s.model, presetEffort = s.effort, openStream = openStream,
+                        presetModel = s.model, presetEffort = s.effort, initialTransport = s.transport,
+                        openStream = openStream,
                         agentId = s.agentId,
                         onAdoptPointer = { from, canonical ->
                             hubVm.adoptChatPointer(s.agentId, from, canonical, s.nodeDenUrl)
@@ -442,6 +478,8 @@ fun App(c: AppContainer, openStream: (android.net.Uri) -> java.io.InputStream? =
                             vm = vm,
                             onOpenDrawer = openDrawer,
                             onOpenHistory = openHistory,
+                            shareUris = shareUris,
+                            onShareConsumed = onShareConsumed,
                         )
                     }
                 }

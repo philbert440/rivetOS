@@ -20,6 +20,8 @@ data class ChatItem(
     val harnessId: String? = null,
     val command: String? = null,
     val model: String? = null,
+    val effort: String? = null,
+    val transport: String? = null,
     val status: String? = null,
     val updatedAt: Long = 0,
     val pin: Boolean = false,
@@ -81,6 +83,8 @@ fun chatItems(
             harnessId = summary.harnessId,
             command = legacy?.command?.takeIf { it.isNotBlank() } ?: ROSTER_COMMAND[summary.harnessId],
             model = summary.model,
+            effort = summary.effort,
+            transport = summary.transport,
             status = summary.status,
             updatedAt = if (parsed != 0L) parsed else (legacy?.updatedAt ?: 0L),
         )

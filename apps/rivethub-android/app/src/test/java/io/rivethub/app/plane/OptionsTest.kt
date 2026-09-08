@@ -3,6 +3,7 @@ package io.rivethub.app.plane
 import io.rivethub.app.gateway.EffortOption
 import io.rivethub.app.gateway.ModelOption
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,6 +66,26 @@ class OptionsTest {
         assertEquals("Hermes", rowPillText(null, null, "hermes"))
         assertEquals("DeepSeek", rowPillText(null, null, "deepseek-harness"))
         assertEquals("Codex", rowPillText(null, null, "codex"))
+    }
+
+    @Test fun `native turn models require protocol transport and turnOptions`() {
+        val sheet = HarnessSheet(
+            models = listOf(
+                ModelOption("gpt-5", "gpt-5", default = true, inputModalities = listOf("text", "image")),
+            ),
+            turnOptions = true,
+            imageAttachments = true,
+        )
+        assertTrue(nativeTurnModels(sheet, "protocol").isNotEmpty())
+        assertTrue(nativeTurnModels(sheet, "pty").isEmpty())
+        assertTrue(nativeTurnModels(sheet, null).isEmpty())
+        assertTrue(nativeTurnModels(sheet.copy(turnOptions = false), "protocol").isEmpty())
+        assertTrue(nativeImageAttachments(sheet, "protocol"))
+        assertFalse(nativeImageAttachments(sheet, "pty"))
+        assertTrue(modelAcceptsImage(sheet.models!!.single()))
+        assertFalse(modelAcceptsImage(ModelOption("x", "x", inputModalities = listOf("text"))))
+        assertTrue(isNativeImageMime("image/png"))
+        assertFalse(isNativeImageMime("application/pdf"))
     }
 
     @Test fun `unknown harness id is the label`() {
