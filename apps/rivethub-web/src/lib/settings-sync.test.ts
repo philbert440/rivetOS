@@ -170,6 +170,23 @@ describe('hydrateSettingsIfEmpty', () => {
     expect(mockShell.settingsSetAll).not.toHaveBeenCalled()
   })
 
+  it('hydrates missing connection keys when localStorage already has other settings', async () => {
+    localStorage.setItem('rivethub.theme', 'dark')
+    mockShell.settingsGetAll = vi.fn(async () => ({
+      'rivethub.baseUrl': 'https://localhost:5174',
+      'rivethub.roster': [{ name: 'rivet-grok', baseUrl: 'https://localhost:5174' }],
+      'rivethub.theme': 'light',
+    }))
+
+    await hydrateSettingsIfEmpty()
+
+    expect(localStorage.getItem('rivethub.theme')).toBe('dark')
+    expect(localStorage.getItem('rivethub.baseUrl')).toBe('https://localhost:5174')
+    expect(JSON.parse(localStorage.getItem('rivethub.roster') ?? 'null')).toEqual([
+      { name: 'rivet-grok', baseUrl: 'https://localhost:5174' },
+    ])
+  })
+
   it('no-ops when both localStorage and file are empty', async () => {
     mockShell.settingsGetAll = vi.fn(async () => ({}))
     mockShell.settingsSetAll = vi.fn(async () => {})
