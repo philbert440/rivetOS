@@ -6,7 +6,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import type { SearchHit } from '../search.js'
+import { SearchEngine, type SearchHit } from '../search.js'
 import { createMemoryApiRoute } from './memory-api.js'
 
 const CONV = '8f3a0000-0000-4000-8000-000000000001'
@@ -26,12 +26,20 @@ function fakePool(opts?: {
   browse?: Array<Record<string, unknown>>
   counts?: Record<string, string>
   missing?: boolean
+  dead?: boolean
+  queueMissing?: boolean
 }): pg.Pool {
   const sessionKey = opts?.sessionKey ?? 'claude-code:native-1'
   return {
     query: async (sql: string, params?: unknown[]) => {
       if (opts?.missing) throw new Error('relation "ros_messages" does not exist')
       const text = sql.replace(/\s+/g, ' ')
+      if (text.includes('AS msg_queue')) return { rows: [{ msg_queue: opts?.counts?.n ?? '3', sum_queue: '0', failed: '2', unembeddable: '4' }] }
+      if (text.includes('graphile_worker._private_jobs')) {
+        if (opts?.queueMissing) throw Object.assign(new Error('missing queue'), { code: '42P01' })
+        return { rows: opts?.dead ? [{ task: 'extract-wiki', pending: '5', dead: '2', running: '1', scheduled: '3', oldest_pending_age_min: '90.5', last_error: 'private error' }] : [] }
+      }
+      if (text.includes('WITH per_conv')) return { rows: [{ eligible_msgs: '10', active_tail_msgs: '3', below_floor_msgs: '1' }] }
       if (text.includes('FROM ros_conversations WHERE id = ANY')) {
         const ids = (params?.[0] as string[]) ?? []
         return {
@@ -96,6 +104,34 @@ async function serve(opts: Parameters<typeof createMemoryApiRoute>[0]): Promise<
 }
 
 describe('/api/memory', () => {
+  it('exposes dead work and normalizes queue ages without exposing raw errors', async () => {
+    vi.spyOn(SearchEngine.prototype, 'checkEmbeddingHealth').mockResolvedValue({ available: true, checkedAt: new Date().toISOString() })
+    const base = await serve({ pool: fakePool({ dead: true }) })
+    const health = await (await fetch(`${base}/api/memory/health`)).json()
+    expect(health).toMatchObject({ status: 'degraded', queueStatus: 'available', queues: [{ task: 'extract-wiki', pending: 5, dead: 2, running: 1, scheduled: 3, oldestPendingMinutes: 90.5 }] })
+    expect(JSON.stringify(health)).not.toContain('private error')
+  })
+  it('distinguishes unavailable queue schema from an empty queue', async () => {
+    const base = await serve({ pool: fakePool({ queueMissing: true }) })
+    const health = await (await fetch(`${base}/api/memory/health`)).json()
+    expect(health.queueStatus).toBe('unavailable')
+    expect(health.queues).toBeUndefined()
+  })
+
+  it('reports real embedding failures, compaction buckets, and owner-only queues', async () => {
+    const userPool = fakePool()
+    const query = vi.spyOn(userPool, 'query')
+    const base = await serve({ pool: fakePool(), userPools: new Map([['coco', userPool]]) })
+    const stats = await (await fetch(`${base}/api/memory/stats`)).json()
+    expect(stats).toMatchObject({ embedQueueDepth: 3, failedEmbeddings: 2 })
+    const health = await (await fetch(`${base}/api/memory/health`, { headers: { 'x-rivetos-user': 'coco' } })).json()
+    expect(health).toMatchObject({ queueStatus: 'restricted', failedEmbeddings: 2, skippedEmbeddings: 4,
+      compaction: { eligible: 10, activeTail: 3, belowFloor: 1 }, capture: { status: 'unknown' } })
+    expect(health.queues).toBeUndefined()
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('graphile_worker'))).toBe(false)
+    expect(Number.isFinite(Date.parse(health.observedAt))).toBe(true)
+  })
+
   it('rejects POST and unknown paths', async () => {
     const base = await serve({ pool: fakePool(), search: async () => [] })
     expect((await fetch(`${base}/api/memory/search`, { method: 'POST' })).status).toBe(405)
