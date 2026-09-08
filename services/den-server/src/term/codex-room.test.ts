@@ -1,8 +1,8 @@
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { findCodexRoomRollout } from './codex-room.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { findCodexRoomRollout, resolveCodexRoomRollout } from './codex-room.js'
 
 describe('Codex terminal room discovery', () => {
   let root: string
@@ -16,6 +16,7 @@ describe('Codex terminal room discovery', () => {
     await mkdir(proc)
   })
   afterEach(async () => {
+    vi.useRealTimers()
     await rm(root, { recursive: true, force: true })
   })
   async function processFile(pid: string, room: string, path: string, command = '/bin/codex') {
@@ -34,6 +35,28 @@ describe('Codex terminal room discovery', () => {
     await processFile('3', 'room', join(sessions, 'ignored', filename), '/bin/node')
     expect(await findCodexRoomRollout('room', sessions, proc)).toBe(path)
     expect(await findCodexRoomRollout('unknown', sessions, proc)).toBeUndefined()
+  })
+  it('caches successful discovery and expires the link after a room restart', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const path = join(sessions, filename)
+    await mkdir(sessions)
+    await writeFile(path, '')
+    await processFile('1', 'room', path)
+    expect(await resolveCodexRoomRollout('room', sessions, proc)).toBe(path)
+    await rm(join(proc, '1'), { recursive: true })
+    expect(await resolveCodexRoomRollout('room', sessions, proc)).toBe(path)
+    vi.advanceTimersByTime(30_001)
+    expect(await resolveCodexRoomRollout('room', sessions, proc)).toBeUndefined()
+  })
+  it('invalidates deleted rollouts without waiting for cache expiry', async () => {
+    const path = join(sessions, filename)
+    await mkdir(sessions)
+    await writeFile(path, '')
+    await processFile('1', 'room', path)
+    expect(await resolveCodexRoomRollout('room', sessions, proc)).toBe(path)
+    await rm(path)
+    await rm(join(proc, '1'), { recursive: true })
+    expect(await resolveCodexRoomRollout('room', sessions, proc)).toBeUndefined()
   })
   it('rejects paths outside the store and ambiguous rooms', async () => {
     await processFile('1', 'room', join(root, 'elsewhere', filename))

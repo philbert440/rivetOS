@@ -47,12 +47,14 @@ const rootEl = document.getElementById('root')
 if (!rootEl) throw new Error('missing #root element')
 
 // Boot: never leave the local/bundled dist for a remote node's UI.
-// 1) Hydrate settings from the shell's JSON file if localStorage is empty.
-// 2) Adopt last-active remote into the gateway (repoint only).
-// 3) Honor ?node= (Android drawer deep-link). Auth is device mTLS.
-// 4) Mount React.
+// 1) Hydrate missing keys from the shell's JSON file (existing values win).
+// 2) Refresh the connection store from storage (module init ran before 1).
+// 3) Adopt last-active remote into the gateway (repoint only).
+// 4) Honor ?node= (Android drawer deep-link). Auth is device mTLS.
+// 5) Mount React.
 void hydrateSettingsIfEmpty()
   .then(() => {
+    useConnection.getState().hydrateFromStorage()
     installOmarchySync()
     return adoptStoredRemoteUi((baseUrl) => {
       const { baseUrl: current, setConnection } = useConnection.getState()

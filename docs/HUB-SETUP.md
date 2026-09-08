@@ -55,7 +55,7 @@ npx nx build @rivetos/rivethub-web
 cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 ```
 
-Desktop starts unconfigured until a node gateway URL is set (the bundled app:// origin is not http(s)).
+Desktop starts unconfigured until a node gateway URL is set (the bundled app:// origin is not http(s)). On first launch with no saved `rivethub.baseUrl`, the shell probes `https://localhost:5174/healthz` (then `http://`) and, on a hit, writes that origin plus a roster row so the renderer restores both.
 
 ---
 

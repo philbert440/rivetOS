@@ -50,6 +50,14 @@ export interface RivetConfig {
   plugins?: string[]
 }
 
+/** `memory.postgres.embedded` — loopback PGlite transport for the postgres backend. */
+export interface MemoryPostgresEmbeddedSection {
+  data_dir?: string
+  port?: number
+  auto_migrate?: boolean
+  max_connections?: number
+}
+
 /** Workflows engine host config (YAML snake_case). */
 export interface WorkflowsSection {
   /** Absolute path for run caseDirs (default /rivet-shared/workflows/runs). */
@@ -103,6 +111,11 @@ export interface MeshSection {
       }
   /** Port for the agent channel HTTP server (default: 3000) */
   agent_channel_port?: number
+  /**
+   * Bind address for the agent channel HTTP server. Omitted = all interfaces
+   * (existing mesh default). Local mode sets `127.0.0.1`.
+   */
+  agent_channel_host?: string
 
   /**
    * Mesh delegation transport (cutover step g1). Default: 'postgres' when
@@ -260,6 +273,11 @@ export interface DenSection {
   /** Explicit opt-out of the tokenless files security gate (trusted LAN
    *  only). Defaults to terminal.open when unset. */
   files_open?: boolean
+  /**
+   * Publish `_rivethub._tcp` via mDNS so LAN apps can find this node.
+   * Default false. No-op unless the embedded gateway actually started.
+   */
+  advertise_mdns?: boolean
   /** Mesh device enrollment (Settings → Devices). Off unless `enabled`.
    *  With a shared roster (default when a shared export mount is present),
    *  any mesh node can add/revoke; each node still needs relay_ssh to mutate
@@ -447,7 +465,8 @@ export async function loadConfig(path: string): Promise<RivetConfig> {
 // Env Var Resolution
 // ---------------------------------------------------------------------------
 
-function resolveEnvVars<T>(obj: T): T {
+/** Resolve `${ENV_VAR}` references in string values (missing names → empty string). */
+export function resolveEnvVars<T>(obj: T): T {
   if (typeof obj === 'string') {
     return obj.replace(/\$\{(\w+)\}/g, (_, name: string) => {
       return process.env[name] ?? ''

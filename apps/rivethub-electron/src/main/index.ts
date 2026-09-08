@@ -28,6 +28,7 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron'
 import { CrashLog } from './crash-log.js'
+import { adoptLocalDenIfUnconfigured } from './local-den.js'
 import { PipeState } from './mtls-pipe.js'
 import { SettingsStore } from './settings-store.js'
 import { registerIpc } from './ipc.js'
@@ -134,6 +135,15 @@ function identityDir(): string {
   const legacy = path.join(app.getPath('appData'), 'dev.rivetos.rivethub', 'mtls')
   if (fs.existsSync(path.join(legacy, 'device.crt'))) return legacy
   return own
+}
+
+/** Probe-only CA material. Missing/unreadable → HTTPS without a pin. */
+function readIdentityCaPem(): string | undefined {
+  try {
+    return fs.readFileSync(path.join(identityDir(), 'ca.pem'), 'utf8')
+  } catch {
+    return undefined
+  }
 }
 
 const pipes = new PipeState(identityDir)
@@ -509,8 +519,24 @@ if (!app.requestSingleInstanceLock()) {
     else showMain()
   })
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     try {
+      // Before the first window: renderer hydrates missing keys from
+      // settings.json (per-key; existing localStorage values win). Existing
+      // non-empty baseUrl is left alone.
+      const started = Date.now()
+      const adopted = await adoptLocalDenIfUnconfigured(settingsStore, {
+        caPem: readIdentityCaPem(),
+      })
+      const elapsedMs = Date.now() - started
+      if (adopted) {
+        logFault('local-den', `adopted ${adopted.name} ${adopted.baseUrl} ${elapsedMs}ms`)
+      } else {
+        const existing = settingsStore.get('rivethub.baseUrl')
+        if (typeof existing !== 'string' || existing.trim() === '') {
+          logFault('local-den', `miss ${elapsedMs}ms`)
+        }
+      }
       startup()
     } catch (err) {
       // One bad step must not abort startup with no window and no trail —
@@ -564,20 +590,11 @@ function startup(): void {
   // check handler backs navigator.permissions.query, which would otherwise
   // disagree with getUserMedia (review finding, PR #555).
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details) => {
-    cb(
-      permission === 'media' &&
-        allowMediaRequest(
-          details as { requestingUrl?: string; isMainFrame?: boolean; mediaTypes?: string[] },
-        ),
-    )
+    cb(permission === 'media' && allowMediaRequest(details))
   })
   session.defaultSession.setPermissionCheckHandler(
     (_wc, permission, requestingOrigin, details) =>
-      permission === 'media' &&
-      allowMediaCheck(
-        requestingOrigin,
-        details as { embeddingOrigin?: string; mediaType?: string; isMainFrame?: boolean },
-      ),
+      permission === 'media' && allowMediaCheck(requestingOrigin, details),
   )
 
   // Summon follows focus (see registerSummon): global while every shell

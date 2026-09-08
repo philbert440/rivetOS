@@ -465,8 +465,24 @@ export interface MemoryStatsResponse {
 }
 
 export interface MemoryHealthResponse {
+  observedAt?: string
+  /** Worker queues are owner-only; user-routed requests never expose fleet data. */
+  queueStatus?: 'available' | 'unavailable' | 'restricted'
+  queues?: {
+    task: string
+    pending: number
+    running: number
+    scheduled: number
+    dead: number
+    oldestPendingMinutes: number | null
+  }[]
+  compaction?: { eligible: number; activeTail: number; belowFloor: number }
+  failedEmbeddings?: number
+  skippedEmbeddings?: number
+  capture?: { status: 'unknown'; impact: string }
+
   status: 'ok' | 'degraded' | 'error'
-  embeddings: { status: 'ok' | 'unavailable'; error?: string; impact?: string }
+  embeddings: { status: 'ok' | 'unavailable'; error?: string; impact?: string; checkedAt?: string }
   embedQueueDepth: number
 }
 

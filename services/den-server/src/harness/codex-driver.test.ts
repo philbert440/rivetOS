@@ -65,7 +65,16 @@ function fakePty() {
       return writable && !dead.has(id)
     },
   }
-  return { host, spawns, injects, live, dead, setWritable: (v: boolean): void => { writable = v } }
+  return {
+    host,
+    spawns,
+    injects,
+    live,
+    dead,
+    setWritable: (v: boolean): void => {
+      writable = v
+    },
+  }
 }
 
 function makeDriver(
@@ -307,7 +316,9 @@ describe('adoption — how a Codex session enters the control plane', () => {
     const seen: HarnessEvent[] = []
     f.driver.subscribeEvents((e) => seen.push(e))
     f.emitDen({ v: 1, session: ROOM, harness: 'hermes', type: 'session.start', title: 'h' })
-    f.emitDen(codexEvent(ROOM, 'unknown-4242abcd4242abcd', { type: 'session.start', title: 'codex' }))
+    f.emitDen(
+      codexEvent(ROOM, 'unknown-4242abcd4242abcd', { type: 'session.start', title: 'codex' }),
+    )
     f.emitDen(codexEvent(ROOM, 'session_' + NAT, { type: 'session.start', title: 'codex' }))
     f.emitDen({ v: 1, session: ROOM, harness: 'codex', type: 'tool.start', tool: 'shell' })
     expect(seen).toEqual([])
@@ -521,7 +532,6 @@ runHarnessRotationConformance('codex', () => {
   }
 })
 
-
 describe('Codex screen approvals', () => {
   const screen = async () => `Would you like to run the following command?
   Reason: Approval UI smoke test
@@ -531,22 +541,36 @@ describe('Codex screen approvals', () => {
   3. No, and tell Codex what to do differently (esc)
   Press enter to confirm or esc to cancel`
 
-  it.each([['allow', 'y'], ['deny', '\x1b']] as const)('routes %s from a blocked screen to the actual TUI shortcut', async (decision, key) => {
-    const f = makeDriver({ herdrStatus: true, screen })
-    const seen: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => seen.push(e))
-    f.driver.subscribe(SID, (e) => seen.push(e))
-    adopt(f, ROOM, NAT)
-    await vi.waitFor(() => expect(seen.some((e) => e.type === 'session-created')).toBe(true))
-    f.driver.applyHerdrStatus(ROOM, { type: 'status', sessionId: SID, status: 'blocked', since: Date.now(), source: 'herdr' })
-    await vi.waitFor(() => expect(seen.some((e) => e.type === 'approval-request')).toBe(true))
-    const request = seen.find((e) => e.type === 'approval-request')!
-    if (request.type !== 'approval-request') throw new Error('missing approval')
-    await expect(f.driver.resolveApproval(SID, request.requestId, 'allow-session')).rejects.toMatchObject({ code: 'bad_request' })
-    expect(seen.some((e) => e.type === 'approval-resolved')).toBe(false)
-    await f.driver.resolveApproval(SID, request.requestId, decision)
-    expect(f.pty.injects.at(-1)).toMatchObject({ text: key, submit: false })
-    expect(seen.some((e) => e.type === 'approval-resolved')).toBe(true)
-    f.driver.close()
-  })
+  it.each([
+    ['allow', 'y'],
+    ['deny', '\x1b'],
+  ] as const)(
+    'routes %s from a blocked screen to the actual TUI shortcut',
+    async (decision, key) => {
+      const f = makeDriver({ herdrStatus: true, screen })
+      const seen: HarnessEvent[] = []
+      f.driver.subscribeEvents((e) => seen.push(e))
+      f.driver.subscribe(SID, (e) => seen.push(e))
+      adopt(f, ROOM, NAT)
+      await vi.waitFor(() => expect(seen.some((e) => e.type === 'session-created')).toBe(true))
+      f.driver.applyHerdrStatus(ROOM, {
+        type: 'status',
+        sessionId: SID,
+        status: 'blocked',
+        since: Date.now(),
+        source: 'herdr',
+      })
+      await vi.waitFor(() => expect(seen.some((e) => e.type === 'approval-request')).toBe(true))
+      const request = seen.find((e) => e.type === 'approval-request')!
+      if (request.type !== 'approval-request') throw new Error('missing approval')
+      await expect(
+        f.driver.resolveApproval(SID, request.requestId, 'allow-session'),
+      ).rejects.toMatchObject({ code: 'bad_request' })
+      expect(seen.some((e) => e.type === 'approval-resolved')).toBe(false)
+      await f.driver.resolveApproval(SID, request.requestId, decision)
+      expect(f.pty.injects.at(-1)).toMatchObject({ text: key, submit: false })
+      expect(seen.some((e) => e.type === 'approval-resolved')).toBe(true)
+      f.driver.close()
+    },
+  )
 })

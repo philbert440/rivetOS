@@ -11,16 +11,45 @@ import { Runtime } from '@rivetos/core'
 import { logger } from '@rivetos/core'
 import type { ThinkingLevel } from '@rivetos/types'
 
-import { loadConfig } from './config.js'
+import { loadConfig, type RivetConfig } from './config.js'
 import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
 import { registerPlugins } from './registrars/plugins.js'
 import { registerAgentTools } from './registrars/agents.js'
-import { registerGateway } from './registrars/gateway.js'
+import { registerGateway, denTlsConfigured } from './registrars/gateway.js'
+import { registerMdnsAdvertiser } from './registrars/mdns.js'
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js'
+import {
+  acquireEmbeddedPg,
+  applyEmbeddedPgUrl,
+  migrateEmbedded,
+  resolveEmbeddedPg,
+  type EmbeddedPgHandle,
+} from './embedded-pg.js'
 
 // Re-export config types for consumers
-export { loadConfig, type RivetConfig, ConfigValidationError } from './config.js'
+export {
+  loadConfig,
+  resolveEnvVars,
+  type RivetConfig,
+  type MemoryPostgresEmbeddedSection,
+  ConfigValidationError,
+} from './config.js'
+export {
+  resolveEmbeddedPg,
+  acquireEmbeddedPg,
+  applyEmbeddedPgUrl,
+  migrateEmbedded,
+  readEmbeddedPgLock,
+  embeddedPgLockAlive,
+  embeddedPgUrl,
+  waitForPort,
+  EMBEDDED_PG_LOCKFILE,
+  ATTACH_BACKUP_ERROR,
+  type ResolvedEmbeddedPg,
+  type EmbeddedPgHandle,
+  type EmbeddedPgLock,
+} from './embedded-pg.js'
 export {
   validateConfig,
   formatValidationResult,
@@ -105,6 +134,54 @@ export async function boot(configPath?: string): Promise<void> {
   log.info(`Loading config from ${configPath}`)
 
   const config = await loadConfig(configPath)
+
+  // Embedded PGlite (optional): acquire the loopback socket and inject the
+  // URL before plugin discovery so memory / gateway / Runtime.getPgUrl() see it.
+  const embedded = resolveEmbeddedPg(config)
+  let embeddedHandle: EmbeddedPgHandle | undefined
+  if (embedded) {
+    embeddedHandle = await acquireEmbeddedPg(embedded, { log })
+    applyEmbeddedPgUrl(config, embeddedHandle.pgUrl)
+  }
+
+  // Everything below runs with the embedded DB held: if boot fails or is signalled before
+  // the shutdown handlers exist, release the socket + lock instead of leaking them.
+  const releaseOnFailure = async (): Promise<void> => {
+    await embeddedHandle?.close()
+  }
+  const onEarlySignal = (): void => {
+    void releaseOnFailure().finally(() => process.exit(1))
+  }
+  if (embeddedHandle) {
+    process.once('SIGINT', onEarlySignal)
+    process.once('SIGTERM', onEarlySignal)
+  }
+  try {
+    await bootWithConfig(config, configPath, embedded, embeddedHandle)
+  } catch (err) {
+    await releaseOnFailure()
+    throw err
+  } finally {
+    process.off('SIGINT', onEarlySignal)
+    process.off('SIGTERM', onEarlySignal)
+  }
+}
+
+async function bootWithConfig(
+  config: RivetConfig,
+  configPath: string,
+  embedded: ReturnType<typeof resolveEmbeddedPg>,
+  embeddedHandle: EmbeddedPgHandle | undefined,
+): Promise<void> {
+  if (embedded && embeddedHandle) {
+    if (embedded.autoMigrate && embeddedHandle.owned) {
+      await migrateEmbedded(embeddedHandle.pgUrl)
+    }
+    if (embedded.liteMode && embeddedHandle.owned) {
+      await embeddedHandle.exec?.(`SET rivet.defer_embed_enqueue = 'on'`)
+    }
+  }
+
   const workspaceDir = config.runtime.workspace.replace('~', process.env.HOME ?? '.')
 
   // 0. Discover plugins
@@ -183,11 +260,27 @@ export async function boot(configPath?: string): Promise<void> {
 
   // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
   //      task-engine route families mounted behind its bearer gate.
-  await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+  const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
 
-  // 5. Lifecycle
+  // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
+  // One shutdown hook: unpublish (goodbye) first, then den.close(). Hooks run
+  // FIFO; registerGateway no longer registers den.close itself.
+  if (gateway) {
+    const stopMdns = await registerMdnsAdvertiser(config, gateway.port, denTlsConfigured(config))
+    runtime.addShutdownHook(async () => {
+      try {
+        if (stopMdns) await stopMdns()
+      } finally {
+        await gateway.close()
+      }
+    })
+  }
+
+  // 5. Lifecycle — close embedded PG after runtime.stop (den/plugins first).
   await writePidFile()
-  registerShutdownHandlers(runtime)
+  registerShutdownHandlers(runtime, undefined, async () => {
+    await embeddedHandle?.close()
+  })
 
   // 6. Start
   await runtime.start()

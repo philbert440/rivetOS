@@ -25,7 +25,7 @@ const cleanup: Array<() => void> = []
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn()
 })
-function setup(linkUploads = false) {
+function setup(defaults: Record<string, unknown> = {}, linkUploads = false) {
   const dir = mkdtempSync(join(tmpdir(), 'codex-driver-'))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   const uploadsDir = linkUploads ? join(dir, 'uploads-link') : dir
@@ -69,6 +69,7 @@ function setup(linkUploads = false) {
       bindingsFile: join(dir, 'bindings.json'),
       uploadsDir,
       cwd: () => '/work',
+      threadDefaults: () => defaults,
       store: {
         list: async () => [],
         describe: async () => undefined,
@@ -127,17 +128,17 @@ it('re-reads uncertain sends without replaying them', async () => {
   })
   expect(vi.mocked(rpc.request).mock.calls.filter(([m]) => m === 'turn/start')).toHaveLength(1)
 })
-it('uses thread/resume for developer instructions', async () => {
+it('delivers context in the accepted first turn even when resume overrides are ignored', async () => {
   const { driver, rpc } = setup()
   await driver.startSession({ nativeSessionId: id })
   await driver.sendUserTurn(sid, { text: 'hello', systemPrompt: 'context' })
-  expect(rpc.request).toHaveBeenCalledWith('thread/resume', {
-    threadId: native,
-    developerInstructions: 'context',
-  })
+  expect(rpc.request).not.toHaveBeenCalledWith('thread/resume', expect.anything())
   expect(rpc.request).toHaveBeenCalledWith('turn/start', {
     threadId: native,
-    input: [{ type: 'text', text: 'hello' }],
+    input: [
+      { type: 'text', text: 'context' },
+      { type: 'text', text: 'hello' },
+    ],
   })
 })
 it('preserves approval IDs, ignores other threads and rejects stale answers', async () => {
@@ -146,7 +147,7 @@ it('preserves approval IDs, ignores other threads and rejects stale answers', as
   const events: HarnessEvent[] = []
   driver.subscribe(sid, (e) => events.push(e))
   emit({ id: 7, method: 'item/commandExecution/requestApproval', params: { threadId: 'other' } })
-  expect(rpc.reject).not.toHaveBeenCalled()
+  expect(rpc.reject).toHaveBeenCalledWith(7, 'No managed thread for request')
   emit({
     id: '7',
     method: 'item/commandExecution/requestApproval',
@@ -287,7 +288,7 @@ it('advertises protocol controls even without a PTY backend', () => {
 })
 
 it('accepts flat uploads through a symlinked staging directory and canonicalizes the input', async () => {
-  const { driver, rpc, dir, uploadsDir } = setup(true)
+  const { driver, rpc, dir, uploadsDir } = setup({}, true)
   await driver.startSession({ nativeSessionId: id })
   writeFileSync(join(dir, 'image.jpg'), 'image')
   await driver.sendUserTurn(sid, {
@@ -300,7 +301,7 @@ it('accepts flat uploads through a symlinked staging directory and canonicalizes
   })
 })
 it('rejects nested files and file symlinks even inside a symlinked staging directory', async () => {
-  const { driver, rpc, dir, uploadsDir } = setup(true)
+  const { driver, rpc, dir, uploadsDir } = setup({}, true)
   await driver.startSession({ nativeSessionId: id })
   mkdirSync(join(dir, 'nested'))
   writeFileSync(join(dir, 'nested', 'image.png'), 'image')
@@ -401,4 +402,168 @@ it('omits unknown content without adding newlines to user echoes', () => {
       ],
     }),
   ).toEqual([{ role: 'user', text: 'hello\n[Image]' }])
+})
+it('accepts interrupt then send before the completion notification', async () => {
+  const { driver, rpc, emit } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  await driver.sendUserTurn(sid, { text: 'first' })
+  await driver.interrupt(sid)
+  vi.mocked(rpc.request).mockResolvedValueOnce({ turn: { id: 'turn2', status: 'inProgress' } })
+  await driver.sendUserTurn(sid, { text: 'replacement' })
+  emit({
+    method: 'turn/completed',
+    params: { threadId: native, turn: { id: 'turn1', status: 'interrupted' } },
+  })
+  await expect(driver.sendUserTurn(sid, { text: 'third' })).rejects.toMatchObject({
+    code: 'turn_in_flight',
+  })
+})
+
+it('ignores a superseded completion while replacement approvals are pending', async () => {
+  const { driver, rpc, emit } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  const events: HarnessEvent[] = []
+  driver.subscribe(sid, (event) => events.push(event))
+  await driver.sendUserTurn(sid, { text: 'first' })
+  await driver.interrupt(sid)
+  vi.mocked(rpc.request).mockResolvedValueOnce({ turn: { id: 'turn2', status: 'inProgress' } })
+  await driver.sendUserTurn(sid, { text: 'replacement' })
+  emit({
+    id: 7,
+    method: 'item/commandExecution/requestApproval',
+    params: { threadId: native, turnId: 'turn2', itemId: 'cmd2' },
+  })
+  const sync = vi.spyOn(driver, 'syncTranscript')
+  events.length = 0
+  emit({
+    method: 'turn/completed',
+    params: { threadId: native, turn: { id: 'turn1', status: 'interrupted' } },
+  })
+  expect(events).toEqual([])
+  expect(sync).not.toHaveBeenCalled()
+  await driver.resolveApproval(sid, 'number:7', 'allow')
+  expect(rpc.respond).toHaveBeenCalledWith(7, { decision: 'accept' })
+  emit({
+    method: 'turn/completed',
+    params: { threadId: native, turn: { id: 'turn2', status: 'completed' } },
+  })
+  expect(events).toContainEqual(expect.objectContaining({ type: 'turn-complete', turnId: 'turn2' }))
+  expect(sync).toHaveBeenCalledOnce()
+})
+
+it('replays one unavailable event to a subscriber attaching during an outage', async () => {
+  const { driver, rpc, emit } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  const existing: HarnessEvent[] = []
+  driver.subscribe(sid, (event) => existing.push(event))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  emit({ method: '$disconnected', params: {} })
+  vi.mocked(rpc.request).mockRejectedValue(new Error('still disconnected'))
+  const late: HarnessEvent[] = []
+  driver.subscribe(sid, (event) => late.push(event))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  emit({ method: '$disconnected', params: {} })
+  const unavailable = (events: HarnessEvent[]) =>
+    events.filter((event) => event.type === 'error' && event.code === 'codex_unavailable')
+  expect(unavailable(existing)).toHaveLength(1)
+  expect(unavailable(late)).toEqual(unavailable(existing))
+})
+
+it('interrupt waits for a pending turn/start response', async () => {
+  const { driver, rpc } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  let accept!: (value: Record<string, unknown>) => void
+  vi.mocked(rpc.request).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        accept = resolve
+      }),
+  )
+  const send = driver.sendUserTurn(sid, { text: 'first' })
+  await vi.waitFor(() => expect(accept).toBeDefined())
+  const interrupt = driver.interrupt(sid)
+  accept({ turn: { id: 'pending', status: 'inProgress' } })
+  await Promise.all([send, interrupt])
+  expect(rpc.request).toHaveBeenCalledWith('turn/interrupt', {
+    threadId: native,
+    turnId: 'pending',
+  })
+})
+
+it.each(['completed', 'inProgress'])(
+  're-reads a disconnected known turn without subscribers: %s',
+  async (status) => {
+    const { driver, rpc, emit, thread } = setup()
+    await driver.startSession({ nativeSessionId: id })
+    await driver.sendUserTurn(sid, { text: 'first' })
+    emit({ method: '$disconnected', params: {} })
+    thread.turns = [{ id: 'turn1', status }]
+    if (status === 'completed') await driver.sendUserTurn(sid, { text: 'second' })
+    else
+      await expect(driver.sendUserTurn(sid, { text: 'second' })).rejects.toMatchObject({
+        code: 'turn_in_flight',
+      })
+    expect(rpc.request).toHaveBeenCalledWith('thread/resume', { threadId: native })
+    expect(vi.mocked(rpc.request).mock.calls.filter(([m]) => m === 'turn/start')).toHaveLength(
+      status === 'completed' ? 2 : 1,
+    )
+  },
+)
+
+it('reports one unavailable event per outage and marks recovered active turns blocked', async () => {
+  const { driver, emit, thread } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  const events: HarnessEvent[] = []
+  driver.subscribe(sid, (e) => events.push(e))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  emit({ id: 7, method: 'item/commandExecution/requestApproval', params: { threadId: native } })
+  emit({ method: '$disconnected', params: {} })
+  emit({ method: '$disconnected', params: {} })
+  expect(events.filter((e) => e.type === 'error' && e.code === 'codex_unavailable')).toHaveLength(1)
+  thread.turns = [{ id: 'turn1', status: 'inProgress' }]
+  emit({ method: '$connected', params: {} })
+  await vi.waitFor(() =>
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: 'error', code: 'approval_recovery_required' }),
+    ),
+  )
+  expect(events).toContainEqual(expect.objectContaining({ type: 'status', status: 'blocked' }))
+  emit({ method: '$disconnected', params: {} })
+  expect(events.filter((e) => e.type === 'error' && e.code === 'codex_unavailable')).toHaveLength(2)
+})
+
+it('reads accepted first-turn history before turn/started', async () => {
+  const { driver, rpc } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  await driver.sendUserTurn(sid, { text: 'first' })
+  await driver.transcript(sid)
+  expect(rpc.request).toHaveBeenCalledWith('thread/read', { threadId: native, includeTurns: true })
+})
+
+it('preserves defaults and empty transcript across driver restart', async () => {
+  const defaults = { approvalPolicy: 'never', sandbox: 'danger-full-access' }
+  const { driver, rpc, make } = setup(defaults)
+  await driver.startSession({ nativeSessionId: id })
+  driver.close()
+  const resumed = make()
+  expect(await resumed.transcript(sid)).toEqual({ turns: [] })
+  expect(rpc.request).toHaveBeenCalledWith('thread/resume', { ...defaults, threadId: native })
+  expect(rpc.request).not.toHaveBeenCalledWith('thread/read', expect.anything())
+})
+
+it('rejects threadless server requests promptly', () => {
+  const { emit, rpc } = setup()
+  emit({ id: 'token', method: 'account/token/refresh', params: {} })
+  expect(rpc.reject).toHaveBeenCalledWith('token', 'No managed thread for request')
+})
+
+it('forwards requested reasoning effort on creation', async () => {
+  const { driver, rpc } = setup({ config: { existing: true } })
+  await driver.startSession({ nativeSessionId: id, effort: 'high' })
+  expect(rpc.request).toHaveBeenCalledWith(
+    'thread/start',
+    expect.objectContaining({
+      config: { existing: true, model_reasoning_effort: 'high' },
+    }),
+  )
 })

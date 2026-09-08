@@ -31,24 +31,29 @@
  * derived from rsync's itemized output.
  */
 
-import { execFileSync } from 'node:child_process'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileAsync, type ExecResult } from '../lib/harness-detect.js'
 
 const EXCLUDE = new Set(['node_modules', '.git', '__pycache__', '.pytest_cache'])
 
-interface SyncStats {
+export interface SyncStats {
   written: string[]
   removed: string[]
   unchanged: number
 }
 
-interface Ctx {
+export interface Ctx {
   dryRun: boolean
   stats: SyncStats
+  exec?: typeof execFileAsync
+}
+
+export function createSyncCtx(dryRun: boolean): Ctx {
+  return { dryRun, stats: { written: [], removed: [], unchanged: 0 } }
 }
 
 // ---------------------------------------------------------------------------
@@ -128,23 +133,52 @@ function countFiles(dir: string): number {
   return n
 }
 
-function runRsync(ctx: Ctx, args: string[], label: string, singleFile: boolean, srcFiles: number) {
-  let output: string
+/** Bound so `plugins sync` / install cannot hang the event loop on a stuck rsync. */
+export const RSYNC_TIMEOUT_MS = 60_000
+
+/**
+ * Async rsync via `execFileAsync` (never `execFileSync`). Same errors as the
+ * old sync helper so `plugins sync` behaviour stays identical aside from
+ * not blocking the event loop.
+ */
+export async function execRsync(
+  args: string[],
+  opts: { timeoutMs?: number; exec?: typeof execFileAsync; label?: string } = {},
+): Promise<string> {
+  const exec = opts.exec ?? execFileAsync
+  const label = opts.label ?? 'rsync'
+  let result: ExecResult
   try {
-    output = execFileSync('rsync', args, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+    result = await exec('rsync', args, { timeoutMs: opts.timeoutMs ?? RSYNC_TIMEOUT_MS })
   } catch (err) {
-    const e = err as NodeJS.ErrnoException & { status?: number; stderr?: Buffer | string }
+    const e = err as NodeJS.ErrnoException
     if (e.code === 'ENOENT') {
       throw new Error('rsync not found on PATH — install rsync (expected on every fleet node)', {
         cause: err,
       })
     }
-    const stderr = e.stderr ? String(e.stderr).trim() : ''
+    throw err
+  }
+  if (result.code === null && /ENOENT/i.test(result.stderr)) {
+    throw new Error('rsync not found on PATH — install rsync (expected on every fleet node)')
+  }
+  if (result.timedOut || result.code !== 0) {
+    const stderr = result.stderr.trim()
     throw new Error(
-      `rsync failed for ${label} (exit ${e.status ?? 'unknown'})${stderr ? `: ${stderr}` : ''}`,
-      { cause: err },
+      `rsync failed for ${label} (exit ${result.timedOut ? 'timeout' : (result.code ?? 'unknown')})${stderr ? `: ${stderr}` : ''}`,
     )
   }
+  return result.stdout
+}
+
+async function runRsync(
+  ctx: Ctx,
+  args: string[],
+  label: string,
+  singleFile: boolean,
+  srcFiles: number,
+): Promise<void> {
+  const output = await execRsync(args, { exec: ctx.exec, label })
   let written = 0
   for (const change of parseItemized(output)) {
     const path = singleFile ? label : `${label}/${change.rel}`
@@ -162,9 +196,14 @@ function runRsync(ctx: Ctx, args: string[], label: string, singleFile: boolean, 
 
 /** Mirror srcDir into destDir, removing stale files (--delete).
  *  Only use for directories we own outright. */
-function syncManagedDir(ctx: Ctx, srcDir: string, destDir: string, label: string): void {
+async function syncManagedDir(
+  ctx: Ctx,
+  srcDir: string,
+  destDir: string,
+  label: string,
+): Promise<void> {
   if (!ctx.dryRun) mkdirSync(destDir, { recursive: true })
-  runRsync(
+  await runRsync(
     ctx,
     rsyncDirArgs(srcDir, destDir, { deleteExtraneous: true, dryRun: ctx.dryRun }),
     label,
@@ -174,9 +213,14 @@ function syncManagedDir(ctx: Ctx, srcDir: string, destDir: string, label: string
 }
 
 /** Copy our files from srcDir into a shared destDir; never delete others'. */
-function syncSharedDir(ctx: Ctx, srcDir: string, destDir: string, label: string): void {
+async function syncSharedDir(
+  ctx: Ctx,
+  srcDir: string,
+  destDir: string,
+  label: string,
+): Promise<void> {
   if (!ctx.dryRun) mkdirSync(destDir, { recursive: true })
-  runRsync(
+  await runRsync(
     ctx,
     rsyncDirArgs(srcDir, destDir, { deleteExtraneous: false, dryRun: ctx.dryRun }),
     label,
@@ -186,16 +230,16 @@ function syncSharedDir(ctx: Ctx, srcDir: string, destDir: string, label: string)
 }
 
 /** Copy a single managed file (dest may rename it). */
-function syncFile(ctx: Ctx, src: string, dest: string, label: string): void {
+async function syncFile(ctx: Ctx, src: string, dest: string, label: string): Promise<void> {
   if (!ctx.dryRun) mkdirSync(dirname(dest), { recursive: true })
-  runRsync(ctx, rsyncFileArgs(src, dest, { dryRun: ctx.dryRun }), label, true, 1)
+  await runRsync(ctx, rsyncFileArgs(src, dest, { dryRun: ctx.dryRun }), label, true, 1)
 }
 
 // ---------------------------------------------------------------------------
 // root + marketplace discovery
 // ---------------------------------------------------------------------------
 
-function findRoot(explicit?: string): string | null {
+export function findRoot(explicit?: string): string | null {
   if (explicit) return existsSync(join(explicit, 'integrations')) ? resolve(explicit) : null
   if (process.env.RIVETOS_ROOT && existsSync(join(process.env.RIVETOS_ROOT, 'integrations')))
     return resolve(process.env.RIVETOS_ROOT)
@@ -256,7 +300,7 @@ function directoryMarketplaceDir(
   }
 }
 
-function syncClaudeCode(ctx: Ctx, root: string, home: string): void {
+async function syncClaudeCode(ctx: Ctx, root: string, home: string): Promise<void> {
   const claudeDir = join(home, '.claude')
   if (!existsSync(claudeDir)) {
     console.log('⚪ claude-code not detected, skipping')
@@ -273,7 +317,7 @@ function syncClaudeCode(ctx: Ctx, root: string, home: string): void {
     for (const ver of readdirSync(cacheBase, { withFileTypes: true })) {
       if (!ver.isDirectory()) continue
       any = true
-      syncManagedDir(
+      await syncManagedDir(
         ctx,
         src,
         join(cacheBase, ver.name),
@@ -293,13 +337,71 @@ function syncClaudeCode(ctx: Ctx, root: string, home: string): void {
       const dest = join(mktDir, 'integrations', 'claude-code', plugin)
       if (!existsSync(src) || !existsSync(dest)) continue
       any = true
-      syncManagedDir(ctx, src, dest, `${mktDir}/integrations/claude-code/${plugin}`)
+      await syncManagedDir(ctx, src, dest, `${mktDir}/integrations/claude-code/${plugin}`)
     }
   }
   if (!any) console.log('  (no rivetos plugins installed in the Claude Code plugin cache)')
 }
 
-function syncGrok(ctx: Ctx, root: string, home: string): void {
+const GROK_ROOT_PLACEHOLDER = '${RIVETOS_ROOT:-/opt/rivetos}'
+
+/** POSIX single-quote so a baked root with spaces or quotes stays one argv. */
+export function posixShellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function bakeGrokCommand(command: string, root: string): string {
+  if (!command.includes(GROK_ROOT_PLACEHOLDER)) return command
+  let out = ''
+  let rest = command
+  while (rest.length > 0) {
+    const idx = rest.indexOf(GROK_ROOT_PLACEHOLDER)
+    if (idx < 0) {
+      out += rest
+      break
+    }
+    out += rest.slice(0, idx)
+    rest = rest.slice(idx + GROK_ROOT_PLACEHOLDER.length)
+    const rel = rest.match(/^\S*/)?.[0] ?? ''
+    rest = rest.slice(rel.length)
+    out += posixShellQuote(root + rel)
+  }
+  return out
+}
+
+function bakeGrokValue(value: unknown, root: string): unknown {
+  if (typeof value === 'string') return bakeGrokCommand(value, root)
+  if (Array.isArray(value)) return value.map((v) => bakeGrokValue(v, root))
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = bakeGrokValue(v, root)
+    }
+    return out
+  }
+  return value
+}
+
+/** Rewrite copied Grok hook commands so a custom --root does not fall back
+ *  to /opt/rivetos when Grok's environment has no RIVETOS_ROOT. Parses JSON
+ *  and shell-quotes the baked executable so spaces/`"` in the root stay one
+ *  argv and the hook file remains valid JSON. */
+export function bakeGrokHookCommands(path: string, root: string): boolean {
+  if (!existsSync(path)) return false
+  const before = readFileSync(path, 'utf-8')
+  if (!before.includes(GROK_ROOT_PLACEHOLDER)) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(before)
+  } catch {
+    return false
+  }
+  const baked = bakeGrokValue(parsed, root)
+  writeFileSync(path, `${JSON.stringify(baked, null, 2)}\n`)
+  return true
+}
+
+export async function syncGrok(ctx: Ctx, root: string, home: string): Promise<void> {
   const grokDir = join(home, '.grok')
   if (!existsSync(grokDir)) {
     console.log('⚪ grok not detected, skipping')
@@ -317,7 +419,7 @@ function syncGrok(ctx: Ctx, root: string, home: string): void {
     if (existsSync(skillsDir)) {
       for (const s of readdirSync(skillsDir, { withFileTypes: true })) {
         if (!s.isDirectory()) continue
-        syncManagedDir(
+        await syncManagedDir(
           ctx,
           join(skillsDir, s.name),
           join(grokDir, 'skills', s.name),
@@ -328,22 +430,19 @@ function syncGrok(ctx: Ctx, root: string, home: string): void {
     // commands: copy our files into the shared dir; never delete others'
     const commandsDir = join(src, 'commands')
     if (existsSync(commandsDir)) {
-      syncSharedDir(ctx, commandsDir, join(grokDir, 'commands'), '~/.grok/commands')
+      await syncSharedDir(ctx, commandsDir, join(grokDir, 'commands'), '~/.grok/commands')
     }
     // hooks: whole-file ours, named per plugin
     const hooksSrc = join(src, 'hooks', 'hooks.json')
     if (existsSync(hooksSrc)) {
-      syncFile(
-        ctx,
-        hooksSrc,
-        join(grokDir, 'hooks', `${plugin}.json`),
-        `~/.grok/hooks/${plugin}.json`,
-      )
+      const dest = join(grokDir, 'hooks', `${plugin}.json`)
+      await syncFile(ctx, hooksSrc, dest, `~/.grok/hooks/${plugin}.json`)
+      if (!ctx.dryRun) bakeGrokHookCommands(dest, root)
     }
     // always-on reflex
     const grokMd = join(src, 'GROK.md')
     if (existsSync(grokMd)) {
-      syncFile(ctx, grokMd, join(grokDir, 'AGENTS.md'), '~/.grok/AGENTS.md')
+      await syncFile(ctx, grokMd, join(grokDir, 'AGENTS.md'), '~/.grok/AGENTS.md')
     }
   }
   // co-owned config: hint only, never write
@@ -358,7 +457,7 @@ function syncGrok(ctx: Ctx, root: string, home: string): void {
   }
 }
 
-function syncHermes(ctx: Ctx, root: string, home: string): void {
+export async function syncHermes(ctx: Ctx, root: string, home: string): Promise<void> {
   const hermesDir = join(home, '.hermes')
   if (!existsSync(hermesDir)) {
     console.log('⚪ hermes not detected, skipping')
@@ -367,7 +466,7 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
   console.log('🔄 hermes:')
   const pluginSrc = join(root, 'integrations', 'hermes', 'rivet-memory')
   if (existsSync(pluginSrc)) {
-    syncManagedDir(
+    await syncManagedDir(
       ctx,
       pluginSrc,
       join(hermesDir, 'plugins', 'rivet_memory'),
@@ -376,7 +475,7 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
   }
   const skillSrc = join(root, 'integrations', 'hermes', 'memory-recall')
   if (existsSync(skillSrc)) {
-    syncManagedDir(
+    await syncManagedDir(
       ctx,
       skillSrc,
       join(hermesDir, 'skills', 'memory-recall'),
@@ -387,7 +486,7 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
   // into the user-co-owned config.yaml (never clobbered — see mergeHermesDenHooks).
   const denHook = join(root, 'integrations', 'hermes', 'rivet-den', 'hooks', 'hermes-den-hook.mjs')
   if (existsSync(denHook)) {
-    syncFile(
+    await syncFile(
       ctx,
       denHook,
       join(hermesDir, 'agent-hooks', 'hermes-den-hook.mjs'),
@@ -395,6 +494,113 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
     )
     mergeHermesDenHooks(ctx, root, hermesDir)
   }
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+function mergeHookEvents(
+  existing: Record<string, Array<{ command?: string }>>,
+  incoming: Record<string, Array<{ command?: string }>>,
+): boolean {
+  let changed = false
+  for (const [event, entries] of Object.entries(incoming)) {
+    const list = existing[event] ?? []
+    for (const e of entries) {
+      if (!list.some((x) => x.command === e.command)) {
+        list.push(e)
+        changed = true
+      }
+    }
+    existing[event] = list
+  }
+  return changed
+}
+
+function hasOwnKey(target: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(target, key)
+}
+
+/** Deep-merge `patch` into `target`. `hooks` is additive (keyed by command);
+ *  nested objects merge by key; a *present* key is user-owned and is not
+ *  overwritten (even `''` / `null`) unless `force`. */
+function applyHermesPatch(
+  target: Record<string, unknown>,
+  patch: Record<string, unknown>,
+  opts: { force?: boolean; kept: string[] },
+  path = '',
+): boolean {
+  let changed = false
+  for (const [key, value] of Object.entries(patch)) {
+    const here = path ? `${path}.${key}` : key
+    if (key === 'hooks' && isPlainObject(value)) {
+      const hooks = (isPlainObject(target.hooks) ? target.hooks : {}) as Record<
+        string,
+        Array<{ command?: string }>
+      >
+      if (mergeHookEvents(hooks, value as Record<string, Array<{ command?: string }>>)) {
+        target.hooks = hooks
+        changed = true
+      }
+      continue
+    }
+    if (isPlainObject(value) && isPlainObject(target[key])) {
+      if (applyHermesPatch(target[key], value, opts, here)) changed = true
+      continue
+    }
+    if (isPlainObject(value) && target[key] == null) {
+      if (!opts.force && hasOwnKey(target, key)) {
+        opts.kept.push(here)
+        continue
+      }
+      target[key] = { ...value }
+      changed = true
+      continue
+    }
+    if (target[key] !== value) {
+      if (!opts.force && hasOwnKey(target, key)) {
+        opts.kept.push(here)
+        continue
+      }
+      target[key] = value
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
+ * Merge a YAML patch into ~/.hermes/config.yaml — additively and
+ * idempotently. config.yaml is user-co-owned: hooks are keyed by command
+ * (never replaced wholesale) and nested objects keep sibling keys.
+ * Rewrites only when something actually changes. An existing key is kept
+ * (⚪) regardless of value (`''`, `null`, …) unless `opts.force`.
+ */
+export function mergeHermesConfig(
+  ctx: Ctx,
+  hermesDir: string,
+  patch: Record<string, unknown>,
+  label: string,
+  opts: { force?: boolean } = {},
+): void {
+  const cfgPath = join(hermesDir, 'config.yaml')
+  const cfg = existsSync(cfgPath)
+    ? ((parseYaml(readFileSync(cfgPath, 'utf-8')) as Record<string, unknown>) ?? {})
+    : {}
+  const kept: string[] = []
+  const changed = applyHermesPatch(cfg, patch, { force: opts.force, kept })
+  for (const key of kept) {
+    console.log(`⚪ ${label}  kept existing ${key} (pass --force to overwrite)`)
+  }
+  if (!changed) {
+    ctx.stats.unchanged++
+    return
+  }
+  console.log(`  ~ ${ctx.dryRun ? '(dry-run) ' : ''}${label}`)
+  ctx.stats.written.push(label)
+  if (ctx.dryRun) return
+  writeFileSync(cfgPath, stringifyYaml(cfg))
 }
 
 /**
@@ -405,48 +611,23 @@ function syncHermes(ctx: Ctx, root: string, home: string): void {
  * no-op); the first add does reformat the file via yaml round-trip (comments
  * on the machine-managed config are not preserved).
  */
-function mergeHermesDenHooks(ctx: Ctx, root: string, hermesDir: string): void {
+export function mergeHermesDenHooks(ctx: Ctx, root: string, hermesDir: string): void {
   const srcHooks = join(root, 'integrations', 'hermes', 'rivet-den', 'config.hooks.yaml')
   if (!existsSync(srcHooks)) return
-  const cfgPath = join(hermesDir, 'config.yaml')
   const denHooks =
     (
       parseYaml(readFileSync(srcHooks, 'utf-8')) as {
         hooks?: Record<string, Array<{ command?: string }>>
       } | null
     )?.hooks ?? {}
-  const cfg = existsSync(cfgPath)
-    ? ((parseYaml(readFileSync(cfgPath, 'utf-8')) as Record<string, unknown>) ?? {})
-    : {}
-  const hooks = (cfg.hooks ?? {}) as Record<string, Array<{ command?: string }>>
-  let changed = false
-  for (const [event, entries] of Object.entries(denHooks)) {
-    const list = hooks[event] ?? []
-    for (const e of entries) {
-      if (!list.some((x) => x.command === e.command)) {
-        list.push(e)
-        changed = true
-      }
-    }
-    hooks[event] = list
-  }
-  const label = '~/.hermes/config.yaml (rivet-den hooks)'
-  if (!changed) {
-    ctx.stats.unchanged++
-    return
-  }
-  console.log(`  ~ ${ctx.dryRun ? '(dry-run) ' : ''}${label}`)
-  ctx.stats.written.push(label)
-  if (ctx.dryRun) return
-  cfg.hooks = hooks
-  writeFileSync(cfgPath, stringifyYaml(cfg))
+  mergeHermesConfig(ctx, hermesDir, { hooks: denHooks }, '~/.hermes/config.yaml (rivet-den hooks)')
 }
 
 // ---------------------------------------------------------------------------
 // entry
 // ---------------------------------------------------------------------------
 
-export default function pluginsSync(args: string[]): void {
+export default async function pluginsSync(args: string[]): Promise<void> {
   const dryRun = args.includes('--dry-run')
   let rootArg: string | undefined
   const tuis: string[] = []
@@ -473,9 +654,9 @@ export default function pluginsSync(args: string[]): void {
 
   const ctx: Ctx = { dryRun, stats: { written: [], removed: [], unchanged: 0 } }
   const home = homedir()
-  if (want('claude-code')) syncClaudeCode(ctx, root, home)
-  if (want('grok')) syncGrok(ctx, root, home)
-  if (want('hermes')) syncHermes(ctx, root, home)
+  if (want('claude-code')) await syncClaudeCode(ctx, root, home)
+  if (want('grok')) await syncGrok(ctx, root, home)
+  if (want('hermes')) await syncHermes(ctx, root, home)
 
   const { written, removed, unchanged } = ctx.stats
   console.log(

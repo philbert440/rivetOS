@@ -24,6 +24,8 @@
  *  14. herdr — pinned binary + manifest overrides when the optional mux
  *      backend is provisioned; warn (not fail) when term.mux=herdr but the
  *      binary is missing
+ *  15. Harnesses — detected coding-agent binaries, versions, and whether
+ *      the RivetOS memory plugin is installed in each
  *
  * Usage:
  *   rivetos doctor               Run all checks
@@ -45,7 +47,12 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
 import { parse as parseYaml } from 'yaml'
-import { validateConfig } from '@rivetos/boot'
+import {
+  embeddedPgLockAlive,
+  embeddedPgUrl,
+  readEmbeddedPgLock,
+  validateConfig,
+} from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
@@ -59,6 +66,25 @@ import {
   readRivetosDotEnv,
   resolveHerdrMux,
 } from '../lib/herdr.js'
+import {
+  dirSizeBytes,
+  findRivetConfigPath,
+  formatBytes,
+  readEmbeddedConfig,
+} from '../lib/embedded.js'
+import { loadRivetEnv } from '../lib/env-file.js'
+import { detectHarnesses, execFileAsync, type DetectedHarness } from '../lib/harness-detect.js'
+import { findRoot } from './plugins-sync.js'
+import {
+  CODEX_LAUNCHD_LABEL,
+  CODEX_WATCHER_UNIT,
+  artefactConfigHomes,
+  kimiConfigHomes,
+  mcpJsonHasRivetos,
+  tomlFileHasRivetosTable,
+  uncommentedLineContains,
+  yamlFileHasRivetMemory,
+} from './plugins-install.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -347,6 +373,7 @@ export async function checkWorkspace(): Promise<CheckResult[]> {
 function checkEnvVars(rawConfig: string | null): CheckResult[] {
   const results: CheckResult[] = []
   const envChecks: Array<{ name: string; context: string }> = []
+  let requirePgUrl = true
 
   if (rawConfig) {
     try {
@@ -371,7 +398,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
       // Social channels (telegram/discord/voice-discord) were removed in Phase 5.
       // Doctor no longer probes their bot tokens.
 
-      if (memory.postgres && !memory.postgres.connection_string) {
+      const pg = memory.postgres
+      if (pg && pg.embedded !== undefined && pg.embedded !== null) {
+        requirePgUrl = false
+      } else if (pg && !pg.connection_string) {
         envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory: postgres' })
       }
     } catch {
@@ -380,10 +410,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
   }
 
   if (envChecks.length === 0) {
-    envChecks.push(
-      { name: 'ANTHROPIC_API_KEY', context: 'provider' },
-      { name: 'RIVETOS_PG_URL', context: 'memory' },
-    )
+    envChecks.push({ name: 'ANTHROPIC_API_KEY', context: 'provider' })
+    if (requirePgUrl) {
+      envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory' })
+    }
   }
 
   for (const { name, context } of envChecks) {
@@ -523,12 +553,84 @@ function checkContainers(): CheckResult[] {
 
 type DoctorPgQuery = (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>
 
-async function checkMemoryBackend(): Promise<{
+export async function checkMemoryBackend(): Promise<{
   results: CheckResult[]
   query?: DoctorPgQuery
   close?: () => Promise<void>
 }> {
   const results: CheckResult[] = []
+  const embedded = loadEmbeddedResolved()
+
+  if (embedded) {
+    const size = formatBytes(dirSizeBytes(embedded.dataDir))
+    const lock = readEmbeddedPgLock(embedded.dataDir)
+    const running = lock ? embeddedPgLockAlive(lock) : false
+    if (!running || !lock) {
+      results.push(
+        check(
+          'memory',
+          'embedded',
+          'warn',
+          `embedded PGlite: ${embedded.dataDir} (${size}), not running — start the node`,
+        ),
+      )
+      return { results }
+    }
+    // Dial the port the OWNER recorded in the lock, not the config's — they can differ.
+    const pgUrl = lock ? embeddedPgUrl(lock.port) : (process.env.RIVETOS_PG_URL ?? embedded.pgUrl)
+    try {
+      const { default: pg } = await import('pg')
+      const client = new pg.Client({ connectionString: pgUrl })
+      try {
+        await client.connect()
+        await client.query('SELECT 1')
+      } catch (err) {
+        try {
+          await client.end()
+        } catch {
+          /* ignore */
+        }
+        results.push(
+          check(
+            'memory',
+            'embedded',
+            'fail',
+            'embedded DB — start the node (`rivetos start`)',
+            `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused: ${(err as Error).message}`,
+          ),
+        )
+        return { results }
+      }
+      results.push(
+        check(
+          'memory',
+          'embedded',
+          'pass',
+          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)}`,
+        ),
+      )
+      return {
+        results,
+        query: async (sql) => {
+          const res = await client.query(sql)
+          return { rows: res.rows as Array<Record<string, unknown>> }
+        },
+        close: () => client.end(),
+      }
+    } catch (err) {
+      results.push(
+        check(
+          'memory',
+          'embedded',
+          'fail',
+          'embedded DB — start the node (`rivetos start`)',
+          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused: ${(err as Error).message}`,
+        ),
+      )
+      return { results }
+    }
+  }
+
   const pgUrl = process.env.RIVETOS_PG_URL
 
   if (!pgUrl) {
@@ -580,6 +682,18 @@ async function checkMemoryBackend(): Promise<{
       ),
     )
     return { results }
+  }
+}
+
+function loadEmbeddedResolved():
+  NonNullable<ReturnType<typeof readEmbeddedConfig>>['resolved'] | undefined {
+  const configPath = findRivetConfigPath()
+  if (!configPath) return undefined
+  try {
+    return readEmbeddedConfig(configPath)?.resolved
+  } catch {
+    // Malformed embedded.port throws from the lenient reader; do not crash doctor.
+    return undefined
   }
 }
 
@@ -1380,6 +1494,213 @@ export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {
 }
 
 // ---------------------------------------------------------------------------
+// Check: Harnesses — detected binaries + memory-plugin install state
+// ---------------------------------------------------------------------------
+
+export interface HarnessDoctorProbe {
+  home?: string
+  pathEnv?: string
+  detect?: typeof detectHarnesses
+  exec?: typeof execFileAsync
+  /** RivetOS tree used to locate `hooks.js --status` for the claude fallback. */
+  root?: string
+  platform?: NodeJS.Platform
+  uid?: number
+}
+
+function hermesPluginInstalled(configHome: string): boolean {
+  const pluginDir = join(configHome, 'plugins', 'rivet_memory')
+  if (!existsSync(pluginDir)) return false
+  try {
+    const cfg = parseYaml(readFileSync(join(configHome, 'config.yaml'), 'utf-8')) as {
+      memory?: { provider?: unknown }
+    }
+    return cfg?.memory?.provider === 'rivet_memory'
+  } catch {
+    return false
+  }
+}
+
+function kimiPluginInstalled(home: string, configHome: string): boolean {
+  for (const dir of kimiConfigHomes(home, configHome)) {
+    if (mcpJsonHasRivetos(join(dir, 'mcp.json'))) return true
+    try {
+      if (
+        uncommentedLineContains(
+          readFileSync(join(dir, 'config.toml'), 'utf-8'),
+          'kimi-memory-hook.sh',
+        )
+      )
+        return true
+    } catch {
+      // missing toml is fine
+    }
+  }
+  return false
+}
+
+function pluginMarker(h: DetectedHarness, home: string): boolean {
+  switch (h.id) {
+    case 'grok-build':
+      return tomlFileHasRivetosTable(join(h.configHome, 'config.toml'))
+    case 'kimi-code':
+      return kimiPluginInstalled(home, h.configHome)
+    case 'deepseek-harness':
+      return artefactConfigHomes(h.id, home, h.configHome).some((dir) =>
+        yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml')),
+      )
+    case 'codex':
+      return artefactConfigHomes(h.id, home, h.configHome).some(
+        (dir) =>
+          mcpJsonHasRivetos(join(dir, 'mcp.json')) ||
+          tomlFileHasRivetosTable(join(dir, 'config.toml')),
+      )
+    case 'hermes':
+      return hermesPluginInstalled(h.configHome)
+    case 'claude-code':
+      return false // decided by `claude plugin list` below
+  }
+}
+
+async function claudePluginListed(
+  binary: string,
+  exec: typeof execFileAsync,
+): Promise<boolean | null> {
+  const result = await exec(binary, ['plugin', 'list'], { timeoutMs: 8_000 })
+  if (result.code !== 0) return null
+  return /rivet-memory/i.test(result.stdout + result.stderr)
+}
+
+export type CaptureWatcherHealth = 'active' | 'inactive' | 'crash-looping' | 'n/a'
+
+function parseSystemctlShow(text: string): { nRestarts: number; activeState: string } {
+  let nRestarts = 0
+  let activeState = ''
+  for (const line of text.split('\n')) {
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const k = line.slice(0, eq)
+    const v = line.slice(eq + 1).trim()
+    if (k === 'NRestarts') nRestarts = Number.parseInt(v, 10) || 0
+    if (k === 'ActiveState') activeState = v
+  }
+  return { nRestarts, activeState }
+}
+
+export async function captureWatcherStatus(
+  exec: typeof execFileAsync,
+  platform: NodeJS.Platform,
+  uid?: number,
+): Promise<CaptureWatcherHealth> {
+  if (platform === 'darwin') {
+    const id = uid ?? process.getuid?.() ?? 0
+    const r = await exec('launchctl', ['print', `gui/${id}/${CODEX_LAUNCHD_LABEL}`], {
+      timeoutMs: 5_000,
+    })
+    if (r.code !== 0) return 'inactive'
+    const blob = `${r.stdout}\n${r.stderr}`
+    return /\bstate\s*=\s*running\b/i.test(blob) ? 'active' : 'inactive'
+  }
+  if (platform === 'linux') {
+    const r = await exec(
+      'systemctl',
+      ['--user', 'show', '-p', 'NRestarts,ActiveState', CODEX_WATCHER_UNIT],
+      { timeoutMs: 5_000 },
+    )
+    const { nRestarts, activeState } = parseSystemctlShow(`${r.stdout}\n${r.stderr}`)
+    if (nRestarts > 3) return 'crash-looping'
+    return activeState === 'active' ? 'active' : 'inactive'
+  }
+  return 'n/a'
+}
+
+async function claudeHooksStatus(
+  exec: typeof execFileAsync,
+  root: string | null,
+): Promise<boolean> {
+  if (!root) return false
+  const hooksJs = join(root, 'plugins', 'providers', 'claude-cli', 'dist', 'hooks.js')
+  if (!existsSync(hooksJs)) return false
+  const result = await exec(process.execPath, [hooksJs, '--status'], { timeoutMs: 8_000 })
+  return /Capture hooks active/i.test(result.stdout + result.stderr)
+}
+
+/**
+ * One row per detected harness: binary, version, memory plugin installed?
+ * Missing harnesses are silent (local mode writes den-term.json so the
+ * picker does not list them). Nothing detected → no row (no behaviour
+ * change on existing nodes that have no coding harnesses).
+ */
+export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<CheckResult[]> {
+  const results: CheckResult[] = []
+  const home = probe.home ?? homedir()
+  const detect = probe.detect ?? detectHarnesses
+  const exec = probe.exec ?? execFileAsync
+  const found = await detect({
+    home,
+    pathEnv: probe.pathEnv,
+    extraDirs: probe.pathEnv !== undefined ? [] : undefined,
+    skipVersion: true,
+    exec,
+  })
+
+  if (found.length === 0) return results
+
+  const pending: Array<Promise<void>> = []
+  for (const h of found) {
+    if (h.version) continue
+    pending.push(
+      exec(h.binary, ['--version'], { timeoutMs: 3_000 }).then((result) => {
+        if (result.timedOut || result.code !== 0) return
+        const line = result.stdout.trim().split('\n')[0]?.trim()
+        if (line) h.version = line
+      }),
+    )
+  }
+  if (pending.length > 0) await Promise.all(pending)
+
+  const root = probe.root ?? findRoot()
+
+  for (const h of found) {
+    const ver = h.version ? ` ${h.version}` : ''
+    let installed = pluginMarker(h, home)
+    if (h.id === 'claude-code') {
+      const listed = await claudePluginListed(h.binary, exec)
+      installed = listed === true || (await claudeHooksStatus(exec, root))
+    }
+    let extra = ''
+    let watcher: CaptureWatcherHealth | undefined
+    if (h.id === 'codex') {
+      watcher = await captureWatcherStatus(exec, probe.platform ?? process.platform, probe.uid)
+      extra = ` — capture watcher: ${watcher}`
+    }
+    const watcherBroken = watcher === 'inactive' || watcher === 'crash-looping'
+    if (installed && !watcherBroken) {
+      results.push(
+        check(
+          'harnesses',
+          h.id,
+          'pass',
+          `Harness ${h.id}: ${h.binary}${ver} — memory plugin installed${extra}`,
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'harnesses',
+          h.id,
+          'warn',
+          `Harness ${h.id}: ${h.binary}${ver} — memory plugin ${installed ? 'installed' : 'not installed'}${extra}`,
+          'Run: rivetos plugins install',
+        ),
+      )
+    }
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
 // Check: leaf cert expiry (90-day leaves; warn within 30 days)
 // ---------------------------------------------------------------------------
 
@@ -1524,7 +1845,7 @@ Options:
 Checks: system, config, workspace, env vars, secrets, containers,
         memory backend, embedding width, memory queue (dead jobs, wiki starve), shared
         storage, DNS, provider connectivity, peer reachability, service user,
-        leaf cert expiry, herdr (optional mux backend)
+        leaf cert expiry, herdr (optional mux backend), harnesses
 `)
 }
 
@@ -1533,6 +1854,7 @@ Checks: system, config, workspace, env vars, secrets, containers,
 // ---------------------------------------------------------------------------
 
 export default async function doctor(): Promise<void> {
+  loadRivetEnv()
   const opts = parseArgs()
   const allResults: CheckResult[] = []
 
@@ -1602,6 +1924,9 @@ export default async function doctor(): Promise<void> {
 
   const herdrResults = checkHerdr(rawConfig)
   allResults.push(...herdrResults)
+
+  const harnessResults = await checkHarnesses()
+  allResults.push(...harnessResults)
 
   const leafCertResults = await checkLeafCert(rawConfig)
   allResults.push(...leafCertResults)

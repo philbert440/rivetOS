@@ -161,6 +161,10 @@ it('parses Codex command/reason and its allow-once/deny shortcuts without a pers
 })
 
 it('refuses incomplete Codex panels and ordinary numbered prose', () => {
-  expect(parsePermissionPrompt(CODEX_COMMAND.replace('Press enter to confirm or esc to cancel', ''))).toBeUndefined()
-  expect(parsePermissionPrompt(CODEX_COMMAND.replace('  $ touch /tmp/rivetos-codex-approval-smoke', ''))).toBeUndefined()
+  expect(
+    parsePermissionPrompt(CODEX_COMMAND.replace('Press enter to confirm or esc to cancel', '')),
+  ).toBeUndefined()
+  expect(
+    parsePermissionPrompt(CODEX_COMMAND.replace('  $ touch /tmp/rivetos-codex-approval-smoke', '')),
+  ).toBeUndefined()
 })

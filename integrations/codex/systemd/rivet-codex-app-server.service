@@ -1,14 +1,12 @@
 [Unit]
 Description=Codex app-server for RivetHub owner sessions
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/codex app-server --listen ws://127.0.0.1:5175
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h
-Restart=on-failure
+Restart=always
 RestartSec=3
 UMask=0077
 

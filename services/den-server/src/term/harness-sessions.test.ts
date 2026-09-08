@@ -1,7 +1,8 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as codexRoom from './codex-room.js'
 import { isBareSlashCommand } from '../harness/adapters/claude.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import {
@@ -26,6 +27,7 @@ import {
 
 const dirs: string[] = []
 afterEach(() => {
+  vi.restoreAllMocks()
   setTranscriptMaxBytesForTest()
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
   delete process.env.CLAUDE_CONFIG_DIR
@@ -1440,7 +1442,9 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
         payload: {
           type: 'message',
           role: 'developer',
-          content: [{ type: 'input_text', text: '<environment_context>skip</environment_context>' }],
+          content: [
+            { type: 'input_text', text: '<environment_context>skip</environment_context>' },
+          ],
         },
       },
       {
@@ -1483,7 +1487,14 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
         },
       }) + '\n',
     )
-    const newer = join(home, 'sessions', '2026', '09', '07', `rollout-2026-09-07T12-00-00-${ID}.jsonl`)
+    const newer = join(
+      home,
+      'sessions',
+      '2026',
+      '09',
+      '07',
+      `rollout-2026-09-07T12-00-00-${ID}.jsonl`,
+    )
     utimesSync(newer, 2_000_000_000, 2_000_000_000)
     utimesSync(olderFile, 1_000_000_000, 1_000_000_000)
 
@@ -1523,6 +1534,29 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
     expect(ref?.command).toBe('codex')
     expect(ref?.path).toContain(ID)
     expect(ref?.path).toContain('rollout-')
+  })
+
+  it('resolves room UUIDs through driver resync, canonical reads and watches', async () => {
+    const home = fakeCodexStore()
+    const path = join(
+      home,
+      'sessions',
+      '2026',
+      '09',
+      '07',
+      `rollout-2026-09-07T12-00-00-${ID}.jsonl`,
+    )
+    const discover = vi.spyOn(codexRoom, 'resolveCodexRoomRollout').mockResolvedValue(path)
+    const expected = await readCodexTranscript(ID)
+    expect(discover).not.toHaveBeenCalled()
+    expect(await readCodexTranscript(ID2)).toEqual({ ...expected, id: ID2 })
+    expect(await readHarnessTranscript(`codex:${ID2}`)).toEqual({ ...expected, id: `codex:${ID2}` })
+    expect(await resolveHarnessStore(`codex:${ID2}`)).toEqual({ command: 'codex', path })
+    expect(discover).toHaveBeenCalledWith(ID2, join(home, 'sessions'))
+    discover.mockClear()
+    await readHarnessTranscript(`grok-build:${ID2}`)
+    await resolveHarnessStore(`grok-build:${ID2}`)
+    expect(discover).not.toHaveBeenCalled()
   })
 
   it('empty when CODEX_HOME has no sessions', async () => {

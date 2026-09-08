@@ -149,6 +149,21 @@ describe('codexTurnsFromLines', () => {
     expect(failed[1].complete).toBe(true)
   })
 
+  it('keeps final completion when commentary follows final text', () => {
+    const turns = codexTurnsFromLines([
+      user('run it'),
+      assistant('done'),
+      item({
+        type: 'message',
+        role: 'assistant',
+        phase: 'commentary',
+        content: [{ type: 'output_text', text: 'extra context' }],
+      }),
+    ])
+    expect(turns[1].complete).toBe(true)
+    expect(turns[1].stopReason).toBe('end_turn')
+  })
+
   it('does not treat a developer-only rollout as a human turn', () => {
     expect(
       codexTurnsFromLines([

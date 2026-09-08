@@ -133,7 +133,7 @@ export function readHermesTurns(id: string): HarnessTurn[] {
     }
 
     for (const raw of rows) {
-      const r = raw as Record<string, unknown>
+      const r = raw
       const role = typeof r.role === 'string' ? r.role : ''
 
       if (role === 'user') {

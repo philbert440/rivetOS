@@ -580,6 +580,69 @@ describe('Config Validation', () => {
       cfg.memory = { postgres: { embed_model: 'nemotron' } }
       assertValid(validateConfig(cfg))
     })
+
+    it('accepts embedded with defaults', () => {
+      const cfg = validConfig()
+      cfg.memory = { postgres: { embedded: {} } }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('accepts a full embedded shape', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embedded: {
+            data_dir: '~/.rivetos/pglite',
+            port: 5433,
+            auto_migrate: true,
+            max_connections: 96,
+          },
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('errors when embedded and connection_string are both set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embedded: { port: 5433 },
+          connection_string: 'postgres://postgres:postgres@127.0.0.1:5433/postgres',
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres', 'cannot both be set')
+    })
+
+    it('errors on invalid embedded port / data_dir / booleans / max_connections', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embedded: {
+            port: 70000,
+            data_dir: 12,
+            auto_migrate: 'yes',
+            max_connections: 0,
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embedded.port', 'integer between 1 and 65535')
+      assertError(result, 'memory.postgres.embedded.data_dir', 'must be a non-empty string')
+      assertError(result, 'memory.postgres.embedded.auto_migrate', 'must be a boolean')
+      assertError(result, 'memory.postgres.embedded.max_connections', 'must be a positive integer')
+    })
+
+    it('warns on unknown embedded keys', () => {
+      const cfg = validConfig()
+      cfg.memory = { postgres: { embedded: { socket: '/tmp/pg.sock' } } }
+      const result = validateConfig(cfg)
+      assertWarning(
+        result,
+        'memory.postgres.embedded.socket',
+        'Unknown memory.postgres.embedded key',
+      )
+    })
   })
 
   // =========================================================================
@@ -914,8 +977,23 @@ describe('den', () => {
       tls_key: '/rivet-shared/rivet-ca/issued/node.key',
       terminal: { enabled: true },
       static_dir: '/opt/rivetos/apps/rivethub-web/dist',
+      advertise_mdns: true,
     }
     assertValid(validateConfig(cfg))
+  })
+
+  it('accepts advertise_mdns true or false', () => {
+    for (const advertise_mdns of [true, false]) {
+      const cfg = validConfig()
+      cfg.den = { enabled: true, advertise_mdns }
+      assertValid(validateConfig(cfg))
+    }
+  })
+
+  it('rejects non-boolean advertise_mdns', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, advertise_mdns: 'yes' }
+    assertError(validateConfig(cfg), 'den.advertise_mdns', 'must be a boolean')
   })
 
   it('rejects a non-object den section', () => {
@@ -928,6 +1006,12 @@ describe('den', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, prot: 5174 }
     assertWarning(validateConfig(cfg), 'den.prot', 'Unknown den key')
+  })
+
+  it('accepts den.advertise_mdns (local-mode / PR 7 advertiser)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, advertise_mdns: true }
+    assertValid(validateConfig(cfg))
   })
 
   it('warns on unknown den.terminal keys', () => {

@@ -386,8 +386,18 @@ function planFrom(files: Array<[string, string]>): SessionPlan {
   eq('dry run predicts the real skip count', predicted.skipped, plan.rows.length)
   eq('dry run predicts no inserts', predicted.inserted, 0)
   check(
-    'dry run issues no BEGIN / INSERT / UPDATE',
-    dry.queries.every(q => !/^(BEGIN|INSERT|UPDATE|DELETE)/i.test(q)),
+    'dry run issues no INSERT / UPDATE / DELETE',
+    dry.queries.every(q => !/^(INSERT|UPDATE|DELETE)/i.test(q)),
+    dry.queries.join(' | '),
+  )
+  check(
+    'dry run opens a transaction for SET LOCAL',
+    dry.queries.some(q => /^BEGIN/i.test(q)),
+    dry.queries.join(' | '),
+  )
+  check(
+    'dry run pins read-only with SET LOCAL (not session SET)',
+    dry.queries.some(q => /SET LOCAL default_transaction_read_only/i.test(q)),
     dry.queries.join(' | '),
   )
 }
@@ -429,7 +439,12 @@ function planFrom(files: Array<[string, string]>): SessionPlan {
   eq('…and matches the real skip count', predicted.skipped, res.skipped)
   check(
     'greenfield dry run still writes nothing',
-    greenfield.queries.every(q => !/^(BEGIN|INSERT|UPDATE|DELETE)/i.test(q)),
+    greenfield.queries.every(q => !/^(INSERT|UPDATE|DELETE)/i.test(q)),
+    greenfield.queries.join(' | '),
+  )
+  check(
+    'greenfield dry run still SET LOCALs inside a transaction',
+    greenfield.queries.some(q => /SET LOCAL default_transaction_read_only/i.test(q)),
     greenfield.queries.join(' | '),
   )
 }

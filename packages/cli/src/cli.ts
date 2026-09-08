@@ -76,6 +76,7 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   plugin: (args) => runSubRoute(routePlugin(args)),
   skill: (args) => runSubRoute(routeSkill(args)),
   workflow: () => import('./commands/workflow.js').then((m) => m.default()),
+  local: (args) => import('./commands/local.js').then((m) => m.default(args)),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
   'codex-cli': () => import('./commands/provider.js').then((m) => m.default('codex-cli')),
@@ -98,6 +99,7 @@ export function helpText(): string {
 
   Setup:
     rivetos init [--answers-file PATH]  Interactive setup wizard (JSON for non-interactive)
+    rivetos local [init|up|status|backup|reset]  One-shot laptop bring-up (embedded DB + den)
     rivetos install --herdr             Provision pinned herdr + manifest overrides
     rivetos update                      Pull latest, rebuild containers
     rivetos doctor                      Check config and connectivity
@@ -158,8 +160,8 @@ export function helpText(): string {
     rivetos memory retry-failed         Reset dead graphile jobs (after a code fix)
 
   Database:
-    rivetos db migrate                  Apply pending Postgres migrations
-    rivetos db status                   Show applied migrations
+    rivetos db migrate [--config <path>] Apply pending migrations (Postgres or embedded)
+    rivetos db status [--config <path>] Show applied migrations (embedded: data dir, owner)
 
   Users:
     rivetos user list                   Show the tenancy registry
@@ -181,6 +183,7 @@ export function helpText(): string {
   Plugins:
     rivetos plugins list                Show configured plugins with status
     rivetos plugins sync                Refresh TUI plugin installs from source
+    rivetos plugins install             Detect harnesses and install memory capture
     rivetos plugin init <type> <name>   Scaffold a new plugin
 
   Workflows:

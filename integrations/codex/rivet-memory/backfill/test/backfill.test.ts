@@ -173,10 +173,12 @@ console.log('\n— stub runSession —')
   const convs: Row[] = []
   const msgs: Row[] = []
   const writes: string[] = []
+  const queries: string[] = []
   let ids = 0
   const client = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
+      queries.push(s)
       writes.push(s.split(' ')[0] + ' ' + (s.split(' ')[1] ?? ''))
       if (s.startsWith('BEGIN') || s.startsWith('COMMIT') || s.startsWith('ROLLBACK')) {
         return { rows: [], rowCount: 0 }
@@ -250,9 +252,57 @@ console.log('\n— stub runSession —')
   eq('second write skips all', second.skipped, parsed.rows.length)
   eq('second write inserts none', second.inserted, 0)
 
+  queries.length = 0
   const dry = await runSession(client, plan, true)
   eq('dry-run against existing skips all', dry.skipped, parsed.rows.length)
   eq('dry-run inserts none', dry.inserted, 0)
+  check(
+    'dry run opens a transaction for SET LOCAL',
+    queries.some((q) => /^BEGIN/i.test(q)),
+    queries.join(' | '),
+  )
+  check(
+    'dry run pins read-only with SET LOCAL (not session SET)',
+    queries.some((q) => /SET LOCAL default_transaction_read_only/i.test(q)),
+    queries.join(' | '),
+  )
+  check(
+    'dry run rolls back the read-only transaction',
+    queries.some((q) => /^ROLLBACK/i.test(q)),
+    queries.join(' | '),
+  )
+  check(
+    'dry run issues no INSERT / UPDATE / DELETE',
+    queries.every((q) => !/^(INSERT|UPDATE|DELETE)/i.test(q)),
+    queries.join(' | '),
+  )
+
+  const greenQueries: string[] = []
+  const greenClient = {
+    async query(sql: string, _params: unknown[] = []) {
+      const s = sql.replace(/\s+/g, ' ').trim()
+      greenQueries.push(s)
+      if (s.startsWith('BEGIN') || s.startsWith('COMMIT') || s.startsWith('ROLLBACK')) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (s.startsWith('SET LOCAL') || s.startsWith('SELECT pg_advisory')) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (s.startsWith('SELECT id FROM ros_conversations')) {
+        return { rows: [], rowCount: 0 }
+      }
+      throw new Error(`unexpected sql: ${s}`)
+    },
+  }
+  const green = await runSession(greenClient, plan, true)
+  eq('greenfield dry run still predicts a split', green.inserted + green.skipped, parsed.rows.length)
+  check(
+    'greenfield dry run still SET LOCALs inside a transaction',
+    greenQueries.some((q) => /^BEGIN/i.test(q)) &&
+      greenQueries.some((q) => /SET LOCAL default_transaction_read_only/i.test(q)) &&
+      greenQueries.some((q) => /^ROLLBACK/i.test(q)),
+    greenQueries.join(' | '),
+  )
 }
 
 console.log('\n— discovery —')

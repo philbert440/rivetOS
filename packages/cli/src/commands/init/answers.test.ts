@@ -206,6 +206,28 @@ describe('interpretAnswers', () => {
     ).toThrow(/requested default but this prompt has no default/)
   })
 
+  it('grok-cli is keyless and defaults model to default', () => {
+    const result = interpretAnswers(
+      happy({
+        agents: [
+          {
+            name: 'rivet',
+            provider: 'grok-cli',
+            model: { default: true },
+            thinking: { default: true },
+          },
+        ],
+      }),
+      ENV,
+    )
+    expect(result.agents[0]).toMatchObject({
+      name: 'rivet',
+      provider: 'grok-cli',
+      model: 'default',
+      apiKey: undefined,
+    })
+  })
+
   it('claude-cli still requires model (default marker → opus)', () => {
     const result = interpretAnswers(
       happy({

@@ -174,10 +174,12 @@ node dist/kimi-transcript-backfill.js --write
 | `--include-tools` | also emit `role = tool` rows (see above) |
 | `--json` | machine-readable summary instead of the table |
 
-A dry run is safe by construction: the filesystem is only read, and the
-connection is pinned with `SET default_transaction_read_only = on` before any
-query — the code path issues no `BEGIN`, `INSERT`, or `UPDATE`, and the server
-would reject them if it did.
+A dry run is safe by construction: the filesystem is only read, and each
+session's SELECTs run inside a transaction pinned with
+`SET LOCAL default_transaction_read_only = on` (not a session `SET`, which
+would leak read-only onto every other client sharing a PGlite session). The
+code path issues no `INSERT` or `UPDATE`, and the server would reject them if
+it did.
 
 ### Failure isolation
 

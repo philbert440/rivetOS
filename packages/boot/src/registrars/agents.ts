@@ -217,6 +217,7 @@ export async function registerAgentTools(
 
     const storageDir = meshConfig.storage_dir ?? sharedDir()
     const agentChannelPort = meshConfig.agent_channel_port ?? 3000
+    const agentChannelHost = meshConfig.agent_channel_host
     const localAgents = Object.keys(config.agents)
     const nodeName = meshConfig.node_name ?? 'unknown'
 
@@ -355,6 +356,7 @@ export async function registerAgentTools(
     // Agent channel server — receives incoming mesh delegations
     const agentChannel = new AgentChannelServer({
       port: agentChannelPort,
+      host: agentChannelHost,
       tls: tlsConfig,
       delegationEngine: localDelegation,
       meshRegistry,

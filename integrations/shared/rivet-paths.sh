@@ -12,7 +12,8 @@
 #                                1. RIVETOS_ROOT env (authoritative — set in
 #                                   the process env or by rivetos_load_env)
 #                                2. walk up from THIS FILE's real path
-#                                   (readlink -f) for a dir that passes the
+#                                   (rivetos_abs_path; portable, not
+#                                   readlink -f) for a dir that passes the
 #                                   RivetOS sentinel: nx.json AND
 #                                   services/mcp-sidecar both exist
 #                                3. fall back to /opt/rivetos (documented
@@ -28,6 +29,62 @@
 #                              shim layout no longer exists on any node.
 #
 # Diagnostics go to stderr; function results go to stdout.
+
+# Resolve $1 to an absolute path. GNU `readlink -f` is missing on macOS
+# bash 3.2; prefer perl, then a cd/pwd -P fallback. Used by rivetos_find_root
+# so MCP launchers work on a laptop install.
+rivetos_abs_path() {
+  local target="$1"
+  local resolved dir base phys candidate link hops
+  if command -v perl >/dev/null 2>&1; then
+    resolved="$(perl -MCwd -e 'print Cwd::abs_path(shift)' "$target" 2>/dev/null || true)"
+    if [ -n "$resolved" ]; then
+      printf '%s\n' "$resolved"
+      return 0
+    fi
+  fi
+  # GNU readlink (Linux). BSD readlink has no -f; swallow the failure.
+  resolved="$(readlink -f "$target" 2>/dev/null || true)"
+  if [ -n "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+  dir="$(dirname "$target")"
+  base="$(basename "$target")"
+  if [ ! -d "$dir" ]; then
+    return 1
+  fi
+  phys="$(cd "$dir" && pwd -P)" || return 1
+  if [ "$phys" = "/" ]; then
+    candidate="/$base"
+  else
+    candidate="$phys/$base"
+  fi
+  # Resolve chained symlinks in the final filename (perl/GNU readlink -f
+  # already did this above; this covers macOS bash 3.2 with neither).
+  # Cap at 32 hops so a cycle cannot loop forever.
+  hops=0
+  while [ -L "$candidate" ] && [ "$hops" -lt 32 ]; do
+    hops=$((hops + 1))
+    link="$(readlink "$candidate" 2>/dev/null || true)"
+    if [ -z "$link" ]; then
+      break
+    fi
+    case "$link" in
+      /*) candidate="$link" ;;
+      *)
+        dir="$(dirname "$candidate")"
+        if [ "$dir" = "/" ]; then
+          candidate="/$link"
+        else
+          candidate="$dir/$link"
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$candidate"
+  return 0
+}
 
 # Load DB + embedding credentials so the memory tools come up. Without them the
 # server still starts, but with echo + web tools only (memory disabled).
@@ -52,7 +109,7 @@ rivetos_find_root() {
   #    services/mcp-sidecar both exist. BASH_SOURCE[0] inside this function
   #    is rivet-paths.sh itself, wherever the launcher was invoked from.
   local probe
-  probe="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+  probe="$(dirname "$(rivetos_abs_path "${BASH_SOURCE[0]}")")"
   while [ "$probe" != "/" ]; do
     if [ -f "$probe/nx.json" ] && [ -d "$probe/services/mcp-sidecar" ]; then
       printf '%s\n' "$probe"
