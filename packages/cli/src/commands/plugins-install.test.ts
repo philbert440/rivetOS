@@ -192,6 +192,14 @@ describe('ensureGrokMcpBlock', () => {
     expect(out).not.toBe(existing)
     expect(tomlHasUncommentedTable(out, 'mcp_servers.rivetos')).toBe(true)
   })
+
+  it('ignores a table-shaped line inside a nested-array multiline string', () => {
+    const existing = 'instructions = [\n  ["""\n[mcp_servers.rivetos]\n"""]\n]\n'
+    expect(tomlHasUncommentedTable(existing, 'mcp_servers.rivetos')).toBe(false)
+    const out = ensureGrokMcpBlock(existing, root)
+    expect(out).not.toBe(existing)
+    expect(tomlHasUncommentedTable(out, 'mcp_servers.rivetos')).toBe(true)
+  })
 })
 
 describe('ensureEnvKey / readEnvKey', () => {

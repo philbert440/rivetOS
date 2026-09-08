@@ -480,41 +480,18 @@ function skipTomlMlLiteral(text: string, i: number): number {
   return n
 }
 
-function skipTomlStatement(text: string, i: number): number {
-  const n = text.length
-  while (i < n && text[i] !== '\n') {
-    if (text.startsWith('"""', i)) {
-      i = skipTomlMlBasic(text, i + 3)
-      continue
-    }
-    if (text.startsWith("'''", i)) {
-      i = skipTomlMlLiteral(text, i + 3)
-      continue
-    }
-    if (text[i] === '"') {
-      i = skipTomlBasicString(text, i + 1)
-      continue
-    }
-    if (text[i] === "'") {
-      i = skipTomlLiteralString(text, i + 1)
-      continue
-    }
-    if (text[i] === '#') {
-      while (i < n && text[i] !== '\n') i += 1
-      break
-    }
-    i += 1
-  }
-  return i
-}
-
 export function tomlHasUncommentedTable(text: string, table: string): boolean {
   const want = table.split('.')
   let i = 0
   const n = text.length
+  let arrayDepth = 0
   while (i < n) {
-    while (i < n && /[ \t\r\n]/.test(text[i])) i += 1
+    while (i < n && (text[i] === ' ' || text[i] === '\t' || text[i] === '\r')) i += 1
     if (i >= n) break
+    if (text[i] === '\n') {
+      i += 1
+      continue
+    }
     if (text[i] === '#') {
       while (i < n && text[i] !== '\n') i += 1
       continue
@@ -536,16 +513,28 @@ export function tomlHasUncommentedTable(text: string, table: string): boolean {
       continue
     }
     if (text[i] === '[') {
-      const nl = text.indexOf('\n', i)
-      const line = nl === -1 ? text.slice(i) : text.slice(i, nl)
-      const keys = parseTomlTableKeys(line)
-      if (keys && keys.length === want.length && keys.every((k, idx) => k === want[idx])) {
-        return true
+      if (arrayDepth === 0 && text[i + 1] === '[') {
+        while (i < n && text[i] !== '\n') i += 1
+        continue
       }
-      i = nl === -1 ? n : nl
+      if (arrayDepth === 0) {
+        const nl = text.indexOf('\n', i)
+        const line = nl === -1 ? text.slice(i) : text.slice(i, nl)
+        const keys = parseTomlTableKeys(line)
+        if (keys && keys.length === want.length && keys.every((k, idx) => k === want[idx])) {
+          return true
+        }
+      }
+      arrayDepth += 1
+      i += 1
       continue
     }
-    i = skipTomlStatement(text, i)
+    if (text[i] === ']') {
+      if (arrayDepth > 0) arrayDepth -= 1
+      i += 1
+      continue
+    }
+    i += 1
   }
   return false
 }
