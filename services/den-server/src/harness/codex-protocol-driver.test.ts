@@ -85,3 +85,8 @@ it('preserves operator policy and rejects unsupported roster options', () => {
   expect(codexThreadDefaults(['codex'])).toEqual({})
   expect(() => codexThreadDefaults(['codex', '--unknown'])).toThrow('cannot translate')
 })
+
+it('advertises protocol controls even without a PTY backend', () => {
+  const { driver } = setup()
+  expect(driver.capabilities).toMatchObject({ resume: true, interrupt: true, approvals: true, liveStream: true })
+})
