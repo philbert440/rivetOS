@@ -531,6 +531,12 @@ Contract:
 - Export with `pg_dump` ≥ 18 (this engine is PostgreSQL 18.3). RSS is about 650 MB per 170 MB on-disk database.
 - Without `RIVETOS_EMBED_URL` / `embed_endpoint` (lite mode), boot sets `rivet.defer_embed_enqueue=on` so capture INSERTs do not require the graphile schema. In lite mode nothing ever enqueues embed jobs: rows are stored un-embedded (full-text + trigram recall only). When you later configure an embedding endpoint, restart the node — the embedding worker's `enqueue-idle` cron backfills every un-embedded row.
 
+Day-2 commands (no extra daemon):
+
+- `rivetos start` / `rivetos start --role migrate` — foreground start now loads `~/.rivetos/.env` (same non-overriding merge as systemd `EnvironmentFile=`). Migrate acquires or attaches; in-process when this process owns the engine, async spawn when attaching.
+- `rivetos db migrate` / `rivetos db status` — same acquire-or-attach wrap. `db status` on embedded prints data dir, size on disk, owner pid/alive, socket port, and `_rivetos_migrations` count.
+- `rivetos doctor` — does not warn that `RIVETOS_PG_URL` is missing when `memory.postgres.embedded` is set; if the socket refuses, it says to start the node.
+
 ---
 
 ## `tasks`

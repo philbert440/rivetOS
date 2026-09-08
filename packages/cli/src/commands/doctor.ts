@@ -66,6 +66,7 @@ import {
   readRivetosDotEnv,
   resolveHerdrMux,
 } from '../lib/herdr.js'
+import { loadRivetEnv } from '../lib/env-file.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -354,6 +355,7 @@ export async function checkWorkspace(): Promise<CheckResult[]> {
 function checkEnvVars(rawConfig: string | null): CheckResult[] {
   const results: CheckResult[] = []
   const envChecks: Array<{ name: string; context: string }> = []
+  let requirePgUrl = true
 
   if (rawConfig) {
     try {
@@ -378,7 +380,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
       // Social channels (telegram/discord/voice-discord) were removed in Phase 5.
       // Doctor no longer probes their bot tokens.
 
-      if (memory.postgres && !memory.postgres.connection_string) {
+      const pg = memory.postgres
+      if (pg && pg.embedded !== undefined && pg.embedded !== null) {
+        requirePgUrl = false
+      } else if (pg && !pg.connection_string) {
         envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory: postgres' })
       }
     } catch {
@@ -387,10 +392,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
   }
 
   if (envChecks.length === 0) {
-    envChecks.push(
-      { name: 'ANTHROPIC_API_KEY', context: 'provider' },
-      { name: 'RIVETOS_PG_URL', context: 'memory' },
-    )
+    envChecks.push({ name: 'ANTHROPIC_API_KEY', context: 'provider' })
+    if (requirePgUrl) {
+      envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory' })
+    }
   }
 
   for (const { name, context } of envChecks) {
@@ -572,8 +577,8 @@ async function checkMemoryBackend(): Promise<{
             'memory',
             'embedded',
             'fail',
-            `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused`,
-            (err as Error).message,
+            'embedded DB — start the node (`rivetos start`)',
+            `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused: ${(err as Error).message}`,
           ),
         )
         return { results }
@@ -600,8 +605,8 @@ async function checkMemoryBackend(): Promise<{
           'memory',
           'embedded',
           'fail',
-          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused`,
-          (err as Error).message,
+          'embedded DB — start the node (`rivetos start`)',
+          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused: ${(err as Error).message}`,
         ),
       )
       return { results }
@@ -1656,6 +1661,7 @@ Checks: system, config, workspace, env vars, secrets, containers,
 // ---------------------------------------------------------------------------
 
 export default async function doctor(): Promise<void> {
+  loadRivetEnv()
   const opts = parseArgs()
   const allResults: CheckResult[] = []
 
