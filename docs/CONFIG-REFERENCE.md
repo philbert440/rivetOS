@@ -474,6 +474,27 @@ mesh:
 
 ---
 
+## `den`
+
+Embedded node gateway (den-server in-process). Off by default. See [`docs/DEN.md`](DEN.md) and [`docs/GATEWAY-MTLS.md`](GATEWAY-MTLS.md). Independent of `mesh.discovery.mode`.
+
+```yaml
+den:
+  enabled: true
+  host: 0.0.0.0
+  port: 5174
+  advertise_mdns: false
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `false` | Embed the den gateway in this process. |
+| `host` | string | `127.0.0.1` | Bind address. Off-loopback requires TLS. |
+| `port` | number | `5174` | HTTP/WS (or HTTPS) port. |
+| `advertise_mdns` | boolean | `false` | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started. |
+
+---
+
 ## `memory`
 
 Memory backend configuration. Currently supports PostgreSQL.

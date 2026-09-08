@@ -16,7 +16,8 @@ import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
 import { registerPlugins } from './registrars/plugins.js'
 import { registerAgentTools } from './registrars/agents.js'
-import { registerGateway } from './registrars/gateway.js'
+import { registerGateway, denTlsConfigured } from './registrars/gateway.js'
+import { registerMdnsAdvertiser } from './registrars/mdns.js'
 import { writePidFile, registerShutdownHandlers } from './lifecycle.js'
 import {
   acquireEmbeddedPg,
@@ -258,7 +259,12 @@ async function bootWithConfig(
 
   // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
   //      task-engine route families mounted behind its bearer gate.
-  await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+  const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+
+  // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
+  if (gateway) {
+    await registerMdnsAdvertiser(runtime, config, gateway.port, denTlsConfigured(config))
+  }
 
   // 5. Lifecycle — close embedded PG after runtime.stop (den/plugins first).
   await writePidFile()
