@@ -362,14 +362,13 @@ export async function registerGateway(
   })
   if (!listening) return undefined
 
-  runtime.addShutdownHook(async () => {
-    await den.close()
-  })
   log.info(
     `Gateway (den) embedded on ${denConfig.host}:${String(denConfig.port)}` +
       (denConfig.token ? ' [auth on]' : ' [auth off]') +
       (extraRoutes.length ? ` — ${String(extraRoutes.length)} API route mount(s)` : ''),
   )
+  // Caller (boot index) registers close() on the runtime so it can run after
+  // mDNS unpublish — goodbye packet before den stops.
   return {
     port: denConfig.port,
     close: () => den.close(),

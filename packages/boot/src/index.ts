@@ -262,8 +262,17 @@ async function bootWithConfig(
   const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
 
   // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
+  // One shutdown hook: unpublish (goodbye) first, then den.close(). Hooks run
+  // FIFO; registerGateway no longer registers den.close itself.
   if (gateway) {
-    await registerMdnsAdvertiser(runtime, config, gateway.port, denTlsConfigured(config))
+    const stopMdns = await registerMdnsAdvertiser(config, gateway.port, denTlsConfigured(config))
+    runtime.addShutdownHook(async () => {
+      try {
+        if (stopMdns) await stopMdns()
+      } finally {
+        await gateway.close()
+      }
+    })
   }
 
   // 5. Lifecycle — close embedded PG after runtime.stop (den/plugins first).
