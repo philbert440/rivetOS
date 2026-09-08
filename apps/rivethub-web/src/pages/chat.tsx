@@ -1201,6 +1201,7 @@ function ActiveSession(props: {
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect)
+  const protocolSessionRef = useRef<import('@rivetos/types').SessionId | undefined>(undefined)
   const termPtyRef = useRef<string | undefined>(undefined)
   termPtyRef.current = termPtyId
   // Selectors must return stable references when empty (see EMPTY_* above).
@@ -1433,8 +1434,13 @@ function ActiveSession(props: {
     // An API-only agent has no roster command → fall back to the node default
     // rather than 404 (keeps the session id via --session-id if a UUID).
     const p = command
-      ? await gw.termSpawn(body).catch(() => gw.termSpawn({ session: props.sessionId }))
+      ? await gw.termSpawn(body).catch((error: unknown) => {
+          if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
+            return gw.termSpawn({ session: props.sessionId })
+          throw error
+        })
       : await gw.termSpawn(body)
+    protocolSessionRef.current = p.harnessSessionId
     setTermPtyId(p.id)
     termPtyRef.current = p.id
     return p.id
@@ -1577,6 +1583,13 @@ function ActiveSession(props: {
     const injectText = prompt ? prefixSystemPrompt(prompt, text) : text
     try {
       await ensurePty()
+      if (protocolSessionRef.current) {
+        const sid = protocolSessionRef.current
+        if (interrupt) await gw.interruptHarnessSession(sid)
+        await gw.sendHarnessTurn(sid, { text, ...(prompt ? { systemPrompt: prompt } : {}) })
+        if (prompt) markSystemPromptSent(props.sessionId)
+        return
+      }
       try {
         await gw.termInject({
           session: props.sessionId,

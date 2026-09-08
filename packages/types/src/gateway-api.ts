@@ -525,6 +525,8 @@ export interface TermSpawnRequest {
 }
 
 export interface TermSpawnResponse {
+  /** Protocol-owned session: send turns through the control plane immediately. */
+  harnessSessionId?: import('./harness.js').SessionId
   id: string
   denSession: string
   command: string
