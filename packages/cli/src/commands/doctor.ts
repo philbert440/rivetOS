@@ -49,9 +49,7 @@ import {
   embeddedPgLockAlive,
   embeddedPgUrl,
   readEmbeddedPgLock,
-  resolveEmbeddedPg,
   validateConfig,
-  type RivetConfig,
 } from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
@@ -66,6 +64,13 @@ import {
   readRivetosDotEnv,
   resolveHerdrMux,
 } from '../lib/herdr.js'
+import {
+  dirSizeBytes,
+  findRivetConfigPath,
+  formatBytes,
+  readEmbeddedConfig,
+} from '../lib/embedded.js'
+import { loadRivetEnv } from '../lib/env-file.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -354,6 +359,7 @@ export async function checkWorkspace(): Promise<CheckResult[]> {
 function checkEnvVars(rawConfig: string | null): CheckResult[] {
   const results: CheckResult[] = []
   const envChecks: Array<{ name: string; context: string }> = []
+  let requirePgUrl = true
 
   if (rawConfig) {
     try {
@@ -378,7 +384,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
       // Social channels (telegram/discord/voice-discord) were removed in Phase 5.
       // Doctor no longer probes their bot tokens.
 
-      if (memory.postgres && !memory.postgres.connection_string) {
+      const pg = memory.postgres
+      if (pg && pg.embedded !== undefined && pg.embedded !== null) {
+        requirePgUrl = false
+      } else if (pg && !pg.connection_string) {
         envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory: postgres' })
       }
     } catch {
@@ -387,10 +396,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
   }
 
   if (envChecks.length === 0) {
-    envChecks.push(
-      { name: 'ANTHROPIC_API_KEY', context: 'provider' },
-      { name: 'RIVETOS_PG_URL', context: 'memory' },
-    )
+    envChecks.push({ name: 'ANTHROPIC_API_KEY', context: 'provider' })
+    if (requirePgUrl) {
+      envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory' })
+    }
   }
 
   for (const { name, context } of envChecks) {
@@ -530,7 +539,7 @@ function checkContainers(): CheckResult[] {
 
 type DoctorPgQuery = (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>
 
-async function checkMemoryBackend(): Promise<{
+export async function checkMemoryBackend(): Promise<{
   results: CheckResult[]
   query?: DoctorPgQuery
   close?: () => Promise<void>
@@ -572,8 +581,8 @@ async function checkMemoryBackend(): Promise<{
             'memory',
             'embedded',
             'fail',
-            `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused`,
-            (err as Error).message,
+            'embedded DB — start the node (`rivetos start`)',
+            `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused: ${(err as Error).message}`,
           ),
         )
         return { results }
@@ -600,8 +609,8 @@ async function checkMemoryBackend(): Promise<{
           'memory',
           'embedded',
           'fail',
-          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused`,
-          (err as Error).message,
+          'embedded DB — start the node (`rivetos start`)',
+          `embedded PGlite: ${embedded.dataDir} (${size}), owner pid ${String(lock.pid)} — socket refused: ${(err as Error).message}`,
         ),
       )
       return { results }
@@ -662,48 +671,16 @@ async function checkMemoryBackend(): Promise<{
   }
 }
 
-function loadEmbeddedResolved(): ReturnType<typeof resolveEmbeddedPg> {
-  const configPath = resolve(process.env.HOME ?? '.', '.rivetos', 'config.yaml')
+function loadEmbeddedResolved():
+  NonNullable<ReturnType<typeof readEmbeddedConfig>>['resolved'] | undefined {
+  const configPath = findRivetConfigPath()
+  if (!configPath) return undefined
   try {
-    const raw = readFileSync(configPath, 'utf-8')
-    const parsed = parseYaml(raw) as RivetConfig
-    return resolveEmbeddedPg(parsed)
+    return readEmbeddedConfig(configPath)?.resolved
   } catch {
+    // Malformed embedded.port throws from the lenient reader; do not crash doctor.
     return undefined
   }
-}
-
-function dirSizeBytes(dir: string): number {
-  if (!existsSync(dir)) return 0
-  let total = 0
-  const walk = (p: string): void => {
-    let st
-    try {
-      st = statSync(p)
-    } catch {
-      return
-    }
-    if (st.isFile()) {
-      total += st.size
-      return
-    }
-    if (!st.isDirectory()) return
-    let entries: string[]
-    try {
-      entries = readdirSync(p)
-    } catch {
-      return
-    }
-    for (const name of entries) walk(join(p, name))
-  }
-  walk(dir)
-  return total
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${String(n)} B`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 // ---------------------------------------------------------------------------
@@ -1656,6 +1633,7 @@ Checks: system, config, workspace, env vars, secrets, containers,
 // ---------------------------------------------------------------------------
 
 export default async function doctor(): Promise<void> {
+  loadRivetEnv()
   const opts = parseArgs()
   const allResults: CheckResult[] = []
 

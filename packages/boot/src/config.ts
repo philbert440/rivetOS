@@ -455,7 +455,8 @@ export async function loadConfig(path: string): Promise<RivetConfig> {
 // Env Var Resolution
 // ---------------------------------------------------------------------------
 
-function resolveEnvVars<T>(obj: T): T {
+/** Resolve `${ENV_VAR}` references in string values (missing names → empty string). */
+export function resolveEnvVars<T>(obj: T): T {
   if (typeof obj === 'string') {
     return obj.replace(/\$\{(\w+)\}/g, (_, name: string) => {
       return process.env[name] ?? ''

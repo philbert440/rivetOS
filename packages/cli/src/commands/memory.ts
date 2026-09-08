@@ -36,7 +36,10 @@
 // Entrypoint
 // ---------------------------------------------------------------------------
 
+import { loadRivetEnv } from '../lib/env-file.js'
+
 export default async function memory(): Promise<void> {
+  loadRivetEnv()
   const args = process.argv.slice(3)
   const subcommand = args[0]
 

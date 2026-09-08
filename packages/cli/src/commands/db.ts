@@ -5,24 +5,58 @@
  *   db migrate        Apply pending migrations from @rivetos/memory-postgres
  *   db status         Show applied migrations on the configured Postgres
  *
- * Reads RIVETOS_PG_URL from env (or `--url <pg>` arg).
+ * Reads RIVETOS_PG_URL from env (or `--url <pg>` arg). When
+ * `memory.postgres.embedded` is set, acquires or attaches the engine first.
  */
 
 import { spawn } from 'node:child_process'
+import { migrateEmbedded, readEmbeddedPgLock, embeddedPgLockAlive } from '@rivetos/boot'
+import {
+  dirSizeBytes,
+  findRivetConfigPath,
+  formatBytes,
+  readEmbeddedConfig,
+  withEmbeddedPg,
+} from '../lib/embedded.js'
+import { loadRivetEnv } from '../lib/env-file.js'
 import { resolveMemoryMigrateScript } from '../paths.js'
 
-async function migrate(args: string[]): Promise<void> {
+/**
+ * Strip `--config`/`-c` from argv so it is never forwarded to the child
+ * migrator (which only understands `--url` / `--baseline`).
+ */
+export function takeConfigFlag(argv: string[]): { configPath?: string; rest: string[] } {
+  const rest: string[] = []
+  let configPath: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '--config' || arg === '-c') {
+      const next = argv[i + 1]
+      if (!next || next.startsWith('-')) {
+        throw new Error('db: --config requires a path')
+      }
+      configPath = next
+      i++
+      continue
+    }
+    rest.push(arg)
+  }
+  return { configPath, rest }
+}
+
+async function spawnMigrateChild(args: string[], pgUrl?: string): Promise<void> {
   const script = resolveMemoryMigrateScript()
   if (!script) {
-    console.error(
+    // Throw (do not process.exit) so withEmbeddedPg's finally still closes the engine.
+    throw new Error(
       '[db migrate] cannot locate @rivetos/memory-postgres migrate runner — is the package installed and built?',
     )
-    process.exit(1)
   }
 
+  const env = pgUrl ? { ...process.env, RIVETOS_PG_URL: pgUrl } : process.env
   const child = spawn(process.execPath, [script, ...args], {
     stdio: 'inherit',
-    env: process.env,
+    env,
   })
 
   await new Promise<void>((resolveProm, rejectProm) => {
@@ -34,12 +68,75 @@ async function migrate(args: string[]): Promise<void> {
   })
 }
 
-async function status(): Promise<void> {
+export async function runDbMigrate(args: string[], explicitConfig?: string): Promise<void> {
+  // `--url <pg>` targets an explicit (external) database: never touch the embedded engine.
+  if (args.includes('--url')) {
+    await spawnMigrateChild(args)
+    return
+  }
+  const configPath = findRivetConfigPath(explicitConfig)
+  const embedded = configPath ? readEmbeddedConfig(configPath) : undefined
+  if (embedded) {
+    await withEmbeddedPg(embedded.config, async (handle) => {
+      // Owned + no runner arguments → in-process. Any runner argument (--baseline, --dir, …)
+      // goes through the real runner as an ASYNC child — the socket host keeps serving.
+      if (handle.owned && args.length === 0) {
+        await migrateEmbedded(handle.pgUrl)
+        return
+      }
+      await spawnMigrateChild(args, handle.pgUrl)
+    })
+    return
+  }
+  await spawnMigrateChild(args)
+}
+
+export async function runDbStatus(explicitConfig?: string): Promise<void> {
+  const configPath = findRivetConfigPath(explicitConfig)
+  if (configPath) {
+    const embedded = readEmbeddedConfig(configPath)
+    const config = embedded?.config
+    const resolved = embedded?.resolved
+    if (config && resolved) {
+      await withEmbeddedPg(config, async (handle) => {
+        printEmbeddedStatusHeader(resolved.dataDir, resolved.port, handle.owned)
+        await printMigrationStatus(handle.pgUrl, { embedded: true })
+      })
+      return
+    }
+  }
+
   const pgUrl = process.env.RIVETOS_PG_URL
   if (!pgUrl) {
     console.error('[db status] RIVETOS_PG_URL not set')
     process.exit(1)
   }
+  await printMigrationStatus(pgUrl)
+}
+
+function printEmbeddedStatusHeader(dataDir: string, configPort: number, owned: boolean): void {
+  const lock = readEmbeddedPgLock(dataDir)
+  const alive = lock ? embeddedPgLockAlive(lock) : false
+  const size = formatBytes(dirSizeBytes(dataDir))
+  const port = lock?.port ?? configPort
+  console.log('[db status] embedded PGlite')
+  console.log(`  data_dir: ${dataDir}`)
+  console.log(`  size: ${size}`)
+  if (owned) {
+    // Status itself opened the dir; printing our pid as "alive" looks like a node is running.
+    console.log('  owner: this command (no node running)')
+  } else if (lock?.pid == null) {
+    console.log('  owner_pid: none')
+  } else {
+    console.log(`  owner_pid: ${String(lock.pid)} (${alive ? 'alive' : 'dead'})`)
+  }
+  console.log(`  port: ${String(port)}`)
+}
+
+async function printMigrationStatus(
+  pgUrl: string,
+  opts: { embedded?: boolean } = {},
+): Promise<void> {
   const { Client } = (await import('pg')).default
   const client = new Client({ connectionString: pgUrl })
   await client.connect()
@@ -48,12 +145,14 @@ async function status(): Promise<void> {
       "SELECT to_regclass('_rivetos_migrations') AS reg",
     )
     if (!exists.rows[0]?.reg) {
+      if (opts.embedded) console.log('  migrations_applied: 0')
       console.log(
         '[db status] _rivetos_migrations table does not exist (no migrations applied yet)',
       )
       return
     }
     const res = await client.query('SELECT name, applied_at FROM _rivetos_migrations ORDER BY name')
+    if (opts.embedded) console.log(`  migrations_applied: ${String(res.rows.length)}`)
     if (res.rows.length === 0) {
       console.log('[db status] no migrations applied')
       return
@@ -69,23 +168,27 @@ async function status(): Promise<void> {
 }
 
 export default async function dbCommand(): Promise<void> {
+  loadRivetEnv()
   const sub = process.argv[3]
-  const rest = process.argv.slice(4)
+  const { configPath, rest } = takeConfigFlag(process.argv.slice(4))
 
   switch (sub) {
     case 'migrate':
-      await migrate(rest)
+      await runDbMigrate(rest, configPath)
       break
     case 'status':
-      await status()
+      await runDbStatus(configPath)
       break
     default:
       console.log(`
-rivetos db — schema migration commands
+rivetos db — schema migration commands (Postgres or embedded PGlite)
 
 Usage:
-  rivetos db migrate [--url <pg>]   Apply pending migrations
-  rivetos db status                 Show applied migrations
+  rivetos db migrate [--config <path>] [--url <pg>]   Apply pending migrations (embedded: acquire or attach)
+  rivetos db status [--config <path>]                 Show applied migrations (embedded: data dir, size, owner, port)
+
+  --config / -c   Path to config.yaml (not forwarded to the migrator)
+  --url           Bypass the embedded engine and target that Postgres URL
 `)
       if (sub) process.exit(1)
   }
