@@ -946,6 +946,31 @@ export async function runOnce(sessionsDir?: string): Promise<void> {
   )
 }
 
+export type WatchClient = Queryable & { release: () => void }
+export type WatchPool = { connect: () => Promise<WatchClient> }
+
+/** One watch poll. Connect failures (PGlite not up yet) are logged, not thrown. */
+export async function watchTick(
+  pool: WatchPool,
+  root: string,
+  state: WatcherState,
+  fromStart: boolean,
+): Promise<void> {
+  let client: WatchClient | undefined
+  try {
+    // pool.connect() must sit inside the try: a boot race against PGlite
+    // (ECONNREFUSED :5433) used to reject runWatch, and main() then exited 0
+    // so systemd Restart=on-failure never came back.
+    client = await pool.connect()
+    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+    await scanOnce(root, client, state, fromStart)
+  } catch (err) {
+    log(`watch tick failed: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    client?.release()
+  }
+}
+
 export async function runWatch(sessionsDir?: string): Promise<void> {
   const root = sessionsDir ?? codexSessionsDir()
   try {
@@ -958,21 +983,7 @@ export async function runWatch(sessionsDir?: string): Promise<void> {
   const state = createWatcherState()
   log(`watch starting on ${root}`)
 
-  const tick = async (fromStart: boolean): Promise<void> => {
-    let client: PoolClient | undefined
-    try {
-      // pool.connect() must sit inside the try: a boot race against PGlite
-      // (ECONNREFUSED :5433) used to reject runWatch, and main() then exited 0
-      // so systemd Restart=on-failure never came back.
-      client = await pool.connect()
-      await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
-      await scanOnce(root, client, state, fromStart)
-    } catch (err) {
-      log(`watch tick failed: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      client?.release()
-    }
-  }
+  const tick = (fromStart: boolean): Promise<void> => watchTick(pool, root, state, fromStart)
 
   await tick(true)
 
