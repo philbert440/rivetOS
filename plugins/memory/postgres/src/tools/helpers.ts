@@ -263,6 +263,7 @@ export interface StuckJobRow {
  * when nothing is pending under that filter.
  */
 export interface QueueHealthRow {
+  recent_dead?: string
   running?: string
   scheduled?: string
   task: string

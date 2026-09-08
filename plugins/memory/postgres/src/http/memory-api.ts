@@ -1,4 +1,3 @@
-import { queryEmbeddingHealth, queryCompactionHealth, queryQueueHealth } from '../health.js'
 /**
  * /api/memory — HTTP surface for RivetHub Search / Browse / Stats.
  *
@@ -23,6 +22,7 @@ import {
   type MemoryStatsResponse,
 } from '@rivetos/types'
 import type pg from 'pg'
+import { queryEmbeddingHealth, queryCompactionHealth, queryQueueHealth } from '../health.js'
 import {
   SearchEngine,
   type SearchEngineConfig,
@@ -35,6 +35,36 @@ import { applyWindowArgs } from '../tools/helpers.js'
  *  cache survive across HTTP requests. Keyed by pool identity (owner vs each
  *  routed user). First config for a given pool wins. */
 const enginesByPool = new WeakMap<pg.Pool, SearchEngine>()
+
+/** Cache successful diagnostics for 60 s; pending work always shares one promise.
+ * Separate caches keep worker queries behind the owner gate even if pools alias.
+ * Rejections are evicted so a transient database failure can recover immediately.
+ */
+function cachePerPool<T>(query: (pool: pg.Pool) => Promise<T>): (pool: pg.Pool) => Promise<T> {
+  const cache = new WeakMap<pg.Pool, { promise: Promise<T>; expiresAt: number }>()
+  return (pool) => {
+    const cached = cache.get(pool)
+    if (cached && Date.now() < cached.expiresAt) return cached.promise
+    const entry = {
+      promise: query(pool).then(
+        (result) => {
+          entry.expiresAt = Date.now() + 60_000
+          return result
+        },
+        (error: unknown) => {
+          cache.delete(pool)
+          throw error
+        },
+      ),
+      expiresAt: Infinity,
+    }
+    cache.set(pool, entry)
+    return entry.promise
+  }
+}
+const cachedEmbeddingHealth = cachePerPool(queryEmbeddingHealth)
+const cachedCompactionHealth = cachePerPool(queryCompactionHealth)
+const cachedQueueHealth = cachePerPool((pool) => queryQueueHealth((sql) => pool.query(sql)))
 
 function engineForPool(pool: pg.Pool, config: SearchEngineConfig): SearchEngine {
   const cached = enginesByPool.get(pool)
@@ -332,7 +362,7 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
       `SELECT COUNT(*)::text AS n FROM ros_messages WHERE role = 'tool' OR tool_name IS NOT NULL`,
     ),
     pool.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ros_summaries`),
-    queryEmbeddingHealth(pool),
+    cachedEmbeddingHealth(pool),
     pool.query<{ n: string }>(`SELECT COUNT(embedding)::text AS n FROM ros_messages`),
     pool.query<{ tool: string; n: string }>(`
       SELECT tool_name AS tool, COUNT(*)::text AS n
@@ -386,13 +416,13 @@ async function handleHealth(
 ): Promise<void> {
   const [embedding, counts, compaction, queues] = await Promise.all([
     engine.checkEmbeddingHealth(),
-    queryEmbeddingHealth(pool),
-    queryCompactionHealth(pool),
-    owner ? queryQueueHealth((sql) => pool.query(sql)) : Promise.resolve(null),
+    cachedEmbeddingHealth(pool),
+    cachedCompactionHealth(pool),
+    owner ? cachedQueueHealth(pool) : Promise.resolve(null),
   ])
   const row = counts.rows[0]
   const b = compaction.rows[0]
-  const failedEmbeddings = Number(row?.failed ?? 0)
+  const failedEmbeddings = Number(row.failed)
   const queueRows = queues?.map((q) => ({
     task: q.task,
     pending: Number(q.pending),
@@ -403,7 +433,9 @@ async function handleHealth(
   }))
   const body: MemoryHealthResponse = {
     status:
-      embedding.available && !failedEmbeddings && !queueRows?.some((q) => q.dead > 0)
+      embedding.available &&
+      Number(row.recent_failed) === 0 &&
+      !queues?.some((q) => Number(q.recent_dead) > 0)
         ? 'ok'
         : 'degraded',
     observedAt: new Date().toISOString(),
@@ -415,15 +447,15 @@ async function handleHealth(
           error: embedding.reason,
           impact: 'Keyword matching still works; meaning-based ranking is offline.',
         },
-    embedQueueDepth: Number(row?.msg_queue ?? 0) + Number(row?.sum_queue ?? 0),
+    embedQueueDepth: Number(row.msg_queue) + Number(row.sum_queue),
     failedEmbeddings,
-    skippedEmbeddings: Number(row?.unembeddable ?? 0),
+    skippedEmbeddings: Number(row.unembeddable),
     queueStatus: !owner ? 'restricted' : queues === null ? 'unavailable' : 'available',
     ...(queueRows ? { queues: queueRows } : {}),
     compaction: {
-      eligible: Number(b?.eligible_msgs ?? 0),
-      activeTail: Number(b?.active_tail_msgs ?? 0),
-      belowFloor: Number(b?.below_floor_msgs ?? 0),
+      eligible: Number(b.eligible_msgs),
+      activeTail: Number(b.active_tail_msgs),
+      belowFloor: Number(b.below_floor_msgs),
     },
     capture: {
       status: 'unknown',

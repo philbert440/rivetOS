@@ -1,7 +1,7 @@
 import type { MemoryHealthResponse } from '@rivetos/types'
 
-export const HEALTH_REFRESH_MS = 30_000
-export const HEALTH_STALE_MS = 90_000
+export const HEALTH_REFRESH_MS = 120_000
+export const HEALTH_STALE_MS = 180_000
 
 /** Older servers without observation times cannot establish current health. */
 export function memoryHealthState(
@@ -20,6 +20,6 @@ export function memoryHealthState(
   if (stale) return { tone: 'warn', label: 'Health observation is stale', stale }
   if (health.status !== 'ok') return { tone: 'warn', label: 'Memory needs attention', stale }
   if (health.capture?.status === 'unknown' || health.queueStatus !== 'available')
-    return { tone: 'warn', label: 'Observed checks OK · partial coverage', stale }
+    return { tone: 'good', label: 'Observed checks OK · partial coverage', stale }
   return { tone: 'good', label: 'Memory checks OK', stale }
 }

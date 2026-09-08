@@ -7,15 +7,21 @@ import {
   type EmbedQueueRow,
   type UnsummarizedBucketRow,
 } from './tools/helpers.js'
-const FULL_WINDOW = 10
-const IDLE_MINUTES = 15
-const STALE_MINUTES = 4 * 24 * 60
-const STALE_MIN_BATCH = 2
+// Mirrors worker defaults for diagnostic bucketing; deployed overrides may differ.
+export const FULL_WINDOW = 10
+export const IDLE_MINUTES = 15
+export const STALE_MINUTES = 4 * 24 * 60
+export const STALE_MIN_BATCH = 2
+/** Pending means due, not dead, and unlocked (or lock older than 4 h).
+ * Error sample comes from the most recently updated dead job.
+ * Only dead jobs created within 24 h degrade HTTP health; totals retain history.
+ */
 export const QUEUE_HEALTH_SQL = `SELECT t.identifier AS task,
                     COUNT(*) FILTER (WHERE j.attempts < j.max_attempts
                       AND (j.locked_at IS NULL OR j.locked_at < now() - interval '4 hours')
                       AND j.run_at <= now())::text AS pending,
                     COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts)::text AS dead,
+                    COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts AND j.created_at > now() - interval '24 hours')::text AS recent_dead,
                     COUNT(*) FILTER (WHERE j.attempts < j.max_attempts AND j.locked_at >= now() - interval '4 hours')::text AS running,
                     COUNT(*) FILTER (WHERE j.attempts < j.max_attempts AND (j.locked_at IS NULL OR j.locked_at < now() - interval '4 hours') AND j.run_at > now())::text AS scheduled,
                     CASE WHEN MIN(j.run_at) FILTER (
@@ -81,10 +87,14 @@ export const EMBEDDING_HEALTH_SQL = `
             (SELECT COUNT(*) FROM ros_summaries
               WHERE embedding IS NULL AND embed_status = 'unembeddable') AS unembeddable,
             (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND embed_status = 'failed') +
-            (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND embed_status = 'failed') AS failed
+            (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND embed_status = 'failed') AS failed,
+            (SELECT COUNT(*) FROM ros_messages WHERE embedding IS NULL AND embed_status = 'failed'
+              AND created_at > now() - interval '7 days') +
+            (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND embed_status = 'failed'
+              AND created_at > now() - interval '7 days') AS recent_failed
         `
 export function queryEmbeddingHealth(pool: pg.Pool) {
-  return pool.query<EmbedQueueRow & { failed: string }>(EMBEDDING_HEALTH_SQL)
+  return pool.query<EmbedQueueRow & { failed: string; recent_failed: string }>(EMBEDDING_HEALTH_SQL)
 }
 export function queryCompactionHealth(pool: pg.Pool) {
   const notHeartbeat = sqlNotHeartbeatConversation('c')

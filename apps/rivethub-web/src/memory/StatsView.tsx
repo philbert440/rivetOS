@@ -2,7 +2,7 @@ import { HEALTH_REFRESH_MS, memoryHealthState } from './health.js'
 import type { JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
-import { compactNumber, relativeTime } from './format.js'
+import { compactNumber, relativeTime, queueAge } from './format.js'
 
 export function StatsView(props: {
   gateway: RivetGateway
@@ -32,7 +32,7 @@ export function StatsView(props: {
       <header className="pane-head row">
         <p className="muted small">
           {healthState.label}
-          {h?.observedAt ? ` · checked ${relativeTime(h.observedAt)}` : ''}
+          {h?.observedAt ? ` · observed ${relativeTime(h.observedAt)}` : ''}
         </p>
         <button
           type="button"
@@ -73,7 +73,7 @@ export function StatsView(props: {
         />
       </div>
 
-      {healthState.stale && (
+      {healthState.stale && !health.isFetching && (
         <div className="banner warn">
           Current health is unverified. Refresh to obtain a new observation.
         </div>
@@ -82,13 +82,18 @@ export function StatsView(props: {
         <section className="stat-section">
           <h3>Pipeline diagnostics</h3>
           <p className="muted small">
-            Capture: {h.capture?.impact ?? 'Capture progress is not measured.'}
+            Capture:{' '}
+            {h.capture?.status === 'unknown' || !h.capture ? 'not measured' : h.capture.status}.{' '}
+            {h.capture?.impact}
+            {h.embeddings.checkedAt
+              ? ` Embeddings checked ${relativeTime(h.embeddings.checkedAt)}.`
+              : ''}
           </p>
           <div className="stat-grid">
             <StatCard
               label="Failed embeddings"
               value={h.failedEmbeddings === undefined ? '—' : compactNumber(h.failedEmbeddings)}
-              tone={(h.failedEmbeddings ?? 0) > 0 ? 'bad' : undefined}
+              hint="Historical total; only failed rows younger than 7 days affect health"
             />
             <StatCard
               label="Skipped embedding inputs"
@@ -121,7 +126,8 @@ export function StatsView(props: {
               <h3>Worker queues</h3>
               <p className="muted small">
                 Embedding, compaction and wiki work share the existing worker queues. Pending age
-                shows waiting time; it does not prove a worker is stalled.
+                shows waiting time; it does not prove a worker is stalled. Only dead jobs created
+                within the last 24 hours affect health.
               </p>
               {(h.queues ?? []).length === 0 && <p>No queued jobs.</p>}
               <ul className="stat-list">
@@ -133,12 +139,13 @@ export function StatsView(props: {
                         {q.pending} pending · {q.running} running · {q.scheduled} scheduled
                         {q.oldestPendingMinutes === null
                           ? ''
-                          : ` · oldest ${Math.floor(q.oldestPendingMinutes)}m`}
+                          : ` · oldest ${queueAge(q.oldestPendingMinutes)}`}
                       </div>
                     </span>
                     {q.dead > 0 && (
-                      <span className="tag tag-warn">
-                        {q.dead} failed jobs · run rivetos doctor for recovery details
+                      <span className="tag">
+                        {q.dead} failed jobs (historical total) · run rivetos doctor for recovery
+                        details
                       </span>
                     )}
                   </li>

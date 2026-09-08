@@ -30,3 +30,5 @@ The payload is already formatted with ⚠️ / ⏳ / ✅ status markers. Pass it
 through largely as-is. If the user asked a specific question
 ("is the compactor healthy?"), call out the relevant section in one
 sentence at the top.
+
+Embedding pending counts exclude failed and deliberately unembeddable inputs; failed counts appear separately in the headline. Worker queue diagnostics include pending, dead, running, scheduled, and oldest pending age.

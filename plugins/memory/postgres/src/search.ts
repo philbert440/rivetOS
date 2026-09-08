@@ -1282,11 +1282,6 @@ export class SearchEngine {
   // Query embedding — call Nemotron at search time
   // -----------------------------------------------------------------------
 
-  /**
-   * Embed a query string via the configured embedding endpoint.
-   * Failures return a reason + elapsed ms so callers can signal degraded mode
-   * instead of dropping the vector arm silently. Successful vectors are cached.
-   */
   private healthProbe?: Promise<{ available: boolean; checkedAt: string; reason?: string }>
   private healthProbeAt = 0
 
@@ -1303,6 +1298,11 @@ export class SearchEngine {
     return this.healthProbe
   }
 
+  /**
+   * Embed a query string via the configured embedding endpoint.
+   * Failures return a reason + elapsed ms so callers can signal degraded mode
+   * instead of dropping the vector arm silently. Successful vectors are cached.
+   */
   private async embedQuery(
     text: string,
     healthProbe = false,

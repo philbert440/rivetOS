@@ -27,16 +27,19 @@ export function HealthTile(props: {
   const h = health.data
   const s = stats.data
   const embedOk = h?.embeddings.status === 'ok'
-  const { tone, label } = memoryHealthState(h, Boolean(health.error || stats.error))
+  const { tone, label } = memoryHealthState(h, Boolean(health.error))
 
   if (props.compact) {
     return (
       <div className="health compact">
         <div className="health-row">
           <span className={`dot ${tone}`} title={label} />
-          <span className="muted small">
-            {label}
-            {s ? ` · ${compactNumber(s.conversations)} sess` : ''}
+          <span className="muted small" title={label}>
+            {s
+              ? `${compactNumber(s.conversations)} sess`
+              : health.error
+                ? 'unavailable'
+                : 'checking…'}
           </span>
           {!health.error && h && !embedOk && (
             <span className="tag tag-warn small" title="Meaning-based ranking is offline">

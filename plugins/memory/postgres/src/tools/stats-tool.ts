@@ -1,8 +1,16 @@
-import { queryQueueHealth, queryEmbeddingHealth, queryCompactionHealth } from '../health.js'
 /**
  * memory_stats — system health diagnostics tool.
  */
 
+import {
+  queryQueueHealth,
+  queryEmbeddingHealth,
+  queryCompactionHealth,
+  FULL_WINDOW,
+  IDLE_MINUTES,
+  STALE_MINUTES,
+  STALE_MIN_BATCH,
+} from '../health.js'
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
 import type { SearchRuntimeStats } from '../search.js'
@@ -24,16 +32,6 @@ import {
   type QueueHealthRow,
   sqlNotHeartbeatConversation,
 } from './helpers.js'
-
-// Mirrors compaction-worker's COMPACT_LEAF_BATCH default. Used for bucketing
-// only — if the deployed worker overrides it, the eligibility buckets will be
-// slightly off but the rank order still holds.
-const FULL_WINDOW = 10
-const IDLE_MINUTES = 15
-// Mirrors COMPACT_STALE_MINUTES / COMPACT_STALE_MIN_BATCH — long-idle convs get
-// their below-floor tail flushed down to this many messages.
-const STALE_MINUTES = 4 * 24 * 60
-const STALE_MIN_BATCH = 2
 
 /**
  * Named blocks of the memory_stats markdown report.
@@ -107,11 +105,6 @@ export function fmtQueueAge(minutes: number): string {
   return `${String(Math.floor(minutes / 60 / 24))}d`
 }
 
-/**
- * Pending = not-dead, stealable (unlocked or lock older than 4 h), and
- * run_at already due. Oldest pending uses the same filter. last_error is
- * the most recently updated dead-job error, not lexicographic MAX(text).
- */
 export { QUEUE_HEALTH_SQL, queryQueueHealth } from '../health.js'
 /**
  * Render the per-task graphile-worker queue block: pending + dead counts,
@@ -242,7 +235,7 @@ export function createStatsTool(
         const sumQueue = Number(eq.sum_queue)
         const unembeddable = Number(eq.unembeddable)
         const queueTotal = msgQueue + sumQueue
-        const failedEmbeddings = Number(eq.failed ?? 0)
+        const failedEmbeddings = Number(eq.failed)
         const queueStatus =
           failedEmbeddings > 0
             ? `⚠️ ${String(failedEmbeddings)} failed; ${String(queueTotal)} pending`
