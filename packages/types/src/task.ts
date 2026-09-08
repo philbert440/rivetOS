@@ -16,7 +16,13 @@ import type { SessionContext } from './session-context.js'
 
 export type TaskExecutorKind = 'chat-loop' | 'harness-session' | 'mesh'
 export type TaskStatus =
-  'queued' | 'running' | 'awaiting-input' | 'completed' | 'failed' | 'killed' | 'timeout'
+  | 'queued'
+  | 'running'
+  | 'awaiting-input'
+  | 'completed'
+  | 'failed'
+  | 'killed'
+  | 'timeout'
 
 export interface ContextRef {
   kind: 'conversation' | 'message' | 'task' | 'file' | 'url' | 'wiki'

@@ -12,7 +12,14 @@ import type { InboundMessage } from './channel.js'
 
 export interface StreamEvent {
   type:
-    'text' | 'reasoning' | 'tool_start' | 'tool_result' | 'status' | 'interrupt' | 'done' | 'error'
+    | 'text'
+    | 'reasoning'
+    | 'tool_start'
+    | 'tool_result'
+    | 'status'
+    | 'interrupt'
+    | 'done'
+    | 'error'
   content: string
   metadata?: Record<string, unknown>
 }
