@@ -977,8 +977,23 @@ describe('den', () => {
       tls_key: '/rivet-shared/rivet-ca/issued/node.key',
       terminal: { enabled: true },
       static_dir: '/opt/rivetos/apps/rivethub-web/dist',
+      advertise_mdns: true,
     }
     assertValid(validateConfig(cfg))
+  })
+
+  it('accepts advertise_mdns true or false', () => {
+    for (const advertise_mdns of [true, false]) {
+      const cfg = validConfig()
+      cfg.den = { enabled: true, advertise_mdns }
+      assertValid(validateConfig(cfg))
+    }
+  })
+
+  it('rejects non-boolean advertise_mdns', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, advertise_mdns: 'yes' }
+    assertError(validateConfig(cfg), 'den.advertise_mdns', 'must be a boolean')
   })
 
   it('rejects a non-object den section', () => {
