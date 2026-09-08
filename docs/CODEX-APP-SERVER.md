@@ -106,9 +106,11 @@ Native approval acceptance was exercised against a live server using a
 read-only sandbox and an untrusted approval policy: one approval was received
 and accepted, and the expected temporary-file marker was verified with no
 stream errors. This is a programmatic adapter acceptance test; actual browser
-and Android button acceptance still needs a device run. Android compilation
-could not run on the development node because Java and the Android SDK were
-not installed.
+and Android button acceptance still needs a device run. The Android CI workflow
+validates the full RivetHub Android unit suite, debug build, and release build
+with R8. The app lives in `apps/rivethub-android`; the retired `rivet-android`
+app does not receive these controls. Queued and failed native image turns restore
+their staged images with the caption, and catalog updates reconcile selections.
 
 A separate live image-input check read seven catalog models, submitted a staged
 image with an advertised model/effort pair, and received the expected reply and
