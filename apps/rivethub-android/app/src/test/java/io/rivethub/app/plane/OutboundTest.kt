@@ -13,12 +13,21 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.UUID
 
 class OutboundTest {
+    private fun textPump(
+        send: suspend (String) -> Unit,
+        attachmentsUploading: () -> Boolean = { false },
+        newId: () -> String = { UUID.randomUUID().toString() },
+        nowMs: () -> Long = { System.currentTimeMillis() },
+        idleDeadlineMs: Long = IDLE_DEADLINE_MS,
+    ) = OutboundPump({ text, _ -> send(text) }, attachmentsUploading, newId, nowMs, idleDeadlineMs)
+
     @Test fun `refuses a send while an attachment chip is uploading`() = runBlocking {
         withTimeout(1_000) {
             var sent = 0
-            val pump = OutboundPump(send = { sent++ }, attachmentsUploading = { true })
+            val pump = textPump(send = { sent++ }, attachmentsUploading = { true })
             assertEquals(EnqueueResult.Uploading, pump.tryEnqueue("hi"))
             pump.pump()
             assertEquals(0, sent)
@@ -28,7 +37,7 @@ class OutboundTest {
     @Test fun `send while idle dequeues and waits for turn-complete`() = runBlocking {
         withTimeout(1_000) {
             val seen = mutableListOf<String>()
-            val pump = OutboundPump(send = { seen += it }, attachmentsUploading = { false }, newId = { "id1" })
+            val pump = textPump(send = { seen += it }, attachmentsUploading = { false }, newId = { "id1" })
             assertTrue(pump.tryEnqueue("hello") is EnqueueResult.Accepted)
             pump.pump()
             assertEquals(listOf("hello"), seen)
@@ -40,7 +49,7 @@ class OutboundTest {
     @Test fun `409 queues the turn and retries after turn-complete`() = runBlocking {
         withTimeout(1_000) {
             var calls = 0
-            val pump = OutboundPump(
+            val pump = textPump(
                 send = {
                     calls++
                     if (calls == 1) throw TurnInFlight()
@@ -63,7 +72,7 @@ class OutboundTest {
         withTimeout(1_000) {
             val seen = mutableListOf<String>()
             var n = 0
-            val pump = OutboundPump(send = { seen += it }, newId = { "id-${n++}" })
+            val pump = textPump(send = { seen += it }, newId = { "id-${n++}" })
             pump.tryEnqueue("one")
             pump.tryEnqueue("two")
             pump.pump()
@@ -78,7 +87,7 @@ class OutboundTest {
     @Test fun `pump is a no-op while awaiting turn-complete`() = runBlocking {
         withTimeout(1_000) {
             var calls = 0
-            val pump = OutboundPump(send = { calls++ })
+            val pump = textPump(send = { calls++ })
             pump.tryEnqueue("a")
             pump.tryEnqueue("b")
             pump.pump()
@@ -89,7 +98,7 @@ class OutboundTest {
 
     @Test fun `non-409 failure drops the item`() = runBlocking {
         withTimeout(1_000) {
-            val pump = OutboundPump(send = { error("boom") }, newId = { "x" })
+            val pump = textPump(send = { error("boom") }, newId = { "x" })
             pump.tryEnqueue("nope")
             try {
                 pump.pump()
@@ -106,7 +115,7 @@ class OutboundTest {
         withTimeout(1_000) {
             var uploading = false
             var sent = 0
-            val pump = OutboundPump(send = { sent++ }, attachmentsUploading = { uploading })
+            val pump = textPump(send = { sent++ }, attachmentsUploading = { uploading })
             pump.tryEnqueue("hi")
             uploading = true
             pump.pump()
@@ -121,7 +130,7 @@ class OutboundTest {
             val release = CompletableDeferred<Unit>()
             val sends = AtomicInteger(0)
             var n = 0
-            val pump = OutboundPump(
+            val pump = textPump(
                 send = {
                     sends.incrementAndGet()
                     entered.complete(Unit)
@@ -146,7 +155,7 @@ class OutboundTest {
     @Test fun `409 pending acknowledge drops the item so poll complete does not resend`() = runBlocking {
         withTimeout(1_000) {
             var calls = 0
-            val pump = OutboundPump(
+            val pump = textPump(
                 send = {
                     calls++
                     throw TurnInFlight()
@@ -168,7 +177,7 @@ class OutboundTest {
     @Test fun `409 then success retries on pending cadence`() = runBlocking {
         withTimeout(1_000) {
             var calls = 0
-            val pump = OutboundPump(
+            val pump = textPump(
                 send = {
                     calls++
                     if (calls == 1) throw TurnInFlight()
@@ -191,7 +200,7 @@ class OutboundTest {
     @Test fun `cancel returns the item text and drops it`() = runBlocking {
         withTimeout(1_000) {
             var n = 0
-            val pump = OutboundPump(send = {}, newId = { "id-${n++}" })
+            val pump = textPump(send = {}, newId = { "id-${n++}" })
             pump.tryEnqueue("keep me")
             pump.tryEnqueue("drop me")
             val dropped = pump.cancel("id-1")
@@ -202,11 +211,23 @@ class OutboundTest {
         }
     }
 
+    @Test fun `cancel returns staged attachments so the composer can restore them`() = runBlocking {
+        withTimeout(1_000) {
+            val atts = listOf(StagedTurnAttachment("image/png", "/up/a.png", "a.png"))
+            val pump = OutboundPump(send = { _, _ -> }, newId = { "id1" })
+            pump.tryEnqueue("caption", atts)
+            val dropped = pump.cancel("id1")
+            assertEquals("caption", dropped!!.text)
+            assertEquals(atts, dropped.attachments)
+            assertTrue(pump.queued.isEmpty())
+        }
+    }
+
     @Test fun `inject forceId sends that item while awaiting`() = runBlocking {
         withTimeout(1_000) {
             val seen = mutableListOf<String>()
             var n = 0
-            val pump = OutboundPump(send = { seen += it }, newId = { "id-${n++}" })
+            val pump = textPump(send = { seen += it }, newId = { "id-${n++}" })
             pump.tryEnqueue("one")
             pump.tryEnqueue("two")
             pump.pump()
@@ -220,7 +241,7 @@ class OutboundTest {
     @Test fun `onIdle retries a 409 once`() = runBlocking {
         withTimeout(1_000) {
             var calls = 0
-            val pump = OutboundPump(
+            val pump = textPump(
                 send = {
                     calls++
                     if (calls == 1) throw TurnInFlight()
@@ -244,7 +265,7 @@ class OutboundTest {
             var t = 0L
             val seen = mutableListOf<String>()
             var n = 0
-            val pump = OutboundPump(
+            val pump = textPump(
                 send = { seen += it },
                 newId = { "id-${n++}" },
                 nowMs = { t },
@@ -260,6 +281,22 @@ class OutboundTest {
             assertTrue(pump.isStalled(t))
             pump.onTurnComplete()
             assertEquals(listOf("one", "two"), seen)
+            assertTrue(pump.queued.isEmpty())
+        }
+    }
+
+    @Test fun `keeps staged image inputs attached to their queued turn`() = runBlocking {
+        withTimeout(1_000) {
+            val seen = mutableListOf<List<StagedTurnAttachment>>()
+            val pump = OutboundPump(
+                send = { _, atts -> seen += atts },
+                newId = { "id1" },
+            )
+            val atts = listOf(StagedTurnAttachment("image/png", "/node/uploads/a.png", "a.png"))
+            assertTrue(pump.tryEnqueue("caption", atts) is EnqueueResult.Accepted)
+            assertEquals(atts, pump.queued.single().attachments)
+            pump.pump()
+            assertEquals(listOf(atts), seen)
             assertTrue(pump.queued.isEmpty())
         }
     }

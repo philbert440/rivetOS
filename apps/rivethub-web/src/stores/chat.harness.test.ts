@@ -315,6 +315,16 @@ describe('approvals slice', () => {
 })
 
 describe('outbound queue', () => {
+  it('shows an image placeholder while an image-only turn is sending', () => {
+    const chat = useChat.getState()
+    const id = chat.enqueueOutbound(KEY, '', [{ mime: 'image/png', pathOrUri: '/uploads/image.png' }])
+    chat.markOutboundSending(KEY, id)
+    expect(useChat.getState().messages[KEY]?.find((m) => m.id === id)?.text).toBe('[Image]')
+    expect(useChat.getState().outbound[KEY]?.[0].attachments).toEqual([
+      { mime: 'image/png', pathOrUri: '/uploads/image.png' },
+    ])
+  })
+
   it('does not put a queued turn in messages until sending', () => {
     const chat = useChat.getState()
     const id = chat.enqueueOutbound(KEY, 'next please')

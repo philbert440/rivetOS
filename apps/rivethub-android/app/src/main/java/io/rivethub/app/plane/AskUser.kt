@@ -19,13 +19,14 @@ data class AskQuestion(
     val header: String? = null,
     val multiSelect: Boolean = false,
     val options: List<AskOption> = emptyList(),
+    val freeText: Boolean = false,
 )
 
 data class AskScreen(val current: Int, val total: Int)
 
 data class AskUserCard(val questions: List<AskQuestion>, val screen: AskScreen? = null)
 
-enum class AskCardMode { ANSWER, TERMINAL_ONLY, NO_OPTIONS }
+enum class AskCardMode { ANSWER, TERMINAL_ONLY, NO_OPTIONS, FREE_TEXT }
 
 data class PendingApproval(
     val requestId: String,
@@ -142,31 +143,27 @@ fun askQuestionsFromHarness(questions: List<HarnessAskQuestion>): List<AskQuesti
             header = q.header,
             multiSelect = q.multiSelect,
             options = q.options.map { AskOption(it.label, it.description) },
+            freeText = q.freeText,
         )
     }
 
 /**
- * One HTTP answer entry per question. Free text rides `other` when the
- * picked labels include "Other", or on a single-question card.
+ * One HTTP answer entry per question. Free text rides `other` on the
+ * question the user typed under (index → text), never always index 0.
+ * A free-text question (no options) sends labels=[] + other.
  */
 fun promptAnswers(
     questions: List<AskQuestion>,
     picked: Map<Int, List<String>>,
-    free: String,
+    freeByQuestion: Map<Int, String>,
 ): List<HarnessPromptAnswer> {
-    val other = free.trim().ifBlank { null }
     return questions.indices.map { i ->
         val labels = picked[i].orEmpty()
-        val attachOther = when {
-            other == null -> false
-            labels.any { it.equals("Other", ignoreCase = true) } -> true
-            questions.size == 1 -> true
-            else -> false
-        }
+        val other = freeByQuestion[i]?.trim()?.ifBlank { null }
         HarnessPromptAnswer(
             question = i,
             labels = labels,
-            other = other.takeIf { attachOther },
+            other = other,
         )
     }
 }
@@ -177,11 +174,26 @@ fun promptAnswers(
  * picker; empty option lists are not on the captured screen.
  */
 fun askCardMode(question: AskQuestion, screen: AskScreen? = null): AskCardMode {
+    if (question.freeText && question.options.isEmpty()) return AskCardMode.FREE_TEXT
     if (question.options.isEmpty()) return AskCardMode.NO_OPTIONS
     if (screen != null && screen.total > 1 && screen.current == screen.total - 1 && !question.multiSelect) {
         return AskCardMode.TERMINAL_ONLY
     }
     return AskCardMode.ANSWER
+}
+
+/**
+ * Type-your-own-answer field on an answerable question. Unmarked option
+ * questions keep the historical custom-answer entry; freeText questions
+ * with options get a per-question field. den 400s free text on a
+ * multi-question screen-read picker, so that stays hidden. FREE_TEXT
+ * (marker, no options) is the field-only card.
+ */
+fun showsAskCustomAnswer(question: AskQuestion, screen: AskScreen? = null): Boolean {
+    val mode = askCardMode(question, screen)
+    if (mode == AskCardMode.FREE_TEXT) return true
+    if (mode != AskCardMode.ANSWER) return false
+    return screen == null || screen.total <= 1
 }
 
 /**

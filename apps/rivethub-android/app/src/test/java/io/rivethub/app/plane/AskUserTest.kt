@@ -231,7 +231,7 @@ class AskUserTest {
             AskQuestion(header = "A", options = listOf(AskOption("1"))),
             AskQuestion(header = "B", options = listOf(AskOption("2"))),
         )
-        val answers = promptAnswers(qs, mapOf(0 to listOf("1"), 1 to listOf("2")), "")
+        val answers = promptAnswers(qs, mapOf(0 to listOf("1"), 1 to listOf("2")), emptyMap())
         assertEquals(2, answers.size)
         assertEquals(0, answers[0].question)
         assertEquals(listOf("1"), answers[0].labels)
@@ -242,11 +242,23 @@ class AskUserTest {
 
     @Test fun `promptAnswers puts free text on other`() {
         val q = AskQuestion(options = listOf(AskOption("Go"), AskOption("Other")))
-        val answers = promptAnswers(listOf(q), mapOf(0 to listOf("Other")), "typed extra")
+        val answers = promptAnswers(listOf(q), mapOf(0 to listOf("Other")), mapOf(0 to "typed extra"))
         assertEquals(listOf("Other"), answers.single().labels)
         assertEquals("typed extra", answers.single().other)
-        val lone = promptAnswers(listOf(q), mapOf(0 to listOf("Go")), "also this")
+        val lone = promptAnswers(listOf(q), mapOf(0 to listOf("Go")), mapOf(0 to "also this"))
         assertEquals("also this", lone.single().other)
+    }
+
+    @Test fun `promptAnswers attaches other to the question it was typed under`() {
+        val qs = listOf(
+            AskQuestion(question = "Color", options = listOf(AskOption("Red"))),
+            AskQuestion(question = "Name", freeText = true),
+        )
+        val answers = promptAnswers(qs, mapOf(0 to listOf("Red")), mapOf(1 to "River"))
+        assertEquals(listOf("Red"), answers[0].labels)
+        assertNull(answers[0].other)
+        assertTrue(answers[1].labels.isEmpty())
+        assertEquals("River", answers[1].other)
     }
 
     @Test fun `askQuestionsFromHarness copies wire questions`() {
@@ -267,6 +279,12 @@ class AskUserTest {
         assertTrue(qs.single().multiSelect)
         assertEquals("Yes", qs.single().options[0].label)
         assertEquals("do it", qs.single().options[0].description)
+        assertFalse(qs.single().freeText)
+        val free = askQuestionsFromHarness(
+            listOf(HarnessAskQuestion(question = "Name?", freeText = true)),
+        )
+        assertTrue(free.single().freeText)
+        assertTrue(free.single().options.isEmpty())
     }
 
     private fun q(
@@ -281,6 +299,47 @@ class AskUserTest {
     @Test fun `askCardMode is no-options when the option list is empty`() {
         assertEquals(AskCardMode.NO_OPTIONS, askCardMode(q(options = emptyList())))
         assertEquals(AskCardMode.NO_OPTIONS, askCardMode(q(options = emptyList()), AskScreen(2, 3)))
+    }
+
+    @Test fun `askCardMode is free-text when the marker is set`() {
+        val free = AskQuestion(question = "Name?", options = emptyList(), freeText = true)
+        assertEquals(AskCardMode.FREE_TEXT, askCardMode(free))
+        assertEquals(AskCardMode.FREE_TEXT, askCardMode(free, AskScreen(0, 1)))
+    }
+
+    @Test fun `askCardMode keeps options when freeText is also set`() {
+        val both = AskQuestion(freeText = true, options = listOf(AskOption("A")))
+        assertEquals(AskCardMode.ANSWER, askCardMode(both))
+        assertEquals(AskCardMode.ANSWER, askCardMode(both, AskScreen(0, 1)))
+    }
+
+    @Test fun `unmarked option questions keep a custom-answer field`() {
+        val q = AskQuestion(options = listOf(AskOption("Red"), AskOption("Blue"), AskOption("Other")))
+        assertFalse(q.freeText)
+        assertEquals(AskCardMode.ANSWER, askCardMode(q))
+        assertTrue(showsAskCustomAnswer(q))
+        assertTrue(showsAskCustomAnswer(q, AskScreen(0, 1)))
+    }
+
+    @Test fun `freeText with options keeps options and a per-question field`() {
+        val q = AskQuestion(freeText = true, options = listOf(AskOption("A"), AskOption("B")))
+        assertEquals(AskCardMode.ANSWER, askCardMode(q))
+        assertTrue(showsAskCustomAnswer(q))
+        assertTrue(showsAskCustomAnswer(q, AskScreen(0, 1)))
+    }
+
+    @Test fun `freeText without options is a text-only card`() {
+        val q = AskQuestion(question = "Name?", options = emptyList(), freeText = true)
+        assertEquals(AskCardMode.FREE_TEXT, askCardMode(q))
+        assertTrue(showsAskCustomAnswer(q))
+        assertTrue(showsAskCustomAnswer(q, AskScreen(0, 1)))
+    }
+
+    @Test fun `custom-answer is hidden on a multi-question screen`() {
+        val unmarked = AskQuestion(options = listOf(AskOption("Red"), AskOption("Blue")))
+        assertFalse(showsAskCustomAnswer(unmarked, AskScreen(0, 3)))
+        val marked = AskQuestion(freeText = true, options = listOf(AskOption("A")))
+        assertFalse(showsAskCustomAnswer(marked, AskScreen(0, 3)))
     }
 
     @Test fun `askCardMode is terminal-only for the last single-select of several`() {
@@ -349,5 +408,19 @@ class AskUserTest {
         assertEquals("p2", next?.promptId)
         val empty = promptEvent("p3").copy(questions = emptyList())
         assertTrue(promptSlotAfter(next, empty) === next)
+    }
+
+    @Test fun `promptSlotAfter opens a free-text question with no options`() {
+        val event = HarnessEvent.Prompt(
+            sessionId = "s",
+            promptId = "p-free",
+            toolName = "requestUserInput",
+            questions = listOf(HarnessAskQuestion(question = "Describe it", freeText = true)),
+            resolved = false,
+        )
+        val slot = promptSlotAfter(null, event)
+        assertEquals("p-free", slot?.promptId)
+        assertTrue(slot!!.card.questions.single().freeText)
+        assertEquals(AskCardMode.FREE_TEXT, askCardMode(slot.card.questions.single()))
     }
 }

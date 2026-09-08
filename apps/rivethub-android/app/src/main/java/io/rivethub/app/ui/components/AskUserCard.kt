@@ -20,6 +20,7 @@ import io.rivethub.app.R
 import io.rivethub.app.plane.AskCardMode
 import io.rivethub.app.plane.AskUserCard
 import io.rivethub.app.plane.askCardMode
+import io.rivethub.app.plane.showsAskCustomAnswer
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
@@ -28,7 +29,7 @@ import io.rivethub.app.ui.theme.RivetType
 @Composable
 fun AskUserCardView(
     card: AskUserCard,
-    onSubmit: (Map<Int, List<String>>, String) -> Unit,
+    onSubmit: (Map<Int, List<String>>, Map<Int, String>) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
@@ -37,15 +38,14 @@ fun AskUserCardView(
 ) {
     val colors = RivetTheme.colors
     var picked by remember(promptId, card.screen) { mutableStateOf(mapOf<Int, List<String>>()) }
-    var free by remember(promptId, card.screen) { mutableStateOf("") }
+    var freeByQ by remember(promptId, card.screen) { mutableStateOf(mapOf<Int, String>()) }
     val shape = RoundedCornerShape(Radius.md)
     val optionShape = RoundedCornerShape(Radius.lg)
     val screen = card.screen
     val only = card.questions.singleOrNull()
     val cardMode = if (only != null) askCardMode(only, screen) else AskCardMode.ANSWER
-    val hideFreeText = (screen != null && screen.total > 1) || cardMode != AskCardMode.ANSWER
-    val hideSubmit = cardMode != AskCardMode.ANSWER ||
-        (screen != null && screen.total > 1 && only != null && !only.multiSelect)
+    val hideSubmit = (cardMode != AskCardMode.ANSWER && cardMode != AskCardMode.FREE_TEXT) ||
+        (screen != null && screen.total > 1 && only != null && !only.multiSelect && cardMode != AskCardMode.FREE_TEXT)
     val clickSubmits = screen != null && screen.total > 1 && only != null &&
         !only.multiSelect && cardMode == AskCardMode.ANSWER
     Column(
@@ -72,6 +72,13 @@ fun AskUserCardView(
             Text(q.header ?: q.question ?: "", color = colors.ink, style = RivetType.sm)
             val qMode = askCardMode(q, if (only != null) screen else null)
             when (qMode) {
+                AskCardMode.FREE_TEXT -> {
+                    RivetField(
+                        value = freeByQ[qi].orEmpty(),
+                        onValueChange = { if (enabled) freeByQ = freeByQ + (qi to it) },
+                        placeholder = stringResource(R.string.ask_user_free),
+                    )
+                }
                 AskCardMode.NO_OPTIONS -> {
                     Text(stringResource(R.string.ask_no_options), color = colors.inkDim, style = RivetType.mono11)
                 }
@@ -99,7 +106,7 @@ fun AskUserCardView(
                             text = opt.label,
                             onClick = {
                                 if (clickSubmits) {
-                                    onSubmit(mapOf(0 to listOf(opt.label)), free)
+                                    onSubmit(mapOf(0 to listOf(opt.label)), freeByQ)
                                 } else {
                                     picked = picked.toMutableMap().apply {
                                         val cur = this[qi].orEmpty()
@@ -131,20 +138,20 @@ fun AskUserCardView(
                         }
                         opt.description?.let { Text(it, color = colors.inkDim, style = RivetType.xs) }
                     }
+                    if (showsAskCustomAnswer(q, screen)) {
+                        RivetField(
+                            value = freeByQ[qi].orEmpty(),
+                            onValueChange = { if (enabled) freeByQ = freeByQ + (qi to it) },
+                            placeholder = stringResource(R.string.ask_user_free),
+                        )
+                    }
                 }
             }
         }
         if (!hideSubmit) {
-            if (!hideFreeText) {
-                RivetField(
-                    value = free,
-                    onValueChange = { if (enabled) free = it },
-                    placeholder = stringResource(R.string.ask_user_free),
-                )
-            }
             RivetButton(
                 text = stringResource(R.string.action_submit),
-                onClick = { onSubmit(picked, free) },
+                onClick = { onSubmit(picked, freeByQ) },
                 enabled = enabled,
                 modifier = Modifier.fillMaxWidth(),
             )

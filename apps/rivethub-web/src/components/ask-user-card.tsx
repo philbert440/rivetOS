@@ -4,6 +4,7 @@ import {
   askCardMode,
   askErrorMessage,
   composeAskAnswer,
+  structuredAskAnswers,
   type AskQuestion,
   type AskScreen,
 } from '../lib/ask-user.js'
@@ -42,6 +43,7 @@ export function AskUserCard(props: {
   // label selections per question index
   const [picked, setPicked] = useState<Record<number, string[]>>({})
   const [own, setOwn] = useState('')
+  const [questionText, setQuestionText] = useState<Record<number, string>>({})
   const [sending, setSending] = useState(false)
   // one answer in flight at a time — the async clear made double-click a
   // double-send (#578 audit); the sync clear used to make this free
@@ -72,19 +74,14 @@ export function AskUserCard(props: {
   const [error, setError] = useState<string | undefined>()
   const composed = composeAskAnswer(props.questions, picked, own)
 
-  const structured = (picks: Record<number, string[]>): AskStructuredAnswer[] => {
-    const free = own.trim()
-    return props.questions.map((_, i) => ({
-      question: i,
-      labels: picks[i] ?? [],
-      ...(i === 0 && free ? { other: free } : {}),
-    }))
-  }
+  const structured = (picks: Record<number, string[]>): AskStructuredAnswer[] =>
+    structuredAskAnswers(props.questions, picks, questionText)
 
   const submit = (extra?: Record<number, string[]>): void => {
     const picks = extra ?? picked
     if (inFlight.current) return
     if (props.onAnswerStructured) {
+      if (structured(picks).some((a) => !a.labels.length && !a.other)) return
       inFlight.current = true
       setSending(true)
       void props.onAnswerStructured(structured(picks)).then(
@@ -243,13 +240,31 @@ export function AskUserCard(props: {
                   </div>
                 </>
               )}
+              {props.onAnswerStructured && !hideFreeText && qMode === 'answer' && (
+                <input
+                  value={questionText[qi] ?? ''}
+                  onChange={(e) =>
+                    setQuestionText((current) => ({ ...current, [qi]: e.target.value }))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      submit()
+                    }
+                  }}
+                  disabled={props.disabled || sending}
+                  aria-label={`Type your own answer to question ${String(qi + 1)}`}
+                  placeholder="type your own answer…"
+                  className="mt-2 w-full rounded border border-line bg-panel-2/40 px-2 py-1 text-xs text-ink"
+                />
+              )}
             </div>
           )
         })}
       </div>
       {!hideSubmit && (
         <div className="flex items-center gap-2 border-t border-line/60 px-3 py-1.5">
-          {!hideFreeText && (
+          {!hideFreeText && !props.onAnswerStructured && (
             <input
               value={own}
               onChange={(e) => setOwn(e.target.value)}
@@ -267,7 +282,13 @@ export function AskUserCard(props: {
           )}
           <button
             type="button"
-            disabled={!composed || props.disabled || sending}
+            disabled={
+              (props.onAnswerStructured
+                ? structured(picked).some((a) => !a.labels.length && !a.other)
+                : !composed) ||
+              props.disabled ||
+              sending
+            }
             onClick={() => submit()}
             className="rounded border border-em bg-em-dim/20 px-3 py-1 text-xs text-em hover:bg-em-dim/40 disabled:opacity-40"
           >

@@ -14,6 +14,7 @@ sealed interface Screen {
         val model: String = "",
         val effort: String = "",
         val agentId: String = "",
+        val transport: String? = null,
     ) : Screen
     data object Gallery : Screen
     /** Native Memory wiki hub (drawer Memory row); the topic page pushes over it. */

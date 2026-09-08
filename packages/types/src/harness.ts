@@ -46,6 +46,7 @@ export interface EffortOption {
 
 /** One selectable model advertised on a harness capability sheet. */
 export interface HarnessModelOption {
+  inputModalities?: string[]
   id: string
   label: string
   default?: boolean
@@ -64,6 +65,10 @@ export type HarnessCapabilities = {
   approvals: boolean
   liveStream: boolean
   listSessions: boolean
+  /** Native per-turn model/effort settings (not CLI spawn flags). */
+  turnOptions?: boolean
+  /** Structured staged image inputs. */
+  imageAttachments?: boolean
   /**
    * Models this harness can run, from the harness's own source when it has
    * one (grok model cache, kimi config); static list otherwise.
@@ -211,6 +216,12 @@ export interface HarnessAskQuestion {
   question?: string
   header?: string
   multiSelect: boolean
+  /**
+   * Text-entry question (Codex `options: null`, or an explicit marker).
+   * Distinct from an empty option list on a herdr picker, which stays
+   * terminal-only. Typed text is also accepted when options are present.
+   */
+  freeText?: boolean
   options: HarnessAskOption[]
 }
 
@@ -270,6 +281,9 @@ export interface HarnessStatusFrame {
  *  `SessionSummary` is already taken there by the den chat-session summary in
  *  `gateway-api.ts`. */
 export type SessionSummary = {
+  effort?: string
+  /** Protocol-owned session; absent for legacy PTY sessions. */
+  transport?: 'protocol'
   sessionId: SessionId
   harnessId: HarnessId
   title?: string
@@ -340,6 +354,8 @@ export function prefixSystemPrompt(prompt: string, text: string): string {
 }
 
 export type UserTurn = {
+  model?: string
+  effort?: string
   text: string
   /** `pathOrUri` must be node-resolvable — remote clients stage files through
    *  the gateway upload endpoint, never client filesystem paths. */

@@ -79,3 +79,39 @@ rolling out this opt-in transport.
 Protocol reference: [Codex app-server](https://learn.chatgpt.com/docs/app-server).
 Regenerate local reference types with `codex app-server generate-ts --out
 /tmp/codex-protocol --experimental` when upgrading the CLI.
+
+## Chat controls
+
+Protocol-owned sessions advertise their transport on the session summary.
+The same driver may serve older PTY sessions; those retain their existing
+controls. Model choices and each model's effort levels come from `model/list`,
+with a one-minute cache. Web and Android send selections through `turn/start`;
+changing these controls does not restart the terminal.
+
+Web queues retain structured attachments. PNG, JPEG, WebP and GIF images
+staged by `/api/uploads` become native `localImage` inputs, after checking the
+selected model's image modality and the staging directory. Arbitrary paths,
+symlinks, remote URLs and expired uploads are rejected. Other web files retain
+the existing text path references. Android stages local images on the bound
+session's node before enqueueing; other Android attachment types remain
+unsupported and report an error.
+
+`item/tool/requestUserInput` questions use the existing prompt event and
+answer endpoint. Answers map positional UI questions back to native IDs;
+duplicate indexes, invalid choices and stale answers are rejected. Reconnects
+and external resolutions clear stale cards, and new subscribers receive
+pending questions and approvals. Secret-input questions are not supported.
+
+Native approval acceptance was exercised against a live server using a
+read-only sandbox and an untrusted approval policy: one approval was received
+and accepted, and the expected temporary-file marker was verified with no
+stream errors. This is a programmatic adapter acceptance test; actual browser
+and Android button acceptance still needs a device run. The Android CI workflow
+validates the full RivetHub Android unit suite, debug build, and release build
+with R8. The app lives in `apps/rivethub-android`; the retired `rivet-android`
+app does not receive these controls. Queued and failed native image turns restore
+their staged images with the caption, and catalog updates reconcile selections.
+
+A separate live image-input check read seven catalog models, submitted a staged
+image with an advertised model/effort pair, and received the expected reply and
+image-bearing transcript without stream errors.

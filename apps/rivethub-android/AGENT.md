@@ -170,7 +170,19 @@ a later transcript with our assistant ends the turn and drops the queued retry. 
 carry the session id and are discarded if the open session changed mid-fetch. `sendTurn`
 `redirectedTo`/`sessionId` adopts only when `sessionMatchesNative`. Same-id adopt (redirectedTo
 echo) is a no-op. Attachments are `[attached: uri]` lines after streaming
-`POST /api/uploads` on the session's node (1 GiB cap, den-server). Canonical ids contain `:`; path
+`POST /api/uploads` on the session's node (1 GiB cap, den-server), except
+protocol-owned Codex sessions (`transport: protocol` + `imageAttachments`):
+those send staged PNG/JPEG/WebP/GIF as `UserTurn.attachments` with the
+catalog model/effort on the turn body. Native Model/Effort sit above the
+composer (web `chat.tsx` nativeModels row) and hide the spawn-flag pickers.
+A failed attachment chip blocks send on **every** session, PTY included
+(parity with web `composer.tsx`); remove the chip to retry. Gallery pick
+and share (`ACTION_SEND` / `ACTION_SEND_MULTIPLE` `image/*`) land on the
+exported `singleTask` activity via `onNewIntent` → `pendingShare`. Bound
+prompts keep option buttons when present; `freeText` adds a per-question
+text field, and a missing/`null` options list is text-entry-only. Answers
+map index → labels/`other`. Approvals stay bound to
+`requestId`. Canonical ids contain `:`; path
 params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 `data/HermesReasoning.kt`.
 

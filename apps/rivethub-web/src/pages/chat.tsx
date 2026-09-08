@@ -1,3 +1,4 @@
+import { withAttachmentText } from '../lib/attachments.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
  * rivet-android: conversation drawer on the left, transcript + composer on
@@ -171,7 +172,11 @@ const pumpStore: OutboundPumpStore = {
     }),
 }
 
-type InjectSink = (text: string, interrupt: boolean) => Promise<void>
+type InjectSink = (
+  text: string,
+  interrupt: boolean,
+  attachments?: import('@rivetos/types').UserTurn['attachments'],
+) => Promise<void>
 
 /**
  * One outbound pump per conversation, for the app lifetime. ActiveSession
@@ -203,7 +208,7 @@ function outboundPumpFor(sessionId: string): {
       pump: createOutboundPump({
         sessionId,
         store: pumpStore,
-        inject: (text, interrupt) => sink.current(text, interrupt),
+        inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
         isTurnInFlight,
       }),
     }
@@ -1086,9 +1091,8 @@ function ActiveSession(props: {
     retry: 1,
   })
   const remoteRegistry = useQuery({
-    queryKey: ['harnesses', sessionBase, epochForNode],
+    queryKey: isRemote ? ['harnesses', sessionBase, epochForNode] : ['harnesses', sessionBase],
     queryFn: async ({ signal }) => (await gatewayFor(sessionBase)).harnesses(signal),
-    enabled: isRemote,
     staleTime: 300_000,
   })
   // A definitive 404 means the thread's session is gone on its node — except
@@ -1250,6 +1254,23 @@ function ActiveSession(props: {
   // the pre-canonical key as a read fallback; writes land on the new key.
   const settingsKey = storageKey(sessionBase, props.sessionId)
   const settings = useChatSettings((s) => persisted(s.byKey, sessionBase, props.sessionId))
+  const nativeHarnessId = item?.harnessId ?? settings?.harnessId
+  const nativeSheet = remoteRegistry.data?.harnesses.find(
+    (h) => h.harnessId === nativeHarnessId,
+  )?.capabilities
+  const nativeModels =
+    nativeSheet?.turnOptions && item?.transport === 'protocol' ? (nativeSheet.models ?? []) : []
+  const nativeModel =
+    nativeModels.find((m) => m.id === settings?.model) ??
+    nativeModels.find((m) => m.id === item?.model) ??
+    nativeModels.find((m) => m.default) ??
+    nativeModels[0]
+  const nativeEfforts = nativeModel?.efforts ?? []
+  const nativeEffort =
+    nativeEfforts.find((e) => e.id === settings?.harnessEffort) ??
+    nativeEfforts.find((e) => e.id === item?.effort) ??
+    nativeEfforts.find((e) => e.default) ??
+    nativeEfforts[0]
   const setSetting = useChatSettings((s) => s.set)
 
   // ---- Transcript binding ---------------------------------------------------
@@ -1552,12 +1573,52 @@ function ActiveSession(props: {
     return prompt || undefined
   }
 
-  const injectOne = async (text: string, interrupt = false): Promise<void> => {
+  const injectOne = async (
+    text: string,
+    interrupt = false,
+    attachments?: import('@rivetos/types').UserTurn['attachments'],
+  ): Promise<void> => {
     if (remoteDead) {
       throw new Error(`this thread's session no longer exists on ${urlLabel(sessionBase)}`)
     }
     const gw = await sessionGateway()
     const prompt = peekSystemPrompt()
+    const referenceText = withAttachmentText(
+      text,
+      (attachments ?? []).map((a, i) => ({
+        id: String(i),
+        name: a.name ?? 'attachment',
+        size: 0,
+        mime: a.mime,
+        status: 'ready',
+        uri: a.pathOrUri,
+      })),
+    )
+    const sendProtocol = async (sid: string): Promise<void> => {
+      const harnessId = sid.split(':')[0] as import('@rivetos/types').HarnessId
+      const capabilities =
+        remoteRegistry.data?.harnesses.find((h) => h.harnessId === harnessId)?.capabilities ??
+        (await gw.harnessCapabilities(harnessId)).capabilities
+      const protocolOwned =
+        protocolSessionRef.current === sid ||
+        (canonicalId === sid && item?.transport === 'protocol') ||
+        (await gw.getHarnessSession(sid)).transport === 'protocol'
+      const nativeAttachments =
+        protocolOwned &&
+        capabilities.imageAttachments &&
+        attachments?.every((a) => a.mime.startsWith('image/'))
+      await gw.sendHarnessTurn(sid, {
+        text: nativeAttachments ? text : referenceText,
+        ...(nativeAttachments && attachments?.length ? { attachments } : {}),
+        ...(capabilities.turnOptions && protocolOwned
+          ? {
+              ...(nativeModel ? { model: nativeModel.id } : {}),
+              ...(nativeEffort ? { effort: nativeEffort.id } : {}),
+            }
+          : {}),
+        ...(prompt ? { systemPrompt: prompt } : {}),
+      })
+    }
     if (canonicalId) {
       // Control plane: the driver owns spawn-or-resume, so there is no PTY to
       // ensure here. "Inject now" is interrupt-then-send, and only when the
@@ -1569,10 +1630,7 @@ function ActiveSession(props: {
         await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
       }
       try {
-        await gw.sendHarnessTurn(canonicalId, {
-          text,
-          ...(prompt ? { systemPrompt: prompt } : {}),
-        })
+        await sendProtocol(canonicalId)
         if (prompt) markSystemPromptSent(props.sessionId)
       } catch (err) {
         clearSystemPromptSent(props.sessionId)
@@ -1580,13 +1638,13 @@ function ActiveSession(props: {
       }
       return
     }
-    const injectText = prompt ? prefixSystemPrompt(prompt, text) : text
+    const injectText = prompt ? prefixSystemPrompt(prompt, referenceText) : referenceText
     try {
       await ensurePty()
       if (protocolSessionRef.current) {
         const sid = protocolSessionRef.current
         if (interrupt) await gw.interruptHarnessSession(sid)
-        await gw.sendHarnessTurn(sid, { text, ...(prompt ? { systemPrompt: prompt } : {}) })
+        await sendProtocol(sid)
         if (prompt) markSystemPromptSent(props.sessionId)
         return
       }
@@ -1629,8 +1687,11 @@ function ActiveSession(props: {
       .catch(() => undefined)
   }, [liveBusy, outbound.length, props.sessionId])
 
-  const sendToHarness = (body: string): Promise<void> => {
-    enqueueOutbound(props.sessionId, body)
+  const sendToHarness = (
+    body: string,
+    attachments?: import('@rivetos/types').UserTurn['attachments'],
+  ): Promise<void> => {
+    enqueueOutbound(props.sessionId, body, attachments)
     // Fire-and-forget pump — composer unlocks immediately so more turns queue.
     void pumpOutbound().catch(() => undefined)
     return Promise.resolve()
@@ -1848,7 +1909,48 @@ function ActiveSession(props: {
               <HarnessApprovalCard pending={pendingApprovals} onDecide={onDecideApproval} />
             </div>
           )}
+          {nativeModels.length > 0 && (
+            <div className="flex gap-3 px-4 pt-2 text-xs text-ink-dim">
+              <label>
+                Model{' '}
+                <select
+                  aria-label="Codex model"
+                  value={nativeModel?.id ?? ''}
+                  className="rounded border border-line bg-panel px-2 py-1 text-ink"
+                  onChange={(event) =>
+                    setSetting(settingsKey, { model: event.target.value, harnessEffort: undefined })
+                  }
+                >
+                  {nativeModels.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {nativeEfforts.length > 0 && (
+                <label>
+                  Effort{' '}
+                  <select
+                    aria-label="Codex reasoning effort"
+                    value={nativeEffort?.id ?? ''}
+                    className="rounded border border-line bg-panel px-2 py-1 text-ink"
+                    onChange={(event) =>
+                      setSetting(settingsKey, { harnessEffort: event.target.value })
+                    }
+                  >
+                    {nativeEfforts.map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
           <Composer
+            nativeControls={nativeModels.length > 0}
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}

@@ -81,6 +81,26 @@ class ChatItemsTest {
         assertEquals("fable", items[0].model)
     }
 
+    @Test fun `copies summary transport and effort onto the chat item`() {
+        val items = chatItems(
+            mapOf(
+                "codex" to Result.success(
+                    listOf(
+                        summary(uuidA, harnessId = "codex").copy(
+                            model = "gpt-5",
+                            effort = "high",
+                            transport = "protocol",
+                        ),
+                    ),
+                ),
+            ),
+            emptyList(),
+        )
+        assertEquals("protocol", items[0].transport)
+        assertEquals("high", items[0].effort)
+        assertEquals("gpt-5", items[0].model)
+    }
+
     @Test fun `legacy-only harnesses stay bare`() {
         val items = chatItems(
             mapOf("claude-code" to Result.success(listOf(summary(uuidA)))),

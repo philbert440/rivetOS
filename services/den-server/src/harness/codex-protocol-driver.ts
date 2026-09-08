@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
+import { realpath, lstat } from 'node:fs/promises'
 import {
   HarnessError,
   formatSessionId,
@@ -12,6 +13,8 @@ import {
   type StartSessionOpts,
   type UserTurn,
   type HarnessCapabilities,
+  type HarnessPromptEvent,
+  type HarnessModelOption,
 } from '@rivetos/types'
 import { CODEX_NATIVE_RE, CodexDriver, type CodexDriverDeps } from './codex-driver.js'
 import { record, type CodexFrame, type CodexRpc } from './codex-rpc.js'
@@ -22,11 +25,18 @@ interface Binding {
   cwd: string
   createdAt: string
   model?: string
+  effort?: string
   updatedAt?: string
   systemPromptApplied?: boolean
   fresh?: boolean
 }
+interface PendingQuestion {
+  rpcId: string | number
+  ids: string[]
+  event: HarnessPromptEvent
+}
 interface Runtime {
+  prompts: Map<string, PendingQuestion>
   generation?: number
   turnId?: string
   sending?: boolean
@@ -44,6 +54,7 @@ export interface CodexProtocolDeps extends CodexDriverDeps {
   rpc: CodexRpc
   endpoint: string
   bindingsFile: string
+  uploadsDir?: string
   /** Node-owned defaults; never supplied by a remote chat request. */
   threadDefaults?: () => Record<string, unknown>
 }
@@ -64,6 +75,8 @@ export class CodexProtocolDriver extends CodexDriver {
   override get capabilities(): HarnessCapabilities {
     return this.protocolCaps ?? super.capabilities
   }
+  private catalogAt = 0
+  private catalogLoading?: Promise<void>
   private readonly rpcOff: () => void
 
   constructor(private readonly protocol: CodexProtocolDeps) {
@@ -98,11 +111,67 @@ export class CodexProtocolDriver extends CodexDriver {
       interrupt: true,
       liveStream: true,
       approvals: true,
+      turnOptions: true,
+      models: [],
+      efforts: [],
+      imageAttachments: Boolean(protocol.uploadsDir),
     }
   }
 
-  override verifyCapabilities() {
-    return Promise.resolve(this.capabilities)
+  override async verifyCapabilities() {
+    await this.loadModels().catch(() => undefined)
+    return this.capabilities
+  }
+
+  private async loadModels(): Promise<void> {
+    if (this.catalogAt && Date.now() - this.catalogAt < 60_000) return
+    this.catalogLoading ??= (async () => {
+      const models: HarnessModelOption[] = []
+      let cursor: string | undefined
+      const seen = new Set<string>()
+      do {
+        if (seen.size >= 100) throw new Error('Codex model catalog exceeded 100 pages')
+        const result = await this.protocol.rpc.request('model/list', {
+          ...(cursor ? { cursor } : {}),
+          includeHidden: false,
+        })
+        if (!Array.isArray(result.data)) throw new Error('Codex returned an invalid model catalog')
+        for (const raw of result.data) {
+          const model = record(raw)
+          if (typeof model.model !== 'string' || model.hidden === true) continue
+          models.push({
+            id: model.model,
+            label: stringValue(model.displayName) || model.model,
+            default: model.isDefault === true,
+            inputModalities: Array.isArray(model.inputModalities)
+              ? model.inputModalities.filter((m): m is string => typeof m === 'string')
+              : [],
+            efforts: (Array.isArray(model.supportedReasoningEfforts)
+              ? model.supportedReasoningEfforts
+              : []
+            )
+              .map(record)
+              .filter((e) => typeof e.reasoningEffort === 'string')
+              .map((e) => ({
+                id: String(e.reasoningEffort),
+                label: String(e.reasoningEffort),
+                default: e.reasoningEffort === model.defaultReasoningEffort,
+              })),
+          })
+        }
+        cursor = typeof result.nextCursor === 'string' ? result.nextCursor : undefined
+        if (cursor && seen.has(cursor)) throw new Error('Codex model catalog repeated a cursor')
+        if (cursor) seen.add(cursor)
+      } while (cursor)
+      this.capabilities.models = models
+      this.capabilities.efforts = []
+      this.catalogAt = Date.now()
+    })().finally(() => {
+      this.catalogLoading = undefined
+    })
+    await this.catalogLoading.catch((error: unknown) => {
+      if (!this.capabilities.models?.length) throw error
+    })
   }
 
   manages(id: string): boolean {
@@ -123,7 +192,7 @@ export class CodexProtocolDriver extends CodexDriver {
   private state(id: string): Runtime {
     let state = this.runtime.get(id)
     if (!state) {
-      state = { rev: 0, approvals: new Map() }
+      state = { rev: 0, approvals: new Map(), prompts: new Map() }
       this.runtime.set(id, state)
     }
     return state
@@ -143,12 +212,14 @@ export class CodexProtocolDriver extends CodexDriver {
     const state = this.state(binding.id)
     return {
       sessionId: formatSessionId('codex', binding.id),
+      transport: 'protocol',
       harnessId: 'codex',
       cwd: binding.cwd,
       createdAt: binding.createdAt,
       updatedAt: binding.updatedAt ?? binding.createdAt,
       status: state.turnId || state.sending ? 'active' : 'idle',
       model: binding.model,
+      effort: binding.effort,
     }
   }
 
@@ -209,6 +280,7 @@ export class CodexProtocolDriver extends CodexDriver {
         createdAt: new Date().toISOString(),
         fresh: true,
         ...(typeof result.model === 'string' ? { model: result.model } : {}),
+        ...(typeof result.reasoningEffort === 'string' ? { effort: result.reasoningEffort } : {}),
       }
       this.bindings.set(id, binding)
       this.byThread.set(binding.threadId, binding)
@@ -242,6 +314,8 @@ export class CodexProtocolDriver extends CodexDriver {
           threadId: binding.threadId,
         })
         .then((result) => {
+          if (typeof result.model === 'string') binding.model = result.model
+          if (typeof result.reasoningEffort === 'string') binding.effort = result.reasoningEffort
           this.state(binding.id).generation = this.protocol.rpc.generation
           this.observeThread(binding.id, record(result.thread))
           const state = this.state(binding.id)
@@ -286,10 +360,60 @@ export class CodexProtocolDriver extends CodexDriver {
     return [...this.bindings.values()].map((b) => this.summary(b)).concat(legacy)
   }
 
-  protected turnParams(turn: UserTurn): Promise<Record<string, unknown>> {
-    if (turn.attachments?.length)
-      throw new HarnessError('capability_unsupported', 'Attachments are not supported')
-    return Promise.resolve({ input: [{ type: 'text', text: turn.text }] })
+  protected async turnParams(
+    turn: UserTurn,
+    currentModel?: string,
+  ): Promise<Record<string, unknown>> {
+    const params: Record<string, unknown> = {}
+    const input: Array<Record<string, unknown>> = []
+    if (turn.text) input.push({ type: 'text', text: turn.text })
+    if (turn.model || turn.effort || turn.attachments?.length) {
+      await this.loadModels()
+      const model = turn.model && turn.model !== 'default' ? turn.model : currentModel
+      const selected =
+        this.capabilities.models?.find((m) => m.id === model) ??
+        (!model ? this.capabilities.models?.find((m) => m.default) : undefined)
+      if (turn.model && turn.model !== 'default' && !selected)
+        throw new HarnessError('bad_request', 'Model is not in the Codex catalog')
+      if (turn.model && turn.model !== 'default') params.model = turn.model
+      if (turn.effort) {
+        if (!selected?.efforts?.some((e) => e.id === turn.effort))
+          throw new HarnessError(
+            'bad_request',
+            'Effort is not supported by the selected Codex model',
+          )
+        params.effort = turn.effort
+      }
+      if (turn.attachments?.length && !selected?.inputModalities?.includes('image'))
+        throw new HarnessError(
+          'capability_unsupported',
+          'Selected Codex model does not support images',
+        )
+    }
+    for (const attachment of turn.attachments ?? []) {
+      if (
+        !this.protocol.uploadsDir ||
+        !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(
+          attachment.mime === 'image/jpg' ? 'image/jpeg' : attachment.mime,
+        )
+      )
+        throw new HarnessError(
+          'capability_unsupported',
+          'Codex structured attachments require a staged PNG, JPEG, WebP or GIF image',
+        )
+      const root = await realpath(this.protocol.uploadsDir)
+      const path = resolve(attachment.pathOrUri)
+      const stat = await lstat(path).catch(() => undefined)
+      const canonical = await realpath(path).catch(() => undefined)
+      if (!stat?.isFile() || canonical !== join(root, basename(path)))
+        throw new HarnessError(
+          'bad_request',
+          'Attachment must be a regular file staged on this node',
+        )
+      input.push({ type: 'localImage', path: canonical })
+    }
+    if (!input.length) throw new HarnessError('bad_request', 'A turn requires text or an image')
+    return { ...params, input }
   }
 
   override async sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
@@ -303,7 +427,7 @@ export class CodexProtocolDriver extends CodexDriver {
     try {
       await this.ensureLoaded(b)
       if (state.turnId) throw new HarnessError('turn_in_flight', 'A Codex turn is already running')
-      const params = await this.turnParams(turn)
+      const params = await this.turnParams(turn, b.model)
       const includePrompt = Boolean(turn.systemPrompt && !b.systemPromptApplied)
       if (includePrompt) {
         // Loaded threads can silently ignore resume overrides. Deliver context
@@ -313,14 +437,20 @@ export class CodexProtocolDriver extends CodexDriver {
           ...(Array.isArray(params.input) ? (params.input as unknown[]) : []),
         ]
       }
+      const wasFresh = b.fresh
       const result = await this.protocol.rpc.request('turn/start', {
         threadId: b.threadId,
         ...params,
       })
+      const changed =
+        (typeof params.model === 'string' && params.model !== b.model) ||
+        (typeof params.effort === 'string' && params.effort !== b.effort)
+      if (typeof params.model === 'string') b.model = params.model
+      if (typeof params.effort === 'string') b.effort = params.effort
       this.fresh.delete(id)
       b.fresh = false
       if (includePrompt) b.systemPromptApplied = true
-      this.save()
+      if (changed || wasFresh || includePrompt) this.save()
       const remoteTurn = record(result.turn)
       if (
         typeof remoteTurn.id === 'string' &&
@@ -428,6 +558,7 @@ export class CodexProtocolDriver extends CodexDriver {
     if (state.outageReported) sink(state.outageReported)
     this.syncTranscript(sessionId)
     for (const pending of state.approvals.values()) sink(pending.event)
+    for (const pending of state.prompts.values()) sink(pending.event)
     return () => {
       set.delete(sink)
       if (!set.size) this.sinks.delete(id)
@@ -441,7 +572,11 @@ export class CodexProtocolDriver extends CodexDriver {
       type: 'status',
       sessionId: this.sid(id),
       status:
-        state.approvals.size || state.recoveryBlocked ? 'blocked' : active ? 'working' : 'idle',
+        state.approvals.size || state.prompts.size || state.recoveryBlocked
+          ? 'blocked'
+          : active
+            ? 'working'
+            : 'idle',
       since: Date.now(),
       source: 'protocol',
     })
@@ -449,12 +584,54 @@ export class CodexProtocolDriver extends CodexDriver {
       type: 'session-updated',
       sessionId: this.sid(id),
       status: active ? 'active' : 'idle',
-      ...(state.approvals.size || state.recoveryBlocked ? { blocked: true } : {}),
+      ...(state.approvals.size || state.prompts.size || state.recoveryBlocked
+        ? { blocked: true }
+        : {}),
     })
   }
 
   protected handleRequest(id: string, frame: CodexFrame): void {
     if (frame.id === undefined) return
+    if (frame.method === 'item/tool/requestUserInput') {
+      const questions = (Array.isArray(frame.params.questions) ? frame.params.questions : []).map(
+        record,
+      )
+      if (
+        !questions.length ||
+        questions.some((q) => typeof q.id !== 'string' || q.isSecret === true)
+      ) {
+        this.protocol.rpc.reject(
+          frame.id,
+          'Unsupported or secret question is not supported by this client',
+        )
+        return
+      }
+      const promptId = `${typeof frame.id}:${String(frame.id)}`
+      const event: HarnessPromptEvent = {
+        type: 'prompt',
+        sessionId: this.sid(id),
+        promptId,
+        kind: 'ask-user',
+        toolName: 'request_user_input',
+        questions: questions.map((q) => ({
+          question: stringValue(q.question),
+          header: stringValue(q.header),
+          multiSelect: false,
+          freeText: true,
+          options: (Array.isArray(q.options) ? q.options : [])
+            .map(record)
+            .map((o) => ({ label: stringValue(o.label), description: stringValue(o.description) })),
+        })),
+      }
+      this.state(id).prompts.set(promptId, {
+        rpcId: frame.id,
+        ids: questions.map((q) => String(q.id)),
+        event,
+      })
+      this.publish(id, event)
+      this.publishStatus(id)
+      return
+    }
     if (
       frame.method === 'item/commandExecution/requestApproval' ||
       frame.method === 'item/fileChange/requestApproval'
@@ -604,6 +781,7 @@ export class CodexProtocolDriver extends CodexDriver {
       }
       case 'serverRequest/resolved': {
         const key = `${typeof p.requestId}:${String(p.requestId)}`
+        this.clearPrompt(id, key)
         if (state.approvals.delete(key))
           this.publish(id, {
             type: 'approval-resolved',
@@ -617,7 +795,44 @@ export class CodexProtocolDriver extends CodexDriver {
     }
   }
 
+  private clearPrompt(id: string, promptId: string): void {
+    const pending = this.state(id).prompts.get(promptId)
+    if (!pending) return
+    this.state(id).prompts.delete(promptId)
+    this.publish(id, { ...pending.event, resolved: { at: Date.now() } })
+  }
+
+  override async answerPrompt(
+    sessionId: SessionId,
+    promptId: string,
+    answers: Array<{ question: number; labels: string[]; other?: string }>,
+  ): Promise<void> {
+    const id = this.native(sessionId)
+    if (!this.manages(sessionId)) return super.answerPrompt(sessionId, promptId, answers)
+    const pending = this.state(id).prompts.get(promptId)
+    if (!pending) throw new HarnessError('unknown_prompt', 'This question is no longer pending')
+    const out = Object.create(null) as Record<string, { answers: string[] }>
+    if (answers.length !== pending.ids.length)
+      throw new HarnessError('bad_request', 'Answer each question once')
+    for (const answer of answers) {
+      const key = pending.ids[answer.question]
+      if (!Number.isInteger(answer.question) || !key || Object.hasOwn(out, key))
+        throw new HarnessError('bad_request', 'Invalid question index')
+      const options = pending.event.questions[answer.question].options
+      if (answer.labels.some((label) => !options.some((o) => o.label === label)))
+        throw new HarnessError('bad_request', 'Choose offered answers or enter text')
+      const values = [...answer.labels, ...(answer.other?.trim() ? [answer.other.trim()] : [])]
+      if (values.length < 1)
+        throw new HarnessError('bad_request', 'Each question needs at least one answer')
+      out[key] = { answers: values }
+    }
+    this.protocol.rpc.respond(pending.rpcId, { answers: out })
+    this.clearPrompt(id, promptId)
+    this.publishStatus(id)
+  }
+
   private clearApprovals(id: string): void {
+    for (const promptId of this.state(id).prompts.keys()) this.clearPrompt(id, promptId)
     for (const requestId of this.state(id).approvals.keys()) {
       this.publish(id, {
         type: 'approval-resolved',
@@ -649,8 +864,14 @@ export function codexThreadTurns(thread: Record<string, unknown>): HarnessTransc
       if (item.type === 'userMessage') {
         const text = (Array.isArray(item.content) ? item.content : [])
           .map(record)
-          .filter((part) => part.type === 'text')
-          .map((part) => String(part.text))
+          .map((part) =>
+            part.type === 'text'
+              ? String(part.text)
+              : part.type === 'image' || part.type === 'localImage'
+                ? '[Image]'
+                : '',
+          )
+          .filter(Boolean)
           .join('\n')
         if (text) result.push({ role: 'user', text })
       } else if (item.type === 'agentMessage') {

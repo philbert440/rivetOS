@@ -91,6 +91,23 @@ describe('createOutboundPump', () => {
     expect(s.calls).toContain('clearLive')
   })
 
+  it('keeps staged image inputs attached to their queued turn', async () => {
+    const s = fakeStore()
+    const attachments = [{ mime: 'image/png', pathOrUri: '/node/uploads/image.png' }]
+    s.items = [{ ...queued('caption'), attachments }]
+    const inject = vi.fn(() => Promise.resolve())
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject,
+      isTurnInFlight: () => false,
+    })
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS + 1_000)
+    await pending
+    expect(inject).toHaveBeenCalledWith('caption', false, attachments)
+  })
+
   it('waits out a busy live turn instead of double-injecting', async () => {
     const s = fakeStore()
     s.items = [queued('a')]

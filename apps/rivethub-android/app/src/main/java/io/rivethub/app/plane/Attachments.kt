@@ -7,7 +7,70 @@ data class PendingAttachment(
     val name: String,
     val status: AttachmentStatus,
     val uri: String? = null,
+    val mime: String? = null,
 )
+
+data class StagedTurnAttachment(
+    val mime: String,
+    val pathOrUri: String,
+    val name: String? = null,
+)
+
+fun readyAttachments(atts: List<PendingAttachment>): List<StagedTurnAttachment> =
+    atts.mapNotNull { a ->
+        val uri = a.uri
+        if (a.status != AttachmentStatus.READY || uri.isNullOrBlank()) null
+        else StagedTurnAttachment(mime = a.mime ?: "application/octet-stream", pathOrUri = uri, name = a.name)
+    }
+
+/** Rebuild READY chips from a queued turn so cancel / inject-fail does not drop images. */
+fun restoreReadyChips(staged: List<StagedTurnAttachment>): List<PendingAttachment> =
+    staged.map { a ->
+        PendingAttachment(
+            id = a.pathOrUri,
+            name = a.name?.takeIf { it.isNotBlank() }
+                ?: a.pathOrUri.substringAfterLast('/').ifBlank { "image" },
+            status = AttachmentStatus.READY,
+            uri = a.pathOrUri,
+            mime = a.mime,
+        )
+    }
+
+data class RestoredComposer(
+    val text: String,
+    val attachments: List<PendingAttachment>,
+)
+
+/** Prepend the queued caption and chips in front of whatever the composer already holds. */
+fun restoreQueuedComposer(
+    composer: String,
+    composerAttachments: List<PendingAttachment>,
+    itemText: String,
+    itemAttachments: List<StagedTurnAttachment>,
+): RestoredComposer {
+    val text = when {
+        itemText.isBlank() -> composer
+        composer.isBlank() -> itemText
+        else -> "$itemText\n$composer"
+    }
+    return RestoredComposer(
+        text = text,
+        attachments = restoreReadyChips(itemAttachments) + composerAttachments,
+    )
+}
+
+fun anyFailed(atts: List<PendingAttachment>): Boolean =
+    atts.any { it.status == AttachmentStatus.FAILED }
+
+/** Guess an image mime from a file name when the provider omitted one. */
+fun mimeFromName(name: String, fallback: String? = null): String? =
+    when (name.substringAfterLast('.', "").lowercase()) {
+        "jpg", "jpeg" -> "image/jpeg"
+        "png" -> "image/png"
+        "webp" -> "image/webp"
+        "gif" -> "image/gif"
+        else -> fallback
+    }
 
 fun anyUploading(atts: List<PendingAttachment>): Boolean =
     atts.any { it.status == AttachmentStatus.UPLOADING }

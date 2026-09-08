@@ -66,6 +66,7 @@ import io.rivethub.app.ui.components.Composer
 import io.rivethub.app.ui.components.QueuedStrip
 import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.Lucide
+import io.rivethub.app.ui.components.NativeTurnControls
 import io.rivethub.app.ui.components.ModePager
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
@@ -96,6 +97,8 @@ fun HarnessChatScreen(
     vm: HarnessChatViewModel,
     onOpenDrawer: () -> Unit,
     onOpenHistory: () -> Unit,
+    shareUris: List<android.net.Uri> = emptyList(),
+    onShareConsumed: () -> Unit = {},
 ) {
     val st by vm.state.collectAsState()
     val ctx = LocalContext.current
@@ -113,8 +116,7 @@ fun HarnessChatScreen(
         copyText(ctx, clip, sensitive = true)
         vm.consumeTermClipboard()
     }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
+    fun stageFromUri(uri: android.net.Uri) {
         var name = uri.lastPathSegment ?: "file"
         var mime: String? = ctx.contentResolver.getType(uri)
         var size = -1L
@@ -133,6 +135,15 @@ fun HarnessChatScreen(
             }
         }
         vm.stageUri(uri, name, mime, size)
+    }
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        stageFromUri(uri)
+    }
+    LaunchedEffect(shareUris) {
+        if (shareUris.isEmpty()) return@LaunchedEffect
+        shareUris.forEach { stageFromUri(it) }
+        onShareConsumed()
     }
 
     val composerEnabled = composerIsEnabled(st.ws, st.error)
@@ -161,8 +172,13 @@ fun HarnessChatScreen(
     val stripError = when (st.errorCode) {
         HarnessChatViewModel.ERR_UPLOADING -> stringResource(R.string.error_upload_in_progress)
         HarnessChatViewModel.ERR_TOO_LARGE -> stringResource(R.string.error_upload_too_large)
+        HarnessChatViewModel.ERR_FAILED_ATTACHMENT -> stringResource(R.string.error_failed_attachment)
+        HarnessChatViewModel.ERR_IMAGE_ONLY -> stringResource(R.string.error_image_only)
+        HarnessChatViewModel.ERR_IMAGE_UNSUPPORTED -> stringResource(R.string.error_image_unsupported)
         else -> st.error
     }
+    val nativeModels = vm.nativeModels()
+    val nativeImages = vm.nativeImagesEnabled()
     val reconnecting = stringResource(R.string.ws_reconnecting_ellipsis)
 
     Column(
@@ -245,6 +261,17 @@ fun HarnessChatScreen(
                 onInject = vm::injectQueued,
                 onCancel = vm::cancelQueued,
             )
+            if (nativeModels.isNotEmpty()) {
+                NativeTurnControls(
+                    models = nativeModels.map { SelectOption(it.first, it.second) },
+                    model = st.model,
+                    onModel = vm::setModel,
+                    efforts = vm.effortOptions().map { SelectOption(it.first, it.second) },
+                    effort = st.effort,
+                    onEffort = vm::setEffort,
+                    enabled = composerEnabled,
+                )
+            }
             Composer(
                 value = st.composer,
                 onValueChange = vm::setComposer,
@@ -257,7 +284,7 @@ fun HarnessChatScreen(
                 sending = st.inFlight,
                 sendEnabled = sendEnabled,
                 canStop = st.gate.canInterrupt,
-                onAttach = { pick.launch(arrayOf("*/*")) },
+                onAttach = { pick.launch(if (nativeImages) arrayOf("image/*") else arrayOf("*/*")) },
                 onSend = vm::send,
                 onStop = vm::stop,
                 enabled = composerEnabled,
@@ -290,31 +317,33 @@ fun HarnessChatScreen(
                         onChange = {},
                         title = stringResource(R.string.node_picker),
                     )
-                    val models = st.sheet?.models.orEmpty().map { SelectOption(it.id, it.label) }
-                    if (models.isNotEmpty()) {
-                        val modelLabel = models.find { it.value == st.model }?.label ?: st.model
-                        ComposerPicker(
-                            icon = R.drawable.lucide_bot,
-                            label = modelLabel.ifBlank { stringResource(R.string.model_picker) },
-                            compact = compact,
-                            options = models,
-                            value = st.model,
-                            onChange = vm::setModel,
-                            title = stringResource(R.string.model_picker),
-                        )
-                    }
-                    val efforts = vm.effortOptions().map { SelectOption(it.first, it.second) }
-                    if (efforts.isNotEmpty()) {
-                        val effortLabel = efforts.find { it.value == st.effort }?.label ?: st.effort
-                        ComposerPicker(
-                            icon = R.drawable.lucide_lightbulb,
-                            label = effortLabel.ifBlank { stringResource(R.string.effort_picker) },
-                            compact = compact,
-                            options = efforts,
-                            value = st.effort,
-                            onChange = vm::setEffort,
-                            title = stringResource(R.string.effort_picker),
-                        )
+                    if (nativeModels.isEmpty()) {
+                        val models = st.sheet?.models.orEmpty().map { SelectOption(it.id, it.label) }
+                        if (models.isNotEmpty()) {
+                            val modelLabel = models.find { it.value == st.model }?.label ?: st.model
+                            ComposerPicker(
+                                icon = R.drawable.lucide_bot,
+                                label = modelLabel.ifBlank { stringResource(R.string.model_picker) },
+                                compact = compact,
+                                options = models,
+                                value = st.model,
+                                onChange = vm::setModel,
+                                title = stringResource(R.string.model_picker),
+                            )
+                        }
+                        val efforts = vm.effortOptions().map { SelectOption(it.first, it.second) }
+                        if (efforts.isNotEmpty()) {
+                            val effortLabel = efforts.find { it.value == st.effort }?.label ?: st.effort
+                            ComposerPicker(
+                                icon = R.drawable.lucide_lightbulb,
+                                label = effortLabel.ifBlank { stringResource(R.string.effort_picker) },
+                                compact = compact,
+                                options = efforts,
+                                value = st.effort,
+                                onChange = vm::setEffort,
+                                title = stringResource(R.string.effort_picker),
+                            )
+                        }
                     }
                 },
             )

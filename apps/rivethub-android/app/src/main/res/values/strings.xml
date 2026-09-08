@@ -184,6 +184,11 @@
     <string name="action_submit">Submit</string>
     <string name="error_upload_in_progress">Wait for the attachment to finish uploading.</string>
     <string name="error_upload_too_large">That file is larger than the 1 GiB upload limit.</string>
+    <string name="error_failed_attachment">Remove or retry the failed attachment before sending.</string>
+    <string name="error_image_only">This session only accepts PNG, JPEG, WebP, or GIF images.</string>
+    <string name="error_image_unsupported">The selected model does not accept image inputs.</string>
+    <string name="harness_native_model">Model</string>
+    <string name="harness_native_effort">Effort</string>
     <string name="ws_disconnected">disconnected</string>
     <string name="jump_latest">latest</string>
     <string name="ask_user_free">Or type a reply</string>

@@ -10,9 +10,42 @@ data class HarnessSheet(
     val efforts: List<EffortOption>? = null,
     val modelFlag: String? = null,
     val effortFlag: String? = null,
+    val turnOptions: Boolean = false,
+    val imageAttachments: Boolean = false,
 )
 
-fun HarnessCapabilities.toSheet(): HarnessSheet = HarnessSheet(models, efforts, modelFlag, effortFlag)
+fun HarnessCapabilities.toSheet(): HarnessSheet =
+    HarnessSheet(models, efforts, modelFlag, effortFlag, turnOptions, imageAttachments)
+
+/** Protocol-owned native catalog. Absent unless the session is already bound to protocol. */
+fun nativeTurnModels(sheet: HarnessSheet?, transport: String?): List<ModelOption> {
+    if (sheet?.turnOptions != true) return emptyList()
+    if (transport != "protocol") return emptyList()
+    return sheet.models.orEmpty()
+}
+
+fun nativeImageAttachments(sheet: HarnessSheet?, transport: String?): Boolean =
+    sheet?.imageAttachments == true && transport == "protocol"
+
+/** PNG / JPEG / WebP / GIF — the den's native image allowlist. */
+val NATIVE_IMAGE_MIMES: Set<String> = setOf(
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/gif",
+)
+
+fun isNativeImageMime(mime: String?): Boolean {
+    val m = mime?.trim()?.lowercase() ?: return false
+    return m in NATIVE_IMAGE_MIMES
+}
+
+fun modelAcceptsImage(model: ModelOption?): Boolean {
+    val mods = model?.inputModalities ?: return false
+    if (mods.isEmpty()) return false
+    return mods.any { it.equals("image", ignoreCase = true) }
+}
 
 private val HARNESS_LABEL: Map<String, String> = mapOf(
     "claude-code" to "Claude Code",
@@ -98,4 +131,43 @@ fun effortListFor(sheet: HarnessSheet?, modelId: String): List<EffortOption> {
 fun defaultEffort(sheet: HarnessSheet?, modelId: String): String {
     val efforts = effortListFor(sheet, modelId)
     return efforts.find { it.default }?.id ?: efforts.firstOrNull()?.id ?: ""
+}
+
+data class SummaryControls(
+    val transport: String?,
+    val model: String,
+    val effort: String,
+)
+
+/**
+ * Keep [currentModel]/[currentEffort] when they still exist on the native catalog;
+ * otherwise fall through incoming summary ids, then default/first. A catalog that
+ * drops the selected id must not leave those values on the next [buildUserTurn].
+ * Empty native catalog (PTY / no turnOptions) leaves the current pair alone.
+ */
+fun reconcileSummaryControls(
+    sheet: HarnessSheet?,
+    currentTransport: String?,
+    currentModel: String,
+    currentEffort: String,
+    incomingTransport: String? = null,
+    incomingModel: String? = null,
+    incomingEffort: String? = null,
+): SummaryControls {
+    val nextTransport = incomingTransport ?: currentTransport
+    val native = nativeTurnModels(sheet, nextTransport)
+    val nextModel = when {
+        native.isEmpty() -> currentModel
+        native.any { it.id == currentModel } -> currentModel
+        native.any { it.id == incomingModel } -> incomingModel!!
+        else -> native.find { it.default }?.id ?: native.firstOrNull()?.id ?: currentModel
+    }
+    val efforts = native.find { it.id == nextModel }?.efforts.orEmpty()
+    val nextEffort = when {
+        efforts.isEmpty() -> currentEffort
+        efforts.any { it.id == currentEffort } -> currentEffort
+        efforts.any { it.id == incomingEffort } -> incomingEffort!!
+        else -> efforts.find { it.default }?.id ?: efforts.firstOrNull()?.id ?: currentEffort
+    }
+    return SummaryControls(nextTransport, nextModel, nextEffort)
 }

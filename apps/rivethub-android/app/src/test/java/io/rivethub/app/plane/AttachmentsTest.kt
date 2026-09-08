@@ -72,4 +72,68 @@ class AttachmentsTest {
         assertFalse(uploadTooLarge(MAX_UPLOAD_BYTES))
         assertTrue(uploadTooLarge(MAX_UPLOAD_BYTES + 1))
     }
+
+    @Test fun `readyAttachments keep mime path and name`() {
+        val atts = listOf(
+            PendingAttachment("a", "a.png", AttachmentStatus.READY, "/up/a.png", "image/png"),
+            PendingAttachment("b", "b.png", AttachmentStatus.UPLOADING, mime = "image/png"),
+        )
+        assertEquals(
+            listOf(StagedTurnAttachment("image/png", "/up/a.png", "a.png")),
+            readyAttachments(atts),
+        )
+        assertFalse(anyFailed(atts))
+        assertTrue(anyFailed(atts + PendingAttachment("c", "c", AttachmentStatus.FAILED)))
+    }
+
+    @Test fun `mimeFromName infers image types`() {
+        assertEquals("image/jpeg", mimeFromName("pic.JPG"))
+        assertEquals("image/png", mimeFromName("a.png"))
+        assertEquals("image/webp", mimeFromName("x.webp"))
+        assertEquals("image/gif", mimeFromName("y.gif"))
+        assertEquals(null, mimeFromName("notes.txt"))
+        assertEquals("application/pdf", mimeFromName("notes.txt", "application/pdf"))
+    }
+
+    @Test fun `composerSendText keeps a native image caption bare`() {
+        val atts = listOf(PendingAttachment("a", "a.png", AttachmentStatus.READY, "/up/a.png", "image/png"))
+        assertEquals("look", composerSendText("look", atts, nativeImages = true))
+        assertEquals("look\n[attached: /up/a.png]", composerSendText("look", atts, nativeImages = false))
+        assertEquals("", composerSendText("  ", atts, nativeImages = true))
+    }
+
+    @Test fun `restoreReadyChips rebuilds READY chips from a queued turn`() {
+        val staged = listOf(StagedTurnAttachment("image/png", "/node/uploads/a.png", "a.png"))
+        val chips = restoreReadyChips(staged)
+        assertEquals(AttachmentStatus.READY, chips.single().status)
+        assertEquals("a.png", chips.single().name)
+        assertEquals("/node/uploads/a.png", chips.single().uri)
+        assertEquals("image/png", chips.single().mime)
+        assertEquals(staged, readyAttachments(chips))
+    }
+
+    @Test fun `restoreReadyChips names an unnamed file from its path`() {
+        val chips = restoreReadyChips(listOf(StagedTurnAttachment("image/jpeg", "/up/shot.jpg")))
+        assertEquals("shot.jpg", chips.single().name)
+        assertEquals("/up/shot.jpg", chips.single().id)
+    }
+
+    @Test fun `restoreQueuedComposer prepends caption and chips`() {
+        val staged = listOf(StagedTurnAttachment("image/png", "/up/a.png", "a.png"))
+        val existing = listOf(PendingAttachment("x", "new.png", AttachmentStatus.UPLOADING, mime = "image/png"))
+        val out = restoreQueuedComposer("later", existing, "caption", staged)
+        assertEquals("caption\nlater", out.text)
+        assertEquals(2, out.attachments.size)
+        assertEquals(AttachmentStatus.READY, out.attachments[0].status)
+        assertEquals("/up/a.png", out.attachments[0].uri)
+        assertEquals("x", out.attachments[1].id)
+    }
+
+    @Test fun `restoreQueuedComposer leaves chips alone when the queued turn had none`() {
+        val out = restoreQueuedComposer("", emptyList(), "just text", emptyList())
+        assertEquals("just text", out.text)
+        assertTrue(out.attachments.isEmpty())
+        val withComposer = restoreQueuedComposer("draft", emptyList(), "", emptyList())
+        assertEquals("draft", withComposer.text)
+    }
 }
