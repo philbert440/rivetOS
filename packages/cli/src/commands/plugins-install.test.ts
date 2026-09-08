@@ -4,11 +4,17 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse as parseYaml } from 'yaml'
-import { bakeGrokHookCommands, createSyncCtx, mergeHermesConfig } from './plugins-sync.js'
+import {
+  bakeGrokHookCommands,
+  createSyncCtx,
+  mergeHermesConfig,
+  posixShellQuote,
+} from './plugins-sync.js'
 import {
   CODEX_LAUNCHD_LABEL,
   CODEX_WATCHER_UNIT,
   DEFAULT_ROSTER_COMMANDS,
+  artefactConfigHomes,
   buildDenTermRoster,
   codexLaunchdPlist,
   codexSystemdUnit,
@@ -17,11 +23,15 @@ import {
   marketplaceRootWarning,
   mcpJsonHasRivetos,
   parseInstallArgs,
+  parseTomlTableKeys,
   planPluginsInstall,
   readEnvKey,
   runPluginsInstall,
   setupArtefactMissing,
+  setupScriptEnv,
+  systemdEnvironmentFile,
   systemdQuote,
+  tomlHasUncommentedTable,
   watcherPathEnv,
   yamlFileHasRivetMemory,
   type TermRosterFile,
@@ -144,6 +154,28 @@ describe('ensureGrokMcpBlock', () => {
   it('does not duplicate when the marker sits among other tables', () => {
     const existing = '[mcp_servers.other]\ncommand = "x"\n\n[mcp_servers.rivetos]\ncommand = "y"\n'
     expect(ensureGrokMcpBlock(existing, root)).toBe(existing)
+  })
+
+  it('treats a quoted [mcp_servers."rivetos"] table as already present', () => {
+    const existing = '[mcp_servers."rivetos"]\ncommand = "x"\n'
+    expect(ensureGrokMcpBlock(existing, root)).toBe(existing)
+    expect(tomlHasUncommentedTable(existing, 'mcp_servers.rivetos')).toBe(true)
+    expect(parseTomlTableKeys('[mcp_servers."rivetos"]')).toEqual(['mcp_servers', 'rivetos'])
+    expect(parseTomlTableKeys("[mcp_servers.'rivetos']")).toEqual(['mcp_servers', 'rivetos'])
+    expect(parseTomlTableKeys('[ mcp_servers . "rivetos" ]')).toEqual(['mcp_servers', 'rivetos'])
+  })
+
+  it('does not treat [mcp_servers.rivetos] garbage as a table', () => {
+    const garbage = '[mcp_servers.rivetos] garbage\ncommand = "x"\n'
+    expect(tomlHasUncommentedTable(garbage, 'mcp_servers.rivetos')).toBe(false)
+    const out = ensureGrokMcpBlock(garbage, root)
+    expect(out).not.toBe(garbage)
+    expect(tomlHasUncommentedTable(out, 'mcp_servers.rivetos')).toBe(true)
+    expect(parseTomlTableKeys('[mcp_servers.rivetos] garbage')).toBeNull()
+    expect(parseTomlTableKeys('[mcp_servers.rivetos] # comment')).toEqual([
+      'mcp_servers',
+      'rivetos',
+    ])
   })
 })
 
@@ -629,6 +661,8 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(calls[0].file).toBe('bash')
     expect(calls[0].args).toEqual([script, '--apply', '--force'])
     expect(calls[0].env?.RIVETOS_ROOT).toBe(root)
+    expect(calls[0].env?.KIMI_BIN).toBe('/tmp/bin/kimi')
+    expect(calls[0].env?.PATH?.split(':')[0]).toBe('/tmp/bin')
     expect(calls[0].cwd).toBe(root)
     expect(logs()).toMatch(/✅/)
 
@@ -642,6 +676,57 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     ).rejects.toThrow(/failed/)
     expect(logs()).toMatch(/❌/)
     expect(logs()).toMatch(/setup-kimi-rivet-memory\.sh/)
+  })
+
+  it('setup child PATH sees a codex that lives only in a mise shim dir', async () => {
+    const shimDir = join(home, '.local', 'share', 'mise', 'shims')
+    const binary = join(shimDir, 'codex')
+    const scriptRel = join(
+      'integrations',
+      'codex',
+      'rivet-memory',
+      'bin',
+      'setup-codex-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const calls: Array<{ file: string; env?: NodeJS.ProcessEnv }> = []
+    const exec = async (
+      file: string,
+      _args: string[],
+      opts: { env?: NodeJS.ProcessEnv } = {},
+    ): Promise<ExecResult> => {
+      calls.push({ file, env: opts.env })
+      if (file === 'bash') {
+        mkdirSync(join(home, '.codex'), { recursive: true })
+        writeFileSync(
+          join(home, '.codex', 'mcp.json'),
+          JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+        )
+      }
+      if (file === 'systemctl') {
+        return { stdout: '', stderr: 'spawn systemctl ENOENT', code: null, timedOut: false }
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      {
+        home,
+        detect: async () => [codexHarness(home, binary)],
+        exec,
+        platform: 'linux',
+      },
+    )
+    const bash = calls.find((c) => c.file === 'bash')
+    expect(bash?.env?.CODEX_BIN).toBe(binary)
+    const pathParts = (bash?.env?.PATH ?? '').split(':')
+    expect(pathParts[0]).toBe(shimDir)
+    expect(pathParts).toContain(join(home, '.local', 'share', 'mise', 'shims'))
+    const env = setupScriptEnv(codexHarness(home, binary), root, home)
+    expect(env.CODEX_BIN).toBe(binary)
+    expect(env.PATH?.split(':')[0]).toBe(shimDir)
+    expect(logs()).toMatch(/✅/)
   })
 
   it('hermes: pip only with venv, .env key once, yaml merged, provider kept', async () => {
@@ -1111,6 +1196,99 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     }
   })
 
+  it('codex: an override home is exclusive — a marker only in ~/.codex is not enough', async () => {
+    const prev = process.env.CODEX_HOME
+    const custom = join(home, 'custom-codex')
+    process.env.CODEX_HOME = custom
+    try {
+      const scriptRel = join(
+        'integrations',
+        'codex',
+        'rivet-memory',
+        'bin',
+        'setup-codex-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.codex'), { recursive: true })
+      const defaultMcp = JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } })
+      writeFileSync(join(home, '.codex', 'mcp.json'), defaultMcp)
+      mkdirSync(custom, { recursive: true })
+      const exec = async (file: string): Promise<ExecResult> => {
+        if (file === 'systemctl') {
+          return { stdout: '', stderr: 'spawn systemctl ENOENT', code: null, timedOut: false }
+        }
+        return okResult()
+      }
+      await expect(
+        runPluginsInstall(
+          { dryRun: false, force: true, root, harnesses: [] },
+          {
+            home,
+            detect: async () => [codexHarness(home)],
+            exec,
+            platform: 'linux',
+          },
+        ),
+      ).rejects.toThrow(/failed/)
+      expect(setupArtefactMissing('codex', home, join(home, '.codex'))).toMatch(/missing rivetos/)
+      expect(readFileSync(join(home, '.codex', 'mcp.json'), 'utf-8')).toBe(defaultMcp)
+      expect(existsSync(join(custom, 'mcp.json'))).toBe(false)
+      expect(logs()).toMatch(/❌/)
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = prev
+    }
+  })
+
+  it('codex: repair under CODEX_HOME does not rewrite ~/.codex', async () => {
+    const prev = process.env.CODEX_HOME
+    const custom = join(home, 'custom-codex')
+    process.env.CODEX_HOME = custom
+    try {
+      const scriptRel = join(
+        'integrations',
+        'codex',
+        'rivet-memory',
+        'bin',
+        'setup-codex-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.codex'), { recursive: true })
+      const defaultMcp = JSON.stringify({ mcpServers: { other: { command: 'default' } } })
+      writeFileSync(join(home, '.codex', 'mcp.json'), defaultMcp)
+      mkdirSync(custom, { recursive: true })
+      writeFileSync(
+        join(custom, 'mcp.json'),
+        JSON.stringify({ mcpServers: { other: { command: 'custom' } } }),
+      )
+      const exec = async (file: string): Promise<ExecResult> => {
+        if (file === 'systemctl') {
+          return { stdout: '', stderr: 'spawn systemctl ENOENT', code: null, timedOut: false }
+        }
+        return okResult()
+      }
+      await runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [codexHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      )
+      expect(readFileSync(join(home, '.codex', 'mcp.json'), 'utf-8')).toBe(defaultMcp)
+      expect(
+        JSON.parse(readFileSync(join(custom, 'mcp.json'), 'utf-8')).mcpServers.rivetos,
+      ).toBeDefined()
+      expect(logs()).toMatch(/✅/)
+    } finally {
+      if (prev === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = prev
+    }
+  })
+
   it('hermes: process.env PG URL is used when ~/.rivetos/.env lacks the key', async () => {
     const prevPg = process.env.RIVETOS_PG_URL
     const prevEnvFile = process.env.RIVETOS_ENV_FILE
@@ -1198,6 +1376,155 @@ describe('runPluginsInstall install paths (injected exec)', () => {
       else process.env.RIVETOS_ENV_FILE = prevEnvFile
     }
   })
+
+  it('codex linux watcher persists a process-only RIVETOS_PG_URL', async () => {
+    const prevPg = process.env.RIVETOS_PG_URL
+    const prevEnvFile = process.env.RIVETOS_ENV_FILE
+    delete process.env.RIVETOS_ENV_FILE
+    process.env.RIVETOS_PG_URL = 'postgres://192.0.2.1/from-env'
+    try {
+      const scriptRel = join(
+        'integrations',
+        'codex',
+        'rivet-memory',
+        'bin',
+        'setup-codex-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.codex'), { recursive: true })
+      writeFileSync(
+        join(home, '.codex', 'mcp.json'),
+        JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+      )
+      const exec = async (file: string): Promise<ExecResult> => {
+        if (file === 'systemctl') return okResult()
+        return okResult()
+      }
+      await runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [codexHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      )
+      const unit = readFileSync(
+        join(home, '.config', 'systemd', 'user', CODEX_WATCHER_UNIT),
+        'utf-8',
+      )
+      expect(unit).toContain('Environment=RIVETOS_PG_URL=postgres://192.0.2.1/from-env')
+      expect(unit).not.toContain('EnvironmentFile=')
+      expect(logs()).toMatch(/✅/)
+    } finally {
+      if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+      else process.env.RIVETOS_PG_URL = prevPg
+      if (prevEnvFile === undefined) delete process.env.RIVETOS_ENV_FILE
+      else process.env.RIVETOS_ENV_FILE = prevEnvFile
+    }
+  })
+
+  it('codex linux watcher uses a custom RIVETOS_ENV_FILE', async () => {
+    const prevPg = process.env.RIVETOS_PG_URL
+    const prevEnvFile = process.env.RIVETOS_ENV_FILE
+    delete process.env.RIVETOS_PG_URL
+    const custom = join(home, 'custom.env')
+    writeFileSync(custom, 'RIVETOS_PG_URL=postgres://192.0.2.1/custom-file\n')
+    process.env.RIVETOS_ENV_FILE = custom
+    try {
+      const scriptRel = join(
+        'integrations',
+        'codex',
+        'rivet-memory',
+        'bin',
+        'setup-codex-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.codex'), { recursive: true })
+      writeFileSync(
+        join(home, '.codex', 'mcp.json'),
+        JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+      )
+      const exec = async (): Promise<ExecResult> => okResult()
+      await runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [codexHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      )
+      const unit = readFileSync(
+        join(home, '.config', 'systemd', 'user', CODEX_WATCHER_UNIT),
+        'utf-8',
+      )
+      expect(unit).toContain(`EnvironmentFile=-${custom}`)
+      expect(unit).toContain(`Environment=RIVETOS_ENV_FILE=${custom}`)
+      expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
+      expect(logs()).toMatch(/✅/)
+    } finally {
+      if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+      else process.env.RIVETOS_PG_URL = prevPg
+      if (prevEnvFile === undefined) delete process.env.RIVETOS_ENV_FILE
+      else process.env.RIVETOS_ENV_FILE = prevEnvFile
+    }
+  })
+
+  it('codex launchd watcher mirrors process-only URL and custom env file', async () => {
+    const prevPg = process.env.RIVETOS_PG_URL
+    const prevEnvFile = process.env.RIVETOS_ENV_FILE
+    process.env.RIVETOS_PG_URL = 'postgres://192.0.2.1/from-env'
+    const custom = join(home, 'custom.env')
+    writeFileSync(custom, 'RIVETOS_ROOT=/opt/rivetos\n')
+    process.env.RIVETOS_ENV_FILE = custom
+    try {
+      const scriptRel = join(
+        'integrations',
+        'codex',
+        'rivet-memory',
+        'bin',
+        'setup-codex-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.codex'), { recursive: true })
+      writeFileSync(
+        join(home, '.codex', 'mcp.json'),
+        JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+      )
+      const exec = async (file: string): Promise<ExecResult> => {
+        if (file === 'launchctl') return okResult()
+        return okResult()
+      }
+      await runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [codexHarness(home)],
+          exec,
+          platform: 'darwin',
+          uid: 501,
+        },
+      )
+      const plist = readFileSync(
+        join(home, 'Library', 'LaunchAgents', `${CODEX_LAUNCHD_LABEL}.plist`),
+        'utf-8',
+      )
+      expect(plist).toContain('<key>RIVETOS_ENV_FILE</key>')
+      expect(plist).toContain(custom)
+      expect(plist).toContain('<key>RIVETOS_PG_URL</key>')
+      expect(plist).toContain('postgres://192.0.2.1/from-env')
+      expect(logs()).toMatch(/✅/)
+    } finally {
+      if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+      else process.env.RIVETOS_PG_URL = prevPg
+      if (prevEnvFile === undefined) delete process.env.RIVETOS_ENV_FILE
+      else process.env.RIVETOS_ENV_FILE = prevEnvFile
+    }
+  })
 })
 
 describe('codex watcher unit/plist builders', () => {
@@ -1213,9 +1540,7 @@ describe('codex watcher unit/plist builders', () => {
     expect(unit).toContain('EnvironmentFile=-/home/u/.rivetos/.env')
     expect(unit).toContain('Environment=RIVETOS_ROOT=/opt/rivetos')
     expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
-    expect(unit).toContain(
-      `Environment=PATH=${dirname(process.execPath)}:/home/u/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin`,
-    )
+    expect(unit).toContain(`Environment=PATH=${watcherPathEnv('/home/u')}`)
     expect(unit).toContain('WantedBy=default.target')
   })
 
@@ -1252,6 +1577,33 @@ describe('codex watcher unit/plist builders', () => {
     expect(systemdQuote('/home/u/Rivet OS')).toBe('"/home/u/Rivet OS"')
     expect(watcherPathEnv('/home/u')).toContain('/home/u/.local/bin')
   })
+
+  it('EnvironmentFile= is never quoted; % is escaped', () => {
+    const spaced = codexSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u/Phil Smith',
+      envFile: '/home/u/Phil Smith/.rivetos/.env',
+    })
+    expect(spaced).toContain('EnvironmentFile=-/home/u/Phil Smith/.rivetos/.env')
+    expect(spaced).not.toMatch(/EnvironmentFile=-"/)
+    expect(systemdEnvironmentFile('/home/u/Phil Smith/.rivetos/.env')).toBe(
+      'EnvironmentFile=-/home/u/Phil Smith/.rivetos/.env',
+    )
+    const pct = codexSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+      envFile: '/home/u/100%fun/.env',
+    })
+    expect(pct).toContain('EnvironmentFile=-/home/u/100%%fun/.env')
+  })
+
+  it('watcherPathEnv dedupes /usr/bin when that is the node bin dir', () => {
+    expect(watcherPathEnv('/home/u', '/usr/bin')).toBe(
+      '/usr/bin:/home/u/.local/bin:/usr/local/bin:/opt/homebrew/bin:/bin',
+    )
+    const parts = watcherPathEnv('/home/u', '/usr/bin').split(':')
+    expect(parts.filter((p) => p === '/usr/bin')).toHaveLength(1)
+  })
 })
 
 describe('artefact validation + grok hook bake', () => {
@@ -1272,6 +1624,10 @@ describe('artefact validation + grok hook bake', () => {
     dir = mkdtempSync(join(tmpdir(), 'artefact-'))
     writeFileSync(join(dir, 'config.toml'), '# [mcp_servers.rivetos]\ncommand = "x"\n')
     expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
+    writeFileSync(join(dir, 'config.toml'), '[mcp_servers.rivetos] garbage\ncommand = "x"\n')
+    expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
+    writeFileSync(join(dir, 'config.toml'), '[mcp_servers."rivetos"]\ncommand = "x"\n')
+    expect(setupArtefactMissing('codex', dir, dir)).toBeNull()
     writeFileSync(join(dir, 'cordis.patch.yml'), '# rivet-memory\n')
     expect(yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml'))).toBe(false)
     writeFileSync(
@@ -1301,5 +1657,70 @@ describe('artefact validation + grok hook bake', () => {
     const body = readFileSync(hook, 'utf-8')
     expect(body).toContain('/custom/tree/integrations/grok/rivet-memory/bin/grok-memory-hook.sh')
     expect(body).not.toContain('${RIVETOS_ROOT:-/opt/rivetos}')
+    expect(JSON.parse(body).hooks.SessionEnd[0].command).toContain(
+      posixShellQuote('/custom/tree/integrations/grok/rivet-memory/bin/grok-memory-hook.sh'),
+    )
+  })
+
+  it('shell-quotes a baked root that contains spaces or quotes and round-trips JSON', () => {
+    dir = mkdtempSync(join(tmpdir(), 'grok-hooks-'))
+    const hook = join(dir, 'rivet-memory.json')
+    const template = {
+      hooks: {
+        SessionEnd: [
+          {
+            command:
+              '${RIVETOS_ROOT:-/opt/rivetos}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh SessionEnd',
+          },
+        ],
+      },
+    }
+    writeFileSync(hook, JSON.stringify(template))
+    expect(bakeGrokHookCommands(hook, '/home/u/Rivet OS')).toBe(true)
+    const spaced = JSON.parse(readFileSync(hook, 'utf-8')) as typeof template
+    expect(spaced.hooks.SessionEnd[0].command).toBe(
+      `'${'/home/u/Rivet OS/integrations/grok/rivet-memory/bin/grok-memory-hook.sh'}' SessionEnd`,
+    )
+
+    writeFileSync(hook, JSON.stringify(template))
+    const quotedRoot = '/home/u/Rivet "OS"'
+    expect(bakeGrokHookCommands(hook, quotedRoot)).toBe(true)
+    const quoted = JSON.parse(readFileSync(hook, 'utf-8')) as typeof template
+    const exe = `${quotedRoot}/integrations/grok/rivet-memory/bin/grok-memory-hook.sh`
+    expect(quoted.hooks.SessionEnd[0].command).toBe(`${posixShellQuote(exe)} SessionEnd`)
+  })
+
+  it('artefactConfigHomes uses only the env override when set', () => {
+    const prevCodex = process.env.CODEX_HOME
+    const prevKimi = process.env.KIMI_CODE_HOME
+    const prevDsh = process.env.DSH_HOME
+    const home = '/home/u'
+    try {
+      process.env.CODEX_HOME = '/custom/codex'
+      process.env.KIMI_CODE_HOME = '/custom/kimi'
+      process.env.DSH_HOME = '/custom/dsh'
+      expect(artefactConfigHomes('codex', home, join(home, '.codex'))).toEqual(['/custom/codex'])
+      expect(artefactConfigHomes('kimi-code', home, join(home, '.kimi'))).toEqual(['/custom/kimi'])
+      expect(artefactConfigHomes('deepseek-harness', home, join(home, '.dsh'))).toEqual([
+        '/custom/dsh',
+      ])
+      delete process.env.CODEX_HOME
+      delete process.env.KIMI_CODE_HOME
+      delete process.env.DSH_HOME
+      expect(artefactConfigHomes('codex', home, join(home, '.codex'))).toEqual([
+        join(home, '.codex'),
+      ])
+      expect(artefactConfigHomes('kimi-code', home, join(home, '.kimi'))).toEqual([
+        join(home, '.kimi'),
+        join(home, '.kimi-code'),
+      ])
+    } finally {
+      if (prevCodex === undefined) delete process.env.CODEX_HOME
+      else process.env.CODEX_HOME = prevCodex
+      if (prevKimi === undefined) delete process.env.KIMI_CODE_HOME
+      else process.env.KIMI_CODE_HOME = prevKimi
+      if (prevDsh === undefined) delete process.env.DSH_HOME
+      else process.env.DSH_HOME = prevDsh
+    }
   })
 })

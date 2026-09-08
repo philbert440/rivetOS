@@ -12,12 +12,14 @@
 
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
 import {
+  DEFAULT_EXTRA_DIRS,
   detectHarnesses,
   execFileAsync,
+  expandHome,
   type DetectedHarness,
   type ExecResult,
 } from '../lib/harness-detect.js'
@@ -148,7 +150,8 @@ Options:
  *  absent. Pure: returns the new contents (caller writes). */
 const BASH = '/bin/bash'
 
-/** MCP launchers are 100644 in git — always invoke via bash, never as argv0. */
+/** Invoke MCP launchers via bash, never as argv0 — git mode is 100755 on
+ *  main, but mode bits do not survive every copy path. */
 export function rivetosMcpServer(scriptPath: string): { command: string; args: string[] } {
   return { command: BASH, args: [scriptPath] }
 }
@@ -362,12 +365,75 @@ export function marketplaceRootWarning(root: string): string | null {
   )
 }
 
+function skipTomlWs(s: string, i: number): number {
+  while (i < s.length && (s[i] === ' ' || s[i] === '\t')) i += 1
+  return i
+}
+
+function parseTomlKey(s: string, i: number): { key: string; next: number } | null {
+  if (i >= s.length) return null
+  const q = s[i]
+  if (q === '"' || q === "'") {
+    let key = ''
+    let j = i + 1
+    while (j < s.length) {
+      const c = s[j]
+      if (c === q) return { key, next: j + 1 }
+      if (q === '"' && c === '\\') {
+        j += 1
+        if (j >= s.length) return null
+        key += s[j]
+        j += 1
+        continue
+      }
+      key += c
+      j += 1
+    }
+    return null
+  }
+  let j = i
+  while (j < s.length && /[A-Za-z0-9_-]/.test(s[j])) j += 1
+  if (j === i) return null
+  return { key: s.slice(i, j), next: j }
+}
+
+/** Decode a TOML table header into its key path, or null if the line is not
+ *  a well-formed table (`[a.b]`, `[a."b"]`). Rejects array tables and
+ *  trailing garbage after `]`. */
+export function parseTomlTableKeys(line: string): string[] | null {
+  let i = skipTomlWs(line, 0)
+  if (line[i] !== '[') return null
+  i += 1
+  if (line[i] === '[') return null
+  const keys: string[] = []
+  i = skipTomlWs(line, i)
+  for (;;) {
+    const parsed = parseTomlKey(line, i)
+    if (!parsed) return null
+    keys.push(parsed.key)
+    i = skipTomlWs(line, parsed.next)
+    if (line[i] === '.') {
+      i = skipTomlWs(line, i + 1)
+      continue
+    }
+    if (line[i] === ']') {
+      i = skipTomlWs(line, i + 1)
+      if (i < line.length && line[i] !== '#') return null
+      return keys.length > 0 ? keys : null
+    }
+    return null
+  }
+}
+
 export function tomlHasUncommentedTable(text: string, table: string): boolean {
-  const want = `[${table}]`
+  const want = table.split('.')
   for (const line of text.split('\n')) {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('#')) continue
-    if (trimmed === want || trimmed.startsWith(want)) return true
+    const keys = parseTomlTableKeys(trimmed)
+    if (keys && keys.length === want.length && keys.every((k, idx) => k === want[idx])) {
+      return true
+    }
   }
   return false
 }
@@ -421,16 +487,21 @@ export function yamlFileHasRivetMemory(path: string): boolean {
   }
 }
 
-/** Config homes the setup scripts actually write (env override first). */
+/** Config homes the setup scripts actually write. An explicit
+ *  CODEX_HOME / KIMI_CODE_HOME / DSH_HOME is the script's effective home
+ *  — do not also repair or validate the defaults. */
 export function artefactConfigHomes(id: HarnessId, home: string, configHome: string): string[] {
-  const envHome =
-    id === 'kimi-code'
+  const envHome = nonemptyEnv(
+    (id === 'kimi-code'
       ? process.env.KIMI_CODE_HOME
       : id === 'codex'
         ? process.env.CODEX_HOME
         : id === 'deepseek-harness'
           ? process.env.DSH_HOME
           : undefined
+    )?.trim(),
+  )
+  if (envHome) return [envHome]
   const defaults =
     id === 'kimi-code'
       ? [configHome, join(home, '.kimi-code'), join(home, '.kimi')]
@@ -439,7 +510,7 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
         : id === 'deepseek-harness'
           ? [configHome, join(home, '.dsh')]
           : [configHome]
-  return [...new Set([envHome, ...defaults].filter((d): d is string => Boolean(d && d.length > 0)))]
+  return [...new Set(defaults.filter((d) => d.length > 0))]
 }
 
 export function kimiConfigHomes(home: string, configHome: string): string[] {
@@ -558,14 +629,22 @@ function xmlEscape(s: string): string {
 /** PATH baked into the Codex watcher unit/plist so `node`/`npx` resolve
  *  under systemd/launchd's minimal default PATH (Homebrew / fnm / nvm). */
 export function watcherPathEnv(home: string, nodeBinDir = dirname(process.execPath)): string {
-  return [
+  const dirs = [
     nodeBinDir,
     join(home, '.local', 'bin'),
     '/usr/local/bin',
     '/opt/homebrew/bin',
     '/usr/bin',
     '/bin',
-  ].join(':')
+  ]
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const d of dirs) {
+    if (!d || seen.has(d)) continue
+    seen.add(d)
+    out.push(d)
+  }
+  return out.join(':')
 }
 
 /** Quote a systemd unit-file token; `%` → `%%` so specifiers are not expanded. */
@@ -586,12 +665,19 @@ export function systemdEnvironment(key: string, value: string): string {
   return `Environment=${key}=${escapedPct}`
 }
 
+/** EnvironmentFile= is a bare path, not a command line — systemd rejects
+ *  quoted paths. Escape `%` → `%%` only. */
+export function systemdEnvironmentFile(path: string): string {
+  return `EnvironmentFile=-${path.replace(/%/g, '%%')}`
+}
+
 function captureScriptPath(root: string): string {
   return join(root, 'integrations', 'codex', 'rivet-memory', 'bin', 'codex-memory-capture.sh')
 }
 
 /** systemd user unit for the Codex capture watcher. ExecStart is always
- *  `/bin/bash <script> --watch` because the script is 100644 in git. */
+ *  `/bin/bash <script> --watch` so the unit does not depend on the
+ *  launcher's executable bit (mode bits do not survive every copy path). */
 export function codexSystemdUnit(opts: {
   root: string
   home: string
@@ -599,6 +685,8 @@ export function codexSystemdUnit(opts: {
   pathEnv?: string
   nodeBinDir?: string
   codexHome?: string
+  pgUrl?: string
+  rivetosEnvFile?: string
 }): string {
   const captureSh = captureScriptPath(opts.root)
   const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
@@ -611,10 +699,12 @@ export function codexSystemdUnit(opts: {
     'Type=simple',
     `ExecStart=${BASH} ${systemdQuote(captureSh)} --watch`,
   ]
-  if (opts.envFile) lines.push(`EnvironmentFile=-${systemdQuote(opts.envFile)}`)
+  if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
   lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
   lines.push(systemdEnvironment('PATH', pathEnv))
   if (opts.codexHome) lines.push(systemdEnvironment('CODEX_HOME', opts.codexHome))
+  if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
+  if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
   lines.push('Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
   return lines.join('\n')
 }
@@ -628,6 +718,7 @@ export function codexLaunchdPlist(opts: {
   pathEnv?: string
   nodeBinDir?: string
   codexHome?: string
+  rivetosEnvFile?: string
 }): string {
   const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
   const envEntries = [
@@ -636,6 +727,11 @@ export function codexLaunchdPlist(opts: {
   ]
   if (opts.codexHome) {
     envEntries.push(`    <key>CODEX_HOME</key>\n    <string>${xmlEscape(opts.codexHome)}</string>`)
+  }
+  if (opts.rivetosEnvFile) {
+    envEntries.push(
+      `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
+    )
   }
   if (opts.pgUrl) {
     envEntries.push(`    <key>RIVETOS_PG_URL</key>\n    <string>${xmlEscape(opts.pgUrl)}</string>`)
@@ -680,10 +776,16 @@ export async function installCodexCaptureWatcher(opts: {
   platform: NodeJS.Platform
   uid?: number
 }): Promise<{ ok: boolean; detail: string }> {
-  const envFile = join(opts.home, '.rivetos', '.env')
-  const envText = existsSync(envFile) ? readFileSync(envFile, 'utf-8') : ''
-  const pgUrl = readEnvKey(envText, 'RIVETOS_PG_URL') ?? process.env.RIVETOS_PG_URL
-  const rivetRoot = readEnvKey(envText, 'RIVETOS_ROOT') ?? opts.root
+  const customEnvFile = nonemptyEnv(process.env.RIVETOS_ENV_FILE)
+  const defaultEnvFile = join(opts.home, '.rivetos', '.env')
+  const envFile = customEnvFile ?? defaultEnvFile
+  const envFileExists = existsSync(envFile)
+  const envText = envFileExists ? readFileSync(envFile, 'utf-8') : ''
+  const pgUrlFromFile = envFileExists
+    ? nonemptyEnv(readEnvKey(envText, 'RIVETOS_PG_URL'))
+    : undefined
+  const pgUrl = pgUrlFromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
+  const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
   const captureSh = captureScriptPath(rivetRoot)
   const codexHome = process.env.CODEX_HOME || join(opts.home, '.codex')
   const manual = `${BASH} ${captureSh} --watch`
@@ -701,7 +803,9 @@ export async function installCodexCaptureWatcher(opts: {
       codexSystemdUnit({
         root: rivetRoot,
         home: opts.home,
-        envFile: existsSync(envFile) ? envFile : undefined,
+        envFile: envFileExists ? envFile : undefined,
+        rivetosEnvFile: customEnvFile,
+        pgUrl: pgUrlFromFile ? undefined : pgUrl,
         codexHome,
       }),
     )
@@ -732,6 +836,7 @@ export async function installCodexCaptureWatcher(opts: {
         logPath,
         pgUrl,
         codexHome,
+        rivetosEnvFile: customEnvFile,
       }),
     )
     const uid = opts.uid ?? process.getuid?.()
@@ -760,6 +865,33 @@ export async function installCodexCaptureWatcher(opts: {
   return { ok: true, detail: `no service manager (run: ${manual})` }
 }
 
+const SETUP_BIN_ENV: Partial<Record<HarnessId, string>> = {
+  codex: 'CODEX_BIN',
+  'kimi-code': 'KIMI_BIN',
+  'deepseek-harness': 'DSH_BIN',
+}
+
+/** PATH + `CODEX_BIN`/`KIMI_BIN`/`DSH_BIN` so a harness found only in a
+ *  mise shim / extra dir is visible to `command -v` inside setup scripts. */
+export function setupScriptEnv(h: DetectedHarness, root: string, home: string): NodeJS.ProcessEnv {
+  const extra = DEFAULT_EXTRA_DIRS.map((d) => expandHome(d, home))
+  const seen = new Set<string>()
+  const parts: string[] = []
+  for (const dir of [dirname(h.binary), ...extra, ...(process.env.PATH ?? '').split(delimiter)]) {
+    if (!dir || seen.has(dir)) continue
+    seen.add(dir)
+    parts.push(dir)
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    RIVETOS_ROOT: root,
+    PATH: parts.join(delimiter),
+  }
+  const binKey = SETUP_BIN_ENV[h.id]
+  if (binKey) env[binKey] = h.binary
+  return env
+}
+
 async function runSetupScript(
   id: HarnessId,
   h: DetectedHarness,
@@ -777,7 +909,7 @@ async function runSetupScript(
   const applyArgs = force ? [script, '--apply', '--force'] : [script, '--apply']
   const result: ExecResult = await exec('bash', applyArgs, {
     timeoutMs: 60_000,
-    env: { ...process.env, RIVETOS_ROOT: root },
+    env: setupScriptEnv(h, root, home),
     cwd: root,
   })
   if (result.code !== 0) {
@@ -822,7 +954,7 @@ async function installGrok(
   const ctx: Ctx = createSyncCtx(false)
   ctx.exec = exec
   await syncGrok(ctx, root, home)
-  const mcp = after.includes('[mcp_servers.rivetos]')
+  const mcp = tomlHasUncommentedTable(after, 'mcp_servers.rivetos')
   return {
     ok: true,
     detail: mcp ? 'synced + MCP block present' : 'synced (MCP block missing)',

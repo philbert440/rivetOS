@@ -35,7 +35,7 @@
 # so MCP launchers work on a laptop install.
 rivetos_abs_path() {
   local target="$1"
-  local resolved dir base phys candidate link
+  local resolved dir base phys candidate link hops
   if command -v perl >/dev/null 2>&1; then
     resolved="$(perl -MCwd -e 'print Cwd::abs_path(shift)' "$target" 2>/dev/null || true)"
     if [ -n "$resolved" ]; then
@@ -60,24 +60,28 @@ rivetos_abs_path() {
   else
     candidate="$phys/$base"
   fi
-  # Resolve a symlink in the final filename (perl/GNU readlink -f already
-  # did this above; this covers macOS bash 3.2 with neither).
-  if [ -L "$candidate" ]; then
+  # Resolve chained symlinks in the final filename (perl/GNU readlink -f
+  # already did this above; this covers macOS bash 3.2 with neither).
+  # Cap at 32 hops so a cycle cannot loop forever.
+  hops=0
+  while [ -L "$candidate" ] && [ "$hops" -lt 32 ]; do
+    hops=$((hops + 1))
     link="$(readlink "$candidate" 2>/dev/null || true)"
-    if [ -n "$link" ]; then
-      case "$link" in
-        /*) printf '%s\n' "$link"; return 0 ;;
-        *)
-          if [ "$phys" = "/" ]; then
-            printf '/%s\n' "$link"
-          else
-            printf '%s/%s\n' "$phys" "$link"
-          fi
-          return 0
-          ;;
-      esac
+    if [ -z "$link" ]; then
+      break
     fi
-  fi
+    case "$link" in
+      /*) candidate="$link" ;;
+      *)
+        dir="$(dirname "$candidate")"
+        if [ "$dir" = "/" ]; then
+          candidate="/$link"
+        else
+          candidate="$dir/$link"
+        fi
+        ;;
+    esac
+  done
   printf '%s\n' "$candidate"
   return 0
 }

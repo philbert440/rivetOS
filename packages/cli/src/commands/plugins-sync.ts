@@ -345,14 +345,59 @@ async function syncClaudeCode(ctx: Ctx, root: string, home: string): Promise<voi
 
 const GROK_ROOT_PLACEHOLDER = '${RIVETOS_ROOT:-/opt/rivetos}'
 
+/** POSIX single-quote so a baked root with spaces or quotes stays one argv. */
+export function posixShellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`
+}
+
+function bakeGrokCommand(command: string, root: string): string {
+  if (!command.includes(GROK_ROOT_PLACEHOLDER)) return command
+  let out = ''
+  let rest = command
+  while (rest.length > 0) {
+    const idx = rest.indexOf(GROK_ROOT_PLACEHOLDER)
+    if (idx < 0) {
+      out += rest
+      break
+    }
+    out += rest.slice(0, idx)
+    rest = rest.slice(idx + GROK_ROOT_PLACEHOLDER.length)
+    const rel = rest.match(/^\S*/)?.[0] ?? ''
+    rest = rest.slice(rel.length)
+    out += posixShellQuote(root + rel)
+  }
+  return out
+}
+
+function bakeGrokValue(value: unknown, root: string): unknown {
+  if (typeof value === 'string') return bakeGrokCommand(value, root)
+  if (Array.isArray(value)) return value.map((v) => bakeGrokValue(v, root))
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = bakeGrokValue(v, root)
+    }
+    return out
+  }
+  return value
+}
+
 /** Rewrite copied Grok hook commands so a custom --root does not fall back
- *  to /opt/rivetos when Grok's environment has no RIVETOS_ROOT. */
+ *  to /opt/rivetos when Grok's environment has no RIVETOS_ROOT. Parses JSON
+ *  and shell-quotes the baked executable so spaces/`"` in the root stay one
+ *  argv and the hook file remains valid JSON. */
 export function bakeGrokHookCommands(path: string, root: string): boolean {
   if (!existsSync(path)) return false
   const before = readFileSync(path, 'utf-8')
-  const after = before.split(GROK_ROOT_PLACEHOLDER).join(root)
-  if (after === before) return false
-  writeFileSync(path, after)
+  if (!before.includes(GROK_ROOT_PLACEHOLDER)) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(before)
+  } catch {
+    return false
+  }
+  const baked = bakeGrokValue(parsed, root)
+  writeFileSync(path, `${JSON.stringify(baked, null, 2)}\n`)
   return true
 }
 
