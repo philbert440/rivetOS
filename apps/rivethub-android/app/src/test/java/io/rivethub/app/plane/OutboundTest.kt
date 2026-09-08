@@ -211,6 +211,18 @@ class OutboundTest {
         }
     }
 
+    @Test fun `cancel returns staged attachments so the composer can restore them`() = runBlocking {
+        withTimeout(1_000) {
+            val atts = listOf(StagedTurnAttachment("image/png", "/up/a.png", "a.png"))
+            val pump = OutboundPump(send = { _, _ -> }, newId = { "id1" })
+            pump.tryEnqueue("caption", atts)
+            val dropped = pump.cancel("id1")
+            assertEquals("caption", dropped!!.text)
+            assertEquals(atts, dropped.attachments)
+            assertTrue(pump.queued.isEmpty())
+        }
+    }
+
     @Test fun `inject forceId sends that item while awaiting`() = runBlocking {
         withTimeout(1_000) {
             val seen = mutableListOf<String>()

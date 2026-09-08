@@ -180,4 +180,95 @@ class OptionsTest {
             spawnModelEffort(codexSheet(), "codex", "default", "medium"),
         )
     }
+
+    @Test fun `catalog drop resets native model and effort`() {
+        val before = HarnessSheet(
+            models = listOf(
+                ModelOption(
+                    "gpt-5",
+                    "gpt-5",
+                    default = true,
+                    efforts = listOf(
+                        EffortOption("low", "Low"),
+                        EffortOption("high", "High", default = true),
+                    ),
+                ),
+            ),
+            turnOptions = true,
+        )
+        val after = HarnessSheet(
+            models = listOf(
+                ModelOption(
+                    "codex",
+                    "codex",
+                    default = true,
+                    efforts = listOf(EffortOption("medium", "Medium", default = true)),
+                ),
+            ),
+            turnOptions = true,
+        )
+        val kept = reconcileSummaryControls(before, "protocol", "gpt-5", "high")
+        assertEquals("gpt-5", kept.model)
+        assertEquals("high", kept.effort)
+        val reset = reconcileSummaryControls(after, "protocol", "gpt-5", "high")
+        assertEquals("codex", reset.model)
+        assertEquals("medium", reset.effort)
+        assertEquals("protocol", reset.transport)
+    }
+
+    @Test fun `catalog drop of effort only keeps the model`() {
+        val sheet = HarnessSheet(
+            models = listOf(
+                ModelOption(
+                    "gpt-5",
+                    "gpt-5",
+                    default = true,
+                    efforts = listOf(EffortOption("low", "Low", default = true)),
+                ),
+            ),
+            turnOptions = true,
+        )
+        val next = reconcileSummaryControls(sheet, "protocol", "gpt-5", "xhigh")
+        assertEquals("gpt-5", next.model)
+        assertEquals("low", next.effort)
+    }
+
+    @Test fun `pty catalog swap does not rewrite model`() {
+        val sheet = HarnessSheet(
+            models = listOf(ModelOption("other", "other", default = true)),
+            turnOptions = true,
+        )
+        val next = reconcileSummaryControls(sheet, "pty", "gpt-5", "high")
+        assertEquals("gpt-5", next.model)
+        assertEquals("high", next.effort)
+    }
+
+    @Test fun `incoming summary ids win when current is gone`() {
+        val sheet = HarnessSheet(
+            models = listOf(
+                ModelOption(
+                    "gpt-5",
+                    "gpt-5",
+                    default = true,
+                    efforts = listOf(
+                        EffortOption("low", "Low", default = true),
+                        EffortOption("high", "High"),
+                    ),
+                ),
+            ),
+            turnOptions = true,
+        )
+        val next = reconcileSummaryControls(
+            sheet,
+            "pty",
+            "stale",
+            "gone",
+            incomingTransport = "protocol",
+            incomingModel = "gpt-5",
+            incomingEffort = "high",
+        )
+        assertEquals("protocol", next.transport)
+        assertEquals("gpt-5", next.model)
+        assertEquals("high", next.effort)
+    }
 }

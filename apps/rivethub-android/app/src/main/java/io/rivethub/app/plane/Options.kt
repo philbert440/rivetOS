@@ -132,3 +132,42 @@ fun defaultEffort(sheet: HarnessSheet?, modelId: String): String {
     val efforts = effortListFor(sheet, modelId)
     return efforts.find { it.default }?.id ?: efforts.firstOrNull()?.id ?: ""
 }
+
+data class SummaryControls(
+    val transport: String?,
+    val model: String,
+    val effort: String,
+)
+
+/**
+ * Keep [currentModel]/[currentEffort] when they still exist on the native catalog;
+ * otherwise fall through incoming summary ids, then default/first. A catalog that
+ * drops the selected id must not leave those values on the next [buildUserTurn].
+ * Empty native catalog (PTY / no turnOptions) leaves the current pair alone.
+ */
+fun reconcileSummaryControls(
+    sheet: HarnessSheet?,
+    currentTransport: String?,
+    currentModel: String,
+    currentEffort: String,
+    incomingTransport: String? = null,
+    incomingModel: String? = null,
+    incomingEffort: String? = null,
+): SummaryControls {
+    val nextTransport = incomingTransport ?: currentTransport
+    val native = nativeTurnModels(sheet, nextTransport)
+    val nextModel = when {
+        native.isEmpty() -> currentModel
+        native.any { it.id == currentModel } -> currentModel
+        native.any { it.id == incomingModel } -> incomingModel!!
+        else -> native.find { it.default }?.id ?: native.firstOrNull()?.id ?: currentModel
+    }
+    val efforts = native.find { it.id == nextModel }?.efforts.orEmpty()
+    val nextEffort = when {
+        efforts.isEmpty() -> currentEffort
+        efforts.any { it.id == currentEffort } -> currentEffort
+        efforts.any { it.id == incomingEffort } -> incomingEffort!!
+        else -> efforts.find { it.default }?.id ?: efforts.firstOrNull()?.id ?: currentEffort
+    }
+    return SummaryControls(nextTransport, nextModel, nextEffort)
+}

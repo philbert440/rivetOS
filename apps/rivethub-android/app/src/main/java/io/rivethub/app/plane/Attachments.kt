@@ -23,6 +23,42 @@ fun readyAttachments(atts: List<PendingAttachment>): List<StagedTurnAttachment> 
         else StagedTurnAttachment(mime = a.mime ?: "application/octet-stream", pathOrUri = uri, name = a.name)
     }
 
+/** Rebuild READY chips from a queued turn so cancel / inject-fail does not drop images. */
+fun restoreReadyChips(staged: List<StagedTurnAttachment>): List<PendingAttachment> =
+    staged.map { a ->
+        PendingAttachment(
+            id = a.pathOrUri,
+            name = a.name?.takeIf { it.isNotBlank() }
+                ?: a.pathOrUri.substringAfterLast('/').ifBlank { "image" },
+            status = AttachmentStatus.READY,
+            uri = a.pathOrUri,
+            mime = a.mime,
+        )
+    }
+
+data class RestoredComposer(
+    val text: String,
+    val attachments: List<PendingAttachment>,
+)
+
+/** Prepend the queued caption and chips in front of whatever the composer already holds. */
+fun restoreQueuedComposer(
+    composer: String,
+    composerAttachments: List<PendingAttachment>,
+    itemText: String,
+    itemAttachments: List<StagedTurnAttachment>,
+): RestoredComposer {
+    val text = when {
+        itemText.isBlank() -> composer
+        composer.isBlank() -> itemText
+        else -> "$itemText\n$composer"
+    }
+    return RestoredComposer(
+        text = text,
+        attachments = restoreReadyChips(itemAttachments) + composerAttachments,
+    )
+}
+
 fun anyFailed(atts: List<PendingAttachment>): Boolean =
     atts.any { it.status == AttachmentStatus.FAILED }
 
