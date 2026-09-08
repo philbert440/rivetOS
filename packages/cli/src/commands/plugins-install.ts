@@ -370,6 +370,16 @@ function skipTomlWs(s: string, i: number): number {
   return i
 }
 
+const TOML_BASIC_ESCAPES: Record<string, string> = {
+  b: '\b',
+  t: '\t',
+  n: '\n',
+  f: '\f',
+  r: '\r',
+  '"': '"',
+  '\\': '\\',
+}
+
 function parseTomlKey(s: string, i: number): { key: string; next: number } | null {
   if (i >= s.length) return null
   const q = s[i]
@@ -382,7 +392,20 @@ function parseTomlKey(s: string, i: number): { key: string; next: number } | nul
       if (q === '"' && c === '\\') {
         j += 1
         if (j >= s.length) return null
-        key += s[j]
+        const e = s[j]
+        if (e === 'u' || e === 'U') {
+          const width = e === 'u' ? 4 : 8
+          const hex = s.slice(j + 1, j + 1 + width)
+          if (hex.length !== width || !/^[0-9a-fA-F]+$/.test(hex)) return null
+          const cp = Number.parseInt(hex, 16)
+          if (!Number.isFinite(cp) || cp > 0x10ffff) return null
+          key += String.fromCodePoint(cp)
+          j += 1 + width
+          continue
+        }
+        const mapped = TOML_BASIC_ESCAPES[e]
+        if (mapped === undefined) return null
+        key += mapped
         j += 1
         continue
       }
@@ -425,15 +448,104 @@ export function parseTomlTableKeys(line: string): string[] | null {
   }
 }
 
+function skipTomlBasicString(text: string, i: number): number {
+  const n = text.length
+  while (i < n && text[i] !== '"' && text[i] !== '\n') {
+    i += text[i] === '\\' ? 2 : 1
+  }
+  return i < n && text[i] === '"' ? i + 1 : i
+}
+
+function skipTomlLiteralString(text: string, i: number): number {
+  const n = text.length
+  while (i < n && text[i] !== "'" && text[i] !== '\n') i += 1
+  return i < n && text[i] === "'" ? i + 1 : i
+}
+
+function skipTomlMlBasic(text: string, i: number): number {
+  const n = text.length
+  while (i < n) {
+    if (text.startsWith('"""', i)) return i + 3
+    i += text[i] === '\\' ? 2 : 1
+  }
+  return n
+}
+
+function skipTomlMlLiteral(text: string, i: number): number {
+  const n = text.length
+  while (i < n) {
+    if (text.startsWith("'''", i)) return i + 3
+    i += 1
+  }
+  return n
+}
+
+function skipTomlStatement(text: string, i: number): number {
+  const n = text.length
+  while (i < n && text[i] !== '\n') {
+    if (text.startsWith('"""', i)) {
+      i = skipTomlMlBasic(text, i + 3)
+      continue
+    }
+    if (text.startsWith("'''", i)) {
+      i = skipTomlMlLiteral(text, i + 3)
+      continue
+    }
+    if (text[i] === '"') {
+      i = skipTomlBasicString(text, i + 1)
+      continue
+    }
+    if (text[i] === "'") {
+      i = skipTomlLiteralString(text, i + 1)
+      continue
+    }
+    if (text[i] === '#') {
+      while (i < n && text[i] !== '\n') i += 1
+      break
+    }
+    i += 1
+  }
+  return i
+}
+
 export function tomlHasUncommentedTable(text: string, table: string): boolean {
   const want = table.split('.')
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const keys = parseTomlTableKeys(trimmed)
-    if (keys && keys.length === want.length && keys.every((k, idx) => k === want[idx])) {
-      return true
+  let i = 0
+  const n = text.length
+  while (i < n) {
+    while (i < n && /[ \t\r\n]/.test(text[i])) i += 1
+    if (i >= n) break
+    if (text[i] === '#') {
+      while (i < n && text[i] !== '\n') i += 1
+      continue
     }
+    if (text.startsWith('"""', i)) {
+      i = skipTomlMlBasic(text, i + 3)
+      continue
+    }
+    if (text.startsWith("'''", i)) {
+      i = skipTomlMlLiteral(text, i + 3)
+      continue
+    }
+    if (text[i] === '"') {
+      i = skipTomlBasicString(text, i + 1)
+      continue
+    }
+    if (text[i] === "'") {
+      i = skipTomlLiteralString(text, i + 1)
+      continue
+    }
+    if (text[i] === '[') {
+      const nl = text.indexOf('\n', i)
+      const line = nl === -1 ? text.slice(i) : text.slice(i, nl)
+      const keys = parseTomlTableKeys(line)
+      if (keys && keys.length === want.length && keys.every((k, idx) => k === want[idx])) {
+        return true
+      }
+      i = nl === -1 ? n : nl
+      continue
+    }
+    i = skipTomlStatement(text, i)
   }
   return false
 }

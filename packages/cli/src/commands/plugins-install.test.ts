@@ -177,6 +177,21 @@ describe('ensureGrokMcpBlock', () => {
       'rivetos',
     ])
   })
+
+  it('decodes TOML unicode escapes in quoted table keys', () => {
+    const existing = '[mcp_servers."rivet\\u006fs"]\ncommand = "x"\n'
+    expect(parseTomlTableKeys('[mcp_servers."rivet\\u006fs"]')).toEqual(['mcp_servers', 'rivetos'])
+    expect(tomlHasUncommentedTable(existing, 'mcp_servers.rivetos')).toBe(true)
+    expect(ensureGrokMcpBlock(existing, root)).toBe(existing)
+  })
+
+  it('ignores a table header that only appears inside a multiline string', () => {
+    const existing = 'instructions = """\n[mcp_servers.rivetos]\n"""\n'
+    expect(tomlHasUncommentedTable(existing, 'mcp_servers.rivetos')).toBe(false)
+    const out = ensureGrokMcpBlock(existing, root)
+    expect(out).not.toBe(existing)
+    expect(tomlHasUncommentedTable(out, 'mcp_servers.rivetos')).toBe(true)
+  })
 })
 
 describe('ensureEnvKey / readEnvKey', () => {
