@@ -35,6 +35,7 @@ import {
   ingestMessages,
   createWatcherState,
   scanOnce,
+  watchTick,
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
   MAX_CONTENT,
@@ -526,6 +527,43 @@ console.log('\n— fold-parity with codexTurnsFromLines —')
       turns.some((t) => t.role === 'assistant' && t.text === 'here they are'),
     )
   }
+}
+
+// =============================================================================
+// watchTick — boot race against PGlite must not kill the watcher
+// =============================================================================
+console.log('\n— watchTick boot race —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-watch-'))
+  const state = createWatcherState()
+  let released = 0
+  const refused = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:5433'), {
+    code: 'ECONNREFUSED',
+  })
+
+  await watchTick({ connect: async () => { throw refused } }, dir, state, true)
+  eq('ECONNREFUSED first tick does not throw', released, 0)
+
+  let connects = 0
+  const recovering = {
+    connect: async () => {
+      connects++
+      if (connects === 1) throw refused
+      return {
+        query: async () => ({ rows: [], rowCount: 0 }),
+        release: () => {
+          released++
+        },
+      }
+    },
+  }
+  await watchTick(recovering, dir, state, true)
+  eq('first recovering tick still refuses without release', released, 0)
+  await watchTick(recovering, dir, state, false)
+  eq('second tick acquires a client', connects, 2)
+  eq('release runs only after successful connect', released, 1)
+
+  rmSync(dir, { recursive: true, force: true })
 }
 
 if (failed > 0) {

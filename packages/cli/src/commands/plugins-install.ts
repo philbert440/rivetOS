@@ -790,7 +790,8 @@ export function codexSystemdUnit(opts: {
   const lines = [
     '[Unit]',
     'Description=RivetOS Codex memory capture watcher',
-    'After=network.target',
+    'After=network.target rivetos.service',
+    'Wants=rivetos.service',
     '',
     '[Service]',
     'Type=simple',
@@ -802,7 +803,7 @@ export function codexSystemdUnit(opts: {
   if (opts.codexHome) lines.push(systemdEnvironment('CODEX_HOME', opts.codexHome))
   if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
   if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
-  lines.push('Restart=on-failure', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
+  lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
   return lines.join('\n')
 }
 

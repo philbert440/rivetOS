@@ -1579,6 +1579,10 @@ describe('codex watcher unit/plist builders', () => {
     expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
     expect(unit).toContain(`Environment=PATH=${watcherPathEnv('/home/u')}`)
     expect(unit).toContain('WantedBy=default.target')
+    expect(unit).toContain('After=network.target rivetos.service')
+    expect(unit).toContain('Wants=rivetos.service')
+    expect(unit).toContain('Restart=always')
+    expect(unit).not.toContain('Restart=on-failure')
   })
 
   it('launchd plist labels the watcher and xml-escapes env values', () => {
