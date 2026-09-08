@@ -866,7 +866,9 @@ export interface TermClaimFrame {
 
 /** Client → server JSON control frames (keystrokes ride as binary). */
 export type TermControlFrame =
-  { type: 'resize'; cols: number; rows: number } | { type: 'kill' } | TermClaimFrame
+  | { type: 'resize'; cols: number; rows: number }
+  | { type: 'kill' }
+  | TermClaimFrame
 
 // ---------------------------------------------------------------------------
 // WS /api/notifications/ws (phase 4e) — ephemeral delivery; /api/outcomes is
