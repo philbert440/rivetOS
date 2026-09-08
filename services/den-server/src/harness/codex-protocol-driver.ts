@@ -11,6 +11,7 @@ import {
   type HarnessSessionSummary as SessionSummary,
   type StartSessionOpts,
   type UserTurn,
+  type HarnessCapabilities,
 } from '@rivetos/types'
 import { CODEX_NATIVE_RE, CodexDriver, type CodexDriverDeps } from './codex-driver.js'
 import { record, type CodexFrame, type CodexRpc } from './codex-rpc.js'
@@ -55,6 +56,10 @@ export class CodexProtocolDriver extends CodexDriver {
   private readonly fresh = new Set<string>()
   private readonly loading = new Map<string, Promise<void>>()
   private readonly sinks = new Map<string, Set<(event: HarnessEvent) => void>>()
+  private protocolCaps?: HarnessCapabilities
+  override get capabilities(): HarnessCapabilities {
+    return this.protocolCaps ?? super.capabilities
+  }
   private readonly rpcOff: () => void
 
   constructor(private readonly protocol: CodexProtocolDeps) {
@@ -81,12 +86,13 @@ export class CodexProtocolDriver extends CodexDriver {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
     this.rpcOff = protocol.rpc.subscribe((frame) => this.onFrame(frame))
-    Object.assign(this.capabilities, {
+    this.protocolCaps = {
+      ...super.capabilities,
       resume: true,
       interrupt: true,
       liveStream: true,
       approvals: true,
-    })
+    }
   }
 
   override verifyCapabilities() {
