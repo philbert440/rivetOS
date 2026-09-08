@@ -52,12 +52,19 @@ export interface ResolvedEmbeddedPg {
   liteMode: boolean
 }
 
+export const ATTACH_BACKUP_ERROR = 'stop the node or run backup from it'
+
 export interface EmbeddedPgHandle {
   pgUrl: string
   owned: boolean
   close(): Promise<void>
   /** In-process exec on the WASM session. Present only when owned. */
   exec?(sql: string): Promise<unknown>
+  /**
+   * Native PGlite gzip tarball (`dumpDataDir`). Attach mode (another process
+   * owns the engine) throws {@link ATTACH_BACKUP_ERROR}.
+   */
+  backup(outPath: string): Promise<void>
 }
 
 export interface EmbeddedPgLock {
@@ -146,7 +153,12 @@ export async function acquireEmbeddedPg(
             { cause: err },
           )
         }
-        return { pgUrl, owned: false, close: () => Promise.resolve() }
+        return {
+          pgUrl,
+          owned: false,
+          close: () => Promise.resolve(),
+          backup: () => Promise.reject(new Error(ATTACH_BACKUP_ERROR)),
+        }
       }
       if (attached.state === 'stale') {
         try {
@@ -286,7 +298,25 @@ export async function startEmbeddedPg(
     owned: true,
     close,
     exec: (sql: string) => db.exec(sql),
+    backup: async (outPath: string) => {
+      mkdirSync(dirname(outPath), { recursive: true })
+      const dumped = await (
+        db as { dumpDataDir: (compression: 'gzip' | 'none') => Promise<unknown> }
+      ).dumpDataDir('gzip')
+      const bytes = await dumpToBuffer(dumped)
+      writeFileSync(outPath, bytes)
+    },
   }
+}
+
+async function dumpToBuffer(dumped: unknown): Promise<Buffer> {
+  if (Buffer.isBuffer(dumped)) return dumped
+  if (dumped instanceof Uint8Array) return Buffer.from(dumped)
+  if (dumped && typeof dumped === 'object' && 'arrayBuffer' in dumped) {
+    const buf = await (dumped as { arrayBuffer: () => Promise<ArrayBuffer> }).arrayBuffer()
+    return Buffer.from(buf)
+  }
+  throw new Error('embedded postgres: dumpDataDir did not return a File/Blob/Uint8Array')
 }
 
 function expandTilde(p: string, home: string): string {

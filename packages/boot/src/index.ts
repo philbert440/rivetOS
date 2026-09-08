@@ -45,6 +45,7 @@ export {
   embeddedPgUrl,
   waitForPort,
   EMBEDDED_PG_LOCKFILE,
+  ATTACH_BACKUP_ERROR,
   type ResolvedEmbeddedPg,
   type EmbeddedPgHandle,
   type EmbeddedPgLock,

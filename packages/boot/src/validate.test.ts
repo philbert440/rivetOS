@@ -1008,6 +1008,12 @@ describe('den', () => {
     assertWarning(validateConfig(cfg), 'den.prot', 'Unknown den key')
   })
 
+  it('accepts den.advertise_mdns (local-mode / PR 7 advertiser)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, advertise_mdns: true }
+    assertValid(validateConfig(cfg))
+  })
+
   it('warns on unknown den.terminal keys', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, terminal: { enabled: true, shell: '/bin/zsh' }, token: 't' }

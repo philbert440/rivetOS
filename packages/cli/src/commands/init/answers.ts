@@ -7,7 +7,7 @@
  */
 
 import { readFile } from 'node:fs/promises'
-import { DEFAULT_MODELS, PROVIDER_ENV_KEYS } from './agents.js'
+import { CLI_KEYLESS_PROVIDERS, DEFAULT_MODELS, PROVIDER_ENV_KEYS } from './agents.js'
 import type { DeploymentTarget, EnvDetection, WizardAgent, WizardMeshJoin } from './types.js'
 import { parseUserHost, validateNodeName } from '../../lib/mesh-enroll.js'
 
@@ -188,8 +188,8 @@ function interpretAgent(raw: unknown, index: number, usedNames: Set<string>): Wi
   let apiKey: string | undefined
   let baseUrl: string | undefined
 
-  if (provider === 'claude-cli' || provider === 'codex-cli') {
-    // no credentials
+  if (CLI_KEYLESS_PROVIDERS.has(provider)) {
+    // no credentials — local coding-agent binary owns auth
   } else if (provider === 'ollama') {
     baseUrl = readString(obj, 'baseUrl', `${path}.baseUrl`, 'http://localhost:11434')
   } else if (provider === 'vllm') {

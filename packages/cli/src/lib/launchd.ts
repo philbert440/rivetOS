@@ -1,0 +1,127 @@
+/**
+ * macOS LaunchAgent for `rivetos local` (Linux uses the systemd user unit).
+ *
+ * Plist: `~/Library/LaunchAgents/dev.rivetos.node.plist`
+ * bootstrap: `launchctl bootstrap gui/$UID <plist>`
+ */
+
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { parseRivetEnv } from './env-file.js'
+import { execFileAsync } from './harness-detect.js'
+
+export const LAUNCHD_LABEL = 'dev.rivetos.node'
+
+export function launchdPlistPath(home: string = homedir()): string {
+  return join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`)
+}
+
+function xmlEscape(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+export interface LaunchdPlistOpts {
+  nodePath: string
+  cliEntry: string
+  workingDir: string
+  env: Record<string, string>
+  label?: string
+}
+
+export function renderLaunchdPlist(opts: LaunchdPlistOpts): string {
+  const label = opts.label ?? LAUNCHD_LABEL
+  const args = [opts.nodePath, opts.cliEntry, 'start']
+    .map((a) => `    <string>${xmlEscape(a)}</string>`)
+    .join('\n')
+  const envLines = Object.entries(opts.env)
+    .filter(([k, v]) => k && v !== undefined)
+    .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(v)}</string>`)
+    .join('\n')
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(label)}</string>
+  <key>ProgramArguments</key>
+  <array>
+${args}
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(opts.workingDir)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+${envLines}
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(join(opts.workingDir, 'launchd.out.log'))}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(join(opts.workingDir, 'launchd.err.log'))}</string>
+</dict>
+</plist>
+`
+}
+
+export function envFileToRecord(contents: string): Record<string, string> {
+  return parseRivetEnv(contents)
+}
+
+export async function installLaunchdAgent(opts: {
+  home?: string
+  uid?: number
+  nodePath: string
+  cliEntry: string
+  workingDir: string
+  env: Record<string, string>
+  exec?: typeof execFileAsync
+}): Promise<{ plistPath: string }> {
+  const home = opts.home ?? homedir()
+  const plistPath = launchdPlistPath(home)
+  mkdirSync(dirname(plistPath), { recursive: true })
+  const body = renderLaunchdPlist({
+    nodePath: opts.nodePath,
+    cliEntry: opts.cliEntry,
+    workingDir: opts.workingDir,
+    env: opts.env,
+  })
+  writeFileSync(plistPath, body, { encoding: 'utf-8', mode: 0o644 })
+
+  const uid = opts.uid ?? process.getuid?.() ?? 0
+  const domain = `gui/${String(uid)}`
+  const exec = opts.exec ?? execFileAsync
+  const bootout = await exec('launchctl', ['bootout', `${domain}/${LAUNCHD_LABEL}`], {
+    timeoutMs: 10_000,
+  })
+  void bootout
+  const boot = await exec('launchctl', ['bootstrap', domain, plistPath], { timeoutMs: 15_000 })
+  if (boot.timedOut || (boot.code !== 0 && boot.code !== null)) {
+    const kick = await exec('launchctl', ['kickstart', '-k', `${domain}/${LAUNCHD_LABEL}`], {
+      timeoutMs: 10_000,
+    })
+    if (kick.timedOut || (kick.code !== 0 && kick.code !== null)) {
+      const detail = (boot.stderr || boot.stdout || kick.stderr).trim().slice(0, 400)
+      throw new Error(`launchctl bootstrap failed: ${detail}`)
+    }
+  }
+  return { plistPath }
+}
+
+export async function stopLaunchdAgent(opts: {
+  uid?: number
+  exec?: typeof execFileAsync
+}): Promise<void> {
+  const uid = opts.uid ?? process.getuid?.() ?? 0
+  const exec = opts.exec ?? execFileAsync
+  await exec('launchctl', ['bootout', `gui/${String(uid)}/${LAUNCHD_LABEL}`], {
+    timeoutMs: 10_000,
+  })
+}

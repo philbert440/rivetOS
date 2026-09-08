@@ -26,6 +26,30 @@ export interface WizardMeshJoin {
   advertise?: string
 }
 
+/** Detected coding harness recorded for local-mode config emission. */
+export interface WizardLocalHarness {
+  id: string
+  binary: string
+  providerKey?: string
+}
+
+/** `rivetos local` extras consumed by `buildConfigYaml` / `buildEnvFile`. */
+export interface WizardLocal {
+  pgPort: number
+  dataDir: string
+  denPort: number
+  exposeLan: boolean
+  /** Emit den.tls_cert/tls_key. Default: same as `exposeLan`. */
+  tls?: boolean
+  harnesses: WizardLocalHarness[]
+  sharedDir: string
+  hostname: string
+  root?: string
+  memory?: 'lite' | 'full'
+  muxNone?: boolean
+  embedEndpoint?: string
+}
+
 export interface WizardState {
   deployment: DeploymentTarget
   agents: WizardAgent[]
@@ -43,6 +67,8 @@ export interface WizardState {
    * generated config.yaml — not the leftover "add channels.agent by hand" path.
    */
   meshSection?: Record<string, unknown>
+  /** Present when generating a `rivetos local` laptop config. */
+  local?: WizardLocal
 }
 
 export interface EnvDetection {

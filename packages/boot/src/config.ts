@@ -242,6 +242,11 @@ export interface DenSection {
   /** Den HTTP/WS port (default: 5174) */
   port?: number
   /**
+   * Publish `_rivethub._tcp` on the LAN (consumed by PR 7's mDNS registrar).
+   * Unknown to den-server itself — boot reads it.
+   */
+  advertise_mdns?: boolean
+  /**
    * Bearer token required on every non-health endpoint when set.
    * REQUIRED (validation error) when `terminal.enabled` and `host` is not
    * loopback — mirrors den-server's own startup security gate so the

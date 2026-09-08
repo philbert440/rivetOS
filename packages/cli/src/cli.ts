@@ -76,6 +76,7 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   plugin: (args) => runSubRoute(routePlugin(args)),
   skill: (args) => runSubRoute(routeSkill(args)),
   workflow: () => import('./commands/workflow.js').then((m) => m.default()),
+  local: (args) => import('./commands/local.js').then((m) => m.default(args)),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
   'codex-cli': () => import('./commands/provider.js').then((m) => m.default('codex-cli')),
@@ -98,6 +99,7 @@ export function helpText(): string {
 
   Setup:
     rivetos init [--answers-file PATH]  Interactive setup wizard (JSON for non-interactive)
+    rivetos local [init|up|status|backup|reset]  One-shot laptop bring-up (embedded DB + den)
     rivetos install --herdr             Provision pinned herdr + manifest overrides
     rivetos update                      Pull latest, rebuild containers
     rivetos doctor                      Check config and connectivity

@@ -12,11 +12,23 @@ function bail<T>(v: T | symbol): asserts v is T {
   }
 }
 
+/** CLI harness providers — local binary owns auth; no API key. */
+export const CLI_KEYLESS_PROVIDERS = new Set<string>([
+  'claude-cli',
+  'codex-cli',
+  'grok-cli',
+  'hermes-cli',
+  'kimi-code',
+])
+
 /** Default models per provider */
 export const DEFAULT_MODELS: Record<string, string> = {
   'codex-cli': 'default',
   anthropic: 'claude-opus-4-7',
   'claude-cli': 'opus',
+  'grok-cli': 'default',
+  'hermes-cli': 'default',
+  'kimi-code': 'default',
   xai: 'grok-4-1-fast-reasoning',
   google: 'gemini-2.5-pro',
   ollama: 'qwen2.5:32b',
@@ -97,11 +109,28 @@ export async function configureAgents(): Promise<WizardAgent[]> {
     let apiKey: string | undefined
     let baseUrl: string | undefined
 
-    if (provider === 'claude-cli' || provider === 'codex-cli') {
-      // No API key — the local `claude` binary owns auth via its OAuth keychain.
-      // Just remind the user to make sure the CLI is installed and logged in.
-      const cli = provider === 'codex-cli' ? 'Codex CLI' : 'Claude Code CLI'
-      const login = provider === 'codex-cli' ? 'codex login' : 'claude login'
+    if (CLI_KEYLESS_PROVIDERS.has(provider)) {
+      // No API key — the local coding-agent binary owns auth.
+      const cli =
+        provider === 'codex-cli'
+          ? 'Codex CLI'
+          : provider === 'grok-cli'
+            ? 'Grok Build CLI'
+            : provider === 'hermes-cli'
+              ? 'Hermes CLI'
+              : provider === 'kimi-code'
+                ? 'Kimi Code CLI'
+                : 'Claude Code CLI'
+      const login =
+        provider === 'codex-cli'
+          ? 'codex login'
+          : provider === 'grok-cli'
+            ? 'grok login'
+            : provider === 'hermes-cli'
+              ? 'hermes login'
+              : provider === 'kimi-code'
+                ? 'kimi login'
+                : 'claude login'
       p.log.info(`${cli} uses your subscription login — no API key needed.`)
       p.log.info(`Make sure the binary is installed and \`${login}\` has been run.`)
     } else if (provider === 'ollama') {
