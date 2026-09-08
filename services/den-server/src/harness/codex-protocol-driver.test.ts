@@ -174,6 +174,56 @@ it('accepts interrupt then send before the completion notification', async () =>
   })
 })
 
+it('ignores a superseded completion while replacement approvals are pending', async () => {
+  const { driver, rpc, emit } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  const events: HarnessEvent[] = []
+  driver.subscribe(sid, (event) => events.push(event))
+  await driver.sendUserTurn(sid, { text: 'first' })
+  await driver.interrupt(sid)
+  vi.mocked(rpc.request).mockResolvedValueOnce({ turn: { id: 'turn2', status: 'inProgress' } })
+  await driver.sendUserTurn(sid, { text: 'replacement' })
+  emit({
+    id: 7,
+    method: 'item/commandExecution/requestApproval',
+    params: { threadId: native, turnId: 'turn2', itemId: 'cmd2' },
+  })
+  const sync = vi.spyOn(driver, 'syncTranscript')
+  events.length = 0
+  emit({
+    method: 'turn/completed',
+    params: { threadId: native, turn: { id: 'turn1', status: 'interrupted' } },
+  })
+  expect(events).toEqual([])
+  expect(sync).not.toHaveBeenCalled()
+  await driver.resolveApproval(sid, 'number:7', 'allow')
+  expect(rpc.respond).toHaveBeenCalledWith(7, { decision: 'accept' })
+  emit({
+    method: 'turn/completed',
+    params: { threadId: native, turn: { id: 'turn2', status: 'completed' } },
+  })
+  expect(events).toContainEqual(expect.objectContaining({ type: 'turn-complete', turnId: 'turn2' }))
+  expect(sync).toHaveBeenCalledOnce()
+})
+
+it('replays one unavailable event to a subscriber attaching during an outage', async () => {
+  const { driver, rpc, emit } = setup()
+  await driver.startSession({ nativeSessionId: id })
+  const existing: HarnessEvent[] = []
+  driver.subscribe(sid, (event) => existing.push(event))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  emit({ method: '$disconnected', params: {} })
+  vi.mocked(rpc.request).mockRejectedValue(new Error('still disconnected'))
+  const late: HarnessEvent[] = []
+  driver.subscribe(sid, (event) => late.push(event))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  emit({ method: '$disconnected', params: {} })
+  const unavailable = (events: HarnessEvent[]) =>
+    events.filter((event) => event.type === 'error' && event.code === 'codex_unavailable')
+  expect(unavailable(existing)).toHaveLength(1)
+  expect(unavailable(late)).toEqual(unavailable(existing))
+})
+
 it('interrupt waits for a pending turn/start response', async () => {
   const { driver, rpc } = setup()
   await driver.startSession({ nativeSessionId: id })

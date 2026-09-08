@@ -32,7 +32,7 @@ interface Runtime {
   sending?: boolean
   completedTurnId?: string
   recoveryBlocked?: boolean
-  outageReported?: boolean
+  outageReported?: Extract<HarnessEvent, { type: 'error' }>
   rev: number
   approvals: Map<
     string,
@@ -167,14 +167,14 @@ export class CodexProtocolDriver extends CodexDriver {
   private failure(id: string, error: unknown): void {
     const state = this.state(id)
     if (state.outageReported) return
-    state.outageReported = true
-    this.publish(id, {
+    state.outageReported = {
       type: 'error',
       sessionId: this.sid(id),
       code: 'codex_unavailable',
       message: error instanceof Error ? error.message : String(error),
       retryable: true,
-    })
+    }
+    this.publish(id, state.outageReported)
   }
 
   override async startSession(
@@ -424,8 +424,10 @@ export class CodexProtocolDriver extends CodexDriver {
       this.sinks.set(id, set)
     }
     set.add(sink)
+    const state = this.state(id)
+    if (state.outageReported) sink(state.outageReported)
     this.syncTranscript(sessionId)
-    for (const pending of this.state(id).approvals.values()) sink(pending.event)
+    for (const pending of state.approvals.values()) sink(pending.event)
     return () => {
       set.delete(sink)
       if (!set.size) this.sinks.delete(id)
@@ -501,7 +503,7 @@ export class CodexProtocolDriver extends CodexDriver {
 
   protected onFrame(frame: CodexFrame): void {
     if (frame.method === '$connected') {
-      for (const state of this.runtime.values()) state.outageReported = false
+      for (const state of this.runtime.values()) state.outageReported = undefined
       for (const id of this.sinks.keys()) this.syncTranscript(this.sid(id))
       return
     }
@@ -541,6 +543,7 @@ export class CodexProtocolDriver extends CodexDriver {
         this.publishStatus(id)
         break
       case 'turn/completed':
+        if (state.turnId && String(record(p.turn).id) !== state.turnId) break
         this.fresh.delete(id)
         state.completedTurnId = String(record(p.turn).id)
         if (state.turnId === state.completedTurnId) state.turnId = undefined

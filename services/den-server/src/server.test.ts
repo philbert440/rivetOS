@@ -704,3 +704,50 @@ it('returns the unsupported roster setting when creating a Codex terminal', asyn
   expect(response.status).toBe(503)
   expect(await response.json()).toEqual({ error: expect.stringContaining('cannot translate') })
 })
+
+it('rejects protocol inject text without submit before interrupting or sending', async () => {
+  const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(upstream, 'listening')
+  const methods: string[] = []
+  upstream.on('connection', (socket) => {
+    socket.on('message', (data) => {
+      const frame = JSON.parse(String(data)) as { id?: number; method: string }
+      methods.push(frame.method)
+      if (frame.id === undefined) return
+      socket.send(
+        JSON.stringify({
+          id: frame.id,
+          result:
+            frame.method === 'turn/start'
+              ? { turn: { id: 'active', status: 'inProgress' } }
+              : { thread: { id: 'native-inject', cwd: '/tmp', turns: [] } },
+        }),
+      )
+    })
+  })
+  try {
+    const address = upstream.address() as AddressInfo
+    const { base } = await start('', 60000, {
+      term: true,
+      codexAppServerUrl: `ws://127.0.0.1:${address.port}`,
+    })
+    const session = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+    expect((await post(base, '/term', { command: 'codex', session })).status).toBe(201)
+    expect((await post(base, '/term/inject', { session, text: 'first' })).status).toBe(202)
+    methods.length = 0
+    const response = await post(base, '/term/inject', {
+      session,
+      text: 'raw',
+      submit: false,
+      interrupt: true,
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: 'Protocol sessions do not support text without submit',
+    })
+    expect(methods).toEqual([])
+  } finally {
+    for (const socket of upstream.clients) socket.terminate()
+    upstream.close()
+  }
+})
