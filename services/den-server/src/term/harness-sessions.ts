@@ -29,7 +29,7 @@ import {
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
-import { findCodexRoomRollout } from './codex-room.js'
+import { resolveCodexRoomRollout } from './codex-room.js'
 
 export {
   claudeTurnsFromLines,
@@ -1261,13 +1261,9 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     }
   }
 
-  if (wants('codex') && CODEX_NATIVE_RE.test(native)) {
+  if (wants('codex')) {
     const codex = await readCodexTranscript(native)
     if (codex.turns.length > 0) return { ...codex, id }
-  }
-  if (command === undefined) {
-    const path = await findCodexRoomRollout(native, codexSessionsDir())
-    if (path) return readHarnessStoreAt({ command: 'codex', path }, id)
   }
 
   if (wants('hermes')) {
@@ -1354,7 +1350,7 @@ export async function readKimiTranscript(id: string): Promise<HarnessTranscript>
  */
 export async function readCodexTranscript(id: string): Promise<HarnessTranscript> {
   if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
-  const path = findCodexRolloutSync(id)
+  const path = findCodexRolloutSync(id) ?? (await resolveCodexRoomRollout(id, codexSessionsDir()))
   if (!path) return { id, command: '', turns: [] }
   const parsed = await parseJsonlObjects(path)
   return withTruncated(
@@ -1433,12 +1429,9 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const grokPath = await findGrokChatHistory(native)
     if (grokPath) return { command: 'grok', path: grokPath }
   }
-  if (wants('codex') && CODEX_NATIVE_RE.test(native)) {
-    const path = findCodexRolloutSync(native)
-    if (path) return { command: 'codex', path }
-  }
-  if (command === undefined) {
-    const path = await findCodexRoomRollout(native, codexSessionsDir())
+  if (wants('codex')) {
+    const path =
+      findCodexRolloutSync(native) ?? (await resolveCodexRoomRollout(native, codexSessionsDir()))
     if (path) return { command: 'codex', path }
   }
   if (wants('hermes') && hermesSessionExists(native)) {

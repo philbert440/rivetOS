@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import { ShieldQuestion } from 'lucide-react'
 import type { ApprovalDecision } from '@rivetos/types'
 import type { PendingApproval } from '../stores/chat.js'
+import { supportsSessionApproval } from '../lib/approval-options.js'
 import { humanToolTitle } from '../lib/tool-titles.js'
 
 /**
@@ -36,9 +37,7 @@ export function HarnessApprovalCard(props: {
 
   const choices: { label: string; decision: ApprovalDecision; accent: boolean }[] = [
     { label: 'Allow', decision: 'allow', accent: true },
-    // Codex only exposes allow-once and deny; its prefix rule is persistent.
-    ...(scrapedOptions.length === 0 ||
-    scrapedOptions.some((label) => /don't ask|always|this session/i.test(label))
+    ...(supportsSessionApproval(scrapedOptions)
       ? [{ label: 'Allow for session', decision: 'allow-session' as const, accent: false }]
       : []),
     { label: 'Deny', decision: 'deny', accent: false },

@@ -170,7 +170,7 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
         asst.text = asst.text ? asst.text + '\n\n' + text : text
         asst.lastBlock = 'text'
         hadText = true
-        hadFinalText = payload.phase !== 'commentary'
+        hadFinalText ||= payload.phase !== 'commentary'
         break
       }
       case 'reasoning': {

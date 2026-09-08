@@ -1,4 +1,4 @@
-import { readdir, readFile, readlink } from 'node:fs/promises'
+import { access, readdir, readFile, readlink } from 'node:fs/promises'
 import { basename, join, resolve, sep } from 'node:path'
 
 /** Codex has no session-start hook. On Linux, its writable rollout file provides
@@ -55,4 +55,30 @@ export async function findCodexRoomRollout(
   )
   // An ambiguous room must never display another conversation's transcript.
   return paths.size === 1 ? [...paths][0] : undefined
+}
+
+// Bound both staleness after a room restarts and memory use across many rooms.
+const roomRollouts = new Map<string, { path: string; expires: number }>()
+export async function resolveCodexRoomRollout(
+  room: string,
+  sessionsDir: string,
+  procDir = '/proc',
+): Promise<string | undefined> {
+  const key = JSON.stringify([resolve(sessionsDir), procDir, room])
+  const cached = roomRollouts.get(key)
+  if (cached && cached.expires > Date.now()) {
+    try {
+      await access(cached.path)
+      return cached.path
+    } catch {
+      // Removed rollouts must be rediscovered immediately.
+    }
+  }
+  roomRollouts.delete(key)
+  const path = await findCodexRoomRollout(room, sessionsDir, procDir)
+  if (path) {
+    if (roomRollouts.size >= 256) roomRollouts.delete(roomRollouts.keys().next().value!)
+    roomRollouts.set(key, { path, expires: Date.now() + 30_000 })
+  }
+  return path
 }

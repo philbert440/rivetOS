@@ -11,7 +11,7 @@ One spine per shelf. Pick the one that matches the question, query it, then act.
 - **`users/profiles.json` and `users/<id>.md`** — who a routed user is; for resolving display names and per-user context.
 - **`config.yaml`** — this node's own wiring (provider, mesh, den); for "what am I running on".
 
-If shelves disagree, check dates and verify against current evidence before updating the file.
+If two shelves disagree, memory wins over workspace files — update the file.
 
 ## ⚠️ Critical context
 
@@ -20,10 +20,8 @@ _(per-node gotchas that must stay top of mind — keep this list short)_
 ## RivetOS recall tools
 
 The agent-facing MCP server exposes all six read-only recall tools below. Discover
-qualified names from the connected `rivetos` server; a capture watcher alone does
-not register tools in Codex. Register with `codex mcp add rivetos -- bash
-/path/to/rivetos/integrations/codex/rivet-memory/bin/rivet-memory-mcp.sh`, then start
-or resume a Codex session to load the new server.
+qualified names from the connected `rivetos` server. For Codex setup, see
+[integrations/codex/rivet-memory/README.md](../integrations/codex/rivet-memory/README.md).
 
 | Tool | Use |
 | --- | --- |
