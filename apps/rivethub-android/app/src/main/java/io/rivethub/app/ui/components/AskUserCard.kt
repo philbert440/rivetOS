@@ -43,7 +43,7 @@ fun AskUserCardView(
     val screen = card.screen
     val only = card.questions.singleOrNull()
     val cardMode = if (only != null) askCardMode(only, screen) else AskCardMode.ANSWER
-    val hideSharedFree = (screen != null && screen.total > 1) ||
+    val hideFreeText = (screen != null && screen.total > 1) ||
         (cardMode != AskCardMode.ANSWER && cardMode != AskCardMode.FREE_TEXT)
     val hideSubmit = (cardMode != AskCardMode.ANSWER && cardMode != AskCardMode.FREE_TEXT) ||
         (screen != null && screen.total > 1 && only != null && !only.multiSelect && cardMode != AskCardMode.FREE_TEXT)
@@ -139,17 +139,17 @@ fun AskUserCardView(
                         }
                         opt.description?.let { Text(it, color = colors.inkDim, style = RivetType.xs) }
                     }
+                    if (!hideFreeText && q.freeText) {
+                        RivetField(
+                            value = freeByQ[qi].orEmpty(),
+                            onValueChange = { if (enabled) freeByQ = freeByQ + (qi to it) },
+                            placeholder = stringResource(R.string.ask_user_free),
+                        )
+                    }
                 }
             }
         }
         if (!hideSubmit) {
-            if (!hideSharedFree && cardMode == AskCardMode.ANSWER && only != null) {
-                RivetField(
-                    value = freeByQ[0].orEmpty(),
-                    onValueChange = { if (enabled) freeByQ = freeByQ + (0 to it) },
-                    placeholder = stringResource(R.string.ask_user_free),
-                )
-            }
             RivetButton(
                 text = stringResource(R.string.action_submit),
                 onClick = { onSubmit(picked, freeByQ) },

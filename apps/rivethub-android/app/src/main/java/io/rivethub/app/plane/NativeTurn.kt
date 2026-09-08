@@ -24,12 +24,12 @@ fun composerSendText(
 fun nativeImageTurn(atts: List<StagedTurnAttachment>, nativeImages: Boolean): Boolean =
     nativeImages && atts.isNotEmpty() && atts.all { isNativeImageMime(it.mime) }
 
-/** Optimistic bubble for an image-only native turn. */
-fun optimisticUserText(text: String, attachments: List<StagedTurnAttachment>): String {
-    if (text.isNotBlank()) return text
-    if (attachments.isEmpty()) return ""
-    return attachments.joinToString("\n") { "[Image]" }
-}
+/** Optimistic bubble matching the server echo (`caption` + one `[Image]` per file). */
+fun optimisticUserText(text: String, attachments: List<StagedTurnAttachment>): String =
+    buildList {
+        text.takeIf { it.isNotBlank() }?.let { add(it) }
+        repeat(attachments.size) { add("[Image]") }
+    }.joinToString("\n")
 
 fun buildUserTurn(
     text: String,

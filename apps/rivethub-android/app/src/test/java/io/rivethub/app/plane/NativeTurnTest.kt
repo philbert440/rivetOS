@@ -47,7 +47,9 @@ class NativeTurnTest {
     @Test fun `optimistic image-only bubble is a placeholder`() {
         val atts = listOf(StagedTurnAttachment("image/png", "/up/a.png", "a.png"))
         assertEquals("[Image]", optimisticUserText("", atts))
-        assertEquals("caption", optimisticUserText("caption", atts))
+        assertEquals("caption\n[Image]", optimisticUserText("caption", atts))
+        assertEquals("caption\n[Image]\n[Image]", optimisticUserText("caption", atts + atts))
         assertEquals("", optimisticUserText("", emptyList()))
+        assertEquals("caption", optimisticUserText("caption", emptyList()))
     }
 }

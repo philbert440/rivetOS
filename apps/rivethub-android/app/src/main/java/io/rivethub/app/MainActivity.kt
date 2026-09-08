@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelStore
@@ -133,14 +134,23 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Suppress("DEPRECATION")
 private fun extractShareUris(intent: android.content.Intent?): List<android.net.Uri> {
     if (intent == null) return emptyList()
     return when (intent.action) {
         android.content.Intent.ACTION_SEND ->
-            listOfNotNull(intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM) as? android.net.Uri)
+            listOfNotNull(
+                IntentCompat.getParcelableExtra(
+                    intent,
+                    android.content.Intent.EXTRA_STREAM,
+                    android.net.Uri::class.java,
+                ),
+            )
         android.content.Intent.ACTION_SEND_MULTIPLE ->
-            intent.getParcelableArrayListExtra<android.net.Uri>(android.content.Intent.EXTRA_STREAM).orEmpty()
+            IntentCompat.getParcelableArrayListExtra(
+                intent,
+                android.content.Intent.EXTRA_STREAM,
+                android.net.Uri::class.java,
+            ).orEmpty()
         else -> emptyList()
     }
 }

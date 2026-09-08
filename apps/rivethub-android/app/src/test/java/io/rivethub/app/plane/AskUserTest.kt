@@ -302,9 +302,15 @@ class AskUserTest {
     }
 
     @Test fun `askCardMode is free-text when the marker is set`() {
-        val free = AskQuestion(question = "Name?", freeText = true)
+        val free = AskQuestion(question = "Name?", options = emptyList(), freeText = true)
         assertEquals(AskCardMode.FREE_TEXT, askCardMode(free))
         assertEquals(AskCardMode.FREE_TEXT, askCardMode(free, AskScreen(0, 1)))
+    }
+
+    @Test fun `askCardMode keeps options when freeText is also set`() {
+        val both = AskQuestion(freeText = true, options = listOf(AskOption("A")))
+        assertEquals(AskCardMode.ANSWER, askCardMode(both))
+        assertEquals(AskCardMode.ANSWER, askCardMode(both, AskScreen(0, 1)))
     }
 
     @Test fun `askCardMode is terminal-only for the last single-select of several`() {

@@ -537,7 +537,10 @@ private fun parseAskQuestions(el: JsonElement?): List<HarnessAskQuestion> {
     val arr = el as? JsonArray ?: return emptyList()
     return arr.mapNotNull { item ->
         val obj = item as? JsonObject ?: return@mapNotNull null
-        val optionsEl = obj["options"] ?: obj["choices"]
+        val optionsEl = when (val o = obj["options"]) {
+            null, is JsonNull -> obj["choices"]
+            else -> o
+        }
         val optionsMissing = optionsEl == null || optionsEl is JsonNull
         val freeText = obj["freeText"]?.jsonPrimitive?.booleanOrNull == true || optionsMissing
         HarnessAskQuestion(

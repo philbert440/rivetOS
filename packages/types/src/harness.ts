@@ -216,15 +216,13 @@ export interface HarnessAskQuestion {
   question?: string
   header?: string
   multiSelect: boolean
-  /** Native questions allow text even when no options are offered. */
-  freeText?: boolean
-  options: HarnessAskOption[]
   /**
    * Text-entry question (Codex `options: null`, or an explicit marker).
    * Distinct from an empty option list on a herdr picker, which stays
-   * terminal-only.
+   * terminal-only. Typed text is also accepted when options are present.
    */
   freeText?: boolean
+  options: HarnessAskOption[]
 }
 
 export interface HarnessTranscriptEvent {

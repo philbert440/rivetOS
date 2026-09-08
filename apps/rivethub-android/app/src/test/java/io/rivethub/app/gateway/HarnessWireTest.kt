@@ -219,6 +219,11 @@ class HarnessWireTest {
             """{"type":"prompt","sessionId":"$sid","promptId":"p5","kind":"ask-user","toolName":"requestUserInput","questions":[{"question":"Name?","options":null}]}""",
         ) as HarnessEvent.Prompt
         assertTrue(nullOpts.questions.single().freeText)
+        val nullOptsChoices = parseHarnessEvent(
+            """{"type":"prompt","sessionId":"$sid","promptId":"p5b","kind":"ask-user","toolName":"requestUserInput","questions":[{"question":"Go?","options":null,"choices":[{"label":"Yes"},{"label":"No"}]}]}""",
+        ) as HarnessEvent.Prompt
+        assertEquals(listOf("Yes", "No"), nullOptsChoices.questions.single().options.map { it.label })
+        assertFalse(nullOptsChoices.questions.single().freeText)
         val empty = parseHarnessEvent(
             """{"type":"prompt","sessionId":"$sid","promptId":"p6","kind":"ask-user","toolName":"AskUserQuestion","questions":[{"question":"Go?","options":[]}]}""",
         ) as HarnessEvent.Prompt

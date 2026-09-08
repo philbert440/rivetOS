@@ -125,7 +125,7 @@ class HarnessChatViewModel(
     initialDraft: Boolean,
     private val presetModel: String = "",
     private val presetEffort: String = "",
-    initialTransport: String? = null,
+    private val initialTransport: String? = null,
     private val openStream: (Uri) -> java.io.InputStream? = { null },
     private val agentId: String = "",
     private val onAdoptPointer: ((from: String, canonical: String) -> Unit)? = null,
@@ -657,7 +657,7 @@ class HarnessChatViewModel(
             var transport = _state.value.transport
             var summaryModel: String? = null
             var summaryEffort: String? = null
-            if (!_state.value.draft && hid != null && caps != null) {
+            if (!_state.value.draft && hid != null && caps != null && initialTransport == null) {
                 val sessions = withContext(Dispatchers.IO) {
                     runCatching { hg.listSessions(hid, caps) }.getOrDefault(emptyList())
                 }

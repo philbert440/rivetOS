@@ -175,8 +175,13 @@ protocol-owned Codex sessions (`transport: protocol` + `imageAttachments`):
 those send staged PNG/JPEG/WebP/GIF as `UserTurn.attachments` with the
 catalog model/effort on the turn body. Native Model/Effort sit above the
 composer (web `chat.tsx` nativeModels row) and hide the spawn-flag pickers.
-Bound prompts with `freeText` (or `options: null`) render as a text-entry
-ask card; answers map index → labels/`other`. Approvals stay bound to
+A failed attachment chip blocks send on **every** session, PTY included
+(parity with web `composer.tsx`); remove the chip to retry. Gallery pick
+and share (`ACTION_SEND` / `ACTION_SEND_MULTIPLE` `image/*`) land on the
+exported `singleTask` activity via `onNewIntent` → `pendingShare`. Bound
+prompts keep option buttons when present; `freeText` adds a per-question
+text field, and a missing/`null` options list is text-entry-only. Answers
+map index → labels/`other`. Approvals stay bound to
 `requestId`. Canonical ids contain `:`; path
 params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 `data/HermesReasoning.kt`.

@@ -38,11 +38,11 @@ val NATIVE_IMAGE_MIMES: Set<String> = setOf(
 
 fun isNativeImageMime(mime: String?): Boolean {
     val m = mime?.trim()?.lowercase() ?: return false
-    return m in NATIVE_IMAGE_MIMES || m == "image/jpg"
+    return m in NATIVE_IMAGE_MIMES
 }
 
 fun modelAcceptsImage(model: ModelOption?): Boolean {
-    val mods = model?.inputModalities ?: return true
+    val mods = model?.inputModalities ?: return false
     if (mods.isEmpty()) return false
     return mods.any { it.equals("image", ignoreCase = true) }
 }

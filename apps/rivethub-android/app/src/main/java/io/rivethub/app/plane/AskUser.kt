@@ -174,7 +174,7 @@ fun promptAnswers(
  * picker; empty option lists are not on the captured screen.
  */
 fun askCardMode(question: AskQuestion, screen: AskScreen? = null): AskCardMode {
-    if (question.freeText) return AskCardMode.FREE_TEXT
+    if (question.freeText && question.options.isEmpty()) return AskCardMode.FREE_TEXT
     if (question.options.isEmpty()) return AskCardMode.NO_OPTIONS
     if (screen != null && screen.total > 1 && screen.current == screen.total - 1 && !question.multiSelect) {
         return AskCardMode.TERMINAL_ONLY

@@ -84,7 +84,10 @@ class OptionsTest {
         assertFalse(nativeImageAttachments(sheet, "pty"))
         assertTrue(modelAcceptsImage(sheet.models!!.single()))
         assertFalse(modelAcceptsImage(ModelOption("x", "x", inputModalities = listOf("text"))))
+        assertFalse(modelAcceptsImage(ModelOption("x", "x", inputModalities = null)))
+        assertFalse(modelAcceptsImage(null))
         assertTrue(isNativeImageMime("image/png"))
+        assertTrue(isNativeImageMime("image/jpg"))
         assertFalse(isNativeImageMime("application/pdf"))
     }
 
