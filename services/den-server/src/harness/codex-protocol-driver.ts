@@ -103,6 +103,10 @@ export class CodexProtocolDriver extends CodexDriver {
     return this.bindings.has(id.startsWith('codex:') ? id.slice(6) : id)
   }
 
+  ownsNativeThread(id: string): boolean {
+    return [...this.bindings.values()].some((b) => b.threadId === id)
+  }
+
   terminalArgv(id: string, binary: string): string[] | undefined {
     const binding = this.bindings.get(id)
     return binding
