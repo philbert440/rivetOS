@@ -1,10 +1,22 @@
 # Getting started
 
-Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or **bare-metal**.
+Get RivetOS running in under 5 minutes. The supported laptop path is one command on [rivethub.io](https://rivethub.io/). Clone-and-`rivetos init` is the development / mesh-node path.
 
 ---
 
-## Prerequisites
+## Laptop (supported)
+
+Stable first-install lives on the production server, not on GitHub Releases:
+
+```bash
+curl -fsSL https://get.rivethub.io/local.sh | bash
+```
+
+That clones the pinned `local_ref` from [get.rivethub.io/pins/stable.json](https://get.rivethub.io/pins/stable.json), stands up embedded PGlite + den on `https://localhost:5174`, wires harness memory plugins, and (on Linux) installs the desktop AppImage. Desktop and Android **first downloads** are on [rivethub.io](https://rivethub.io/). **Dev / nightly** app builds live on the mesh share (`/rivet-shared/builds/rivethub/`) — that is what Settings → Updates already reads. GitHub tags are source pins only.
+
+Day-2: `rivetos local status`, `rivetos local backup`, `rivetos local reset`. Full contract: [LOCAL-MODE.md](LOCAL-MODE.md).
+
+## Prerequisites (source / mesh)
 
 | Requirement | Version | Check |
 |---|---|---|
@@ -15,9 +27,9 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 > **Note:** `npm install` automatically builds all packages via postinstall. No separate build step needed.
 
-## Option A: interactive setup (recommended)
+## Option A: interactive setup (source checkout)
 
-The supported install path is a **stable tagged release** (pin a tag from [GitHub Releases](https://github.com/philbert440/rivetOS/releases)). Cloning default `main` is the development path.
+Cloning `main` is the development path. GitHub Releases are not the supported install pin.
 
 The `rivetos init` wizard walks you through deployment target, agent configuration, and API keys, then generates your config automatically. Human UX is RivetHub; the wizard no longer collects social-bot tokens.
 

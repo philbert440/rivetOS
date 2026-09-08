@@ -31,10 +31,20 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 - **Persistent memory**: PostgreSQL + pgvector. Hybrid FTS + vector search. Summary DAG. Learning loop.
 - **rivet-den**: harness event contract (`den-protocol`) + den-server intake for session linkage and chat indicators. [Protocol](docs/DEN.md).
 - **Structured observability**: JSON logging, runtime metrics, health endpoints, `rivetos doctor`.
-- **Stable tagged releases**: the supported install path. Pin a tag from GitHub Releases.
+- **Laptop install**: `curl -fsSL https://get.rivethub.io/local.sh | bash` (stable on rivethub.io / get.rivethub.io). GitHub tags are source pins, not the app update feed.
 - **Apache 2.0**: no CLA, no dual-licensing, no surprises. Patent grant included.
 
 ## Quick start
+
+Laptop (supported):
+
+```bash
+curl -fsSL https://get.rivethub.io/local.sh | bash
+```
+
+Desktop and Android first downloads: [rivethub.io](https://rivethub.io/). In-app updates read the mesh share `/rivet-shared/builds/rivethub/`.
+
+Source checkout (development):
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git

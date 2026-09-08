@@ -1,9 +1,24 @@
 # Local mode — one laptop, one node
 
-`rivetos local` stands up RivetOS on a single machine as both datahub and
-agent node: embedded PGlite, a locally minted Rivet CA, the desktop identity
-the RivetHub app expects, memory-capture plugins for whatever coding harnesses
-are on PATH, and a user service that survives logout.
+The supported install is the published one-liner (stable channel on the
+production server):
+
+```bash
+curl -fsSL https://get.rivethub.io/local.sh | bash
+```
+
+That fetches [get.rivethub.io/local.sh](https://get.rivethub.io/local.sh) and
+clones the `local_ref` pin from
+[pins/stable.json](https://get.rivethub.io/pins/stable.json). First-install
+desktop/Android bits are on [rivethub.io](https://rivethub.io/). Dev/nightly
+app builds stay on the mesh share `/rivet-shared/builds/rivethub/` (in-app
+Updates). GitHub tags are source pins, not the app update feed.
+
+`rivetos local` (what the installer runs) stands up RivetOS on a single
+machine as both datahub and agent node: embedded PGlite, a locally minted
+Rivet CA, the desktop identity the RivetHub app expects, memory-capture
+plugins for whatever coding harnesses are on PATH, and a user service that
+survives logout.
 
 Bare `rivetos local` is `init` then `up`. Flags: `--yes`, `--provider`,
 `--api-key`, `--port` (default 5174), `--pg-port` (default 5433), `--no-lan`,

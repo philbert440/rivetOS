@@ -2,23 +2,37 @@
 
 How RivetOS is versioned and what “stable” means for RivetHub.
 
-Stable is an annotated git tag `vX.Y.Z` cut from green `main`. The RivetHub distro repo pins those tags. There is no LTS track and no backport promise: a fix ships in the next tag. This document supersedes leftover LTS / `lts/X.Y` language in README.md and ARCHITECTURE.md pending #589.
+There is no LTS track and no backport promise: a fix ships in the next tag. This document supersedes leftover LTS / `lts/X.Y` language in README.md and ARCHITECTURE.md pending #589.
+
+## Channels
+
+| Channel | Where | What it is for |
+|---|---|---|
+| **Stable** | Production server: [rivethub.io](https://rivethub.io/) and [get.rivethub.io](https://get.rivethub.io/) (`local.sh`, `pins/stable.json`, `releases/latest.json`, AppImage / exe / apk) | First-install. |
+
+The laptop one-liner:
+
+```bash
+curl -fsSL https://get.rivethub.io/local.sh | bash
+```
+| **Dev / nightly** | Mesh share `/rivet-shared/builds/rivethub/` (`latest.json` + binaries) | Already-installed desktop and Android (Settings → Updates over mTLS). Unsupported for production. |
+| **Source pin** | Annotated git tag `vX.Y.Z` on green `main` | What `local.sh` clones (`pins/stable.json` `local_ref`). **Not** the app update feed. GitHub Releases are not the supported install path. |
+
+Container images (`ghcr.io/philbert440/rivetos:…`) still follow the git tag. `main` also publishes `ghcr.io/philbert440/rivetos:main` after CI.
 
 ---
 
 ## Artifacts
 
-Each stable release produces:
+Each stable source pin produces:
 
 | Artifact | What it is |
 |---|---|
-| Git tag `vX.Y.Z` | Annotated tag on the green `main` commit. Checkout and run from source (`npx tsx` / the systemd unit) — the proven path. |
+| Git tag `vX.Y.Z` | Annotated tag on the green `main` commit. Source pin for `local.sh` / `rivetos update --version`. |
 | `ghcr.io/philbert440/rivetos:X.Y.Z` | Container image from that tag. `docker/metadata-action` `type=semver,pattern={{version}}` strips the leading `v`. Pin this. |
 | `ghcr.io/philbert440/rivetos:X.Y` | Same image, `type=semver,pattern={{major}}.{{minor}}`. **Floating** — moves on each patch of that minor (not a pin; there is no backport track). |
 | `ghcr.io/philbert440/rivetos:<short-sha>` | Same image, `type=sha,format=short`. Emitted on every containers push (main and tags). |
 | `ghcr.io/philbert440/rivetos:latest` | Same image. `latest` is written only when a stable `vX.Y.Z` tag is pushed (not pre-release `v*` tags, not every `main` merge). |
-
-`main` is the nightly channel. Every push to `main` (after CI) publishes `ghcr.io/philbert440/rivetos:main`. Nightly is unsupported for production.
 
 ---
 
