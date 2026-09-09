@@ -83,6 +83,42 @@ describe('doctor memory queue check', () => {
     expect(results[0].detail).not.toContain('null')
   })
 
+  it('does not prescribe requeue for a keyed task outside the memory allowlist', async () => {
+    // run-task:<node> is an agent task, not a memory task: the requeue
+    // allowlist is frozen so a shared graphile schema cannot lose unrelated
+    // jobs. Doctor used to hand the operator a command that only errors back.
+    const client = fakeClient(async () => ({
+      rows: [
+        {
+          task: 'run-task:ct117',
+          keyed_dead: '1',
+          keyless_dead: '0',
+          last_error: 'remaining connection slots are reserved',
+        },
+      ],
+    }))
+    const results = await checkMemoryQueue(client)
+    expect(results[0].status).toBe('warn')
+    expect(results[0].detail).not.toContain('rivetos memory requeue --task run-task:ct117')
+    expect(results[0].detail).toContain('not a memory task')
+  })
+
+  it('still prescribes requeue for an allowlisted keyed task', async () => {
+    const client = fakeClient(async () => ({
+      rows: [
+        {
+          task: 'synthesize-tool-call',
+          keyed_dead: '4',
+          keyless_dead: '0',
+          last_error: 'Empty synth response',
+        },
+      ],
+    }))
+    const results = await checkMemoryQueue(client)
+    expect(results[0].detail).toContain('rivetos memory requeue --task synthesize-tool-call')
+    expect(results[0].detail).not.toContain('not a memory task')
+  })
+
   it('passes when the graphile_worker schema is absent (42P01)', async () => {
     const client = fakeClient(async () => {
       throw Object.assign(new Error('relation "graphile_worker._private_jobs" does not exist'), {
