@@ -50,7 +50,7 @@
 
   <section class="block">
     <div class="req">
-      <h3>Requirements</h3>
+      <h2>Requirements</h2>
       <ul class="facts">
         <li>Debian 12 or Ubuntu LTS, x86_64 or aarch64, with systemd.</li>
         <li>Root (<code>sudo</code>) and about 512&nbsp;MiB free disk
@@ -174,7 +174,7 @@
     <h2>Add the first node</h2>
     <div class="term">
       <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node host</span></div>
-      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10</code></pre>
+      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub owner@192.0.2.10</code></pre>
     </div>
     <p>Replace <code>owner@192.0.2.10</code> with an SSH login that can run
     <code>rivethub-hub</code> on this host. Details in the
