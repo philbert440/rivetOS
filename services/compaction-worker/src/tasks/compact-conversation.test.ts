@@ -112,6 +112,21 @@ describe('compact-conversation', () => {
     it('does not shrink below minBatch', () => {
       expect(shrinkLeafBatch(7, MIN_BATCH_SIZE)).toBe(MIN_BATCH_SIZE)
     })
+
+    // compactParentLevel reuses this helper to recover from a response
+    // truncated at BRANCH/ROOT_MAX_TOKENS. Each parent tier gets exactly one
+    // shrink step before hitting its floor — enough to clear a batch that only
+    // just overflows, while still failing the job when even the floor batch
+    // truncates (which is what the leaf path does too).
+    it('gives the branch tier one step from its batch size to its floor', () => {
+      expect(shrinkLeafBatch(8, 5)).toBe(5)
+      expect(shrinkLeafBatch(5, 5)).toBeNull()
+    })
+
+    it('gives the root tier one step from its batch size to its floor', () => {
+      expect(shrinkLeafBatch(5, 3)).toBe(3)
+      expect(shrinkLeafBatch(3, 3)).toBeNull()
+    })
   })
 
   describe('isLlmTruncationError', () => {
