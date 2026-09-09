@@ -133,32 +133,106 @@ function log(msg: string): void {
 // ---------------------------------------------------------------------------
 // Session state tracking (for fail-loud)
 // ---------------------------------------------------------------------------
+// Stuck policy — MUST match run-once.sh:
+// 3+ consecutive failures whose firstFailureMs..lastAttemptMs span is ≤ 2h,
+// and the last attempt is still within that 2h window of now.
+const STUCK_FAILURE_COUNT = 3
+const STUCK_WINDOW_MS = 2 * 60 * 60 * 1000
+
 interface SessionState {
   sessionId: string
   lastAttemptMs: number
   lastStatus: 'success' | 'failure'
   lastError?: string
   consecutiveFailures: number
+  /** Epoch ms of the first failure in the current streak. Omitted on success. */
+  firstFailureMs?: number
+}
+
+function isErrnoCode(err: unknown, code: string): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'code' in err &&
+    (err as { code?: unknown }).code === code
+  )
 }
 
 function readSessionState(sessionId: string): SessionState | null {
   try {
     const statePath = path.join(STATE_DIR, `${sessionId}.json`)
     const raw = fs.readFileSync(statePath, 'utf8')
-    return JSON.parse(raw)
+    return JSON.parse(raw) as SessionState
   } catch {
     return null
   }
 }
 
 function writeSessionState(state: SessionState): void {
+  const statePath = path.join(STATE_DIR, `${state.sessionId}.json`)
+  const tmpPath = path.join(
+    STATE_DIR,
+    `.${state.sessionId}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
+  )
   try {
     fs.mkdirSync(STATE_DIR, { recursive: true })
-    const statePath = path.join(STATE_DIR, `${state.sessionId}.json`)
-    fs.writeFileSync(statePath, JSON.stringify(state, null, 2))
+    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2))
+    fs.renameSync(tmpPath, statePath)
   } catch (err) {
     log(`writeSessionState failed: ${err instanceof Error ? err.message : String(err)}`)
+    try {
+      fs.unlinkSync(tmpPath)
+    } catch {
+      // ignore
+    }
   }
+}
+
+function nextFailureState(
+  sessionId: string,
+  errMsg: string,
+  prior: SessionState | null,
+): SessionState {
+  const now = Date.now()
+  if (prior?.lastStatus === 'failure' && typeof prior.firstFailureMs === 'number') {
+    return {
+      sessionId,
+      lastAttemptMs: now,
+      lastStatus: 'failure',
+      lastError: errMsg,
+      consecutiveFailures: (prior.consecutiveFailures ?? 0) + 1,
+      firstFailureMs: prior.firstFailureMs,
+    }
+  }
+  return {
+    sessionId,
+    lastAttemptMs: now,
+    lastStatus: 'failure',
+    lastError: errMsg,
+    consecutiveFailures: 1,
+    firstFailureMs: now,
+  }
+}
+
+function nextSuccessState(sessionId: string): SessionState {
+  return {
+    sessionId,
+    lastAttemptMs: Date.now(),
+    lastStatus: 'success',
+    consecutiveFailures: 0,
+  }
+}
+
+function isStuckSession(state: SessionState, now = Date.now()): boolean {
+  if (state.lastStatus !== 'failure') return false
+  if ((state.consecutiveFailures ?? 0) < STUCK_FAILURE_COUNT) return false
+  if (typeof state.firstFailureMs !== 'number' || typeof state.lastAttemptMs !== 'number') {
+    return false
+  }
+  const span = state.lastAttemptMs - state.firstFailureMs
+  if (span < 0 || span > STUCK_WINDOW_MS) return false
+  if (now - state.lastAttemptMs > STUCK_WINDOW_MS) return false
+  return true
 }
 
 function checkStuckSessions(): string[] {
@@ -167,17 +241,15 @@ function checkStuckSessions(): string[] {
     fs.mkdirSync(STATE_DIR, { recursive: true })
     const files = fs.readdirSync(STATE_DIR).filter(f => f.endsWith('.json'))
     const now = Date.now()
-    const STUCK_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
 
     for (const file of files) {
       try {
         const statePath = path.join(STATE_DIR, file)
-        const state: SessionState = JSON.parse(fs.readFileSync(statePath, 'utf8'))
-        
-        if (state.lastStatus === 'failure' && 
-            state.consecutiveFailures >= 3 &&
-            now - state.lastAttemptMs < STUCK_THRESHOLD_MS) {
-          stuck.push(`${state.sessionId} (${state.consecutiveFailures} failures, last: ${state.lastError || 'unknown'})`)
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as SessionState
+        if (isStuckSession(state, now)) {
+          stuck.push(
+            `${state.sessionId} (${state.consecutiveFailures} failures, last: ${state.lastError || 'unknown'})`,
+          )
         }
       } catch {
         // Skip malformed state files
@@ -747,31 +819,39 @@ export function enqueue(op: CaptureOp): void {
 // Worker: ingest one session
 // ---------------------------------------------------------------------------
 async function ingestSession(op: CaptureOp): Promise<void> {
-  const pgUrl = resolvePgUrl()
-  const pool = new Pool({ connectionString: pgUrl, max: 1 })
-  const client = await pool.connect()
-
   const sessionKey = deriveSessionKey(op.sessionId)
-  const priorState = readSessionState(op.sessionId)
+  let pool: InstanceType<typeof Pool> | undefined
+  let client: PoolClient | undefined
+  let inTx = false
+  let statePublished = false
 
   try {
+    const pgUrl = resolvePgUrl()
+    pool = new Pool({ connectionString: pgUrl, max: 1 })
+    client = await pool.connect()
+
+    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+    await client.query('BEGIN')
+    inTx = true
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
+
+    // Read → mutate → publish entirely inside the per-session advisory lock.
+    const priorState = readSessionState(op.sessionId)
+
     const sessionDir = findSessionDir(op.sessionId, process.env.GROK_WORKSPACE_ROOT)
     if (!sessionDir) {
       const err = `session dir not found (workspaceRoot=${process.env.GROK_WORKSPACE_ROOT ?? 'unset'})`
       log(`ingest ${sessionKey}: ${err}`)
-      
+
       // Only fail loud if session file exists somewhere
       const sessionExists = fs.existsSync(path.join(SESSIONS_ROOT, op.sessionId))
       if (sessionExists) {
-        writeSessionState({
-          sessionId: op.sessionId,
-          lastAttemptMs: Date.now(),
-          lastStatus: 'failure',
-          lastError: err,
-          consecutiveFailures: (priorState?.consecutiveFailures ?? 0) + 1,
-        })
+        writeSessionState(nextFailureState(op.sessionId, err, priorState))
+        statePublished = true
         throw new Error(err)
       }
+      await client.query('COMMIT')
+      inTx = false
       return
     }
 
@@ -782,23 +862,14 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     } catch (err) {
       const msg = `updates.jsonl unreadable: ${(err as Error).message}`
       log(`ingest ${sessionKey}: ${msg}`)
-      writeSessionState({
-        sessionId: op.sessionId,
-        lastAttemptMs: Date.now(),
-        lastStatus: 'failure',
-        lastError: msg,
-        consecutiveFailures: (priorState?.consecutiveFailures ?? 0) + 1,
-      })
+      writeSessionState(nextFailureState(op.sessionId, msg, priorState))
+      statePublished = true
       throw new Error(msg)
     }
-    
+
     const parsed = parseUpdates(jsonlText)
     const summary = readSessionSummary(sessionDir)
     const title = summary.title?.trim() || 'Grok Build session'
-
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
-    await client.query('BEGIN')
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
 
     const conv = await findOrCreateConversation(client, sessionKey, {
       title,
@@ -831,37 +902,43 @@ async function ingestSession(op: CaptureOp): Promise<void> {
       await client.query(`UPDATE ros_conversations SET updated_at = now() WHERE id = $1`, [conv.id])
     }
 
+    writeSessionState(nextSuccessState(op.sessionId))
     await client.query('COMMIT')
-    
+    inTx = false
+    statePublished = true
+
     const msg = `parsed=${parsed.length} stored_before=${stored} inserted=${toInsert.length}${op.finalize ? ' finalized' : ''}`
     log(`ingest ${sessionKey}: ${msg}`)
-    
-    // Success - reset failure count
-    writeSessionState({
-      sessionId: op.sessionId,
-      lastAttemptMs: Date.now(),
-      lastStatus: 'success',
-      consecutiveFailures: 0,
-    })
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
     const errMsg = err instanceof Error ? err.message : String(err)
     log(`ingest ${op.sessionId} FAIL: ${errMsg}`)
-    
-    // Track failure
-    writeSessionState({
-      sessionId: op.sessionId,
-      lastAttemptMs: Date.now(),
-      lastStatus: 'failure',
-      lastError: errMsg,
-      consecutiveFailures: (priorState?.consecutiveFailures ?? 0) + 1,
-    })
-    
-    // Re-throw to make worker exit non-zero
+
+    // Re-read inside the lock when we still hold it so concurrent workers
+    // cannot publish a stale increment. Connect/config failures never took
+    // the lock; still record them so --health cannot report OK.
+    if (!statePublished) {
+      const priorState = readSessionState(op.sessionId)
+      writeSessionState(nextFailureState(op.sessionId, errMsg, priorState))
+      statePublished = true
+    }
+
+    if (inTx && client) {
+      await client.query('ROLLBACK').catch(() => {})
+      inTx = false
+    }
+
     throw err
   } finally {
-    client.release()
-    await pool.end()
+    if (client) {
+      try {
+        client.release()
+      } catch {
+        // ignore
+      }
+    }
+    if (pool) {
+      await pool.end().catch(() => {})
+    }
   }
 }
 
@@ -876,21 +953,42 @@ async function runWorker(spoolFile?: string) {
 
   let hadFailure = false
   for (const file of files) {
+    let op: CaptureOp
     try {
-      const op = JSON.parse(fs.readFileSync(file, 'utf8')) as CaptureOp
-      await ingestSession(op)
-      fs.unlinkSync(file)
+      op = JSON.parse(fs.readFileSync(file, 'utf8')) as CaptureOp
     } catch (e) {
-      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      if (isErrnoCode(e, 'ENOENT')) {
         // Spool file already gone (e.g. a concurrent, idempotent worker processed
         // it). Benign no-op — not an ingest failure.
         log(`worker: spool file already gone, skipping ${file}`)
         continue
       }
+      const msg = `worker failed reading ${file}: ${e}`
+      log(msg)
+      hadFailure = true
+      continue
+    }
+
+    try {
+      await ingestSession(op)
+    } catch (e) {
       const msg = `worker failed on ${file}: ${e}`
       log(msg)
       hadFailure = true
       // Don't unlink the spool file on failure - retry later
+      continue
+    }
+
+    try {
+      fs.unlinkSync(file)
+    } catch (e) {
+      if (isErrnoCode(e, 'ENOENT')) {
+        log(`worker: spool already unlinked, skipping ${file}`)
+        continue
+      }
+      const msg = `worker failed unlinking ${file}: ${e}`
+      log(msg)
+      hadFailure = true
     }
   }
   
