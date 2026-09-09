@@ -14,7 +14,7 @@ vi.mock('../lib/ssh.js', async (importOriginal) => {
 
 import { sshExecCapture } from '../lib/ssh.js'
 import { ENROLL_SNIPPET_MARKER, MeshHubError, packTarGz } from '../lib/mesh-enroll.js'
-import mesh, { meshEnroll, meshRenew, meshSync } from './mesh.js'
+import mesh, { meshEnroll, meshForget, meshRenew, meshSync, forgetBlockedReason } from './mesh.js'
 
 const sshExecCaptureMock = vi.mocked(sshExecCapture)
 
@@ -292,5 +292,92 @@ describe('mesh sync / renew (mocked ssh)', () => {
     expect(
       readFileSync(join(process.env.RIVETOS_SHARED_DIR!, 'rivet-ca', 'issued', 'ct110.crt'), 'utf-8'),
     ).toBe('CERT')
+  })
+})
+
+const NOW = 1_700_000_000_000
+
+function meshWith(nodes: Record<string, unknown>): string {
+  return JSON.stringify({ version: 1, updatedAt: 1, nodes }, null, 2) + '\n'
+}
+
+const node = (id: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  name: id,
+  host: `192.0.2.${id.length}`,
+  port: 3000,
+  status: 'offline',
+  lastSeen: 0,
+  ...extra,
+})
+
+describe('forgetBlockedReason', () => {
+  it('blocks the local node', () => {
+    expect(forgetBlockedReason(node('phildesk') as never, 'phildesk', NOW)).toMatch(/this node/)
+  })
+
+  it('blocks a node that heartbeat inside the live window', () => {
+    const recent = node('ct112', { lastSeen: NOW - 60_000 })
+    expect(forgetBlockedReason(recent as never, 'phildesk', NOW)).toMatch(/heartbeat/)
+  })
+
+  it('allows a long-dead node', () => {
+    const dead = node('grokbot', { lastSeen: NOW - 48 * 3600_000 })
+    expect(forgetBlockedReason(dead as never, 'phildesk', NOW)).toBeNull()
+  })
+
+  // A decommissioned peer keeps whatever status it died with — the timestamp
+  // is the signal, not the field.
+  it('allows a node whose status still reads online but never heartbeat', () => {
+    const stale = node('datahub', { status: 'online', lastSeen: 0 })
+    expect(forgetBlockedReason(stale as never, 'phildesk', NOW)).toBeNull()
+  })
+})
+
+describe('mesh forget', () => {
+  const meshPath = () => join(process.env.RIVETOS_SHARED_DIR!, 'mesh.json')
+
+  it('removes a dead node and reports the delta', async () => {
+    writeFileSync(
+      meshPath(),
+      meshWith({ ct110: node('ct110'), grokbot: node('grokbot', { host: '192.0.2.99' }) }),
+    )
+    await meshForget('grokbot')
+    const after = JSON.parse(readFileSync(meshPath(), 'utf-8')) as { nodes: Record<string, unknown> }
+    expect(Object.keys(after.nodes)).toEqual(['ct110'])
+    const text = vi.mocked(console.log).mock.calls.flat().join('\n')
+    expect(text).toMatch(/2 → 1 nodes/)
+  })
+
+  it('matches on node name as well as id', async () => {
+    writeFileSync(meshPath(), meshWith({ 'node-7': node('node-7', { name: 'grokbot' }) }))
+    await meshForget('grokbot')
+    const after = JSON.parse(readFileSync(meshPath(), 'utf-8')) as { nodes: Record<string, unknown> }
+    expect(Object.keys(after.nodes)).toEqual([])
+  })
+
+  it('refuses a node that heartbeat recently, and leaves the file alone', async () => {
+    const body = meshWith({ ct112: node('ct112', { lastSeen: Date.now() }) })
+    writeFileSync(meshPath(), body)
+    await expect(meshForget('ct112')).rejects.toBeInstanceOf(MeshHubError)
+    expect(readFileSync(meshPath(), 'utf-8')).toBe(body)
+  })
+
+  it('--force overrides the live guard', async () => {
+    writeFileSync(meshPath(), meshWith({ ct112: node('ct112', { lastSeen: Date.now() }) }))
+    await meshForget('ct112', { force: true })
+    const after = JSON.parse(readFileSync(meshPath(), 'utf-8')) as { nodes: Record<string, unknown> }
+    expect(Object.keys(after.nodes)).toEqual([])
+  })
+
+  it('rejects an unknown node without touching mesh.json', async () => {
+    const body = meshWith({ ct110: node('ct110') })
+    writeFileSync(meshPath(), body)
+    await expect(meshForget('nope')).rejects.toThrow(/No mesh node "nope"/)
+    expect(readFileSync(meshPath(), 'utf-8')).toBe(body)
+  })
+
+  it('requires a node argument', async () => {
+    await expect(meshForget(undefined)).rejects.toThrow(/Usage/)
   })
 })
