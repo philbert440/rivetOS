@@ -1,0 +1,58 @@
+/* Shared marketing appearance. This file is intentionally absent from Omarchy. */
+.landing{--paper:#f7f6f0;--ink:#202e28;--soft:#53645c;--green:#00775a;--rule:#d8dfd5;--mint:#e8eee3;--surface:#fffef9;--band:#eeeee5;--on-green:#ffffff;--hover:#005e47;--scheme:light;}
+@media(prefers-color-scheme:dark){.landing{--paper:#14211b;--ink:#eff2e8;--soft:#b5c5ba;--green:#8bd6af;--rule:#3d5145;--mint:#22362b;--surface:#1b2b22;--band:#192a21;--on-green:#14251b;--hover:#a7e6c3;--scheme:dark;}}
+:root[data-theme=light] .landing{--paper:#f7f6f0;--ink:#202e28;--soft:#53645c;--green:#00775a;--rule:#d8dfd5;--mint:#e8eee3;--surface:#fffef9;--band:#eeeee5;--on-green:#ffffff;--hover:#005e47;--scheme:light;}
+:root[data-theme=dark] .landing{--paper:#14211b;--ink:#eff2e8;--soft:#b5c5ba;--green:#8bd6af;--rule:#3d5145;--mint:#22362b;--surface:#1b2b22;--band:#192a21;--on-green:#14251b;--hover:#a7e6c3;--scheme:dark;}
+
+.landing { --bg:var(--paper);--fg:var(--ink);--muted:var(--soft);--faint:var(--soft);--accent:var(--green);--accent-hi:var(--green);--link:var(--green);--panel:var(--surface);--panel-2:var(--mint);--line:var(--rule);--line-strong:var(--rule);--code-bg:var(--mint);--on-accent:var(--on-green);color-scheme:var(--scheme); }
+.landing::before { display:none; }
+.landing .button.primary,.landing .btn { color:var(--on-green);background:var(--green);box-shadow:none; }
+.landing .button.primary:hover,.landing .btn:hover { background:var(--hover); }
+.landing .btn--ghost { background:transparent;color:var(--green); }
+.landing .story-controls button[aria-pressed=true] { color:var(--paper); }
+.landing .story-stage { border-color:var(--rule); }
+.landing .setup-section { background:var(--band); }
+.landing .installer-card,.landing .use-grid article { background:var(--surface);border-color:var(--rule); }
+.landing .settings-preview { background:var(--mint);border-color:var(--rule); }
+.landing .final-section { background:var(--mint); }
+.landing .scene-copy .pill,.landing .step-number,.landing .setup-after,.landing .nav-start { border-color:var(--rule); }
+.product-shot { min-width:0;margin:0;border:1px solid var(--rule);border-radius:12px;overflow:hidden;background:var(--surface);box-shadow:0 18px 45px #00000014; }
+.product-shot a { display:block; }
+.product-shot img { display:block;width:100%;height:auto; }
+.product-shot figcaption { padding:12px 16px;color:var(--soft);font-size:11px; }
+.hero { grid-template-columns:1fr 1.25fr;gap:40px; }
+.story-scene { grid-template-columns:.8fr 1.3fr;gap:35px; }
+.theme-footer { margin-top:22px; }
+.theme-footer label { display:flex;align-items:center;gap:12px;color:var(--soft);font-size:12px; }
+.theme-footer select { font:inherit;min-height:44px;min-width:120px;padding:8px 12px;background:var(--surface);color:var(--ink);border:1px solid var(--rule);border-radius:8px; }
+.guide-page .wrap-wide { max-width:1248px;width:100%;padding-inline:40px; }
+.guide-page .guide-head { padding-block:80px 32px; }
+.guide-page .kicker { color:var(--green);font:500 11px/1.5 var(--font-mono);letter-spacing:.13em;text-transform:uppercase;margin-bottom:20px; }
+.guide-page h1 { margin-bottom:24px; }
+.guide-page h2 { font-size:clamp(1.8rem,3vw,2.6rem);margin-bottom:20px; }
+.guide-page h3 { margin-bottom:12px; }
+.guide-page p { margin-block:10px; }
+.guide-page .block { padding-block:48px;border-bottom:1px solid var(--rule); }
+.guide-page .card { border-radius:10px;box-shadow:none; }
+.guide-page .card:hover { transform:none; }
+.guide-page .lede { font-size:18px; }
+.guide-page .landing-footer p { font-size:12px; }
+.guide-page .term pre { white-space:pre-wrap;overflow-wrap:anywhere; }
+@media(max-width:760px) {
+ .hero,.story-scene { grid-template-columns:1fr; }
+ .guide-page .wrap-wide { padding-inline:23px; }
+ .guide-page .guide-head { padding-block:48px 20px; }
+ .guide-page .block { padding-block:32px; }
+}
+.landing p a,.landing .note a,.landing .warn a,.landing .facts a,.landing .setup-list a { text-decoration:underline; }
+
+.omarchy-desktop { display:grid;grid-template-columns:1fr 1.15fr;gap:32px;align-items:center;margin-top:24px;background:var(--mint); }
+.guide-page .omarchy-desktop .kicker { margin-top:0; }
+.omarchy-desktop .btn { margin-top:18px; }
+@media(max-width:760px) { .omarchy-desktop { grid-template-columns:1fr;gap:24px; } }
+.landing .header-inner nav a[aria-current=page] { color:var(--green);text-decoration:underline;text-underline-offset:6px; }
+@media(max-width:900px) {
+ .landing .header-inner { flex-wrap:wrap;padding-block:16px;gap:10px; }
+ .landing .header-inner nav { width:100%;display:flex;flex-wrap:wrap;gap:0 20px; }
+ .landing .header-inner nav>a:not(.nav-start) { display:flex;font-size:13px;min-height:44px; }
+}

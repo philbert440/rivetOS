@@ -1,0 +1,79 @@
+.omarchy-layouts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin-block: 2rem; }
+.omarchy-layouts .card { min-width: 0; }
+kbd { font-family: var(--font-mono); font-size: .82em; padding: .1em .35em; border: 1px solid var(--line-strong); border-radius: 4px; }
+@media (max-width: 760px) { .omarchy-layouts { grid-template-columns: 1fr; } }
+.theme-controls { margin-block: 2rem; }
+.theme-controls > label { display: block; margin-bottom: .5rem; font-weight: 700; }
+.theme-controls select { max-width: 100%; padding: .7rem 1rem; background: var(--panel); color: var(--fg); border: 1px solid var(--line-strong); border-radius: 8px; font: inherit; }
+.theme-controls fieldset { padding: 1rem 0 0; border: 0; margin: 1rem 0; display: flex; flex-wrap: wrap; gap: .5rem; }
+.theme-controls button { padding: .6rem .9rem; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--fg); font: inherit; cursor: pointer; }
+.theme-controls button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+.theme-gallery figure { margin: 1rem 0 2rem; }
+.theme-gallery img { display: block; width: 100%; height: auto; border: 1px solid var(--line-strong); border-radius: 12px; }
+.theme-gallery figcaption { margin-top: .75rem; color: var(--muted); font-size: .9rem; }
+[hidden] { display: none !important; }
+/* Omarchy's palette drives the whole guide, starting with Tokyo Night. */
+:root {
+  --bg: #1a1b26; --panel: #1a1b26; --panel-2: #24283b; --fg: #c0caf5;
+  --accent: #7aa2f7; --accent-hi: #7aa2f7; --on-accent: #1a1b26; --link: #7aa2f7;
+  --muted: color-mix(in srgb, var(--fg) 82%, var(--bg));
+  --faint: var(--muted); --line: color-mix(in srgb, var(--fg) 18%, var(--bg));
+  --line-strong: color-mix(in srgb, var(--fg) 35%, var(--bg));
+  --grid: color-mix(in srgb, var(--fg) 3%, transparent); --glow: transparent;
+  --code-bg: color-mix(in srgb, var(--fg) 8%, var(--bg));
+  --term-bg: var(--bg); --term-bar: var(--bg); --term-fg: var(--fg);
+  --term-line: var(--line-strong); --term-muted: var(--muted); --term-accent: var(--link);
+  color-scheme: dark;
+}
+.omarchy-page { font-family: var(--font-mono); }
+.omarchy-page .page-head { padding-bottom: 2rem; }
+.omarchy-page h1 { letter-spacing: -.065em; }
+.omarchy-page #gallery { padding-top: 2rem; }
+.theme-navigation { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; }
+.theme-navigation label { display: block; color: var(--muted); font-size: .75rem; margin-bottom: .35rem; }
+.theme-navigation > button { font-size: 1.4rem; min-width: 48px; }
+.theme-navigation select { width: 240px; }
+#theme-position { margin-left: auto; font-size: .85rem; color: var(--muted); }
+.palette-strip { display: flex; height: 5px; border-radius: 4px; overflow: hidden; margin-top: 1.25rem; }
+.palette-strip i { flex: 1; }
+.theme-gallery h3 { font-size: 1rem; }
+.theme-gallery img { box-shadow: 0 18px 60px #0003; }
+.theme-gallery figcaption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; }
+.gallery-provenance { font-size: .75rem; color: var(--muted); max-width: 85ch; }
+.omarchy-page .note { background: var(--panel); }
+@media (max-width: 480px) { .theme-navigation { gap: .5rem; } .theme-navigation select { width: 185px; } #theme-position { width: 100%; margin: .5rem 0; } }
+.omarchy-page .kicker, .omarchy-page .brand span, .omarchy-page .site-nav a[aria-current="page"], .omarchy-page .setup-list li::marker { color: var(--link); }
+@media (min-width: 900px) {
+  .omarchy-page .page-head { display: grid; grid-template-columns: 1fr 1fr; column-gap: 4rem; padding-top: 3rem; }
+  .omarchy-page .page-head .kicker, .omarchy-page .page-head .jump-links { grid-column: 1 / -1; }
+  .omarchy-page .page-head h1 { font-size: 3.3rem; margin: 0; }
+  .omarchy-page .page-head .lede { font-size: 1rem; margin: 0; align-self: center; }
+  .omarchy-page .page-head .jump-links { margin-top: 1.5rem; }
+  .theme-controls { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 1rem; margin: 1.25rem 0; }
+  .theme-controls fieldset { padding: 0; margin: 0; }
+  .theme-controls legend { font-size: .75rem; color: var(--muted); margin-bottom: .5rem; }
+  .palette-strip { grid-column: 1 / -1; margin-top: .25rem; }
+  #theme-position { font-size: .7rem; margin-left: 0; }
+}
+/* Keep body copy and small controls readable even in low-contrast palettes. */
+:root { --muted: var(--fg); }
+.omarchy-page code { color: var(--fg); background: transparent; }
+.omarchy-page .site-nav a[aria-current="page"] { color: var(--fg); background: transparent; text-decoration: underline; text-underline-offset: .4em; }
+.omarchy-page .guide-head { max-width: none; }
+.harness-strip { margin: 1.5rem 0; padding: 1rem 0; border-block: 1px solid var(--line); font-size: .8rem; }
+.harness-strip p { margin: 0 0 .6rem; font-weight: 700; }
+.harness-strip ul { display: flex; flex-wrap: wrap; gap: .6rem 1.4rem; padding: 0; margin: 0 0 .7rem; list-style: none; }
+.harness-strip li { margin: 0; }
+.view-controls { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+#variant-description { font-size: .75rem; margin: 0; grid-column: 1 / -1; }
+@media (min-width: 900px) { .view-controls { justify-content: flex-end; } .theme-controls { grid-template-columns: 1fr; } .theme-navigation { grid-row: 1; } .view-controls { grid-row: 2; justify-content: flex-start; } }
+.theme-picker-label { display: block; font-size: .75rem; margin-bottom: .5rem; }
+.theme-navigation { display: grid; grid-template-columns: 44px minmax(0, 240px) 44px; gap: .5rem; align-items: center; justify-content: start; }
+.theme-navigation > button { display: grid; place-items: center; width: 44px; min-width: 44px; height: 44px; padding: 0; }
+.theme-navigation > button svg { display: block; }
+.theme-select { position: relative; min-width: 0; }
+.theme-navigation select { appearance: none; -webkit-appearance: none; width: 100%; height: 44px; padding: 0 2.5rem 0 .85rem; line-height: normal; }
+.select-chevron { position: absolute; right: 1rem; top: 50%; width: 7px; height: 7px; border-right: 1.5px solid var(--fg); border-bottom: 1.5px solid var(--fg); transform: translateY(-70%) rotate(45deg); pointer-events: none; }
+#theme-position { margin: .5rem 0 1rem; font-size: .75rem; }
+@media (min-width: 900px) { .theme-controls { display: block; } .view-controls { margin-top: 1rem; } #variant-description { margin-top: 1rem; } }
+@media (max-width: 480px) { .theme-navigation { grid-template-columns: 44px minmax(0, 1fr) 44px; } }

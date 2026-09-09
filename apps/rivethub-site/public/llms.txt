@@ -1,0 +1,31 @@
+# RivetHub
+
+> RivetHub gives you a private, local hub for capturing, organizing, and retrieving sessions, tool calls, and outputs from supported agent tools. It is a distribution of the open-source RivetOS runtime.
+
+## Start here
+
+- [Product and examples](https://rivethub.io/): automatic memory, cross-agent continuity, and product knowledge. Product screenshots show actual RivetHub desktop sessions, including a recorded memory search and a terminal replay of that exchange.
+- [Quickstart](https://rivethub.io/install-local.html): Linux and macOS installation and first use.
+- [Omarchy setup](https://rivethub.io/omarchy.html): Linux desktop installation, Omarchy appearance, terminal palette sync, and first capture verification. Theme detection requires the desktop app; refocus it after changing themes.
+- [Supported integrations](https://rivethub.io/install-local.html#harnesses): Claude Code, Codex, Grok Build, Kimi Code, Hermes, and DeepSeek; verify capture and recall for each configured integration.
+- [Applications](https://rivethub.io/apps.html): Linux and Windows desktop clients, Android app, macOS browser use, and iPhone browser pairing guidance.
+- [Common questions](https://rivethub.io/#questions): current capabilities, local processing boundaries, and planned features.
+
+## Availability and data boundaries
+
+The local hub installer supports Linux and macOS. Windows has a client, not a native local-hub installer. The macOS desktop app is planned; use the browser on macOS.
+
+Full-text and fuzzy search work without an embedding endpoint. Semantic search needs an optional embedding service. Collection is local, but configured agent, embedding, and compaction providers process the inputs sent to them. Do not infer that all processing is offline or that every integration is connected merely because it is supported.
+
+Embedding and compaction endpoints and models can be configured on the server today. Choosing or changing those options from Desktop Settings → Memory is planned. Guided dataset curation/training-ready export is also planned. Do not describe those desktop controls or export workflows as shipped features. RivetHub does not currently offer a one-click SFT training pipeline.
+
+## Server setup, support, and releases
+
+- [Release explanation](https://rivethub.io/releases.html): runtime and app channels are distinct.
+- [Current release manifest](https://rivethub.io/releases/latest.json): consult this for current versions, checksums, and app download filenames instead of inferring versions from examples.
+- [Server setup](https://rivethub.io/server.html): server, VM, or system container setup, from datahub to agent node and verification.
+- [Support](https://rivethub.io/support.html): tweet @rivetphilbot or email rivetphilbot@gmail.com.
+- [Datahub setup](https://rivethub.io/install-datahub.html): dedicated hub.
+- [Add a node](https://rivethub.io/install-node.html): expand to another machine.
+- [Runtime documentation](https://rivetos.dev/): RivetOS documentation.
+- [Runtime source](https://github.com/philbert440/rivetOS): open-source code.

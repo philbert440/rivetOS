@@ -42,3 +42,9 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* Keep the shared pixel-art robot crisp in both documentation themes. */
+.site-title img {
+  image-rendering: pixelated;
+  object-fit: contain;
+}

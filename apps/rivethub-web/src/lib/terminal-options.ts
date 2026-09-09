@@ -1,3 +1,5 @@
+import type { ILinkHandler } from '@xterm/xterm'
+import { openExternal } from './open-external.js'
 import type { TerminalSettings } from '../stores/terminal-settings.js'
 
 /**
@@ -15,6 +17,7 @@ export function buildTerminalOptions(settings: TerminalSettings): {
   cursorBlink: boolean
   scrollback: number
   allowProposedApi: true
+  linkHandler: ILinkHandler
 } {
   return {
     fontFamily: settings.fontFamily,
@@ -25,5 +28,11 @@ export function buildTerminalOptions(settings: TerminalSettings): {
     cursorBlink: settings.cursorBlink,
     scrollback: settings.scrollback,
     allowProposedApi: true,
+    // OSC 8 hyperlinks (including Codex's named PR links) use a separate
+    // path from WebLinksAddon. Avoid xterm's confirm + blank-window opener.
+    linkHandler: {
+      allowNonHttpProtocols: false,
+      activate: (_event, uri) => openExternal(uri),
+    },
   }
 }

@@ -487,11 +487,18 @@ describe.skipIf(!tmuxAvailable())(
         stdio: ['ignore', 'pipe', 'ignore'],
       })
       expect(mouse).toContain('mouse on')
-      const keys = execFileSync('tmux', ['-L', socket, 'list-keys', '-T', 'root', 'WheelUpPane'], {
+      // tmux 3.7 stopped honouring the trailing <key> filter on
+      // `list-keys -T <table>` (it returns nothing), so list the whole root
+      // table and pick the binding out here — works on 3.x either way.
+      const rootKeys = execFileSync('tmux', ['-L', socket, 'list-keys', '-T', 'root'], {
         encoding: 'utf8',
         timeout: 2000,
         stdio: ['ignore', 'pipe', 'ignore'],
       })
+      const keys = rootKeys
+        .split('\n')
+        .filter((line) => line.includes('WheelUpPane'))
+        .join('\n')
       expect(keys).toContain('mouse_any_flag')
     })
   },

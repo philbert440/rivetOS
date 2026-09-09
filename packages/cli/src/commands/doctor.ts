@@ -57,6 +57,7 @@ import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
 import { resolveLocalNodeName } from '../lib/node-identity.js'
+import { REQUEUE_ALLOWED_TASKS } from './memory.js'
 import {
   HERDR_VERSION,
   herdrBinPath,
@@ -932,7 +933,15 @@ export async function checkMemoryQueue(client?: PgLikeClient): Promise<CheckResu
         if (total === 0) continue
         const prescriptions: string[] = []
         if (keyed > 0) {
-          prescriptions.push(`revive with: rivetos memory requeue --task ${row.task}`)
+          // `rivetos memory requeue` refuses any task outside its frozen
+          // allowlist, so prescribing it for e.g. run-task:<node> handed the
+          // operator a command that only errors back at them.
+          const revivable = (REQUEUE_ALLOWED_TASKS as readonly string[]).includes(row.task)
+          prescriptions.push(
+            revivable
+              ? `revive with: rivetos memory requeue --task ${row.task}`
+              : `not a memory task — 'rivetos memory requeue' will refuse it; revive it through whatever owns ${row.task}`,
+          )
         }
         if (keyless > 0) {
           prescriptions.push(
@@ -1162,7 +1171,12 @@ async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
       }
 
       try {
-        const resp = await fetch(`http://${peer.host}:${String(peer.port)}/health/live`, {
+        // mesh.json `port` is the mTLS agent channel (3000) — a plain-HTTP GET
+        // there never completes the handshake, so every peer read as
+        // unreachable while the fleet was healthy. The liveness endpoint is
+        // the separate plain-HTTP health server (RIVETOS_HEALTH_PORT, 3100).
+        const healthPort = Number(process.env.RIVETOS_HEALTH_PORT ?? 3100)
+        const resp = await fetch(`http://${peer.host}:${String(healthPort)}/health/live`, {
           signal: AbortSignal.timeout(3000),
         })
         if (resp.ok) {
@@ -1753,6 +1767,23 @@ async function checkProviderConnectivity(
   config: Record<string, unknown>,
 ): Promise<boolean> {
   const timeout = 5000
+
+  // CLI-binary providers (claude-cli, grok-cli, hermes-cli, …) have no
+  // endpoint to probe: they are reachable when the configured binary exists
+  // and is executable. Without this they fell through to `default: false`, so
+  // doctor reported a perfectly healthy fleet as three hard failures.
+  // codex-cli keeps its richer `login status` probe below.
+  if (name !== 'codex-cli') {
+    const binary = typeof config.binary === 'string' ? config.binary.trim() : ''
+    if (binary) {
+      try {
+        accessSync(binary, fsConstants.X_OK)
+        return true
+      } catch {
+        return false
+      }
+    }
+  }
 
   switch (name) {
     case 'codex-cli':
