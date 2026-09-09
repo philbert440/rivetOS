@@ -19,8 +19,9 @@ import { networkInterfaces } from 'node:os'
 import { dirname } from 'node:path'
 import { mkdir } from 'node:fs/promises'
 import { meshFetch } from '../lib/mtls.js'
-import { loadMeshFile, type MeshNode } from '../lib/mesh-file.js'
+import { loadMeshFile, type MeshFile, type MeshNode } from '../lib/mesh-file.js'
 import { checkSshReachable, isSafeArg, sshExecCapture } from '../lib/ssh.js'
+import { resolveLocalNodeName } from '../lib/node-identity.js'
 import {
   DEFAULT_HUB_CMD,
   MeshHubError,
@@ -54,12 +55,14 @@ const HELP = `
                                               Re-issue this node's leaf certificate
     rivetos mesh join --manual <host>         Legacy seed-node join (prints YAML)
     rivetos mesh status                       Show this node's mesh status
+    rivetos mesh forget <node>                Remove a node from mesh.json
 
   Options:
     --name <node>                             Node name (enroll/renew)
     --advertise <host|ip>                     Address other nodes use to reach this node
     --hub-cmd <cmd>                           Remote hub helper (default: rivethub-hub)
     --manual                                  Use legacy mesh join instead of enroll
+    --force                                   Forget a node that is still online, or this node
     --json                                    Output as JSON
     --timeout <ms>                            Ping timeout per node (default: 5000)
     --ssh-user <user>                         SSH user for infrastructure checks (default: rivet)
@@ -101,6 +104,9 @@ export default async function mesh(argv: string[] = process.argv.slice(3)): Prom
         break
       case 'status':
         await meshStatus(flags)
+        break
+      case 'forget':
+        await meshForget(argv[1], flags)
         break
       default:
         console.log(HELP)
@@ -308,6 +314,90 @@ export async function meshSync(args: string[]): Promise<void> {
   console.log(
     `  mesh.json updated: ${String(beforeCount)} → ${String(afterCount)} nodes (${sign}${String(delta)})`,
   )
+}
+
+// ---------------------------------------------------------------------------
+// mesh forget
+// ---------------------------------------------------------------------------
+
+/**
+ * A node still counts as live if it heartbeat within this window, regardless of
+ * the status field — a peer mid-restart can read 'online' with a stale
+ * timestamp, and a decommissioned one can keep a stale 'online' forever.
+ */
+const FORGET_LIVE_WINDOW_MS = 10 * 60_000
+
+/** Exported for tests: decide whether a node may be dropped without --force. */
+export function forgetBlockedReason(
+  node: MeshNode,
+  localName: string | null,
+  now = Date.now(),
+): string | null {
+  if (localName !== null && (node.id === localName || node.name === localName)) {
+    return 'it is this node'
+  }
+  const lastSeen = node.lastSeen
+  if (lastSeen > 0 && now - lastSeen < FORGET_LIVE_WINDOW_MS) {
+    return `it heartbeat ${timeSince(lastSeen)}`
+  }
+  return null
+}
+
+/**
+ * Remove a node from mesh.json.
+ *
+ * Nothing else in the system deletes one: MeshRegistry.prune() and
+ * deregister() both only set status='offline', so a decommissioned or rebuilt
+ * peer lingers in the registry forever and keeps surfacing as unreachable in
+ * `mesh ping`, `mesh list` and doctor. A node that comes back under a new
+ * identity (fresh host keys, new address) leaves its old record behind with no
+ * supported way to clear it.
+ *
+ * Guarded rather than automatic: a peer that is merely mid-restart must not be
+ * dropped, so a recent heartbeat — or being this node — needs --force.
+ */
+export async function meshForget(target: string | undefined, flags: Flags = {}): Promise<void> {
+  if (!target) {
+    throw new MeshHubError('usage', 'Usage: rivetos mesh forget <node> [--force]')
+  }
+
+  const file = await loadMeshFile()
+  if (!file) {
+    throw new MeshHubError('usage', `No mesh.json found at ${sharedPath('mesh.json')}`)
+  }
+
+  const entries = Object.entries(file.nodes)
+  const match = entries.find(([id, n]) => id === target || n.name === target)
+  if (!match) {
+    throw new MeshHubError(
+      'usage',
+      `No mesh node "${target}". Known: ${entries.map(([id]) => id).join(', ')}`,
+    )
+  }
+  const [nodeId, node] = match
+
+  const blocked = forgetBlockedReason(node, resolveLocalNodeName())
+  if (blocked !== null && !flags.force) {
+    throw new MeshHubError(
+      'usage',
+      `Refusing to forget ${nodeId} — ${blocked}. Pass --force to override.`,
+    )
+  }
+
+  const before = entries.length
+  const remaining = Object.fromEntries(entries.filter(([id]) => id !== nodeId))
+  const updated: MeshFile = { ...file, nodes: remaining, updatedAt: Date.now() }
+
+  const dest = sharedPath('mesh.json')
+  await mkdir(dirname(dest), { recursive: true })
+  await atomicWriteFile(dest, `${JSON.stringify(updated, null, 2)}\n`)
+
+  if (flags.json) {
+    console.log(JSON.stringify({ forgot: nodeId, host: node.host, before, after: before - 1 }))
+    return
+  }
+  console.log(`  ✅ Forgot ${nodeId} (${node.host})${blocked !== null ? ' [forced]' : ''}`)
+  console.log(`  mesh.json: ${String(before)} → ${String(before - 1)} nodes`)
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +804,7 @@ interface Flags {
   port?: number
   sshUser?: string
   manual?: boolean
+  force?: boolean
 }
 
 function parseFlags(args: string[]): Flags {
@@ -721,6 +812,7 @@ function parseFlags(args: string[]): Flags {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') flags.json = true
     if (args[i] === '--manual') flags.manual = true
+    if (args[i] === '--force') flags.force = true
     if (args[i] === '--timeout' && args[i + 1]) flags.timeout = Number(args[++i])
     if (args[i] === '--port' && args[i + 1]) flags.port = Number(args[++i])
     if (args[i] === '--ssh-user' && args[i + 1]) flags.sshUser = args[++i]
