@@ -57,6 +57,7 @@ import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
 import { resolveLocalNodeName } from '../lib/node-identity.js'
+import { REQUEUE_ALLOWED_TASKS } from './memory.js'
 import {
   HERDR_VERSION,
   herdrBinPath,
@@ -932,7 +933,15 @@ export async function checkMemoryQueue(client?: PgLikeClient): Promise<CheckResu
         if (total === 0) continue
         const prescriptions: string[] = []
         if (keyed > 0) {
-          prescriptions.push(`revive with: rivetos memory requeue --task ${row.task}`)
+          // `rivetos memory requeue` refuses any task outside its frozen
+          // allowlist, so prescribing it for e.g. run-task:<node> handed the
+          // operator a command that only errors back at them.
+          const revivable = (REQUEUE_ALLOWED_TASKS as readonly string[]).includes(row.task)
+          prescriptions.push(
+            revivable
+              ? `revive with: rivetos memory requeue --task ${row.task}`
+              : `not a memory task — 'rivetos memory requeue' will refuse it; revive it through whatever owns ${row.task}`,
+          )
         }
         if (keyless > 0) {
           prescriptions.push(
