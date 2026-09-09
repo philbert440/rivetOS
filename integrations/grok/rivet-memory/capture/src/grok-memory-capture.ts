@@ -164,6 +164,20 @@ function isErrnoCode(err: unknown, code: string): boolean {
   )
 }
 
+/**
+ * True when a candidate path cannot exist, as opposed to one we failed to read.
+ *
+ * ENOENT is the session simply not living in this bucket. ENOTDIR is a
+ * non-directory sitting in the sessions root — Grok keeps its own
+ * session_search.sqlite index beside the cwd buckets — so `<that file>/<id>`
+ * can never resolve. Neither is an access failure, so both skip the candidate.
+ * Real access errors (EACCES, EPERM, EIO) still fail loud, so the worker never
+ * deletes the spool of a session it merely could not read.
+ */
+function isUnresolvablePath(err: unknown): boolean {
+  return isErrnoCode(err, 'ENOENT') || isErrnoCode(err, 'ENOTDIR')
+}
+
 function readSessionState(sessionId: string): SessionState | null {
   try {
     const statePath = path.join(STATE_DIR, `${sessionId}.json`)
@@ -400,7 +414,7 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
     try {
       if (fs.statSync(candidate).isDirectory()) return candidate
     } catch (err) {
-      if (!isErrnoCode(err, 'ENOENT')) throw err
+      if (!isUnresolvablePath(err)) throw err
     }
   }
   let cwdEntries: string[]
@@ -416,7 +430,7 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
     try {
       if (fs.statSync(candidate).isDirectory()) return candidate
     } catch (err) {
-      if (isErrnoCode(err, 'ENOENT')) continue
+      if (isUnresolvablePath(err)) continue
       accessError = err
     }
   }

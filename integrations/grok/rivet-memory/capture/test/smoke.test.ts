@@ -210,6 +210,52 @@ console.log('\n— findSessionDir resolver —')
   const phantom = findSessionDir('00000000-0000-0000-0000-000000000000')
   check('returns null for unknown session id', phantom === null)
 }
+{
+  // Regression: Grok keeps session_search.sqlite in the sessions root, beside
+  // the urlencoded-cwd buckets. Statting `<that file>/<sessionId>` raises
+  // ENOTDIR, which is not an access failure — it used to abort the whole scan,
+  // so capture failed on any machine whose Grok CLI had built its index.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-home-'))
+  const sessions = path.join(home, '.grok', 'sessions')
+  const bucket = path.join(sessions, '%2Ftmp%2Fwork')
+  const wanted = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  fs.mkdirSync(path.join(bucket, wanted), { recursive: true })
+  fs.writeFileSync(path.join(sessions, 'session_search.sqlite'), 'not a directory')
+
+  const prevHome = process.env.HOME
+  process.env.HOME = home
+  try {
+    // Fresh module instance so SESSIONS_ROOT is recomputed from the fixture.
+    const mod = await import('../src/grok-memory-capture.ts?notdir-fixture')
+
+    let threw: unknown = null
+    let found: string | null = null
+    try {
+      found = mod.findSessionDir(wanted)
+    } catch (err) {
+      threw = err
+    }
+    check(
+      'a non-directory beside the cwd buckets does not abort the scan',
+      threw === null,
+      threw instanceof Error ? threw.message : String(threw),
+    )
+    check('still finds the session that does exist', found === path.join(bucket, wanted))
+
+    let missThrew: unknown = null
+    let miss: string | null = null
+    try {
+      miss = mod.findSessionDir('00000000-0000-0000-0000-000000000000')
+    } catch (err) {
+      missThrew = err
+    }
+    check('unknown id past the stray file still returns null', missThrew === null && miss === null)
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}
 
 // =============================================================================
 // Layer 4: --hook spool path (subprocess, no DB)
