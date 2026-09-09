@@ -134,10 +134,14 @@ function log(msg: string): void {
 // Session state tracking (for fail-loud)
 // ---------------------------------------------------------------------------
 // Stuck policy — MUST match run-once.sh:
-// 3+ consecutive failures whose firstFailureMs..lastAttemptMs span is ≤ 2h,
-// and the last attempt is still within that 2h window of now.
+// ≥3 failures whose timestamps fall inside a rolling 2h window ending at now.
+// Samples older than 2h (or in the future / clock-rollback) are dropped.
+// Success clears the window. A fresh burst of 3 failures within 2h re-alarms
+// regardless of older history.
 const STUCK_FAILURE_COUNT = 3
 const STUCK_WINDOW_MS = 2 * 60 * 60 * 1000
+const STATE_LOCK_RETRY_MS = 50
+const STATE_LOCK_TIMEOUT_MS = 20_000
 
 interface SessionState {
   sessionId: string
@@ -145,8 +149,10 @@ interface SessionState {
   lastStatus: 'success' | 'failure'
   lastError?: string
   consecutiveFailures: number
-  /** Epoch ms of the first failure in the current streak. Omitted on success. */
+  /** Epoch ms of the oldest failure still inside the rolling window. */
   firstFailureMs?: number
+  /** Recent failure timestamps (epoch ms) retained for the rolling window. */
+  failureTimestampsMs?: number[]
 }
 
 function isErrnoCode(err: unknown, code: string): boolean {
@@ -188,29 +194,127 @@ function writeSessionState(state: SessionState): void {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function lockPathFor(sessionId: string): string {
+  const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, '_')
+  return path.join(STATE_DIR, `.${safe}.lock`)
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function tryStealStaleLock(lockPath: string): void {
+  try {
+    const raw = fs.readFileSync(lockPath, 'utf8').trim()
+    const pid = Number.parseInt(raw, 10)
+    if (!pidIsAlive(pid)) fs.unlinkSync(lockPath)
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Exclusive lockfile (O_EXCL) keyed by sessionId in STATE_DIR. Held across
+ * read → modify → publish so state serializes even when Postgres is down.
+ * The PG advisory lock still covers DB writes; this lock covers local state.
+ */
+async function acquireSessionFileLock(sessionId: string): Promise<() => void> {
+  fs.mkdirSync(STATE_DIR, { recursive: true })
+  const lockPath = lockPathFor(sessionId)
+  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS
+  let fd: number | undefined
+  while (fd === undefined) {
+    try {
+      fd = fs.openSync(lockPath, 'wx')
+      fs.writeSync(fd, String(process.pid))
+    } catch (err) {
+      if (fd !== undefined) {
+        try {
+          fs.closeSync(fd)
+        } catch {
+          // ignore
+        }
+        try {
+          fs.unlinkSync(lockPath)
+        } catch {
+          // ignore
+        }
+        fd = undefined
+      }
+      if (!isErrnoCode(err, 'EEXIST')) throw err
+      tryStealStaleLock(lockPath)
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out acquiring session state lock for ${sessionId}`)
+      }
+      await sleep(STATE_LOCK_RETRY_MS)
+    }
+  }
+  const ownedFd = fd
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    try {
+      fs.closeSync(ownedFd)
+    } catch {
+      // ignore
+    }
+    try {
+      fs.unlinkSync(lockPath)
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function pruneFailureTimestamps(timestamps: number[], now: number): number[] {
+  return timestamps
+    .filter((ts) => {
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) return false
+      const age = now - ts
+      return age >= 0 && age <= STUCK_WINDOW_MS
+    })
+    .sort((a, b) => a - b)
+}
+
+function priorFailureTimestamps(prior: SessionState | null): number[] {
+  if (prior?.lastStatus !== 'failure') return []
+  if (Array.isArray(prior.failureTimestampsMs)) {
+    return prior.failureTimestampsMs.filter((ts) => typeof ts === 'number')
+  }
+  const seeded: number[] = []
+  if (typeof prior.firstFailureMs === 'number') seeded.push(prior.firstFailureMs)
+  if (typeof prior.lastAttemptMs === 'number' && prior.lastAttemptMs !== prior.firstFailureMs) {
+    seeded.push(prior.lastAttemptMs)
+  }
+  return seeded
+}
+
 function nextFailureState(
   sessionId: string,
   errMsg: string,
   prior: SessionState | null,
 ): SessionState {
   const now = Date.now()
-  if (prior?.lastStatus === 'failure' && typeof prior.firstFailureMs === 'number') {
-    return {
-      sessionId,
-      lastAttemptMs: now,
-      lastStatus: 'failure',
-      lastError: errMsg,
-      consecutiveFailures: (prior.consecutiveFailures ?? 0) + 1,
-      firstFailureMs: prior.firstFailureMs,
-    }
-  }
+  const timestamps = pruneFailureTimestamps([...priorFailureTimestamps(prior), now], now)
   return {
     sessionId,
     lastAttemptMs: now,
     lastStatus: 'failure',
     lastError: errMsg,
-    consecutiveFailures: 1,
-    firstFailureMs: now,
+    consecutiveFailures: timestamps.length,
+    firstFailureMs: timestamps[0],
+    failureTimestampsMs: timestamps,
   }
 }
 
@@ -225,14 +329,11 @@ function nextSuccessState(sessionId: string): SessionState {
 
 function isStuckSession(state: SessionState, now = Date.now()): boolean {
   if (state.lastStatus !== 'failure') return false
-  if ((state.consecutiveFailures ?? 0) < STUCK_FAILURE_COUNT) return false
-  if (typeof state.firstFailureMs !== 'number' || typeof state.lastAttemptMs !== 'number') {
-    return false
-  }
-  const span = state.lastAttemptMs - state.firstFailureMs
-  if (span < 0 || span > STUCK_WINDOW_MS) return false
-  if (now - state.lastAttemptMs > STUCK_WINDOW_MS) return false
-  return true
+  if (typeof state.lastAttemptMs !== 'number') return false
+  const lastAge = now - state.lastAttemptMs
+  if (lastAge < 0 || lastAge > STUCK_WINDOW_MS) return false
+  const timestamps = pruneFailureTimestamps(priorFailureTimestamps(state), now)
+  return timestamps.length >= STUCK_FAILURE_COUNT
 }
 
 function checkStuckSessions(): string[] {
@@ -290,19 +391,36 @@ function deriveSessionKey(sessionId: string): string {
  * env var (if set), then scan all cwd buckets for the matching session id.
  */
 export function findSessionDir(sessionId: string, workspaceRootHint?: string): string | null {
+  // Real layout is ~/.grok/sessions/<urlencoded-cwd>/<sessionId>/. Directory
+  // access errors are not "not found" — they must fail loud so the worker
+  // does not delete a spool for an inaccessible session.
   if (workspaceRootHint) {
     const enc = encodeURIComponent(workspaceRootHint)
     const candidate = path.join(SESSIONS_ROOT, enc, sessionId)
-    if (fs.existsSync(candidate)) return candidate
-  }
-  try {
-    for (const cwd of fs.readdirSync(SESSIONS_ROOT)) {
-      const candidate = path.join(SESSIONS_ROOT, cwd, sessionId)
-      try {
-        if (fs.statSync(candidate).isDirectory()) return candidate
-      } catch {}
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate
+    } catch (err) {
+      if (!isErrnoCode(err, 'ENOENT')) throw err
     }
-  } catch {}
+  }
+  let cwdEntries: string[]
+  try {
+    cwdEntries = fs.readdirSync(SESSIONS_ROOT)
+  } catch (err) {
+    if (isErrnoCode(err, 'ENOENT')) return null
+    throw err
+  }
+  let accessError: unknown
+  for (const cwd of cwdEntries) {
+    const candidate = path.join(SESSIONS_ROOT, cwd, sessionId)
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate
+    } catch (err) {
+      if (isErrnoCode(err, 'ENOENT')) continue
+      accessError = err
+    }
+  }
+  if (accessError) throw accessError
   return null
 }
 
@@ -824,8 +942,13 @@ async function ingestSession(op: CaptureOp): Promise<void> {
   let client: PoolClient | undefined
   let inTx = false
   let statePublished = false
+  let releaseLock: (() => void) | undefined
 
   try {
+    // Local file lock covers read → modify → publish even when PG is down.
+    // PG advisory lock still serializes the DB writes when a connection exists.
+    releaseLock = await acquireSessionFileLock(op.sessionId)
+
     const pgUrl = resolvePgUrl()
     pool = new Pool({ connectionString: pgUrl, max: 1 })
     client = await pool.connect()
@@ -835,21 +958,15 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     inTx = true
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
 
-    // Read → mutate → publish entirely inside the per-session advisory lock.
+    // Read → mutate → publish entirely inside the per-session locks.
     const priorState = readSessionState(op.sessionId)
 
     const sessionDir = findSessionDir(op.sessionId, process.env.GROK_WORKSPACE_ROOT)
     if (!sessionDir) {
       const err = `session dir not found (workspaceRoot=${process.env.GROK_WORKSPACE_ROOT ?? 'unset'})`
       log(`ingest ${sessionKey}: ${err}`)
-
-      // Only fail loud if session file exists somewhere
-      const sessionExists = fs.existsSync(path.join(SESSIONS_ROOT, op.sessionId))
-      if (sessionExists) {
-        writeSessionState(nextFailureState(op.sessionId, err, priorState))
-        statePublished = true
-        throw new Error(err)
-      }
+      // Genuine miss under <sessions>/<cwd>/<id>. Access errors throw above
+      // and are recorded as failures; do not treat them as not-found.
       await client.query('COMMIT')
       inTx = false
       return
@@ -902,9 +1019,11 @@ async function ingestSession(op: CaptureOp): Promise<void> {
       await client.query(`UPDATE ros_conversations SET updated_at = now() WHERE id = $1`, [conv.id])
     }
 
-    writeSessionState(nextSuccessState(op.sessionId))
     await client.query('COMMIT')
     inTx = false
+    // Publish success only after COMMIT so a rejected commit increments the
+    // prior failure streak instead of resetting it to 1.
+    writeSessionState(nextSuccessState(op.sessionId))
     statePublished = true
 
     const msg = `parsed=${parsed.length} stored_before=${stored} inserted=${toInsert.length}${op.finalize ? ' finalized' : ''}`
@@ -913,9 +1032,9 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     const errMsg = err instanceof Error ? err.message : String(err)
     log(`ingest ${op.sessionId} FAIL: ${errMsg}`)
 
-    // Re-read inside the lock when we still hold it so concurrent workers
-    // cannot publish a stale increment. Connect/config failures never took
-    // the lock; still record them so --health cannot report OK.
+    // Local file lock (acquired at the start of try) serializes this RMW
+    // even when connect/advisory-lock failed. Commit failures land here
+    // with statePublished still false, so the prior streak is preserved.
     if (!statePublished) {
       const priorState = readSessionState(op.sessionId)
       writeSessionState(nextFailureState(op.sessionId, errMsg, priorState))
@@ -939,17 +1058,27 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     if (pool) {
       await pool.end().catch(() => {})
     }
+    if (releaseLock) {
+      try {
+        releaseLock()
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
 async function runWorker(spoolFile?: string) {
-  fs.mkdirSync(SPOOL_DIR, { recursive: true })
-  const files = spoolFile
-    ? [spoolFile]
-    : fs
-        .readdirSync(SPOOL_DIR)
-        .filter((f) => f.endsWith('.json'))
-        .map((f) => path.join(SPOOL_DIR, f))
+  let files: string[]
+  if (spoolFile) {
+    files = [spoolFile]
+  } else {
+    fs.mkdirSync(SPOOL_DIR, { recursive: true })
+    files = fs
+      .readdirSync(SPOOL_DIR)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => path.join(SPOOL_DIR, f))
+  }
 
   let hadFailure = false
   for (const file of files) {
@@ -991,7 +1120,7 @@ async function runWorker(spoolFile?: string) {
       hadFailure = true
     }
   }
-  
+
   // Exit non-zero if any ingest failed
   if (hadFailure) {
     process.exit(1)
@@ -1070,5 +1199,7 @@ async function main() {
 
 main().catch((err) => {
   log(`fatal: ${err}`)
-  process.exit(0) // never fail the caller
+  // Worker init (mkdir/readdir of spool, etc.) must fail loud. Hook mode
+  // still exits 0 so the Grok session is never blocked.
+  process.exit(process.argv.includes('--worker') ? 1 : 0)
 })

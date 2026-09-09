@@ -14,8 +14,10 @@ STATE_DIR="${HOME}/.rivetos/grokbot-capture-state"
 GROKBOT_TRANSCRIPT_ROOT="${GROKBOT_TRANSCRIPT_ROOT:-}"
 
 # Stuck policy — MUST match grok-memory-capture.ts:
-# 3+ consecutive failures whose firstFailureMs..lastAttemptMs span is <= 2h,
-# and the last attempt is still within that 2h window of now.
+# ≥3 failures whose timestamps fall inside a rolling 2h window ending at now.
+# Samples older than 2h (or in the future / clock-rollback) are dropped.
+# Success clears the window. A fresh burst of 3 failures within 2h re-alarms
+# regardless of older history.
 STUCK_FAILURE_COUNT=3
 STUCK_WINDOW_MS=$((2 * 60 * 60 * 1000))
 
@@ -92,10 +94,17 @@ write_state_atomic() {
 
 read_prior_state_json() {
     local state_file="$1"
-    if [[ -f "${state_file}" ]]; then
-        jq -c . "${state_file}" 2>/dev/null || echo '{}'
-    else
+    local raw=""
+    # Empty files make `jq -c .` exit 0 with no output, so `|| echo '{}'`
+    # never fires. Require a JSON object; anything else (empty, array,
+    # parse error) becomes {}.
+    if [[ -s "${state_file}" ]]; then
+        raw="$(jq -c 'if type == "object" then . else empty end' "${state_file}" 2>/dev/null || true)"
+    fi
+    if [[ -z "${raw}" ]]; then
         echo '{}'
+    else
+        printf '%s\n' "${raw}"
     fi
 }
 
@@ -110,27 +119,34 @@ record_failure() {
         --arg sid "${session_id}" \
         --arg err "${last_error}" \
         --argjson now "${now_ms}" \
+        --argjson window "${STUCK_WINDOW_MS}" \
         --argjson prior "${prior_json}" \
         '
         ($prior.lastStatus // "") as $st |
-        ($prior.firstFailureMs) as $ff |
+        (if $st == "failure" then
+           if ($prior.failureTimestampsMs | type) == "array" then
+             $prior.failureTimestampsMs
+           else
+             (
+               [
+                 ($prior.firstFailureMs | select(type == "number")),
+                 ($prior.lastAttemptMs | select(type == "number"))
+               ] | unique
+             )
+           end
+         else [] end) as $prior_ts |
+        ($prior_ts + [$now]
+          | map(select(type == "number" and ($now - .) >= 0 and ($now - .) <= $window))
+          | sort
+        ) as $ts |
         {
           sessionId: $sid,
           lastAttemptMs: $now,
           lastStatus: "failure",
           lastError: $err,
-          consecutiveFailures: (
-            if $st == "failure" and ($ff | type) == "number"
-            then (($prior.consecutiveFailures // 0) + 1)
-            else 1
-            end
-          ),
-          firstFailureMs: (
-            if $st == "failure" and ($ff | type) == "number"
-            then $ff
-            else $now
-            end
-          )
+          consecutiveFailures: ($ts | length),
+          firstFailureMs: (if ($ts | length) > 0 then $ts[0] else $now end),
+          failureTimestampsMs: $ts
         }
         ')"
     write_state_atomic "${state_file}" "${json}"
@@ -165,11 +181,19 @@ session_is_stuck() {
         --argjson window "${STUCK_WINDOW_MS}" \
         '
         .lastStatus == "failure"
-        and ((.consecutiveFailures // 0) >= $count)
-        and (.firstFailureMs | type) == "number"
         and (.lastAttemptMs | type) == "number"
-        and ((.lastAttemptMs - .firstFailureMs) <= $window)
+        and (($now - .lastAttemptMs) >= 0)
         and (($now - .lastAttemptMs) <= $window)
+        and (
+          (if (.failureTimestampsMs | type) == "array" then .failureTimestampsMs
+           else (
+             [(.firstFailureMs | select(type == "number")),
+              (.lastAttemptMs | select(type == "number"))] | unique
+           )
+           end)
+          | map(select(type == "number" and ($now - .) >= 0 and ($now - .) <= $window))
+          | length
+        ) >= $count
         ' "${state_file}" >/dev/null 2>&1
 }
 

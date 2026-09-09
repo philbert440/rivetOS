@@ -83,33 +83,104 @@ PG_URL=""
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Remote/share filesystems that may host GROKBOT_SHARE_ROOT as a subdirectory.
+# Local disk/tmpfs/overlay parents (e.g. /home on its own partition) do not
+# qualify — those would restore/snapshot on the wrong device.
+share_fstype_is_remote() {
+    local fstype="$1"
+    case "${fstype}" in
+        nfs|nfs[0-9]|nfs4|nfs4.*|cifs|smb|smb[0-9]|smb3|smb3.*|9p|ceph|glusterfs|fuse|fuse.*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# Print "TARGET<TAB>SOURCE<TAB>FSTYPE" for the mount that contains $1.
+# Fail closed if mount identity cannot be resolved.
+containing_mount_for() {
+    local path="$1"
+    local target source fstype line
+    if command -v findmnt >/dev/null 2>&1; then
+        target="$(findmnt -n -o TARGET --target "${path}" 2>/dev/null)" || return 1
+        source="$(findmnt -n -o SOURCE --target "${path}" 2>/dev/null)" || return 1
+        fstype="$(findmnt -n -o FSTYPE --target "${path}" 2>/dev/null)" || return 1
+        [[ -n "${target}" && -n "${fstype}" ]] || return 1
+        printf '%s\t%s\t%s\n' "${target}" "${source}" "${fstype}"
+        return 0
+    fi
+    [[ -r /proc/self/mounts ]] || return 1
+    line="$(awk -v path="${path}" '
+        function unesc(s) {
+            gsub(/\\040/, " ", s)
+            gsub(/\\011/, "\t", s)
+            return s
+        }
+        {
+            src = unesc($1)
+            tgt = unesc($2)
+            fs = $3
+            if (tgt == path || index(path, tgt "/") == 1 || tgt == "/") {
+                if (length(tgt) >= bestlen) {
+                    bestlen = length(tgt)
+                    bestsrc = src
+                    besttgt = tgt
+                    bestfs = fs
+                }
+            }
+        }
+        END {
+            if (besttgt != "") printf "%s\t%s\t%s\n", besttgt, bestsrc, bestfs
+        }
+    ' /proc/self/mounts)" || return 1
+    [[ -n "${line}" ]] || return 1
+    printf '%s\n' "${line}"
+}
+
 share_is_mounted() {
     local target="$1"
-    local p cur root_dev dir_dev
+    local p mnt_line mnt_target mnt_source mnt_fstype
     [[ -d "${target}" ]] || return 1
-    p="$(cd "${target}" && pwd -P)"
+    p="$(cd "${target}" && pwd -P)" || return 1
 
-    if command -v mountpoint >/dev/null 2>&1; then
-        cur="${p}"
-        while [[ -n "${cur}" && "${cur}" != "/" ]]; do
-            if mountpoint -q "${cur}"; then
-                return 0
-            fi
-            cur="$(dirname -- "${cur}")"
-        done
-        return 1
+    mnt_line="$(containing_mount_for "${p}")" || return 1
+    IFS=$'\t' read -r mnt_target mnt_source mnt_fstype <<<"${mnt_line}"
+    [[ -n "${mnt_target}" ]] || return 1
+
+    # Policy: SHARE_ROOT itself is the mount (any fstype, including a local
+    # disk dedicated as the recovery share), OR SHARE_ROOT is a subdirectory
+    # of a remote/fuse share. A mounted ancestor that is just local storage
+    # (e.g. /home on its own partition) does not qualify.
+    if [[ "${mnt_target}" == "${p}" ]]; then
+        return 0
     fi
+    # Subdirectory of a mount: require a remote/fuse source, not a local parent.
+    [[ -n "${mnt_source}" ]] || return 1
+    share_fstype_is_remote "${mnt_fstype}"
+}
 
-    # Fallback when mountpoint(1) is absent: the path must live on a
-    # different device than / (a leftover empty mount-point dir does not).
-    root_dev="$(stat -c '%d' /)"
-    dir_dev="$(stat -c '%d' "${p}")"
-    [[ "${dir_dev}" != "${root_dev}" ]]
+mesh_cert_parseable() {
+    local cert="$1"
+    [[ -s "${cert}" ]] || return 1
+    if command -v openssl >/dev/null 2>&1; then
+        openssl x509 -in "${cert}" -noout >/dev/null 2>&1
+    else
+        grep -q -- "-----BEGIN CERTIFICATE-----" "${cert}" \
+            && grep -q -- "-----END CERTIFICATE-----" "${cert}"
+    fi
+}
+
+mesh_roster_parseable() {
+    local roster="$1"
+    [[ -s "${roster}" ]] || return 1
+    jq -e 'type == "object"' "${roster}" >/dev/null 2>&1
 }
 
 mesh_identity_complete() {
     local dir="$1"
-    [[ -d "${dir}" ]] && [[ -f "${dir}/node.crt" ]] && [[ -f "${dir}/roster.json" ]]
+    [[ -d "${dir}" ]] || return 1
+    mesh_cert_parseable "${dir}/node.crt" || return 1
+    mesh_roster_parseable "${dir}/roster.json"
 }
 
 restore_mesh_identity() {
@@ -174,14 +245,25 @@ restore_mesh_identity() {
     return 0
 }
 
+systemd_exec_start() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//%/%%}"
+    printf '"%s"' "${s}"
+}
+
 write_capture_unit_files() {
     local dir="$1"
     local scope="${2:-user}"
     local user_line=""
+    local env_file exec_start
     mkdir -p "${dir}"
     if [[ "${scope}" == "system" ]]; then
         user_line="User=$(whoami)"
     fi
+    env_file="${RIVETOS_ENV_FILE:-${HOME_RIVETOS}/.env}"
+    exec_start="$(systemd_exec_start "${CAPTURE_RUNNER}")"
     cat > "${dir}/${SERVICE_NAME}" <<EOF
 [Unit]
 Description=Grok Bot transcript capture
@@ -192,7 +274,8 @@ Type=oneshot
 ${user_line}
 Environment="RIVETOS_ROOT=${RIVETOS_ROOT}"
 Environment="GROKBOT_TRANSCRIPT_ROOT=${GROKBOT_TRANSCRIPT_ROOT:-}"
-ExecStart=${CAPTURE_RUNNER}
+Environment="RIVETOS_ENV_FILE=${env_file}"
+ExecStart=${exec_start}
 StandardOutput=journal
 StandardError=journal
 EOF
@@ -209,22 +292,35 @@ WantedBy=timers.target
 EOF
 }
 
-install_capture_watcher() {
-    if systemctl --user is-active --quiet "${TIMER_NAME}" 2>/dev/null; then
-        echo "  Watcher timer ACTIVE (user): ${TIMER_NAME}"
-        return 0
+# Confirm the installed oneshot has the current runner, transcript root, and
+# credential env — i.e. the scheduled environment, not just "a timer is active".
+verify_scheduled_capture_unit() {
+    local scope="$1"
+    local show=""
+    if [[ "${scope}" == "user" ]]; then
+        systemctl --user is-enabled --quiet "${TIMER_NAME}" 2>/dev/null || return 1
+        systemctl --user is-active --quiet "${TIMER_NAME}" 2>/dev/null || return 1
+        show="$(systemctl --user show "${SERVICE_NAME}" -p ExecStart -p Environment --no-pager 2>/dev/null)" || return 1
+    else
+        systemctl is-enabled --quiet "${TIMER_NAME}" 2>/dev/null || return 1
+        systemctl is-active --quiet "${TIMER_NAME}" 2>/dev/null || return 1
+        show="$(systemctl show "${SERVICE_NAME}" -p ExecStart -p Environment --no-pager 2>/dev/null)" || return 1
     fi
-    if systemctl is-active --quiet "${TIMER_NAME}" 2>/dev/null; then
-        echo "  Watcher timer ACTIVE (system): ${TIMER_NAME}"
-        return 0
+    [[ -n "${show}" ]] || return 1
+    echo "${show}" | grep -Fq "${CAPTURE_RUNNER}" || return 1
+    if [[ -n "${GROKBOT_TRANSCRIPT_ROOT:-}" ]]; then
+        echo "${show}" | grep -Fq "GROKBOT_TRANSCRIPT_ROOT=${GROKBOT_TRANSCRIPT_ROOT}" || return 1
     fi
+    echo "${show}" | grep -Fq "RIVETOS_ENV_FILE=" || return 1
+}
 
+install_capture_watcher() {
     local user_dir="${HOME}/.config/systemd/user"
     write_capture_unit_files "${user_dir}" "user"
     if systemctl --user daemon-reload >/dev/null 2>&1 \
         && systemctl --user enable --now "${TIMER_NAME}" >/dev/null 2>&1 \
-        && systemctl --user is-active --quiet "${TIMER_NAME}"; then
-        echo "  Installed and ACTIVE (user): ${TIMER_NAME}"
+        && verify_scheduled_capture_unit "user"; then
+        echo "  Installed/reconciled and ACTIVE (user): ${TIMER_NAME}"
         return 0
     fi
 
@@ -235,15 +331,15 @@ install_capture_watcher() {
         if sudo -n cp "${tmp}/${SERVICE_NAME}" "${tmp}/${TIMER_NAME}" /etc/systemd/system/ \
             && sudo -n systemctl daemon-reload \
             && sudo -n systemctl enable --now "${TIMER_NAME}" \
-            && systemctl is-active --quiet "${TIMER_NAME}"; then
+            && verify_scheduled_capture_unit "system"; then
             rm -rf "${tmp}"
-            echo "  Installed and ACTIVE (system): ${TIMER_NAME}"
+            echo "  Installed/reconciled and ACTIVE (system): ${TIMER_NAME}"
             return 0
         fi
         rm -rf "${tmp}"
     fi
 
-    echo "ERROR: Capture watcher timer is not ACTIVE" >&2
+    echo "ERROR: Capture watcher timer is not ACTIVE with the current unit config" >&2
     echo "Could not install/start ${TIMER_NAME} as a user or system unit." >&2
     echo "Enable lingering / fix systemd --user, or install the units, then re-run." >&2
     return 1
@@ -266,15 +362,46 @@ restore_grok_hooks() {
         echo "ERROR: Hook config not found at ${hook_src}" >&2
         return 1
     fi
+    local abs_hook dest tmp
+    abs_hook="$(cd "$(dirname -- "${hook_script}")" && pwd -P)/$(basename -- "${hook_script}")"
+    if [[ ! -f "${abs_hook}" ]]; then
+        echo "ERROR: Hook script not found at ${abs_hook}" >&2
+        return 1
+    fi
     mkdir -p "${grok_home}/hooks"
-    local dest="${grok_home}/hooks/rivet-memory.json"
-    cp "${hook_src}" "${dest}"
-    if [[ ! -f "${dest}" ]] || ! grep -q 'grok-memory-hook.sh' "${dest}"; then
+    dest="${grok_home}/hooks/rivet-memory.json"
+    tmp="${dest}.tmp.$$"
+    # Rewrite template ${RIVETOS_ROOT:-/opt/rivetos}/... to the durable
+    # absolute path so a later Grok process without that env still works.
+    if ! jq --arg hook "${abs_hook}" '
+        .hooks |= map_values(
+          map(
+            .hooks |= map(
+              if .type == "command" and (.command | type == "string")
+                 and (.command | test("grok-memory-hook\\.sh"))
+              then .command = ($hook + " " + (.command | split(" ") | last))
+              else . end
+            )
+          )
+        )
+      ' "${hook_src}" > "${tmp}"; then
+        rm -f "${tmp}"
+        echo "ERROR: Failed to rewrite Grok hook config with durable hook path" >&2
+        return 1
+    fi
+    if ! mv -f "${tmp}" "${dest}"; then
+        rm -f "${tmp}"
         echo "ERROR: Failed to restore Grok hook config at ${dest}" >&2
         return 1
     fi
+    if [[ ! -f "${dest}" ]] \
+        || ! grep -Fq "${abs_hook}" "${dest}" \
+        || grep -Fq '${RIVETOS_ROOT' "${dest}"; then
+        echo "ERROR: Hook config at ${dest} is not resolved to a durable path" >&2
+        return 1
+    fi
     echo "  Restored hook config: ${dest}"
-    echo "  Hook script: ${hook_script}"
+    echo "  Hook script: ${abs_hook}"
     return 0
 }
 
@@ -309,11 +436,13 @@ ingest_packages_ok() {
         && [[ -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]
 }
 
-# Returns 0 if a conversation row exists for session_key+agent.
+# Returns 0 if a matching row exists for session_key+agent.
+# Optional $3 = exact message content that must have been stored (this attempt).
 # 1 = queried OK but no row; 2 = could not query (unavailable).
 prove_stored_row() {
     local session_key="$1"
     local agent="$2"
+    local content_needle="${3:-}"
     if [[ -z "${PG_URL}" ]]; then
         return 2
     fi
@@ -323,12 +452,14 @@ prove_stored_row() {
 const url = process.env.RIVETOS_PG_URL;
 const sessionKey = process.env.PROOF_SESSION_KEY;
 const agent = process.env.PROOF_AGENT;
+const content = process.env.PROOF_CONTENT || "";
 if (!url || !sessionKey || !agent) process.exit(2);
 const pool = new Pool({ connectionString: url, max: 1 });
-pool.query(
-  "SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2 LIMIT 1",
-  [sessionKey, agent],
-).then(async (r) => {
+const sql = content
+  ? "SELECT m.id FROM ros_messages m JOIN ros_conversations c ON c.id = m.conversation_id WHERE c.session_key = $1 AND c.agent = $2 AND m.content = $3 LIMIT 1"
+  : "SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2 LIMIT 1";
+const params = content ? [sessionKey, agent, content] : [sessionKey, agent];
+pool.query(sql, params).then(async (r) => {
   await pool.end().catch(() => {});
   process.exit(r.rows.length > 0 ? 0 : 1);
 }).catch(async () => {
@@ -340,6 +471,7 @@ pool.query(
         RIVETOS_PG_URL="${PG_URL}" \
         PROOF_SESSION_KEY="${session_key}" \
         PROOF_AGENT="${agent}" \
+        PROOF_CONTENT="${content_needle}" \
         node --input-type=commonjs -e "${node_script}" || rc=$?
     return "${rc}"
 }
@@ -407,58 +539,77 @@ prove_door2() {
         return 0
     fi
 
-    local capture_js="${RIVETOS_ROOT}/integrations/grok/rivet-memory/capture/dist/grok-memory-capture.js"
-    local capture_ts="${RIVETOS_ROOT}/integrations/grok/rivet-memory/capture/src/grok-memory-capture.ts"
-    local -a capture_cmd
-    if [[ -f "${capture_js}" ]]; then
-        capture_cmd=(node "${capture_js}")
-    elif [[ -f "${capture_ts}" ]]; then
-        capture_cmd=(npx --yes tsx "${capture_ts}")
-    else
-        echo "ERROR: Door 2 proof unavailable: capture worker not present" >&2
-        return 2
-    fi
     if ! load_pg_url; then
         echo "ERROR: Door 2 proof unavailable: RIVETOS_PG_URL not set and not in ~/.rivetos/.env" >&2
         return 2
     fi
 
-    local sid="" d
-    shopt -s nullglob
-    for d in "${grok_home}/sessions"/*/*/; do
-        if [[ -f "${d}updates.jsonl" ]]; then
-            sid="$(basename -- "${d%/}")"
-            break
+    local dest="${grok_home}/hooks/rivet-memory.json"
+    if [[ ! -f "${dest}" ]]; then
+        echo "ERROR: Door 2 proof unavailable: installed hook config missing at ${dest}" >&2
+        return 2
+    fi
+    local cmd hook_bin hook_evt
+    cmd="$(jq -r '.hooks.Stop[0].hooks[0].command // empty' "${dest}")"
+    if [[ -z "${cmd}" ]]; then
+        echo "ERROR: Door 2 proof unavailable: no Stop command in ${dest}" >&2
+        return 2
+    fi
+    if [[ "${cmd}" == *'${'* ]]; then
+        echo "ERROR: Door 2 proof failed: installed hook command is not a durable path: ${cmd}" >&2
+        return 1
+    fi
+    hook_evt="${cmd##* }"
+    hook_bin="${cmd%" ${hook_evt}"}"
+    if [[ ! -f "${hook_bin}" ]]; then
+        echo "ERROR: Door 2 proof unavailable: hook command not found at ${hook_bin}" >&2
+        return 2
+    fi
+
+    local sid token cwd_enc proof_dir now_ms session_key pr i
+    sid="setup-prove-$$-$(date +%s)"
+    token="rivetos-door2-prove-$$-$(date +%s)-${RANDOM}"
+    cwd_enc="$(node -p 'encodeURIComponent("/tmp/rivetos-door2-prove")')" || cwd_enc="%2Ftmp%2Frivetos-door2-prove"
+    proof_dir="${grok_home}/sessions/${cwd_enc}/${sid}"
+    mkdir -p "${proof_dir}"
+    now_ms=$(( $(date +%s) * 1000 ))
+    if ! jq -n --arg sid "${sid}" --arg token "${token}" --argjson ts "${now_ms}" \
+        '{method:"session/update",params:{sessionId:$sid,update:{sessionUpdate:"user_message_chunk",content:{type:"text",text:$token},_meta:{promptIndex:0}},_meta:{eventId:($sid + "-prove"),agentTimestampMs:$ts}}}' \
+        > "${proof_dir}/updates.jsonl"; then
+        rm -rf "${proof_dir}"
+        echo "ERROR: Door 2 proof unavailable: failed to write proof transcript" >&2
+        return 2
+    fi
+    printf '%s\n' '{"generated_title":"setup door2 prove"}' > "${proof_dir}/summary.json"
+
+    echo "  Door 2: Invoking installed hook ${hook_bin} ${hook_evt}..."
+    if ! printf '%s\n' "{\"sessionId\":\"${sid}\"}" \
+        | GROK_SESSION_ID="${sid}" "${hook_bin}" "${hook_evt}"; then
+        rm -rf "${proof_dir}"
+        echo "ERROR: Door 2 hook command failed for session ${sid}" >&2
+        return 1
+    fi
+
+    session_key="grok-build:${sid}"
+    pr=1
+    for i in {1..30}; do
+        pr=0
+        prove_stored_row "${session_key}" "rivet-grok" "${token}" || pr=$?
+        if [[ "${pr}" -eq 0 ]]; then
+            rm -rf "${proof_dir}"
+            echo "  Door 2 proved OK (session ${sid}, known message stored)"
+            return 0
         fi
+        if [[ "${pr}" -eq 2 ]]; then
+            rm -rf "${proof_dir}"
+            echo "ERROR: Door 2 proof unavailable: could not query memory store" >&2
+            return 2
+        fi
+        sleep 1
     done
-    shopt -u nullglob
-    if [[ -z "${sid}" ]]; then
-        echo "ERROR: Door 2 proof unavailable: no Grok session transcript under ${grok_home}/sessions" >&2
-        return 2
-    fi
-
-    local spool
-    spool="$(mktemp "${TMPDIR:-/tmp}/rivetos-grok-prove.XXXXXX.json")"
-    jq -n --arg sid "${sid}" '{kind:"ingest",sessionId:$sid,sourceEvent:"setup-prove"}' > "${spool}"
-    if ! "${capture_cmd[@]}" --worker "${spool}"; then
-        rm -f "${spool}"
-        echo "ERROR: Door 2 ingest of session ${sid} failed" >&2
-        return 1
-    fi
-    rm -f "${spool}"
-
-    local session_key="grok-build:${sid}" pr=0
-    prove_stored_row "${session_key}" "rivet-grok" || pr=$?
-    if [[ "${pr}" -eq 2 ]]; then
-        echo "ERROR: Door 2 proof unavailable: could not query memory store" >&2
-        return 2
-    fi
-    if [[ "${pr}" -ne 0 ]]; then
-        echo "ERROR: Door 2 proof failed: no stored row for ${session_key}" >&2
-        return 1
-    fi
-    echo "  Door 2 proved OK (session ${sid})"
-    return 0
+    rm -rf "${proof_dir}"
+    echo "ERROR: Door 2 proof failed: known message from this attempt was not stored for ${session_key}" >&2
+    return 1
 }
 
 snapshot_mesh_identity() {
@@ -534,8 +685,9 @@ if [[ ! -d "${SHARE_ROOT}" ]]; then
 fi
 
 if ! share_is_mounted "${SHARE_ROOT}"; then
-    echo "ERROR: ${SHARE_ROOT} is not a mountpoint (share is not mounted)" >&2
-    echo "A leftover directory is not enough — mount the share, then re-run." >&2
+    echo "ERROR: ${SHARE_ROOT} is not the mounted recovery share" >&2
+    echo "The path must be the share mount itself, or a subdirectory of a remote/fuse share." >&2
+    echo "A leftover directory or a subdirectory of unrelated local storage is not enough." >&2
     exit 1
 fi
 
