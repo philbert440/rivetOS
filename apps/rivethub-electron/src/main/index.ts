@@ -44,6 +44,7 @@ import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
 import { contextMenuTemplate } from './context-menu.js'
 import { RendererReloadPolicy } from './reload-policy.js'
 import { totalUnread } from './unread.js'
+import { maybeInstallFirstRunDesktopIntegration } from './updater.js'
 import { cascadePoint, loadWindowState, saveWindowState, type WindowState } from './window-state.js'
 
 // Unpackaged dev runs otherwise derive userData from the scoped package name
@@ -581,6 +582,17 @@ function startup(): void {
       app.quit()
     },
   })
+
+  // First-run .desktop + icons for a user-writable AppImage. Pacman installs
+  // already ship a system launcher; a missing tool or extract failure must
+  // never block the window.
+  if (process.platform === 'linux') {
+    void maybeInstallFirstRunDesktopIntegration(process.env.APPIMAGE, app.getPath('home')).catch(
+      (err) => {
+        logFault('desktop-integration', err instanceof Error ? (err.stack ?? err.message) : err)
+      },
+    )
+  }
 
   // Deny every renderer permission request EXCEPT microphone capture for the
   // bundled UI's main frame (voice dictation). Electron's default handler

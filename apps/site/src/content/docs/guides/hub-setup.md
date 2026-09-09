@@ -92,18 +92,24 @@ Launch via:
 - Terminal: `rivethub`
 - Omarchy session: `uwsm-app rivethub` (session-managed)
 
+The pacman install is package-managed: update with `pacman -Syu rivethub` (or
+your AUR helper). In-app mesh self-update is skipped for `/opt/rivethub`.
+
 ### Manual AppImage Installation
 
-The AppImage can be installed without the pacman package:
+The AppImage can be installed without the pacman package. There is no
+`rivethub-latest.AppImage` alias; the publisher writes `RivetHub-<version>.AppImage`.
+The current linux filename is `linux.file` in
+`https://mesh.rivetos.dev/builds/rivethub/latest.json`.
 
 ```bash
-# Download from mesh
-curl -LO https://mesh.rivetos.dev/builds/rivethub/rivethub-latest.AppImage
-chmod +x rivethub-latest.AppImage
+# Download the versioned AppImage from mesh (example version; prefer latest.json)
+curl -LO https://mesh.rivetos.dev/builds/rivethub/RivetHub-0.5.21.AppImage
+chmod +x RivetHub-0.5.21.AppImage
 
 # Install to ~/.local/bin
 mkdir -p ~/.local/bin
-mv rivethub-latest.AppImage ~/.local/bin/rivethub
+mv RivetHub-0.5.21.AppImage ~/.local/bin/rivethub
 
 # Run once to install .desktop and icons
 ~/.local/bin/rivethub

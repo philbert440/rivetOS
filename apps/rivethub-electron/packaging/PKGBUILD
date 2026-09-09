@@ -6,7 +6,7 @@ pkgdesc='RivetOS node interface — chat, terminal, memory, files, tasks'
 arch=('x86_64')
 url='https://rivethub.io'
 license=('custom')
-depends=('fuse2' 'hicolor-icon-theme')
+depends=('fuse2' 'hicolor-icon-theme' 'desktop-file-utils' 'gtk-update-icon-cache')
 optdepends=(
   'libappindicator-gtk3: for system tray icon'
 )
@@ -15,14 +15,16 @@ conflicts=('rivethub-bin' 'rivethub-git' 'rivethub-appimage')
 options=(!strip)
 install=rivethub.install
 source=(
-  "rivethub-${pkgver}.AppImage::https://mesh.rivetos.dev/builds/rivethub/rivethub-${pkgver}.AppImage"
+  "rivethub-${pkgver}.AppImage::https://mesh.rivetos.dev/builds/rivethub/RivetHub-${pkgver}.AppImage"
   'rivethub.desktop'
   'rivethub-wrapper.sh'
 )
 noextract=("rivethub-${pkgver}.AppImage")
-sha256sums=('SKIP'  # Update after each release
-            'SKIP'
-            'SKIP')
+sha256sums=(
+  'SKIP'  # TODO(release): pin sha256 of the published RivetHub-<ver>.AppImage
+  'SKIP'
+  'SKIP'
+)
 
 prepare() {
   chmod +x "${srcdir}/rivethub-${pkgver}.AppImage"

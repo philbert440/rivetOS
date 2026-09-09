@@ -1,12 +1,21 @@
 /**
- * Tests for updater.ts — Linux AppImage install path resolution.
+ * Tests for updater.ts — Linux AppImage install path, desktop Exec rewrite,
+ * first-run skip rules, and writable-dir detection.
  */
 
 import { afterEach, describe, it, expect } from 'vitest'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { installAppImage, resolveInstallPath, type InstallIo } from './updater.js'
+import {
+  installAppImage,
+  isDirWritableByUser,
+  quoteDesktopExecPath,
+  resolveInstallPath,
+  rewriteDesktopExec,
+  shouldAttemptFirstRunDesktopIntegration,
+  type InstallIo,
+} from './updater.js'
 
 describe('resolveInstallPath', () => {
   const homeDir = '/home/user'
@@ -169,5 +178,114 @@ describe('installAppImage', () => {
 
     expect(await fs.promises.readFile(installTo, 'utf8')).toBe('new-bytes')
     expect(fs.statSync(installTo).mode & 0o755).toBe(0o755)
+  })
+})
+
+describe('quoteDesktopExecPath / rewriteDesktopExec', () => {
+  it('leaves a simple path unquoted', () => {
+    expect(quoteDesktopExecPath('/home/user/.local/bin/rivethub')).toBe(
+      '/home/user/.local/bin/rivethub',
+    )
+  })
+
+  it('quotes a path with spaces and keeps Wayland args', () => {
+    const quoted = quoteDesktopExecPath('/home/user/My Apps/RivetHub.AppImage')
+    expect(quoted).toBe('"/home/user/My Apps/RivetHub.AppImage"')
+    const rewritten = rewriteDesktopExec(
+      'Exec=rivethub --ozone-platform=wayland %U\n',
+      '/home/user/My Apps/RivetHub.AppImage',
+    )
+    expect(rewritten).toBe(
+      'Exec="/home/user/My Apps/RivetHub.AppImage" --ozone-platform=wayland %U\n',
+    )
+  })
+
+  it('escapes quotes and doubles percent signs in the path', () => {
+    expect(quoteDesktopExecPath('/tmp/foo"bar%baz')).toBe('"/tmp/foo\\"bar%%baz"')
+  })
+
+  it('rewrites an embedded rivethub Exec to the absolute AppImage path', () => {
+    const src = [
+      '[Desktop Entry]',
+      'Name=RivetHub',
+      'Exec=rivethub --ozone-platform=wayland %U',
+      'Icon=rivethub',
+      '',
+    ].join('\n')
+    expect(rewriteDesktopExec(src, '/home/user/.local/bin/rivethub')).toBe(
+      [
+        '[Desktop Entry]',
+        'Name=RivetHub',
+        'Exec=/home/user/.local/bin/rivethub --ozone-platform=wayland %U',
+        'Icon=rivethub',
+        '',
+      ].join('\n'),
+    )
+  })
+})
+
+describe('shouldAttemptFirstRunDesktopIntegration', () => {
+  const tmp = '/tmp'
+
+  it('skips when APPIMAGE is unset', () => {
+    expect(shouldAttemptFirstRunDesktopIntegration(undefined, tmp, false)).toBe(false)
+  })
+
+  it('skips when a per-user desktop entry already exists', () => {
+    expect(
+      shouldAttemptFirstRunDesktopIntegration('/home/user/.local/bin/rivethub', tmp, true),
+    ).toBe(false)
+  })
+
+  it('skips a temp updater path', () => {
+    expect(
+      shouldAttemptFirstRunDesktopIntegration(
+        '/tmp/rivethub-update-abc/RivetHub.AppImage',
+        tmp,
+        false,
+      ),
+    ).toBe(false)
+  })
+
+  it('attempts a persistent user-writable AppImage with no existing entry', () => {
+    expect(
+      shouldAttemptFirstRunDesktopIntegration('/home/user/.local/bin/rivethub', tmp, false),
+    ).toBe(true)
+  })
+})
+
+describe('isDirWritableByUser', () => {
+  const dirs: string[] = []
+
+  afterEach(async () => {
+    await Promise.all(
+      dirs.splice(0).map((dir) => fs.promises.rm(dir, { recursive: true, force: true })),
+    )
+  })
+
+  it('returns true for a writable directory', async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rivethub-writable-'))
+    dirs.push(dir)
+    expect(await isDirWritableByUser(dir)).toBe(true)
+  })
+
+  it('returns true for a missing nested dir whose parent is writable', async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rivethub-writable-'))
+    dirs.push(dir)
+    expect(await isDirWritableByUser(path.join(dir, 'nested', 'bin'))).toBe(true)
+  })
+
+  it('returns false for a directory without write permission', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'rivethub-writable-'))
+    dirs.push(dir)
+    const locked = path.join(dir, 'locked')
+    await fs.promises.mkdir(locked, { mode: 0o555 })
+    await fs.promises.chmod(locked, 0o555)
+    try {
+      expect(await isDirWritableByUser(locked)).toBe(false)
+    } finally {
+      await fs.promises.chmod(locked, 0o755)
+    }
   })
 })

@@ -158,7 +158,10 @@ export function registerIpc(deps: IpcDeps): void {
     const base = gatewayBaseArg(raw)
     updating = true
     try {
-      await downloadAndInstall(deps.pipes, base)
+      const installed = await downloadAndInstall(deps.pipes, base)
+      // Successful install quits; package-managed skip returns false and
+      // must re-arm so the user can try again after switching to pacman.
+      if (!installed) updating = false
     } catch (err) {
       updating = false
       throw err

@@ -69,16 +69,18 @@ scripts and menu configuration.
 The AppImage can still be installed manually:
 
 ```bash
-# Download from mesh
-curl -LO https://mesh.rivetos.dev/builds/rivethub/rivethub-latest.AppImage
-chmod +x rivethub-latest.AppImage
+# There is no rivethub-latest.AppImage alias. Publisher writes
+# RivetHub-<version>.AppImage; see linux.file in
+# https://mesh.rivetos.dev/builds/rivethub/latest.json
+curl -LO https://mesh.rivetos.dev/builds/rivethub/RivetHub-0.5.21.AppImage
+chmod +x RivetHub-0.5.21.AppImage
 
 # Install to ~/.local/bin
 mkdir -p ~/.local/bin
-mv rivethub-latest.AppImage ~/.local/bin/rivethub
+mv RivetHub-0.5.21.AppImage ~/.local/bin/rivethub
 
-# The updater will install .desktop and icons on first run
-./~/.local/bin/rivethub
+# First run installs .desktop and icons (user-writable AppImage only)
+~/.local/bin/rivethub
 ```
 
 ## Notes
@@ -86,7 +88,8 @@ mv rivethub-latest.AppImage ~/.local/bin/rivethub
 - The wrapper script sets `ELECTRON_OZONE_PLATFORM_HINT=wayland` and passes
   `--ozone-platform=wayland` to ensure native Wayland rendering
 - StartupWMClass is set to `rivethub` to align launcher/window IDs on Hyprland
-- The updater (`src/main/updater.ts`) installs .desktop and icons on AppImage
-  updates, so a mesh swap doesn't break launcher integration
+- The updater (`src/main/updater.ts`) installs .desktop and icons on first run
+  of a user-writable AppImage and after mesh updates. Pacman installs under
+  `/opt/rivethub` skip in-app self-update (update with the package manager).
 - Icon resizing should be done with ImageMagick or similar tools for production;
   the current hicolor set uses the 512x512 icon at all sizes as a placeholder

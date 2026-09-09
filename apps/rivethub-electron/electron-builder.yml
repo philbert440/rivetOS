@@ -3,9 +3,6 @@
 # process serves it over app:// with its CSP applied.
 appId: dev.rivetos.rivethub
 productName: RivetHub
-# Desktop name matches StartupWMClass (rivethub) to align launcher/window IDs
-# on Wayland. The desktopName gets written into the packaged .desktop's Name field.
-desktopName: RivetHub
 directories:
   output: release
 # esbuild bundles every runtime dependency into dist-electron — node_modules
@@ -24,14 +21,18 @@ linux:
   category: Development
   icon: icons/icon.png
   executableName: rivethub
+  # electron-builder v26: freedesktop keys live under desktop.entry (not
+  # desktop itself). Name is display; StartupWMClass matches the lowercase
+  # window class / app.setDesktopName('rivethub.desktop').
   desktop:
-    Name: RivetHub
-    GenericName: AI Agent Interface
-    Comment: RivetOS node interface — chat, terminal, memory, files, tasks
-    Exec: rivethub --ozone-platform=wayland %U
-    Icon: rivethub
-    StartupWMClass: rivethub
-    MimeType: x-scheme-handler/rivethub;
+    entry:
+      Name: RivetHub
+      GenericName: AI Agent Interface
+      Comment: RivetOS node interface — chat, terminal, memory, files, tasks
+      Exec: rivethub --ozone-platform=wayland %U
+      Icon: rivethub
+      StartupWMClass: rivethub
+      MimeType: x-scheme-handler/rivethub;
 win:
   target:
     - nsis

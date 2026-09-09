@@ -58,6 +58,57 @@ export function resolveInstallPath(
   return isTemp ? fallback : appImageEnv
 }
 
+/** True when `dir` (or an ancestor, if it does not exist yet) is writable by
+ *  this user. Pacman installs land in root-owned `/opt/rivethub` and fail this. */
+export async function isDirWritableByUser(dir: string): Promise<boolean> {
+  try {
+    await fs.promises.access(dir, fs.constants.W_OK)
+    return true
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') {
+      const parent = path.dirname(dir)
+      if (parent === dir) return false
+      return isDirWritableByUser(parent)
+    }
+    return false
+  }
+}
+
+/**
+ * Quote a path for a freedesktop `Exec=` value (spaces / reserved chars),
+ * and double `%` so the desktop parser does not treat path percents as field
+ * codes. See Desktop Entry Spec "The Exec key".
+ */
+export function quoteDesktopExecPath(filePath: string): string {
+  const withPercent = filePath.replace(/%/g, '%%')
+  if (!/[ \t\n"'$\\><~|&;()*?`#]/.test(filePath)) return withPercent
+  return `"${withPercent.replace(/[\\"$`]/g, '\\$&')}"`
+}
+
+/** Rewrite the `Exec=` line to launch `appImagePath` with the Wayland args. */
+export function rewriteDesktopExec(contents: string, appImagePath: string): string {
+  const execLine = `Exec=${quoteDesktopExecPath(appImagePath)} --ozone-platform=wayland %U`
+  if (!/^Exec=/m.test(contents)) {
+    return contents.endsWith('\n') ? `${contents}${execLine}\n` : `${contents}\n${execLine}\n`
+  }
+  return contents.replace(/^Exec=.*$/m, execLine)
+}
+
+/** First-run launcher install: skip missing/temp AppImage paths and an
+ *  already-present per-user desktop entry (do not clobber). Writable check
+ *  is separate (`isDirWritableByUser`). */
+export function shouldAttemptFirstRunDesktopIntegration(
+  appImagePath: string | undefined,
+  tmp: string,
+  desktopEntryExists: boolean,
+): boolean {
+  if (!appImagePath) return false
+  if (desktopEntryExists) return false
+  const isTemp = appImagePath.startsWith(tmp) || appImagePath.includes('rivethub-update-')
+  return !isTemp
+}
+
 /** The node:fs/promises methods `installAppImage` actually calls. */
 export interface InstallIo {
   mkdir: typeof fs.promises.mkdir
@@ -107,7 +158,7 @@ export async function installDesktopIntegration(
     const tmpExtract = await mkdtemp(join(tmpdir(), 'rivethub-desktop-extract-'))
     try {
       const env = { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' }
-      
+
       // Extract .desktop file
       await new Promise<void>((resolve, reject) => {
         const child = spawn(
@@ -136,12 +187,19 @@ export async function installDesktopIntegration(
         })
       })
 
-      // Install .desktop file
+      // Install .desktop file. The AppImage's embedded Exec=rivethub does
+      // not resolve for a manually-located image (and can launch a pacman
+      // /usr/bin/rivethub instead). Rewrite to the actual absolute path.
       const desktopSrc = path.join(tmpExtract, 'squashfs-root', 'rivethub.desktop')
       const desktopDest = path.join(applicationsDir, 'rivethub.desktop')
       if (fs.existsSync(desktopSrc)) {
         await fs.promises.mkdir(applicationsDir, { recursive: true })
-        await fs.promises.copyFile(desktopSrc, desktopDest)
+        const desktopText = await fs.promises.readFile(desktopSrc, 'utf8')
+        await fs.promises.writeFile(
+          desktopDest,
+          rewriteDesktopExec(desktopText, appImagePath),
+          'utf8',
+        )
         await fs.promises.chmod(desktopDest, 0o644)
       }
 
@@ -159,13 +217,11 @@ export async function installDesktopIntegration(
         }
       }
 
-      // Update desktop database and icon cache
-      try {
-        spawn('update-desktop-database', [applicationsDir], { stdio: 'ignore', detached: true }).unref()
-        spawn('gtk-update-icon-cache', [iconsDir], { stdio: 'ignore', detached: true }).unref()
-      } catch {
-        // Best-effort: these tools might not be available
-      }
+      // Update desktop database and icon cache. spawn() itself does not
+      // throw on ENOENT — the child emits `error` later — so each child
+      // needs an error listener or the miss escapes to uncaughtException.
+      spawnUnrefBestEffort('update-desktop-database', [applicationsDir])
+      spawnUnrefBestEffort('gtk-update-icon-cache', [iconsDir])
     } finally {
       await rm(tmpExtract, { recursive: true, force: true })
     }
@@ -173,6 +229,43 @@ export async function installDesktopIntegration(
     // Desktop integration is best-effort: log but don't fail the update
     console.warn('Failed to install desktop integration:', err)
   }
+}
+
+function spawnUnrefBestEffort(command: string, args: string[]): void {
+  try {
+    const child = spawn(command, args, { stdio: 'ignore', detached: true })
+    child.on('error', () => {
+      /* missing binary (ENOENT) — contained no-op */
+    })
+    child.unref()
+  } catch {
+    /* spawn itself threw — still best-effort */
+  }
+}
+
+/** Best-effort first-run .desktop + icons for a user-writable AppImage.
+ *  No-op when APPIMAGE is unset/temp, the install dir is not writable
+ *  (pacman `/opt/rivethub`), or a per-user entry already exists. Failures
+ *  are swallowed by `installDesktopIntegration`. */
+export async function maybeInstallFirstRunDesktopIntegration(
+  appImagePath: string | undefined,
+  homeDir: string,
+  tmp: string = tmpdir(),
+): Promise<void> {
+  if (!appImagePath) return
+  const dataHome = process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share')
+  const desktopDest = path.join(dataHome, 'applications', 'rivethub.desktop')
+  if (
+    !shouldAttemptFirstRunDesktopIntegration(
+      appImagePath,
+      tmp,
+      fs.existsSync(desktopDest),
+    )
+  ) {
+    return
+  }
+  if (!(await isDirWritableByUser(path.dirname(appImagePath)))) return
+  await installDesktopIntegration(appImagePath, homeDir)
 }
 
 const MANIFEST_TIMEOUT_MS = 15_000
@@ -233,10 +326,23 @@ export async function checkForUpdate(
 }
 
 /** Re-fetches the manifest at install time (no stale check-time state),
- *  downloads, verifies, launches, then quits the app. */
-export async function downloadAndInstall(pipes: PipeState, gatewayBase: string): Promise<void> {
+ *  downloads, verifies, launches, then quits the app.
+ *  @returns true if an install/relaunch was started; false if this install
+ *  is package-managed (install dir not user-writable) and in-app update
+ *  was skipped without throwing. */
+export async function downloadAndInstall(pipes: PipeState, gatewayBase: string): Promise<boolean> {
   if (process.platform !== 'win32' && process.platform !== 'linux')
     throw new Error(`in-app update is not supported on ${process.platform}`)
+
+  if (process.platform === 'linux') {
+    const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
+    if (!(await isDirWritableByUser(path.dirname(installTo)))) {
+      console.info(
+        'RivetHub is managed by your package manager — update with your package manager',
+      )
+      return false
+    }
+  }
 
   const entry = await fetchManifestEntry(pipes, gatewayBase)
   if (!newerVersion(entry.version, app.getVersion()))
@@ -303,13 +409,14 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
       setTimeout(() => {
         app.quit()
       }, 1500)
-      return
+      return true
     }
     await chmod(dest, 0o755)
 
     // Install by sibling copy + rename. Linux refuses an in-place write to
     // the running AppImage (ETXTBSY); rename over it is allowed and the old
-    // process keeps its inode.
+    // process keeps its inode. Writable check already ran at the top of
+    // this function; re-resolve so the path cannot drift.
     const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
     await installAppImage(dest, installTo)
 
@@ -382,4 +489,5 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
   setTimeout(() => {
     app.quit()
   }, 1500)
+  return true
 }
