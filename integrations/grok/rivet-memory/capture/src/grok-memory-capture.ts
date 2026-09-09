@@ -51,6 +51,7 @@ export const CAPTURE_CHANNEL = 'grok-build'
 
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'grok-memory-capture.log')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
+const STATE_DIR = path.join(os.homedir(), '.rivetos', 'capture-state')
 const SESSIONS_ROOT = path.join(os.homedir(), '.grok', 'sessions')
 const MAX_CONTENT = 16000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
 const STATEMENT_TIMEOUT_MS = 15000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
@@ -127,6 +128,65 @@ function log(msg: string): void {
   } catch {
     // ignore
   }
+}
+
+// ---------------------------------------------------------------------------
+// Session state tracking (for fail-loud)
+// ---------------------------------------------------------------------------
+interface SessionState {
+  sessionId: string
+  lastAttemptMs: number
+  lastStatus: 'success' | 'failure'
+  lastError?: string
+  consecutiveFailures: number
+}
+
+function readSessionState(sessionId: string): SessionState | null {
+  try {
+    const statePath = path.join(STATE_DIR, `${sessionId}.json`)
+    const raw = fs.readFileSync(statePath, 'utf8')
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+function writeSessionState(state: SessionState): void {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true })
+    const statePath = path.join(STATE_DIR, `${state.sessionId}.json`)
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2))
+  } catch (err) {
+    log(`writeSessionState failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+function checkStuckSessions(): string[] {
+  const stuck: string[] = []
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true })
+    const files = fs.readdirSync(STATE_DIR).filter(f => f.endsWith('.json'))
+    const now = Date.now()
+    const STUCK_THRESHOLD_MS = 2 * 60 * 60 * 1000 // 2 hours
+
+    for (const file of files) {
+      try {
+        const statePath = path.join(STATE_DIR, file)
+        const state: SessionState = JSON.parse(fs.readFileSync(statePath, 'utf8'))
+        
+        if (state.lastStatus === 'failure' && 
+            state.consecutiveFailures >= 3 &&
+            now - state.lastAttemptMs < STUCK_THRESHOLD_MS) {
+          stuck.push(`${state.sessionId} (${state.consecutiveFailures} failures, last: ${state.lastError || 'unknown'})`)
+        }
+      } catch {
+        // Skip malformed state files
+      }
+    }
+  } catch {
+    // State dir doesn't exist or can't be read
+  }
+  return stuck
 }
 
 // ---------------------------------------------------------------------------
@@ -691,13 +751,27 @@ async function ingestSession(op: CaptureOp): Promise<void> {
   const pool = new Pool({ connectionString: pgUrl, max: 1 })
   const client = await pool.connect()
 
+  const sessionKey = deriveSessionKey(op.sessionId)
+  const priorState = readSessionState(op.sessionId)
+
   try {
-    const sessionKey = deriveSessionKey(op.sessionId)
     const sessionDir = findSessionDir(op.sessionId, process.env.GROK_WORKSPACE_ROOT)
     if (!sessionDir) {
-      log(
-        `ingest ${sessionKey}: session dir not found (workspaceRoot=${process.env.GROK_WORKSPACE_ROOT ?? 'unset'})`,
-      )
+      const err = `session dir not found (workspaceRoot=${process.env.GROK_WORKSPACE_ROOT ?? 'unset'})`
+      log(`ingest ${sessionKey}: ${err}`)
+      
+      // Only fail loud if session file exists somewhere
+      const sessionExists = fs.existsSync(path.join(SESSIONS_ROOT, op.sessionId))
+      if (sessionExists) {
+        writeSessionState({
+          sessionId: op.sessionId,
+          lastAttemptMs: Date.now(),
+          lastStatus: 'failure',
+          lastError: err,
+          consecutiveFailures: (priorState?.consecutiveFailures ?? 0) + 1,
+        })
+        throw new Error(err)
+      }
       return
     }
 
@@ -706,9 +780,18 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     try {
       jsonlText = fs.readFileSync(updatesPath, 'utf8')
     } catch (err) {
-      log(`ingest ${sessionKey}: updates.jsonl unreadable: ${(err as Error).message}`)
-      return
+      const msg = `updates.jsonl unreadable: ${(err as Error).message}`
+      log(`ingest ${sessionKey}: ${msg}`)
+      writeSessionState({
+        sessionId: op.sessionId,
+        lastAttemptMs: Date.now(),
+        lastStatus: 'failure',
+        lastError: msg,
+        consecutiveFailures: (priorState?.consecutiveFailures ?? 0) + 1,
+      })
+      throw new Error(msg)
     }
+    
     const parsed = parseUpdates(jsonlText)
     const summary = readSessionSummary(sessionDir)
     const title = summary.title?.trim() || 'Grok Build session'
@@ -749,12 +832,33 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     }
 
     await client.query('COMMIT')
-    log(
-      `ingest ${sessionKey}: parsed=${parsed.length} stored_before=${stored} inserted=${toInsert.length}${op.finalize ? ' finalized' : ''}`,
-    )
+    
+    const msg = `parsed=${parsed.length} stored_before=${stored} inserted=${toInsert.length}${op.finalize ? ' finalized' : ''}`
+    log(`ingest ${sessionKey}: ${msg}`)
+    
+    // Success - reset failure count
+    writeSessionState({
+      sessionId: op.sessionId,
+      lastAttemptMs: Date.now(),
+      lastStatus: 'success',
+      consecutiveFailures: 0,
+    })
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
-    log(`ingest ${op.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`)
+    const errMsg = err instanceof Error ? err.message : String(err)
+    log(`ingest ${op.sessionId} FAIL: ${errMsg}`)
+    
+    // Track failure
+    writeSessionState({
+      sessionId: op.sessionId,
+      lastAttemptMs: Date.now(),
+      lastStatus: 'failure',
+      lastError: errMsg,
+      consecutiveFailures: (priorState?.consecutiveFailures ?? 0) + 1,
+    })
+    
+    // Re-throw to make worker exit non-zero
+    throw err
   } finally {
     client.release()
     await pool.end()
@@ -770,14 +874,23 @@ async function runWorker(spoolFile?: string) {
         .filter((f) => f.endsWith('.json'))
         .map((f) => path.join(SPOOL_DIR, f))
 
+  let hadFailure = false
   for (const file of files) {
     try {
       const op = JSON.parse(fs.readFileSync(file, 'utf8')) as CaptureOp
       await ingestSession(op)
       fs.unlinkSync(file)
     } catch (e) {
-      log(`worker failed on ${file}: ${e}`)
+      const msg = `worker failed on ${file}: ${e}`
+      log(msg)
+      hadFailure = true
+      // Don't unlink the spool file on failure - retry later
     }
+  }
+  
+  // Exit non-zero if any ingest failed
+  if (hadFailure) {
+    process.exit(1)
   }
 }
 
@@ -789,6 +902,20 @@ async function main() {
 
   if (args[0] === '--worker') {
     await runWorker(args[1])
+    return
+  }
+
+  if (args[0] === '--health') {
+    // Health check: report stuck sessions
+    const stuck = checkStuckSessions()
+    if (stuck.length > 0) {
+      console.error('STUCK SESSIONS DETECTED:')
+      for (const s of stuck) {
+        console.error(`  ${s}`)
+      }
+      process.exit(1)
+    }
+    console.log('OK: No stuck sessions')
     return
   }
 
@@ -831,7 +958,10 @@ async function main() {
     process.exit(0) // always succeed fast
   }
 
-  console.log('Usage: grok-memory-capture --hook <event>  |  --worker [file]')
+  console.log('Usage:')
+  console.log('  grok-memory-capture --hook <event>  # enqueue ingest from Grok hook')
+  console.log('  grok-memory-capture --worker [file] # run detached worker')
+  console.log('  grok-memory-capture --health        # check for stuck sessions')
 }
 
 main().catch((err) => {

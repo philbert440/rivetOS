@@ -57,24 +57,40 @@ That calls the same ingestSession() as the sidecar (requires a built checkout).
 
 The `capture/` directory provides automated transcript conversion and ingestion for the grokbot node.
 
+**Door 1: Transcript watcher** — monitors per-model transcript files and ingests to phil_memory.
+
 **Setup:**
 
 1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `/home/box/grokbot/transcripts`)
 2. Set `RIVETOS_PG_URL` in `~/.rivetos/.env` or environment
 3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`)
+4. Run the setup script (see Setup/Restore section below)
 
-**Run:**
+**Run watcher (scheduled):**
 
 ```bash
 cd capture/
 ./run-once.sh
 ```
 
-The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>.jsonl`, then ingests to Postgres when reachable. Fails closed if PG or packages are missing (conversion succeeds, ingest skipped).
+The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>.jsonl`, then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours).
 
-**Schedule:** Typically via cron/systemd hourly. Desk hourly hop remains the backstop.
+**Schedule:** Typically via cron/systemd hourly. Reports stuck sessions and failures via exit code.
 
-**Deferred:** Den app/event integration is out of scope. Tailscale/PG reachability from the grokbot node is an ops follow-up.
+**Monitoring:** Check exit code and logs. Non-zero exit means ingest failures occurred. Stuck sessions are reported to stderr.
+
+## Setup / Restore
+
+Use `bin/setup-grokbot-node.sh` for both initial setup and recovery after a wipe. The script is idempotent and safe to re-run. It:
+
+1. Verifies share mount (fails loud if missing)
+2. Restores sealed home bits if missing (env, capture scripts, hooks)
+3. Ensures plugin is present from snapshot or checkout
+4. Brings up the transcript watcher (door 1)
+5. Proves both doors with known sessions
+6. Writes a fresh share snapshot
+
+See `bin/setup-grokbot-node.sh --help` for usage.
 
 ## Related
 

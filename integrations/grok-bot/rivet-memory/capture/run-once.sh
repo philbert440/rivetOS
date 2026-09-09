@@ -10,6 +10,7 @@ CONVERTER="${CONVERTER:-${SCRIPT_DIR}/convert-transcript.py}"
 RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
 INGEST_BIN="${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/bin/ingest-session.mjs"
 SPOOL_DIR="${SCRIPT_DIR}/spool"
+STATE_DIR="${HOME}/.rivetos/grokbot-capture-state"
 GROKBOT_TRANSCRIPT_ROOT="${GROKBOT_TRANSCRIPT_ROOT:-}"
 
 # Validate dependencies
@@ -61,6 +62,7 @@ if [[ ! -f "${RIVETOS_ENV_FILE}" ]] && [[ -z "${RIVETOS_PG_URL:-}" ]]; then
 fi
 
 mkdir -p "${SPOOL_DIR}"
+mkdir -p "${STATE_DIR}"
 
 # Parse models.json
 if [[ ! -f "${MODELS_JSON}" ]]; then
@@ -73,6 +75,7 @@ transcript_rel=$(jq -r '.transcriptRel' "${MODELS_JSON}")
 
 any_model_failed=0
 any_model_processed=0
+any_stuck=0
 
 # Process each model
 while IFS= read -r model_json; do
@@ -94,12 +97,36 @@ while IFS= read -r model_json; do
     
     any_model_processed=1
     
+    # Check for stuck state
+    state_file="${STATE_DIR}/${session_id}.json"
+    if [[ -f "${state_file}" ]]; then
+        last_status=$(jq -r '.lastStatus // "unknown"' "${state_file}")
+        consecutive_failures=$(jq -r '.consecutiveFailures // 0' "${state_file}")
+        if [[ "${last_status}" == "failure" ]] && [[ "${consecutive_failures}" -ge 3 ]]; then
+            echo "  WARN: Session stuck (${consecutive_failures} consecutive failures)" >&2
+            last_error=$(jq -r '.lastError // "unknown"' "${state_file}")
+            echo "  Last error: ${last_error}" >&2
+            any_stuck=1
+        fi
+    fi
+    
     # Convert
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"
     echo "  Converting: ${transcript_path} -> ${spool_path}"
     
     if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" 2>&1; then
         echo "  ERROR: Conversion failed for ${model_name}" >&2
+        
+        # Track conversion failure
+        cat > "${state_file}" <<EOF
+{
+  "sessionId": "${session_id}",
+  "lastAttemptMs": $(date +%s)000,
+  "lastStatus": "failure",
+  "lastError": "conversion failed",
+  "consecutiveFailures": $(( $(jq -r '.consecutiveFailures // 0' "${state_file}" 2>/dev/null || echo 0) + 1 ))
+}
+EOF
         any_model_failed=1
         continue
     fi
@@ -122,7 +149,28 @@ while IFS= read -r model_json; do
         
         if [[ ${ingest_rc} -ne 0 ]]; then
             echo "  ERROR: Ingest failed for ${model_name} (exit ${ingest_rc})" >&2
+            
+            # Track ingest failure
+            cat > "${state_file}" <<EOF
+{
+  "sessionId": "${session_id}",
+  "lastAttemptMs": $(date +%s)000,
+  "lastStatus": "failure",
+  "lastError": "ingest exit ${ingest_rc}",
+  "consecutiveFailures": $(( $(jq -r '.consecutiveFailures // 0' "${state_file}" 2>/dev/null || echo 0) + 1 ))
+}
+EOF
             any_model_failed=1
+        else
+            # Success - reset failure count
+            cat > "${state_file}" <<EOF
+{
+  "sessionId": "${session_id}",
+  "lastAttemptMs": $(date +%s)000,
+  "lastStatus": "success",
+  "consecutiveFailures": 0
+}
+EOF
         fi
     else
         echo "  SKIP: Ingest (fail closed, see warnings above)"
@@ -137,5 +185,15 @@ if [[ ${any_model_processed} -eq 0 ]]; then
     exit 1
 fi
 
-echo "Capture run complete"
+# Report summary
+if [[ ${any_stuck} -gt 0 ]]; then
+    echo "WARN: Some sessions are stuck (see warnings above)" >&2
+fi
+
+if [[ ${any_model_failed} -eq 0 ]]; then
+    echo "Capture run complete: all OK"
+else
+    echo "Capture run complete: some failures (see errors above)" >&2
+fi
+
 exit ${any_model_failed}
