@@ -162,12 +162,14 @@ share_is_mounted() {
 mesh_cert_parseable() {
     local cert="$1"
     [[ -s "${cert}" ]] || return 1
-    if command -v openssl >/dev/null 2>&1; then
-        openssl x509 -in "${cert}" -noout >/dev/null 2>&1
-    else
-        grep -q -- "-----BEGIN CERTIFICATE-----" "${cert}" \
-            && grep -q -- "-----END CERTIFICATE-----" "${cert}"
+    # Require a real certificate parser. A marker-only grep fallback would
+    # accept a truncated/corrupt cert as complete and let it overwrite the last
+    # good mesh-identity backup (#740 review R3) — fail closed instead.
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "ERROR: openssl not found; cannot validate ${cert} — refusing to treat the mesh identity as complete (install openssl)" >&2
+        return 1
     fi
+    openssl x509 -in "${cert}" -noout >/dev/null 2>&1
 }
 
 mesh_roster_parseable() {
