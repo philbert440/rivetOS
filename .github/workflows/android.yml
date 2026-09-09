@@ -64,6 +64,19 @@ jobs:
       - name: Release build (R8, unsigned)
         run: ./gradlew :app:assembleRelease --console=plain --no-daemon
 
+      # The debug APK is debug-signed and carries applicationIdSuffix ".debug",
+      # so it installs alongside a production RivetHub rather than replacing it.
+      # Uploading it makes this workflow a way to get a build onto a phone for
+      # smoke testing without an Android toolchain on the machine driving it.
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rivethub-debug-apk
+          path: apps/rivethub-android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Test report
         if: always()
         run: |
