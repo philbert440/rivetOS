@@ -1,0 +1,60 @@
+# Maintainer: Rivet Philbot <rivetphilbot@gmail.com>
+pkgname=rivethub
+pkgver=0.5.21
+pkgrel=1
+pkgdesc='RivetOS node interface — chat, terminal, memory, files, tasks'
+arch=('x86_64')
+url='https://rivethub.io'
+license=('custom')
+depends=('fuse2' 'hicolor-icon-theme')
+optdepends=(
+  'libappindicator-gtk3: for system tray icon'
+)
+provides=('rivethub')
+conflicts=('rivethub-bin' 'rivethub-git' 'rivethub-appimage')
+options=(!strip)
+install=rivethub.install
+source=(
+  "rivethub-${pkgver}.AppImage::https://mesh.rivetos.dev/builds/rivethub/rivethub-${pkgver}.AppImage"
+  'rivethub.desktop'
+  'rivethub-wrapper.sh'
+)
+noextract=("rivethub-${pkgver}.AppImage")
+sha256sums=('SKIP'  # Update after each release
+            'SKIP'
+            'SKIP')
+
+prepare() {
+  chmod +x "${srcdir}/rivethub-${pkgver}.AppImage"
+  
+  # Extract icons from the AppImage
+  cd "${srcdir}"
+  ./rivethub-${pkgver}.AppImage --appimage-extract 'usr/share/icons/hicolor/*/apps/rivethub.png' 2>/dev/null || true
+}
+
+package() {
+  # Install the AppImage
+  install -Dm755 "${srcdir}/rivethub-${pkgver}.AppImage" "${pkgdir}/opt/rivethub/rivethub.AppImage"
+  
+  # Install wrapper script with Wayland flags
+  install -Dm755 "${srcdir}/rivethub-wrapper.sh" "${pkgdir}/usr/bin/rivethub"
+  
+  # Install .desktop file
+  install -Dm644 "${srcdir}/rivethub.desktop" "${pkgdir}/usr/share/applications/rivethub.desktop"
+  
+  # Install hicolor icons
+  if [ -d "${srcdir}/squashfs-root/usr/share/icons/hicolor" ]; then
+    for size in 16 24 32 48 64 128 256 512; do
+      if [ -f "${srcdir}/squashfs-root/usr/share/icons/hicolor/${size}x${size}/apps/rivethub.png" ]; then
+        install -Dm644 \
+          "${srcdir}/squashfs-root/usr/share/icons/hicolor/${size}x${size}/apps/rivethub.png" \
+          "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/rivethub.png"
+      fi
+    done
+  fi
+  
+  # Install license (if present in AppImage)
+  if [ -f "${srcdir}/squashfs-root/LICENSE" ]; then
+    install -Dm644 "${srcdir}/squashfs-root/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  fi
+}

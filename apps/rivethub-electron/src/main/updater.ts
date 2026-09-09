@@ -93,6 +93,88 @@ export async function installAppImage(
   }
 }
 
+/** Install .desktop file and hicolor icons for Linux desktop integration. */
+export async function installDesktopIntegration(
+  appImagePath: string,
+  homeDir: string,
+): Promise<void> {
+  const dataHome = process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share')
+  const applicationsDir = path.join(dataHome, 'applications')
+  const iconsDir = path.join(dataHome, 'icons', 'hicolor')
+
+  try {
+    // Extract .desktop file and icons from the AppImage using --appimage-extract
+    const tmpExtract = await mkdtemp(join(tmpdir(), 'rivethub-desktop-extract-'))
+    try {
+      const env = { ...process.env, APPIMAGE_EXTRACT_AND_RUN: '1' }
+      
+      // Extract .desktop file
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          appImagePath,
+          ['--appimage-extract', 'rivethub.desktop'],
+          { cwd: tmpExtract, stdio: 'ignore', env }
+        )
+        child.on('error', reject)
+        child.on('exit', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`desktop extract failed: ${String(code)}`))
+        })
+      })
+
+      // Extract icons
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          appImagePath,
+          ['--appimage-extract', 'usr/share/icons/hicolor/*'],
+          { cwd: tmpExtract, stdio: 'ignore', env }
+        )
+        child.on('error', reject)
+        child.on('exit', (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`icon extract failed: ${String(code)}`))
+        })
+      })
+
+      // Install .desktop file
+      const desktopSrc = path.join(tmpExtract, 'squashfs-root', 'rivethub.desktop')
+      const desktopDest = path.join(applicationsDir, 'rivethub.desktop')
+      if (fs.existsSync(desktopSrc)) {
+        await fs.promises.mkdir(applicationsDir, { recursive: true })
+        await fs.promises.copyFile(desktopSrc, desktopDest)
+        await fs.promises.chmod(desktopDest, 0o644)
+      }
+
+      // Install hicolor icons
+      const extractedIconsBase = path.join(tmpExtract, 'squashfs-root', 'usr', 'share', 'icons', 'hicolor')
+      if (fs.existsSync(extractedIconsBase)) {
+        const sizes = ['16x16', '24x24', '32x32', '48x48', '64x64', '128x128', '256x256', '512x512']
+        for (const size of sizes) {
+          const srcIcon = path.join(extractedIconsBase, size, 'apps', 'rivethub.png')
+          if (fs.existsSync(srcIcon)) {
+            const destDir = path.join(iconsDir, size, 'apps')
+            await fs.promises.mkdir(destDir, { recursive: true })
+            await fs.promises.copyFile(srcIcon, path.join(destDir, 'rivethub.png'))
+          }
+        }
+      }
+
+      // Update desktop database and icon cache
+      try {
+        spawn('update-desktop-database', [applicationsDir], { stdio: 'ignore', detached: true }).unref()
+        spawn('gtk-update-icon-cache', [iconsDir], { stdio: 'ignore', detached: true }).unref()
+      } catch {
+        // Best-effort: these tools might not be available
+      }
+    } finally {
+      await rm(tmpExtract, { recursive: true, force: true })
+    }
+  } catch (err) {
+    // Desktop integration is best-effort: log but don't fail the update
+    console.warn('Failed to install desktop integration:', err)
+  }
+}
+
 const MANIFEST_TIMEOUT_MS = 15_000
 const MANIFEST_MAX_BYTES = 1024 * 1024
 const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
@@ -230,6 +312,9 @@ export async function downloadAndInstall(pipes: PipeState, gatewayBase: string):
     // process keeps its inode.
     const installTo = resolveInstallPath(process.env.APPIMAGE, app.getPath('home'), tmpdir())
     await installAppImage(dest, installTo)
+
+    // Install .desktop file and hicolor icons for launcher integration
+    await installDesktopIntegration(installTo, app.getPath('home'))
 
     // Run the INSTALLED AppImage, not the temp download. Strip the RUNNING
     // AppImage's runtime vars, or the new image's runtime resolves against

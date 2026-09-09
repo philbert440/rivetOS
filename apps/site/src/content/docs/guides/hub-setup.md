@@ -64,6 +64,85 @@ Desktop starts unconfigured until a node gateway URL is set (the bundled app:// 
 
 ---
 
+## Omarchy Setup (Linux + Wayland)
+
+RivetHub is packaged for first-class Omarchy support with native Wayland rendering.
+
+### Install > AI (pacman package)
+
+For **Install > AI** menu integration (same tier as ChatGPT / Grok Bot), install via pacman:
+
+```bash
+# From the Omarchy package repository (when available)
+sudo pacman -S rivethub
+
+# Or from AUR
+yay -S rivethub
+# or: paru -S rivethub
+```
+
+The package installs:
+- AppImage to `/opt/rivethub/`
+- Wrapper script at `/usr/bin/rivethub` with Wayland flags
+- `.desktop` file with `uwsm-app` session compatibility
+- Hicolor icons for launcher integration
+
+Launch via:
+- Application launcher (searches by "RivetHub")
+- Terminal: `rivethub`
+- Omarchy session: `uwsm-app rivethub` (session-managed)
+
+### Manual AppImage Installation
+
+The AppImage can be installed without the pacman package:
+
+```bash
+# Download from mesh
+curl -LO https://mesh.rivetos.dev/builds/rivethub/rivethub-latest.AppImage
+chmod +x rivethub-latest.AppImage
+
+# Install to ~/.local/bin
+mkdir -p ~/.local/bin
+mv rivethub-latest.AppImage ~/.local/bin/rivethub
+
+# Run once to install .desktop and icons
+~/.local/bin/rivethub
+```
+
+The updater automatically installs `.desktop` and hicolor icons on first run and
+after mesh updates, so a manual AppImage swap doesn't break launcher integration.
+
+### Wayland Rendering
+
+RivetHub detects Omarchy's `ELECTRON_OZONE_PLATFORM_HINT=wayland` and enables
+native Wayland rendering. The packaged `.desktop` explicitly sets
+`--ozone-platform=wayland` to ensure Chromium uses Wayland even when the hint
+is insufficient (Slack stayed on XWayland until the flag was on the Exec line).
+
+### Window/Launcher Alignment
+
+`StartupWMClass=rivethub` matches the window ID on Hyprland, so the launcher and
+running window are correctly linked. On native Wayland, the window class is often
+lowercase (`rivethub`) while the AppImage's embedded `.desktop` defaulted to
+`RivetHub` (title-case), breaking the link. This is now aligned.
+
+### Packaging Tiers
+
+1. **Installable** (first-class Omarchy slot): pacman package → Install > AI row.
+   Requires Omarchy package repo or AUR. Official install launches via
+   `uwsm-app`, not bare AppImage.
+
+2. **Bundled default**: A `.desktop` shipped as a default Omarchy launcher entry.
+   **This release does NOT bundle RivetHub as a default app** — that requires a
+   separate Omarchy tree change.
+
+3. **Docs-only**: This setup guide documents the Omarchy path. Docs alone don't
+   make RivetHub first-class; the Install menu entry requires a pacman package.
+
+See `apps/rivethub-electron/packaging/README.md` for PKGBUILD details.
+
+---
+
 ## Serve Hub from the node (recommended)
 
 den-server should serve hub as the static root so `/` is Hub.

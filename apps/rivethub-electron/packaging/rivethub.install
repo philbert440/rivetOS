@@ -1,0 +1,16 @@
+post_install() {
+  update-desktop-database -q
+  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+  echo "RivetHub installed. Launch with 'rivethub' or from your application launcher."
+  echo "For uwsm-app session integration, ensure you're running under Omarchy/uwsm."
+}
+
+post_upgrade() {
+  update-desktop-database -q
+  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+}
+
+post_remove() {
+  update-desktop-database -q
+  gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+}

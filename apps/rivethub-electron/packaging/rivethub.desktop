@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=RivetHub
+GenericName=AI Agent Interface
+Comment=RivetOS node interface — chat, terminal, memory, files, tasks
+Exec=rivethub --ozone-platform=wayland %U
+Icon=rivethub
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=rivethub
+StartupNotify=true
+MimeType=x-scheme-handler/rivethub;
