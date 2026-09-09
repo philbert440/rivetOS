@@ -231,15 +231,27 @@ export function checkSshReachable(host: string, requestedUser = 'rivet'): boolea
 }
 
 /**
- * Restart a local systemd unit, trying direct `systemctl` then `sudo systemctl`.
- * Returns true if either succeeded. Never throws.
+ * Restart a local systemd unit, trying system scope, then the per-user
+ * manager, then sudo. Returns true if any succeeded. Never throws.
+ *
+ * The `--user` attempt matters: some nodes run the agent runtime as a user
+ * unit, where both system-scope commands fail with "Unit rivetos.service not
+ * found". The update then reported "Could not restart via systemd" and moved
+ * on, leaving the node serving the old build with the new one already on disk
+ * (seen live on two peers in one `--mesh` run). It is tried before sudo so a
+ * user-unit host never escalates just to restart its own service; on a
+ * system-unit host it fails harmlessly and falls through.
  *
  * `timeoutMs` defaults to 30s for the primary rivetos unit. Datahub workers
  * (compactor/embedder) often need longer — pass 90_000 for those.
  */
 export function restartViaSystemd(unit = 'rivetos', timeoutMs = 30_000): boolean {
   if (!isSafeArg(unit)) return false
-  for (const cmd of [`systemctl restart ${unit}`, `sudo systemctl restart ${unit}`]) {
+  for (const cmd of [
+    `systemctl restart ${unit}`,
+    `systemctl --user restart ${unit}`,
+    `sudo systemctl restart ${unit}`,
+  ]) {
     try {
       execSync(cmd, { encoding: 'utf-8', timeout: timeoutMs, stdio: ['pipe', 'pipe', 'pipe'] })
       return true

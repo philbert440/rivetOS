@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { isSafeArg, assertSafeArg, quoteShellArg, discoverLocalRivetWorkers } from './ssh.js'
+import {
+  isSafeArg,
+  assertSafeArg,
+  quoteShellArg,
+  discoverLocalRivetWorkers,
+  restartViaSystemd,
+} from './ssh.js'
 import { execSync } from 'node:child_process'
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -110,5 +116,59 @@ describe('discoverLocalRivetWorkers', () => {
       'rivet-ok.service\nrivet-bad;reboot.service\n' as unknown as Buffer,
     )
     expect(discoverLocalRivetWorkers()).toEqual(['rivet-ok.service'])
+  })
+})
+
+describe('restartViaSystemd', () => {
+  afterEach(() => {
+    execSyncMock.mockReset()
+  })
+
+  /** Commands the mock was asked to run, in order. */
+  const calls = () => execSyncMock.mock.calls.map((c) => String(c[0]))
+
+  it('stops at system scope when the unit restarts there', () => {
+    execSyncMock.mockReturnValue('' as unknown as Buffer)
+    expect(restartViaSystemd()).toBe(true)
+    expect(calls()).toEqual(['systemctl restart rivetos'])
+  })
+
+  // Some nodes run the agent runtime as a user unit; both system-scope
+  // commands fail with "Unit rivetos.service not found" and the update used to
+  // give up, leaving the node on the old build with the new one on disk.
+  it('falls back to the per-user manager without escalating to sudo', () => {
+    execSyncMock.mockImplementation(((cmd: string) => {
+      if (String(cmd).includes('--user')) return '' as unknown as Buffer
+      throw new Error('Unit rivetos.service not found.')
+    }) as typeof execSync)
+    expect(restartViaSystemd()).toBe(true)
+    expect(calls()).toEqual(['systemctl restart rivetos', 'systemctl --user restart rivetos'])
+    expect(calls().some((c) => c.startsWith('sudo'))).toBe(false)
+  })
+
+  it('still escalates to sudo for a system unit needing privileges', () => {
+    execSyncMock.mockImplementation(((cmd: string) => {
+      if (String(cmd).startsWith('sudo ')) return '' as unknown as Buffer
+      throw new Error('Interactive authentication required.')
+    }) as typeof execSync)
+    expect(restartViaSystemd()).toBe(true)
+    expect(calls()).toEqual([
+      'systemctl restart rivetos',
+      'systemctl --user restart rivetos',
+      'sudo systemctl restart rivetos',
+    ])
+  })
+
+  it('returns false when every scope fails', () => {
+    execSyncMock.mockImplementation((() => {
+      throw new Error('no systemd')
+    }) as typeof execSync)
+    expect(restartViaSystemd()).toBe(false)
+    expect(calls()).toHaveLength(3)
+  })
+
+  it('refuses an unsafe unit name without running anything', () => {
+    expect(restartViaSystemd('rivetos;reboot')).toBe(false)
+    expect(execSyncMock).not.toHaveBeenCalled()
   })
 })
