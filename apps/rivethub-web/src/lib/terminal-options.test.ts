@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { ImageAddon } from '@xterm/addon-image'
@@ -74,4 +74,38 @@ describe('buildTerminalOptions', () => {
     expect(b.cursorStyle).toBe('underline')
     expect(b.scrollback).toBe(8000)
   })
+})
+
+
+afterEach(() => vi.unstubAllGlobals())
+
+it('routes OSC hyperlinks through the desktop opener without a warning or blank window', () => {
+  const open = vi.fn()
+  const confirm = vi.fn()
+  const openExternal = vi.fn(async () => undefined)
+  vi.stubGlobal('window', { open, confirm })
+  vi.stubGlobal('confirm', confirm)
+  vi.stubGlobal('rivetShell', {
+    kind: 'electron',
+    mtlsProxyPort: async () => 12345,
+    openExternal,
+    clipboardWriteText: async () => undefined,
+    clipboardReadText: async () => '',
+    sendNotification: async () => undefined,
+    setUnread: async () => undefined,
+  })
+  const term = new Terminal(buildTerminalOptions(TERMINAL_DEFAULTS))
+  const handler = term.options.linkHandler!
+  const event = {} as MouseEvent
+  const range = { start: { x: 1, y: 1 }, end: { x: 8, y: 1 } }
+  handler.activate(event, 'https://github.com/philbert440/rivetOS/pull/738', range)
+  expect(openExternal).toHaveBeenCalledWith('https://github.com/philbert440/rivetOS/pull/738')
+  expect(confirm).not.toHaveBeenCalled()
+  expect(open).not.toHaveBeenCalled()
+  expect(handler.allowNonHttpProtocols).toBe(false)
+  for (const uri of ['javascript:alert(1)', 'file:///etc/passwd', 'mailto:test@example.com']) {
+    handler.activate(event, uri, range)
+  }
+  expect(openExternal).toHaveBeenCalledTimes(1)
+  term.dispose()
 })
