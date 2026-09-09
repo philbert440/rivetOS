@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install a datahub — RivetHub</title>
+<meta name="description" content="Install a RivetHub datahub: Postgres 16 + pgvector, the memory schema, and the mesh CA.">
+<meta name="theme-color" content="#090d0b">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RivetHub">
+
+
+
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="landing.css">
+
+<link rel="canonical" href="https://rivethub.io/install-datahub.html">
+<meta property="og:title" content="Install a datahub — RivetHub">
+<meta property="og:description" content="Install a RivetHub datahub: Postgres 16 + pgvector, the memory schema, and the mesh CA.">
+<meta property="og:url" content="https://rivethub.io/install-datahub.html">
+<meta property="og:image" content="https://rivethub.io/social-preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="RivetHub: Automatic memory. Nothing to remember to write down.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Install a datahub — RivetHub">
+<meta name="twitter:description" content="Install a RivetHub datahub: Postgres 16 + pgvector, the memory schema, and the mesh CA.">
+<meta name="twitter:image" content="https://rivethub.io/social-preview.png">
+<link rel="stylesheet" href="marketing.css">
+<script src="theme.js"></script>
+</head>
+<body class="landing guide-page">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="landing-header"><div class="landing-wrap header-inner">
+  <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a></nav>
+</div></header>
+<main id="main">
+<div class="wrap-wide">
+
+  <div class="page-head guide-head">
+    <p class="kicker">// install · datahub</p>
+    <h1>Install a datahub</h1><p><a href="server.html">← Server setup overview</a></p>
+    <p class="lede">The datahub is the center of the mesh: Postgres&nbsp;16 +
+    pgvector, the memory schema, <code>users.json</code>, and the certificate
+    authority. No agent runs here.</p>
+  </div>
+
+  <section class="block">
+    <div class="req">
+      <h3>Requirements</h3>
+      <ul class="facts">
+        <li>Debian 12 or Ubuntu LTS, x86_64 or aarch64, with systemd.</li>
+        <li>Root (<code>sudo</code>) and about 512&nbsp;MiB free disk
+        (2&nbsp;GiB comfortable).</li>
+        <li>Port 5432 (or your <code>--pg-port</code>) free on
+        <code>127.0.0.1</code>.</li>
+        <li><code>curl</code>, <code>openssl</code>, <code>flock</code>,
+        <code>python3</code> — the installer installs missing ones via
+        <code>apt-get</code> when run as root.</li>
+        <li><code>docker</code> in PATH only if you choose
+        <code>--docker</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// the command</p>
+    <h2>Run it from a checkout</h2>
+    <p>From a checkout of the rivethub-distro repository, on the host that
+    will be your hub:</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">datahub installer</span></div>
+      <pre tabindex="0" data-copy="sudo bash install/datahub.sh"><code><span class="ps">$ </span>sudo bash install/datahub.sh</code></pre>
+    </div>
+    <div class="warn">
+      <strong>No curl-pipe yet.</strong>
+      <code>curl -fsSL https://get.rivethub.io/datahub.sh | bash</code> is
+      <strong>refused in preflight, before any write</strong>: curl-pipe has
+      no sibling <code>bin/rivethub-hub</code>. A checkout is the only path that works until the
+      helpers are published. If you must invoke the script from elsewhere,
+      set <code>RIVETHUB_DISTRO_DIR</code> /
+      <code>RIVETHUB_MIGRATIONS_DIR</code>.
+    </div>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// the wizard</p>
+    <h2>What the wizard asks</h2>
+    <p>On a terminal, unset fields are prompted (defaults shown), then a
+    SUMMARY, then an explicit <code>yes</code> before anything is written.
+    Flags and <code>RIVETHUB_*</code> env vars skip their own prompt;
+    <code>--yes</code> skips the final confirm. On non-TTY (plain ssh, no
+    controlling terminal) <code>--yes</code> also accepts each prompt's
+    documented default. Fields with no default are listed together in one
+    error with their env names
+    (<code>RIVETOS_EMBED_URL</code> / <code>RIVETOS_COMPACTOR_URL</code>
+    for <code>--memory full</code>).</p>
+    <ul class="facts">
+      <li><strong>Owner user id</strong> — seeds <code>users.json</code>
+      (default <code>owner</code>; honored on first run only).</li>
+      <li><strong>Memory mode</strong> — <code>lite</code> (workers off, the
+      default) or <code>full</code>. Full also asks for OpenAI-compatible
+      embed and compaction endpoints and models, and installs
+      <code>rivet-embedder.service</code> /
+      <code>rivet-compactor.service</code> (not started until a RivetOS
+      runtime is present).</li>
+      <li><strong>Install mode</strong> — bare-metal Postgres from PGDG
+      packages (the default) or <code>--docker</code> for the pinned pgvector
+      image under systemd.</li>
+      <li><strong>Re-run</strong> — an existing install is detected and the
+      wizard offers resume / reconfigure-safe-bits / abort. CA re-init and
+      the postgres password rotation never happen silently — pass
+      <code>--force</code>.</li>
+    </ul>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// layout</p>
+    <h2>What gets installed where</h2>
+    <dl class="what">
+      <div>
+        <dt><code>/var/lib/rivethub/shared/</code></dt>
+        <dd><code>mesh.json</code>, <code>rivet-ca</code> (exportable)</dd>
+      </div>
+      <div>
+        <dt><code>/var/lib/rivethub/shared/rivetos/users.json</code></dt>
+        <dd>tenancy registry (mode 0600, not clobbered on re-run)</dd>
+      </div>
+      <div>
+        <dt><code>/var/lib/rivethub/ca-root/</code></dt>
+        <dd>root CA key — mode 0700, never exported, never packed into an
+        enroll tarball</dd>
+      </div>
+      <div>
+        <dt><code>/var/lib/rivethub/datahub.env</code></dt>
+        <dd>postgres conninfo + worker env (mode 0600; the password is never
+        printed)</dd>
+      </div>
+      <div>
+        <dt><code>/usr/local/bin/rivethub-hub</code></dt>
+        <dd>datahub helper (ca-init, enroll, renew, mesh-export, status)</dd>
+      </div>
+      <div>
+        <dt><code>/usr/local/lib/rivethub/rivet-ca.sh</code></dt>
+        <dd>pinned CA library</dd>
+      </div>
+    </dl>
+    <p>Bare-metal also installs <code>postgresql-16</code> +
+    <code>postgresql-16-pgvector</code> from PGDG. <code>--docker</code>
+    instead writes <code>rivethub-postgres.service</code> running the pinned
+    pgvector image, publishing <code>127.0.0.1:PORT:5432</code>.</p>
+    <p><code>--data-root DIR</code> (or <code>RIVETHUB_ROOT</code>) moves the
+    <code>/var/lib/rivethub</code> tree.</p>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// verify</p>
+    <h2>Verify</h2>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span></div>
+      <pre tabindex="0" data-copy="rivethub-hub status"><code><span class="ps">$ </span>rivethub-hub status</code></pre>
+    </div>
+    <p>The CA is initialized once on the datahub (the installer runs
+    <code>rivethub-hub ca-init</code> for you; <code>ca-init --force</code>
+    re-inits). The closing banner prints the hub root, the postgres DSN, and
+    the path to the password file — never the password itself.</p>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// next</p>
+    <h2>Add the first node</h2>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node host</span></div>
+      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10</code></pre>
+    </div>
+    <p>Replace <code>owner@192.0.2.10</code> with an SSH login that can run
+    <code>rivethub-hub</code> on this host. Details in the
+    <a href="install-node.html">node guide</a>.</p>
+
+    <h2 class="spaced">Renew node certificates</h2>
+    <p>On the datahub:</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span></div>
+      <pre tabindex="0" data-copy="rivethub-hub renew &lt;node-name&gt;"><code><span class="ps">$ </span>rivethub-hub renew &lt;node-name&gt;</code></pre>
+    </div>
+    <p>Renew re-issues the node's leaf certificate using the host stored in
+    <code>mesh.json</code> and emits the same base64 tarball contract as
+    enroll. To change a node's address, re-enroll it instead.</p>
+  </section>
+
+</div>
+</main>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Automatic memory for your agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<script src="site.js"></script>
+</body>
+</html>

@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install an agent node — RivetHub</title>
+<meta name="description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
+<meta name="theme-color" content="#090d0b">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RivetHub">
+
+
+
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="landing.css">
+
+<link rel="canonical" href="https://rivethub.io/install-node.html">
+<meta property="og:title" content="Install an agent node — RivetHub">
+<meta property="og:description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
+<meta property="og:url" content="https://rivethub.io/install-node.html">
+<meta property="og:image" content="https://rivethub.io/social-preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="RivetHub: Automatic memory. Nothing to remember to write down.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Install an agent node — RivetHub">
+<meta name="twitter:description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
+<meta name="twitter:image" content="https://rivethub.io/social-preview.png">
+<link rel="stylesheet" href="marketing.css">
+<script src="theme.js"></script>
+</head>
+<body class="landing guide-page">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="landing-header"><div class="landing-wrap header-inner">
+  <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html" aria-current="page">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a></nav>
+</div></header>
+<main id="main">
+<div class="wrap-wide">
+
+  <div class="page-head guide-head">
+    <p class="kicker">// install · agent node</p>
+    <h1>Install an agent node</h1><p><a href="server.html">← Server setup overview</a></p>
+    <p class="lede">An agent node runs the RivetOS runtime and enrolls
+    against your datahub over SSH. You need a working
+    <a href="install-datahub.html">datahub</a> first.</p>
+  </div>
+
+  <section class="block">
+    <div class="req">
+      <h3>Requirements</h3>
+      <ul class="facts">
+        <li>Debian 12 or Ubuntu LTS, x86_64 or aarch64, with systemd.</li>
+        <li>Root (<code>sudo</code>) and about 512&nbsp;MiB free disk
+        (2&nbsp;GiB comfortable for <code>npm ci</code>).</li>
+        <li>An SSH login on the datahub that can run
+        <code>rivethub-hub</code> — this is your <code>--hub</code>
+        target.</li>
+        <li>The installer runs as root, so BatchMode SSH uses
+        <code>/root/.ssh</code> — copy your key there (or
+        <code>ssh-copy-id</code> as root) before a curl-pipe or
+        <code>sudo</code> run.</li>
+        <li><code>curl</code>, <code>python3</code>, <code>tar</code>,
+        <code>ssh</code>, <code>flock</code>, and <code>git</code>
+        (bare-metal) — missing ones are installed via <code>apt-get</code>
+        when run as root.</li>
+        <li><code>docker</code> in PATH only if you choose
+        <code>--docker</code>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// the command</p>
+    <h2>Curl-pipe is supported</h2>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">node installer — curl-pipe</span></div>
+      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10</code></pre>
+    </div>
+    <p>Or from a checkout of the rivethub-distro repository:</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">node installer — checkout</span></div>
+      <pre tabindex="0" data-copy="sudo bash install/node.sh --hub owner@192.0.2.10 --name node-a --advertise-host 192.0.2.11"><code><span class="ps">$ </span>sudo bash install/node.sh --hub owner@192.0.2.10 --name node-a --advertise-host 192.0.2.11</code></pre>
+    </div>
+    <p>Re-running is safe. Re-run without <code>--hub</code> and the
+    installer resumes <code>HUB_TARGET</code> / <code>NODE_NAME</code> from
+    <code>$RIVETHUB_ROOT/node.env</code>.</p>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// the prompts</p>
+    <h2>What the installer asks</h2>
+    <p>On a TTY, unset fields are prompted, then a SUMMARY, then an
+    explicit <code>yes</code>. <code>--yes</code> skips the confirm; on
+    non-TTY it also accepts documented defaults (name = hostname,
+    advertise-host = <code>hostname -f</code>). <code>--hub</code> has no
+    default — missing answers are listed together with their env names
+    (<code>RIVETHUB_HUB</code>).</p>
+    <ul class="facts">
+      <li><strong>Datahub SSH target</strong> — the <code>user@host</code>
+      for <code>--hub</code>. Required when stdin is not a TTY and no
+      <code>node.env</code> has one recorded.</li>
+      <li><strong>Mesh node name</strong> — the certificate CN
+      (<code>[a-z0-9-]</code>, max 63). Default: the hostname,
+      sanitized.</li>
+      <li><strong>Advertise host</strong> — the address other nodes use to
+      reach <em>this</em> node. Default: <code>hostname -f</code>.</li>
+    </ul>
+    <p>Enrollment happens over SSH: the installer runs
+    <code>rivethub-hub enroll &lt;node-name&gt; &lt;advertise-host&gt;</code>
+    on the datahub, and stdout is only a base64 tarball (leaf cert + key,
+    <code>ca-chain.pem</code>, current <code>mesh.json</code>, node config
+    snippet), unpacked into the local shared dir.
+    <code>rivetos mesh enroll</code> is not merged upstream yet — the
+    installer implements the same tarball contract today.</p>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// layout</p>
+    <h2>What gets installed where</h2>
+    <dl class="what">
+      <div>
+        <dt><code>/opt/rivetos</code></dt>
+        <dd>RivetOS checkout at the <code>pins/stable.json</code>
+        <code>rivetos_tag</code> (bare-metal; Node 22+ from NodeSource)</dd>
+      </div>
+      <div>
+        <dt><code>/var/lib/rivethub/shared</code></dt>
+        <dd>local <code>mesh.json</code> + <code>rivet-ca</code>
+        (<code>RIVETOS_SHARED_DIR</code>)</dd>
+      </div>
+      <div>
+        <dt><code>/rivet-shared</code></dt>
+        <dd>symlink to the shared dir, so hardcoded RivetOS TLS paths
+        work</dd>
+      </div>
+      <div>
+        <dt><code>/home/rivet/.rivetos</code></dt>
+        <dd><code>config.yaml</code> + <code>.env</code> (mode 0600) for the
+        <code>rivet</code> user (uid 2000 if free)</dd>
+      </div>
+      <div>
+        <dt><code>/var/lib/rivethub/node.env</code></dt>
+        <dd>recorded identity (node name, hub target) — no secrets</dd>
+      </div>
+      <div>
+        <dt><code>/etc/systemd/system/rivetos-agent.service</code></dt>
+        <dd>the agent unit (enabled + started)</dd>
+      </div>
+    </dl>
+    <p>Bare-metal (systemd) is the default. <code>--docker</code> runs the
+    pinned GHCR image under systemd with host networking on mesh port
+    3000.</p>
+    <div class="warn">
+      <strong>Installer versions.</strong> The installer uses the runtime tag and container image in <code>pins/stable.json</code>. Check <a href="releases.html">Releases</a> for the distinction between installer pins, runtime releases, and desktop downloads.
+    </div>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// verify</p>
+    <h2>Verify</h2>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span></div>
+      <pre tabindex="0" data-copy="systemctl status rivetos-agent.service&#10;journalctl -u rivetos-agent.service -n 50&#10;sudo -u rivet -H rivetos status&#10;sudo -u rivet -H rivetos doctor"><code><span class="ps">$ </span>systemctl status rivetos-agent.service
+<span class="ps">$ </span>journalctl -u rivetos-agent.service -n 50
+<span class="ps">$ </span>sudo -u rivet -H rivetos status
+<span class="ps">$ </span>sudo -u rivet -H rivetos doctor</code></pre>
+    </div>
+    <p>The systemd unit is <code>rivetos-agent.service</code> (not
+    <code>rivetos.service</code>). The mesh certificate lives at
+    <code>/var/lib/rivethub/shared/rivet-ca/issued/&lt;node-name&gt;.crt</code>.</p>
+    <p>Day-2 mesh sync / renew run as the <code>rivet</code> user (the
+    installer generated <code>/home/rivet/.ssh/id_ed25519</code> and
+    installed the pubkey on <code>--hub</code> via the root hop):</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">as rivet</span></div>
+      <pre tabindex="0" data-copy="sudo -u rivet -H rivetos mesh sync&#10;sudo -u rivet -H rivetos mesh renew"><code><span class="ps">$ </span>sudo -u rivet -H rivetos mesh sync
+<span class="ps">$ </span>sudo -u rivet -H rivetos mesh renew</code></pre>
+    </div>
+  </section>
+
+  <section class="block">
+    <p class="kicker">// next</p>
+    <h2>Add the next node</h2>
+    <p>Run the same command on another host, with a fresh name and
+    address:</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">second node</span></div>
+      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10 --name node-b --advertise-host 192.0.2.11"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub owner@192.0.2.10 --name node-b --advertise-host 192.0.2.11</code></pre>
+    </div>
+
+    <h2 class="spaced">Renew certificates</h2>
+    <p>Renewal is driven from the datahub, which re-issues the node's leaf
+    and emits the same tarball:</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span></div>
+      <pre tabindex="0" data-copy="rivethub-hub renew &lt;node-name&gt;"><code><span class="ps">$ </span>rivethub-hub renew &lt;node-name&gt;</code></pre>
+    </div>
+    <p>To change a node's address, re-enroll it instead of renewing.</p>
+  </section>
+
+</div>
+</main>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Automatic memory for your agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<script src="site.js"></script>
+</body>
+</html>
