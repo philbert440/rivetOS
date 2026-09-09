@@ -16,7 +16,7 @@
     "graphile-worker": "^0.17.3"
   },
   "devDependencies": {
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.0"
   },
   "engines": {
     "node": ">=22.0.0"

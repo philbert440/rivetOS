@@ -30,7 +30,7 @@
     "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^26.1.2",
     "@types/pg": "^8.20.3",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.0"
   },
   "rivetos": {
     "type": "provider",
