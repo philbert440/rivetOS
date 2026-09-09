@@ -32,6 +32,20 @@ import type { UpdateOptions, NodeUpdateResult } from './types.js'
  */
 const RESTART_TIMEOUT_MS = 90_000
 
+/**
+ * Timeout for a source-tree `npm install` on a peer. Generous because the
+ * root package's `postinstall` runs `npm run build` — a full
+ * `nx run-many -t build` over the monorepo — so this step is minutes of work,
+ * not seconds.
+ *
+ * The old 120s killed our SSH client while the install kept running
+ * server-side, which is worse than a plain failure: the node ends up with
+ * freshly built code on disk that nothing restarts onto, so it keeps serving
+ * the old build while reporting "npm" failed. A live --mesh run lost 6 of 9
+ * peers this way, every one of them between 133s and 149s.
+ */
+const NPM_INSTALL_TIMEOUT_MS = 600_000
+
 /** Default source-tree install path on mesh peers (git update path). Call-time. */
 export function remoteInstallRoot(): string {
   return installRoot()
@@ -248,7 +262,7 @@ export async function gitUpdateNodeAsync(
         host,
         remoteCd(root, 'npm install --no-audit --no-fund'),
         `${tag} npm install`,
-        120_000,
+        NPM_INSTALL_TIMEOUT_MS,
         sshUser,
       )
     } catch (err: unknown) {
@@ -372,7 +386,7 @@ export async function gitUpdateNodeAsync(
       host,
       remoteCd(root, 'npm install --no-audit --no-fund'),
       `${tag} npm install`,
-      120_000,
+      NPM_INSTALL_TIMEOUT_MS,
       sshUser,
     )
   } catch (err: unknown) {
