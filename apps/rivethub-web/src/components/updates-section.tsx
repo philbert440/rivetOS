@@ -36,7 +36,7 @@ export const PACKAGE_MANAGED_NOTICE =
  * `void`/`undefined` (older shells) is treated as success, not a skip.
  */
 export function stateAfterInstallResult(
-  installed: boolean | void,
+  installed: boolean | undefined,
   available: { version: string; sizeBytes?: number },
 ): UpdateState {
   if (installed === false) {

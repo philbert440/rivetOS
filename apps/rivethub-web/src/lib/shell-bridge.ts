@@ -29,7 +29,7 @@ export interface RivetShell {
     available?: { version: string; sizeBytes?: number }
   }>
   /** true = install started (app will quit); false = skipped (package-managed). */
-  installUpdate?(gatewayBase: string): Promise<boolean>
+  installUpdate?(gatewayBase: string): Promise<boolean | undefined>
   /** Open one more shell window. */
   newWindow?(): Promise<void>
   /** Zoom this window: 1 = in, -1 = out, 0 = reset. */
