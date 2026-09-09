@@ -5,6 +5,13 @@
  * the sha256 of the composed embed text, or when no chunk rows exist yet.
  * When the hash matches but some chunk rows still have NULL embeddings,
  * already-computed vectors are written in place (no delete).
+ *
+ * The delete-then-insert pair is NOT atomic against a concurrent writer: both
+ * embed-target (INSERT/UPDATE trigger) and the enqueue-unchunked sweep call
+ * this for the same message, and a racer re-inserting between our DELETE and
+ * our INSERT used to raise a unique violation on (message_id, idx) that killed
+ * the job (live: 5 dead embed-target jobs). The inserts therefore upsert;
+ * COALESCE keeps a vector the racer already computed rather than nulling it.
  */
 
 import { createHash } from 'node:crypto'
@@ -67,13 +74,23 @@ export async function upsertMessageChunks(
       const vec = truncateVec(raw, opts.truncateDims)
       await query(
         `INSERT INTO ros_message_chunks (message_id, idx, char_start, char_end, content, embedding)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (message_id, idx) DO UPDATE
+            SET char_start = EXCLUDED.char_start,
+                char_end   = EXCLUDED.char_end,
+                content    = EXCLUDED.content,
+                embedding  = COALESCE(EXCLUDED.embedding, ros_message_chunks.embedding)`,
         [opts.messageId, i, chunk.charStart, chunk.charEnd, chunk.text, formatHalfvec(vec)],
       )
     } else {
       await query(
         `INSERT INTO ros_message_chunks (message_id, idx, char_start, char_end, content)
-         VALUES ($1, $2, $3, $4, $5)`,
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (message_id, idx) DO UPDATE
+            SET char_start = EXCLUDED.char_start,
+                char_end   = EXCLUDED.char_end,
+                content    = EXCLUDED.content,
+                embedding  = COALESCE(EXCLUDED.embedding, ros_message_chunks.embedding)`,
         [opts.messageId, i, chunk.charStart, chunk.charEnd, chunk.text],
       )
     }
