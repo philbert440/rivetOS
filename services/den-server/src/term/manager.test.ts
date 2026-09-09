@@ -91,6 +91,7 @@ function makeManager(
   extra: {
     token?: string
     port?: number
+    caPath?: string
     roster?: TermRoster
     roomOpen?: (s: string) => boolean
     spawn?: PtySpawn
@@ -120,7 +121,7 @@ function makeManager(
     port: extra.port ?? 5199,
     host: '127.0.0.1',
     token: extra.token ?? '',
-    tls: { certPath: '', keyPath: '', caPath: '', requireClientCert: true },
+    tls: { certPath: '', keyPath: '', caPath: extra.caPath ?? '', requireClientCert: true },
     stateDir,
     staticDir: '',
     evictTtlMs: 60_000,
@@ -195,9 +196,18 @@ describe('term manager', () => {
     expect(env.RIVET_DEN_NAME).toBe(`${hostname()}:claude`)
     expect(env.TERM).toBe('xterm-256color')
     expect(env.COLORTERM).toBe('truecolor')
+    // empty caPath (http den) → RIVET_DEN_CA is not injected
+    expect(env.RIVET_DEN_CA).toBeUndefined()
     // linkage map — get() resolves the den-session alias too (same as kill)
     expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
     expect(manager.get(pty.denSession)?.id).toBe(pty.id)
+  })
+
+  it('injects RIVET_DEN_CA from the den caPath for hook mTLS (#591)', () => {
+    const ca = '/custom/shared/rivet-ca/intermediate/chain.pem'
+    const { manager, spawns } = makeManager({}, { caPath: ca })
+    manager.spawn('claude', 120, 40, '127.0.0.1')
+    expect(spawns[0].opts.env.RIVET_DEN_CA).toBe(ca)
   })
 
   it('appends model/effort flags from the sheet and omits unknown / no-flag', () => {
