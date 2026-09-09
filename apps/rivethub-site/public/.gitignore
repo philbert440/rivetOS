@@ -1,0 +1,2 @@
+# These browser scripts are source, not TypeScript build output.
+!*.js
