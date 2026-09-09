@@ -1,0 +1,14 @@
+{
+  "name": "rivethub-site",
+  "root": "apps/rivethub-site",
+  "sourceRoot": "apps/rivethub-site/public",
+  "projectType": "application",
+  "tags": ["scope:app", "type:app"],
+  "targets": {
+    "build": {
+      "command": "node apps/rivethub-site/scripts/build.mjs",
+      "inputs": ["{projectRoot}/public/**/*", "{projectRoot}/scripts/**/*"],
+      "outputs": ["{projectRoot}/dist"]
+    }
+  }
+}
