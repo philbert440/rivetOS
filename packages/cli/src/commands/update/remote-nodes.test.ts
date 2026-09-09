@@ -16,7 +16,11 @@ vi.mock('../../lib/ssh.js', async (importOriginal) => {
 vi.mock('../../lib/mtls.js', () => ({ buildMeshDispatcher: vi.fn() }))
 
 import { sshExec, sshExecCapture, sshExecQuiet } from '../../lib/ssh.js'
-import { gitUpdateNodeAsync, probeRemoteInstallWritable } from './remote-nodes.js'
+import {
+  gitUpdateNodeAsync,
+  probeRemoteInstallWritable,
+  restartUnitCommand,
+} from './remote-nodes.js'
 import type { UpdateOptions } from './types.js'
 
 const ORIGINAL_INSTALL_ROOT = process.env.RIVETOS_INSTALL_ROOT
@@ -367,5 +371,34 @@ describe('gitUpdateNodeAsync — install root resolution', () => {
 
     const commands = sshExecMock.mock.calls.map((c) => c[1])
     expect(commands.some((cmd) => cmd.startsWith("cd '/env/rivetos' && git fetch"))).toBe(true)
+  })
+})
+
+describe('restartUnitCommand', () => {
+  // Peers disagree on where the runtime lives: most register a system unit,
+  // some run it as a user unit. A bare `sudo systemctl restart` fails on the
+  // latter with exit 5 (Unit not found) and the node is reported as a restart
+  // failure while its freshly built code sits unused.
+  it('tries system scope, then the user manager, then sudo', () => {
+    expect(restartUnitCommand('rivetos', 'rivet')).toBe(
+      'systemctl restart rivetos || systemctl --user restart rivetos || sudo systemctl restart rivetos',
+    )
+  })
+
+  it('omits sudo when already root', () => {
+    const cmd = restartUnitCommand('rivetos', 'root')
+    expect(cmd).toBe('systemctl restart rivetos || systemctl --user restart rivetos')
+    expect(cmd).not.toContain('sudo')
+  })
+
+  it('reaches the per-user manager before escalating', () => {
+    const cmd = restartUnitCommand('rivetos', 'rivet')
+    expect(cmd.indexOf('--user')).toBeLessThan(cmd.indexOf('sudo'))
+  })
+
+  it('applies to co-located worker units too', () => {
+    expect(restartUnitCommand('rivet-embedder.service', 'rivet')).toContain(
+      'systemctl --user restart rivet-embedder.service',
+    )
   })
 })
