@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PACKAGE_MANAGED_NOTICE, stateAfterInstallResult } from './updates-section.js'
+import { PACKAGE_MANAGED_NOTICE, stateAfterInstallResult } from './updates-state.js'
 
 describe('stateAfterInstallResult', () => {
   const available = { version: '0.5.22', sizeBytes: 120_000_000 }
