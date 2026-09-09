@@ -881,6 +881,12 @@ async function runWorker(spoolFile?: string) {
       await ingestSession(op)
       fs.unlinkSync(file)
     } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        // Spool file already gone (e.g. a concurrent, idempotent worker processed
+        // it). Benign no-op — not an ingest failure.
+        log(`worker: spool file already gone, skipping ${file}`)
+        continue
+      }
       const msg = `worker failed on ${file}: ${e}`
       log(msg)
       hadFailure = true
