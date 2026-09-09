@@ -46,6 +46,26 @@ const RESTART_TIMEOUT_MS = 90_000
  */
 const NPM_INSTALL_TIMEOUT_MS = 600_000
 
+/**
+ * Shell fallback chain for restarting a unit on a peer.
+ *
+ * Peers do not agree on where the agent runtime lives: most register
+ * rivetos.service with the system manager, some run it as a *user* unit. A
+ * bare `sudo systemctl restart` fails on the latter with exit 5 (Unit
+ * rivetos.service not found) and the whole node is reported as a restart
+ * failure — while its freshly built code sits unused, which is the same
+ * stale-node trap the npm timeout used to cause.
+ *
+ * Order mirrors the local restartViaSystemd: system scope, then the per-user
+ * manager, then sudo. A user-unit host never escalates just to restart its own
+ * service, and a system-unit host needing privileges still reaches sudo.
+ */
+export function restartUnitCommand(unit: string, sshUser: string): string {
+  const attempts = [`systemctl restart ${unit}`, `systemctl --user restart ${unit}`]
+  if (sshUser !== 'root') attempts.push(`sudo systemctl restart ${unit}`)
+  return attempts.join(' || ')
+}
+
 /** Default source-tree install path on mesh peers (git update path). Call-time. */
 export function remoteInstallRoot(): string {
   return installRoot()
@@ -329,9 +349,8 @@ export async function gitUpdateNodeAsync(
       // rivet-embedder) on stale code.
       for (const unit of workers) {
         console.log(`    ${tag} Restarting ${unit}...`)
-        // Workers run as rivet; use sudo for systemctl if not root
-        const restartCmd =
-          sshUser === 'root' ? `systemctl restart ${unit}` : `sudo systemctl restart ${unit}`
+        // Workers run as rivet; same scope fallback as the primary unit.
+        const restartCmd = restartUnitCommand(unit, sshUser)
         try {
           await sshExec(host, restartCmd, `${tag} restart ${unit}`, RESTART_TIMEOUT_MS, sshUser)
         } catch (err: unknown) {
@@ -430,9 +449,7 @@ export async function gitUpdateNodeAsync(
   if (opts.restart) {
     try {
       console.log(`    ${tag} Restarting service...`)
-      // Use sudo when logged in as rivet (non-root)
-      const restartCmd =
-        sshUser === 'root' ? 'systemctl restart rivetos' : 'sudo systemctl restart rivetos'
+      const restartCmd = restartUnitCommand('rivetos', sshUser)
       await sshExec(host, restartCmd, `${tag} restart`, RESTART_TIMEOUT_MS, sshUser)
     } catch (err: unknown) {
       console.error(`    ${tag} ❌ Restart failed: ${(err as Error).message}`)
