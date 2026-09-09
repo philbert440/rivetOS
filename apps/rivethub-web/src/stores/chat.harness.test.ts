@@ -3,7 +3,7 @@
 // The connection store is mocked away — it touches window/localStorage at
 // import time and none of this needs a real gateway.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   HarnessPromptEvent,
   HarnessStatusFrame,
@@ -44,6 +44,25 @@ vi.mock('./connection.js', () => ({
     }),
   },
 }))
+
+// chat.ts persists via createJSONStorage(() => localStorage), evaluated at
+// store-module load. Stub before that import (vi.hoisted runs before ESM
+// imports) — same idiom as sidebar-prefs/experimental store tests.
+vi.hoisted(() => {
+  const m = new Map<string, string>()
+  vi.stubGlobal('localStorage', {
+    get length() {
+      return m.size
+    },
+    clear: () => m.clear(),
+    getItem: (k: string) => m.get(k) ?? null,
+    key: (i: number) => [...m.keys()][i] ?? null,
+    removeItem: (k: string) => void m.delete(k),
+    setItem: (k: string, v: string) => void m.set(k, String(v)),
+  } satisfies Storage)
+})
+
+afterAll(() => vi.unstubAllGlobals())
 
 const { useChat } = await import('./chat.js')
 

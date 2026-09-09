@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quickstart — RivetHub</title>
+<meta name="description" content="Install a complete RivetHub node on Linux or macOS, with local memory and capture and recall for six AI harnesses.">
+<meta name="theme-color" content="#090d0b">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RivetHub">
+
+
+
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="landing.css">
+
+<link rel="canonical" href="https://rivethub.io/install-local.html">
+<meta property="og:title" content="Run locally — RivetHub">
+<meta property="og:description" content="Install a complete RivetHub node on Linux or macOS, with local memory and capture and recall for six AI harnesses.">
+<meta property="og:url" content="https://rivethub.io/install-local.html">
+<meta property="og:image" content="https://rivethub.io/social-preview.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="RivetHub: Automatic memory. Nothing to remember to write down.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Run locally — RivetHub">
+<meta name="twitter:description" content="Install a complete RivetHub node on Linux or macOS, with local memory and capture and recall for six AI harnesses.">
+<meta name="twitter:image" content="https://rivethub.io/social-preview.png">
+<link rel="stylesheet" href="marketing.css">
+<script src="theme.js"></script>
+</head>
+<body class="landing guide-page">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="landing-header"><div class="landing-wrap header-inner">
+  <a class="wordmark" href="index.html" aria-label="RivetHub home"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt=""> rivet<span>hub</span><span class="brand-dot" aria-hidden="true">.</span></a>
+  <nav aria-label="Main navigation"><a href="index.html">Home</a><a href="install-local.html" aria-current="page">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a></nav>
+</div></header>
+<main id="main">
+
+<div class="wrap-wide">
+<div class="page-head guide-head">
+<p class="kicker">Quickstart / Local development setup</p>
+<h1>Up and running.<br>On your own machine.</h1>
+<p class="lede">Datahub, agent and den together. One command takes you from an empty machine to local memory and your first chat.</p>
+<nav class="jump-links" aria-label="On this page"><a href="#install">Install</a><a href="#harnesses">Harnesses</a><a href="#phone">Pair a phone</a><a href="#everyday">Everyday commands</a>
+</nav>
+</div>
+<section class="block guide-section" id="included">
+<div>
+<p class="kicker">01 / what you get</p>
+<h2>Everything in<br>one place.</h2>
+</div>
+<div>
+<ol class="setup-list">
+<li><strong>Runtime + embedded Postgres.</strong> PGlite runs the memory engine without a separate database server.</li>
+<li><strong>Your own CA + TLS.</strong> A local certificate authority and HTTPS on port 5174.</li>
+<li><strong>Your harnesses, connected.</strong> Detection, memory capture and recall for the supported tools already on your machine.</li>
+<li><strong>The desktop app.</strong> Installed and launched on Linux; it finds localhost automatically. macOS desktop is coming — use the browser there.</li>
+<li><strong>A next-steps banner.</strong> The installer points you to your local node and what to do next.</li>
+</ol>
+<div class="req">
+<h3>Requirements</h3>
+<p>Linux or macOS · Node.js 22+ (installed for you if missing) · ~1 GB RAM for the memory engine · ~200 MB disk to start.</p>
+</div>
+</div>
+</section>
+<section class="block guide-section" id="install">
+<div>
+<p class="kicker">02 / the command</p>
+<h2>Make yourself<br>at home.</h2>
+</div>
+<div>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on your laptop</span>
+</div><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre>
+</div>
+<p class="note">This is the stable laptop installer. Desktop and Android first downloads are on this site. Dev/nightly builds for in-app Updates live on the mesh share. <a href="releases.html">Release details →</a></p>
+<p>The installer reports setup progress, the harnesses it detects and a banner with next steps. When it finishes, your local node is at <a href="https://localhost:5174">https://localhost:5174</a>.</p>
+<div class="note"><strong>First chat.</strong> Open the RivetHub desktop app — it connects to localhost by itself — or open the local address in your browser. On macOS, use the browser while the desktop app is coming.</div>
+<div class="first-chat-downloads"><h3>Download the apps · latest stable</h3>
+<div class="download-row">
+<div class="download-item" data-platform="linux">
+<a data-field="download" href="https://rivethub.io/releases/RivetHub-0.5.21.AppImage" download>Desktop for Linux <span aria-hidden="true">↓</span></a>
+<p>AppImage · latest stable <span data-field="version">v0.5.21</span><br><span data-field="size">123.2 MB</span></p>
+</div>
+<div class="download-item" data-platform="win32">
+<a data-field="download" href="https://rivethub.io/releases/RivetHub-Setup-0.5.21.exe" download>Desktop for Windows <span aria-hidden="true">↓</span></a>
+<p>Installer · latest stable <span data-field="version">v0.5.21</span><br><span data-field="size">96.2 MB</span></p>
+</div>
+<div class="download-item" data-platform="android">
+<a data-field="download" href="https://rivethub.io/releases/RivetHub-0.5.22.apk" download>Android <span aria-hidden="true">↓</span></a>
+<p>APK · latest stable <span data-field="version">v0.5.22</span><br><span data-field="size">2.5 MB</span></p>
+</div>
+</div>
+<p class="download-alternatives">macOS desktop: coming · iPhone: <a href="install-local.html#phone">via Safari + QR</a> · <a href="apps.html">App details + checksums →</a></p>
+</div>
+</div>
+</section>
+<section class="block" id="harnesses">
+<p class="kicker">03 / what it detects</p>
+<h2>Keep the tools you know.</h2>
+<p class="section-lede">The installer adds both sides of memory to every supported harness it finds on your machine.</p>
+<div class="table-scroll" role="region" aria-label="Harness support" tabindex="0">
+<table><caption>Local harness integrations</caption>
+<thead>
+<tr><th scope="col">Harness</th><th scope="col">Capture</th><th scope="col">Recall</th><th scope="col">How it’s wired</th></tr></thead>
+<tbody>
+<tr><th scope="row">Claude Code</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Detected locally; capture + recall installed into Claude Code.</td></tr>
+<tr><th scope="row">Grok Build</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Detected locally; capture + recall installed into Grok Build.</td></tr>
+<tr><th scope="row">Codex</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Detected locally; capture + recall installed into Codex.</td></tr>
+<tr><th scope="row">Kimi Code</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Detected locally; capture + recall installed into Kimi Code.</td></tr>
+<tr><th scope="row">Hermes</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Detected locally; capture + recall installed into Hermes.</td></tr>
+<tr><th scope="row">DeepSeek</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Detected locally; capture + recall installed into DeepSeek.</td></tr></tbody></table>
+</div>
+</section>
+<section class="block" id="phone">
+<div class="pair-intro">
+<div>
+<p class="kicker">04 / pair your phone</p>
+<h2>Your node.<br>Another screen.</h2>
+<p class="section-lede">Start in Settings → Devices on the desktop. The QR connects your phone to your node.</p><a href="apps.html">Get the apps →</a>
+</div>
+<figure class="diagram pairing-diagram"><svg viewBox="0 0 460 240" role="img" aria-labelledby="pair-title pair-desc"><title id="pair-title">Pair from Settings, Devices</title><desc id="pair-desc">A desktop device screen with an illustrative QR code connects to a phone. Use the real QR in your desktop app.</desc><rect class="d-box" x="10" y="20" width="270" height="170" rx="12"/><text class="d-label" x="30" y="50">Settings → Devices</text><rect class="qr-paper" x="98" y="70" width="82" height="82" rx="4"/><path class="qr-ink" d="M108 80h22v22h-22zM148 80h22v22h-22zM108 120h22v22h-22z"/><path class="qr-pixels" d="M136 80v30h30M110 110h22v8M140 120h10v20h20v-25M136 135v8"/><path class="d-chan" d="M280 110H340"/><rect class="d-hub" x="340" y="45" width="105" height="157" rx="16"/><text class="d-label" x="392" y="116" text-anchor="middle">Paired</text><text class="d-sub" x="392" y="139" text-anchor="middle">your node</text><path class="d-link" d="M370 187H413M105 208H185M145 190V208"/></svg><figcaption>Illustration only. Scan the QR shown in your desktop app.</figcaption>
+</figure>
+</div>
+<div class="pair-grid">
+<article class="card"><span class="badge">Android</span>
+<h3>Scan. Open. Connected.</h3>
+<ol class="setup-list">
+<li>Install the <a href="apps.html#android">RivetHub Android app</a>.</li>
+<li>Open <strong>Settings → Devices</strong> on the desktop and scan its QR with your phone.</li>
+<li>The app pulls its certificate and passphrase and connects to your node.</li>
+</ol>
+</article>
+<article class="card"><span class="badge badge--quiet">iPhone</span>
+<h3>A home in Safari.</h3>
+<ol class="setup-list">
+<li>Open <strong>Settings → Devices</strong> on the desktop.</li>
+<li>Scan the QR on your iPhone. Open the pairing page in Safari and install its profile.</li>
+<li>Use RivetHub in Safari. A native iPhone app comes later.</li>
+</ol>
+</article>
+</div>
+</section>
+<section class="block guide-section" id="memory">
+<div>
+<p class="kicker">05 / your memory</p>
+<h2>Context that<br>stays with you.</h2>
+</div>
+<div>
+<h3>Capture saves the conversation</h3>
+<p>As you use a connected harness, memory capture records conversation context in the local memory engine. Your captured memory stays on your machine.</p>
+<h3 class="spaced">Recall brings it back</h3>
+<p>Inside Claude Code, Grok Build, Codex, Kimi Code, Hermes and DeepSeek, recall makes relevant saved context available to the harness. You keep working in the tool you know.</p>
+<p>Full-text and fuzzy search work from day one. Semantic search is opt-in: use <code>--memory full</code> with any OpenAI-compatible embedding endpoint. That endpoint processes embedding requests; choose where it runs.</p>
+</div>
+</section>
+<section class="block guide-section" id="mesh">
+<div>
+<p class="kicker">06 / grow into a mesh</p>
+<h2>You already<br>started one.</h2>
+</div>
+<div>
+<p>Your laptop was a mesh of one all along. Run this on another machine to join it to your laptop:</p>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the next machine</span>
+</div><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub user@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub user@192.0.2.10</code></pre>
+</div>
+<p>Replace <code>user</code> with your SSH login and <code>192.0.2.10</code> with your laptop’s address. See the <a href="install-node.html">node guide</a> for the joining machine’s requirements.</p>
+</div>
+</section>
+<section class="block guide-section" id="everyday">
+<div>
+<p class="kicker">07 / everyday commands</p>
+<h2>A little<br>housekeeping.</h2>
+</div>
+<div>
+<h3>Check the local node</h3>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">terminal</span>
+</div><pre tabindex="0" data-copy="rivetos local status"><code><span class="ps">$ </span>rivetos local status</code></pre>
+</div>
+<h3 class="spaced">Back up your local setup</h3>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">terminal</span>
+</div><pre tabindex="0" data-copy="rivetos local backup"><code><span class="ps">$ </span>rivetos local backup</code></pre>
+</div>
+<h3 class="spaced">Reset local mode</h3>
+<p>Back up before resetting your local setup.</p>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">terminal</span>
+</div><pre tabindex="0" data-copy="rivetos local reset"><code><span class="ps">$ </span>rivetos local reset</code></pre>
+</div>
+<h3 class="spaced">Uninstall</h3>
+<p>Back up first, then check the installed CLI’s local help for its uninstall instructions. Remove the desktop app through your operating system.</p>
+<div class="term">
+<div class="term__bar"><i></i><i></i><i></i><span class="term__title">terminal</span>
+</div><pre tabindex="0" data-copy="rivetos local --help"><code><span class="ps">$ </span>rivetos local --help</code></pre>
+</div>
+</div>
+</section>
+<section class="block guide-section" id="troubleshooting">
+<div>
+<p class="kicker">08 / troubleshooting</p>
+<h2>When something<br>gets in the way.</h2>
+</div>
+<div>
+<details open><summary>Node not running</summary>
+<p>Memory capture pauses while the local node is stopped. Run <code>rivetos local status</code> to check it, and restore the node before continuing capture.</p>
+</details>
+<details><summary>Port 5174 is busy</summary>
+<p>Check which application is using port 5174. Stop that application if it is safe to do so, then retry local setup.</p>
+</details>
+<details><summary>Unsigned macOS app</summary>
+<p>For an unsigned macOS build, right-click the app and choose <strong>Open</strong>. The macOS desktop release is coming; the browser at <a href="https://localhost:5174">https://localhost:5174</a> is the current path.</p>
+</details>
+</div>
+</section>
+</div>
+</main>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Automatic memory for your agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<script src="site.js"></script>
+</body>
+</html>

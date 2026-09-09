@@ -543,17 +543,33 @@ async function compactParentLevel(
 
   if (children.rows.length < cfg.minChildren) return 0
 
-  const formatted = cfg.formatPrompt(convMeta, children.rows)
-
-  console.log(
-    `[CompactWorker] ${cfg.label}: ${children.rows.length} ${cfg.childKind}s for ${conversationId.slice(0, 8)}`,
-  )
-
+  // Same batch-size problem the leaf path already handles: a response
+  // truncated at cfg.maxTokens will truncate again on retry with the identical
+  // prompt, so the job only burns graphile attempts (live: 16 dead branch jobs
+  // at max_tokens=14000 and 3 root at 20000, alongside the leaf ones that this
+  // shrink loop already rescues). Shrink the child set and retry; the leftover
+  // children stay parent_id IS NULL for the next round.
+  let batch = children.rows
   let summaryText: string
-  try {
-    summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
-  } catch (err) {
-    propagateLlmFailure(conversationId, err, cfg.kind, { isFinalAttempt })
+  for (;;) {
+    const formatted = cfg.formatPrompt(convMeta, batch)
+    console.log(
+      `[CompactWorker] ${cfg.label}: ${batch.length} ${cfg.childKind}s for ${conversationId.slice(0, 8)}`,
+    )
+    try {
+      summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
+      break
+    } catch (err) {
+      const next = shrinkLeafBatch(batch.length, cfg.minChildren)
+      if (isLlmTruncationError(err) && next !== null) {
+        console.warn(
+          `[CompactWorker] ${cfg.label} truncated at ${String(batch.length)} ${cfg.childKind}s for ${conversationId.slice(0, 8)}, retrying with ${String(next)}`,
+        )
+        batch = batch.slice(0, next)
+        continue
+      }
+      propagateLlmFailure(conversationId, err, cfg.kind, { isFinalAttempt })
+    }
   }
 
   const parentId = await withTransaction(
@@ -563,7 +579,7 @@ async function compactParentLevel(
       // FOR UPDATE SKIP LOCKED. Abort unless the locked set equals the
       // pre-LLM set — never subset-commit a summary whose prose covers
       // children that stay parent_id IS NULL.
-      const childIds = children.rows.map((r) => r.id)
+      const childIds = batch.map((r) => r.id)
       const locked = await client.query<{ id: string }>(
         `SELECT id FROM ros_summaries
           WHERE id = ANY($1::uuid[]) AND parent_id IS NULL
@@ -571,14 +587,14 @@ async function compactParentLevel(
           FOR UPDATE SKIP LOCKED`,
         [childIds],
       )
-      if (locked.rows.length !== children.rows.length) {
+      if (locked.rows.length !== batch.length) {
         console.warn(
-          `[CompactWorker] ${cfg.label}: only ${String(locked.rows.length)}/${String(children.rows.length)} ${cfg.childKind}s lockable for ${conversationId.slice(0, 8)} — skipping this round`,
+          `[CompactWorker] ${cfg.label}: only ${String(locked.rows.length)}/${String(batch.length)} ${cfg.childKind}s lockable for ${conversationId.slice(0, 8)} — skipping this round`,
         )
         return null
       }
       const lockedIds = new Set(locked.rows.map((r) => r.id))
-      const usable = children.rows.filter((r) => lockedIds.has(r.id))
+      const usable = batch.filter((r) => lockedIds.has(r.id))
 
       const totalMessages = usable.reduce((sum, r) => sum + Number(r.message_count ?? 0), 0)
       let earliestAt: unknown = usable[0].earliest_at ?? usable[0].created_at
