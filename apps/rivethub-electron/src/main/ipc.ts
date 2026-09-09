@@ -153,15 +153,17 @@ export function registerIpc(deps: IpcDeps): void {
   }
   let updating = false
   guarded('update:check', (_e, raw: unknown) => checkForUpdate(deps.pipes, gatewayBaseArg(raw)))
-  guarded('update:install', async (_e, raw: unknown): Promise<void> => {
+  guarded('update:install', async (_e, raw: unknown): Promise<boolean> => {
     if (updating) throw new Error('installUpdate: already in progress')
     const base = gatewayBaseArg(raw)
     updating = true
     try {
       const installed = await downloadAndInstall(deps.pipes, base)
-      // Successful install quits; package-managed skip returns false and
-      // must re-arm so the user can try again after switching to pacman.
+      // Successful install quits (guard stays set). Package-managed skip
+      // returns false and must re-arm so the renderer can leave "installing"
+      // and the user can try again after switching to pacman.
       if (!installed) updating = false
+      return installed
     } catch (err) {
       updating = false
       throw err

@@ -201,7 +201,9 @@ describe('quoteDesktopExecPath / rewriteDesktopExec', () => {
   })
 
   it('escapes quotes and doubles percent signs in the path', () => {
-    expect(quoteDesktopExecPath('/tmp/foo"bar%baz')).toBe('"/tmp/foo\\"bar%%baz"')
+    // Argument quoting produces \"; desktop string encoding doubles that
+    // backslash so a parser round-trip restores the quote.
+    expect(quoteDesktopExecPath('/tmp/foo"bar%baz')).toBe('"/tmp/foo\\\\"bar%%baz"')
   })
 
   it('rewrites an embedded rivethub Exec to the absolute AppImage path', () => {
@@ -222,7 +224,90 @@ describe('quoteDesktopExecPath / rewriteDesktopExec', () => {
       ].join('\n'),
     )
   })
+
+  it('round-trips reserved-character paths through a desktop parser', () => {
+    const paths = [
+      '/home/user/My Apps/RivetHub.AppImage',
+      '/home/user/$&/RivetHub.AppImage',
+      '/home/user/a\\b/RivetHub.AppImage',
+      '/home/user/`foo/RivetHub.AppImage',
+      "/home/user/$'/RivetHub.AppImage",
+      '/home/user/a\nb/RivetHub.AppImage',
+      '/home/user/$`/RivetHub.AppImage',
+      '/home/user/$1/RivetHub.AppImage',
+    ]
+    for (const appImagePath of paths) {
+      const rewritten = rewriteDesktopExec(
+        '[Desktop Entry]\nExec=rivethub --ozone-platform=wayland %U\n',
+        appImagePath,
+      )
+      const execLines = rewritten.split('\n').filter((line) => line.startsWith('Exec='))
+      expect(execLines).toHaveLength(1)
+      expect(execLines[0]).toMatch(/ --ozone-platform=wayland %U$/)
+      expect(execPathFromDesktop(rewritten)).toBe(appImagePath)
+    }
+  })
+
+  it('does not expand JS replacement tokens in the install path', () => {
+    const rewritten = rewriteDesktopExec(
+      'Exec=rivethub --ozone-platform=wayland %U\n',
+      '/home/user/$&/RivetHub.AppImage',
+    )
+    expect(rewritten).toBe(
+      'Exec="/home/user/\\\\$&/RivetHub.AppImage" --ozone-platform=wayland %U\n',
+    )
+    expect(execPathFromDesktop(rewritten)).toBe('/home/user/$&/RivetHub.AppImage')
+  })
+
+  it('emits four backslashes for a literal backslash in a quoted Exec', () => {
+    expect(quoteDesktopExecPath('/home/user/a\\b/RivetHub.AppImage')).toBe(
+      '"/home/user/a\\\\\\\\b/RivetHub.AppImage"',
+    )
+  })
 })
+
+/** Undo desktop string-value escapes, then Exec quoting, then %% field codes. */
+function unescapeDesktopString(value: string): string {
+  let out = ''
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] !== '\\' || i + 1 >= value.length) {
+      out += value[i]
+      continue
+    }
+    const next = value[i + 1]
+    i += 1
+    if (next === '\\') out += '\\'
+    else if (next === 'n') out += '\n'
+    else if (next === 't') out += '\t'
+    else if (next === 'r') out += '\r'
+    else if (next === 's') out += ' '
+    else out += next
+  }
+  return out
+}
+
+function firstExecArg(unescapedValue: string): string {
+  if (unescapedValue.startsWith('"')) {
+    let out = ''
+    for (let i = 1; i < unescapedValue.length; i++) {
+      if (unescapedValue[i] === '\\' && i + 1 < unescapedValue.length) {
+        out += unescapedValue[i + 1]
+        i += 1
+        continue
+      }
+      if (unescapedValue[i] === '"') return out.replace(/%%/g, '%')
+      out += unescapedValue[i]
+    }
+    throw new Error('unterminated quoted Exec argument')
+  }
+  return unescapedValue.split(/[ \t]/)[0]!.replace(/%%/g, '%')
+}
+
+function execPathFromDesktop(contents: string): string {
+  const line = contents.split('\n').find((entry) => entry.startsWith('Exec='))
+  if (!line) throw new Error('missing Exec line')
+  return firstExecArg(unescapeDesktopString(line.slice('Exec='.length)))
+}
 
 describe('shouldAttemptFirstRunDesktopIntegration', () => {
   const tmp = '/tmp'

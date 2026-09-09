@@ -76,14 +76,38 @@ export async function isDirWritableByUser(dir: string): Promise<boolean> {
 }
 
 /**
+ * Encode a desktop-entry string value: backslash first, then control chars.
+ * Applied AFTER Exec argument quoting, because parsers undo this layer first.
+ * See Desktop Entry Spec "Possible value types" and "The Exec key".
+ */
+function encodeDesktopStringValue(value: string): string {
+  let out = ''
+  for (const ch of value) {
+    if (ch === '\\') out += '\\\\'
+    else if (ch === '\n') out += '\\n'
+    else if (ch === '\t') out += '\\t'
+    else if (ch === '\r') out += '\\r'
+    else out += ch
+  }
+  return out
+}
+
+/**
  * Quote a path for a freedesktop `Exec=` value (spaces / reserved chars),
- * and double `%` so the desktop parser does not treat path percents as field
- * codes. See Desktop Entry Spec "The Exec key".
+ * double `%` so the desktop parser does not treat path percents as field
+ * codes, then apply desktop string-value encoding so a literal backslash
+ * round-trips (`\\\\` in the file) and control chars do not split the line.
  */
 export function quoteDesktopExecPath(filePath: string): string {
   const withPercent = filePath.replace(/%/g, '%%')
-  if (!/[ \t\n"'$\\><~|&;()*?`#]/.test(filePath)) return withPercent
-  return `"${withPercent.replace(/[\\"$`]/g, '\\$&')}"`
+  // Reserved chars from "The Exec key"; CR is not listed there but is a
+  // string-value control character, so it must be quoted then encoded.
+  const reserved = /[ \t\n\r"'$\\><~|&;()*?`#]/
+  let execArg = withPercent
+  if (reserved.test(filePath)) {
+    execArg = `"${withPercent.replace(/[\\"$`]/g, (ch) => `\\${ch}`)}"`
+  }
+  return encodeDesktopStringValue(execArg)
 }
 
 /** Rewrite the `Exec=` line to launch `appImagePath` with the Wayland args. */
@@ -92,7 +116,8 @@ export function rewriteDesktopExec(contents: string, appImagePath: string): stri
   if (!/^Exec=/m.test(contents)) {
     return contents.endsWith('\n') ? `${contents}${execLine}\n` : `${contents}\n${execLine}\n`
   }
-  return contents.replace(/^Exec=.*$/m, execLine)
+  // Replacement function so `$&` / `$`` / `$'` / `$n` in the path are literal.
+  return contents.replace(/^Exec=.*$/m, () => execLine)
 }
 
 /** First-run launcher install: skip missing/temp AppImage paths and an
@@ -161,11 +186,11 @@ export async function installDesktopIntegration(
 
       // Extract .desktop file
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(
-          appImagePath,
-          ['--appimage-extract', 'rivethub.desktop'],
-          { cwd: tmpExtract, stdio: 'ignore', env }
-        )
+        const child = spawn(appImagePath, ['--appimage-extract', 'rivethub.desktop'], {
+          cwd: tmpExtract,
+          stdio: 'ignore',
+          env,
+        })
         child.on('error', reject)
         child.on('exit', (code) => {
           if (code === 0) resolve()
@@ -175,11 +200,11 @@ export async function installDesktopIntegration(
 
       // Extract icons
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(
-          appImagePath,
-          ['--appimage-extract', 'usr/share/icons/hicolor/*'],
-          { cwd: tmpExtract, stdio: 'ignore', env }
-        )
+        const child = spawn(appImagePath, ['--appimage-extract', 'usr/share/icons/hicolor/*'], {
+          cwd: tmpExtract,
+          stdio: 'ignore',
+          env,
+        })
         child.on('error', reject)
         child.on('exit', (code) => {
           if (code === 0) resolve()
@@ -204,7 +229,14 @@ export async function installDesktopIntegration(
       }
 
       // Install hicolor icons
-      const extractedIconsBase = path.join(tmpExtract, 'squashfs-root', 'usr', 'share', 'icons', 'hicolor')
+      const extractedIconsBase = path.join(
+        tmpExtract,
+        'squashfs-root',
+        'usr',
+        'share',
+        'icons',
+        'hicolor',
+      )
       if (fs.existsSync(extractedIconsBase)) {
         const sizes = ['16x16', '24x24', '32x32', '48x48', '64x64', '128x128', '256x256', '512x512']
         for (const size of sizes) {
@@ -255,13 +287,7 @@ export async function maybeInstallFirstRunDesktopIntegration(
   if (!appImagePath) return
   const dataHome = process.env.XDG_DATA_HOME || path.join(homeDir, '.local', 'share')
   const desktopDest = path.join(dataHome, 'applications', 'rivethub.desktop')
-  if (
-    !shouldAttemptFirstRunDesktopIntegration(
-      appImagePath,
-      tmp,
-      fs.existsSync(desktopDest),
-    )
-  ) {
+  if (!shouldAttemptFirstRunDesktopIntegration(appImagePath, tmp, fs.existsSync(desktopDest))) {
     return
   }
   if (!(await isDirWritableByUser(path.dirname(appImagePath)))) return

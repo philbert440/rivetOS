@@ -68,10 +68,11 @@ const api = {
       available?: { version: string; sizeBytes?: number }
     }>,
   /** Download+verify+launch the manifest's build for this platform, then the
-   *  app quits itself. Main re-reads the manifest at install time — the
-   *  renderer supplies only the gateway base, never a URL or digest. */
-  installUpdate: (gatewayBase: string): Promise<void> =>
-    ipcRenderer.invoke('update:install', gatewayBase) as Promise<void>,
+   *  app quits itself. Returns false when the install is package-managed and
+   *  was skipped (non-throwing). Main re-reads the manifest at install time —
+   *  the renderer supplies only the gateway base, never a URL or digest. */
+  installUpdate: (gatewayBase: string): Promise<boolean> =>
+    ipcRenderer.invoke('update:install', gatewayBase) as Promise<boolean>,
   /** The user's installed terminal-emulator configs, read-only. Main picks
    *  the files from a fixed allowlist and resolves one level of includes;
    *  the renderer does all the parsing (lib/terminal-config). */

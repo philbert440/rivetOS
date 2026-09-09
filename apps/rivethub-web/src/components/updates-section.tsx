@@ -21,9 +21,34 @@ type UpdateState =
   | { kind: 'idle' }
   | { kind: 'checking' }
   | { kind: 'current'; version: string }
-  | { kind: 'available'; version: string; sizeBytes?: number }
+  | { kind: 'available'; version: string; sizeBytes?: number; notice?: string }
   | { kind: 'installing' }
   | { kind: 'error'; message: string }
+
+/** Shown when main skips an in-app install because the dir is package-managed. */
+export const PACKAGE_MANAGED_NOTICE =
+  'managed by your package manager — update with your package manager'
+
+/**
+ * Map the install IPC result onto renderer state.
+ * `false` is a clean skip (leave installing; restore available + notice).
+ * `true` keeps installing — a real install still quits.
+ * `void`/`undefined` (older shells) is treated as success, not a skip.
+ */
+export function stateAfterInstallResult(
+  installed: boolean | void,
+  available: { version: string; sizeBytes?: number },
+): UpdateState {
+  if (installed === false) {
+    return {
+      kind: 'available',
+      version: available.version,
+      sizeBytes: available.sizeBytes,
+      notice: PACKAGE_MANAGED_NOTICE,
+    }
+  }
+  return { kind: 'installing' }
+}
 
 export function UpdatesSection(): JSX.Element | null {
   const { baseUrl } = useConnection()
@@ -57,7 +82,7 @@ export function UpdatesSection(): JSX.Element | null {
     }
   }
 
-  const install = async (version: string): Promise<void> => {
+  const install = async (version: string, sizeBytes?: number): Promise<void> => {
     if (!baseUrl) return
     const ok = await dialog.confirm(
       `Install RivetHub v${version}? The build is downloaded from the connected node (${baseUrl}), verified, and the installer is launched — RivetHub will QUIT and you reopen it when the install finishes.`,
@@ -66,8 +91,12 @@ export function UpdatesSection(): JSX.Element | null {
     if (!ok) return
     setState({ kind: 'installing' })
     try {
-      await shell.installUpdate!(baseUrl)
-      // The shell quits itself once the installer is running; nothing to do.
+      const installed = await shell.installUpdate!(baseUrl)
+      if (installed === false) {
+        setState(stateAfterInstallResult(false, { version, sizeBytes }))
+      }
+      // true (or void from an older shell): the process is quitting; keep
+      // installing. A successful install still holds the main-process guard.
     } catch (err) {
       setState({ kind: 'error', message: err instanceof Error ? err.message : String(err) })
     }
@@ -93,7 +122,7 @@ export function UpdatesSection(): JSX.Element | null {
         </button>
         {state.kind === 'available' && (
           <button
-            onClick={() => void install(state.version)}
+            onClick={() => void install(state.version, state.sizeBytes)}
             className="rounded bg-em px-4 py-2 text-sm font-medium text-bg hover:bg-em-dim"
           >
             Install v{state.version}
@@ -108,6 +137,7 @@ export function UpdatesSection(): JSX.Element | null {
             <span className="text-em">
               v{state.version} available
               {state.sizeBytes ? ` (${(state.sizeBytes / 1e6).toFixed(0)} MB)` : ''}
+              {state.notice ? ` — ${state.notice}` : ''}
             </span>
           )}
           {state.kind === 'installing' && (
