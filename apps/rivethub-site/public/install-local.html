@@ -166,9 +166,10 @@
 <p>Your laptop was a mesh of one all along. Run this on another machine to join it to your laptop:</p>
 <div class="term">
 <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the next machine</span>
-</div><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub user@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub user@192.0.2.10</code></pre>
+</div><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub user@192.0.2.10"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub user@192.0.2.10</code></pre>
 </div>
 <p>Replace <code>user</code> with your SSH login and <code>192.0.2.10</code> with your laptop’s address. See the <a href="install-node.html">node guide</a> for the joining machine’s requirements.</p>
+<p>One prerequisite: your laptop must be set up as a hub before another machine can enroll into it — local mode does not install the hub helper on its own. See the <a href="install-datahub.html">datahub guide</a> to enable enrollment on your laptop first.</p>
 </div>
 </section>
 <section class="block guide-section" id="everyday">
