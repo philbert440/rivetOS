@@ -1270,6 +1270,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const denScheme = config.tls.certPath.trim() && config.tls.keyPath.trim() ? 'https' : 'http'
       env.RIVET_DEN_URL = `${denScheme}://127.0.0.1:${config.port}`
       env.RIVET_DEN_NAME = `${hostname()}:${key}`
+      // Hook mTLS (#591): den hooks verify the den's https cert against the
+      // Rivet CA chain. Inject the den's own resolved caPath (which honors
+      // RIVETOS_SHARED_DIR) so hooks posting over https work under a non-default
+      // shared root, instead of the hooks' hardcoded /rivet-shared fallback.
+      setNonEmpty(env, 'RIVET_DEN_CA', config.tls.caPath)
+      if (env.RIVET_DEN_CA) tmuxEnvKeys.add('RIVET_DEN_CA')
       // The outer PTY stays xterm-256color; inside the pane tmux presents
       // default-terminal (tmux-256color) itself. TERM deliberately does NOT
       // ride `-e`: on an already-running server it would override the conf's

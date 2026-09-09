@@ -176,7 +176,10 @@ export class FileMeshRegistry implements MeshRegistry {
     if (!discovery) return
 
     if (discovery.mode === 'seed' && discovery.seedHost) {
-      await this.syncFromSeed(discovery.seedHost, discovery.seedPort ?? 3100)
+      // Default to the mesh listener port (agent_channel_port default 3000),
+      // not 3100 — a seed configured with seed_host but no seed_port must dial
+      // the port the default listener actually binds (#592).
+      await this.syncFromSeed(discovery.seedHost, discovery.seedPort ?? 3000)
     }
     // mDNS and static don't need sync — they discover via other means
   }
