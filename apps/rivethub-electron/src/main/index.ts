@@ -52,9 +52,16 @@ import { cascadePoint, loadWindowState, saveWindowState, type WindowState } from
 // finding, PR #555). Must precede any getPath('userData') use.
 app.setName('RivetHub')
 
-// Disable GPU acceleration to avoid crashes on macOS (common Electron issue)
+// Disable GPU acceleration on macOS to avoid Electron GPU-process crashes
+// (intermittent, often shader-cache related). Electron core does not read
+// ELECTRON_DISABLE_GPU itself, so setting the env var alone is inert — we
+// honor the convention AND make it real via disableHardwareAcceleration(),
+// which must run before the app 'ready' event (this is at module top).
 if (process.platform === 'darwin') {
   process.env.ELECTRON_DISABLE_GPU = '1'
+}
+if (process.env.ELECTRON_DISABLE_GPU === '1') {
+  app.disableHardwareAcceleration()
 }
 
 // Windows drops toast notifications unless the running process's AUMID
