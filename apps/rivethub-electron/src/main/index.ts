@@ -52,6 +52,11 @@ import { cascadePoint, loadWindowState, saveWindowState, type WindowState } from
 // finding, PR #555). Must precede any getPath('userData') use.
 app.setName('RivetHub')
 
+// Disable GPU acceleration to avoid crashes on macOS (common Electron issue)
+if (process.platform === 'darwin') {
+  process.env.ELECTRON_DISABLE_GPU = '1'
+}
+
 // Windows drops toast notifications unless the running process's AUMID
 // matches the Start-Menu shortcut NSIS creates from electron-builder's appId
 // — Notification.isSupported() still reports true, so the failure is silent.
