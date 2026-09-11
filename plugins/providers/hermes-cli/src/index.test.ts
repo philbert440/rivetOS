@@ -150,6 +150,7 @@ describe('HermesCliModel.doStream', () => {
     const fin = parts.find((p) => p.type === 'finish')
     expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : undefined).toBe(42)
     expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : undefined).toBe(7)
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.noCache : 'missing').toBeUndefined()
   })
 
   it('doGenerate usage matches the stream finish usage', async () => {
@@ -168,6 +169,133 @@ describe('HermesCliModel.doStream', () => {
     const r = await model(bin, path.join(tmp(), 'm.json'), 'conv-1', dbFile).doGenerate({ prompt })
     expect(r.usage.inputTokens.total).toBe(9)
     expect(r.usage.outputTokens.total).toBe(3)
+  })
+
+  it('resume with decreasing message counts reports the new message as-is (not a delta)', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dir = tmp()
+    const dbFile = path.join(dir, 'state.db')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER);
+      CREATE TABLE messages (
+        session_id TEXT, role TEXT, content TEXT, timestamp INTEGER,
+        input_tokens INTEGER, output_tokens INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess-m', 1000, 2000);
+      INSERT INTO messages VALUES ('sess-m','assistant','a',1001,100,20);
+    `)
+    db.close()
+    const update = path.join(dir, 'update.mjs')
+    fs.writeFileSync(
+      update,
+      `import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(${JSON.stringify(dbFile)});
+db.exec("INSERT INTO messages VALUES ('sess-m','assistant','b',1002,60,10)");
+db.close();
+`,
+    )
+    const bin = fakeScript(
+      `#!/usr/bin/env bash\nnode ${JSON.stringify(update)}\necho "session_id: sess-m" >&2\nprintf "PONG"\n`,
+    )
+    const mapPath = path.join(dir, 'map.json')
+    saveSessionMap(mapPath, { 'conv-1': 'sess-m' })
+    const parts = await collect(model(bin, mapPath, 'conv-1', dbFile), prompt)
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : undefined).toBe(60)
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : undefined).toBe(10)
+  })
+
+  it('resume whose pre-spawn db read fails reports empty usage (not lifetime totals)', async () => {
+    await import('node:sqlite')
+    const dir = tmp()
+    const dbFile = path.join(dir, 'state.db')
+    const update = path.join(dir, 'create.mjs')
+    fs.writeFileSync(
+      update,
+      `import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(${JSON.stringify(dbFile)});
+db.exec(\`
+  CREATE TABLE sessions (
+    id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER,
+    input_tokens INTEGER, output_tokens INTEGER
+  );
+  INSERT INTO sessions VALUES ('sess-r', 1, 2, 100100, 10010);
+\`);
+db.close();
+`,
+    )
+    const bin = fakeScript(
+      `#!/usr/bin/env bash\nnode ${JSON.stringify(update)}\necho "session_id: sess-r" >&2\nprintf "PONG"\n`,
+    )
+    const mapPath = path.join(dir, 'map.json')
+    saveSessionMap(mapPath, { 'conv-1': 'sess-r' })
+    const parts = await collect(model(bin, mapPath, 'conv-1', dbFile), prompt)
+    expect(fs.existsSync(dbFile)).toBe(true)
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : 'missing').toBeUndefined()
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : 'missing').toBeUndefined()
+  })
+
+  it('resume session-total subtracts the pre-spawn baseline', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dir = tmp()
+    const dbFile = path.join(dir, 'state.db')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER,
+        input_tokens INTEGER, output_tokens INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess-d', 1, 2, 100, 10);
+    `)
+    db.close()
+    const update = path.join(dir, 'bump.mjs')
+    fs.writeFileSync(
+      update,
+      `import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync(${JSON.stringify(dbFile)});
+db.exec("UPDATE sessions SET input_tokens = 150, output_tokens = 40 WHERE id = 'sess-d'");
+db.close();
+`,
+    )
+    const bin = fakeScript(
+      `#!/usr/bin/env bash\nnode ${JSON.stringify(update)}\necho "session_id: sess-d" >&2\nprintf "PONG"\n`,
+    )
+    const mapPath = path.join(dir, 'map.json')
+    saveSessionMap(mapPath, { 'conv-1': 'sess-d' })
+    const parts = await collect(model(bin, mapPath, 'conv-1', dbFile), prompt)
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : undefined).toBe(50)
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : undefined).toBe(30)
+  })
+
+  it('falls back to the saved session map when stderr is trimmed past session_id', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dir = tmp()
+    const dbFile = path.join(dir, 'state.db')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER,
+        input_tokens INTEGER, output_tokens INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess-trim', 1, 2, 5, 1);
+    `)
+    db.close()
+    const bin = fakeScript(
+      `#!/usr/bin/env bash
+echo "session_id: sess-trim" >&2
+node -e "process.stderr.write('n'.repeat(70000))"
+printf "PONG"
+`,
+    )
+    const mapPath = path.join(dir, 'map.json')
+    const parts = await collect(model(bin, mapPath, 'conv-1', dbFile), prompt)
+    expect(loadSessionMap(mapPath)).toEqual({ 'conv-1': 'sess-trim' })
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : undefined).toBe(5)
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : undefined).toBe(1)
   })
 })
 

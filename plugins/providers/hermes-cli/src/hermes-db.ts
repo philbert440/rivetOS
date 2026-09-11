@@ -25,9 +25,22 @@ export interface SqliteDb {
 export interface HermesTokenCounts {
   input?: number
   output?: number
+  cacheRead?: number
+  cacheWrite?: number
+  reasoning?: number
+}
+
+/** Where the counts came from — resume accounting depends on this. */
+export type HermesTokenKind = 'session-total' | 'message' | 'unknown'
+
+export interface HermesTokenSnapshot {
+  kind: HermesTokenKind
+  counts: HermesTokenCounts
 }
 
 const require_ = createRequire(import.meta.url)
+
+export const UNKNOWN_TOKENS: HermesTokenSnapshot = { kind: 'unknown', counts: {} }
 
 export function emptyUsage(): LanguageModelV3Usage {
   return {
@@ -70,7 +83,21 @@ function tokenNum(v: unknown): number | undefined {
   return undefined
 }
 
-/** Pull input/output token fields off a sessions or messages row. */
+function hasCounts(counts: HermesTokenCounts): boolean {
+  return (
+    counts.input !== undefined ||
+    counts.output !== undefined ||
+    counts.cacheRead !== undefined ||
+    counts.cacheWrite !== undefined ||
+    counts.reasoning !== undefined
+  )
+}
+
+function hasSessionTotals(counts: HermesTokenCounts): boolean {
+  return counts.input !== undefined || counts.output !== undefined
+}
+
+/** Pull input/output/cache/reasoning token fields off a sessions or messages row. */
 export function tokensFromRow(row: SqliteRow | undefined): HermesTokenCounts {
   if (!row) return {}
   const input =
@@ -80,48 +107,82 @@ export function tokensFromRow(row: SqliteRow | undefined): HermesTokenCounts {
     tokenNum(row.completion_tokens) ??
     tokenNum(row.tokens_output) ??
     tokenNum(row.token_count)
+  const cacheRead = tokenNum(row.cache_read_tokens)
+  const cacheWrite = tokenNum(row.cache_write_tokens)
+  const reasoning = tokenNum(row.reasoning_tokens)
   return {
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),
+    ...(cacheRead !== undefined ? { cacheRead } : {}),
+    ...(cacheWrite !== undefined ? { cacheWrite } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   }
 }
 
 export function usageFromTokens(counts: HermesTokenCounts): LanguageModelV3Usage {
-  if (counts.input === undefined && counts.output === undefined) return emptyUsage()
+  if (!hasCounts(counts)) return emptyUsage()
   return {
     inputTokens: {
       total: counts.input,
-      noCache: counts.input,
-      cacheRead: undefined,
-      cacheWrite: undefined,
+      // Unknown — do not claim all input was uncached just because we have a total.
+      noCache: undefined,
+      cacheRead: counts.cacheRead,
+      cacheWrite: counts.cacheWrite,
     },
-    outputTokens: { total: counts.output, text: counts.output, reasoning: undefined },
+    outputTokens: { total: counts.output, text: counts.output, reasoning: counts.reasoning },
   }
 }
 
-/** Per-turn usage when session totals are cumulative (resume). */
+function deltaField(before: number | undefined, after: number | undefined): number | undefined {
+  if (after === undefined || before === undefined) return undefined
+  return Math.max(0, after - before)
+}
+
+/** Per-turn usage when session totals are cumulative (resume).
+ *  A missing baseline field is unknown, not zero. */
 export function usageDelta(before: HermesTokenCounts, after: HermesTokenCounts): HermesTokenCounts {
-  const input =
-    after.input !== undefined ? Math.max(0, after.input - (before.input ?? 0)) : undefined
-  const output =
-    after.output !== undefined ? Math.max(0, after.output - (before.output ?? 0)) : undefined
+  const input = deltaField(before.input, after.input)
+  const output = deltaField(before.output, after.output)
+  const cacheRead = deltaField(before.cacheRead, after.cacheRead)
+  const cacheWrite = deltaField(before.cacheWrite, after.cacheWrite)
+  const reasoning = deltaField(before.reasoning, after.reasoning)
   return {
     ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output } : {}),
+    ...(cacheRead !== undefined ? { cacheRead } : {}),
+    ...(cacheWrite !== undefined ? { cacheWrite } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   }
 }
 
 /**
+ * Per-turn counts from a pre-spawn baseline and a post-exit snapshot.
+ * Delta only for cumulative session totals with a known session-total
+ * baseline; message rows are reported as-is; unknown → empty.
+ */
+export function tokensForTurn(
+  resumed: boolean,
+  prior: HermesTokenSnapshot,
+  after: HermesTokenSnapshot,
+): HermesTokenCounts {
+  if (after.kind === 'unknown') return {}
+  if (after.kind === 'message') return after.counts
+  if (!resumed) return after.counts
+  if (prior.kind !== 'session-total') return {}
+  return usageDelta(prior.counts, after.counts)
+}
+
+/**
  * Session totals if present, else the latest assistant message's token
- * columns. Empty object when the DB or row is unreadable.
+ * columns. `kind: 'unknown'` when the DB or row is unreadable.
  */
 export function readHermesSessionTokens(
   sessionId: string,
   dbPath: string = hermesDbPath(),
-): HermesTokenCounts {
-  if (!sessionId) return {}
+): HermesTokenSnapshot {
+  if (!sessionId) return UNKNOWN_TOKENS
   const db = openHermesDb(dbPath)
-  if (!db) return {}
+  if (!db) return UNKNOWN_TOKENS
   try {
     let sessionTokens: HermesTokenCounts = {}
     try {
@@ -130,8 +191,8 @@ export function readHermesSessionTokens(
     } catch {
       /* older schema without a sessions table */
     }
-    if (sessionTokens.input !== undefined || sessionTokens.output !== undefined) {
-      return sessionTokens
+    if (hasSessionTotals(sessionTokens)) {
+      return { kind: 'session-total', counts: sessionTokens }
     }
     try {
       const msg = db
@@ -142,12 +203,14 @@ export function readHermesSessionTokens(
            LIMIT 1`,
         )
         .get(sessionId)
-      return tokensFromRow(msg)
+      const counts = tokensFromRow(msg)
+      if (hasCounts(counts)) return { kind: 'message', counts }
+      return UNKNOWN_TOKENS
     } catch {
-      return {}
+      return UNKNOWN_TOKENS
     }
   } catch {
-    return {}
+    return UNKNOWN_TOKENS
   } finally {
     try {
       db.close()
@@ -161,5 +224,5 @@ export function readHermesUsage(
   sessionId: string,
   dbPath: string = hermesDbPath(),
 ): LanguageModelV3Usage {
-  return usageFromTokens(readHermesSessionTokens(sessionId, dbPath))
+  return usageFromTokens(readHermesSessionTokens(sessionId, dbPath).counts)
 }

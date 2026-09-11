@@ -162,11 +162,15 @@ describe('foldHermesAssistant', () => {
     expect(foldHermesAssistant('assistant', raw, undefined)).toEqual({
       text: '',
       thinking: 'only thinking',
+      extracted: true,
     })
   })
 
   it('does not fold user turns', () => {
-    expect(foldHermesAssistant('user', HERMES_BOXED, undefined)).toEqual({ text: HERMES_BOXED })
+    expect(foldHermesAssistant('user', HERMES_BOXED, undefined)).toEqual({
+      text: HERMES_BOXED,
+      extracted: false,
+    })
   })
 })
 
@@ -238,6 +242,27 @@ describe('liveFromTranscript', () => {
     expect(live?.text).toBe('')
     expect(live?.reasoningText).toBe('only thinking')
     expect(live?.reasoning).toBe(true)
+  })
+
+  it('does not hold reasoning open for non-Hermes thinking then tool_use', () => {
+    const live = liveFromTranscript(
+      [
+        {
+          role: 'assistant',
+          text: '',
+          thinking: 'check the files',
+          lastBlock: 'tool_use',
+          tools: [{ name: 'Bash', status: 'running', id: 't1' }],
+        },
+      ],
+      working,
+    )
+    expect(live?.reasoning).toBe(false)
+    expect(live?.reasoningText).toBe('check the files')
+    expect(live?.text).toBe('')
+    expect(live?.tools).toEqual([
+      expect.objectContaining({ id: 't1', name: 'Bash', status: 'running' }),
+    ])
   })
 })
 

@@ -34,12 +34,12 @@ export function foldHermesAssistant(
   role: HarnessTranscriptTurn['role'],
   text: string,
   thinking: string | undefined,
-): { text: string; thinking?: string } {
-  if (role === 'user') return { text, ...(thinking ? { thinking } : {}) }
+): { text: string; thinking?: string; extracted: boolean } {
+  if (role === 'user') return { text, extracted: false, ...(thinking ? { thinking } : {}) }
   const split = splitHermesReasoning(text)
-  if (!split.reasoning) return { text, ...(thinking ? { thinking } : {}) }
+  if (!split.reasoning) return { text, extracted: false, ...(thinking ? { thinking } : {}) }
   const next = thinking || split.reasoning
-  return { text: split.text, ...(next ? { thinking: next } : {}) }
+  return { text: split.text, extracted: true, ...(next ? { thinking: next } : {}) }
 }
 
 /**
@@ -92,7 +92,7 @@ export function liveFromTranscript(
   const reasoningText = folded.thinking ?? ''
   return {
     text,
-    reasoning: !text && (last.lastBlock === 'thinking' || Boolean(reasoningText)),
+    reasoning: !text && (last.lastBlock === 'thinking' || folded.extracted),
     reasoningText,
     tools,
     activity: statusActivity(status),

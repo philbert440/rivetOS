@@ -31,7 +31,8 @@ import {
   emptyUsage,
   hermesDbPath,
   readHermesSessionTokens,
-  usageDelta,
+  tokensForTurn,
+  UNKNOWN_TOKENS,
   usageFromTokens,
 } from './hermes-db.js'
 
@@ -42,7 +43,9 @@ export {
   openHermesDb,
   readHermesSessionTokens,
   readHermesUsage,
+  tokensForTurn,
   tokensFromRow,
+  UNKNOWN_TOKENS,
   usageDelta,
   usageFromTokens,
 } from './hermes-db.js'
@@ -149,8 +152,9 @@ export class HermesCliModel implements LanguageModelV3 {
     const dbPath = this.config.hermesDbPath ?? hermesDbPath()
     // Snapshot cumulative session totals before spawn so a --resume turn can
     // report the delta. New sessions have no prior row; after-exit totals
-    // are the turn.
-    const priorTokens = sessionId ? readHermesSessionTokens(sessionId, dbPath) : {}
+    // are the turn. Provenance is kept so a message-row fallback is never
+    // subtracted, and an unreadable baseline is never treated as zero.
+    const priorTokens = sessionId ? readHermesSessionTokens(sessionId, dbPath) : UNKNOWN_TOKENS
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
@@ -231,14 +235,15 @@ export class HermesCliModel implements LanguageModelV3 {
               })
               controller.enqueue({ type: 'text-end', id: TEXT_ID })
             }
-            const sid = sessionIdFromStderr(stderr) || sessionId
+            // stderr can lose `session_id:` when trimmed to 32k; the map
+            // was already saved when the line first arrived.
+            const sid = sessionIdFromStderr(stderr) || map[convKey] || sessionId
             let usage = emptyUsage()
             try {
               if (sid) {
                 const after = readHermesSessionTokens(sid, dbPath)
-                const tokens =
-                  sessionId && sid === sessionId ? usageDelta(priorTokens, after) : after
-                usage = usageFromTokens(tokens)
+                const resumed = Boolean(sessionId) && sid === sessionId
+                usage = usageFromTokens(tokensForTurn(resumed, priorTokens, after))
               }
             } catch {
               /* DB unreadable → empty usage */
