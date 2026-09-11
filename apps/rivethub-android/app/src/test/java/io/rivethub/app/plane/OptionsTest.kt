@@ -64,7 +64,6 @@ class OptionsTest {
         assertEquals("grok Build", rowPillText(null, null, "grok-build"))
         assertEquals("Kimi Code", rowPillText(null, null, "kimi-code"))
         assertEquals("Hermes", rowPillText(null, null, "hermes"))
-        assertEquals("DeepSeek", rowPillText(null, null, "deepseek-harness"))
         assertEquals("Codex", rowPillText(null, null, "codex"))
     }
 
@@ -132,7 +131,7 @@ class OptionsTest {
 
     @Test fun `unknown sheet with neither flag is empty`() {
         val empty = HarnessSheet()
-        assertEquals(SpawnFlags(), spawnModelEffort(empty, "deepseek-harness", "x", "y"))
+        assertEquals(SpawnFlags(), spawnModelEffort(empty, "codex", "x", "y"))
     }
 
     @Test fun `effort off is dropped`() {

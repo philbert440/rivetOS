@@ -26,14 +26,14 @@
  * `<harness-id>:<x>` is reserved for session ids; an operator room must not
  * use it. Probing for room existence before resolving would make every edge's
  * behavior depend on live den state, which is a worse trade than reserving a
- * five-token prefix nobody should have been squatting on.
+ * harness-id prefix nobody should have been squatting on.
  */
 
 import { parseSessionId, type HarnessId } from '@rivetos/types'
 import { normalizeSessionId } from './alias.js'
 
 /** The roster tokens whose on-disk stores `term/harness-sessions` can read. */
-export type StoreCommand = 'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh' | 'codex'
+export type StoreCommand = 'claude' | 'grok' | 'hermes' | 'kimi' | 'codex'
 
 /**
  * `HarnessId` → the roster token naming its store.
@@ -49,7 +49,6 @@ const STORE_COMMAND: Record<HarnessId, StoreCommand> = {
   'grok-build': 'grok',
   'kimi-code': 'kimi',
   hermes: 'hermes',
-  'deepseek-harness': 'dsh',
   codex: 'codex',
 }
 

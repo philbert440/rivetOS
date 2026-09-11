@@ -96,7 +96,6 @@ describe('findOnPath + detectHarnesses', () => {
     root = mkdtempSync(join(tmpdir(), 'harness-detect-'))
     const binDir = join(root, 'bin')
     const grok = fakeBin(binDir, 'grok')
-    const dsh = fakeBin(binDir, 'dsh')
     const hermes = fakeBin(binDir, 'hermes')
     mkdirSync(join(root, '.hermes', 'hermes-agent', 'venv'), { recursive: true })
 
@@ -108,18 +107,12 @@ describe('findOnPath + detectHarnesses', () => {
     })
     const byId = Object.fromEntries(found.map((h) => [h.id, h]))
 
-    expect(Object.keys(byId).sort()).toEqual(['deepseek-harness', 'grok-build', 'hermes'])
+    expect(Object.keys(byId).sort()).toEqual(['grok-build', 'hermes'])
     expect(byId['grok-build']).toMatchObject({
       command: 'grok',
       binary: grok,
       providerKey: 'grok-cli',
       configHome: join(root, '.grok'),
-    })
-    expect(byId['deepseek-harness']).toMatchObject({
-      command: 'dsh',
-      binary: dsh,
-      providerKey: undefined,
-      configHome: join(root, '.dsh'),
     })
     expect(byId.hermes).toMatchObject({
       command: 'hermes',

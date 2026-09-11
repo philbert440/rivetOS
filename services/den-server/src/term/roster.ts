@@ -77,11 +77,6 @@ export function defaultRoster(): TermRoster {
       },
       hermes: { label: 'Hermes', cmd: ['hermes', '--yolo', '--accept-hooks'], room: true },
       kimi: { label: 'Kimi Code', cmd: ['kimi', '--yolo'], room: true },
-      // dsh: --profile tui is the interactive den-session form. The binary
-      // name is resolved through the spawn PATH, including ~/.local/bin. No --yolo
-      // equivalent is documented on 0.1.1-rc.2 — permission prompts stay
-      // inside the TUI. --resume is appended by HARNESS_FLAGS, not here.
-      dsh: { label: 'DeepSeek Harness', cmd: ['dsh', '--profile', 'tui'], room: true },
       // Codex mints its own rollout UUID; resume is `codex resume <id>` via
       // HARNESS_FLAGS (subcommand, not a dashed flag). No --yolo equivalent
       // is wired here — permission prompts stay in the TUI (lane A2 keys).

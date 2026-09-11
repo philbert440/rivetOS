@@ -380,7 +380,7 @@ export function isHerdrEventEnvelope(obj: unknown): boolean {
 }
 
 /** Roster command → herdr `--kind`. Undefined = not in the closed enum
- *  (plain `shell`/`bash`, `dsh`/`deepseek`, operator keys) → plain pane. */
+ *  (plain `shell`/`bash`, operator keys) → plain pane. */
 export function herdrKindForCommand(command: string): string | undefined {
   if (HERDR_AGENT_KINDS.has(command)) return command
   return undefined

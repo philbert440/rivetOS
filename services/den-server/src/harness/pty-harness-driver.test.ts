@@ -1,4 +1,4 @@
-// Contract tests for the shared `PtyHarnessDriver` base, run against ALL SIX
+// Contract tests for the shared `PtyHarnessDriver` base, run against ALL FIVE
 // real drivers rather than a stand-in subclass — the point is that every driver
 // inherits the behaviour, so every driver is asserted.
 //
@@ -19,7 +19,6 @@ import { ClaudeCodeDriver } from './claude-driver.js'
 import { GrokBuildDriver } from './grok-driver.js'
 import { HermesDriver } from './hermes-driver.js'
 import { KimiCodeDriver } from './kimi-driver.js'
-import { DeepseekHarnessDriver } from './deepseek-driver.js'
 import { CodexDriver } from './codex-driver.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { composePromptText, type HarnessPtyHost, type PtyHarnessDriver } from './pty-harness-driver.js'
@@ -29,8 +28,6 @@ const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 const HERMES_NATIVE = '20260802_225647_6ad0b9'
 /** kimi's are uuid-class, behind a fixed `session_` prefix. */
 const KIMI_NATIVE = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-/** dsh's are uuid-class, behind a fixed `session-` prefix (hyphen). */
-const DSH_NATIVE = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
 /** Codex natives are a bare rollout UUID. */
 const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 
@@ -176,26 +173,6 @@ const subjects: [name: string, make: () => Subject][] = [
     },
   ],
   [
-    'deepseek-harness',
-    (): Subject => {
-      const pty = fakePty()
-      const store = fakeStore([{ id: DSH_NATIVE, command: 'dsh', title: 't', updatedAt: 1 }])
-      const driver = new DeepseekHarnessDriver({
-        store,
-        pty: () => Promise.resolve(pty.host),
-        turnQuietMs: 0,
-      })
-      return {
-        driver,
-        sessionId: DeepseekHarnessDriver.sessionId(DSH_NATIVE),
-        injects: pty.injects,
-        activate: async () => {
-          await driver.resumeSession(DeepseekHarnessDriver.sessionId(DSH_NATIVE))
-        },
-      }
-    },
-  ],
-  [
     'codex',
     (): Subject => {
       const pty = fakePty()
@@ -308,14 +285,6 @@ const capabilitySubjects: [
       }),
   ],
   [
-    'deepseek-harness',
-    (pty) =>
-      new DeepseekHarnessDriver({
-        store: fakeStore([{ id: DSH_NATIVE, command: 'dsh', title: 't', updatedAt: 1 }]),
-        ...(pty ? { pty } : {}),
-      }),
-  ],
-  [
     'codex',
     (pty) =>
       new CodexDriver({
@@ -334,11 +303,9 @@ describe.each(capabilitySubjects)('%s: capabilities are runtime-truthed', (name,
       ? (`hermes:${HERMES_NATIVE}` as SessionId)
       : name === 'kimi-code'
         ? (`kimi-code:${KIMI_NATIVE}` as SessionId)
-        : name === 'deepseek-harness'
-          ? (`deepseek-harness:${DSH_NATIVE}` as SessionId)
-          : name === 'codex'
-            ? (`codex:${CODEX_NATIVE}` as SessionId)
-            : (`${driver.harnessId}:${UUID}` as SessionId)
+        : name === 'codex'
+          ? (`codex:${CODEX_NATIVE}` as SessionId)
+          : (`${driver.harnessId}:${UUID}` as SessionId)
 
   it('advertises interrupt/resume false once the probe finds no PTY backend', async () => {
     const driver = make(failedPtyLoad())

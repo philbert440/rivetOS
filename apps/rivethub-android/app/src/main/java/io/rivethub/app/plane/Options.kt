@@ -52,7 +52,6 @@ private val HARNESS_LABEL: Map<String, String> = mapOf(
     "grok-build" to "grok Build",
     "kimi-code" to "Kimi Code",
     "hermes" to "Hermes",
-    "deepseek-harness" to "DeepSeek",
     "codex" to "Codex",
 )
 

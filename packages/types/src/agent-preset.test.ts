@@ -15,6 +15,8 @@ describe('catalogAgentToHarness', () => {
     expect(catalogAgentToHarness('codex')).toBe('codex')
     expect(catalogAgentToHarness('fable')).toBeUndefined()
     expect(catalogAgentToHarness('grok-4.6')).toBeUndefined()
+    expect(catalogAgentToHarness('deepseek')).toBeUndefined()
+    expect(catalogAgentToHarness('dsh')).toBeUndefined()
   })
 })
 

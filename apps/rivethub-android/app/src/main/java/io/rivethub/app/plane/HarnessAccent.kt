@@ -7,7 +7,6 @@ fun harnessIdForAgent(agentId: String, provider: String? = null): String? {
         "grok" in s -> "grok-build"
         "kimi" in s -> "kimi-code"
         "hermes" in s -> "hermes"
-        "deepseek" in s || "dsh" in s -> "deepseek-harness"
         "codex" in s -> "codex"
         else -> null
     }

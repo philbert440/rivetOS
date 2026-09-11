@@ -7,7 +7,6 @@ import {
   applySheetOverride,
   claudeSheet,
   codexSheet,
-  deepseekSheet,
   EFFORT_TOKEN_RE,
   grokSheet,
   hermesSheet,
@@ -185,17 +184,13 @@ describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
   })
 })
 
-describe('hermesSheet / deepseekSheet', () => {
+describe('hermesSheet', () => {
   it('hermes advertises no models (own picker) and --reasoning efforts', () => {
     const sheet = hermesSheet()
     expect(sheet.models).toEqual([])
     expect(sheet.effortFlag).toBe('--reasoning')
     expect(sheet.modelFlag).toBeUndefined()
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
-  })
-
-  it('deepseek is empty', () => {
-    expect(deepseekSheet()).toEqual({})
   })
 })
 
@@ -288,8 +283,8 @@ describe('appendModelEffortArgv', () => {
         'high',
       ),
     ).toEqual(['kimi'])
-    expect(appendModelEffortArgv(['dsh'], sheetForHarness('deepseek-harness'), 'x', 'y')).toEqual([
-      'dsh',
+    expect(appendModelEffortArgv(['codex'], sheetForHarness('codex'), 'x', 'y')).toEqual([
+      'codex',
     ])
   })
 

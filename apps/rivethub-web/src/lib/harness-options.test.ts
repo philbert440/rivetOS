@@ -73,7 +73,6 @@ describe('rowPillText', () => {
 describe('harnessLabel', () => {
   it('uses the friendly name', () => {
     expect(harnessLabel('claude-code')).toBe('Claude Code')
-    expect(harnessLabel('deepseek-harness')).toBe('DeepSeek')
     expect(harnessLabel('codex')).toBe('Codex')
     expect(harnessLabel('nope')).toBe('nope')
   })

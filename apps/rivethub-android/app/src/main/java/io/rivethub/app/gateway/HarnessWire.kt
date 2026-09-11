@@ -20,7 +20,6 @@ val HARNESS_IDS: Set<String> = setOf(
     "grok-build",
     "kimi-code",
     "hermes",
-    "deepseek-harness",
     "codex",
 )
 

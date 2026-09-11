@@ -48,7 +48,6 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   grok: 'grok-build',
   kimi: 'kimi-code',
   hermes: 'hermes',
-  dsh: 'deepseek-harness',
   codex: 'codex',
 }
 
@@ -330,11 +329,6 @@ export function hermesSheet(): ModelSheet {
   }
 }
 
-/** DeepSeek Harness — no queryable list in v1. */
-export function deepseekSheet(): ModelSheet {
-  return {}
-}
-
 /**
  * Codex — static sheet. The CLI's model list is not queryable here; `default`
  * is the picker placeholder. Effort ids match #719 (`low|medium|high|xhigh`).
@@ -362,8 +356,6 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return kimiSheet(readText, home)
     case 'hermes':
       return hermesSheet()
-    case 'deepseek-harness':
-      return deepseekSheet()
     case 'codex':
       return codexSheet()
   }

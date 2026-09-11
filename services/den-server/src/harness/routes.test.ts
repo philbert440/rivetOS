@@ -212,7 +212,7 @@ const post = (base: string, path: string, body?: unknown): Promise<Response> =>
   })
 
 describe('GET /api/harnesses', () => {
-  it('lists the six built-in drivers a real node boots with', async () => {
+  it('lists the five built-in drivers a real node boots with', async () => {
     // No fakes: this is what `createDenServer` actually registers. Reading the
     // capability sheet touches no harness store, so it is safe to boot for
     // real here.
@@ -225,7 +225,6 @@ describe('GET /api/harnesses', () => {
       'grok-build',
       'hermes',
       'kimi-code',
-      'deepseek-harness',
       'codex',
     ])
     // Terminals are off in this config, so interrupt/resume are honestly false

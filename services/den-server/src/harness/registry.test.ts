@@ -84,12 +84,13 @@ class StubDriver implements HarnessDriver {
 describe('isHarnessId', () => {
   it('accepts only the product tokens', () => {
     expect(
-      ['claude-code', 'grok-build', 'kimi-code', 'hermes', 'deepseek-harness', 'codex'].every(
+      ['claude-code', 'grok-build', 'kimi-code', 'hermes', 'codex'].every(
         isHarnessId,
       ),
     ).toBe(true)
     expect(isHarnessId('claude')).toBe(false)
     expect(isHarnessId('claude-cli')).toBe(false)
+    expect(isHarnessId('deepseek-harness')).toBe(false)
   })
 })
 

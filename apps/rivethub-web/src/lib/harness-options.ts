@@ -16,7 +16,6 @@ const HARNESS_LABEL: Record<HarnessId, string> = {
   'grok-build': 'grok Build',
   'kimi-code': 'Kimi Code',
   hermes: 'Hermes',
-  'deepseek-harness': 'DeepSeek',
   codex: 'Codex',
 }
 
