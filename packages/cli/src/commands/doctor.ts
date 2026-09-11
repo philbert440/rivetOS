@@ -1553,8 +1553,10 @@ function opencodePluginInstalled(configHome: string): boolean {
         plugin.some((p) => {
           if (typeof p === 'string') return /rivetos/i.test(p)
           if (p && typeof p === 'object' && 'name' in p) {
-            return typeof (p as { name?: unknown }).name === 'string' &&
+            return (
+              typeof (p as { name?: unknown }).name === 'string' &&
               /rivetos/i.test((p as { name: string }).name)
+            )
           }
           return false
         })

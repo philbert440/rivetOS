@@ -43,7 +43,8 @@ import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
 import { OPENCODE_ROSTER_COMMAND, type OpencodeStoreHost } from './opencode-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
-export type HarnessStoreName = 'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode'
+export type HarnessStoreName =
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode'
 
 type StoreByName = {
   claude: ClaudeStoreHost

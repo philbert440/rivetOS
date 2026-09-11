@@ -1017,9 +1017,7 @@ async function registerOpencodeTaskExecutor(
       'opencode',
       `the @rivetos/harness-opencode package did not load on this node: ${message}`,
     )
-    log.warn(
-      `@rivetos/harness-opencode not loadable — opencode task executor skipped: ${message}`,
-    )
+    log.warn(`@rivetos/harness-opencode not loadable — opencode task executor skipped: ${message}`)
   }
 }
 

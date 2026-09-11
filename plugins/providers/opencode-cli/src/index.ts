@@ -153,7 +153,10 @@ function usageFromTokens(tokens: Record<string, unknown>): LanguageModelV3Usage 
       cacheWrite,
     },
     outputTokens: {
-      total: output !== undefined || reasoning !== undefined ? (output ?? 0) + (reasoning ?? 0) : undefined,
+      total:
+        output !== undefined || reasoning !== undefined
+          ? (output ?? 0) + (reasoning ?? 0)
+          : undefined,
       text: output,
       reasoning,
     },
@@ -263,11 +266,10 @@ export class OpencodeCliModel implements LanguageModelV3 {
     const effortFromOpts = options.providerOptions?.['opencode-cli']
     const effortRaw =
       effortFromOpts && typeof effortFromOpts === 'object' && !Array.isArray(effortFromOpts)
-        ? (effortFromOpts as Record<string, unknown>).variant ??
-          (effortFromOpts as Record<string, unknown>).effort
+        ? ((effortFromOpts as Record<string, unknown>).variant ??
+          (effortFromOpts as Record<string, unknown>).effort)
         : undefined
-    const effort =
-      typeof effortRaw === 'string' ? effortRaw : this.config.effort
+    const effort = typeof effortRaw === 'string' ? effortRaw : this.config.effort
     const args = buildArgs({ binary, modelId: this.modelId, sessionId, effort }, prompt)
     const abortSignal = options.abortSignal
     const childEnv: NodeJS.ProcessEnv = { ...process.env }

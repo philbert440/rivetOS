@@ -1090,7 +1090,10 @@ function rowToOpencodeSession(r: {
   model?: unknown
 }): HarnessSession {
   const id = String(r.id ?? '')
-  const title = (typeof r.title === 'string' ? r.title : '').replace(/\s+/g, ' ').trim().slice(0, 120)
+  const title = (typeof r.title === 'string' ? r.title : '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
   const created = opencodeEpochMs(r.time_created)
   const model = opencodeModelLabel(r.model)
   return {
