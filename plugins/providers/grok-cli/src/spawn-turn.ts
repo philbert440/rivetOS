@@ -196,6 +196,8 @@ export interface GrokTurn {
   stderrText(): string
   /**
    * Parsed NDJSON objects from stdout, yielded as lines arrive.
+   * Completes on stdout `end`/`close`, not process `exit`, so a trailing
+   * line still buffered after the child exits is yielded.
    * Single-consumer: iterate exactly once. Non-JSON lines are skipped.
    */
   events(): AsyncIterable<GrokCliEvent>
@@ -264,13 +266,15 @@ export function spawnGrokTurn(
 
   let exited = false
   const exit = new Promise<number | null>((resolve) => {
+    // Process exit can fire while stdout still has buffered data. Do not
+    // flush or close the event latch here — a trailing `result` line would
+    // be dropped. `events()` completes on stdout `end`/`close` instead.
     proc.once('exit', (code) => {
       exited = true
-      flushLineBuf()
-      closeStdout()
       resolve(code)
     })
-    // spawn() failures (ENOENT, EACCES) surface as async 'error' events
+    // spawn() failures (ENOENT, EACCES) surface as async 'error' events.
+    // There will be no stdout EOF, so close the latch or `events()` hangs.
     proc.once('error', (err) => {
       exited = true
       stderr += `spawn error: ${err.message}\n`

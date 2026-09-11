@@ -12,6 +12,7 @@ import {
   finishReasonFor,
   innerStreamEvent,
   isRecognizedStreamEvent,
+  mergeGrokUsage,
   newestUserChunk,
   renderPromptForCli,
   sessionIdOf,
@@ -143,6 +144,31 @@ async function collect(model: GrokCliModel, p: LanguageModelV3Prompt): Promise<L
   return parts
 }
 
+async function collectAllowingError(
+  model: GrokCliModel,
+  p: LanguageModelV3Prompt,
+): Promise<{ parts: LanguageModelV3StreamPart[]; threw: boolean; errorMsg: string }> {
+  const { stream } = await model.doStream({ prompt: p })
+  const parts: LanguageModelV3StreamPart[] = []
+  let threw = false
+  let errorMsg = ''
+  const reader = stream.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parts.push(value)
+      if (value.type === 'error') {
+        errorMsg = value.error instanceof Error ? value.error.message : String(value.error)
+      }
+    }
+  } catch (err) {
+    threw = true
+    if (!errorMsg) errorMsg = err instanceof Error ? err.message : String(err)
+  }
+  return { parts, threw, errorMsg }
+}
+
 describe('renderPromptForCli / composePrompt', () => {
   it('splits system text from a USER/ASSISTANT/TOOL transcript', () => {
     const r = renderPromptForCli(prompt)
@@ -214,6 +240,14 @@ describe('helpers', () => {
     expect(u.inputTokens.noCache).toBe(60)
     expect(u.outputTokens.reasoning).toBe(5)
     expect(u.outputTokens.text).toBe(15)
+  })
+
+  it('merges sparse usage so later output counts do not drop earlier input counts', () => {
+    const merged = mergeGrokUsage(
+      { input_tokens: 11, output_tokens: 0, cache_read_input_tokens: 2 },
+      { output_tokens: 4 },
+    )
+    expect(merged).toEqual({ input_tokens: 11, output_tokens: 4, cache_read_input_tokens: 2 })
   })
 
   it('maps stop reasons', () => {
@@ -437,6 +471,182 @@ describe('GrokCliModel.doStream', () => {
     }
     expect(threw || seen.includes('error')).toBe(true)
     expect(seen).not.toContain('finish')
+  })
+
+  it('a system line then exit 1 is an error and does not write the session map (first turn)', async () => {
+    const mapPath = tmpMap()
+    const { parts, threw, errorMsg } = await collectAllowingError(
+      new GrokCliModel(
+        cfg(ndjsonScript([{ type: 'system', session_id: 'crash-sid' }], 1), { sessionMapPath: mapPath }),
+      ),
+      prompt,
+    )
+    const types = parts.map((p) => p.type)
+    expect(threw || types.includes('error')).toBe(true)
+    expect(types).not.toContain('finish')
+    expect(errorMsg).toMatch(/exited 1/)
+    expect(loadSessionMap(mapPath)).toEqual({})
+    expect(fs.existsSync(mapPath)).toBe(false)
+  })
+
+  it('a system line then exit 1 is an error in replay mode and does not write the session map', async () => {
+    const mapPath = tmpMap()
+    const { parts, threw } = await collectAllowingError(
+      new GrokCliModel(
+        cfg(ndjsonScript([{ type: 'system', session_id: 'crash-sid' }], 1), {
+          sessionMapPath: mapPath,
+          sessionMode: 'replay',
+        }),
+      ),
+      prompt,
+    )
+    const types = parts.map((p) => p.type)
+    expect(threw || types.includes('error')).toBe(true)
+    expect(types).not.toContain('finish')
+    expect(loadSessionMap(mapPath)).toEqual({})
+    expect(fs.existsSync(mapPath)).toBe(false)
+  })
+
+  it('resume-retry: system then exit 1 on both attempts errors and leaves the map untouched', async () => {
+    const mapPath = tmpMap()
+    saveSessionMap(mapPath, { 'test-conv': 'gone-sid' })
+    const { parts, threw, errorMsg } = await collectAllowingError(
+      new GrokCliModel(
+        cfg(ndjsonScript([{ type: 'system', session_id: 'crash-sid' }], 1), { sessionMapPath: mapPath }),
+      ),
+      prompt,
+    )
+    const types = parts.map((p) => p.type)
+    expect(threw || types.includes('error')).toBe(true)
+    expect(types).not.toContain('finish')
+    expect(errorMsg).toMatch(/exited 1/)
+    expect(loadSessionMap(mapPath)).toEqual({ 'test-conv': 'gone-sid' })
+  })
+
+  it('a text delta then non-zero exit without a result line is an error', async () => {
+    const mapPath = tmpMap()
+    const { parts, threw } = await collectAllowingError(
+      new GrokCliModel(
+        cfg(
+          ndjsonScript(
+            [
+              {
+                type: 'stream_event',
+                event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } },
+                session_id: 'crash-sid',
+              },
+            ],
+            2,
+          ),
+          { sessionMapPath: mapPath },
+        ),
+      ),
+      prompt,
+    )
+    const types = parts.map((p) => p.type)
+    expect(threw || types.includes('error')).toBe(true)
+    expect(types).not.toContain('finish')
+    expect(loadSessionMap(mapPath)).toEqual({})
+  })
+
+  it('a result line then non-zero exit (max-turns) still finishes and stores the session', async () => {
+    const mapPath = tmpMap()
+    const parts = await collect(
+      new GrokCliModel(
+        cfg(
+          ndjsonScript(
+            [
+              {
+                type: 'assistant',
+                message: { content: [{ type: 'text', text: 'ok' }] },
+                session_id: 's-max',
+              },
+              { type: 'result', session_id: 's-max', stop_reason: 'end_turn', result: 'ok' },
+            ],
+            1,
+          ),
+          { sessionMapPath: mapPath },
+        ),
+      ),
+      prompt,
+    )
+    expect(parts.map((p) => p.type)).toContain('finish')
+    expect(textOf(parts)).toBe('ok')
+    expect(loadSessionMap(mapPath)).toEqual({ 'test-conv': 's-max' })
+  })
+
+  it('a mid-stream error line kills the child without waiting for stdout to close', async () => {
+    const bin = fakeScript(
+      '#!/usr/bin/env node\n' +
+        'process.on("SIGTERM", () => {});\n' +
+        'process.stdout.write(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",delta:{type:"text_delta",text:"hi"}}}) + "\\n");\n' +
+        'process.stdout.write(JSON.stringify({type:"error",message:"boom from grok"}) + "\\n");\n' +
+        'setInterval(() => {}, 60000);\n',
+    )
+    const t0 = Date.now()
+    const { parts, threw, errorMsg } = await collectAllowingError(new GrokCliModel(cfg(bin)), prompt)
+    const types = parts.map((p) => p.type)
+    expect(threw || types.includes('error')).toBe(true)
+    expect(types).toContain('text-delta')
+    expect(types).not.toContain('finish')
+    expect(errorMsg).toContain('boom from grok')
+    expect(Date.now() - t0).toBeLessThan(2000)
+  })
+
+  it('thinking partials do not suppress whole-message fallback text', async () => {
+    const parts = await collect(
+      new GrokCliModel(
+        cfg(
+          ndjsonScript([
+            {
+              type: 'stream_event',
+              event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hmm' } },
+            },
+            {
+              type: 'assistant',
+              message: { content: [{ type: 'text', text: 'ANSWER' }] },
+            },
+            { type: 'result', result: 'ANSWER', session_id: 's1', stop_reason: 'end_turn' },
+          ]),
+        ),
+      ),
+      prompt,
+    )
+    const thinking = parts
+      .filter((p) => p.type === 'reasoning-delta')
+      .map((p) => ('delta' in p ? p.delta : ''))
+      .join('')
+    expect(thinking).toBe('hmm')
+    expect(textOf(parts)).toBe('ANSWER')
+    expect(parts.map((p) => p.type)).toContain('finish')
+  })
+
+  it('message_start input counts survive a later message_delta that only has output', async () => {
+    const parts = await collect(
+      new GrokCliModel(
+        cfg(
+          ndjsonScript([
+            {
+              type: 'message_start',
+              message: { usage: { input_tokens: 11, output_tokens: 0 } },
+              session_id: 's1',
+            },
+            { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn' },
+              usage: { output_tokens: 4 },
+            },
+            { type: 'message_stop' },
+          ]),
+        ),
+      ),
+      prompt,
+    )
+    const fin = parts.find((p) => p.type === 'finish')
+    if (!fin || fin.type !== 'finish') throw new Error('no finish')
+    expect(fin.usage.inputTokens.total).toBe(11)
+    expect(fin.usage.outputTokens.total).toBe(4)
   })
 
   it('abort kills the child', async () => {

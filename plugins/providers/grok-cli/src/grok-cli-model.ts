@@ -253,6 +253,23 @@ export function buildUsage(r: GrokJsonResult): LanguageModelV3Usage {
   }
 }
 
+/** Merge sparse usage objects (message_start input + message_delta output). Defined numbers win. */
+export function mergeGrokUsage(prev: GrokUsage | undefined, next: GrokUsage): GrokUsage {
+  if (!prev) return { ...next }
+  const out: GrokUsage = { ...prev }
+  if (typeof next.input_tokens === 'number') out.input_tokens = next.input_tokens
+  if (typeof next.output_tokens === 'number') out.output_tokens = next.output_tokens
+  if (typeof next.cache_read_input_tokens === 'number') {
+    out.cache_read_input_tokens = next.cache_read_input_tokens
+  }
+  if (typeof next.cache_creation_input_tokens === 'number') {
+    out.cache_creation_input_tokens = next.cache_creation_input_tokens
+  }
+  if (typeof next.reasoning_tokens === 'number') out.reasoning_tokens = next.reasoning_tokens
+  if (typeof next.total_tokens === 'number') out.total_tokens = next.total_tokens
+  return out
+}
+
 export function finishReasonFor(
   stop: string | undefined,
 ): LanguageModelV3GenerateResult['finishReason'] {
@@ -548,9 +565,12 @@ export class GrokCliModel implements LanguageModelV3 {
         try {
           let textOpen = false
           let reasoningOpen = false
-          let streamedAny = false
+          let streamedAnyText = false
+          let streamedAnyReasoning = false
           let recognizedEvents = 0
+          let sawResult = false
           let usage = emptyUsage()
+          let grokUsage: GrokUsage | undefined
           let stopReason: string | undefined
           let returnedSessionId: string | undefined
           let costUsd: number | undefined
@@ -577,7 +597,7 @@ export class GrokCliModel implements LanguageModelV3 {
               controller.enqueue({ type: 'text-start', id: TEXT_ID })
               textOpen = true
             }
-            streamedAny = true
+            streamedAnyText = true
             controller.enqueue({ type: 'text-delta', id: TEXT_ID, delta })
           }
           const emitThinking = (delta: string): void => {
@@ -587,12 +607,14 @@ export class GrokCliModel implements LanguageModelV3 {
               controller.enqueue({ type: 'reasoning-start', id: REASON_ID })
               reasoningOpen = true
             }
-            streamedAny = true
+            streamedAnyReasoning = true
             controller.enqueue({ type: 'reasoning-delta', id: REASON_ID, delta })
           }
-          const applyUsage = (raw: unknown): void => {
+          const applyUsage = (raw: unknown, replace = false): void => {
             const u = asUsage(raw)
-            if (u) usage = buildUsage({ usage: u })
+            if (!u) return
+            grokUsage = replace ? { ...u } : mergeGrokUsage(grokUsage, u)
+            usage = buildUsage({ usage: grokUsage })
           }
           const applyStop = (raw: unknown): void => {
             if (typeof raw === 'string' && raw) stopReason = raw
@@ -651,7 +673,8 @@ export class GrokCliModel implements LanguageModelV3 {
             }
 
             if (event.type === 'result') {
-              applyUsage(event.usage)
+              sawResult = true
+              applyUsage(event.usage, true)
               applyStop(event.stop_reason ?? event.stopReason)
               if (typeof event.total_cost_usd === 'number') costUsd = event.total_cost_usd
               if (typeof event.num_turns === 'number') numTurns = event.num_turns
@@ -668,8 +691,11 @@ export class GrokCliModel implements LanguageModelV3 {
             for await (const event of turn.events()) {
               if (!isRecognizedStreamEvent(event)) continue
               recognizedEvents++
-              if (streamError) continue
               handleEvent(event)
+              if (streamError) {
+                turn.kill()
+                throw streamError
+              }
             }
             return turn.waitExit()
           }
@@ -680,7 +706,8 @@ export class GrokCliModel implements LanguageModelV3 {
             persistSessions &&
             wasResume &&
             exitCode !== 0 &&
-            !streamedAny &&
+            !streamedAnyText &&
+            !streamedAnyReasoning &&
             !options.abortSignal?.aborted
           ) {
             const freshId = uuidForConversation(convKey)
@@ -705,10 +732,12 @@ export class GrokCliModel implements LanguageModelV3 {
             }
             usedSessionId = freshId
             recognizedEvents = 0
+            sawResult = false
             streamError = undefined
             fallbackText = ''
             fallbackThinking = ''
             usage = emptyUsage()
+            grokUsage = undefined
             stopReason = undefined
             returnedSessionId = undefined
             costUsd = undefined
@@ -757,15 +786,24 @@ export class GrokCliModel implements LanguageModelV3 {
             }
           }
 
-          if (!streamedAny && (fallbackThinking || fallbackText)) {
-            if (fallbackThinking) emitThinking(fallbackThinking)
-            if (fallbackText) emitText(fallbackText)
+          if (exitCode !== 0 && !sawResult) {
+            const err = turn.stderrText().trim() || turn.stdoutText().trim()
+            throw new APICallError({
+              message: `grok CLI exited ${String(exitCode)}: ${err.slice(0, 500)}`,
+              url: 'grok-cli://stream',
+              requestBodyValues: {},
+              statusCode: exitCode ?? 500,
+              isRetryable: false,
+            })
           }
+
+          if (!streamedAnyReasoning && fallbackThinking) emitThinking(fallbackThinking)
+          if (!streamedAnyText && fallbackText) emitText(fallbackText)
 
           closeText()
           closeReasoning()
 
-          if (!streamedAny && recognizedEvents === 0) {
+          if (!streamedAnyText && !streamedAnyReasoning && recognizedEvents === 0) {
             const err = turn.stderrText().trim() || turn.stdoutText().trim()
             throw new APICallError({
               message: `grok CLI exited ${String(exitCode)} without a JSON result: ${err.slice(0, 500)}`,

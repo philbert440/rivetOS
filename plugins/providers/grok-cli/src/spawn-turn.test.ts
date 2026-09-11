@@ -167,6 +167,29 @@ describe('spawnGrokTurn', () => {
     expect(parseGrokJson(turn.stdoutText())?.text).toBe('the prompt')
   })
 
+  it('events() yields one event for a line split across data chunks and one for a CRLF-terminated line', async () => {
+    const turn = spawnGrokTurn(
+      {
+        ...base,
+        binary: fakeScript(
+          '#!/usr/bin/env node\n' +
+            'process.stdout.write(\'{"type":"system","session_id":"s1"\', () => {\n' +
+            '  setTimeout(() => {\n' +
+            '    process.stdout.write(\'}\\n{"type":"result","session_id":"s1"}\\r\\n\');\n' +
+            '  }, 50);\n' +
+            '});\n',
+        ),
+      },
+      'q',
+    )
+    const evs: unknown[] = []
+    for await (const e of turn.events()) evs.push(e)
+    expect(await turn.waitExit()).toBe(0)
+    expect(evs).toHaveLength(2)
+    expect(evs[0]).toMatchObject({ type: 'system', session_id: 's1' })
+    expect(evs[1]).toMatchObject({ type: 'result', session_id: 's1' })
+  })
+
   it('events() yields NDJSON objects in order while stdoutText still has the raw buffer', async () => {
     const turn = spawnGrokTurn(
       {

@@ -414,7 +414,7 @@ Messaging channel configuration. Each key is a channel type / plugin name.
 
 ### grok-cli
 
-Drives the local Grok Build `grok` binary headlessly — one `grok -p <prompt> --output-format json` call per turn — on the user's Grok Build subscription (OIDC login in `~/.grok`), not the metered xAI API. The CLI owns auth and its own tools/MCP servers. Default `session: resume` keeps one grok session per RivetOS conversation (`--session-id` on the first turn with the full transcript, `--resume` after with only the newest user turn). `session: replay` re-sends the whole conversation every turn. The JSON result (reasoning, text, usage, `sessionId`, cost) is replayed as a turn. This is what lets `provider: grok-cli` agents answer mesh delegations, heartbeat tasks and chat.
+Drives the local Grok Build `grok` binary headlessly — one `grok -p <prompt> --output-format streaming-messages-json --include-partial-messages` call per turn — on the user's Grok Build subscription (OIDC login in `~/.grok`), not the metered xAI API. The CLI owns auth and its own tools/MCP servers. Default `session: resume` keeps one grok session per RivetOS conversation (`--session-id` on the first turn with the full transcript, `--resume` after with only the newest user turn). `session: replay` re-sends the whole conversation every turn. NDJSON `stream_event` deltas (reasoning, text) are emitted as they arrive; usage, `sessionId`, and cost come from the final `result` line. This is what lets `provider: grok-cli` agents answer mesh delegations, heartbeat tasks and chat.
 
 ```yaml
 providers:
