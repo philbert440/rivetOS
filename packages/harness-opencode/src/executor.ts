@@ -543,7 +543,9 @@ export class OpencodeExecutor implements HarnessExecutor {
             RIVETOS_SESSION_KEY: undefined,
             // This executor owns den emission — the den hook must stay quiet.
             RIVETOS_DEN_HOOK_DISABLED: '1',
-            ...(this.cfg.opencodeHome ? { XDG_DATA_HOME: xdgDataHomeFor(this.cfg.opencodeHome) } : {}),
+            ...(this.cfg.opencodeHome
+              ? { XDG_DATA_HOME: xdgDataHomeFor(this.cfg.opencodeHome) }
+              : {}),
           },
         },
       )

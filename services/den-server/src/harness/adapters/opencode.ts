@@ -73,7 +73,12 @@ export function opencodeTurnsFromMessages(
     const tools: HarnessTranscriptTool[] = []
     for (const part of parts) {
       const type = typeof part.type === 'string' ? part.type : ''
-      if (type === 'step-start' || type === 'step_start' || type === 'step-finish' || type === 'step_finish') {
+      if (
+        type === 'step-start' ||
+        type === 'step_start' ||
+        type === 'step-finish' ||
+        type === 'step_finish'
+      ) {
         continue
       }
       if (type === 'reasoning' || type === 'thinking' || type === 'think') {
@@ -120,7 +125,9 @@ export function opencodeTurnsFromMessages(
     const turn: HarnessTurn = { role: 'assistant', text: text.trim() }
     if (thinking) {
       turn.thinking =
-        thinking.length > THINKING_TAIL_CHARS ? '…' + thinking.slice(-THINKING_TAIL_CHARS) : thinking
+        thinking.length > THINKING_TAIL_CHARS
+          ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
+          : thinking
     }
     if (tools.length > 0) turn.tools = tools
     if (typeof msg.modelID === 'string') {
@@ -137,7 +144,8 @@ export function opencodeTurnsFromMessages(
 }
 
 function messageTime(msg: Record<string, unknown>): number {
-  if (typeof msg.time_created === 'number' && Number.isFinite(msg.time_created)) return msg.time_created
+  if (typeof msg.time_created === 'number' && Number.isFinite(msg.time_created))
+    return msg.time_created
   if (isRecord(msg.time) && typeof msg.time.created === 'number') return msg.time.created
   if (typeof msg.createdAt === 'number') return msg.createdAt
   return 0
@@ -163,7 +171,11 @@ export function readOpencodeTurns(id: string): HarnessTurn[] {
       const mid = typeof p.message_id === 'string' ? p.message_id : String(p.message_id ?? '')
       if (!mid) continue
       const data = parseJson(p.data)
-      const rec: Record<string, unknown> = { ...data, id: String(p.id ?? ''), time_created: p.time_created }
+      const rec: Record<string, unknown> = {
+        ...data,
+        id: String(p.id ?? ''),
+        time_created: p.time_created,
+      }
       const arr = partsByMessage.get(mid) ?? []
       arr.push(rec)
       partsByMessage.set(mid, arr)

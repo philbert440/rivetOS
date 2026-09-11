@@ -140,13 +140,7 @@ export function newestSessionAfter(home: string, cwd: string, sinceMs: number): 
 // ---------------------------------------------------------------------------
 
 export type ParsedOpencodeKind =
-  | 'text'
-  | 'tool-start'
-  | 'tool-end'
-  | 'usage'
-  | 'session'
-  | 'error'
-  | 'other'
+  'text' | 'tool-start' | 'tool-end' | 'usage' | 'session' | 'error' | 'other'
 
 export interface ParsedOpencodeEvent {
   kind: ParsedOpencodeKind
@@ -182,7 +176,10 @@ function tokensToUsage(tokens: Record<string, unknown>): {
   }
 }
 
-function sessionIdOf(rec: Record<string, unknown>, nested?: Record<string, unknown>): string | undefined {
+function sessionIdOf(
+  rec: Record<string, unknown>,
+  nested?: Record<string, unknown>,
+): string | undefined {
   return (
     str(rec.sessionID) ??
     str(rec.sessionId) ??
@@ -232,7 +229,8 @@ export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefine
       str(row.tool_call_id) ??
       str(row.id) ??
       (part ? (str(part.callID) ?? str(part.id)) : undefined)
-    const state = part && isRecord(part.state) ? part.state : isRecord(row.state) ? row.state : undefined
+    const state =
+      part && isRecord(part.state) ? part.state : isRecord(row.state) ? row.state : undefined
     const status = state ? str(state.status) : undefined
     const ended =
       type === 'tool_result' ||
