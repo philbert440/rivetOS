@@ -48,14 +48,7 @@ import { PI_ROSTER_COMMAND, type PiStoreHost } from './pi-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
 export type HarnessStoreName =
-  | 'claude'
-  | 'grok'
-  | 'hermes'
-  | 'kimi'
-  | 'deepseek'
-  | 'codex'
-  | 'opencode'
-  | 'pi'
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode' | 'pi'
 
 type StoreByName = {
   claude: ClaudeStoreHost

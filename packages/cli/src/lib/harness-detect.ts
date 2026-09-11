@@ -31,13 +31,7 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
 /** `providers.<key>` in config.yaml — deepseek-harness is not a CLI harness
  *  provider (`CLI_HARNESS_PROVIDERS` in @rivetos/boot). */
 export type HarnessProviderKey =
-  | 'claude-cli'
-  | 'grok-cli'
-  | 'kimi-code'
-  | 'hermes-cli'
-  | 'codex-cli'
-  | 'opencode-cli'
-  | 'pi-cli'
+  'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli' | 'opencode-cli' | 'pi-cli'
 
 export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undefined> = {
   'claude-code': 'claude-cli',

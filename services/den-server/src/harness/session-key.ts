@@ -34,14 +34,7 @@ import { normalizeSessionId } from './alias.js'
 
 /** The roster tokens whose on-disk stores `term/harness-sessions` can read. */
 export type StoreCommand =
-  | 'claude'
-  | 'grok'
-  | 'hermes'
-  | 'kimi'
-  | 'dsh'
-  | 'codex'
-  | 'opencode'
-  | 'pi'
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh' | 'codex' | 'opencode' | 'pi'
 
 /**
  * `HarnessId` → the roster token naming its store.
