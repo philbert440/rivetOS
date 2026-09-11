@@ -12,6 +12,7 @@ import {
   grokSheet,
   hermesSheet,
   kimiSheet,
+  piSheet,
   MODEL_TOKEN_RE,
   parseKimiToml,
   sanitizeEfforts,
@@ -196,6 +197,11 @@ describe('hermesSheet / deepseekSheet', () => {
 
   it('deepseek is empty', () => {
     expect(deepseekSheet()).toEqual({})
+  })
+
+  it('pi advertises --model with an empty list', () => {
+    expect(piSheet()).toEqual({ models: [], modelFlag: '--model' })
+    expect(sheetForHarness('pi')).toEqual(piSheet())
   })
 })
 

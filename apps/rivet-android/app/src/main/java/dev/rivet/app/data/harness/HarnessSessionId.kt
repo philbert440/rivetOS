@@ -30,9 +30,10 @@ object HarnessIds {
     const val GROK_BUILD = "grok-build"
     const val KIMI_CODE = "kimi-code"
     const val HERMES = "hermes"
+    const val PI = "pi"
 
     /** Declaration order matches the contract's enum. */
-    val ALL: List<String> = listOf(CLAUDE_CODE, GROK_BUILD, KIMI_CODE, HERMES)
+    val ALL: List<String> = listOf(CLAUDE_CODE, GROK_BUILD, KIMI_CODE, HERMES, PI)
 
     fun isHarnessId(value: String): Boolean = ALL.contains(value)
 
@@ -45,6 +46,7 @@ object HarnessIds {
         GROK_BUILD -> "grok"
         KIMI_CODE -> "kimi"
         HERMES -> "hermes"
+        PI -> "pi"
         else -> harnessId
     }
 }

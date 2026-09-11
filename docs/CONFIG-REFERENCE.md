@@ -366,6 +366,24 @@ providers:
 
 **Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does.
 
+### pi-cli
+
+Drives the local `pi` binary (`@earendil-works/pi-coding-agent`) headlessly — print/JSON or RPC. Harness id is `pi`; roster command is `pi`. Recommended default backend is z.ai GLM (reuse the coding-plan / Anthropic-compat key). Add `@rivetos/provider-pi-cli` to `plugins`.
+
+```yaml
+providers:
+  pi-cli:
+    binary: pi # path or name on PATH
+    # model: glm-4.6 # optional — omit for the CLI's configured model
+```
+
+| Key      | Type   | Default | Description                     |
+| -------- | ------ | ------- | ------------------------------- |
+| `binary` | string | `pi`    | Path to the `pi` binary.        |
+| `model`  | string | —       | Model alias to pass to the CLI. |
+
+**Auth:** whatever backend `pi` is configured to use (z.ai GLM recommended). RivetOS does not ship a dedicated `pi` API key; reuse the coding-plan credentials.
+
 ---
 
 ## `channels`

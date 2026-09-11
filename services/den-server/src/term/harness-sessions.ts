@@ -8,8 +8,9 @@
 // (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
 // ~/.hermes/state.db), Kimi Code
 // (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), DeepSeek
-// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/) and Codex
-// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl). An unknown harness
+// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/), Codex
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and Pi
+// (~/.pi/sessions/<id>/transcript.jsonl). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
@@ -25,6 +26,7 @@ import {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  piTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
@@ -38,6 +40,7 @@ export {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  piTurnsFromLines,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -795,6 +798,149 @@ function dshSessionExists(id: string): boolean {
   return dshSessionDir(id) !== undefined
 }
 
+// ---- Pi: ~/.pi/sessions/<id>/transcript.jsonl (or <id>.jsonl) --------------
+// REVIEWER-CONFIRM: on-disk session dir + transcript filename. Best guess is
+// `~/.pi/sessions/<native-id>/transcript.jsonl`, with a flat
+// `~/.pi/sessions/<native-id>.jsonl` fallback. Honours PI_HOME like kimi's
+// KIMI_CODE_HOME.
+
+function piHome(): string {
+  return process.env.PI_HOME?.trim() || join(homedir(), '.pi')
+}
+
+function piSessionsDir(): string {
+  return join(piHome(), 'sessions')
+}
+
+/** Transcript files we will try inside a session directory, first hit wins. */
+const PI_TRANSCRIPT_NAMES = ['transcript.jsonl', 'session.jsonl'] as const
+
+function piTranscriptInDir(dir: string): string | undefined {
+  for (const name of PI_TRANSCRIPT_NAMES) {
+    const path = join(dir, name)
+    if (existsSync(path)) return path
+  }
+  return undefined
+}
+
+/** Resolve a native id to a transcript file (dir layout, then flat jsonl). */
+function piTranscriptPath(id: string): string | undefined {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const root = piSessionsDir()
+  const dirHit = piTranscriptInDir(join(root, id))
+  if (dirHit) return dirHit
+  const flat = join(root, `${id}.jsonl`)
+  return existsSync(flat) ? flat : undefined
+}
+
+function piSessionDir(id: string): string | undefined {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const dir = join(piSessionsDir(), id)
+  try {
+    if (statSync(dir).isDirectory()) return dir
+  } catch {
+    /* miss */
+  }
+  return undefined
+}
+
+async function piTitleFromTranscript(file: string): Promise<string> {
+  const parsed = await parseJsonlObjects(file)
+  for (const turn of piTurnsFromLines(parsed.objects)) {
+    if (turn.role === 'user' && turn.text.trim()) return turn.text.trim().slice(0, 120)
+  }
+  return ''
+}
+
+async function readPiSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const dir = piSessionDir(id)
+  const transcript = piTranscriptPath(id)
+  let mtime: number
+  let birth: number
+  try {
+    const st = await stat(dir ?? transcript ?? '')
+    mtime = st.mtimeMs
+    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
+  } catch {
+    return undefined
+  }
+  if (transcript) {
+    try {
+      const ts = await stat(transcript)
+      if (ts.mtimeMs > mtime) mtime = ts.mtimeMs
+    } catch {
+      /* keep dir mtime */
+    }
+  }
+  const title = transcript
+    ? (await piTitleFromTranscript(transcript).catch(() => '')) || id
+    : id
+  return {
+    id,
+    command: 'pi',
+    title,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
+}
+
+async function listPiSessions(limit: number): Promise<HarnessSession[]> {
+  const root = piSessionsDir()
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const ids = new Set<string>()
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      ids.add(e.name)
+    } else if (e.isFile() && e.name.endsWith('.jsonl')) {
+      ids.add(e.name.slice(0, -'.jsonl'.length))
+    }
+  }
+  const out: HarnessSession[] = []
+  for (const id of ids) {
+    const row = await readPiSession(id)
+    if (row) out.push(row)
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+}
+
+/**
+ * Describe ONE pi session by native id — the `pi` driver's `getSession`.
+ */
+export async function describePiSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  return readPiSession(id)
+}
+
+function piSessionExists(id: string): boolean {
+  if (!id || id.includes('/') || id.includes('..')) return false
+  const root = piSessionsDir()
+  if (existsSync(join(root, id))) return true
+  return existsSync(join(root, `${id}.jsonl`))
+}
+
+/**
+ * Pi-only transcript read — the `pi` driver's hard-resync source.
+ *
+ * Store-scoped: a pi id whose file has been deleted reads as empty, never as
+ * another harness's transcript.
+ */
+export async function readPiTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = piTranscriptPath(id)
+  if (!path) return { id, command: '', turns: [] }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'pi', turns: piTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
+}
+
 // ---- Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl --------
 
 /** ~/.codex (respects CODEX_HOME, which the CLI itself reads). */
@@ -1059,6 +1205,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
   if (command === 'dsh') return dshSessionExists(id) // session DIR under any cwd-slug bucket
   if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
+  if (command === 'pi') return piSessionExists(id)
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -1099,6 +1246,7 @@ export async function listHarnessSessions(
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
+  if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1283,6 +1431,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (dsh.command === 'dsh') return { ...dsh, id }
   }
 
+  if (wants('pi')) {
+    const pi = await readPiTranscript(native)
+    if (pi.turns.length > 0) return { ...pi, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -1445,6 +1598,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const dir = dshSessionDir(native)
     if (dir) return { command: 'dsh', path: join(dir, 'session.jsonl.zstd') }
   }
+  if (wants('pi')) {
+    const path = piTranscriptPath(native)
+    if (path) return { command: 'pi', path }
+  }
   return undefined
 }
 
@@ -1458,6 +1615,7 @@ export function harnessStoreDirs(): string[] {
     kimiSessionsDir(),
     dshSessionsDir(),
     codexSessionsDir(),
+    piSessionsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

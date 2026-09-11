@@ -72,6 +72,9 @@ class HarnessSessionIdTest {
         val id = HarnessSessionIds.format("kimi-code", "c7f2-uuid")
         assertEquals("kimi-code:c7f2-uuid", id)
         assertEquals("c7f2-uuid", HarnessSessionIds.parse(id).nativeSessionId)
+        val piId = HarnessSessionIds.format("pi", "sess-01")
+        assertEquals("pi:sess-01", piId)
+        assertEquals("sess-01", HarnessSessionIds.parse(piId).nativeSessionId)
         expectInvalid { HarnessSessionIds.format("claude", "abc") }
         expectInvalid { HarnessSessionIds.format("claude-code", "") }
     }
@@ -164,6 +167,7 @@ class HarnessSessionIdTest {
         assertEquals("grok", HarnessIds.rosterCommand(HarnessIds.GROK_BUILD))
         assertEquals("kimi", HarnessIds.rosterCommand(HarnessIds.KIMI_CODE))
         assertEquals("hermes", HarnessIds.rosterCommand(HarnessIds.HERMES))
-        assertEquals(4, HarnessIds.ALL.size)
+        assertEquals("pi", HarnessIds.rosterCommand(HarnessIds.PI))
+        assertEquals(5, HarnessIds.ALL.size)
     }
 }

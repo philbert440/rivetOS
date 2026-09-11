@@ -50,6 +50,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   hermes: 'hermes',
   dsh: 'deepseek-harness',
   codex: 'codex',
+  pi: 'pi',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -349,6 +350,16 @@ export function codexSheet(): ModelSheet {
   }
 }
 
+/**
+ * Pi — no queryable model list in v1. `--model` is advertised so a
+ * `tasks.harnesses.pi.models` override can actually spawn with the flag.
+ * // REVIEWER-CONFIRM: whether pi advertises models (config file / CLI list)
+ * and the exact model flag.
+ */
+export function piSheet(): ModelSheet {
+  return { models: [], modelFlag: '--model' }
+}
+
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
   const home = readers?.home
   const readJson = readers?.readJson
@@ -366,6 +377,8 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return deepseekSheet()
     case 'codex':
       return codexSheet()
+    case 'pi':
+      return piSheet()
   }
 }
 

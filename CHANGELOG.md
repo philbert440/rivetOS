@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Harness
+
+- `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
+
 ### Breaking
 
 - Per-user memory routing reads only the users.json registry (`RIVETOS_USERS_FILE`, else `$RIVETOS_SHARED_DIR/rivetos/users.json`, else `~/.rivetos/users.json`). The `RIVETOS_USER_DBS` and `RIVETOS_DEN_DEVICE_USERS` env maps are removed — leftover values do not route.

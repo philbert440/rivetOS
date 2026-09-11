@@ -23,7 +23,7 @@
 | `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces               |
 
 **Primary interactive path:** harness sessions on the node
-(`claude-code`, `grok-build`, `kimi-code`, `hermes`) via the gateway contract.
+(`claude-code`, `grok-build`, `kimi-code`, `hermes`, `pi`) via the gateway contract.
 
 **Removed (Phase 5):** Telegram / Discord / voice-discord channel plugins are gone. Hub is the product path. Leftover `channels.telegram:` in config is a validation warning only (no crash-loop).
 
@@ -174,7 +174,7 @@ Create tasks in-UI (goal + agent/harness from catalog + optional criteria).
 Catalog entries for `harness-session` include `harnessId` and `implemented`;
 grey options that are honest rejections (e.g. grok-build / hermes executors).
 
-Implemented headless executors today: `claude-code`, `kimi-code`. Prefer those
+Implemented headless executors today: `claude-code`, `kimi-code`, `pi`. Prefer those
 for automated task runs. Interactive coding remains the harness TUI + Hub chat.
 
 ---
@@ -217,8 +217,8 @@ curl -sS --cert /path/to/device.crt --key /path/to/device.key \
   --cacert /rivet-shared/rivet-ca/intermediate/chain.pem \
   "$GATEWAY/api/harnesses" | jq .
 
-# Expect four ids when all drivers registered:
-# claude-code, grok-build, hermes, kimi-code
+# Expect ids when all drivers registered:
+# claude-code, grok-build, hermes, kimi-code, pi
 
 # 4. Open Hub, set gateway origin, present a device client cert, confirm drawer lists sessions
 # 5. Open a claude-code or grok-build session — Stop visible if terminals on

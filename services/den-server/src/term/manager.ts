@@ -384,6 +384,8 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // Codex resume is a subcommand, not a dashed flag: `codex resume <uuid>`.
   // There is no --session-id; a fresh spawn is just `codex`.
   codex: { resumeFlag: 'resume' },
+  // REVIEWER-CONFIRM: pi resume flag. `--session` mirrors kimi; no pin flag.
+  pi: { resumeFlag: '--session' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:

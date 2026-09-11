@@ -21,6 +21,7 @@ import { HermesDriver } from './hermes-driver.js'
 import { KimiCodeDriver } from './kimi-driver.js'
 import { DeepseekHarnessDriver } from './deepseek-driver.js'
 import { CodexDriver } from './codex-driver.js'
+import { PiDriver } from './pi-driver.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { composePromptText, type HarnessPtyHost, type PtyHarnessDriver } from './pty-harness-driver.js'
 
@@ -33,6 +34,8 @@ const KIMI_NATIVE = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 const DSH_NATIVE = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
 /** Codex natives are a bare rollout UUID. */
 const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+/** pi natives are treated as a bare UUID (REVIEWER-CONFIRM). */
+const PI_NATIVE = '15cb936c-3364-49d6-8769-21f0c635f160'
 
 interface Injected {
   id: string
@@ -215,6 +218,26 @@ const subjects: [name: string, make: () => Subject][] = [
       }
     },
   ],
+  [
+    'pi',
+    (): Subject => {
+      const pty = fakePty()
+      const store = fakeStore([{ id: PI_NATIVE, command: 'pi', title: 't', updatedAt: 1 }])
+      const driver = new PiDriver({
+        store,
+        pty: () => Promise.resolve(pty.host),
+        turnQuietMs: 0,
+      })
+      return {
+        driver,
+        sessionId: PiDriver.sessionId(PI_NATIVE),
+        injects: pty.injects,
+        activate: async () => {
+          await driver.resumeSession(PiDriver.sessionId(PI_NATIVE))
+        },
+      }
+    },
+  ],
 ]
 
 describe.each(subjects)('%s: the in-flight turn lock is not racy', (_name, make) => {
@@ -323,6 +346,14 @@ const capabilitySubjects: [
         ...(pty ? { pty } : {}),
       }),
   ],
+  [
+    'pi',
+    (pty) =>
+      new PiDriver({
+        store: fakeStore([{ id: PI_NATIVE, command: 'pi', title: 't', updatedAt: 1 }]),
+        ...(pty ? { pty } : {}),
+      }),
+  ],
 ]
 
 /** A PTY dep that resolves null — den terminals enabled, `node-pty` absent. */
@@ -338,7 +369,9 @@ describe.each(capabilitySubjects)('%s: capabilities are runtime-truthed', (name,
           ? (`deepseek-harness:${DSH_NATIVE}` as SessionId)
           : name === 'codex'
             ? (`codex:${CODEX_NATIVE}` as SessionId)
-            : (`${driver.harnessId}:${UUID}` as SessionId)
+            : name === 'pi'
+              ? (`pi:${PI_NATIVE}` as SessionId)
+              : (`${driver.harnessId}:${UUID}` as SessionId)
 
   it('advertises interrupt/resume false once the probe finds no PTY backend', async () => {
     const driver = make(failedPtyLoad())

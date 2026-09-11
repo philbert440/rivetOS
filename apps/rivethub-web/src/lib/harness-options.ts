@@ -11,13 +11,14 @@ export type HarnessSheet = Pick<
   'models' | 'efforts' | 'modelFlag' | 'effortFlag'
 >
 
-const HARNESS_LABEL: Record<HarnessId, string> = {
+const HARNESS_LABEL: Record<HarnessId | 'pi', string> = {
   'claude-code': 'Claude Code',
   'grok-build': 'grok Build',
   'kimi-code': 'Kimi Code',
   hermes: 'Hermes',
   'deepseek-harness': 'DeepSeek',
   codex: 'Codex',
+  pi: 'pi',
 }
 
 /** Client-side Codex sheet — same lists as den `codexSheet()` (no spawn flags). */

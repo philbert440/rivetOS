@@ -22,6 +22,7 @@ val HARNESS_IDS: Set<String> = setOf(
     "hermes",
     "deepseek-harness",
     "codex",
+    "pi",
 )
 
 /** HTTP 409 `turn_in_flight` — the driver is mid-turn; the caller queues and retries. */

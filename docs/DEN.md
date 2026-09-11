@@ -29,6 +29,9 @@ To stream a real session, install an adapter:
   assistant reply and no thinking, so that room shows prompts, tools, plan and
   terminal but no agent messages; the `kimi-code` harness driver serves both out
   of kimi's own transcript instead.
+- **pi**: CLI `@earendil-works/pi-coding-agent` (roster command `pi`, harness id
+  `pi`, provider `pi-cli`). Drive via print/JSON or RPC; native session store
+  confirmed at driver wiring. Recommended default backend is z.ai GLM.
 
 The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple

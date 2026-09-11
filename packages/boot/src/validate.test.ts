@@ -356,7 +356,14 @@ describe('Config Validation', () => {
     })
 
     it('allows CLI harness providers without model', () => {
-      for (const name of ['grok-cli', 'hermes-cli', 'kimi-code', 'claude-cli', 'codex-cli']) {
+      for (const name of [
+        'grok-cli',
+        'hermes-cli',
+        'kimi-code',
+        'claude-cli',
+        'codex-cli',
+        'pi-cli',
+      ]) {
         const cfg = validConfig()
         ;(cfg.providers as Record<string, unknown>)[name] = {}
         const result = validateConfig(cfg)

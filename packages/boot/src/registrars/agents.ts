@@ -767,9 +767,10 @@ export async function registerAgentTools(
 /**
  * Register one `harness-session` executor per harness id (Phase 3).
  *
- * `claude-code` and `kimi-code` get the real thing — the claude-cli plugin's
- * headless `claude -p` executor and `@rivetos/harness-kimi-code`'s `kimi -p`
- * one — when their binary probes pass. Every id left over (including those two
+ * `claude-code`, `kimi-code` and `pi` get the real thing — the claude-cli
+ * plugin's headless `claude -p` executor, `@rivetos/harness-kimi-code`'s
+ * `kimi -p` one, and `@rivetos/harness-pi`'s `pi` executor — when their
+ * binary probes pass. Every id left over (including those three
  * when the probe fails, with the probe's own reason rather than the generic
  * one) gets an explicit rejecting executor carrying that reason, so the
  * registry answers "no, and here is why" rather than going silent. That is
@@ -789,6 +790,7 @@ async function registerHarnessTaskExecutors(
   const gapOverrides = new Map<HarnessId, string>()
   await registerClaudeCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   await registerKimiCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
+  await registerPiTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   // Exact per-harness lookup (not resolve(), whose kind-level fallback would
   // report every harness as covered once any one of them registered).
   for (const { harnessId, registered } of executors.harnesses()) {
@@ -962,6 +964,63 @@ async function registerKimiCodeTaskExecutor(
     log.warn(
       `@rivetos/harness-kimi-code not loadable — kimi-code task executor skipped: ${message}`,
     )
+  }
+}
+
+/**
+ * Register the `pi` harness-session executor when the `pi` binary is
+ * resolvable.
+ *
+ * Same probe-or-record-why shape as kimi. Settings come from
+ * `tasks.harnesses.pi` (binary / model / effort / cwd / home). The
+ * provider-plugin id is `pi-cli` — that slice is validated separately
+ * (`CLI_HARNESS_PROVIDERS`); the executor still keys on harness id `pi`.
+ */
+async function registerPiTaskExecutor(
+  runtime: Runtime,
+  config: RivetConfig,
+  executors: ReturnType<typeof createExecutorRegistry>,
+  workspaceDir: string,
+  gapOverrides: Map<HarnessId, string>,
+): Promise<void> {
+  const harnessCfg = config.tasks?.harnesses?.pi ?? {}
+  const binary = harnessCfg.binary ?? 'pi'
+
+  const available = await probeBinaryVersion(binary, { harnessId: 'pi' })
+  if (!available) {
+    const reason =
+      `the \`pi\` binary is not resolvable on this node (tried "${binary}"): install ` +
+      `Pi (earendil-works/pi), or set tasks.harnesses.pi.binary to its path`
+    gapOverrides.set('pi', reason)
+    log.info(`pi binary "${binary}" not resolvable — pi task executor not registered`)
+    return
+  }
+
+  try {
+    const { PiExecutor, PI_HARNESS_ID } = await import('@rivetos/harness-pi')
+    executors.register(
+      'harness-session',
+      new PiExecutor({
+        binary,
+        modelId: harnessCfg.model,
+        effort: harnessCfg.effort,
+        cwd: harnessCfg.cwd ?? workspaceDir,
+        piHome: harnessCfg.home,
+        // Resume rehydration: pi resumes its own native session between
+        // turns, so this only feeds a cross-process resume or a session pi
+        // refuses to reopen.
+        memory: runtime.getMemory(),
+      }),
+      PI_HARNESS_ID,
+    )
+    log.info(`Task executor registered: (harness-session, ${PI_HARNESS_ID}) via ${binary}`)
+  } catch (err: unknown) {
+    const message = (err as Error).message
+    gapOverrides.set(
+      'pi',
+      `the @rivetos/harness-pi package did not load on this node: ${message}`,
+    )
+    log.warn(`@rivetos/harness-pi not loadable — pi task executor skipped: ${message}`)
   }
 }
 

@@ -53,6 +53,7 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   kimi: { label: 'Kimi Code', cmd: ['kimi', '--yolo'], room: true },
   dsh: { label: 'DeepSeek Harness', cmd: ['dsh', '--profile', 'tui'], room: true },
   codex: { label: 'Codex', cmd: ['codex'], room: true },
+  pi: { label: 'Pi', cmd: ['pi'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
@@ -263,6 +264,8 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'merge memory.provider: rivet_memory into ~/.hermes/config.yaml',
         'ensure RIVETOS_PG_URL in ~/.hermes/.env (from ~/.rivetos/.env)',
       ]
+    case 'pi':
+      return ['pi memory capture not wired yet']
   }
 }
 
@@ -1236,6 +1239,9 @@ export async function runPluginsInstall(
               uid: deps.uid,
             },
           )
+          break
+        case 'pi':
+          result = { ok: true, detail: 'no capture installer yet' }
           break
       }
       oneLine(h.id, result.ok, result.detail, false)

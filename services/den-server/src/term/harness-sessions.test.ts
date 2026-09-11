@@ -11,6 +11,7 @@ import {
   describeKimiSession,
   describeCodexSession,
   describeDshSession,
+  describePiSession,
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
@@ -20,6 +21,7 @@ import {
   readHermesTranscript,
   readKimiTranscript,
   readCodexTranscript,
+  readPiTranscript,
   resolveHarnessStore,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
@@ -36,6 +38,7 @@ afterEach(() => {
   delete process.env.KIMI_CODE_HOME
   delete process.env.DSH_HOME
   delete process.env.CODEX_HOME
+  delete process.env.PI_HOME
 })
 
 /**
@@ -505,15 +508,17 @@ describe('listHarnessSessions', () => {
     process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
     process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
-    expect(await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex'])).toEqual(
-      [],
-    )
+    process.env.PI_HOME = join(tmpdir(), 'no-pi-' + String(process.pid))
+    expect(
+      await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex', 'pi']),
+    ).toEqual([])
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
     delete process.env.KIMI_CODE_HOME
     delete process.env.DSH_HOME
     delete process.env.CODEX_HOME
+    delete process.env.PI_HOME
   })
 
   it('reads dsh sessions from ~/.dsh/sessions/<cwd-slug>/session-<uuid>/', async () => {
@@ -535,6 +540,73 @@ describe('listHarnessSessions', () => {
       command: 'dsh',
       path: join(dir, 'session.jsonl.zstd'),
     })
+  })
+
+  it('reads pi sessions from ~/.pi/sessions/<id>/transcript.jsonl', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-store-'))
+    dirs.push(home)
+    process.env.PI_HOME = home
+    const id = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+    const dir = join(home, 'sessions', id)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, 'transcript.jsonl'),
+      [
+        JSON.stringify({ role: 'user', content: 'ship the pi wiring' }),
+        JSON.stringify({ role: 'assistant', content: 'on it' }),
+      ].join('\n') + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'ship the pi wiring' })
+    expect(await describePiSession(id)).toEqual(sessions[0])
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    expect(harnessSessionExists('pi', 'deadbeef')).toBe(false)
+    expect(await describePiSession('../../etc/passwd')).toBeUndefined()
+    expect(harnessSessionExists('pi', '../x')).toBe(false)
+    const tx = await readPiTranscript(id)
+    expect(tx).toMatchObject({
+      id,
+      command: 'pi',
+      turns: [
+        { role: 'user', text: 'ship the pi wiring' },
+        { role: 'assistant', text: 'on it' },
+      ],
+    })
+    expect((await readHarnessTranscript(`pi:${id}`)).command).toBe('pi')
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({
+      command: 'pi',
+      path: join(dir, 'transcript.jsonl'),
+    })
+  })
+
+  it('reads a flat ~/.pi/sessions/<id>.jsonl as a pi session', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-flat-'))
+    dirs.push(home)
+    process.env.PI_HOME = home
+    const id = '42accb06-524a-47a6-b4b3-0991552914d7'
+    mkdirSync(join(home, 'sessions'), { recursive: true })
+    writeFileSync(
+      join(home, 'sessions', `${id}.jsonl`),
+      JSON.stringify({ type: 'user', text: 'flat transcript' }) + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'flat transcript' })
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    expect((await readPiTranscript(id)).turns).toEqual([{ role: 'user', text: 'flat transcript' }])
+  })
+
+  it('treats a pi session DIR without a transcript as existing but untitled', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-empty-'))
+    dirs.push(home)
+    process.env.PI_HOME = home
+    const id = '15cb936c-3364-49d6-8769-21f0c635f160'
+    mkdirSync(join(home, 'sessions', id), { recursive: true })
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    const row = await describePiSession(id)
+    expect(row).toMatchObject({ id, command: 'pi', title: id })
+    expect(await readPiTranscript(id)).toEqual({ id, command: '', turns: [] })
   })
 })
 
