@@ -108,6 +108,7 @@ describe('messagesFromHarnessTurns', () => {
 })
 
 describe('isLiveTurnCommand', () => {
+  it('treats claude/kimi/opencode/pi/grok/hermes/codex as live-turn stores', () => {
     expect(isLiveTurnCommand('claude')).toBe(true)
     expect(isLiveTurnCommand('kimi-code')).toBe(true)
     expect(isLiveTurnCommand('opencode')).toBe(true)
