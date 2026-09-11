@@ -119,15 +119,24 @@ describe('spawnClaudeTurn timeout_ms', () => {
     const timeoutMs = 500
     const turn = spawnFake(IGNORE_TERM, { timeoutMs })
     live.push(turn)
+    // Fake timers + a real child race `signalCode`: stdout can end before
+    // Node records the waitpid signal. Record kill() calls instead.
+    const sent: Array<NodeJS.Signals | number | undefined> = []
+    const nativeKill = turn.proc.kill.bind(turn.proc)
+    turn.proc.kill = ((signal?: NodeJS.Signals | number) => {
+      sent.push(signal)
+      return nativeKill(signal)
+    }) as typeof turn.proc.kill
     const iterating = (async () => {
       for await (const _ of turn.events()) {
         /* drain */
       }
     })()
     await vi.advanceTimersByTimeAsync(timeoutMs)
+    expect(sent).toEqual(['SIGTERM'])
     expect(turn.proc.signalCode).toBeNull()
     await vi.advanceTimersByTimeAsync(KILL_GRACE_MS)
+    expect(sent).toEqual(['SIGTERM', 'SIGKILL'])
     await expect(iterating).rejects.toBeInstanceOf(ClaudeCliTimeoutError)
-    expect(turn.proc.signalCode).toBe('SIGKILL')
   })
 })

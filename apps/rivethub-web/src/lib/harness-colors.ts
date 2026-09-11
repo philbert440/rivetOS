@@ -34,7 +34,7 @@ export function harnessAccent(command?: string): string {
   if (exact) return exact
   const keys = Object.keys(HARNESS_ACCENTS).sort((a, b) => b.length - a.length)
   for (const id of keys) {
-    if (c.includes(id)) return HARNESS_ACCENTS[id]!
+    if (c.includes(id)) return HARNESS_ACCENTS[id]
   }
   return ACCENT_FALLBACK
 }

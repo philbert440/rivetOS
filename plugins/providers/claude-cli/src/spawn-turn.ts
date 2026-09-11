@@ -273,19 +273,27 @@ export function spawnClaudeTurn(
   proc.stdin.end()
 
   // Terminate the child idempotently: SIGTERM, then SIGKILL if it ignores us.
+  // The SIGKILL fallback is armed whenever SIGTERM is sent (not on SIGTERM
+  // exit) so a child that ignores SIGTERM is still killed after grace.
   let killTimer: ReturnType<typeof setTimeout> | undefined
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined
   let timeoutError: ClaudeCliTimeoutError | undefined
   const exited = (): boolean => proc.exitCode !== null || proc.signalCode !== null
+  const armSigkillFallback = (): void => {
+    if (killTimer) return
+    killTimer = setTimeout(() => {
+      if (!exited()) proc.kill('SIGKILL')
+    }, KILL_GRACE_MS)
+    killTimer.unref()
+  }
   const kill = (): void => {
     if (exited()) return // already exited (or signalled) — nothing to do
-    if (!proc.killed) proc.kill('SIGTERM')
-    if (!killTimer) {
-      killTimer = setTimeout(() => {
-        if (!exited()) proc.kill('SIGKILL')
-      }, KILL_GRACE_MS)
-      killTimer.unref()
+    try {
+      proc.kill('SIGTERM')
+    } catch {
+      /* already gone */
     }
+    armSigkillFallback()
   }
 
   // Optional per-spawn timeout (0 = none). SIGTERM then SIGKILL after grace.
