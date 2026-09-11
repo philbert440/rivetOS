@@ -138,11 +138,9 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
   private readonly pendingSpawn = new Map<string, number>()
 
   private adoptFromStore(room: string): string | undefined {
-    const newest = this.deps.store.newestAfter
-    if (typeof newest !== 'function') return undefined
     const cwd = this.deps.cwd?.() ?? ''
     const since = (this.pendingSpawn.get(room) ?? this.now()) - 2_000
-    const id = newest(cwd, since)
+    const id = this.deps.store.newestAfter?.(cwd, since)
     if (id && OPENCODE_NATIVE_RE.test(id)) return id
     return undefined
   }
