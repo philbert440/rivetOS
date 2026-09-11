@@ -4,7 +4,7 @@
  * The opencode half of the harness control plane's task side: a
  * `HarnessExecutor` that drives the local `opencode` binary headlessly
  * (`opencode run --format json`) and reconciles the turn's usage out of
- * opencode's on-disk message records after the process exits.
+ * opencode.db after the process exits.
  *
  * Not a provider plugin: there is no `LanguageModel` here and no
  * `providers.opencode` config slice — the package exists so `@rivetos/boot`
@@ -31,21 +31,19 @@ export {
   buildChildEnv,
   clampPrompt,
   spawnOpencodeTurn,
+  variantForEffort,
 } from './spawn-turn.js'
 export type { OpencodeSpawnFlags, OpencodeStreamLine, SpawnedTurn } from './spawn-turn.js'
 
 export {
-  OPENCODE_DATA_DIR_ENV,
   emptyWireTurnFacts,
   listSessionIds,
-  messageFilesFor,
-  messagesRoot,
+  newestSessionAfter,
+  opencodeDbPath,
   opencodeHome,
   parseOpencodeEvent,
-  readSessionIndex,
   reconcileTurn,
-  resolveSessionDir,
-  sessionsRoot,
+  xdgDataHomeFor,
 } from './wire.js'
 export type {
   ParsedOpencodeEvent,

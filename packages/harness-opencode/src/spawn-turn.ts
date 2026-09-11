@@ -2,34 +2,15 @@
  * spawn-turn — one headless `opencode run` spawn, its flag set, its child env,
  * and the JSON-line parser.
  *
- * Drive contract (spec + README): non-interactive `opencode run "<prompt>"`.
- * There is also an ACP nd-JSON server over stdin/stdout; this executor does
- * not speak ACP. JSON session export/import is a session-create candidate,
- * not the turn protocol.
+ * Drive contract (opencode 1.18.30): non-interactive
  *
- * REVIEWER-CONFIRM: exact argv vs installed opencode 1.18.25 (`opencode run
- * --help`). Assumed shape, mirroring kimi's `-p --output-format stream-json`:
+ *   opencode run --format json [-m provider/model] [--variant v] [-s id] <prompt>
  *
- *   opencode run [--session <id>] [--model <provider/model>] --format json <prompt>
- *
- * What that assumption gives us:
- *   - The prompt is an ARGV value, not stdin. Linux caps a single argv
- *     element at 128 KiB (MAX_ARG_STRLEN), so the prompt is clamped — see
- *     `clampPrompt`.
- *   - `--format json` writes one JSON object per line to stdout. Parsed
- *     objects are yielded as `OpencodeStreamLine`; `wire.parseOpencodeEvent`
- *     interprets the schema.
- *   - `--session <id>` resumes an existing session. Omit for a fresh session.
- *   - `--model` is `provider/model` (e.g. `zai/glm-5.3-flash`).
- *
- * REVIEWER-CONFIRM: session-create path. Known headless bug class: `run`
- * reports "Session not found" when no session exists yet. A resume that
- * hits `RESUME_REJECTED_RE` retries once without `--session` (fresh). A
- * FRESH spawn that hits it is a failed turn — retrying fresh would loop.
- * Confirm against v1.18.25 how a session is minted non-interactively
- * (HTTP `POST /session` on `opencode serve`, JSON import, a minting flag
- * such as `--title`, or ACP initialize) and wire that in front of the
- * first `run` if needed.
+ * `--format json` writes one JSON object per line (the same objects as the
+ * `message`/`part` rows in opencode.db). `--session`/`-s` resumes an existing
+ * session; a missing id exits non-zero (treated as session_not_found). There
+ * is no flag to pin a NEW session id. `--variant` is the effort flag:
+ * RivetOS low→minimal, medium→omit, high→high, xhigh/max→max.
  *
  * Locked constraint (same as the claude-cli / kimi-code executor): no
  * RivetOS-side per-turn timeout. The runner enforces budgets between turns
@@ -46,8 +27,7 @@ import { StringDecoder } from 'node:string_decoder'
 /**
  * Grace period between SIGTERM and SIGKILL.
  *
- * REVIEWER-CONFIRM: opencode's headless cleanup budget is unknown. 10s
- * matches kimi-code so a SIGKILL does not race the last storage write.
+ * 10s matches kimi-code so a SIGKILL does not race the last SQLite WAL write.
  */
 export const KILL_GRACE_MS = 10_000
 
@@ -77,29 +57,45 @@ export const EMPTY_PROMPT_PLACEHOLDER = '(no instruction was provided for this t
 /**
  * One stdout JSON object from `opencode run --format json`.
  *
- * REVIEWER-CONFIRM: exact event schema vs installed opencode 1.18.25. The
- * interpreter lives in `wire.parseOpencodeEvent`; this type is the raw line.
+ * Lines are the same objects as `message`/`part` rows: user/assistant
+ * envelopes (`role`) and parts (`type`: text | reasoning | step-start |
+ * step-finish | tool). Parsed defensively; unknown `type` is ignored.
  */
 export interface OpencodeStreamLine {
   type?: string
+  role?: string
   sessionID?: string
   sessionId?: string
   session_id?: string
   text?: string
+  tool?: string
   part?: Record<string, unknown>
+  state?: Record<string, unknown>
   tokens?: Record<string, unknown>
   error?: unknown
   [key: string]: unknown
 }
 
 /**
- * opencode rejects a session it cannot use, by message rather than (only) by
- * exit code. Both a missing-session fresh `run` and a stale `--session` hit
- * this class.
- *
- * REVIEWER-CONFIRM: exact stderr/stdout wording on v1.18.25.
+ * A missing `-s/--session` id fails with a non-zero exit (wording unknown).
+ * Any non-zero exit while `--session` was passed is treated as session_not_found.
+ * The regex still matches the documented "Session not found" class on stderr.
  */
 export const RESUME_REJECTED_RE = /session not found/i
+
+/**
+ * Map a RivetOS effort id onto OpenCode `--variant`.
+ * low→minimal, medium→omit, high→high, xhigh/max→max. Unknown → omit.
+ */
+export function variantForEffort(effort: string | undefined): string | undefined {
+  if (!effort) return undefined
+  const key = effort.trim().toLowerCase()
+  if (key === 'low' || key === 'minimal') return 'minimal'
+  if (key === 'medium' || key === 'default' || key === '') return undefined
+  if (key === 'high') return 'high'
+  if (key === 'xhigh' || key === 'max') return 'max'
+  return undefined
+}
 
 // ---------------------------------------------------------------------------
 // Prompt + args + env
@@ -132,25 +128,20 @@ export interface OpencodeSpawnFlags {
   resumeSessionId?: string
   /** Working directory. Pins the project bucket AND scopes session resume. */
   cwd?: string
+  /** RivetOS effort id; mapped to `--variant`. */
+  effort?: string
 }
 
 /**
- * Assemble one `opencode run` argv.
- *
- * REVIEWER-CONFIRM: flag names and prompt position vs `opencode run --help`
- * on v1.18.25. Assumed:
- *   - subcommand `run` first
- *   - `--session <id>` to resume (not `--continue`, which is "last session")
- *   - `--model <provider/model>`
- *   - `--format json` always, so the stream parser has a contract
- *   - prompt as the terminal positional (readable in logs and fake-binary fixtures)
- * No ACP flags. No permission/`--yolo` analog (unknown on this CLI).
+ * Assemble one `opencode run` argv (opencode 1.18.30):
+ *   opencode run --format json [-m model] [--variant v] [-s id] <prompt>
  */
 export function buildArgs(flags: OpencodeSpawnFlags, prompt: string): string[] {
-  const args: string[] = ['run']
-  if (flags.resumeSessionId) args.push('--session', flags.resumeSessionId)
+  const args: string[] = ['run', '--format', 'json']
   if (flags.modelId) args.push('--model', flags.modelId)
-  args.push('--format', 'json')
+  const variant = variantForEffort(flags.effort)
+  if (variant) args.push('--variant', variant)
+  if (flags.resumeSessionId) args.push('--session', flags.resumeSessionId)
   args.push(clampPrompt(prompt))
   return args
 }

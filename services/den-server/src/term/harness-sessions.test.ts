@@ -40,6 +40,7 @@ afterEach(() => {
   delete process.env.CODEX_HOME
   delete process.env.OPENCODE_DATA_DIR
   delete process.env.XDG_DATA_HOME
+  delete process.env.XDG_CONFIG_HOME
 })
 
 /**
@@ -509,7 +510,7 @@ describe('listHarnessSessions', () => {
     process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
     process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
-    process.env.OPENCODE_DATA_DIR = join(tmpdir(), 'no-opencode-' + String(process.pid))
+    process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
     expect(
       await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex', 'opencode']),
     ).toEqual([])
@@ -519,7 +520,7 @@ describe('listHarnessSessions', () => {
     delete process.env.KIMI_CODE_HOME
     delete process.env.DSH_HOME
     delete process.env.CODEX_HOME
-    delete process.env.OPENCODE_DATA_DIR
+    delete process.env.XDG_DATA_HOME
   })
 
   it('reads dsh sessions from ~/.dsh/sessions/<cwd-slug>/session-<uuid>/', async () => {
@@ -1571,95 +1572,72 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
   })
 })
 
-describe('opencode store: ~/.local/share/opencode/storage/session/<project>/<id>.json', () => {
+describe('opencode store: ~/.local/share/opencode/opencode.db', () => {
   const ID = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
   const ID2 = 'ses_01K8QRSTUVWXYZABCDEFGHIJKL'
 
-  function fakeOpencodeStore(): string {
-    const home = mkdtempSync(join(tmpdir(), 'opencode-store-'))
-    dirs.push(home)
-    process.env.OPENCODE_DATA_DIR = home
-    const project = join(home, 'storage', 'session', 'proj_abc')
-    mkdirSync(project, { recursive: true })
-    writeFileSync(
-      join(project, `${ID}.json`),
-      JSON.stringify({
-        id: ID,
-        projectID: 'proj_abc',
-        directory: '/work/rivetos',
-        title: 'review the opencode driver',
-        time: { created: 1_700_000_000_000, updated: 1_700_000_100_000 },
-      }),
-    )
-    writeFileSync(
-      join(project, `${ID2}.json`),
-      JSON.stringify({
-        id: ID2,
-        projectID: 'proj_abc',
-        title: 'second session',
-        time: { created: 1_700_000_200_000, updated: 1_700_000_300_000 },
-      }),
-    )
-    const msgDir = join(home, 'storage', 'message', ID)
-    mkdirSync(msgDir, { recursive: true })
-    writeFileSync(
-      join(msgDir, 'msg_user.json'),
-      JSON.stringify({
-        id: 'msg_user',
-        sessionID: ID,
-        role: 'user',
-        time: { created: 1_700_000_000_100 },
-      }),
-    )
-    writeFileSync(
-      join(msgDir, 'msg_asst.json'),
-      JSON.stringify({
-        id: 'msg_asst',
-        sessionID: ID,
-        role: 'assistant',
-        time: { created: 1_700_000_000_200 },
-        model: { providerID: 'anthropic', modelID: 'claude-sonnet-4-5' },
-      }),
-    )
-    mkdirSync(join(home, 'storage', 'part', 'msg_user'), { recursive: true })
-    mkdirSync(join(home, 'storage', 'part', 'msg_asst'), { recursive: true })
-    writeFileSync(
-      join(home, 'storage', 'part', 'msg_user', 'prt_1.json'),
-      JSON.stringify({ id: 'prt_1', messageID: 'msg_user', type: 'text', text: 'review the diff' }),
-    )
-    writeFileSync(
-      join(home, 'storage', 'part', 'msg_asst', 'prt_think.json'),
-      JSON.stringify({
-        id: 'prt_think',
-        messageID: 'msg_asst',
-        type: 'reasoning',
-        text: 'weighing it',
-      }),
-    )
-    writeFileSync(
-      join(home, 'storage', 'part', 'msg_asst', 'prt_tool.json'),
-      JSON.stringify({
-        id: 'prt_tool',
-        messageID: 'msg_asst',
-        type: 'tool',
-        tool: 'Bash',
-        input: { command: 'git diff' },
-      }),
-    )
-    writeFileSync(
-      join(home, 'storage', 'part', 'msg_asst', 'prt_text.json'),
-      JSON.stringify({
-        id: 'prt_text',
-        messageID: 'msg_asst',
-        type: 'text',
-        text: 'looks good',
-      }),
-    )
-    return home
+  async function fakeOpencodeStore(): Promise<string | undefined> {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return undefined
+    }
+    const xdg = mkdtempSync(join(tmpdir(), 'opencode-store-'))
+    dirs.push(xdg)
+    process.env.XDG_DATA_HOME = xdg
+    mkdirSync(join(xdg, 'opencode'), { recursive: true })
+    const db = new DatabaseSync(join(xdg, 'opencode', 'opencode.db'))
+    const userData = JSON.stringify({
+      role: 'user',
+      time: { created: 1_700_000_000_100 },
+      agent: 'build',
+      model: { providerID: 'zai', modelID: 'glm-5.3-flash' },
+    }).replace(/'/g, "''")
+    const asstData = JSON.stringify({
+      parentID: 'msg_user',
+      role: 'assistant',
+      mode: 'build',
+      agent: 'build',
+      modelID: 'glm-5.3-flash',
+      providerID: 'zai',
+      tokens: { total: 130, input: 100, output: 20, reasoning: 5, cache: { write: 0, read: 10 } },
+      time: { created: 1_700_000_000_200, completed: 1_700_000_000_250 },
+    }).replace(/'/g, "''")
+    const model = JSON.stringify({
+      id: 'glm-5.3-flash',
+      providerID: 'zai',
+      variant: 'default',
+    }).replace(/'/g, "''")
+    db.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY, title TEXT, directory TEXT, model TEXT,
+        time_created INTEGER, time_updated INTEGER
+      );
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT
+      );
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT
+      );
+      INSERT INTO session VALUES
+        ('${ID}', 'review the opencode driver', '/work/rivetos', '${model}', 1700000000000, 1700000100000),
+        ('${ID2}', 'second session', '/work/rivetos', NULL, 1700000200000, 1700000300000);
+      INSERT INTO message VALUES
+        ('msg_user', '${ID}', 1700000000100, 1700000000100, '${userData}'),
+        ('msg_asst', '${ID}', 1700000000200, 1700000000250, '${asstData}');
+      INSERT INTO part VALUES
+        ('prt_1', 'msg_user', '${ID}', 1700000000110, '{"type":"text","text":"review the diff"}'),
+        ('prt_think', 'msg_asst', '${ID}', 1700000000210, '{"type":"reasoning","text":"weighing it"}'),
+        ('prt_tool', 'msg_asst', '${ID}', 1700000000220, '{"type":"tool","tool":"Bash","state":{"status":"completed","input":{"command":"git diff"},"output":"","title":"git diff"}}'),
+        ('prt_text', 'msg_asst', '${ID}', 1700000000230, '{"type":"text","text":"looks good"}');
+    `)
+    db.close()
+    return xdg
   }
 
   it('lists sessions newest-first and describe agrees', async () => {
-    fakeOpencodeStore()
+    if (!(await fakeOpencodeStore())) return
     const listed = await listHarnessSessions(['opencode'])
     expect(listed.map((s) => s.id)).toEqual([ID2, ID])
     expect(listed[1]).toMatchObject({
@@ -1668,21 +1646,22 @@ describe('opencode store: ~/.local/share/opencode/storage/session/<project>/<id>
       title: 'review the opencode driver',
       updatedAt: 1_700_000_100_000,
       createdAt: 1_700_000_000_000,
+      model: 'zai/glm-5.3-flash',
     })
     expect(await describeOpencodeSession(ID)).toEqual(listed.find((s) => s.id === ID))
     expect(await describeOpencodeSession('ses_nope')).toBeUndefined()
     expect(await describeOpencodeSession('../../etc/passwd')).toBeUndefined()
   })
 
-  it('harnessSessionExists checks the session JSON, not a later message file', () => {
-    fakeOpencodeStore()
+  it('harnessSessionExists checks the session row, not a later message', async () => {
+    if (!(await fakeOpencodeStore())) return
     expect(harnessSessionExists('opencode', ID)).toBe(true)
     expect(harnessSessionExists('opencode', 'ses_deadbeefdeadbeef')).toBe(false)
     expect(harnessSessionExists('opencode', '../x')).toBe(false)
   })
 
-  it('folds user + assistant turns out of message/part JSON files', async () => {
-    fakeOpencodeStore()
+  it('folds user + assistant turns out of message/part rows', async () => {
+    if (!(await fakeOpencodeStore())) return
     const t = await readOpencodeTranscript(ID)
     expect(t.command).toBe('opencode')
     expect(t.turns[0]).toEqual({ role: 'user', text: 'review the diff' })
@@ -1690,7 +1669,7 @@ describe('opencode store: ~/.local/share/opencode/storage/session/<project>/<id>
       role: 'assistant',
       text: 'looks good',
       thinking: 'weighing it',
-      model: 'claude-sonnet-4-5',
+      model: 'zai/glm-5.3-flash',
       tools: [{ name: 'Bash', status: 'done', id: 'prt_tool', args: { command: 'git diff' } }],
     })
     expect((await readHarnessTranscript(`opencode:${ID}`)).command).toBe('opencode')
@@ -1701,11 +1680,11 @@ describe('opencode store: ~/.local/share/opencode/storage/session/<project>/<id>
     })
     const ref = await resolveHarnessStore(`opencode:${ID}`)
     expect(ref?.command).toBe('opencode')
-    expect(ref?.path).toContain(`${ID}.json`)
+    expect(ref?.path).toContain('opencode.db')
   })
 
-  it('empty when OPENCODE_DATA_DIR has no sessions', async () => {
-    process.env.OPENCODE_DATA_DIR = join(tmpdir(), 'no-opencode-' + String(process.pid))
+  it('empty when XDG_DATA_HOME has no opencode.db', async () => {
+    process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
     expect(await listHarnessSessions(['opencode'])).toEqual([])
   })
 })

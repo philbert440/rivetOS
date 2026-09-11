@@ -36,6 +36,11 @@ export interface ModelSheet {
   efforts?: EffortOption[]
   modelFlag?: string
   effortFlag?: string
+  /**
+   * Effort id → CLI flag value. Present + empty string omits the flag
+   * (opencode medium → no `--variant`). Absent key → use the effort id.
+   */
+  effortArgValues?: Record<string, string>
 }
 
 export interface SheetOverride {
@@ -81,6 +86,22 @@ const CODEX_EFFORTS: EffortOption[] = [
   { id: 'high', label: 'High' },
   { id: 'xhigh', label: 'X-High' },
 ]
+
+/** RivetOS effort ids for OpenCode `--variant`. medium omits the flag. */
+const OPENCODE_EFFORTS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium', default: true },
+  { id: 'high', label: 'High' },
+  { id: 'max', label: 'Max' },
+]
+
+const OPENCODE_EFFORT_ARGS: Record<string, string> = {
+  low: 'minimal',
+  medium: '',
+  high: 'high',
+  max: 'max',
+  xhigh: 'max',
+}
 
 function defaultReadJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8'))
@@ -351,21 +372,26 @@ export function codexSheet(): ModelSheet {
 }
 
 /**
- * Parse OpenCode's config JSON for a default `model`. Config missing →
- * `models: []`. Spawn flag is `--model`.
- *
- * // REVIEWER-CONFIRM: config path (`~/.config/opencode/opencode.json`) and
- * whether the CLI advertises a model list we should parse (provider tables).
+ * Parse OpenCode's config JSON for a default `model` plus any
+ * `provider.<id>.models` keys. Config lives at
+ * `$XDG_CONFIG_HOME/opencode/opencode.json` else `~/.config/opencode/opencode.json`.
+ * Spawn flags: `--model`, `--variant` (effort).
  */
 export function opencodeSheet(
   readJson: ReadJson = defaultReadJson,
   home: string = homedir(),
 ): ModelSheet {
-  const empty: ModelSheet = { models: [], modelFlag: '--model' }
+  const flags: Pick<ModelSheet, 'modelFlag' | 'effortFlag' | 'efforts' | 'effortArgValues'> = {
+    modelFlag: '--model',
+    effortFlag: '--variant',
+    efforts: OPENCODE_EFFORTS,
+    effortArgValues: OPENCODE_EFFORT_ARGS,
+  }
+  const empty: ModelSheet = { models: [], ...flags }
+  const configRoot = process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config')
   const paths = [
-    join(home, '.config', 'opencode', 'opencode.json'),
-    join(home, '.config', 'opencode', 'opencode.jsonc'),
-    join(home, '.opencode', 'opencode.json'),
+    join(configRoot, 'opencode', 'opencode.json'),
+    join(configRoot, 'opencode', 'opencode.jsonc'),
   ]
   for (const path of paths) {
     let raw: unknown
@@ -374,17 +400,44 @@ export function opencodeSheet(
     } catch {
       continue
     }
-    return { models: parseOpencodeConfig(raw), modelFlag: '--model' }
+    return { models: parseOpencodeConfig(raw), ...flags }
   }
   return empty
 }
 
-/** Tiny JSON grab: top-level `model` string becomes the default (and only) picker row. */
+/** Top-level `model` (`provider/model`) plus `provider.<id>.models` keys. */
 export function parseOpencodeConfig(raw: unknown): HarnessModelOption[] {
-  if (!isRecord(raw) || typeof raw.model !== 'string') return []
-  const id = raw.model.trim()
-  if (!id || !MODEL_TOKEN_RE.test(id)) return []
-  return [{ id, label: id, default: true }]
+  if (!isRecord(raw)) return []
+  const out: HarnessModelOption[] = []
+  const seen = new Set<string>()
+  const add = (id: string, isDefault: boolean): void => {
+    const trimmed = id.trim()
+    if (!trimmed || !MODEL_TOKEN_RE.test(trimmed) || seen.has(trimmed)) return
+    seen.add(trimmed)
+    const opt: HarnessModelOption = { id: trimmed, label: trimmed }
+    if (isDefault) opt.default = true
+    out.push(opt)
+  }
+  const defaultModel = typeof raw.model === 'string' ? raw.model.trim() : ''
+  if (defaultModel) add(defaultModel, true)
+  if (isRecord(raw.provider)) {
+    for (const [providerId, prov] of Object.entries(raw.provider)) {
+      if (!isRecord(prov)) continue
+      const models = prov.models
+      if (isRecord(models)) {
+        for (const modelId of Object.keys(models)) {
+          add(`${providerId}/${modelId}`, `${providerId}/${modelId}` === defaultModel)
+        }
+      } else if (Array.isArray(models)) {
+        for (const modelId of models) {
+          if (typeof modelId === 'string') {
+            add(`${providerId}/${modelId}`, `${providerId}/${modelId}` === defaultModel)
+          }
+        }
+      }
+    }
+  }
+  return out
 }
 
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
@@ -455,7 +508,11 @@ export function appendModelEffortArgv(
     !!sheet.effortFlag &&
     effortIdsFor(sheet, modelOk ? model : undefined).includes(effort)
   if (effortOk && sheet.effortFlag && effort) {
-    out.push(sheet.effortFlag, effort)
+    const mapped =
+      sheet.effortArgValues && Object.prototype.hasOwnProperty.call(sheet.effortArgValues, effort)
+        ? sheet.effortArgValues[effort]
+        : effort
+    if (mapped) out.push(sheet.effortFlag, mapped)
   } else if (effort && log) {
     log(`[den-server] spawn: omitting effort ${JSON.stringify(effort)} (unknown or no flag)`)
   }

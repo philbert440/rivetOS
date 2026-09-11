@@ -18,6 +18,7 @@ import {
   PROMPT_MAX_BYTES,
   RESUME_REJECTED_RE,
   spawnOpencodeTurn,
+  variantForEffort,
 } from './spawn-turn.js'
 
 describe('buildArgs', () => {
@@ -30,24 +31,33 @@ describe('buildArgs', () => {
     ])
   })
 
-  it('adds --session for a resumed turn and --model for a model override', () => {
+  it('adds --session, --model and --variant', () => {
     const args = buildArgs(
       {
         binary: 'opencode',
         modelId: 'zai/glm-5.3-flash',
-        resumeSessionId: 'ses_abc',
+        resumeSessionId: 'ses_abcabcabcabcabcabcab',
+        effort: 'low',
       },
       'go on',
     )
-    expect(args.slice(0, 5)).toEqual([
+    expect(args).toEqual([
       'run',
-      '--session',
-      'ses_abc',
+      '--format',
+      'json',
       '--model',
       'zai/glm-5.3-flash',
+      '--variant',
+      'minimal',
+      '--session',
+      'ses_abcabcabcabcabcabcab',
+      'go on',
     ])
-    expect(args[args.length - 1]).toBe('go on')
-    expect(args[args.indexOf('--format') + 1]).toBe('json')
+  })
+
+  it('omits --variant for medium effort', () => {
+    const args = buildArgs({ binary: 'opencode', effort: 'medium' }, 'x')
+    expect(args).not.toContain('--variant')
   })
 
   it('never passes ACP or last-session flags', () => {
@@ -59,6 +69,18 @@ describe('buildArgs', () => {
     expect(args).not.toContain('--auto')
     expect(args).not.toContain('--append-system-prompt')
     expect(args).not.toContain('--json-schema')
+  })
+})
+
+describe('variantForEffort', () => {
+  it('maps RivetOS ids onto OpenCode --variant values', () => {
+    expect(variantForEffort('low')).toBe('minimal')
+    expect(variantForEffort('medium')).toBeUndefined()
+    expect(variantForEffort('high')).toBe('high')
+    expect(variantForEffort('xhigh')).toBe('max')
+    expect(variantForEffort('max')).toBe('max')
+    expect(variantForEffort('nope')).toBeUndefined()
+    expect(variantForEffort(undefined)).toBeUndefined()
   })
 })
 
@@ -139,7 +161,6 @@ describe('waitExit', () => {
 
 describe('KILL_GRACE_MS', () => {
   it('is long enough that a SIGKILL does not race the last storage write', () => {
-    // REVIEWER-CONFIRM: opencode's own cleanup budget is unknown; 10s matches kimi.
     expect(KILL_GRACE_MS).toBeGreaterThanOrEqual(8_000)
   })
 })

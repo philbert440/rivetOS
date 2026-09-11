@@ -8,23 +8,21 @@
  *
  *   | Contract method | Existing machinery it wraps                                 |
  *   |-----------------|-------------------------------------------------------------|
- *   | listSessions    | `listHarnessSessions(['opencode'])` — ~/.local/share/opencode |
+ *   | listSessions    | `listHarnessSessions(['opencode'])` — opencode.db SQLite     |
  *   | getSession      | `describeOpencodeSession`                                   |
  *   | startSession    | **refused** — see "no pinning" below                        |
- *   | resumeSession   | term manager spawn-or-get → `opencode` with --resume        |
+ *   | resumeSession   | term manager spawn-or-get → `opencode --session <id>`       |
  *   | sendUserTurn    | term manager `inject(pty, text, submit)`                    |
  *   | interrupt       | term manager `inject(pty, '', false, interrupt)` (Esc)      |
  *   | subscribe       | den AgentEvent ingest tap (when a hook stamps an id)        |
  *   | transcript      | `readOpencodeTranscript`                                    |
  *
- * **Identity.** // REVIEWER-CONFIRM: native ids assumed `ses_<alnum>` (OpenCode
- * Identifier.ascending("session")). Canonical form is `opencode:ses_…`.
+ * **Identity.** Native ids are `ses_` + 20+ alphanumerics (OpenCode 1.18.30).
+ * Canonical form is `opencode:ses_…`.
  *
- * **No pinning.** // REVIEWER-CONFIRM: `opencode run` is documented to fail
- * with "Session not found" when no session exists; interactive resume is
- * assumed to reference an EXISTING session only (same shape as kimi
- * `-S/--session`). If a later CLI grows `--session-id`, this driver can start
- * pinning instead of adopting.
+ * **No pinning.** There is no flag to pin a NEW session id (`opencode run`
+ * mints `ses_…` itself). A missing `-s/--session` id fails with a non-zero
+ * exit — treated as `session_not_found`. Same adopting shape as kimi.
  *
  * See docs/ARCHITECTURE.md.
  */
@@ -45,19 +43,18 @@ export const OPENCODE_ROSTER_COMMAND = 'opencode'
 export type OpencodePtyHost = HarnessPtyHost
 
 /**
- * The slice of the on-disk opencode store this driver needs. `exists` is
- * required like grok's and kimi's: the store writes a session file, so a
- * describable session is a strict subset of an existing one.
+ * The slice of the OpenCode SQLite store this driver needs. `exists` is
+ * required like grok's and kimi's: a row in `session` is existence.
  */
 export interface OpencodeStoreHost extends HarnessStoreHost {
-  /** Does the session file exist under the data dir? Sync. */
+  /** Does the session row exist in opencode.db? Sync. */
   exists(nativeId: string): boolean
 }
 
 export type OpencodeDriverDeps = PtyHarnessDriverDeps<OpencodeStoreHost>
 
-/** // REVIEWER-CONFIRM: OpenCode session ids are `ses_` + 8+ alphanumerics. */
-const OPENCODE_NATIVE_RE = /^ses_[A-Za-z0-9]{8,}$/
+/** OpenCode 1.18.30 session ids are `ses_` + 20+ alphanumerics. */
+const OPENCODE_NATIVE_RE = /^ses_[A-Za-z0-9]{20,}$/
 
 export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> {
   constructor(deps: OpencodeDriverDeps) {
@@ -68,8 +65,8 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
         productName: 'OpenCode',
         noPinReason:
           'opencode: starting a session through the control plane is not supported — opencode has ' +
-          'no verified flag to pin a new session id (`run` fails with "Session not found" when ' +
-          'none exists), so the control plane cannot name the session it would be creating. ' +
+          'no flag to pin a new session id (`run` mints `ses_…` itself; a missing `-s` id exits ' +
+          'non-zero), so the control plane cannot name the session it would be creating. ' +
           'Spawn opencode from the den roster; the driver adopts it when its hooks announce an id.',
       },
       deps,

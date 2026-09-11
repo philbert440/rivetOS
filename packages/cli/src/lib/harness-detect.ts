@@ -51,7 +51,7 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   hermes: '.hermes',
   'deepseek-harness': '.dsh',
   codex: '.codex',
-  // REVIEWER-CONFIRM: OpenCode's config home is XDG (`~/.config/opencode`), not a $HOME dotdir.
+  // OpenCode is XDG: `$XDG_CONFIG_HOME/opencode` else `~/.config/opencode`.
   opencode: '.config/opencode',
 }
 
@@ -84,6 +84,8 @@ export interface DetectedHarness {
   version?: string
   /** Hermes only: `~/.hermes/hermes-agent/venv` when that directory exists. */
   venv?: string
+  /** OpenCode only: `$XDG_DATA_HOME/opencode` else `~/.local/share/opencode`. */
+  dataHome?: string
 }
 
 export interface DetectHarnessesOpts {
@@ -240,7 +242,10 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
       home,
     })
     if (!binary) continue
-    const configHome = join(home, HARNESS_CONFIG_DIRS[id])
+    const configHome =
+      id === 'opencode'
+        ? join(process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config'), 'opencode')
+        : join(home, HARNESS_CONFIG_DIRS[id])
     const harness: DetectedHarness = {
       id,
       command,
@@ -251,6 +256,12 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
     if (id === 'hermes') {
       const venv = join(configHome, HERMES_VENV_REL)
       if (existsSync(venv)) harness.venv = venv
+    }
+    if (id === 'opencode') {
+      harness.dataHome = join(
+        process.env.XDG_DATA_HOME?.trim() || join(home, '.local', 'share'),
+        'opencode',
+      )
     }
     found.push(harness)
   }

@@ -5,7 +5,7 @@ The `opencode` half of the harness control plane's task side: a
 headlessly.
 
 ```
-opencode run [--session <session_id>] [--model <provider/model>] --format json <prompt>
+opencode run --format json [-m provider/model] [--variant v] [-s session_id] <prompt>
 ```
 
 Not a provider plugin — there is no `LanguageModel` here and no
@@ -18,30 +18,31 @@ for harness id `opencode`.
 1. **Spawn.** One `opencode run` per turn, in a fixed `cwd`. The task scaffold
    (context, acceptance criteria, the `TASK_RESULT` fence contract) is
    prepended to the prompt: `run` has no `--append-system-prompt`.
-2. **Stream.** `--format json` gives assistant text, tool-use parts and
-   correlated tool completions — translated to den `message.agent` /
-   `tool.start` / `tool.end`. Session id is read off the JSON events
-   (`sessionID` / `part.sessionID`) and canonicalized to
-   `opencode:<native-id>`.
+   `--variant` maps RivetOS effort (low→`minimal`, medium→omit, high→`high`,
+   xhigh/max→`max`).
+2. **Stream.** `--format json` writes the same objects as `message`/`part`
+   rows — translated to den `message.agent` / `tool.start` / `tool.end`.
+   Session id is adopted from SQLite (newest `session` row for this cwd
+   created after spawn start) or from a json event if present, then
+   canonicalized to `opencode:<native-id>`. There is no flag to pin a new
+   session id.
 3. **Reconcile.** After the child exits the executor reads the session's
-   on-disk message records (token counts per assistant message) and reports
-   the turn's tokens from there. Post-hoc, because the process has exited: no
-   tailing, no attribution race. If the store is empty, JSON `step_finish`
-   tokens are a fallback; if both are empty, usage degrades to zero rather
-   than failing the turn.
+   message rows in `opencode.db` (token counts per assistant message) and
+   reports the turn's tokens from there. If the store is empty, JSON
+   `step-finish` / assistant-envelope tokens are a fallback; if both are
+   empty, usage degrades to zero rather than failing the turn.
 4. **Steer.** Follow-up turns spawn `--session <native-id>`, so the whole task
    shares ONE opencode session and its context. If opencode refuses the resume
-   (`Session not found`, or equivalent), the turn retries once on a fresh
+   (any non-zero exit while `-s` was passed), the turn retries once on a fresh
    session seeded with the task's rendered history.
 
-## Session-create quirk
+## Session store
 
-`opencode run` has a known headless bug class: it can report `Session not
-found` when no session exists yet. A **resume** that hits that error retries
-fresh (no `--session`). A **fresh** spawn that hits it is a failed turn —
-retrying fresh would loop. Creating a session non-interactively before `run`
-(API `POST /session`, JSON import, or a minting flag) is still
-`REVIEWER-CONFIRM` against the installed binary.
+Sessions are **not files**. They live in SQLite:
+
+`$XDG_DATA_HOME/opencode/opencode.db` else `~/.local/share/opencode/opencode.db`
+
+(WAL mode). Native ids are `ses_` + 20+ alphanumerics.
 
 ## What it does not do
 
@@ -51,8 +52,7 @@ retrying fresh would loop. Creating a session non-interactively before `run`
   `TASK_RESULT` block is the only structured channel.
 - **No per-turn MCP injection.** Servers come from opencode's own config
   (`opencode.json`), shared with the interactive harness.
-- **No effort flag.** `spec.effort` is ignored until a flag/env is confirmed
-  on the installed binary.
+- **No session-id pinning.** A fresh `run` mints `ses_…`; RivetOS adopts it.
 
 ## Config
 
@@ -61,9 +61,9 @@ tasks:
   harnesses:
     opencode:
       binary: /usr/local/bin/opencode  # default: `opencode` on PATH
-      model: zai/glm-5.3-flash         # optional, provider/model
+      model: zai/glm-5.3-flash         # optional, provider/model ([1m] is not valid on z.ai)
       cwd: /srv/rivetos/work           # default: the workspace dir
-      home: ~/.local/share/opencode    # optional OPENCODE_DATA_DIR override
+      home: ~/.local/share/opencode    # optional data-dir override (sets XDG_DATA_HOME)
 ```
 
 Boot probes `opencode --version` and registers a rejecting executor carrying
@@ -73,6 +73,6 @@ instead of going silent.
 ## Testing
 
 `npm test` runs the shared executor-conformance suite plus opencode specifics
-against a FAKE `opencode` binary writing an opencode-shaped transcript into a
-throwaway data dir. The real binary is never invoked and the operator's
+against a FAKE `opencode` binary writing an opencode-shaped SQLite transcript
+into a throwaway data dir. The real binary is never invoked and the operator's
 `~/.local/share/opencode` is never touched.

@@ -12,21 +12,21 @@
  *     the prompt text of every turn.
  *   - JSON stream → TaskEvent: text parts → den message.agent, tool-use
  *     running → den tool.start, tool-use completed → den tool.end.
- *     Session id is read off the events (`sessionID` / `part.sessionID`) and
- *     canonicalized onto `opencode:<native-id>`.
- *   - Usage arrives POST-HOC from the session's message JSON after the child
- *     exits — see wire.ts. Stream `step_finish` tokens are a fallback when
- *     the store is empty. A reconcile that finds nothing degrades to zero
- *     usage and a warning; it can never fail a turn.
+ *     Session id is adopted from SQLite (newest `session` row for this cwd
+ *     created after spawn start) or, if present, from a json event.
+ *     Canonicalized onto `opencode:<native-id>`. There is no flag to pin a
+ *     NEW session id.
+ *   - Usage arrives POST-HOC from the session's message rows after the child
+ *     exits — see wire.ts. Stream `step-finish` / assistant-envelope tokens
+ *     are a fallback when the store is empty. A reconcile that finds nothing
+ *     degrades to zero usage and a warning; it can never fail a turn.
  *   - Structured result: `parseTaskResultBlock` over the turn's text, falling
  *     back to {verdict:'completed', summary:<last text>}. `result` NEVER
  *     rejects.
  *   - kill(): SIGTERM then SIGKILL after the grace period → verdict 'killed'.
  *
- * REVIEWER-CONFIRM: session-create path. `run` is known to report
- * "Session not found" when no session exists. A refused `--session` retries
- * once fresh. A fresh spawn that hits the same error is a failed turn
- * (retrying would loop) until a minting path is confirmed on v1.18.25.
+ * A refused `--session` (any non-zero exit while `-s` was passed) retries
+ * once fresh. A fresh spawn that exits non-zero is a failed turn.
  *
  * Task association (#467) is the claude contract verbatim: `RIVETOS_TASK_ID`
  * on the child env, the inherited `RIVETOS_SESSION_KEY` explicitly DELETED,
@@ -55,13 +55,14 @@ import {
   taskResultFenceInstructions,
 } from '@rivetos/types'
 import { createLogger, type HarnessLogger } from './log.js'
-import { RESUME_REJECTED_RE, spawnOpencodeTurn, type SpawnedTurn } from './spawn-turn.js'
+import { spawnOpencodeTurn, type SpawnedTurn } from './spawn-turn.js'
 import {
   emptyWireTurnFacts,
-  listSessionIds,
+  newestSessionAfter,
   opencodeHome,
   parseOpencodeEvent,
   reconcileTurn,
+  xdgDataHomeFor,
   type WireTurnFacts,
 } from './wire.js'
 
@@ -83,6 +84,8 @@ export interface OpencodeExecutorConfig {
   binary: string
   /** Default model id (spec.model overrides). Empty = the CLI's default. */
   modelId?: string
+  /** Default RivetOS effort (spec.effort overrides). Mapped to `--variant`. */
+  effort?: string
   /**
    * Default working directory (spec.workingDir overrides). Pins the storage
    * project and scopes `--session` resume — every turn of a task uses the
@@ -90,9 +93,9 @@ export interface OpencodeExecutorConfig {
    */
   cwd?: string
   /**
-   * OPENCODE_DATA_DIR for the child. Also where the reconcile reads
-   * transcripts, so the two can never drift. Default: the ambient home
-   * (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`).
+   * Data dir for SQLite reconcile (`opencode.db`). Default: the ambient home
+   * (`$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`). Also sets the
+   * child's `XDG_DATA_HOME` so the CLI writes the same place.
    */
   opencodeHome?: string
   /** Override the SIGTERM→SIGKILL grace (tests use a short one). */
@@ -288,12 +291,11 @@ export class OpencodeExecutor implements HarnessExecutor {
     return {
       steerable: true, // between turns — no mid-spawn steering
       multiTurn: true, // native `--session` resume, one session across the task
-      structuredStream: true, // --format json text/tool_use/step_finish lines
-      usageInResult: true, // reconciled from storage, stream as fallback
-      sessionIdCapture: true, // sessionID on JSON events, plus a disk fallback
+      structuredStream: true, // --format json text/tool/step-finish lines
+      usageInResult: true, // reconciled from sqlite, stream as fallback
+      sessionIdCapture: true, // sqlite session row, json events as fallback
       slashCommands: false,
-      // REVIEWER-CONFIRM: no effort flag observed on `opencode run`; spec.effort is ignored.
-      effortSelection: false,
+      effortSelection: true, // --variant via spec.effort
       // No per-turn MCP flag: servers come from opencode.json, shared with the TUI.
       mcpInjection: 'persistent-config',
     }
@@ -519,11 +521,6 @@ export class OpencodeExecutor implements HarnessExecutor {
     const cwd = spec.workingDir ?? this.cfg.cwd ?? process.cwd()
     const home = this.cfg.opencodeHome ?? opencodeHome()
 
-    // Ids that exist BEFORE the spawn. A turn that throws never reaches a
-    // sessionID event, so this snapshot is the only way back to the session
-    // it did create.
-    const idsBefore = turn.resumeSessionId === undefined ? listSessionIds(home, cwd) : undefined
-
     let spawned: SpawnedTurn
     try {
       spawned = spawnOpencodeTurn(
@@ -531,6 +528,7 @@ export class OpencodeExecutor implements HarnessExecutor {
           binary: this.cfg.binary,
           modelId: spec.model ?? this.cfg.modelId,
           resumeSessionId: turn.resumeSessionId,
+          effort: spec.effort ?? this.cfg.effort,
           cwd,
         },
         turn.prompt,
@@ -545,7 +543,7 @@ export class OpencodeExecutor implements HarnessExecutor {
             RIVETOS_SESSION_KEY: undefined,
             // This executor owns den emission — the den hook must stay quiet.
             RIVETOS_DEN_HOOK_DISABLED: '1',
-            ...(this.cfg.opencodeHome ? { OPENCODE_DATA_DIR: this.cfg.opencodeHome } : {}),
+            ...(this.cfg.opencodeHome ? { XDG_DATA_HOME: xdgDataHomeFor(this.cfg.opencodeHome) } : {}),
           },
         },
       )
@@ -575,7 +573,6 @@ export class OpencodeExecutor implements HarnessExecutor {
 
     let text = ''
     let sessionId: string | undefined
-    let sawSessionId = false
     let error: string | undefined
     const toolNamesById = new Map<string, string>()
     const streamUsage = { input: 0, output: 0, records: 0 }
@@ -586,7 +583,6 @@ export class OpencodeExecutor implements HarnessExecutor {
         if (ev === undefined) continue
         if (ev.sessionId) {
           sessionId = ev.sessionId
-          sawSessionId = true
         }
 
         if (ev.kind === 'text' && ev.text) {
@@ -634,15 +630,9 @@ export class OpencodeExecutor implements HarnessExecutor {
       if (exitCode !== 0 && error === undefined && !run.isKilled()) {
         error = `opencode CLI exited ${String(exitCode)}: ${stderrTail}`
       }
-      if (!sawSessionId && error === undefined && !run.isKilled()) {
-        // Clean exit with no session id on the stream. Unlike kimi we do not
-        // require a dedicated resume_hint event — any JSON object carrying
-        // sessionID counts — but a turn that printed nothing usable is a
-        // protocol miss.
-        error = 'opencode CLI stream ended without a session id'
-      }
-      if (error !== undefined && RESUME_REJECTED_RE.test(spawned.stderrText())) {
-        return { text, error, resumeRejected: turn.resumeSessionId !== undefined }
+      // A missing `-s` id (or any failure while resuming) is session_not_found.
+      if (exitCode !== 0 && turn.resumeSessionId !== undefined) {
+        return { text, error, resumeRejected: true }
       }
     } catch (err: unknown) {
       error ??= err instanceof Error ? err.message : String(err)
@@ -651,7 +641,14 @@ export class OpencodeExecutor implements HarnessExecutor {
       spawned.kill() // no-op when already exited — reaps every path
     }
 
-    sessionId ??= turn.resumeSessionId ?? this.recoverSessionId(home, cwd, idsBefore)
+    const fromStore =
+      turn.resumeSessionId === undefined
+        ? newestSessionAfter(home, cwd, spawned.startedAtMs)
+        : undefined
+    sessionId = fromStore ?? sessionId ?? turn.resumeSessionId
+    if (!sessionId && error === undefined && !run.isKilled()) {
+      error = 'opencode CLI stream ended without a session id'
+    }
     const facts = this.reconcile({ home, sessionId, sinceMs: spawned.startedAtMs })
     if (facts.usageRecords > 0) {
       usage.inputTokens += facts.usage.inputTokens
@@ -676,21 +673,6 @@ export class OpencodeExecutor implements HarnessExecutor {
     }
 
     return { text, sessionId, error, resumeRejected: false }
-  }
-
-  /**
-   * The session a failed turn created, when exactly one appeared. Concurrent
-   * same-cwd spawns make this ambiguous, and an ambiguous id is worse than
-   * none — it would attribute another task's tokens to this one.
-   */
-  private recoverSessionId(
-    home: string,
-    cwd: string,
-    idsBefore: Set<string> | undefined,
-  ): string | undefined {
-    if (idsBefore === undefined) return undefined
-    const fresh = [...listSessionIds(home, cwd)].filter((id) => !idsBefore.has(id))
-    return fresh.length === 1 ? fresh[0] : undefined
   }
 
   /** Read the turn's usage off disk. Any failure degrades to zero, never throws. */

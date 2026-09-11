@@ -2,7 +2,7 @@
  * Default on-disk store host for a harness driver. Thin adapter:
  * `term/harness-sessions.ts` stays the one place that knows each store's
  * layout (`~/.claude/projects/…`, `~/.grok/sessions/…`, `~/.hermes/state.db`,
- * `~/.kimi-code/sessions/…`, `~/.dsh/sessions/…`, `~/.local/share/opencode/…`),
+ * `~/.kimi-code/sessions/…`, `~/.dsh/sessions/…`, `~/.local/share/opencode/opencode.db`),
  * and tests swap this whole object for a fake rather than shimming the
  * filesystem or node:sqlite.
  *

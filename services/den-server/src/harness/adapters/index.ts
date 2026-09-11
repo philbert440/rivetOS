@@ -14,7 +14,7 @@ export { grokPickTurn, grokTurnsFromLines, grokAdapter } from './grok.js'
 export { readHermesTurns, hermesAdapter } from './hermes.js'
 export { readDshTurns, deepseekAdapter } from './deepseek.js'
 export { codexTurnsFromLines, codexAdapter } from './codex.js'
-export { opencodeTurnsFromMessages, opencodeAdapter } from './opencode.js'
+export { opencodeTurnsFromMessages, readOpencodeTurns, opencodeAdapter } from './opencode.js'
 
 const BY_COMMAND: Record<string, HarnessAdapter> = {
   claude: claudeAdapter,

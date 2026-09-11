@@ -1,163 +1,137 @@
 /**
- * wire — JSON event interpretation plus the on-disk half of the opencode
- * executor: finding a session's transcript and reading back usage stdout
+ * wire — JSON event interpretation plus the SQLite half of the opencode
+ * executor: finding a session in `opencode.db` and reading back usage stdout
  * may not have carried.
  *
- * REVIEWER-CONFIRM: exact event schema vs installed opencode 1.18.25
- * (`opencode run --format json`). Assumed newline-delimited objects:
+ * `--format json` event lines are the same objects as `message`/`part` rows
+ * (user/assistant envelopes, then parts). Parse defensively by `type`;
+ * unknown → ignore.
  *
- *   {"type":"step_start","sessionID":"ses_…"}
- *   {"type":"text","part":{"type":"text","text":"…","sessionID":"ses_…"}}
- *   {"type":"tool_use","part":{"type":"tool","tool":"bash","callID":"…",
- *     "sessionID":"ses_…","state":{"status":"running"|"completed"|"error"}}}
- *   {"type":"step_finish","sessionID":"ses_…","tokens":{"input":n,"output":n,
- *     "reasoning":n,"cache":{"read":n,"write":n}}}
- *   {"type":"error","error":{"message":"…"}}
- *
- * `parseOpencodeEvent` maps those onto a small tagged union the executor
- * turns into den `TaskEvent`s (the control-plane `HarnessEvent` type is the
- * den *driver* stream — a different package). Unknown shapes are `other`,
- * never fatal.
- *
- * REVIEWER-CONFIRM: on-disk session layout + data-dir env vs v1.18.25.
- * Assumed (XDG, matching opencode's Global.Path.data):
- *
- *   $OPENCODE_DATA_DIR | $XDG_DATA_HOME/opencode | ~/.local/share/opencode
- *     storage/session/<projectHash>/<sessionId>.json
- *     storage/message/<sessionId>/<messageId>.json
- *
- * Session JSON carries `id` + `directory` (cwd). Message JSON carries
- * `role`, `tokens`, `time.created`/`time.completed`. This module is
- * deliberately POST-HOC: the executor reads it after the child has exited.
- * Never throws: an unreadable file or a torn line degrades the numbers.
+ * Sessions live in SQLite (WAL): `$XDG_DATA_HOME/opencode/opencode.db` else
+ * `~/.local/share/opencode/opencode.db`. This module is deliberately POST-HOC:
+ * the executor reads it after the child has exited. Never throws: an
+ * unreadable db or a torn row degrades the numbers.
  */
 
-import fs from 'node:fs'
+import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 
-/** Env override for the data dir. REVIEWER-CONFIRM: actual name on v1.18.25. */
-export const OPENCODE_DATA_DIR_ENV = 'OPENCODE_DATA_DIR'
-
-/** `$OPENCODE_DATA_DIR`, else `$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode`. */
+/** `$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode`. */
 export function opencodeHome(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env[OPENCODE_DATA_DIR_ENV]?.trim()
-  if (explicit && explicit.length > 0) return explicit
   const xdg = env.XDG_DATA_HOME?.trim()
   if (xdg && xdg.length > 0) return path.join(xdg, 'opencode')
   return path.join(os.homedir(), '.local', 'share', 'opencode')
 }
 
-/** `<home>/storage/session`. */
-export function sessionsRoot(home: string): string {
-  return path.join(home, 'storage', 'session')
+export function opencodeDbPath(home: string): string {
+  return path.join(home, 'opencode.db')
 }
 
-/** `<home>/storage/message`. */
-export function messagesRoot(home: string): string {
-  return path.join(home, 'storage', 'message')
+/**
+ * XDG_DATA_HOME to point the CLI at `dataDir`. If `dataDir` ends with
+ * `/opencode`, the parent is the XDG root; otherwise the path itself (the
+ * CLI will then write `$XDG_DATA_HOME/opencode`).
+ */
+export function xdgDataHomeFor(dataDir: string): string {
+  return path.basename(dataDir) === 'opencode' ? path.dirname(dataDir) : dataDir
+}
+
+interface SqliteRow {
+  [k: string]: unknown
+}
+interface SqliteStmt {
+  all(...params: unknown[]): SqliteRow[]
+  get(...params: unknown[]): SqliteRow | undefined
+}
+interface SqliteDb {
+  prepare(sql: string): SqliteStmt
+  close(): void
+}
+
+const require_ = createRequire(import.meta.url)
+
+function openDb(home: string): SqliteDb | null {
+  const dbPath = opencodeDbPath(home)
+  if (!existsSync(dbPath)) return null
+  try {
+    const { DatabaseSync } = require_('node:sqlite') as {
+      DatabaseSync: new (p: string, o?: { readOnly?: boolean }) => SqliteDb
+    }
+    return new DatabaseSync(dbPath, { readOnly: true })
+  } catch {
+    return null
+  }
 }
 
 export interface SessionIndexEntry {
   sessionId: string
-  sessionDir: string
   workDir?: string
+  timeCreated?: number
 }
 
 /**
- * Read every session JSON under `storage/session`. There is no kimi-style
- * `session_index.jsonl`; this walk is the index.
- */
-export function readSessionIndex(home: string): SessionIndexEntry[] {
-  const out: SessionIndexEntry[] = []
-  for (const file of jsonFilesUnder(sessionsRoot(home), 2)) {
-    const row = readJsonObject(file)
-    const sessionId =
-      typeof row?.id === 'string'
-        ? row.id
-        : path.basename(file, '.json')
-    const workDir = typeof row?.directory === 'string' ? row.directory : undefined
-    out.push({
-      sessionId,
-      sessionDir: path.dirname(file),
-      ...(workDir !== undefined ? { workDir } : {}),
-    })
-  }
-  return out
-}
-
-export interface SessionLocation {
-  home: string
-  cwd: string
-  sessionId: string
-}
-
-/** Directory containing the session JSON for a known id, or undefined. */
-export function resolveSessionDir(loc: SessionLocation): string | undefined {
-  const indexed = readSessionIndex(loc.home).find((e) => e.sessionId === loc.sessionId)
-  if (indexed && dirExists(indexed.sessionDir)) return indexed.sessionDir
-  const guess = path.join(sessionsRoot(loc.home), loc.sessionId)
-  return dirExists(guess) ? guess : undefined
-}
-
-/**
- * Every session id opencode knows for `cwd`.
- *
- * Used for the failure path only: a turn that throws never prints a session
- * id, so snapshotting the ids before the spawn and diffing after recovers
- * it — one new id is the spawn's, several means concurrent same-cwd spawns
- * and the executor declines to guess.
+ * Every session id opencode knows for `cwd` (session.directory).
  */
 export function listSessionIds(home: string, cwd: string): Set<string> {
   const ids = new Set<string>()
   const cwdResolved = path.resolve(cwd)
-  for (const entry of readSessionIndex(home)) {
-    if (entry.workDir !== undefined && path.resolve(entry.workDir) !== cwdResolved) continue
-    ids.add(entry.sessionId)
+  const db = openDb(home)
+  if (!db) return ids
+  try {
+    const rows = db.prepare(`SELECT id, directory FROM session`).all()
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : ''
+      if (!id) continue
+      const dir = typeof r.directory === 'string' ? r.directory : undefined
+      if (dir !== undefined && path.resolve(dir) !== cwdResolved) continue
+      ids.add(id)
+    }
+  } catch {
+    return ids
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
   }
   return ids
 }
 
-function dirExists(p: string): boolean {
+/**
+ * Newest `session` row for this cwd with `time_created >= sinceMs`.
+ * Prefer this over JSON-event session ids (user envelopes carry none).
+ */
+export function newestSessionAfter(home: string, cwd: string, sinceMs: number): string | undefined {
+  const db = openDb(home)
+  if (!db) return undefined
   try {
-    return fs.statSync(p).isDirectory()
+    const cwdResolved = path.resolve(cwd)
+    const rows = db
+      .prepare(
+        `SELECT id, directory, time_created FROM session
+         WHERE time_created >= ?
+         ORDER BY time_created DESC, time_updated DESC`,
+      )
+      .all(sinceMs)
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : ''
+      if (!id) continue
+      const dir = typeof r.directory === 'string' ? r.directory : undefined
+      if (dir !== undefined && path.resolve(dir) !== cwdResolved) continue
+      return id
+    }
+    return undefined
   } catch {
-    return false
-  }
-}
-
-function jsonFilesUnder(root: string, maxDepth: number): string[] {
-  const out: string[] = []
-  const walk = (dir: string, depth: number): void => {
-    let entries: fs.Dirent[]
+    return undefined
+  } finally {
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
+      db.close()
     } catch {
-      return
+      /* ignore */
     }
-    for (const ent of entries) {
-      const full = path.join(dir, ent.name)
-      if (ent.isFile() && ent.name.endsWith('.json')) out.push(full)
-      else if (ent.isDirectory() && depth < maxDepth) walk(full, depth + 1)
-    }
-  }
-  walk(root, 0)
-  return out
-}
-
-function readJsonObject(file: string): Record<string, unknown> | undefined {
-  let text: string
-  try {
-    text = fs.readFileSync(file, 'utf8')
-  } catch {
-    return undefined
-  }
-  try {
-    const row: unknown = JSON.parse(text)
-    if (typeof row !== 'object' || row === null || Array.isArray(row)) return undefined
-    return row as Record<string, unknown>
-  } catch {
-    return undefined
   }
 }
 
@@ -208,20 +182,24 @@ function tokensToUsage(tokens: Record<string, unknown>): {
   }
 }
 
-function sessionIdOf(rec: Record<string, unknown>, part?: Record<string, unknown>): string | undefined {
+function sessionIdOf(rec: Record<string, unknown>, nested?: Record<string, unknown>): string | undefined {
   return (
     str(rec.sessionID) ??
     str(rec.sessionId) ??
     str(rec.session_id) ??
-    (part ? (str(part.sessionID) ?? str(part.sessionId) ?? str(part.session_id)) : undefined)
+    (isRecord(rec.session) ? str(rec.session.id) : undefined) ??
+    (nested
+      ? (str(nested.sessionID) ?? str(nested.sessionId) ?? str(nested.session_id))
+      : undefined)
   )
 }
 
 /**
  * Interpret one JSON object from `opencode run --format json`.
  *
- * REVIEWER-CONFIRM: field names (`sessionID` vs `sessionId`, `callID`,
- * `part.state.status`, `tokens.cache`) against a real turn on v1.18.25.
+ * Real 1.18.30 lines match message/part rows: `{type: text|reasoning|tool|
+ * step-start|step-finish}` and `{role: user|assistant, tokens?}`. Unknown
+ * types are `other`, never fatal.
  */
 export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefined {
   if (!isRecord(row)) return undefined
@@ -229,15 +207,20 @@ export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefine
   const part = isRecord(row.part) ? row.part : undefined
   const sessionId = sessionIdOf(row, part)
   const partType = part ? str(part.type) : undefined
+  const role = str(row.role)
 
   if (type === 'text' || partType === 'text') {
     const text = str(row.text) ?? (part ? str(part.text) : undefined) ?? ''
     return { kind: 'text', sessionId, text, raw: row }
   }
 
+  if (type === 'reasoning' || type === 'thinking' || partType === 'reasoning') {
+    return { kind: 'other', sessionId, raw: row }
+  }
+
   const isTool =
-    type === 'tool_use' ||
     type === 'tool' ||
+    type === 'tool_use' ||
     type === 'tool_result' ||
     type === 'tool-result' ||
     partType === 'tool'
@@ -247,6 +230,7 @@ export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefine
       str(row.callID) ??
       str(row.toolCallId) ??
       str(row.tool_call_id) ??
+      str(row.id) ??
       (part ? (str(part.callID) ?? str(part.id)) : undefined)
     const state = part && isRecord(part.state) ? part.state : isRecord(row.state) ? row.state : undefined
     const status = state ? str(state.status) : undefined
@@ -264,10 +248,19 @@ export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefine
     }
   }
 
-  if (type === 'step_finish' || type === 'step.finish' || type === 'usage') {
+  if (
+    type === 'step-finish' ||
+    type === 'step_finish' ||
+    type === 'step.finish' ||
+    type === 'usage'
+  ) {
     const tokens = isRecord(row.tokens) ? row.tokens : undefined
     const usage = tokens ? tokensToUsage(tokens) : undefined
     return { kind: usage ? 'usage' : 'other', sessionId, usage, raw: row }
+  }
+
+  if (role === 'assistant' && isRecord(row.tokens)) {
+    return { kind: 'usage', sessionId, usage: tokensToUsage(row.tokens), raw: row }
   }
 
   if (type === 'error' || type === 'session.error') {
@@ -280,7 +273,12 @@ export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefine
     }
   }
 
-  if (type === 'session' || type === 'session.created' || type === 'step_start') {
+  if (
+    type === 'session' ||
+    type === 'session.created' ||
+    type === 'step-start' ||
+    type === 'step_start'
+  ) {
     return { kind: sessionId ? 'session' : 'other', sessionId, raw: row }
   }
 
@@ -306,13 +304,13 @@ export interface WireTurnEnd {
 
 export interface WireTurnFacts {
   usage: WireTurnUsage
-  /** Assistant message files counted into `usage`. Zero means "found nothing". */
+  /** Assistant message rows counted into `usage`. Zero means "found nothing". */
   usageRecords: number
   /** Newest completed assistant message at or after the spawn clock. */
   turnEnded?: WireTurnEnd
-  /** Message files read. */
+  /** Message rows read. */
   files: number
-  /** Files that were not parseable JSON — tolerated, never fatal. */
+  /** Rows that were not parseable JSON — tolerated, never fatal. */
   malformed: number
 }
 
@@ -325,34 +323,24 @@ export function emptyWireTurnFacts(): WireTurnFacts {
   }
 }
 
-/** `<home>/storage/message/<sessionId>/*.json`. */
-export function messageFilesFor(home: string, sessionId: string): string[] {
-  const dir = path.join(messagesRoot(home), sessionId)
-  let names: string[]
+function parseData(raw: unknown): Record<string, unknown> | undefined {
+  if (isRecord(raw)) return raw
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined
   try {
-    names = fs.readdirSync(dir)
+    const parsed: unknown = JSON.parse(raw)
+    return isRecord(parsed) ? parsed : undefined
   } catch {
-    return []
+    return undefined
   }
-  return names
-    .filter((n) => n.endsWith('.json'))
-    .map((n) => path.join(dir, n))
-    .filter((file) => {
-      try {
-        return fs.statSync(file).isFile()
-      } catch {
-        return false
-      }
-    })
 }
 
 /**
- * Sum one turn's usage out of a session's message records.
+ * Sum one turn's usage out of a session's message rows.
  *
- * `sinceMs` is the spawn clock: a resumed session's files hold every previous
+ * `sinceMs` is the spawn clock: a resumed session's rows hold every previous
  * turn too, so the floor is what separates this turn from its predecessors.
  *
- * Never throws: an unreadable file or a torn body degrades the numbers, and
+ * Never throws: an unreadable db or a torn body degrades the numbers, and
  * zero usage is a truthful "we could not tell", not a failed turn.
  */
 export function reconcileTurn(opts: {
@@ -361,46 +349,53 @@ export function reconcileTurn(opts: {
   sinceMs: number
 }): WireTurnFacts {
   const facts = emptyWireTurnFacts()
-  for (const file of messageFilesFor(opts.home, opts.sessionId)) {
-    let text: string
+  const db = openDb(opts.home)
+  if (!db) return facts
+  try {
+    const rows = db
+      .prepare(
+        `SELECT data, time_created FROM message WHERE session_id = ? ORDER BY time_created ASC`,
+      )
+      .all(opts.sessionId)
+    for (const r of rows) {
+      facts.files += 1
+      const row = parseData(r.data)
+      if (!row) {
+        facts.malformed += 1
+        continue
+      }
+      const role = str(row.role)
+      if (role !== 'assistant') continue
+      const time = isRecord(row.time) ? row.time : undefined
+      const timeMs =
+        typeof time?.completed === 'number'
+          ? time.completed
+          : typeof time?.created === 'number'
+            ? time.created
+            : typeof r.time_created === 'number'
+              ? r.time_created
+              : undefined
+      if (timeMs === undefined || timeMs < opts.sinceMs) continue
+      const tokens = isRecord(row.tokens) ? row.tokens : undefined
+      if (tokens === undefined) continue
+      const usage = tokensToUsage(tokens)
+      facts.usage.inputTokens += usage.inputTokens
+      facts.usage.outputTokens += usage.outputTokens
+      facts.usageRecords += 1
+      const ended: WireTurnEnd = { reason: 'completed', timeMs }
+      if (facts.turnEnded === undefined || ended.timeMs >= facts.turnEnded.timeMs) {
+        facts.turnEnded = ended
+      }
+    }
+    facts.usage.totalTokens = facts.usage.inputTokens + facts.usage.outputTokens
+    return facts
+  } catch {
+    return facts
+  } finally {
     try {
-      text = fs.readFileSync(file, 'utf8')
+      db.close()
     } catch {
-      continue
-    }
-    facts.files += 1
-    let row: unknown
-    try {
-      row = JSON.parse(text)
-    } catch {
-      facts.malformed += 1
-      continue
-    }
-    if (!isRecord(row)) {
-      facts.malformed += 1
-      continue
-    }
-    const role = str(row.role)
-    if (role !== 'assistant') continue
-    const time = isRecord(row.time) ? row.time : undefined
-    const timeMs =
-      typeof time?.completed === 'number'
-        ? time.completed
-        : typeof time?.created === 'number'
-          ? time.created
-          : undefined
-    if (timeMs === undefined || timeMs < opts.sinceMs) continue
-    const tokens = isRecord(row.tokens) ? row.tokens : undefined
-    if (tokens === undefined) continue
-    const usage = tokensToUsage(tokens)
-    facts.usage.inputTokens += usage.inputTokens
-    facts.usage.outputTokens += usage.outputTokens
-    facts.usageRecords += 1
-    const ended: WireTurnEnd = { reason: 'completed', timeMs }
-    if (facts.turnEnded === undefined || ended.timeMs >= facts.turnEnded.timeMs) {
-      facts.turnEnded = ended
+      /* ignore */
     }
   }
-  facts.usage.totalTokens = facts.usage.inputTokens + facts.usage.outputTokens
-  return facts
 }

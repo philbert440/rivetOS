@@ -619,8 +619,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     const roster = rosterProvider.get()
     if (!Object.hasOwn(roster.commands, key)) return roster.cwd
     const entry = roster.commands[key]
-    // Mirrors the spawn rule in term/manager.ts: harness entries run in home.
-    if (entry.room) return homedir()
+    // Mirrors the spawn rule in term/manager.ts: harness entries run in home
+    // unless the roster entry sets cwd (OpenCode cannot spawn in `$HOME`).
+    if (entry.room) return entry.cwd ?? homedir()
     return entry.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).

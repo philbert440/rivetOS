@@ -63,18 +63,21 @@ describe('helpers', () => {
       'json',
       '(no instruction was provided for this turn)',
     ])
-    expect(buildArgs({ binary: 'k', modelId: 'm', sessionId: 's' }, 'q')).toEqual([
+    expect(buildArgs({ binary: 'k', modelId: 'm', sessionId: 's', effort: 'low' }, 'q')).toEqual([
       'run',
       '--format',
       'json',
       '--model',
       'm',
+      '--variant',
+      'minimal',
       '--session',
       's',
       'q',
     ])
+    expect(buildArgs({ binary: 'k', effort: 'medium' }, 'q')).not.toContain('--variant')
   })
-  it('parseOpencodeLine classifies assistant text, session ids and noise', () => {
+  it('parseOpencodeLine classifies assistant text, session ids, usage and noise', () => {
     expect(parseOpencodeLine(JSON.stringify({ type: 'text', text: 'hi' }))).toEqual({ kind: 'text', text: 'hi' })
     expect(
       parseOpencodeLine(JSON.stringify({ type: 'text', sessionID: 'ses_1', part: { text: 'hi' } })),
@@ -86,11 +89,12 @@ describe('helpers', () => {
     expect(
       parseOpencodeLine(
         JSON.stringify({
-          method: 'session/update',
-          params: { update: { content: { type: 'text', text: 'acp' } }, sessionId: 'ses_acp' },
+          role: 'assistant',
+          tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 3, write: 0 } },
         }),
-      ),
-    ).toEqual({ kind: 'text', text: 'acp', sessionId: 'ses_acp' })
+      ).kind,
+    ).toBe('usage')
+    expect(parseOpencodeLine(JSON.stringify({ type: 'step-start' }))).toEqual({ kind: 'other' })
     expect(parseOpencodeLine(JSON.stringify({ type: 'text', text: '' }))).toEqual({ kind: 'other' })
     expect(parseOpencodeLine('not json')).toEqual({ kind: 'other' })
   })
@@ -101,12 +105,12 @@ describe('helpers', () => {
 })
 
 describe('OpencodeCliModel.doStream', () => {
-  it('replays text parts, remembers the session id, sets OPENCODE_CONFIG_DIR', async () => {
+  it('replays text parts, remembers the session id, sets XDG_DATA_HOME', async () => {
     const bin = fakeScript(
       '#!/usr/bin/env bash\n' +
         'echo \'{"type":"session","sessionID":"session_42"}\'\n' +
         'echo \'{"type":"text","part":{"text":"PO"}}\'\n' +
-        'printf \'{"type":"text","text":"NG-'"$OPENCODE_CONFIG_DIR"\'"}\'\n',
+        'printf \'{"type":"text","text":"NG-'"$XDG_DATA_HOME"\'"}\'\n',
     )
     const mapPath = path.join(tmp(), 'map.json')
     const parts = await collect(model(bin, mapPath), prompt)

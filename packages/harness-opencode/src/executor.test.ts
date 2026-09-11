@@ -1,7 +1,7 @@
 /**
  * OpencodeExecutor tests — the shared HarnessExecutor conformance suite plus
  * opencode specifics, all driven by a FAKE `opencode` binary writing an
- * opencode-shaped transcript into a throwaway OPENCODE_DATA_DIR. The real
+ * opencode-shaped transcript into a throwaway data dir. The real
  * binary is never invoked: no provider tokens, no live store, no
  * `~/.local/share/opencode`.
  *
@@ -37,7 +37,7 @@ afterAll(() => {
   cleanupFakeOpencode()
 })
 
-const SESSION = 'ses_11111111-2222-3333-4444-555555555555'
+const SESSION = 'ses_11111111111111111111111111'
 
 function makeExecutor(fake: FakeOpencode): OpencodeExecutor {
   return new OpencodeExecutor({
@@ -90,7 +90,7 @@ describe('OpencodeExecutor', () => {
       usageInResult: true,
       sessionIdCapture: true,
       slashCommands: false,
-      effortSelection: false,
+      effortSelection: true,
       mcpInjection: 'persistent-config',
     })
   })
@@ -144,7 +144,7 @@ describe('OpencodeExecutor', () => {
       expect(env.RIVETOS_TASK_ID).toBe('task-env-check')
       expect(env.RIVETOS_SESSION_KEY).toBeUndefined()
       expect(env.RIVETOS_DEN_HOOK_DISABLED).toBe('1')
-      expect(env.OPENCODE_DATA_DIR).toBe(fake.home)
+      expect(env.XDG_DATA_HOME).toBe(fake.home)
 
       const args = fake.args()
       expect(args[0]).toBe('run')
@@ -270,7 +270,10 @@ describe('OpencodeExecutor', () => {
   })
 
   it('resolves failed on a clean exit with no session id on the stream', async () => {
-    const fake = makeFakeOpencode({ raw: ['not json at all', '{"role": 42'] })
+    const fake = makeFakeOpencode({
+      raw: ['not json at all', '{"role": 42'],
+      writeStore: false,
+    })
     const result = await makeExecutor(fake).start(makeConformanceSpec(), {
       signal: new AbortController().signal,
     }).result

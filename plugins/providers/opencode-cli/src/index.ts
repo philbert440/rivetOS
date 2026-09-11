@@ -1,11 +1,11 @@
 /**
  * @rivetos/provider-opencode-cli — OpenCode CLI provider.
  *
- * Each turn shells out to the local OpenCode CLI (`opencode run <prompt>
- * --format json`) and replays JSON text parts as text. Session ids are
+ * Each turn shells out to the local OpenCode CLI (`opencode run --format json
+ * <prompt>`) and replays JSON text parts as text. Session ids are
  * remembered per RivetOS conversation (~/.rivetos/opencode-cli-sessions.json)
  * and passed back as `--session` so the conversation continues in one
- * OpenCode session. `home` sets OPENCODE_CONFIG_DIR.
+ * OpenCode session. `home` is the data dir (`$XDG_DATA_HOME/opencode`).
  * Implements `aiSdkBridge()` (LanguageModelV3) for the agent loop.
  *
  * Drive contract is per-turn `opencode run`, not the long-lived ACP
@@ -31,7 +31,7 @@ import { defaultSessionMapPath, loadSessionMap, saveSessionMap } from './session
 export { loadSessionMap, saveSessionMap } from './session-map.js'
 
 export const OPENCODE_CLI_PROVIDER_ID = 'opencode-cli'
-// REVIEWER-CONFIRM: exact default model id string on the fleet (z.ai GLM).
+/** Fleet default — the `[1m]` suffix is not valid on z.ai. */
 export const DEFAULT_MODEL = 'zai/glm-5.3-flash'
 export const SESSION_MAP_FILE = 'opencode-cli-sessions.json'
 const NO_INSTRUCTION = '(no instruction was provided for this turn)'
@@ -57,27 +57,43 @@ export interface OpencodeSpawnFlags {
   binary: string
   modelId?: string
   sessionId?: string
+  /** RivetOS effort id; mapped to `--variant`. */
+  effort?: string
 }
 
 /**
- * REVIEWER-CONFIRM: spawn argv for opencode v1.18.25.
- * Spec-confirmed positional: `opencode run "<prompt>"`.
- * Assumed flags (flags before the message so they are not swallowed as
- * prompt tokens): `--format json`, `--model <id>`, `--session <id>`.
- * ACP (`opencode acp`) is not spawned from this bridge.
+ * Map a RivetOS effort id onto OpenCode `--variant`.
+ * low→minimal, medium→omit, high→high, xhigh/max→max.
+ */
+export function variantForEffort(effort: string | undefined): string | undefined {
+  if (!effort) return undefined
+  const key = effort.trim().toLowerCase()
+  if (key === 'low' || key === 'minimal') return 'minimal'
+  if (key === 'medium' || key === 'default' || key === '') return undefined
+  if (key === 'high') return 'high'
+  if (key === 'xhigh' || key === 'max') return 'max'
+  return undefined
+}
+
+/**
+ * Spawn argv for opencode 1.18.30:
+ *   opencode run --format json [-m model] [--variant v] [-s id] <prompt>
  */
 export function buildArgs(flags: OpencodeSpawnFlags, prompt: string): string[] {
   const args = ['run', '--format', 'json']
   if (flags.modelId) args.push('--model', flags.modelId)
+  const variant = variantForEffort(flags.effort)
+  if (variant) args.push('--variant', variant)
   if (flags.sessionId) args.push('--session', flags.sessionId)
   args.push(prompt || NO_INSTRUCTION)
   return args
 }
 
-/** One parsed JSON line: assistant text (optional session id), a session id, or nothing of interest. */
+/** One parsed JSON line: assistant text, a session id, usage, or nothing of interest. */
 export type OpencodeEvent =
   | { kind: 'text'; text: string; sessionId?: string }
   | { kind: 'session'; sessionId: string }
+  | { kind: 'usage'; usage: LanguageModelV3Usage }
   | { kind: 'other' }
 
 function stringField(o: Record<string, unknown>, keys: string[]): string | undefined {
@@ -112,32 +128,41 @@ function textFromObject(o: Record<string, unknown>): string | undefined {
     const p = o.part as Record<string, unknown>
     if (typeof p.text === 'string' && p.text) return p.text
   }
-  // REVIEWER-CONFIRM: ACP nd-JSON `session/update` text chunks, if `run --format json`
-  // ever emits them (this bridge still drives `opencode run`, not `opencode acp`).
-  if (typeof o.method === 'string' && o.method === 'session/update' && o.params && typeof o.params === 'object') {
-    const params = o.params as Record<string, unknown>
-    const update = params.update
-    if (update && typeof update === 'object') {
-      const u = update as Record<string, unknown>
-      if (typeof u.text === 'string' && u.text) return u.text
-      const content = u.content
-      if (content && typeof content === 'object') {
-        const c = content as Record<string, unknown>
-        if (typeof c.text === 'string' && c.text) return c.text
-      }
-    }
-  }
   return undefined
 }
 
+function num(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+function usageFromTokens(tokens: Record<string, unknown>): LanguageModelV3Usage {
+  const cache =
+    tokens.cache && typeof tokens.cache === 'object' && !Array.isArray(tokens.cache)
+      ? (tokens.cache as Record<string, unknown>)
+      : undefined
+  const input = num(tokens.input)
+  const output = num(tokens.output)
+  const reasoning = num(tokens.reasoning)
+  const cacheRead = cache ? num(cache.read) : undefined
+  const cacheWrite = cache ? num(cache.write) : undefined
+  return {
+    inputTokens: {
+      total: input,
+      noCache: input,
+      cacheRead,
+      cacheWrite,
+    },
+    outputTokens: {
+      total: output !== undefined || reasoning !== undefined ? (output ?? 0) + (reasoning ?? 0) : undefined,
+      text: output,
+      reasoning,
+    },
+  }
+}
+
 /**
- * REVIEWER-CONFIRM: JSON line shapes for `opencode run --format json`.
- * Assumed (kimi-style union, plus sessionID piggybacked on text events):
- *   { type: "text", text: "..." }
- *   { type: "text", sessionID: "ses_…", part: { text: "..." } }
- *   { type: "session", sessionID: "ses_…" }
- *   ACP-ish { method: "session/update", params: { update: { content: { text } } } }
- * Non-JSON lines are ignored.
+ * JSON line shapes for `opencode run --format json` (same objects as
+ * message/part rows). Unknown `type` → ignore.
  */
 export function parseOpencodeLine(line: string): OpencodeEvent {
   let ev: unknown
@@ -148,14 +173,23 @@ export function parseOpencodeLine(line: string): OpencodeEvent {
   }
   if (!ev || typeof ev !== 'object') return { kind: 'other' }
   const o = ev as Record<string, unknown>
-  const text = textFromObject(o)
+  const type = typeof o.type === 'string' ? o.type : ''
+  const text = type === 'text' || type === '' ? textFromObject(o) : undefined
   const sessionId = sessionIdFromObject(o)
   if (text) return sessionId ? { kind: 'text', text, sessionId } : { kind: 'text', text }
+  if (o.role === 'assistant' && o.tokens && typeof o.tokens === 'object') {
+    return { kind: 'usage', usage: usageFromTokens(o.tokens as Record<string, unknown>) }
+  }
+  if (type === 'step-finish' || type === 'step_finish') {
+    if (o.tokens && typeof o.tokens === 'object') {
+      return { kind: 'usage', usage: usageFromTokens(o.tokens as Record<string, unknown>) }
+    }
+  }
   if (sessionId) return { kind: 'session', sessionId }
   return { kind: 'other' }
 }
 
-/** REVIEWER-CONFIRM: headless `run` "Session not found" when --session points at a missing session. */
+/** A missing `-s` id exits non-zero; wording is unknown so this is a stderr hint. */
 export function isSessionNotFound(text: string): boolean {
   return /session not found/i.test(text)
 }
@@ -179,6 +213,8 @@ export interface OpencodeCliModelConfig {
   cwd: string | undefined
   opencodeHome: string | undefined
   conversationId: string | undefined
+  /** RivetOS effort id; mapped to `--variant`. */
+  effort?: string
   /** Injected in tests. */
   sessionMapPath?: string
 }
@@ -200,6 +236,7 @@ export class OpencodeCliModel implements LanguageModelV3 {
     const result = await this.doStream(options)
     const reader = result.stream.getReader()
     let text = ''
+    let usage = emptyUsage()
     let finishReason: LanguageModelV3GenerateResult['finishReason'] = {
       unified: 'stop',
       raw: undefined,
@@ -208,9 +245,12 @@ export class OpencodeCliModel implements LanguageModelV3 {
       const { done, value } = await reader.read()
       if (done) break
       if (value.type === 'text-delta') text += value.delta
-      else if (value.type === 'finish') finishReason = value.finishReason
+      else if (value.type === 'finish') {
+        finishReason = value.finishReason
+        if (value.usage) usage = value.usage
+      }
     }
-    return { content: [{ type: 'text', text }], finishReason, usage: emptyUsage(), warnings: [] }
+    return { content: [{ type: 'text', text }], finishReason, usage, warnings: [] }
   }
 
   doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
@@ -220,11 +260,23 @@ export class OpencodeCliModel implements LanguageModelV3 {
     const mapPath = this.config.sessionMapPath ?? defaultSessionMapPath(SESSION_MAP_FILE)
     const map = loadSessionMap(mapPath)
     const sessionId = map[convKey]
-    const args = buildArgs({ binary, modelId: this.modelId, sessionId }, prompt)
+    const effortFromOpts = options.providerOptions?.['opencode-cli']
+    const effortRaw =
+      effortFromOpts && typeof effortFromOpts === 'object' && !Array.isArray(effortFromOpts)
+        ? (effortFromOpts as Record<string, unknown>).variant ??
+          (effortFromOpts as Record<string, unknown>).effort
+        : undefined
+    const effort =
+      typeof effortRaw === 'string' ? effortRaw : this.config.effort
+    const args = buildArgs({ binary, modelId: this.modelId, sessionId, effort }, prompt)
     const abortSignal = options.abortSignal
     const childEnv: NodeJS.ProcessEnv = { ...process.env }
-    // REVIEWER-CONFIRM: env var OpenCode honors for a relocated data/config dir.
-    if (opencodeHome) childEnv.OPENCODE_CONFIG_DIR = opencodeHome
+    if (opencodeHome) {
+      childEnv.XDG_DATA_HOME =
+        opencodeHome.endsWith('/opencode') || opencodeHome.endsWith('\\opencode')
+          ? opencodeHome.slice(0, opencodeHome.lastIndexOf('opencode') - 1)
+          : opencodeHome
+    }
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
@@ -233,6 +285,7 @@ export class OpencodeCliModel implements LanguageModelV3 {
         let sawText = false
         let stderr = ''
         let buffer = ''
+        let usage = emptyUsage()
         controller.enqueue({ type: 'stream-start', warnings: [] })
 
         if (!existsSync(binary)) {
@@ -282,6 +335,8 @@ export class OpencodeCliModel implements LanguageModelV3 {
             if (ev.sessionId) rememberSession(ev.sessionId)
           } else if (ev.kind === 'session') {
             rememberSession(ev.sessionId)
+          } else if (ev.kind === 'usage') {
+            usage = ev.usage
           }
         }
 
@@ -313,9 +368,9 @@ export class OpencodeCliModel implements LanguageModelV3 {
             abortSignal?.removeEventListener('abort', kill)
             const tail = buffer.trim()
             if (tail) handleLine(tail)
-            // REVIEWER-CONFIRM: drop the mapped id so the *next* turn creates a
-            // session (no in-turn retry — keeps the stream one-spawn like kimi).
-            if (isSessionNotFound(stderr) || isSessionNotFound(tail)) {
+            // A missing `-s` id exits non-zero. Drop the mapped id so the
+            // next turn creates a session (no in-turn retry).
+            if (sessionId && (code !== 0 || isSessionNotFound(stderr) || isSessionNotFound(tail))) {
               if (map[convKey]) {
                 delete map[convKey]
                 saveSessionMap(mapPath, map)
@@ -334,7 +389,7 @@ export class OpencodeCliModel implements LanguageModelV3 {
             controller.enqueue({
               type: 'finish',
               finishReason: { unified: code === 0 ? 'stop' : 'error', raw: String(code) },
-              usage: emptyUsage(),
+              usage,
             })
             controller.close()
           } catch {
@@ -379,6 +434,7 @@ export class OpencodeCliProvider implements Provider {
   private readonly opencodeHome: string
   private readonly contextWindow: number
   private readonly outputTokenLimit: number
+  private available: boolean | null = null
 
   constructor(config: OpencodeCliProviderConfig = {}) {
     this.name = config.name ?? 'OpenCode (CLI)'
@@ -402,8 +458,36 @@ export class OpencodeCliProvider implements Provider {
   getMaxOutputTokens(): number {
     return this.outputTokenLimit
   }
-  isAvailable(): Promise<boolean> {
-    return Promise.resolve(existsSync(this.binary))
+  /** `opencode --version` exits 0 → available. Cached after the first probe. */
+  async isAvailable(): Promise<boolean> {
+    if (this.available !== null) return this.available
+    this.available = await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (ok: boolean): void => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      try {
+        const proc = spawn(this.binary, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const t = setTimeout(() => {
+          proc.kill('SIGKILL')
+          done(false)
+        }, 15_000)
+        t.unref()
+        proc.once('error', () => {
+          clearTimeout(t)
+          done(false)
+        })
+        proc.once('exit', (code) => {
+          clearTimeout(t)
+          done(code === 0)
+        })
+      } catch {
+        done(false)
+      }
+    })
+    return this.available
   }
 
   aiSdkBridge(): ProviderAiSdkBridge {
@@ -417,12 +501,18 @@ export class OpencodeCliProvider implements Provider {
           opencodeHome: this.opencodeHome,
           conversationId,
         }),
-      buildProviderOptions: () => undefined,
+      buildProviderOptions: (_messages, options) => {
+        const thinking = options?.thinking
+        if (!thinking || thinking === 'off') return undefined
+        const variant = variantForEffort(thinking)
+        if (!variant) return undefined
+        return { [OPENCODE_CLI_PROVIDER_ID]: { variant } }
+      },
     }
   }
 }
 
-function num(v: unknown): number | undefined {
+function positiveNum(v: unknown): number | undefined {
   const n = Number(v)
   return Number.isFinite(n) && n > 0 ? n : undefined
 }
@@ -439,8 +529,8 @@ export const manifest: PluginManifest = {
         binary: cfg.binary as string | undefined,
         home: cfg.home as string | undefined,
         cwd: cfg.cwd as string | undefined,
-        contextWindow: num(cfg.context_window),
-        maxOutputTokens: num(cfg.max_output_tokens),
+        contextWindow: positiveNum(cfg.context_window),
+        maxOutputTokens: positiveNum(cfg.max_output_tokens),
       }),
     )
   },

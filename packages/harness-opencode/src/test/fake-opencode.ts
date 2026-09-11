@@ -1,11 +1,11 @@
 /**
  * Fake `opencode` binaries for the executor tests.
  *
- * A shell script that records argv + env, optionally writes an opencode-shaped
- * session JSON + message records into a throwaway OPENCODE_DATA_DIR, prints
- * canned `--format json` lines on stdout and exits with a chosen code. The
- * real binary is never invoked, no provider tokens are spent, and nothing
- * touches the operator's `~/.local/share/opencode`.
+ * A Node script that records argv + env, optionally writes an opencode-shaped
+ * SQLite session into a throwaway data dir, prints canned `--format json`
+ * lines on stdout and exits with a chosen code. The real binary is never
+ * invoked, no provider tokens are spent, and nothing touches the operator's
+ * `~/.local/share/opencode`.
  *
  * Lives under `src/test/` rather than a top-level `test/` so the package's
  * tsconfig picks it up as ordinary source — same placement as core's
@@ -36,12 +36,14 @@ export interface FakeOpencodeOptions {
   onResume?: { stderr: string; exitCode: number }
   /** Hang until signalled instead of doing anything else. */
   slow?: boolean
+  /** Skip writing opencode.db (session-id / empty-store tests). Default true. */
+  writeStore?: boolean
 }
 
 export interface FakeOpencode {
   binary: string
   dir: string
-  /** Throwaway OPENCODE_DATA_DIR the fake writes transcripts into. */
+  /** Throwaway data dir the fake writes opencode.db into. */
   home: string
   /** Working directory to spawn in (a throwaway too). */
   cwd: string
@@ -80,66 +82,111 @@ export function makeFakeOpencode(opts: FakeOpencodeOptions = {}): FakeOpencode {
   fs.mkdirSync(cwd, { recursive: true })
 
   const binary = path.join(dir, 'opencode')
-  const sessionId = opts.sessionId ?? 'ses_11111111-2222-3333-4444-555555555555'
+  const sessionId = opts.sessionId ?? 'ses_11111111111111111111111111'
   const stdout = (opts.raw ?? (opts.lines ?? []).map((l) => JSON.stringify(l))).join('\n')
   fs.writeFileSync(path.join(dir, 'stdout.txt'), stdout === '' ? '' : stdout + '\n')
 
-  const script: string[] = [
-    '#!/usr/bin/env bash',
-    `printf '%s\\n' "${INVOCATION_MARK}" "$@" >> "${dir}/args.txt"`,
-    `env > "${dir}/env.txt"`,
-  ]
+  const writeStore = opts.writeStore !== false && opts.slow !== true
+  const usage = opts.usage ?? [{ inputOther: 100, output: 25, inputCacheRead: 10 }]
+  const fixture = {
+    sessionId,
+    home,
+    writeStore,
+    usage,
+    onResume: opts.onResume ?? null,
+    stderr: opts.stderr ?? null,
+    exitCode: opts.exitCode ?? 0,
+    slow: opts.slow === true,
+    stdoutPath: path.join(dir, 'stdout.txt'),
+    argsPath: path.join(dir, 'args.txt'),
+    envPath: path.join(dir, 'env.txt'),
+    mark: INVOCATION_MARK,
+  }
+  fs.writeFileSync(path.join(dir, 'fixture.json'), JSON.stringify(fixture))
 
-  if (opts.slow === true) {
-    script.push('exec sleep 60')
-  } else {
-    if (opts.onResume) {
-      script.push(
-        'for a in "$@"; do',
-        '  if [ "$a" = "--session" ]; then',
-        `    printf '%s\\n' ${shellQuote(opts.onResume.stderr)} >&2`,
-        `    exit ${String(opts.onResume.exitCode)}`,
-        '  fi',
-        'done',
-      )
-    }
-    const usage = opts.usage ?? [{ inputOther: 100, output: 25, inputCacheRead: 10 }]
-    const sessionFile = path.join(home, 'storage', 'session', 'proj_fake', `${sessionId}.json`)
-    const messageDir = path.join(home, 'storage', 'message', sessionId)
-    script.push(
-      'NOW=$(date +%s%3N)',
-      `mkdir -p ${shellQuote(path.dirname(sessionFile))}`,
-      `mkdir -p ${shellQuote(messageDir)}`,
-      `printf '%s\\n' '{"id":"${sessionId}","directory":"'"$PWD"'","title":"fake"}' > ${shellQuote(sessionFile)}`,
-    )
-    usage.forEach((u, i) => {
-      const tokens = {
+  // CJS: this file is spawned from /tmp with no package.json type=module.
+  const script = `#!/usr/bin/env node
+const { appendFileSync, readFileSync, writeFileSync } = require('node:fs')
+const path = require('node:path')
+
+const dir = path.dirname(__filename)
+const fixture = JSON.parse(readFileSync(path.join(dir, 'fixture.json'), 'utf8'))
+const args = process.argv.slice(2)
+appendFileSync(fixture.argsPath, fixture.mark + '\\n' + args.join('\\n') + '\\n')
+const envLines = Object.entries(process.env)
+  .filter(([, v]) => v !== undefined)
+  .map(([k, v]) => k + '=' + v)
+  .join('\\n')
+writeFileSync(fixture.envPath, envLines + '\\n')
+
+if (fixture.slow) {
+  setInterval(() => {}, 1 << 30)
+} else {
+
+if (fixture.onResume && args.includes('--session')) {
+  if (fixture.onResume.stderr) process.stderr.write(fixture.onResume.stderr + '\\n')
+  process.exit(fixture.onResume.exitCode)
+}
+
+if (fixture.writeStore) {
+  const { DatabaseSync } = require('node:sqlite')
+  const dbPath = path.join(fixture.home, 'opencode.db')
+  const db = new DatabaseSync(dbPath)
+  db.exec(\`
+    CREATE TABLE IF NOT EXISTS session (
+      id TEXT PRIMARY KEY, title TEXT, directory TEXT, model TEXT,
+      time_created INTEGER, time_updated INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS message (
+      id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT
+    );
+    CREATE TABLE IF NOT EXISTS part (
+      id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT
+    );
+  \`)
+  const now = Date.now()
+  const cwd = process.cwd()
+  db.prepare(
+    'INSERT OR REPLACE INTO session (id, title, directory, time_created, time_updated) VALUES (?, ?, ?, ?, ?)',
+  ).run(fixture.sessionId, 'fake', cwd, now, now)
+  const insertMsg = db.prepare(
+    'INSERT OR REPLACE INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+  )
+  for (let i = 0; i < fixture.usage.length; i++) {
+    const u = fixture.usage[i]
+    const data = JSON.stringify({
+      role: 'assistant',
+      tokens: {
         input: u.inputOther,
         output: u.output,
         reasoning: 0,
         cache: { read: u.inputCacheRead ?? 0, write: 0 },
-      }
-      script.push(
-        `printf '%s\\n' '{"id":"msg_${String(i)}","sessionID":"${sessionId}","role":"assistant","tokens":${JSON.stringify(
-          tokens,
-        )},"time":{"created":'"$NOW"',"completed":'"$NOW"'}}' > ${shellQuote(
-          path.join(messageDir, `msg_${String(i)}.json`),
-        )}`,
-      )
+      },
+      time: { created: now, completed: now },
     })
-    // A user-role row the reconcile must NOT add to the turn.
-    script.push(
-      `printf '%s\\n' '{"id":"msg_user","sessionID":"${sessionId}","role":"user","tokens":{"input":99999,"output":99999,"reasoning":0,"cache":{"read":0,"write":0}},"time":{"created":'"$NOW"',"completed":'"$NOW"'}}' > ${shellQuote(
-        path.join(messageDir, 'msg_user.json'),
-      )}`,
-    )
-    if (opts.stderr !== undefined) {
-      script.push(`printf '%s\\n' ${shellQuote(opts.stderr)} >&2`)
-    }
-    script.push(`cat "${dir}/stdout.txt"`, `exit ${String(opts.exitCode ?? 0)}`)
+    insertMsg.run('msg_' + i, fixture.sessionId, now, now, data)
   }
+  insertMsg.run(
+    'msg_user',
+    fixture.sessionId,
+    now,
+    now,
+    JSON.stringify({
+      role: 'user',
+      tokens: { input: 99999, output: 99999, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: now, completed: now },
+    }),
+  )
+  db.close()
+}
 
-  fs.writeFileSync(binary, script.join('\n') + '\n', { mode: 0o755 })
+if (fixture.stderr) process.stderr.write(fixture.stderr + '\\n')
+process.stdout.write(readFileSync(fixture.stdoutPath))
+process.exit(fixture.exitCode)
+}
+`
+
+  fs.writeFileSync(binary, script, { mode: 0o755 })
 
   const readInvocations = (): string[][] => {
     let text: string
@@ -197,42 +244,21 @@ export function makeFakeOpencode(opts: FakeOpencodeOptions = {}): FakeOpencode {
   }
 }
 
-/** `--format json` lines a healthy opencode turn prints. */
-export function successLines(finalText: string, sessionId: string): unknown[] {
+/** `--format json` lines a healthy opencode 1.18.30 turn prints. */
+export function successLines(finalText: string, sessionId?: string): unknown[] {
   return [
-    { type: 'step_start', sessionID: sessionId },
+    { type: 'step-start', ...(sessionId ? { sessionID: sessionId } : {}) },
     {
-      type: 'tool_use',
-      part: {
-        type: 'tool',
-        tool: 'bash',
-        callID: 'bash_0',
-        sessionID: sessionId,
-        state: { status: 'running', input: { command: 'ls' } },
-      },
+      type: 'tool',
+      tool: 'bash',
+      state: { status: 'running', input: { command: 'ls' } },
     },
     {
-      type: 'tool_use',
-      part: {
-        type: 'tool',
-        tool: 'bash',
-        callID: 'bash_0',
-        sessionID: sessionId,
-        state: { status: 'completed', output: 'a\nb\n' },
-      },
+      type: 'tool',
+      tool: 'bash',
+      state: { status: 'completed', output: 'a\nb\n', title: 'ls' },
     },
-    {
-      type: 'text',
-      part: { type: 'text', text: finalText, sessionID: sessionId },
-    },
-    {
-      type: 'step_finish',
-      sessionID: sessionId,
-      reason: 'stop',
-    },
+    { type: 'text', text: finalText },
+    { type: 'step-finish' },
   ]
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`
 }

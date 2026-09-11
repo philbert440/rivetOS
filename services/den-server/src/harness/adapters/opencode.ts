@@ -1,4 +1,5 @@
 import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
+import { openOpencodeDb } from '../../term/opencode-db.js'
 import {
   extractTurnText,
   summarizeTurnArgs,
@@ -11,6 +12,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function parseJson(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value
+  if (typeof value !== 'string' || value.trim() === '') return {}
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function partText(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (isRecord(part.text) && typeof part.text.value === 'string') return part.text.value
@@ -18,12 +30,12 @@ function partText(part: Record<string, unknown>): string {
 }
 
 /**
- * Fold OpenCode message (+ optional part) records into logical turns.
+ * Fold OpenCode `message` + `part` rows into logical turns.
  *
- * // REVIEWER-CONFIRM: assumed shape is one JSON object per message
- * (`role`/`time`/`id`) with parts either inline (`parts[]`) or in sibling
- * `storage/part/<messageID>/*.json` files (`type: text | reasoning | tool`).
- * A real on-disk dump should replace this guess.
+ * Message `data` JSON: user `{role,time,agent,model}`; assistant
+ * `{role,parentID,tokens,modelID,providerID,time,…}`. Part `data` JSON:
+ * `{type: text|reasoning|step-start|step-finish|tool, text?, state?}`.
+ * Tool parts are read defensively (`type`, `tool`, `state.status/input/output/title`).
  */
 export function opencodeTurnsFromMessages(
   messages: Array<Record<string, unknown>>,
@@ -61,6 +73,9 @@ export function opencodeTurnsFromMessages(
     const tools: HarnessTranscriptTool[] = []
     for (const part of parts) {
       const type = typeof part.type === 'string' ? part.type : ''
+      if (type === 'step-start' || type === 'step_start' || type === 'step-finish' || type === 'step_finish') {
+        continue
+      }
       if (type === 'reasoning' || type === 'thinking' || type === 'think') {
         thinking += partText(part)
         continue
@@ -71,17 +86,23 @@ export function opencodeTurnsFromMessages(
           (typeof part.name === 'string' && part.name) ||
           (isRecord(part.tool) && typeof part.tool.name === 'string' && part.tool.name) ||
           'tool'
+        const state = isRecord(part.state) ? part.state : undefined
         const callId =
           (typeof part.id === 'string' && part.id) ||
           (typeof part.toolCallId === 'string' && part.toolCallId) ||
+          (typeof part.callID === 'string' && part.callID) ||
           `${name}_${String(tools.length)}`
-        const args = isRecord(part.tool)
-          ? (part.tool.input ?? part.tool.args ?? part.state)
-          : (part.input ?? part.args)
+        const args =
+          (state && 'input' in state ? state.input : undefined) ??
+          (isRecord(part.tool) ? (part.tool.input ?? part.tool.args) : undefined) ??
+          part.input ??
+          part.args
         const status =
-          part.isError === true || (isRecord(part.state) && part.state.status === 'error')
+          part.isError === true || (state && state.status === 'error')
             ? 'error'
-            : 'done'
+            : state && state.status === 'running'
+              ? 'running'
+              : 'done'
         tools.push({
           name,
           status,
@@ -102,7 +123,10 @@ export function opencodeTurnsFromMessages(
         thinking.length > THINKING_TAIL_CHARS ? '…' + thinking.slice(-THINKING_TAIL_CHARS) : thinking
     }
     if (tools.length > 0) turn.tools = tools
-    if (isRecord(msg.model) && typeof msg.model.modelID === 'string') {
+    if (typeof msg.modelID === 'string') {
+      const provider = typeof msg.providerID === 'string' ? msg.providerID : ''
+      turn.model = provider ? `${provider}/${msg.modelID}` : msg.modelID
+    } else if (isRecord(msg.model) && typeof msg.model.modelID === 'string') {
       turn.model = msg.model.modelID
     } else if (typeof msg.model === 'string') {
       turn.model = msg.model
@@ -113,18 +137,60 @@ export function opencodeTurnsFromMessages(
 }
 
 function messageTime(msg: Record<string, unknown>): number {
+  if (typeof msg.time_created === 'number' && Number.isFinite(msg.time_created)) return msg.time_created
   if (isRecord(msg.time) && typeof msg.time.created === 'number') return msg.time.created
   if (typeof msg.createdAt === 'number') return msg.createdAt
   return 0
 }
 
+/** Read one session's turns out of `opencode.db`. Empty on miss / sqlite unavailable. */
+export function readOpencodeTurns(id: string): HarnessTurn[] {
+  const db = openOpencodeDb()
+  if (!db) return []
+  try {
+    const messages = db
+      .prepare(
+        `SELECT id, time_created, data FROM message WHERE session_id = ? ORDER BY time_created ASC`,
+      )
+      .all(id)
+    const parts = db
+      .prepare(
+        `SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY time_created ASC`,
+      )
+      .all(id)
+    const partsByMessage = new Map<string, Array<Record<string, unknown>>>()
+    for (const p of parts) {
+      const mid = typeof p.message_id === 'string' ? p.message_id : String(p.message_id ?? '')
+      if (!mid) continue
+      const data = parseJson(p.data)
+      const rec: Record<string, unknown> = { ...data, id: String(p.id ?? ''), time_created: p.time_created }
+      const arr = partsByMessage.get(mid) ?? []
+      arr.push(rec)
+      partsByMessage.set(mid, arr)
+    }
+    const msgs = messages.map((m) => {
+      const data = parseJson(m.data)
+      return { ...data, id: String(m.id ?? ''), time_created: m.time_created }
+    })
+    return opencodeTurnsFromMessages(msgs, partsByMessage)
+  } catch {
+    return []
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export const opencodeAdapter: HarnessAdapter = {
   id: 'opencode',
   store: {
-    parseObjects(objects: Record<string, unknown>[]): HarnessTranscriptTurn[] {
-      return opencodeTurnsFromMessages(objects)
+    readTurns(_ref, _maxBytes, sessionId): Promise<HarnessTranscriptTurn[]> {
+      return Promise.resolve(sessionId ? readOpencodeTurns(sessionId) : [])
     },
   },
   promptToolNames: [],
-  capabilities: () => ({ liveTurn: false, prompts: false, approvals: false }),
+  capabilities: () => ({ liveTurn: true, prompts: false, approvals: false }),
 }

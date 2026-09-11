@@ -10,7 +10,7 @@
 // (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), DeepSeek
 // Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/), Codex
 // (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and OpenCode
-// (~/.local/share/opencode/storage/session/<projectID>/<id>.json). An unknown harness
+// (~/.local/share/opencode/opencode.db SQLite). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
@@ -26,11 +26,12 @@ import {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
-  opencodeTurnsFromMessages,
+  readOpencodeTurns,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
+import { opencodeDataDir, opencodeDbPath, openOpencodeDb } from './opencode-db.js'
 import { resolveCodexRoomRollout } from './codex-room.js'
 
 export {
@@ -40,7 +41,7 @@ export {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
-  opencodeTurnsFromMessages,
+  readOpencodeTurns,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -1041,59 +1042,20 @@ function codexSessionExists(id: string): boolean {
   return findCodexRolloutSync(id) !== undefined
 }
 
-/**
-// ---- OpenCode: ~/.local/share/opencode/storage/session/<projectID>/<id>.json ----
+// ---- OpenCode: ~/.local/share/opencode/opencode.db (SQLite, WAL) ------------
 //
-// REVIEWER-CONFIRM: on-disk layout is OpenCode's XDG data dir
-// (`$OPENCODE_DATA_DIR` or `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`)
-// with session metadata at `storage/session/<projectID>/<ses_…>.json`,
-// messages at `storage/message/<ses_…>/*.json`, parts at
-// `storage/part/<msg_…>/*.json`. Native ids assumed `ses_<alnum>`.
+// Native ids are `ses_` + 20+ alphanumerics. Title = session.title.
+// List order: time_updated DESC. Transcript: message + part rows by time_created.
 
-function opencodeDataDir(): string {
-  const explicit = process.env.OPENCODE_DATA_DIR?.trim()
-  if (explicit) return explicit
-  const xdg = process.env.XDG_DATA_HOME?.trim()
-  return join(xdg || join(homedir(), '.local', 'share'), 'opencode')
-}
-
-function opencodeSessionRoot(): string {
-  return join(opencodeDataDir(), 'storage', 'session')
-}
-
-/** OpenCode native ids are `ses_<alnum>` — the session JSON basename. */
+/** OpenCode native ids are `ses_<alnum>` — the session table primary key. */
 const OPENCODE_ID_PREFIX = 'ses_'
 
 function opencodeIdSafe(id: string): boolean {
   return !!id && !id.includes('/') && !id.includes('..')
 }
 
-function findOpencodeSessionFileSync(id: string): string | undefined {
-  if (!opencodeIdSafe(id)) return undefined
-  const root = opencodeSessionRoot()
-  let projects: string[]
-  try {
-    projects = readdirSync(root)
-  } catch {
-    return undefined
-  }
-  let best: { path: string; mtime: number } | undefined
-  for (const project of projects) {
-    const path = join(root, project, `${id}.json`)
-    try {
-      const st = statSync(path)
-      if (st.isFile() && (!best || st.mtimeMs > best.mtime)) best = { path, mtime: st.mtimeMs }
-    } catch {
-      /* miss */
-    }
-  }
-  return best?.path
-}
-
-function opencodeTime(v: unknown): number {
-  if (typeof v === 'number' && Number.isFinite(v)) {
-    return v < 1e12 ? v * 1000 : v
-  }
+function opencodeEpochMs(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v < 1e12 ? v * 1000 : v
   if (typeof v === 'string') {
     const t = Date.parse(v)
     return Number.isFinite(t) ? t : 0
@@ -1101,145 +1063,130 @@ function opencodeTime(v: unknown): number {
   return 0
 }
 
-function readOpencodeSessionFile(path: string, id: string): HarnessSession | undefined {
-  let raw: string
-  let mtime: number
-  let birth: number
-  try {
-    const st = statSync(path)
-    if (!st.isFile()) return undefined
-    mtime = st.mtimeMs
-    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
-    raw = readFileSync(path, 'utf8')
-  } catch {
-    return undefined
-  }
-  let obj: Record<string, unknown>
-  try {
-    obj = JSON.parse(raw) as Record<string, unknown>
-  } catch {
-    return {
-      id,
-      command: 'opencode',
-      title: id,
-      updatedAt: Math.floor(mtime),
-      createdAt: Math.floor(birth),
+function opencodeModelLabel(raw: unknown): string | undefined {
+  let v: unknown = raw
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (!t) return undefined
+    try {
+      v = JSON.parse(t) as unknown
+    } catch {
+      return t
     }
   }
-  const title =
-    (typeof obj.title === 'string' ? obj.title.trim() : '') ||
-    (typeof obj.directory === 'string' ? obj.directory.trim() : '') ||
-    id
-  const time =
-    obj.time && typeof obj.time === 'object' && obj.time !== null && !Array.isArray(obj.time)
-      ? (obj.time as Record<string, unknown>)
-      : undefined
-  const updated = opencodeTime(time?.updated) || Math.floor(mtime)
-  const created = opencodeTime(time?.created) || Math.floor(birth)
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const o = v as Record<string, unknown>
+  const id = typeof o.id === 'string' ? o.id : ''
+  const provider = typeof o.providerID === 'string' ? o.providerID : ''
+  if (provider && id) return `${provider}/${id}`
+  return id || undefined
+}
+
+function rowToOpencodeSession(r: {
+  id?: unknown
+  title?: unknown
+  time_updated?: unknown
+  time_created?: unknown
+  model?: unknown
+}): HarnessSession {
+  const id = String(r.id ?? '')
+  const title = (typeof r.title === 'string' ? r.title : '').replace(/\s+/g, ' ').trim().slice(0, 120)
+  const created = opencodeEpochMs(r.time_created)
+  const model = opencodeModelLabel(r.model)
   return {
     id,
     command: 'opencode',
-    title: title.replace(/\s+/g, ' ').trim().slice(0, 120) || id,
-    updatedAt: Math.floor(updated),
-    createdAt: Math.floor(created),
+    title: title || id,
+    updatedAt: opencodeEpochMs(r.time_updated) || created,
+    ...(created ? { createdAt: created } : {}),
+    ...(model ? { model } : {}),
   }
 }
 
-async function listOpencodeSessions(limit: number): Promise<HarnessSession[]> {
-  const root = opencodeSessionRoot()
-  let projects: string[]
+function listOpencodeSessions(limit: number): HarnessSession[] {
+  const db = openOpencodeDb()
+  if (!db) return []
   try {
-    projects = await readdir(root)
+    const rows = db
+      .prepare(
+        `SELECT id, title, model, time_created, time_updated
+         FROM session
+         ORDER BY time_updated DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+    return rows.map((r) => rowToOpencodeSession(r))
   } catch {
     return []
-  }
-  const found: { id: string; path: string; mtime: number }[] = []
-  for (const project of projects) {
-    let files: string[]
+  } finally {
     try {
-      files = await readdir(join(root, project))
+      db.close()
     } catch {
-      continue
-    }
-    for (const file of files) {
-      if (!file.endsWith('.json')) continue
-      const id = file.slice(0, -'.json'.length)
-      if (!id || id.includes('..')) continue
-      const path = join(root, project, file)
-      try {
-        const st = await stat(path)
-        if (st.isFile()) found.push({ id, path, mtime: st.mtimeMs })
-      } catch {
-        /* skip */
-      }
+      /* ignore */
     }
   }
-  found.sort((a, b) => b.mtime - a.mtime)
-  const out: HarnessSession[] = []
-  for (const f of found.slice(0, limit)) {
-    const row = readOpencodeSessionFile(f.path, f.id)
-    if (row) out.push(row)
-  }
-  return out
 }
 
-/**
- * Describe ONE OpenCode session by native id — the `opencode` driver's
- * `getSession`, without paying a whole-store title scan.
- */
-export async function describeOpencodeSession(id: string): Promise<HarnessSession | undefined> {
+function describeOpencodeSessionSync(id: string): HarnessSession | undefined {
   if (!opencodeIdSafe(id)) return undefined
-  const path = findOpencodeSessionFileSync(id)
-  if (!path) return undefined
-  return readOpencodeSessionFile(path, id)
+  const db = openOpencodeDb()
+  if (!db) return undefined
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, title, model, time_created, time_updated
+         FROM session WHERE id = ? LIMIT 1`,
+      )
+      .get(id)
+    if (!row) return undefined
+    return rowToOpencodeSession(row)
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Async face of the sqlite lookup, so every driver's store port looks alike. */
+export function describeOpencodeSession(id: string): Promise<HarnessSession | undefined> {
+  return Promise.resolve(describeOpencodeSessionSync(id))
 }
 
 function opencodeSessionExists(id: string): boolean {
-  return findOpencodeSessionFileSync(id) !== undefined
-}
-
-function readJsonFilesInDir(dir: string): Array<Record<string, unknown>> {
-  let names: string[]
+  if (!opencodeIdSafe(id)) return false
+  const db = openOpencodeDb()
+  if (!db) return false
   try {
-    names = readdirSync(dir)
+    return !!db.prepare('SELECT 1 FROM session WHERE id = ? LIMIT 1').get(id)
   } catch {
-    return []
-  }
-  const out: Array<Record<string, unknown>> = []
-  for (const name of names) {
-    if (!name.endsWith('.json')) continue
+    return false
+  } finally {
     try {
-      const raw = readFileSync(join(dir, name), 'utf8')
-      const obj = JSON.parse(raw) as unknown
-      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
-        out.push(obj as Record<string, unknown>)
-      }
+      db.close()
     } catch {
-      /* skip */
+      /* ignore */
     }
   }
-  return out
 }
 
 /**
  * OpenCode-only transcript read — the `opencode` driver's hard-resync source.
  *
- * Store-scoped like its siblings: a missing session file reads as an empty
+ * Store-scoped like its siblings: a missing session row reads as an empty
  * transcript, never as whichever other store happens to hold that id.
  */
-export async function readOpencodeTranscript(id: string): Promise<HarnessTranscript> {
-  if (!opencodeIdSafe(id)) return { id, command: '', turns: [] }
-  const sessionFile = findOpencodeSessionFileSync(id)
-  if (!sessionFile) return { id, command: '', turns: [] }
-  const dataDir = opencodeDataDir()
-  const messages = readJsonFilesInDir(join(dataDir, 'storage', 'message', id))
-  const partsByMessage = new Map<string, Array<Record<string, unknown>>>()
-  for (const msg of messages) {
-    const mid = typeof msg.id === 'string' ? msg.id : ''
-    if (!mid) continue
-    partsByMessage.set(mid, readJsonFilesInDir(join(dataDir, 'storage', 'part', mid)))
+export function readOpencodeTranscript(id: string): Promise<HarnessTranscript> {
+  if (!opencodeIdSafe(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
   }
-  return { id, command: 'opencode', turns: opencodeTurnsFromMessages(messages, partsByMessage) }
+  if (!opencodeSessionExists(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  return Promise.resolve({ id, command: 'opencode', turns: readOpencodeTurns(id) })
 }
 
 /**
@@ -1304,7 +1251,7 @@ export async function listHarnessSessions(
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
-  if (commands.includes('opencode')) all.push(...(await listOpencodeSessions(limit)))
+  if (commands.includes('opencode')) all.push(...listOpencodeSessions(limit))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1657,8 +1604,7 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     if (dir) return { command: 'dsh', path: join(dir, 'session.jsonl.zstd') }
   }
   if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
-    const path = findOpencodeSessionFileSync(native)
-    if (path) return { command: 'opencode', path }
+    if (opencodeSessionExists(native)) return { command: 'opencode', path: opencodeDbPath() }
   }
   return undefined
 }
@@ -1673,7 +1619,7 @@ export function harnessStoreDirs(): string[] {
     kimiSessionsDir(),
     dshSessionsDir(),
     codexSessionsDir(),
-    join(opencodeDataDir(), 'storage'),
+    opencodeDataDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

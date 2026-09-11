@@ -142,7 +142,7 @@ describe('capability flags are honest', () => {
   it('advertises --model from an injected opencode.json', () => {
     const caps = makeDriver({ sheetReaders: opencodeJsonReader }).driver.capabilities
     expect(caps.modelFlag).toBe('--model')
-    expect(caps.effortFlag).toBeUndefined()
+    expect(caps.effortFlag).toBe('--variant')
     expect(caps.models?.map((m) => m.id)).toEqual(['anthropic/claude-sonnet-4-5'])
     expect(caps.models?.filter((m) => m.default === true).map((m) => m.id)).toEqual([
       'anthropic/claude-sonnet-4-5',
@@ -212,7 +212,7 @@ describe('startSession is refused — opencode cannot be told what to call a ses
 describe('identity + canonicalization', () => {
   it('mints `opencode:ses_…` ids from OpenCode’s own prefixed ids', () => {
     expect(OpencodeDriver.sessionId(NAT)).toBe(SID)
-    expect(NAT).toMatch(/^ses_[A-Za-z0-9]{8,}$/)
+    expect(NAT).toMatch(/^ses_[A-Za-z0-9]{20,}$/)
   })
 
   it('refuses to act on another harness id', async () => {
