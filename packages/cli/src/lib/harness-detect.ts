@@ -51,7 +51,7 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   hermes: '.hermes',
   'deepseek-harness': '.dsh',
   codex: '.codex',
-  pi: '.pi',
+  pi: '.pi/agent',
 }
 
 const HERMES_VENV_REL = join('hermes-agent', 'venv')

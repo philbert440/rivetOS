@@ -10,8 +10,8 @@
 // (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), DeepSeek
 // Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/), Codex
 // (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and Pi
-// (~/.pi/sessions/<id>/transcript.jsonl). An unknown harness
-// yields [] — the drawer just shows nothing for it rather than breaking.
+// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl). An unknown
+// harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -798,54 +798,92 @@ function dshSessionExists(id: string): boolean {
   return dshSessionDir(id) !== undefined
 }
 
-// ---- Pi: ~/.pi/sessions/<id>/transcript.jsonl (or <id>.jsonl) --------------
-// REVIEWER-CONFIRM: on-disk session dir + transcript filename. Best guess is
-// `~/.pi/sessions/<native-id>/transcript.jsonl`, with a flat
-// `~/.pi/sessions/<native-id>.jsonl` fallback. Honours PI_HOME like kimi's
-// KIMI_CODE_HOME.
+// ---- Pi: ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<uuid>.jsonl ---------
+// encoded-cwd replaces every `/` with `-` and wraps in dashes
+// (`/home/rivet` → `--home-rivet--`). Native id is the UUID in the filename
+// (and on the first JSONL `session` line). Listing walks every cwd bucket;
+// newest by file mtime (timestamp prefix as a tie-break). No `$PI_HOME`.
+
+const PI_NATIVE_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const PI_SESSION_FILE_RE =
+  /^(.+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+let piHomeOverride: string | undefined
+
+/** Test-only: point the pi store at a temp dir. Call with no args to reset. */
+export function setPiHomeForTest(home?: string): void {
+  piHomeOverride = home
+}
 
 function piHome(): string {
-  return process.env.PI_HOME?.trim() || join(homedir(), '.pi')
+  return piHomeOverride ?? join(homedir(), '.pi', 'agent')
 }
 
 function piSessionsDir(): string {
   return join(piHome(), 'sessions')
 }
 
-/** Transcript files we will try inside a session directory, first hit wins. */
-const PI_TRANSCRIPT_NAMES = ['transcript.jsonl', 'session.jsonl'] as const
-
-function piTranscriptInDir(dir: string): string | undefined {
-  for (const name of PI_TRANSCRIPT_NAMES) {
-    const path = join(dir, name)
-    if (existsSync(path)) return path
-  }
-  return undefined
+function piNativeFromFilename(name: string): string | undefined {
+  const m = name.match(PI_SESSION_FILE_RE)
+  return m?.[2]
 }
 
-/** Resolve a native id to a transcript file (dir layout, then flat jsonl). */
+/** Newest jsonl for a native id across every cwd bucket. */
 function piTranscriptPath(id: string): string | undefined {
-  if (!id || id.includes('/') || id.includes('..')) return undefined
+  if (!id || !PI_NATIVE_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
   const root = piSessionsDir()
-  const dirHit = piTranscriptInDir(join(root, id))
-  if (dirHit) return dirHit
-  const flat = join(root, `${id}.jsonl`)
-  return existsSync(flat) ? flat : undefined
-}
-
-function piSessionDir(id: string): string | undefined {
-  if (!id || id.includes('/') || id.includes('..')) return undefined
-  const dir = join(piSessionsDir(), id)
+  let buckets: string[]
   try {
-    if (statSync(dir).isDirectory()) return dir
+    buckets = readdirSync(root)
   } catch {
-    /* miss */
+    return undefined
   }
-  return undefined
+  let best: { path: string; mtime: number; prefix: string } | undefined
+  for (const bucket of buckets) {
+    if (bucket.startsWith('.')) continue
+    const dir = join(root, bucket)
+    let names: string[]
+    try {
+      if (!statSync(dir).isDirectory()) continue
+      names = readdirSync(dir)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      if (piNativeFromFilename(name) !== id) continue
+      const full = join(dir, name)
+      try {
+        const st = statSync(full)
+        if (!st.isFile()) continue
+        const prefix = name.slice(0, name.length - `_${id}.jsonl`.length)
+        if (
+          !best ||
+          st.mtimeMs > best.mtime ||
+          (st.mtimeMs === best.mtime && prefix > best.prefix)
+        ) {
+          best = { path: full, mtime: st.mtimeMs, prefix }
+        }
+      } catch {
+        continue
+      }
+    }
+  }
+  return best?.path
 }
 
 async function piTitleFromTranscript(file: string): Promise<string> {
   const parsed = await parseJsonlObjects(file)
+  for (const obj of parsed.objects) {
+    const t = obj.type
+    if (
+      (t === 'name' || t === 'session_name') &&
+      (typeof obj.name === 'string' || typeof obj.session_name === 'string')
+    ) {
+      const name = (typeof obj.name === 'string' ? obj.name : obj.session_name) as string
+      if (name.trim()) return name.trim().slice(0, 120)
+    }
+  }
   for (const turn of piTurnsFromLines(parsed.objects)) {
     if (turn.role === 'user' && turn.text.trim()) return turn.text.trim().slice(0, 120)
   }
@@ -853,29 +891,18 @@ async function piTitleFromTranscript(file: string): Promise<string> {
 }
 
 async function readPiSession(id: string): Promise<HarnessSession | undefined> {
-  if (!id || id.includes('/') || id.includes('..')) return undefined
-  const dir = piSessionDir(id)
   const transcript = piTranscriptPath(id)
+  if (!transcript) return undefined
   let mtime: number
   let birth: number
   try {
-    const st = await stat(dir ?? transcript ?? '')
+    const st = await stat(transcript)
     mtime = st.mtimeMs
     birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
   } catch {
     return undefined
   }
-  if (transcript) {
-    try {
-      const ts = await stat(transcript)
-      if (ts.mtimeMs > mtime) mtime = ts.mtimeMs
-    } catch {
-      /* keep dir mtime */
-    }
-  }
-  const title = transcript
-    ? (await piTitleFromTranscript(transcript).catch(() => '')) || id
-    : id
+  const title = (await piTitleFromTranscript(transcript).catch(() => '')) || id
   return {
     id,
     command: 'pi',
@@ -887,22 +914,38 @@ async function readPiSession(id: string): Promise<HarnessSession | undefined> {
 
 async function listPiSessions(limit: number): Promise<HarnessSession[]> {
   const root = piSessionsDir()
-  let entries: import('node:fs').Dirent[]
+  let buckets: import('node:fs').Dirent[]
   try {
-    entries = await readdir(root, { withFileTypes: true })
+    buckets = await readdir(root, { withFileTypes: true })
   } catch {
     return []
   }
-  const ids = new Set<string>()
-  for (const e of entries) {
-    if (e.isDirectory()) {
-      ids.add(e.name)
-    } else if (e.isFile() && e.name.endsWith('.jsonl')) {
-      ids.add(e.name.slice(0, -'.jsonl'.length))
+  const newest = new Map<string, { path: string; mtime: number }>()
+  for (const bucket of buckets) {
+    if (!bucket.isDirectory() || bucket.name.startsWith('.')) continue
+    let files: import('node:fs').Dirent[]
+    try {
+      files = await readdir(join(root, bucket.name), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      if (!f.isFile()) continue
+      const id = piNativeFromFilename(f.name)
+      if (!id) continue
+      const full = join(root, bucket.name, f.name)
+      let mtime: number
+      try {
+        mtime = (await stat(full)).mtimeMs
+      } catch {
+        continue
+      }
+      const prev = newest.get(id)
+      if (!prev || mtime >= prev.mtime) newest.set(id, { path: full, mtime })
     }
   }
   const out: HarnessSession[] = []
-  for (const id of ids) {
+  for (const id of newest.keys()) {
     const row = await readPiSession(id)
     if (row) out.push(row)
   }
@@ -918,10 +961,7 @@ export async function describePiSession(id: string): Promise<HarnessSession | un
 }
 
 function piSessionExists(id: string): boolean {
-  if (!id || id.includes('/') || id.includes('..')) return false
-  const root = piSessionsDir()
-  if (existsSync(join(root, id))) return true
-  return existsSync(join(root, `${id}.jsonl`))
+  return piTranscriptPath(id) !== undefined
 }
 
 /**

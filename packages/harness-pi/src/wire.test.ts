@@ -1,7 +1,7 @@
 /**
  * wire tests — session-directory resolution, print/JSON line parsing /
- * HarnessEvent mapping, and the post-hoc usage reconcile against transcripts
- * written to a temp PI_HOME.
+ * HarnessEvent mapping, and the post-hoc usage reconcile against session
+ * jsonl written to a temp data dir.
  */
 
 import fs from 'node:fs'
@@ -9,11 +9,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import {
+  encodePiCwd,
+  findSessionFile,
   listSessionIds,
   parsePiJsonLine,
   piHome,
   reconcileTurn,
-  resolveSessionDir,
   sessionsRoot,
   toHarnessEvents,
   tokensFromUsage,
@@ -32,71 +33,70 @@ function tmpHome(): string {
   return dir
 }
 
+const SID = '01a090db-c402-71cb-a954-6066b9493630'
+const CWD = '/home/rivet'
+
 interface WriteOpts {
   home: string
   sessionId: string
+  cwd?: string
   lines: unknown[]
 }
 
 function writeSession(opts: WriteOpts): string {
-  const sessionDir = path.join(sessionsRoot(opts.home), opts.sessionId)
-  fs.mkdirSync(sessionDir, { recursive: true })
+  const cwd = opts.cwd ?? CWD
+  const bucket = path.join(sessionsRoot(opts.home), encodePiCwd(cwd))
+  fs.mkdirSync(bucket, { recursive: true })
+  const file = path.join(bucket, `2026-09-11T14-25-16-803Z_${opts.sessionId}.jsonl`)
   fs.writeFileSync(
-    path.join(sessionDir, 'transcript.jsonl'),
+    file,
     opts.lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n',
   )
-  return sessionDir
+  return file
 }
 
-const usage = (time: number, over: Partial<Record<string, number>> = {}): unknown => ({
-  type: 'usage',
-  input_tokens: over.input_tokens ?? 100,
-  output_tokens: over.output_tokens ?? 10,
-  cache_read_tokens: over.cache_read_tokens ?? 5,
-  cache_write_tokens: over.cache_write_tokens ?? 0,
-  usage_scope: 'turn',
-  time,
-})
-
 describe('home + session resolution', () => {
-  it('honours PI_HOME, else ~/.pi/agent', () => {
-    expect(piHome({ PI_HOME: '/somewhere/else' })).toBe('/somewhere/else')
+  it('uses ~/.pi/agent and ignores PI_HOME', () => {
+    expect(piHome({ PI_HOME: '/somewhere/else' })).toBe(path.join(os.homedir(), '.pi', 'agent'))
     expect(piHome({})).toBe(path.join(os.homedir(), '.pi', 'agent'))
   })
 
-  it('resolves a session directory that exists', () => {
+  it('encodes cwd buckets the way pi does', () => {
+    expect(encodePiCwd('/home/rivet')).toBe('--home-rivet--')
+    expect(encodePiCwd('/home/rivet/')).toBe('--home-rivet--')
+  })
+
+  it('resolves a session jsonl that exists', () => {
     const home = tmpHome()
-    const dir = writeSession({ home, sessionId: 'session_a', lines: [] })
-    expect(resolveSessionDir({ home, cwd: '/work/a', sessionId: 'session_a' })).toBe(dir)
+    const file = writeSession({ home, sessionId: SID, lines: [] })
+    expect(findSessionFile({ home, cwd: CWD, sessionId: SID })).toBe(file)
   })
 
   it('returns undefined for a session that is not on disk', () => {
     const home = tmpHome()
-    expect(resolveSessionDir({ home, cwd: '/work/c', sessionId: 'session_nope' })).toBeUndefined()
+    expect(
+      findSessionFile({ home, cwd: CWD, sessionId: '00000000-0000-4000-8000-000000000000' }),
+    ).toBeUndefined()
   })
 })
 
 describe('listSessionIds', () => {
-  it('lists session directories (and bare .jsonl files) under sessions/', () => {
+  it('walks every cwd bucket for *_<uuid>.jsonl files', () => {
     const home = tmpHome()
-    writeSession({ home, sessionId: 'session_d1', lines: [] })
-    writeSession({ home, sessionId: 'session_d2', lines: [] })
-    const root = sessionsRoot(home)
-    fs.writeFileSync(path.join(root, 'session_file.jsonl'), '{}\n')
+    const other = '42accb06-524a-47a6-b4b3-0991552914d7'
+    writeSession({ home, sessionId: SID, cwd: '/home/rivet', lines: [] })
+    writeSession({ home, sessionId: other, cwd: '/srv/work', lines: [] })
 
-    expect([...listSessionIds(home, '/work/d')].sort()).toEqual([
-      'session_d1',
-      'session_d2',
-      'session_file',
-    ])
+    expect([...listSessionIds(home, '/home/rivet')].sort()).toEqual([other, SID].sort())
   })
 })
 
 describe('parsePiJsonLine', () => {
   it('parses a typed object and skips junk', () => {
-    expect(parsePiJsonLine('{"type":"assistant","content":"hi"}')).toEqual({
-      type: 'assistant',
-      content: 'hi',
+    expect(parsePiJsonLine('{"type":"session","version":3,"id":"' + SID + '"}')).toEqual({
+      type: 'session',
+      version: 3,
+      id: SID,
     })
     expect(parsePiJsonLine('not json')).toBeUndefined()
     expect(parsePiJsonLine('{"role":"assistant"}')).toBeUndefined()
@@ -106,18 +106,30 @@ describe('parsePiJsonLine', () => {
 })
 
 describe('toHarnessEvents', () => {
-  const sid = 'pi:session_x'
+  const sid = `pi:${SID}`
 
-  it('maps assistant / thinking / tools / result / error', () => {
-    expect(toHarnessEvents({ type: 'assistant', content: 'hello' }, sid)).toEqual([
-      { type: 'assistant-delta', sessionId: sid, text: 'hello' },
-    ])
-    expect(toHarnessEvents({ type: 'thinking', content: 'hmm' }, sid)).toEqual([
-      { type: 'reasoning-delta', sessionId: sid, text: 'hmm' },
+  it('maps session + assistant message text / thinking / tools', () => {
+    expect(toHarnessEvents({ type: 'session', id: SID }, sid)).toEqual([
+      { type: 'session-updated', sessionId: sid, status: 'active' },
     ])
     expect(
-      toHarnessEvents({ type: 'tool_start', id: 't1', name: 'Bash', input: { command: 'ls' } }, sid),
+      toHarnessEvents(
+        {
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'hmm' },
+              { type: 'toolCall', id: 't1', name: 'Bash', arguments: { command: 'ls' } },
+              { type: 'toolResult', id: 't1', result: 'ok' },
+              { type: 'text', text: 'hello' },
+            ],
+          },
+        },
+        sid,
+      ),
     ).toEqual([
+      { type: 'reasoning-delta', sessionId: sid, text: 'hmm' },
       {
         type: 'tool-use',
         sessionId: sid,
@@ -125,8 +137,6 @@ describe('toHarnessEvents', () => {
         name: 'Bash',
         input: { command: 'ls' },
       },
-    ])
-    expect(toHarnessEvents({ type: 'tool_end', id: 't1', output: 'ok' }, sid)).toEqual([
       {
         type: 'tool-result',
         sessionId: sid,
@@ -134,95 +144,106 @@ describe('toHarnessEvents', () => {
         name: '',
         output: 'ok',
       },
-    ])
-    expect(toHarnessEvents({ type: 'result', session_id: 'session_x', text: 'done' }, sid)).toEqual([
-      { type: 'turn-complete', sessionId: sid, stopReason: 'end-turn' },
-    ])
-    expect(toHarnessEvents({ type: 'error', message: 'boom' }, sid)).toEqual([
-      { type: 'error', sessionId: sid, code: 'pi_error', message: 'boom' },
+      { type: 'assistant-delta', sessionId: sid, text: 'hello' },
     ])
   })
 
   it('returns nothing without a session id to attribute', () => {
-    expect(toHarnessEvents({ type: 'assistant', content: 'x' }, '')).toEqual([])
+    expect(
+      toHarnessEvents({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] } }, ''),
+    ).toEqual([])
   })
 })
 
 describe('usageFromEvent / tokensFromUsage', () => {
-  it('sums input + cache into inputTokens and ignores session rollups', () => {
+  it('sums input + cache into inputTokens from assistant message.usage', () => {
     expect(
       tokensFromUsage({ input_tokens: 100, output_tokens: 25, cache_read_tokens: 10 }),
     ).toEqual({ inputTokens: 110, outputTokens: 25 })
     expect(
       usageFromEvent({
-        type: 'usage',
-        input_tokens: 40,
-        output_tokens: 5,
-        usage_scope: 'turn',
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [],
+          usage: { input_tokens: 40, output_tokens: 5 },
+        },
       }),
     ).toEqual({ inputTokens: 40, outputTokens: 5 })
     expect(
       usageFromEvent({
-        type: 'usage',
-        input_tokens: 999,
-        output_tokens: 999,
-        usage_scope: 'session',
+        type: 'message',
+        message: { role: 'user', content: [], usage: { input_tokens: 9, output_tokens: 1 } },
       }),
     ).toBeUndefined()
-    expect(
-      usageFromEvent({
-        type: 'result',
-        usage: { input_tokens: 7, output_tokens: 3 },
-      }),
-    ).toEqual({ inputTokens: 7, outputTokens: 3 })
   })
 })
 
 describe('reconcileTurn', () => {
-  it('sums turn-scoped usage at or after the floor', () => {
+  it('sums assistant usage at or after the floor', () => {
     const home = tmpHome()
-    const dir = writeSession({
+    const file = writeSession({
       home,
-      sessionId: 'session_e',
+      sessionId: SID,
       lines: [
-        { type: 'session', session_id: 'session_e' },
-        usage(1000), // before the floor — a previous turn on a resumed session
-        usage(2000, { input_tokens: 200, output_tokens: 20, cache_read_tokens: 0 }),
+        { type: 'session', version: 3, id: SID, timestamp: '2026-09-11T14:25:16.803Z', cwd: CWD },
         {
-          type: 'usage',
-          input_tokens: 9999,
-          output_tokens: 9999,
-          usage_scope: 'session',
-          time: 2000,
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'old' }],
+            timestamp: 1000,
+            usage: { input_tokens: 100, output_tokens: 10 },
+          },
         },
-        { type: 'turn_end', reason: 'completed', turn_id: 1, duration_ms: 1234, time: 2100 },
+        {
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'new' }],
+            timestamp: 2000,
+            usage: { input_tokens: 200, output_tokens: 20 },
+            stopReason: 'end_turn',
+          },
+        },
       ],
     })
 
-    const facts = reconcileTurn({ sessionDir: dir, sinceMs: 1500 })
+    const facts = reconcileTurn({ sessionDir: file, sinceMs: 1500 })
     expect(facts.usage).toEqual({ inputTokens: 200, outputTokens: 20, totalTokens: 220 })
     expect(facts.usageRecords).toBe(1)
-    expect(facts.turnEnded).toMatchObject({ reason: 'completed', turnId: 1, durationMs: 1234 })
+    expect(facts.turnEnded).toMatchObject({ reason: 'end_turn' })
     expect(facts.files).toBe(1)
   })
 
   it('tolerates a torn final line', () => {
     const home = tmpHome()
-    const dir = writeSession({
+    const file = writeSession({
       home,
-      sessionId: 'session_f',
-      lines: [usage(3000), '{"type":"turn_end","reason":"cancel'],
+      sessionId: SID,
+      lines: [
+        {
+          type: 'message',
+          message: {
+            role: 'assistant',
+            content: [],
+            timestamp: 3000,
+            usage: { input_tokens: 100, output_tokens: 10, cache_read_tokens: 5 },
+          },
+        },
+        '{"type":"message","message":{"role":"assistant"',
+      ],
     })
-    const facts = reconcileTurn({ sessionDir: dir, sinceMs: 0 })
+    const facts = reconcileTurn({ sessionDir: file, sinceMs: 0 })
     expect(facts.malformed).toBe(1)
     expect(facts.usage.totalTokens).toBe(115)
     expect(facts.turnEnded).toBeUndefined()
   })
 
   it('reports zero rather than throwing when there is no transcript', () => {
-    const facts = reconcileTurn({ sessionDir: '/nonexistent/session', sinceMs: 0 })
+    const facts = reconcileTurn({ sessionDir: '/nonexistent/session.jsonl', sinceMs: 0 })
     expect(facts.usage.totalTokens).toBe(0)
     expect(facts.files).toBe(0)
-    expect(transcriptFilesFor('/nonexistent/session')).toEqual([])
+    expect(transcriptFilesFor('/nonexistent/session.jsonl')).toEqual([])
   })
 })

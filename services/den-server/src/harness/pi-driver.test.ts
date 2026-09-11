@@ -2,22 +2,21 @@
 // manager (PTY spawn/inject/Esc) and the pi on-disk store. No `pi` binary
 // and no ~/.pi required.
 //
-// Mirrors kimi-driver.test.ts — adopting harness, refused startSession,
-// UUID natives (no prefix; REVIEWER-CONFIRM), room rotation.
+// Pinning driver (like grok/claude): `--session-id` creates a new session,
+// UUID natives (any version), no rotation.
 
 import { describe, expect, it, vi } from 'vitest'
 import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { PiDriver, type PiPtyHost, type PiStoreHost } from './pi-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
+import type { SheetReaders } from './model-sheets.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
-import { FIVE_FLAGS, pick, runHarnessRotationConformance } from './test/driver-conformance.js'
+import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
-const NAT = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-const NAT2 = '42accb06-524a-47a6-b4b3-0991552914d7'
-const NAT3 = '15cb936c-3364-49d6-8769-21f0c635f160'
-const SID = `pi:${NAT}` as SessionId
-const ROOM = 'den-pty-1a2b3c4d'
+const UUID = '01a090db-c402-71cb-a954-6066b9493630'
+const UUID2 = '42accb06-524a-47a6-b4b3-0991552914d7'
+const SID = `pi:${UUID}` as SessionId
 
 interface Fakes {
   driver: PiDriver
@@ -75,12 +74,20 @@ function fakePty() {
   }
 }
 
+/** Force the fallback sheet — tests do not depend on ~/.pi/agent/settings.json. */
+const missingPiFiles: SheetReaders = {
+  readJson: (): never => {
+    throw new Error('ENOENT')
+  },
+}
+
 function makeDriver(
   opts: {
     rows?: HarnessSession[]
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sheetReaders?: SheetReaders
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -100,26 +107,18 @@ function makeDriver(
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
+    sheetReaders: opts.sheetReaders ?? missingPiFiles,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
 
-const piEvent = (
-  room: string,
-  native: string | undefined,
-  body: Record<string, unknown>,
-): DenAgentEventLike =>
+const piEvent = (session: string, body: Record<string, unknown>): DenAgentEventLike =>
   ({
     v: 1,
-    session: room,
+    session,
     harness: 'pi',
-    ...(native ? { harnessSession: native } : {}),
     ...body,
   }) as DenAgentEventLike
-
-const adopt = (f: Fakes, room: string, native: string): void => {
-  f.emitDen(piEvent(room, native, { type: 'session.start', title: 'pi session' }))
-}
 
 describe('capability flags are honest', () => {
   it('reports what is actually wired on this node', () => {
@@ -133,11 +132,12 @@ describe('capability flags are honest', () => {
     })
   })
 
-  it('advertises --model with an empty list until a config override fills it', () => {
+  it('advertises --model / --thinking with the fleet default when settings.json is missing', () => {
     const caps = makeDriver().driver.capabilities
     expect(caps.modelFlag).toBe('--model')
-    expect(caps.effortFlag).toBeUndefined()
-    expect(caps.models).toEqual([])
+    expect(caps.effortFlag).toBe('--thinking')
+    expect(caps.models?.[0]?.id).toBe('deepseek/deepseek-v4-flash')
+    expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'max'])
   })
 
   it('drops interrupt/resume when den terminals are off', () => {
@@ -162,8 +162,9 @@ describe('capability-false paths reject with capability_unsupported', () => {
     await expectUnsupported(() => driver.resolveApproval(SID, 'req-1', 'allow'))
   })
 
-  it('rejects resume/turn when terminals are disabled', async () => {
+  it('rejects start/resume/turn when terminals are disabled', async () => {
     const { driver } = makeDriver({ withPty: false })
+    await expectUnsupported(() => driver.startSession())
     await expectUnsupported(() => driver.resumeSession(SID))
     await expectUnsupported(() => driver.sendUserTurn(SID, { text: 'hi' }))
   })
@@ -182,28 +183,18 @@ describe('capability-false paths reject with capability_unsupported', () => {
       }),
     )
   })
-})
 
-describe('startSession is refused — pi cannot be told what to call a session', () => {
-  it('rejects with capability_unsupported, pinned or not, and spawns nothing', async () => {
-    const { driver, pty } = makeDriver()
-    await expect(driver.startSession()).rejects.toMatchObject({
-      code: 'capability_unsupported',
-    })
-    await expect(driver.startSession({ nativeSessionId: NAT })).rejects.toMatchObject({
-      code: 'capability_unsupported',
-    })
-    await expect(driver.startSession({ cwd: '/elsewhere' })).rejects.toMatchObject({
-      code: 'capability_unsupported',
-    })
-    expect(pty.spawns).toEqual([])
+  it('rejects roster-owned start options rather than silently ignoring them', async () => {
+    const { driver } = makeDriver()
+    await expectUnsupported(() => driver.startSession({ cwd: '/elsewhere' }))
+    await expectUnsupported(() => driver.startSession({ model: 'deepseek/deepseek-v4-flash' }))
   })
 })
 
 describe('identity + canonicalization', () => {
   it('mints `pi:<uuid>` ids from pi’s own ids', () => {
-    expect(PiDriver.sessionId(NAT)).toBe(SID)
-    expect(NAT).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    expect(PiDriver.sessionId(UUID)).toBe(SID)
+    expect(UUID).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
   })
 
   it('refuses to act on another harness id', async () => {
@@ -215,7 +206,7 @@ describe('identity + canonicalization', () => {
 
   it('lists store rows as canonical summaries', async () => {
     const { driver } = makeDriver({
-      rows: [{ id: NAT, command: 'pi', title: 'review the PR', updatedAt: 1_700_000_000_000 }],
+      rows: [{ id: UUID, command: 'pi', title: 'review the PR', updatedAt: 1_700_000_000_000 }],
     })
     const [summary] = await driver.listSessions()
     expect(summary).toMatchObject({
@@ -230,218 +221,159 @@ describe('identity + canonicalization', () => {
   it('ignores rows from another harness store in the same list', async () => {
     const { driver } = makeDriver({
       rows: [
-        { id: NAT, command: 'pi', title: 'mine', updatedAt: 2 },
-        { id: NAT2, command: 'grok', title: 'not mine', updatedAt: 3 },
+        { id: UUID, command: 'pi', title: 'mine', updatedAt: 2 },
+        { id: UUID2, command: 'grok', title: 'not mine', updatedAt: 3 },
       ],
     })
     expect((await driver.listSessions()).map((s) => s.sessionId)).toEqual([SID])
   })
 })
 
-describe('adoption — how a pi session enters the control plane', () => {
-  it('binds the den room to pi’s own id on the first hook event', async () => {
-    const { driver, emitDen } = makeDriver({
-      rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 5 }],
+describe('startSession', () => {
+  it('pins the native id and spawns the `pi` roster entry', async () => {
+    const { driver, pty } = makeDriver()
+    const summary = await driver.startSession({ nativeSessionId: UUID })
+    expect(summary.sessionId).toBe(SID)
+    expect(summary.status).toBe('idle')
+    expect(pty.spawns).toEqual([{ key: 'pi', session: UUID, resume: undefined }])
+  })
+
+  it('mints a uuid when the caller does not pin one', async () => {
+    const { driver, pty } = makeDriver()
+    const summary = await driver.startSession()
+    expect(summary.sessionId).toMatch(/^pi:[0-9a-f-]{36}$/)
+    expect(pty.spawns[0].resume).toBeUndefined()
+  })
+
+  it('never attaches: a pinned id already in the store is a collision', async () => {
+    const { driver } = makeDriver({
+      rows: [{ id: UUID, command: 'pi', title: UUID, updatedAt: 1 }],
     })
+    await expect(driver.startSession({ nativeSessionId: UUID })).rejects.toMatchObject({
+      code: 'session_id_collision',
+    })
+  })
+
+  it('collides on a session file the store cannot describe yet', async () => {
+    const { driver, store, pty } = makeDriver()
+    store.sessions.add(UUID)
+    await expect(driver.startSession({ nativeSessionId: UUID })).rejects.toMatchObject({
+      code: 'session_id_collision',
+    })
+    expect(pty.spawns).toEqual([])
+  })
+
+  it('rejects a non-uuid pin — `pi --session-id` cannot honor it', async () => {
+    const { driver } = makeDriver()
+    await expect(driver.startSession({ nativeSessionId: 'thread-42' })).rejects.toMatchObject({
+      code: 'invalid_session_id',
+    })
+  })
+
+  it('announces session-created on the registry stream', async () => {
+    const { driver } = makeDriver()
     const seen: HarnessEvent[] = []
     driver.subscribeEvents((e) => seen.push(e))
-    adopt({ driver, emitDen } as Fakes, ROOM, NAT)
-
-    expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'idle' })
-    await vi.waitFor(() => {
-      expect(seen.some((e) => e.type === 'session-created' && e.sessionId === SID)).toBe(true)
-    })
-    expect(await driver.getSession(SID)).toMatchObject({ sessionId: SID, status: 'idle' })
-  })
-
-  it('adopts a pi running OUTSIDE den, whose room key IS its canonical id', () => {
-    const f = makeDriver()
-    const seen: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => seen.push(e))
-    f.emitDen({ v: 1, session: SID, harness: 'pi', type: 'session.start', title: 'pi' })
-    expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'idle' })
-  })
-
-  it('does not mistake an arbitrary colon-bearing room key for a canonical id', () => {
-    const f = makeDriver()
-    const seen: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => seen.push(e))
-    f.emitDen({
-      v: 1,
-      session: 'pi:nope',
-      harness: 'pi',
-      type: 'tool.start',
-      tool: 'Bash',
-    })
-    f.emitDen({
-      v: 1,
-      session: 'host:pi',
-      harness: 'pi',
-      type: 'tool.start',
-      tool: 'Bash',
-    })
-    expect(seen).toEqual([])
-  })
-
-  it('streams that room’s later events under the bound id', () => {
-    const f = makeDriver()
-    adopt(f, ROOM, NAT)
-    const seen: HarnessEvent[] = []
-    f.driver.subscribe(SID, (e) => seen.push(e))
-    f.emitDen(piEvent(ROOM, NAT, { type: 'tool.start', tool: 'Bash' }))
-    expect(seen).toEqual([
-      { type: 'tool-use', sessionId: SID, toolCallId: `${NAT}:t1`, name: 'Bash', input: {} },
-    ])
-  })
-
-  it('ignores rooms that are not pi, and the translator’s id-less fallback', () => {
-    const f = makeDriver()
-    const seen: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => seen.push(e))
-    f.emitDen({ v: 1, session: ROOM, harness: 'hermes', type: 'session.start', title: 'h' })
-    f.emitDen(piEvent(ROOM, 'unknown-4242abcd4242abcd', { type: 'session.start', title: 'pi' }))
-    f.emitDen({ v: 1, session: ROOM, harness: 'pi', type: 'tool.start', tool: 'Bash' })
-    expect(seen).toEqual([])
-  })
-
-  it('adopts a pi PTY spawned from the /term drawer (synthetic rivetos start)', () => {
-    const f = makeDriver()
-    const seen: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => seen.push(e))
-    f.emitDen({
-      v: 1,
-      session: ROOM,
-      harness: 'rivetos',
-      name: 'rivet-node:pi',
-      harnessSession: NAT,
-      type: 'session.start',
-      title: 'Pi',
-    })
-    expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'idle' })
-    const before = seen.length
-    f.emitDen({
-      v: 1,
-      session: 'den-pty-other',
-      harness: 'rivetos',
-      name: 'rivet-node:hermes',
-      harnessSession: NAT2,
-      type: 'session.start',
-      title: 'Hermes',
-    })
-    expect(seen).toHaveLength(before)
-  })
-
-  it('keeps streaming a session it resumed itself when the hook is too old to send the id', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 1 }] })
-    await f.driver.resumeSession(SID)
-    const seen: HarnessEvent[] = []
-    f.driver.subscribe(SID, (e) => seen.push(e))
-    f.emitDen({ v: 1, session: NAT, harness: 'pi', type: 'tool.start', tool: 'Read' })
-    expect(seen).toEqual([
-      { type: 'tool-use', sessionId: SID, toolCallId: `${NAT}:t1`, name: 'Read', input: {} },
-    ])
+    const summary = await driver.startSession({ nativeSessionId: UUID })
+    expect(seen).toContainEqual({ type: 'session-created', sessionId: SID, summary })
   })
 })
 
 describe('resumeSession', () => {
   it('re-spawns with --session, in a room named after the native id', async () => {
     const { driver, pty } = makeDriver({
-      rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }],
+      rows: [{ id: UUID, command: 'pi', title: 't', updatedAt: 2 }],
     })
     const summary = await driver.resumeSession(SID)
     expect(summary.sessionId).toBe(SID)
-    expect(pty.spawns).toEqual([{ key: 'pi', session: NAT, resume: NAT }])
+    expect(pty.spawns).toEqual([{ key: 'pi', session: UUID, resume: UUID }])
   })
 
-  it('resumes a session dir the store cannot describe yet', async () => {
+  it('resumes a session the store cannot describe yet', async () => {
     const { driver, store, pty } = makeDriver()
-    store.sessions.add(NAT)
+    store.sessions.add(UUID)
     await expect(driver.resumeSession(SID)).resolves.toMatchObject({ sessionId: SID })
-    expect(pty.spawns).toEqual([{ key: 'pi', session: NAT, resume: NAT }])
+    expect(pty.spawns).toEqual([{ key: 'pi', session: UUID, resume: UUID }])
   })
 
   it('rejects a session the harness store has never heard of', async () => {
     const { driver } = makeDriver()
     await expect(driver.resumeSession(SID)).rejects.toMatchObject({ code: 'invalid_session_id' })
   })
-
-  it('keeps an adopted session in ITS den room rather than opening a second one', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 1 }] })
-    adopt(f, ROOM, NAT)
-    await f.driver.resumeSession(SID)
-    expect(f.pty.spawns).toEqual([{ key: 'pi', session: ROOM, resume: NAT }])
-  })
 })
 
 describe('sendUserTurn', () => {
-  it('injects into the PTY of the room the session is running in', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 1 }] })
-    adopt(f, ROOM, NAT)
-    await f.driver.sendUserTurn(SID, { text: 'hello' })
-    expect(f.pty.spawns).toEqual([{ key: 'pi', session: ROOM, resume: NAT }])
-    expect(f.pty.injects).toEqual([
+  it('injects the turn into the live PTY', async () => {
+    const { driver, pty } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(SID, { text: 'hello' })
+    expect(pty.injects).toEqual([
       { id: 'pty-1', text: 'hello', submit: true, interrupt: undefined },
     ])
   })
 
   it('re-attaches (--session) when the PTY was LRU-evicted between turns', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }] })
-    await f.driver.resumeSession(SID)
-    f.pty.live.delete(NAT)
-    await f.driver.sendUserTurn(SID, { text: 'still there?' })
-    expect(f.pty.spawns).toEqual([
-      { key: 'pi', session: NAT, resume: NAT },
-      { key: 'pi', session: NAT, resume: NAT },
+    const { driver, pty } = makeDriver({
+      rows: [{ id: UUID, command: 'pi', title: 't', updatedAt: 2 }],
+    })
+    await driver.resumeSession(SID)
+    pty.live.delete(UUID)
+    await driver.sendUserTurn(SID, { text: 'still there?' })
+    expect(pty.spawns).toEqual([
+      { key: 'pi', session: UUID, resume: UUID },
+      { key: 'pi', session: UUID, resume: UUID },
     ])
   })
 
   it('re-spawns through --session when the pty exited but has not been reaped', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }] })
-    await f.driver.resumeSession(SID)
-    f.pty.dead.add('pty-1')
-    await expect(f.driver.sendUserTurn(SID, { text: 'still there?' })).resolves.toBeUndefined()
-    expect(f.pty.spawns).toHaveLength(2)
-    expect(f.pty.injects.at(-1)).toMatchObject({ id: 'pty-2', text: 'still there?' })
+    const { driver, pty } = makeDriver({
+      rows: [{ id: UUID, command: 'pi', title: 't', updatedAt: 2 }],
+    })
+    await driver.resumeSession(SID)
+    pty.dead.add('pty-1')
+    await expect(driver.sendUserTurn(SID, { text: 'still there?' })).resolves.toBeUndefined()
+    expect(pty.spawns).toHaveLength(2)
+    expect(pty.injects.at(-1)).toMatchObject({ id: 'pty-2', text: 'still there?' })
   })
 
   it('reports turn_in_flight (retryable) when even a fresh pty refuses the write', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }] })
-    await f.driver.resumeSession(SID)
-    f.pty.setWritable(false)
-    await expect(f.driver.sendUserTurn(SID, { text: 'hi' })).rejects.toMatchObject({
+    const { driver, pty } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    pty.setWritable(false)
+    await expect(driver.sendUserTurn(SID, { text: 'hi' })).rejects.toMatchObject({
       code: 'turn_in_flight',
       retryable: true,
     })
   })
 
   it('rejects with turn_in_flight rather than silently queueing', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }] })
-    await f.driver.resumeSession(SID)
-    await f.driver.sendUserTurn(SID, { text: 'one' })
-    await expect(f.driver.sendUserTurn(SID, { text: 'two' })).rejects.toMatchObject({
+    const { driver } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(SID, { text: 'one' })
+    await expect(driver.sendUserTurn(SID, { text: 'two' })).rejects.toMatchObject({
       code: 'turn_in_flight',
       retryable: true,
     })
   })
 
   it('releases the lock on turn.end so the next turn goes through', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }] })
-    await f.driver.resumeSession(SID)
-    await f.driver.sendUserTurn(SID, { text: 'one' })
-    f.emitDen(piEvent(NAT, NAT, { type: 'turn.end' }))
-    await expect(f.driver.sendUserTurn(SID, { text: 'two' })).resolves.toBeUndefined()
+    const { driver, emitDen } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(SID, { text: 'one' })
+    emitDen(piEvent(UUID, { type: 'turn.end' }))
+    await expect(driver.sendUserTurn(SID, { text: 'two' })).resolves.toBeUndefined()
   })
 })
 
 describe('interrupt', () => {
-  it('sends Esc to the room’s PTY and completes the turn as interrupted', async () => {
-    const f = makeDriver({ rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 2 }] })
-    await f.driver.resumeSession(SID)
+  it('sends Esc to the live PTY and completes the turn as interrupted', async () => {
+    const { driver, pty } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
     const seen: HarnessEvent[] = []
-    f.driver.subscribe(SID, (e) => seen.push(e))
-    await f.driver.sendUserTurn(SID, { text: 'go' })
-    await f.driver.interrupt(SID)
-    expect(f.pty.injects.at(-1)).toEqual({ id: 'pty-1', text: '', submit: false, interrupt: true })
+    driver.subscribe(SID, (e) => seen.push(e))
+    await driver.sendUserTurn(SID, { text: 'go' })
+    await driver.interrupt(SID)
+    expect(pty.injects.at(-1)).toEqual({ id: 'pty-1', text: '', submit: false, interrupt: true })
     expect(seen).toContainEqual({
       type: 'turn-complete',
       sessionId: SID,
@@ -457,23 +389,23 @@ describe('interrupt', () => {
 })
 
 describe('subscribe maps den AgentEvents onto the contract', () => {
-  it('streams paired tool calls and turn completion', () => {
-    const f = makeDriver()
-    adopt(f, ROOM, NAT)
+  it('streams paired tool calls and turn completion', async () => {
+    const { driver, emitDen } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
     const seen: HarnessEvent[] = []
-    const off = f.driver.subscribe(SID, (e) => seen.push(e))
+    const off = driver.subscribe(SID, (e) => seen.push(e))
 
-    f.emitDen(piEvent(ROOM, NAT, { type: 'tool.start', tool: 'Bash', args: { command: 'ls' } }))
-    f.emitDen(piEvent(ROOM, NAT, { type: 'tool.end', tool: 'Bash' }))
-    f.emitDen(piEvent(ROOM, NAT, { type: 'turn.end' }))
+    emitDen(piEvent(UUID, { type: 'tool.start', tool: 'Bash', args: { command: 'ls' } }))
+    emitDen(piEvent(UUID, { type: 'tool.end', tool: 'Bash' }))
+    emitDen(piEvent(UUID, { type: 'turn.end' }))
     off()
-    f.emitDen(piEvent(ROOM, NAT, { type: 'tool.start', tool: 'Read' }))
+    emitDen(piEvent(UUID, { type: 'tool.start', tool: 'Read' }))
 
     expect(seen.filter((e) => e.type === 'tool-use')).toEqual([
       {
         type: 'tool-use',
         sessionId: SID,
-        toolCallId: `${NAT}:t1`,
+        toolCallId: `${UUID}:t1`,
         name: 'Bash',
         input: { command: 'ls' },
       },
@@ -482,7 +414,7 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
       {
         type: 'tool-result',
         sessionId: SID,
-        toolCallId: `${NAT}:t1`,
+        toolCallId: `${UUID}:t1`,
         name: 'Bash',
         output: null,
       },
@@ -491,40 +423,69 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
     expect(seen.some((e) => e.type === 'tool-use' && e.name === 'Read')).toBe(false)
   })
 
-  it('marks a session ended when its harness exits', () => {
-    const f = makeDriver()
-    adopt(f, ROOM, NAT)
+  it('ignores den rooms that are not pi', () => {
+    const { driver, emitDen } = makeDriver()
     const seen: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => seen.push(e))
-    f.emitDen(piEvent(ROOM, NAT, { type: 'session.end' }))
+    driver.subscribeEvents((e) => seen.push(e))
+    emitDen({ v: 1, session: UUID2, harness: 'hermes', type: 'session.start', title: 'h' })
+    expect(seen).toEqual([])
+  })
+
+  it('ignores the translator’s id-less fallback room (`unknown-<ppid>`)', () => {
+    const { driver, emitDen } = makeDriver()
+    const seen: HarnessEvent[] = []
+    driver.subscribeEvents((e) => seen.push(e))
+    emitDen({ v: 1, session: 'unknown-4242', harness: 'pi', type: 'session.start' })
+    expect(seen).toEqual([])
+  })
+
+  it('adopts a pi PTY spawned from the /term drawer (synthetic rivetos start)', () => {
+    const { driver, emitDen } = makeDriver()
+    const seen: HarnessEvent[] = []
+    driver.subscribeEvents((e) => seen.push(e))
+    emitDen({
+      v: 1,
+      session: UUID,
+      harness: 'rivetos',
+      name: 'rivet-node:pi',
+      type: 'session.start',
+      title: 'Pi',
+    })
+    expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'idle' })
+    const before = seen.length
+    emitDen({
+      v: 1,
+      session: UUID2,
+      harness: 'rivetos',
+      name: 'rivet-node:hermes',
+      type: 'session.start',
+      title: 'Hermes',
+    })
+    expect(seen).toHaveLength(before)
+  })
+
+  it('marks a session ended when its harness exits', async () => {
+    const { driver, emitDen } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribeEvents((e) => seen.push(e))
+    emitDen(piEvent(UUID, { type: 'session.end' }))
     expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'ended' })
   })
 })
 
-describe('a den room CAN change which pi it runs — that is the rotation', () => {
-  it('emits session-updated with previousSessionId when the room’s id changes', () => {
-    const f = makeDriver()
-    adopt(f, ROOM, NAT)
+describe('native session ids do not rotate on the den path', () => {
+  it('never emits session-updated with previousSessionId', async () => {
+    const { driver, emitDen } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID })
     const registry: HarnessEvent[] = []
-    f.driver.subscribeEvents((e) => registry.push(e))
-    f.emitDen(piEvent(ROOM, NAT2, { type: 'session.start', title: 'pi session' }))
-    expect(registry).toContainEqual({
-      type: 'session-updated',
-      sessionId: `pi:${NAT2}`,
-      previousSessionId: SID,
-      status: 'idle',
-    })
-  })
-
-  it('does NOT re-key its own sinks — that is control-plane work', () => {
-    const f = makeDriver()
-    adopt(f, ROOM, NAT)
-    const seen: HarnessEvent[] = []
-    f.driver.subscribe(SID, (e) => seen.push(e))
-    f.emitDen(piEvent(ROOM, NAT2, { type: 'session.start', title: 'pi session' }))
-    seen.length = 0
-    f.emitDen(piEvent(ROOM, NAT2, { type: 'tool.start', tool: 'Bash' }))
-    expect(seen).toEqual([])
+    driver.subscribeEvents((e) => registry.push(e))
+    emitDen(piEvent(UUID, { type: 'session.start', title: 'fresh' }))
+    emitDen(piEvent(UUID, { type: 'turn.end' }))
+    for (const e of registry) {
+      expect(e.type === 'session-updated' && e.previousSessionId).toBeFalsy()
+      expect(e.sessionId).toBe(SID)
+    }
   })
 })
 
@@ -555,11 +516,11 @@ describe('through the real registry', () => {
 
   it('lists canonical ids, exactly once each', async () => {
     const { registry } = withRegistry([
-      { id: NAT, command: 'pi', title: 'a', updatedAt: 2 },
-      { id: NAT2, command: 'pi', title: 'b', updatedAt: 1 },
+      { id: UUID, command: 'pi', title: 'a', updatedAt: 2 },
+      { id: UUID2, command: 'pi', title: 'b', updatedAt: 1 },
     ])
     const ids = (await registry.listSessions('pi')).map((s) => s.sessionId)
-    expect(ids).toEqual([SID, `pi:${NAT2}`])
+    expect(ids).toEqual([SID, `pi:${UUID2}`])
     expect(new Set(ids).size).toBe(ids.length)
   })
 })
@@ -567,9 +528,9 @@ describe('through the real registry', () => {
 describe('transcript', () => {
   it('serves the hard-resync source for a canonical id', async () => {
     const { driver, store } = makeDriver({
-      rows: [{ id: NAT, command: 'pi', title: 't', updatedAt: 1 }],
+      rows: [{ id: UUID, command: 'pi', title: 't', updatedAt: 1 }],
     })
-    store.transcripts.set(NAT, { turns: [{ role: 'user', text: 'hi' }] })
+    store.transcripts.set(UUID, { turns: [{ role: 'user', text: 'hi' }] })
     await expect(driver.transcript(SID)).resolves.toEqual({
       turns: [{ role: 'user', text: 'hi' }],
     })
@@ -583,36 +544,4 @@ describe('close', () => {
     driver.close()
     expect(off).toHaveBeenCalledOnce()
   })
-})
-
-runHarnessRotationConformance('pi', () => {
-  const fakes = makeDriver({
-    rows: [
-      { id: NAT, command: 'pi', title: 'first', updatedAt: 1_700_000_000_000 },
-      { id: NAT2, command: 'pi', title: 'second', updatedAt: 1_700_000_100_000 },
-      { id: NAT3, command: 'pi', title: 'third', updatedAt: 1_700_000_200_000 },
-    ],
-  })
-  adopt(fakes, ROOM, NAT)
-  const registry = createHarnessRegistry()
-  registry.register(fakes.driver)
-  let minted = 0
-  return {
-    registry,
-    driver: fakes.driver,
-    sessionId: SID,
-    rotate: () => {
-      const next =
-        [NAT2, NAT3][minted++] ?? `00000000-0000-4000-8000-00000000000${String(minted)}`
-      fakes.emitDen(piEvent(ROOM, next, { type: 'session.start', title: 'pi session' }))
-      return `pi:${next}` as SessionId
-    },
-    emitActivity: (id) => {
-      fakes.emitDen(piEvent(ROOM, id.slice('pi:'.length), { type: 'tool.start', tool: 'Bash' }))
-    },
-    teardown: () => {
-      registry.close()
-      fakes.driver.close()
-    },
-  }
 })

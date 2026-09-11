@@ -35,8 +35,8 @@ describe('buildArgs', () => {
     const args = buildArgs(
       {
         binary: 'pi',
-        modelId: 'glm-4.5',
-        resumeSessionId: 'session_abc',
+        modelId: 'deepseek/deepseek-v4-flash',
+        resumeSessionId: '01a090db-c402-71cb-a954-6066b9493630',
         thinking: 'high',
       },
       'go on',
@@ -46,13 +46,35 @@ describe('buildArgs', () => {
       '--mode',
       'json',
       '--session',
-      'session_abc',
+      '01a090db-c402-71cb-a954-6066b9493630',
       '--model',
-      'glm-4.5',
+      'deepseek/deepseek-v4-flash',
       '--thinking',
       'high',
     ])
     expect(args[args.length - 1]).toBe('go on')
+  })
+
+  it('pins a new session with --session-id and optional --session-dir', () => {
+    const args = buildArgs(
+      {
+        binary: 'pi',
+        pinSessionId: '01a090db-c402-71cb-a954-6066b9493630',
+        sessionDir: '/tmp/pi-sessions',
+      },
+      'hi',
+    )
+    expect(args).toEqual([
+      '--print',
+      '--mode',
+      'json',
+      '--session-id',
+      '01a090db-c402-71cb-a954-6066b9493630',
+      '--session-dir',
+      '/tmp/pi-sessions',
+      'hi',
+    ])
+    expect(args).not.toContain('--session')
   })
 
   it('never passes a permission flag or kimi-shaped aliases', () => {

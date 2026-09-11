@@ -2,21 +2,20 @@
  * spawn-turn — one headless `pi --print --mode json` spawn, its flag set, its
  * child env, and the NDJSON line iterator.
  *
- * REVIEWER-CONFIRM: bin name (`pi` vs `pi-coding-agent`) and the exact print/
- * JSON argv. Chosen contract, unverified against an installed binary:
+ * Confirmed against pi 0.85.1 (`@earendil-works/pi-coding-agent`, bin `pi`):
  *
- *   pi --print --mode json [--session <id>] [--model <model>] [--thinking <effort>] <prompt>
+ *   pi --print --mode json [--model m] [--session-id id | --session id]
+ *      [--session-dir d] [--thinking level] <prompt>
  *
- * What that runner is assumed to give us:
- *
+ *   - Binary name is `pi` (not `pi-coding-agent`).
  *   - The prompt is a positional ARGV value, not stdin. Linux caps a single
  *     argv element at 128 KiB (MAX_ARG_STRLEN), so the prompt is clamped —
  *     see `clampPrompt`.
- *   - `--mode json` writes one JSON object per line to stdout. Parsed by
- *     `parsePiJsonLine` in wire.ts (schema is REVIEWER-CONFIRM there).
- *   - `--session <id>` resumes an existing session headlessly. Every turn of
- *     a task MUST spawn with the same cwd in case resume is cwd-scoped.
- *   - `--thinking` maps TaskSpec.effort (low|medium|high). Unset = CLI default.
+ *   - `--mode json` writes the session JSONL (version 3) to stdout, one object
+ *     per line, `session` line first. Parsed by `parsePiJsonLine` in wire.ts.
+ *   - `--session <id>` resumes an existing session. `--session-id <uuid>` pins
+ *     a NEW session (creates the id if missing). Do not pass both.
+ *   - `--thinking` is `off|minimal|low|medium|high|max`. Unset = CLI default.
  *
  * Locked constraint (same as the claude-cli / kimi-code executors): no
  * RivetOS-side per-turn timeout. The runner enforces budgets between turns
@@ -34,9 +33,8 @@ import { parsePiJsonLine, type PiJsonEvent } from './wire.js'
 /**
  * Grace period between SIGTERM and SIGKILL.
  *
- * REVIEWER-CONFIRM: pi print-mode cleanup budget is unknown. 10s matches
- * kimi-code so a killed turn still has a chance to flush transcript usage;
- * drop toward 2s if pi exits synchronously on SIGTERM.
+ * Print-mode cleanup budget was not timed on 0.85.1; 10s matches kimi-code
+ * so a killed turn still has a chance to flush the session jsonl.
  */
 export const KILL_GRACE_MS = 10_000
 
@@ -55,8 +53,9 @@ export const PROMPT_MAX_BYTES = 96_000
 export const EMPTY_PROMPT_PLACEHOLDER = '(no instruction was provided for this turn)'
 
 /**
- * pi rejects a resumed session it cannot use, by message rather than by exit
- * code (assumed). REVIEWER-CONFIRM: exact refuse strings.
+ * pi rejects a resumed session it cannot use. Exact refuse strings were not
+ * sampled on 0.85.1; this matches the cwd-scoped "not found" / "different
+ * directory" family plus a generic `session not found`.
  */
 export const RESUME_REJECTED_RE =
   /Session "[^"]*" (?:not found|was created under a different directory)|session not found/i
@@ -84,32 +83,34 @@ export function clampPrompt(text: string): string {
 }
 
 export interface PiSpawnFlags {
-  /** Path to the `pi` binary. REVIEWER-CONFIRM: `pi` vs `pi-coding-agent`. */
+  /** Path to the `pi` binary. */
   binary: string
   /** Model id for `--model` (empty/undefined = the CLI's configured default). */
   modelId?: string
   /** Native session id for `--session` — turns ≥2 of a task. Omit for a fresh session. */
   resumeSessionId?: string
+  /** Pin a NEW session with `--session-id` (creates the id if missing). */
+  pinSessionId?: string
+  /** `--session-dir` override (tests / non-default data dir). */
+  sessionDir?: string
   /** Reasoning effort for `--thinking`. Unset = CLI default. */
-  thinking?: 'low' | 'medium' | 'high'
-  /** Working directory. Pins the session store AND scopes resume if pi is cwd-scoped. */
+  thinking?: 'low' | 'medium' | 'high' | 'max' | 'minimal'
+  /** Working directory. Sessions are bucketed per cwd on disk. */
   cwd?: string
 }
 
 /**
- * Assemble one `pi --print --mode json` argv.
- *
- * REVIEWER-CONFIRM: flag names (`--print`/`--mode json`/`--session`/`--model`/
- * `--thinking`) and that the prompt is positional last rather than `-p`.
+ * Assemble one `pi --print --mode json` argv. Prompt is positional last.
+ * `--session-id` (pin new) and `--session` (resume existing) are mutually
+ * exclusive — pin wins if both are set.
  */
 export function buildArgs(flags: PiSpawnFlags, prompt: string): string[] {
-  // REVIEWER-CONFIRM: `--print --mode json` as the print/JSON one-shot contract.
   const args: string[] = ['--print', '--mode', 'json']
-  if (flags.resumeSessionId) args.push('--session', flags.resumeSessionId)
+  if (flags.pinSessionId) args.push('--session-id', flags.pinSessionId)
+  else if (flags.resumeSessionId) args.push('--session', flags.resumeSessionId)
+  if (flags.sessionDir) args.push('--session-dir', flags.sessionDir)
   if (flags.modelId) args.push('--model', flags.modelId)
   if (flags.thinking) args.push('--thinking', flags.thinking)
-  // Prompt last: keeping it terminal makes the argv readable in logs and in
-  // the fake-binary test fixtures.
   args.push(clampPrompt(prompt))
   return args
 }

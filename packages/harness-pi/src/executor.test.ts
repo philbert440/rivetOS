@@ -1,16 +1,17 @@
 /**
  * PiExecutor tests — the shared HarnessExecutor conformance suite plus pi
  * specifics, all driven by a FAKE `pi` binary writing a pi-shaped
- * `transcript.jsonl` into a throwaway PI_HOME. The real binary is never
+ * session jsonl into a throwaway data dir. The real binary is never
  * invoked: no provider tokens, no live store, no `~/.pi`.
  *
  * Covered: lifecycle, kill → 'killed', result-never-rejects (nonzero exit,
  * malformed stream, missing session/result), post-hoc usage reconcile
- * (including the session-scoped rollup it must ignore), canonical session id
+ * (assistant message.usage on disk), canonical session id
  * on turn.end, `--session` resume on steered turns, the resume-rejected
  * fallback, the #467 env contract, and the prompt scaffold.
  */
 
+import path from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { TaskEvent } from '@rivetos/types'
 import {
@@ -31,7 +32,7 @@ afterAll(() => {
   cleanupFakePi()
 })
 
-const SESSION = 'session_11111111-2222-3333-4444-555555555555'
+const SESSION = '01a090db-c402-71cb-a954-6066b9493630'
 
 function makeExecutor(fake: FakePi): PiExecutor {
   return new PiExecutor({
@@ -91,7 +92,7 @@ describe('PiExecutor', () => {
     expect(makeExecutor(successFake()).name).toBe('pi')
   })
 
-  it('translates print/JSON into den events and reconciles usage off transcript.jsonl', async () => {
+  it('translates print/JSON into den events and reconciles usage off the session jsonl', async () => {
     const fake = makeFakePi({
       lines: successLines('All done.', SESSION),
       sessionId: SESSION,
@@ -112,8 +113,7 @@ describe('PiExecutor', () => {
 
     expect(events.find((e) => e.type === 'turn.end')).toMatchObject({
       harnessSessionId: `pi:${SESSION}`,
-      // 100+10 + 40 in, 25+5 out. The usage_scope:'session' rollup the fake
-      // also writes (99999/99999) must NOT be counted.
+      // 100+10 + 40 in, 25+5 out, summed onto the on-disk assistant message.
       usage: { inputTokens: 150, outputTokens: 30, totalTokens: 180, turns: 1 },
     })
     expect(result.verdict).toBe('completed')
@@ -134,15 +134,18 @@ describe('PiExecutor', () => {
       expect(env.RIVETOS_TASK_ID).toBe('task-env-check')
       expect(env.RIVETOS_SESSION_KEY).toBeUndefined()
       expect(env.RIVETOS_DEN_HOOK_DISABLED).toBe('1')
-      expect(env.PI_HOME).toBe(fake.home)
+      expect(env.PI_HOME).toBeUndefined()
 
       const args = fake.args()
       expect(args[args.indexOf('--model') + 1]).toBe('glm-4.5')
       expect(args[args.indexOf('--thinking') + 1]).toBe('high')
       expect(args[args.indexOf('--mode') + 1]).toBe('json')
       expect(args).toContain('--print')
-      // Turn 1 opens a fresh session.
+      expect(args[args.indexOf('--session-dir') + 1]).toBe(path.join(fake.home, 'sessions'))
+      // Turn 1 opens a fresh session (den pinning uses --session-id; the
+      // executor adopts the id from the stdout session line).
       expect(args).not.toContain('--session')
+      expect(args).not.toContain('--session-id')
       expect(args).not.toContain('--auto')
       expect(args).not.toContain('--yolo')
     } finally {
@@ -160,8 +163,7 @@ describe('PiExecutor', () => {
     await makeExecutor(fake).start(spec, { signal: new AbortController().signal }).result
 
     const args = fake.args()
-    // Prompt is positional last; printf-split argv starts the prompt at this heading.
-    expect(args[args.indexOf('--mode') + 2]).toBe('## Task Context')
+    expect(args).toContain('## Task Context')
     const prompt = fake.invocationTexts()[0]
     expect(prompt).toContain('[c1] widget ships')
     expect(prompt).toContain('TASK_RESULT')
@@ -257,13 +259,13 @@ describe('PiExecutor', () => {
     expect(result.error).toContain('model alias unknown')
   })
 
-  it('resolves failed on a clean exit with no session/result event', async () => {
+  it('resolves failed on a clean exit with no session event', async () => {
     const fake = makeFakePi({ raw: ['not json at all', '{"role": 42'] })
     const result = await makeExecutor(fake).start(makeConformanceSpec(), {
       signal: new AbortController().signal,
     }).result
     expect(result.verdict).toBe('failed')
-    expect(result.error).toMatch(/without a session\/result event/)
+    expect(result.error).toMatch(/without a session event/)
   })
 
   it('resolves failed when the binary does not exist', async () => {
@@ -297,8 +299,8 @@ describe('PiExecutor', () => {
 
 describe('canonicalPiSessionId', () => {
   it('canonicalizes native ids, and only when it honestly can', () => {
-    expect(canonicalPiSessionId('session_abc')).toBe('pi:session_abc')
-    expect(canonicalPiSessionId('pi:session_abc')).toBe('pi:session_abc')
+    expect(canonicalPiSessionId(SESSION)).toBe(`pi:${SESSION}`)
+    expect(canonicalPiSessionId(`pi:${SESSION}`)).toBe(`pi:${SESSION}`)
     expect(canonicalPiSessionId(' padded ')).toBe(' padded ')
     expect(canonicalPiSessionId('')).toBeUndefined()
     expect(canonicalPiSessionId(undefined)).toBeUndefined()

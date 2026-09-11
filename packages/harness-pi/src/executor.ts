@@ -6,17 +6,16 @@
  *     `steer()` queues follow-up turns; turn N spawns
  *     `pi --print --mode json --session <native-id>`, so every turn of a task
  *     shares ONE native session and its context.
- *   - There is no assumed `--append-system` on this CLI, so the task scaffold
- *     (context + acceptance criteria + the TASK_RESULT fence contract) is
- *     PREPENDED to the prompt text of every turn.
- *   - print/JSON → TaskEvent: assistant text → den message.agent,
- *     `tool_start` → den tool.start, `tool_end` → den tool.end.
- *     `session` / `result.session_id` carries the native session id,
- *     canonicalized onto `pi:<native>`.
- *   - Usage arrives from stdout `usage`/`result.usage` when present, else
- *     POST-HOC from the session's `transcript.jsonl` after the child exits.
- *     A reconcile that finds nothing degrades to zero usage and a warning; it
- *     can never fail a turn. No `cost` events: tokens, not money.
+ *   - There is no `--append-system` on the confirmed flag set, so the task
+ *     scaffold (context + acceptance criteria + the TASK_RESULT fence
+ *     contract) is PREPENDED to the prompt text of every turn.
+ *   - print/JSON is the session JSONL on stdout. `type:session` (first line)
+ *     carries the native UUID; `type:message` assistant content maps to den
+ *     `message.agent` / `tool.start` / `tool.end`. Canonical id is `pi:<uuid>`.
+ *   - Usage arrives from assistant `message.usage` on stdout when present,
+ *     else POST-HOC from the session jsonl after the child exits. A reconcile
+ *     that finds nothing degrades to zero usage and a warning; it can never
+ *     fail a turn. No `cost` events: tokens, not money.
  *   - Structured result: `parseTaskResultBlock` over the turn's text, falling
  *     back to {verdict:'completed', summary:<last text>}. `result` NEVER rejects.
  *   - kill(): SIGTERM then SIGKILL after the grace period → verdict 'killed'.
@@ -29,6 +28,7 @@
  * budget between turns via the abort signal.
  */
 
+import path from 'node:path'
 import type {
   AgentEventBody,
   HarnessExecutor,
@@ -51,29 +51,27 @@ import { createLogger, type HarnessLogger } from './log.js'
 import { RESUME_REJECTED_RE, spawnPiTurn, type SpawnedTurn } from './spawn-turn.js'
 import {
   emptyPiTurnFacts,
+  findSessionFile,
   listSessionIds,
   piHome,
   reconcileTurn,
-  resolveSessionDir,
-  RESULT_TYPE,
   SESSION_TYPE,
+  sessionIdFromEvent,
   usageFromEvent,
   type PiJsonEvent,
+  type PiMessageEvent,
   type PiTurnFacts,
 } from './wire.js'
 
-/**
- * Harness id this executor registers under (`HARNESS_IDS`).
- * REVIEWER-CONFIRM: types bot must add `'pi'` to `HARNESS_IDS`; asserted until then.
- */
-export const PI_HARNESS_ID = 'pi' as HarnessId
+/** Harness id this executor registers under (`HARNESS_IDS`). */
+export const PI_HARNESS_ID: HarnessId = 'pi'
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
 export interface PiExecutorConfig {
-  /** Path to the `pi` binary. REVIEWER-CONFIRM: `pi` vs `pi-coding-agent`. */
+  /** Path to the `pi` binary. */
   binary: string
   /** Default model id (spec.model overrides). Empty = the CLI's default. */
   modelId?: string
@@ -84,13 +82,13 @@ export interface PiExecutorConfig {
   effort?: 'low' | 'medium' | 'high'
   /**
    * Default working directory (spec.workingDir overrides). Pins resume —
-   * every turn of a task uses the same one.
+   * every turn of a task uses the same one (sessions are cwd-bucketed).
    */
   cwd?: string
   /**
-   * PI_HOME for the child. Also where the reconcile reads transcripts, so the
-   * two can never drift. Default: the ambient home (`~/.pi/agent`).
-   * REVIEWER-CONFIRM: real pi data-dir env/path.
+   * Data dir used to find session jsonl for post-hoc usage (`~/.pi/agent`
+   * layout). When set, also passed as `--session-dir <home>/sessions` so the
+   * child writes where we will read. pi does not honour `$PI_HOME`.
    */
   piHome?: string
   /** Override the SIGTERM→SIGKILL grace (tests use a short one). */
@@ -198,15 +196,12 @@ export function renderResumeTranscript(history: Array<{ role: string; content: u
 
 /**
  * Canonicalize pi's native session id onto the control plane's one id
- * format, `pi:<native>`.
+ * format, `pi:<native>`. The native half is a UUID (any version).
  *
- * Adoption, not pinning: this CLI is not assumed to take `--session-id` on a
- * fresh spawn, so the id is whatever it minted. An id already carrying a
- * prefix, or one the codec rejects, passes through verbatim — a
- * non-canonical breadcrumb beats none.
- *
- * Until `'pi'` lands in `HARNESS_IDS`, `formatSessionId` throws; we still
- * emit `pi:<native>` so turn.end keys stay stable across the swarm.
+ * Headless turns adopt the id from the first stdout `session` line (print
+ * mode always emits it). The den PTY driver pins a new id with `--session-id`
+ * instead. An id already carrying a prefix, or one the codec rejects, passes
+ * through verbatim — a non-canonical breadcrumb beats none.
  */
 export function canonicalPiSessionId(nativeId: string | undefined): string | undefined {
   if (nativeId === undefined || nativeId === '') return undefined
@@ -284,13 +279,13 @@ export class PiExecutor implements HarnessExecutor {
     return {
       steerable: true, // between turns — no mid-spawn steering
       multiTurn: true, // native `--session` resume, one session across the task
-      structuredStream: true, // print/JSON assistant/tool_start/tool_end lines
-      usageInResult: true, // stdout usage or transcript.jsonl
-      sessionIdCapture: true, // session / result.session_id, plus a disk fallback
+      structuredStream: true, // print/JSON session + message lines
+      usageInResult: true, // assistant message.usage or session jsonl
+      sessionIdCapture: true, // session.id on the first stdout line, plus a disk fallback
       slashCommands: false,
       effortSelection: true, // `--thinking`
-      // REVIEWER-CONFIRM: MCP injection channel. Assumed persistent config
-      // shared with the interactive harness (no per-turn --mcp-config).
+      // Confirmed flag set has no --mcp-config; servers come from pi's own
+      // persistent config, shared with the interactive harness.
       mcpInjection: 'persistent-config',
     }
   }
@@ -524,6 +519,7 @@ export class PiExecutor implements HarnessExecutor {
           binary: this.cfg.binary,
           modelId: spec.model ?? this.cfg.modelId,
           resumeSessionId: turn.resumeSessionId,
+          sessionDir: this.cfg.piHome ? path.join(this.cfg.piHome, 'sessions') : undefined,
           thinking: effort,
           cwd,
         },
@@ -534,7 +530,6 @@ export class PiExecutor implements HarnessExecutor {
             RIVETOS_TASK_ID: spec.taskId,
             RIVETOS_SESSION_KEY: undefined,
             RIVETOS_DEN_HOOK_DISABLED: '1',
-            ...(this.cfg.piHome ? { PI_HOME: this.cfg.piHome } : {}),
           },
         },
       )
@@ -608,7 +603,7 @@ export class PiExecutor implements HarnessExecutor {
         error = `pi CLI exited ${String(exitCode)}: ${stderrTail}`
       }
       if (!sawTerminal && error === undefined && !run.isKilled()) {
-        error = 'pi CLI stream ended without a session/result event'
+        error = 'pi CLI stream ended without a session event'
       }
       if (error !== undefined && RESUME_REJECTED_RE.test(spawned.stderrText())) {
         return { text, error, resumeRejected: turn.resumeSessionId !== undefined }
@@ -663,44 +658,54 @@ export class PiExecutor implements HarnessExecutor {
     },
   ): void {
     const tokens = usageFromEvent(line)
-    if (tokens && line.type === 'usage') into.onUsage(tokens)
+    if (tokens) into.onUsage(tokens)
 
     switch (line.type) {
-      case 'assistant': {
-        const content = (line as { content?: unknown }).content
-        if (typeof content === 'string' && content !== '') {
-          into.onText(content)
-          into.den({ type: 'message.agent', text: content })
+      case 'message': {
+        const msg = (line as PiMessageEvent).message
+        if (!msg || typeof msg !== 'object') return
+        const content = Array.isArray(msg.content)
+          ? msg.content
+          : typeof msg.content === 'string'
+            ? [{ type: 'text', text: msg.content }]
+            : []
+        if (msg.role !== 'assistant') return
+        for (const raw of content) {
+          if (!raw || typeof raw !== 'object') continue
+          const item = raw as Record<string, unknown>
+          const t = item.type
+          if (t === 'text' && typeof item.text === 'string' && item.text !== '') {
+            into.onText(item.text)
+            into.den({ type: 'message.agent', text: item.text })
+          } else if (t === 'toolCall' || t === 'tool_call' || t === 'toolUse' || t === 'tool_use') {
+            const name =
+              (typeof item.name === 'string' && item.name) ||
+              (typeof item.toolName === 'string' && item.toolName) ||
+              ''
+            if (!name) continue
+            const id =
+              (typeof item.id === 'string' && item.id) ||
+              (typeof item.toolCallId === 'string' && item.toolCallId) ||
+              undefined
+            if (id) into.toolNamesById.set(id, name)
+            into.den({ type: 'tool.start', tool: name })
+          } else if (t === 'toolResult' || t === 'tool_result') {
+            const id =
+              (typeof item.id === 'string' && item.id) ||
+              (typeof item.toolCallId === 'string' && item.toolCallId) ||
+              undefined
+            into.den({
+              type: 'tool.end',
+              tool: typeof id === 'string' ? into.toolNamesById.get(id) : undefined,
+            })
+          }
         }
         return
       }
-      case 'tool_start': {
-        const id = (line as { id?: unknown }).id
-        const name = (line as { name?: unknown }).name
-        if (typeof name !== 'string') return
-        if (typeof id === 'string') into.toolNamesById.set(id, name)
-        into.den({ type: 'tool.start', tool: name })
-        return
-      }
-      case 'tool_end': {
-        const id = (line as { id?: unknown }).id
-        into.den({
-          type: 'tool.end',
-          tool: typeof id === 'string' ? into.toolNamesById.get(id) : undefined,
-        })
-        return
-      }
       case SESSION_TYPE: {
-        const id = (line as { session_id?: unknown }).session_id
-        if (typeof id === 'string' && id !== '') into.onSessionId(id)
+        const id = sessionIdFromEvent(line)
+        if (id) into.onSessionId(id)
         into.onTerminal()
-        return
-      }
-      case RESULT_TYPE: {
-        const id = (line as { session_id?: unknown }).session_id
-        if (typeof id === 'string' && id !== '') into.onSessionId(id)
-        into.onTerminal()
-        if (tokens) into.onUsage(tokens)
         return
       }
       case 'error': {
@@ -737,13 +742,13 @@ export class PiExecutor implements HarnessExecutor {
   }): PiTurnFacts {
     if (opts.sessionId === undefined) return emptyPiTurnFacts()
     try {
-      const sessionDir = resolveSessionDir({
+      const sessionFile = findSessionFile({
         home: opts.home,
         cwd: opts.cwd,
         sessionId: opts.sessionId,
       })
-      if (sessionDir === undefined) return emptyPiTurnFacts()
-      return reconcileTurn({ sessionDir, sinceMs: opts.sinceMs })
+      if (sessionFile === undefined) return emptyPiTurnFacts()
+      return reconcileTurn({ sessionDir: sessionFile, sinceMs: opts.sinceMs })
     } catch (err: unknown) {
       this.log.warn('task.usage.reconcile.failed', {
         sessionId: opts.sessionId,

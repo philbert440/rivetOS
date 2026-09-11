@@ -4,7 +4,7 @@
  * The pi half of the harness control plane's task side: a
  * `HarnessExecutor` that drives the local `pi` binary headlessly
  * (`pi --print --mode json`) and reconciles the turn's usage out of stdout
- * or pi's own `transcript.jsonl` after the process exits.
+ * or pi's own session jsonl after the process exits.
  *
  * Not a provider plugin: there is no `LanguageModel` here and no
  * `providers.pi-cli` config slice in this package — it exists so
@@ -36,16 +36,18 @@ export {
 export type { PiSpawnFlags, SpawnedTurn } from './spawn-turn.js'
 
 export {
-  RESULT_TYPE,
+  PI_NATIVE_RE,
   SESSION_TYPE,
-  TRANSCRIPT_FILE,
   emptyPiTurnFacts,
+  encodePiCwd,
+  findSessionFile,
   listSessionIds,
   parsePiJsonLine,
   piHome,
   reconcileTurn,
   resolveSessionDir,
   sessionsRoot,
+  sessionIdFromEvent,
   toHarnessEvents,
   tokensFromUsage,
   transcriptFilesFor,

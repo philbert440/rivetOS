@@ -34,7 +34,7 @@ const KIMI_NATIVE = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 const DSH_NATIVE = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
 /** Codex natives are a bare rollout UUID. */
 const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-/** pi natives are treated as a bare UUID (REVIEWER-CONFIRM). */
+/** pi natives are a bare UUID (any version; pi mints v7). */
 const PI_NATIVE = '15cb936c-3364-49d6-8769-21f0c635f160'
 
 interface Injected {

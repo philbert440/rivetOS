@@ -86,8 +86,8 @@ export function defaultRoster(): TermRoster {
       // HARNESS_FLAGS (subcommand, not a dashed flag). No --yolo equivalent
       // is wired here — permission prompts stay in the TUI (lane A2 keys).
       codex: { label: 'Codex', cmd: ['codex'], room: true },
-      // Pi (earendil-works/pi). Resume flag is `--session` (unverified —
-      // HARNESS_FLAGS). No --yolo equivalent confirmed at wiring time.
+      // Pi 0.85.1: `--session-id` pins a new session, `--session` resumes
+      // (HARNESS_FLAGS). No --yolo equivalent on the confirmed flag set.
       pi: { label: 'Pi', cmd: ['pi'], room: true },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },

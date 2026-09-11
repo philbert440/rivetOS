@@ -2,7 +2,7 @@
  * Fake `pi` binaries for the executor tests.
  *
  * A shell script that records argv + env, optionally writes a pi-shaped
- * `transcript.jsonl` into a throwaway PI_HOME, prints canned print/JSON on
+ * session jsonl into a throwaway data dir, prints canned print/JSON on
  * stdout and exits with a chosen code. The real binary is never invoked, no
  * provider tokens are spent, and nothing touches the operator's `~/.pi`.
  *
@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { encodePiCwd } from '../wire.js'
 
 const INVOCATION_MARK = '--invocation--'
 
@@ -27,12 +28,10 @@ export interface FakePiOptions {
   exitCode?: number
   /** Text written to stderr before exiting. */
   stderr?: string
-  /** Native session id the fake writes a transcript for. */
+  /** Native session id the fake writes a session jsonl for. */
   sessionId?: string
-  /** Per-request usage rows written to transcript.jsonl (scope 'turn'). */
+  /** Per-request usage stamped on the on-disk assistant message. */
   usage?: Array<{ input_tokens: number; output_tokens: number; cache_read_tokens?: number }>
-  /** Write a `turn_end` record. Default true when a transcript is written. */
-  turnEnded?: string | false
   /** Behave differently when spawned with `--session` (resume-rejection tests). */
   onResume?: { stderr: string; exitCode: number }
   /** Hang until signalled instead of doing anything else. */
@@ -42,7 +41,7 @@ export interface FakePiOptions {
 export interface FakePi {
   binary: string
   dir: string
-  /** Throwaway PI_HOME the fake writes transcripts into. */
+  /** Throwaway data dir the fake writes session jsonl into (`~/.pi/agent` layout). */
   home: string
   /** Working directory to spawn in (a throwaway too). */
   cwd: string
@@ -81,7 +80,7 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
   fs.mkdirSync(cwd, { recursive: true })
 
   const binary = path.join(dir, 'pi')
-  const sessionId = opts.sessionId ?? 'session_11111111-2222-3333-4444-555555555555'
+  const sessionId = opts.sessionId ?? '019090db-c402-71cb-a954-6066b9493630'
   const stdout = (opts.raw ?? (opts.lines ?? []).map((l) => JSON.stringify(l))).join('\n')
   fs.writeFileSync(path.join(dir, 'stdout.txt'), stdout === '' ? '' : stdout + '\n')
 
@@ -104,39 +103,26 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
         'done',
       )
     }
-    // A pi-shaped transcript for the reconcile to read, with the clock set to
-    // now so it lands at or after the executor's spawn timestamp.
     const usage = opts.usage ?? [{ input_tokens: 100, output_tokens: 25, cache_read_tokens: 10 }]
-    const sessionDir = path.join(home, 'sessions', sessionId)
-    const wire = path.join(sessionDir, 'transcript.jsonl')
+    const encoded = encodePiCwd(cwd)
+    const bucket = path.join(home, 'sessions', encoded)
+    const wire = path.join(bucket, `2026-09-11T14-25-16-803Z_${sessionId}.jsonl`)
     script.push(
       'NOW=$(date +%s%3N)',
-      `mkdir -p ${shellQuote(path.dirname(wire))}`,
-      `printf '%s\\n' '{"type":"session","session_id":"${sessionId}"}' >> ${shellQuote(wire)}`,
+      `mkdir -p ${shellQuote(bucket)}`,
+      `printf '%s\\n' '{"type":"session","version":3,"id":"${sessionId}","timestamp":"2026-09-11T14:25:16.803Z","cwd":${JSON.stringify(cwd)}}' >> ${shellQuote(wire)}`,
     )
+    let inTokens = 0
+    let outTokens = 0
+    let cacheRead = 0
     for (const u of usage) {
-      const record = {
-        type: 'usage',
-        input_tokens: u.input_tokens,
-        output_tokens: u.output_tokens,
-        cache_read_tokens: u.cache_read_tokens ?? 0,
-        cache_write_tokens: 0,
-        usage_scope: 'turn',
-      }
-      script.push(
-        `printf '%s\\n' '${JSON.stringify(record).slice(0, -1)},"time":'"$NOW"'}' >> ${shellQuote(wire)}`,
-      )
+      inTokens += u.input_tokens
+      outTokens += u.output_tokens
+      cacheRead += u.cache_read_tokens ?? 0
     }
-    // A session-scoped rollup the reconcile must NOT add to the turn.
     script.push(
-      `printf '%s\\n' '{"type":"usage","input_tokens":99999,"output_tokens":99999,"cache_read_tokens":0,"cache_write_tokens":0,"usage_scope":"session","time":'"$NOW"'}' >> ${shellQuote(wire)}`,
+      `printf '%s\\n' '{"type":"message","id":"bbbbbbbb","parentId":"aaaaaaaa","timestamp":"2026-09-11T14:25:17.000Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"timestamp":'"$NOW"',"usage":{"input_tokens":${String(inTokens)},"output_tokens":${String(outTokens)},"cache_read_tokens":${String(cacheRead)}}}}' >> ${shellQuote(wire)}`,
     )
-    if (opts.turnEnded !== false) {
-      const reason = typeof opts.turnEnded === 'string' ? opts.turnEnded : 'completed'
-      script.push(
-        `printf '%s\\n' '{"type":"turn_end","turn_id":0,"reason":"${reason}","duration_ms":42,"time":'"$NOW"'}' >> ${shellQuote(wire)}`,
-      )
-    }
     if (opts.stderr !== undefined) {
       script.push(`printf '%s\\n' ${shellQuote(opts.stderr)} >&2`)
     }
@@ -201,19 +187,45 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
   }
 }
 
-/** print/JSON lines a healthy pi turn prints. */
+/** print/JSON lines a healthy pi turn prints (session JSONL version 3). */
 export function successLines(finalText: string, sessionId: string): unknown[] {
   return [
-    { type: 'session', session_id: sessionId },
     {
-      type: 'tool_start',
-      id: 'Bash_0',
-      name: 'Bash',
-      input: { command: 'ls' },
+      type: 'session',
+      version: 3,
+      id: sessionId,
+      timestamp: '2026-09-11T14:25:16.803Z',
+      cwd: '/home/rivet',
     },
-    { type: 'tool_end', id: 'Bash_0', output: 'a\nb\n' },
-    { type: 'assistant', content: finalText },
-    { type: 'result', session_id: sessionId, text: finalText },
+    { type: 'model_change', provider: 'deepseek', modelId: 'deepseek-v4-flash' },
+    { type: 'thinking_level_change', thinkingLevel: 'high' },
+    {
+      type: 'message',
+      id: 'aaaaaaaa',
+      parentId: null,
+      timestamp: '2026-09-11T14:25:16.900Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'hi' }],
+        timestamp: 1_700_000_000_000,
+      },
+    },
+    {
+      type: 'message',
+      id: 'bbbbbbbb',
+      parentId: 'aaaaaaaa',
+      timestamp: '2026-09-11T14:25:17.000Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'plan' },
+          { type: 'toolCall', id: 'Bash_0', name: 'Bash', arguments: { command: 'ls' } },
+          { type: 'toolResult', id: 'Bash_0', result: 'a\nb\n' },
+          { type: 'text', text: finalText },
+        ],
+        timestamp: 1_700_000_001_000,
+      },
+    },
   ]
 }
 
