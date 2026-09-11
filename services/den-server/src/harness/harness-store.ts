@@ -44,14 +44,18 @@ import { HERMES_ROSTER_COMMAND, type HermesStoreHost } from './hermes-driver.js'
 import { CODEX_ROSTER_COMMAND, type CodexStoreHost } from './codex-driver.js'
 import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
 import { OPENCODE_ROSTER_COMMAND, type OpencodeStoreHost } from './opencode-driver.js'
-import type { HarnessStoreHost } from './pty-harness-driver.js'
-
-export type HarnessStoreName =
-  'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode'
 import { PI_ROSTER_COMMAND, type PiStoreHost } from './pi-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
-export type HarnessStoreName = 'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'pi'
+export type HarnessStoreName =
+  | 'claude'
+  | 'grok'
+  | 'hermes'
+  | 'kimi'
+  | 'deepseek'
+  | 'codex'
+  | 'opencode'
+  | 'pi'
 
 type StoreByName = {
   claude: ClaudeStoreHost
