@@ -89,7 +89,6 @@ describe('isHarnessId', () => {
         'grok-build',
         'kimi-code',
         'hermes',
-        'deepseek-harness',
         'codex',
         'opencode',
         'pi',
@@ -97,6 +96,7 @@ describe('isHarnessId', () => {
     ).toBe(true)
     expect(isHarnessId('claude')).toBe(false)
     expect(isHarnessId('claude-cli')).toBe(false)
+    expect(isHarnessId('deepseek-harness')).toBe(false)
   })
 })
 

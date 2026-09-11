@@ -3,8 +3,6 @@
  * harness control plane.
  *
  * The executor registry keys `harness-session` on a HARNESS ID, the same
- * `claude-code | grok-build | kimi-code | hermes | deepseek-harness | codex | opencode`
- * `claude-code | grok-build | kimi-code | hermes | deepseek-harness | codex | pi`
  * vocabulary `SessionId`,
  * `HarnessDriver` and the gateway already speak. Before this, the one CLI
  * executor registered under the PROVIDER name `claude-cli`, so a task row and
@@ -17,10 +15,10 @@
  *     session keys: resolve it, warn once, keep reads working while the rows
  *     that predate the rename drain. Nothing writes the legacy target anymore.
  *
- *   - **Honest not-implemented executors.** grok-build, hermes and
- *     deepseek-harness cannot spawn a session for a task to run in — the grok
- *     and dsh drivers spawn a PTY, and hermes/dsh can only ADOPT a session the
- *     roster started (neither has a flag to pin a new id) — so their
+ *   - **Honest not-implemented executors.** grok-build and hermes cannot spawn
+ *     a session for a task to run in — the grok driver spawns a PTY, and
+ *     hermes can only ADOPT a session the roster started (no flag to pin a
+ *     new id) — so their
  *     executors are explicit rejections, not absences. `kimi-code` has a real
  *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`),
  *     `opencode` has a real executor over headless `opencode run`
@@ -233,11 +231,6 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'the hermes driver cannot START a session for a task to run in: hermes has no flag ' +
     'to pin a new session id, so it only ever adopts sessions the roster spawned ' +
     '(HermesDriver.startSession answers capability_unsupported for the same reason)',
-  'deepseek-harness':
-    'no node-side headless task executor: dsh mints its own session id (no --session-id ' +
-    'to pin a new one) and capture is out-of-band via the Cordis session/event plugin. ' +
-    'The den term manager spawns the interactive TUI (`dsh --profile tui [--resume]`); ' +
-    'a headless profile exists but is not wired as a HarnessExecutor',
   codex:
     'the codex driver cannot START a session for a task to run in: Codex mints its own ' +
     'rollout UUID and `codex resume` references existing sessions only (no --session-id). ' +

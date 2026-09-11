@@ -22,14 +22,12 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
   'grok-build': 'grok',
   'kimi-code': 'kimi',
   hermes: 'hermes',
-  'deepseek-harness': 'dsh',
   codex: 'codex',
   opencode: 'opencode',
   pi: 'pi',
 }
 
-/** `providers.<key>` in config.yaml — deepseek-harness is not a CLI harness
- *  provider (`CLI_HARNESS_PROVIDERS` in @rivetos/boot). */
+/** `providers.<key>` in config.yaml. */
 export type HarnessProviderKey =
   'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli' | 'opencode-cli' | 'pi-cli'
 
@@ -38,7 +36,6 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   'grok-build': 'grok-cli',
   'kimi-code': 'kimi-code',
   hermes: 'hermes-cli',
-  'deepseek-harness': undefined,
   codex: 'codex-cli',
   opencode: 'opencode-cli',
   pi: 'pi-cli',
@@ -51,7 +48,6 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   'grok-build': '.grok',
   'kimi-code': '.kimi',
   hermes: '.hermes',
-  'deepseek-harness': '.dsh',
   codex: '.codex',
   // OpenCode is XDG: `$XDG_CONFIG_HOME/opencode` else `~/.config/opencode`.
   opencode: '.config/opencode',
@@ -78,7 +74,7 @@ export interface FindOnPathOpts {
 
 export interface DetectedHarness {
   id: HarnessId
-  /** argv[0] / roster key — `claude`, `grok`, `kimi`, `hermes`, `dsh`, `codex`. */
+  /** argv[0] / roster key — `claude`, `grok`, `kimi`, `hermes`, `codex`. */
   command: string
   /** Absolute path of the executable. */
   binary: string
@@ -270,7 +266,7 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
   }
 
   // Version probes only after the PATH walk, and only when at least one
-  // binary was found — doctor should not pay six `--version` spawns on a
+  // binary was found — doctor should not pay five `--version` spawns on a
   // node with no coding harnesses.
   if (!opts.skipVersion && found.length > 0) {
     for (const harness of found) {

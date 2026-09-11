@@ -7,7 +7,6 @@ import {
   applySheetOverride,
   claudeSheet,
   codexSheet,
-  deepseekSheet,
   EFFORT_TOKEN_RE,
   grokSheet,
   hermesSheet,
@@ -188,7 +187,7 @@ describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
   })
 })
 
-describe('hermesSheet / deepseekSheet', () => {
+describe('hermesSheet', () => {
   it('hermes advertises no models (own picker) and --reasoning efforts', () => {
     const sheet = hermesSheet()
     expect(sheet.models).toEqual([])
@@ -198,7 +197,6 @@ describe('hermesSheet / deepseekSheet', () => {
   })
 
   it('deepseek is empty', () => {
-    expect(deepseekSheet()).toEqual({})
   })
 
   it('pi falls back to the fleet default and --thinking efforts when config is missing', () => {
@@ -223,7 +221,6 @@ describe('hermesSheet / deepseekSheet', () => {
   it('pi reads settings.json default and models-store.json when present', () => {
     const files: Record<string, unknown> = {
       '/home/rivet/.pi/agent/settings.json': {
-        defaultProvider: 'deepseek',
         defaultModel: 'deepseek-v4-flash',
       },
       '/home/rivet/.pi/agent/models-store.json': {
@@ -398,8 +395,8 @@ describe('appendModelEffortArgv', () => {
         'high',
       ),
     ).toEqual(['kimi'])
-    expect(appendModelEffortArgv(['dsh'], sheetForHarness('deepseek-harness'), 'x', 'y')).toEqual([
-      'dsh',
+    expect(appendModelEffortArgv(['codex'], sheetForHarness('codex'), 'x', 'y')).toEqual([
+      'codex',
     ])
   })
 

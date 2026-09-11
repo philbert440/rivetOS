@@ -122,8 +122,8 @@ export type KimiDriverDeps = PtyHarnessDriverDeps<KimiStoreHost>
 /**
  * The adopting shape (room ↔ native map, adopt-vs-rotate in `bindRoom`,
  * refused `startSession`) is the shared `AdoptingPtyHarnessDriver` — extracted
- * when deepseek became the THIRD adopting driver, exactly as the EXTRACTION
- * POINT notes that used to sit here and on hermes's copy prescribed.
+ * when the adopting-driver base was extracted (rule of three), exactly as the
+ * EXTRACTION POINT notes that used to sit here and on hermes's copy prescribed.
  *
  * What that extraction deliberately did NOT take, because it is kimi's own:
  *

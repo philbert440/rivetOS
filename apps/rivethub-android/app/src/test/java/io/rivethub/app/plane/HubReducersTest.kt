@@ -15,7 +15,6 @@ class HubReducersTest {
         assertEquals("opencode", harnessIdForAgent("bot", "opencode-cli"))
         assertEquals(null, harnessIdForAgent("opencode-migration-helper", null))
         assertEquals("hermes", harnessIdForAgent("hermes", null))
-        assertEquals("deepseek-harness", harnessIdForAgent("dsh", null))
         assertEquals("codex", harnessIdForAgent("codex", null))
         assertEquals("pi", harnessIdForAgent("pi", "pi-cli"))
         assertEquals("pi", harnessIdForAgent("pi", null))

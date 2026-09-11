@@ -84,7 +84,6 @@ import {
   mcpJsonHasRivetos,
   tomlFileHasRivetosTable,
   uncommentedLineContains,
-  yamlFileHasRivetMemory,
 } from './plugins-install.js'
 
 // ---------------------------------------------------------------------------
@@ -1594,10 +1593,6 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
       return tomlFileHasRivetosTable(join(h.configHome, 'config.toml'))
     case 'kimi-code':
       return kimiPluginInstalled(home, h.configHome)
-    case 'deepseek-harness':
-      return artefactConfigHomes(h.id, home, h.configHome).some((dir) =>
-        yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml')),
-      )
     case 'codex':
       return artefactConfigHomes(h.id, home, h.configHome).some(
         (dir) =>

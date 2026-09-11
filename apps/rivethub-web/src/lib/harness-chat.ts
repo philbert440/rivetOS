@@ -95,7 +95,6 @@ export const ROSTER_COMMAND: Record<HarnessId | 'pi', string> = {
   'kimi-code': 'kimi',
   opencode: 'opencode',
   hermes: 'hermes',
-  'deepseek-harness': 'dsh',
   codex: 'codex',
   pi: 'pi',
 }

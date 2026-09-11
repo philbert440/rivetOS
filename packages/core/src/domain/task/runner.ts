@@ -45,7 +45,7 @@ const log = logger('TaskRunner')
 // Executor registry — keyed by (executor, executor_target).
 //
 // For kind 'harness-session' the target is a HARNESS ID (`claude-code`,
-// `grok-build`, `kimi-code`, `hermes`, `deepseek-harness`) — the same
+// `grok-build`, `kimi-code`, `hermes`, `codex`) — the same
 // vocabulary SessionId and the gateway speak. Retired targets (`claude-cli`)
 // canonicalize on the way in and
 // out, warning once each, so rows queued before the rename still resolve.

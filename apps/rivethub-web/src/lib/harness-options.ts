@@ -17,7 +17,6 @@ const HARNESS_LABEL: Record<HarnessId | 'pi', string> = {
   'kimi-code': 'Kimi Code',
   opencode: 'opencode',
   hermes: 'Hermes',
-  'deepseek-harness': 'DeepSeek',
   codex: 'Codex',
   pi: 'pi',
 }

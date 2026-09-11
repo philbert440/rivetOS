@@ -22,7 +22,7 @@ import java.io.Closeable
 
 /**
  * Typed harness-plane client over one node's gateway. Intentionally has no
- * startSession: hermes, kimi and dsh reject it with capability_unsupported,
+ * startSession: hermes, kimi and codex reject it with capability_unsupported,
  * and + new mints a bare-UUID draft instead.
  */
 class HarnessGateway(

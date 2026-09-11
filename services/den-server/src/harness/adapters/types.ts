@@ -7,7 +7,7 @@ import type {
 
 /** Resolved on-disk store the transcript watcher / readers parse. */
 export interface HarnessStoreRef {
-  command: 'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh' | 'codex' | 'opencode' | 'pi'
+  command: 'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi'
   /** The file to watch for changes (jsonl / chat_history / sqlite db). */
   path: string
   /** Extra files whose size/mtime should wake the watcher (sqlite WAL/SHM). */
@@ -23,7 +23,7 @@ export interface HarnessAdapter {
     /** Same fold over ALREADY-PARSED JSONL objects — the watcher hot path has
      *  them from the tail-window reader; never stringify to re-parse. */
     parseObjects?(objects: Record<string, unknown>[]): HarnessTranscriptTurn[]
-    /** hermes (sqlite), dsh (empty). sessionId is the den join key; hermes rows are keyed by it. */
+    /** hermes (sqlite). sessionId is the den join key; hermes rows are keyed by it. */
     readTurns?(
       ref: HarnessStoreRef,
       maxBytes: number,

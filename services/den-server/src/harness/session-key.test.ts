@@ -9,9 +9,6 @@ describe('denJoinKey', () => {
     expect(denJoinKey(`grok-build:${UUID}`)).toBe(UUID)
     expect(denJoinKey('kimi-code:session_abc')).toBe('session_abc')
     expect(denJoinKey(`hermes:${UUID}`)).toBe(UUID)
-    expect(denJoinKey('deepseek-harness:session-86ffe759-cd7b-49a7-955d-c282631a935d')).toBe(
-      'session-86ffe759-cd7b-49a7-955d-c282631a935d',
-    )
     expect(denJoinKey(`codex:${UUID}`)).toBe(UUID)
     expect(denJoinKey('opencode:ses_01K8ABCDEFGHIJKLMNOPQRSTUV')).toBe(
       'ses_01K8ABCDEFGHIJKLMNOPQRSTUV',
@@ -51,12 +48,6 @@ describe('denSessionRef', () => {
       command: 'kimi',
     })
     expect(denSessionRef(`hermes:${UUID}`)).toEqual({ native: UUID, command: 'hermes' })
-    expect(
-      denSessionRef('deepseek-harness:session-86ffe759-cd7b-49a7-955d-c282631a935d'),
-    ).toEqual({
-      native: 'session-86ffe759-cd7b-49a7-955d-c282631a935d',
-      command: 'dsh',
-    })
     expect(denSessionRef(`codex:${UUID}`)).toEqual({ native: UUID, command: 'codex' })
     expect(denSessionRef('opencode:ses_01K8ABCDEFGHIJKLMNOPQRSTUV')).toEqual({
       native: 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV',

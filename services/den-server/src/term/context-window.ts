@@ -44,8 +44,6 @@ export function contextWindowFromModel(model: string | undefined, command?: stri
     cmd === 'hermes' ||
     cmd === 'kimi' ||
     cmd === 'kimi-code' ||
-    cmd === 'dsh' ||
-    cmd === 'deepseek-harness' ||
     cmd === 'opencode' ||
     cmd === 'pi' ||
     cmd === 'local'

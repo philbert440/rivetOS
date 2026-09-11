@@ -226,7 +226,6 @@ describe('GET /api/harnesses', () => {
       'hermes',
       'kimi-code',
       'pi',
-      'deepseek-harness',
       'opencode',
       'codex',
     ])
@@ -250,7 +249,6 @@ describe('GET /api/harnesses', () => {
       'hermes',
       'kimi-code',
       'pi',
-      'deepseek-harness',
       'opencode',
       'codex',
     ])
@@ -1124,7 +1122,6 @@ describe('capability runtime truthing', () => {
       'hermes',
       'kimi-code',
       'pi',
-      'deepseek-harness',
       'opencode',
       'codex',
     ])
@@ -1157,7 +1154,6 @@ describe('capability runtime truthing', () => {
       'hermes',
       'kimi-code',
       'pi',
-      'deepseek-harness',
       'opencode',
       'codex',
     ])

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking
 
 - Per-user memory routing reads only the users.json registry (`RIVETOS_USERS_FILE`, else `$RIVETOS_SHARED_DIR/rivetos/users.json`, else `~/.rivetos/users.json`). The `RIVETOS_USER_DBS` and `RIVETOS_DEN_DEVICE_USERS` env maps are removed — leftover values do not route.
+- Removed the `deepseek-harness` (dsh) harness — `HARNESS_IDS` token, `@rivetos/harness-deepseek`, `integrations/deepseek` capture plugin, and the `deepseek`/`dsh` preset aliases (presets using them no longer map to a harness); nodes with a `dsh` roster entry in `~/.rivetos/den-term.json` need `rivetos plugins install --force` or a hand edit.
 
 ## [0.5.0] - 2026-08-30
 

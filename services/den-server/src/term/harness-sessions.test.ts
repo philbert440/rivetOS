@@ -11,7 +11,6 @@ import {
   describeKimiSession,
   describeOpencodeSession,
   describeCodexSession,
-  describeDshSession,
   describePiSession,
   claudeTurnsFromLines,
   grokTurnsFromLines,
@@ -40,7 +39,6 @@ afterEach(() => {
   delete process.env.GROK_HOME
   delete process.env.HERMES_HOME
   delete process.env.KIMI_CODE_HOME
-  delete process.env.DSH_HOME
   delete process.env.CODEX_HOME
   delete process.env.OPENCODE_DATA_DIR
   delete process.env.XDG_DATA_HOME
@@ -513,7 +511,6 @@ describe('listHarnessSessions', () => {
     process.env.GROK_HOME = join(tmpdir(), 'no-grok-' + String(process.pid))
     process.env.HERMES_HOME = join(tmpdir(), 'no-hermes-' + String(process.pid))
     process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
-    process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
     process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
     setPiHomeForTest(join(tmpdir(), 'no-pi-' + String(process.pid)))
@@ -523,7 +520,6 @@ describe('listHarnessSessions', () => {
         'grok',
         'hermes',
         'kimi',
-        'dsh',
         'codex',
         'opencode',
         'pi',
@@ -533,31 +529,10 @@ describe('listHarnessSessions', () => {
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
     delete process.env.KIMI_CODE_HOME
-    delete process.env.DSH_HOME
     delete process.env.CODEX_HOME
     delete process.env.XDG_DATA_HOME
   })
 
-  it('reads dsh sessions from ~/.dsh/sessions/<cwd-slug>/session-<uuid>/', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'dsh-store-'))
-    dirs.push(home)
-    process.env.DSH_HOME = home
-    const id = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
-    const dir = join(home, 'sessions', 'home-rivet-workspace', id)
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'session.jsonl.zstd'), '')
-    const sessions = await listHarnessSessions(['dsh'])
-    expect(sessions).toHaveLength(1)
-    expect(sessions[0]).toMatchObject({ id, command: 'dsh', title: id })
-    expect(await describeDshSession(id)).toEqual(sessions[0])
-    expect(harnessSessionExists('dsh', id)).toBe(true)
-    expect(harnessSessionExists('dsh', 'session-nope')).toBe(false)
-    expect(await describeDshSession('../../etc/passwd')).toBeUndefined()
-    expect(await resolveHarnessStore(`deepseek-harness:${id}`)).toEqual({
-      command: 'dsh',
-      path: join(dir, 'session.jsonl.zstd'),
-    })
-  })
 
   it('reads pi sessions from ~/.pi/agent/sessions/<cwd-bucket>/<ts>_<uuid>.jsonl', async () => {
     const home = mkdtempSync(join(tmpdir(), 'pi-store-'))
