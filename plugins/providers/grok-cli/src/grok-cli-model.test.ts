@@ -7,10 +7,15 @@ import {
   GrokCliModel,
   buildUsage,
   composePrompt,
+  deltaOf,
   effortFromProviderOptions,
   finishReasonFor,
+  innerStreamEvent,
+  isRecognizedStreamEvent,
   newestUserChunk,
   renderPromptForCli,
+  sessionIdOf,
+  streamErrorMessage,
   type GrokCliModelConfig,
 } from './grok-cli-model.js'
 import { loadSessionMap, saveSessionMap, uuidForConversation } from './session-map.js'
@@ -21,6 +26,52 @@ function fakeScript(body: string): string {
   fs.writeFileSync(file, body, { mode: 0o755 })
   return file
 }
+
+/** Fake grok binary that prints each object as one NDJSON line, then exits. */
+function ndjsonScript(lines: unknown[], exitCode = 0): string {
+  return fakeScript(
+    '#!/usr/bin/env node\n' +
+      'const lines = ' +
+      JSON.stringify(lines) +
+      ';\n' +
+      'for (const line of lines) process.stdout.write(JSON.stringify(line) + "\\n");\n' +
+      'process.exit(' +
+      String(exitCode) +
+      ');\n',
+  )
+}
+
+const STREAM_PONG: unknown[] = [
+  {
+    type: 'stream_event',
+    event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hmm' } },
+    session_id: 's1',
+  },
+  {
+    type: 'stream_event',
+    event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: '…' } },
+    session_id: 's1',
+  },
+  {
+    type: 'stream_event',
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'P' } },
+    session_id: 's1',
+  },
+  {
+    type: 'stream_event',
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'ONG' } },
+    session_id: 's1',
+  },
+  {
+    type: 'result',
+    is_error: false,
+    stop_reason: 'end_turn',
+    session_id: 's1',
+    usage: { input_tokens: 11, output_tokens: 4, reasoning_tokens: 1 },
+    num_turns: 1,
+    total_cost_usd: 0.002,
+  },
+]
 
 const prompt: LanguageModelV3Prompt = [
   { role: 'system', content: 'You are Maggie.' },
@@ -179,15 +230,163 @@ describe('helpers', () => {
   })
 })
 
+describe('stream event helpers', () => {
+  it('recognizes Anthropic/claude-cli wrappers and unwraps deltas', () => {
+    expect(isRecognizedStreamEvent({ type: 'stream_event' })).toBe(true)
+    expect(isRecognizedStreamEvent({ type: 'result' })).toBe(true)
+    expect(isRecognizedStreamEvent({ text: 'blob', sessionId: 'x' })).toBe(false)
+    expect(sessionIdOf({ type: 'result', session_id: 'abc' })).toBe('abc')
+    expect(sessionIdOf({ type: 'result', sessionId: 'xyz' })).toBe('xyz')
+    expect(streamErrorMessage({ type: 'error', message: 'boom' })).toBe('boom')
+    expect(streamErrorMessage({ type: 'result', is_error: true, result: 'nope' })).toBe('nope')
+    expect(streamErrorMessage({ type: 'result', is_error: false })).toBeUndefined()
+    const inner = innerStreamEvent({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } },
+    })
+    expect(deltaOf(inner ?? {})).toEqual({ text: 'Hi' })
+    expect(
+      deltaOf({
+        type: 'content_block_delta',
+        delta: { type: 'thinking_delta', thinking: 'hmm' },
+      }),
+    ).toEqual({ thinking: 'hmm' })
+  })
+})
+
 describe('GrokCliModel.doStream', () => {
-  it('replays reasoning, text and usage from the JSON result', async () => {
+  it('emits reasoning then text deltas in order, with usage from the result line', async () => {
+    const parts = await collect(new GrokCliModel(cfg(ndjsonScript(STREAM_PONG))), prompt)
+    const types = parts.map((p) => p.type)
+    expect(types).toEqual([
+      'stream-start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-delta',
+      'text-end',
+      'finish',
+    ])
+    const thinking = parts
+      .filter((p) => p.type === 'reasoning-delta')
+      .map((p) => ('delta' in p ? p.delta : ''))
+      .join('')
+    const text = parts
+      .filter((p) => p.type === 'text-delta')
+      .map((p) => ('delta' in p ? p.delta : ''))
+      .join('')
+    expect(thinking).toBe('hmm…')
+    expect(text).toBe('PONG')
+    expect(thinking).not.toContain('PONG')
+    expect(text).not.toContain('hmm')
+    const fin = parts.find((p) => p.type === 'finish')
+    if (!fin || fin.type !== 'finish') throw new Error('no finish')
+    expect(fin.usage.inputTokens.total).toBe(11)
+    expect(fin.usage.outputTokens.reasoning).toBe(1)
+    expect(fin.usage.outputTokens.text).toBe(3)
+    expect(fin.finishReason.unified).toBe('stop')
+    expect((fin.providerMetadata?.['grok-cli'] as { sessionId?: string }).sessionId).toBe('s1')
+    expect((fin.providerMetadata?.['grok-cli'] as { costUsd?: number }).costUsd).toBe(0.002)
+  })
+
+  it('a mid-stream error line surfaces as an error and suppresses finish', async () => {
+    const bin = ndjsonScript([
+      {
+        type: 'stream_event',
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } },
+      },
+      { type: 'error', message: 'boom from grok' },
+    ])
+    const { stream } = await new GrokCliModel(cfg(bin)).doStream({ prompt })
+    const reader = stream.getReader()
+    const seen: string[] = []
+    let threw = false
+    let errorMsg = ''
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        seen.push(value.type)
+        if (value.type === 'error') {
+          errorMsg = value.error instanceof Error ? value.error.message : String(value.error)
+        }
+      }
+    } catch (err) {
+      threw = true
+      if (!errorMsg) errorMsg = err instanceof Error ? err.message : String(err)
+    }
+    expect(threw || seen.includes('error')).toBe(true)
+    expect(seen).toContain('text-delta')
+    expect(seen).not.toContain('finish')
+    expect(errorMsg).toContain('boom from grok')
+  })
+
+  it('emits whole assistant blocks when the stream has no partial deltas', async () => {
+    const parts = await collect(
+      new GrokCliModel(
+        cfg(
+          ndjsonScript([
+            {
+              type: 'assistant',
+              message: {
+                content: [
+                  { type: 'thinking', thinking: 'plan' },
+                  { type: 'text', text: 'done' },
+                ],
+              },
+              session_id: 's2',
+            },
+            {
+              type: 'result',
+              session_id: 's2',
+              stop_reason: 'end_turn',
+              usage: { input_tokens: 2, output_tokens: 1 },
+            },
+          ]),
+        ),
+      ),
+      prompt,
+    )
+    expect(parts.map((p) => p.type)).toEqual([
+      'stream-start',
+      'reasoning-start',
+      'reasoning-delta',
+      'reasoning-end',
+      'text-start',
+      'text-delta',
+      'text-end',
+      'finish',
+    ])
+    expect(textOf(parts)).toBe('done')
+    const reason = parts.find((p) => p.type === 'reasoning-delta')
+    expect(reason && 'delta' in reason ? reason.delta : '').toBe('plan')
+  })
+
+  it('stores session_id recovered from the stream', async () => {
+    const mapPath = tmpMap()
+    await collect(new GrokCliModel(cfg(ndjsonScript(STREAM_PONG), { sessionMapPath: mapPath })), prompt)
+    expect(loadSessionMap(mapPath)).toEqual({ 'test-conv': 's1' })
+  })
+
+  it('doGenerate accumulates streamed reasoning and text', async () => {
+    const r = await new GrokCliModel(cfg(ndjsonScript(STREAM_PONG))).doGenerate({ prompt })
+    expect(r.content).toEqual([
+      { type: 'reasoning', text: 'hmm…' },
+      { type: 'text', text: 'PONG' },
+    ])
+    expect(r.usage.inputTokens.total).toBe(11)
+  })
+
+  it('falls back to a json blob when the stream produced zero events and exit is 0', async () => {
     const bin = fakeScript(
       '#!/usr/bin/env bash\n' +
         'printf \'%s\' \'{"text":"PONG","thought":"thinking","stopReason":"end_turn","sessionId":"s1","usage":{"input_tokens":11,"output_tokens":4,"reasoning_tokens":1},"num_turns":1,"total_cost_usd":0.002}\'\n',
     )
     const parts = await collect(new GrokCliModel(cfg(bin)), prompt)
-    const types = parts.map((p) => p.type)
-    expect(types).toEqual([
+    expect(parts.map((p) => p.type)).toEqual([
       'stream-start',
       'reasoning-start',
       'reasoning-delta',
@@ -199,14 +398,9 @@ describe('GrokCliModel.doStream', () => {
     ])
     const text = parts.find((p) => p.type === 'text-delta')
     expect(text && 'delta' in text ? text.delta : '').toBe('PONG')
-    const fin = parts.find((p) => p.type === 'finish')
-    if (!fin || fin.type !== 'finish') throw new Error('no finish')
-    expect(fin.usage.inputTokens.total).toBe(11)
-    expect(fin.finishReason.unified).toBe('stop')
-    expect((fin.providerMetadata?.['grok-cli'] as { sessionId?: string }).sessionId).toBe('s1')
   })
 
-  it('doGenerate accumulates the same call', async () => {
+  it('doGenerate accumulates the same call from a json blob fallback', async () => {
     const bin = fakeScript('#!/usr/bin/env bash\nprintf \'{"text":"gen","stopReason":"end_turn"}\'\n')
     const r = await new GrokCliModel(cfg(bin)).doGenerate({ prompt })
     expect(r.content).toEqual([{ type: 'text', text: 'gen' }])

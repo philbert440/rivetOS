@@ -2,7 +2,13 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildArgs, parseGrokJson, spawnGrokTurn, type GrokSpawnFlags } from './spawn-turn.js'
+import {
+  buildArgs,
+  parseGrokJson,
+  parseGrokStreamLine,
+  spawnGrokTurn,
+  type GrokSpawnFlags,
+} from './spawn-turn.js'
 
 const base: GrokSpawnFlags = {
   binary: 'grok',
@@ -20,12 +26,13 @@ function fakeScript(body: string): string {
 }
 
 describe('buildArgs', () => {
-  it('emits the headless json invocation with the prompt as an argument', () => {
+  it('emits the headless streaming-messages-json invocation with the prompt as an argument', () => {
     expect(buildArgs(base, 'hello')).toEqual([
       '-p',
       'hello',
       '--output-format',
-      'json',
+      'streaming-messages-json',
+      '--include-partial-messages',
       '--permission-mode',
       'dontAsk',
       '--max-turns',
@@ -103,6 +110,22 @@ describe('parseGrokJson', () => {
   })
 })
 
+describe('parseGrokStreamLine', () => {
+  it('parses a stream_event line and skips noise', () => {
+    expect(
+      parseGrokStreamLine(
+        '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}}',
+      ),
+    ).toEqual({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } },
+    })
+    expect(parseGrokStreamLine('')).toBeNull()
+    expect(parseGrokStreamLine('Error: max turns reached')).toBeNull()
+    expect(parseGrokStreamLine('{ not json')).toBeNull()
+  })
+})
+
 describe('spawnGrokTurn', () => {
   it('collects stdout and resolves the exit code', async () => {
     const turn = spawnGrokTurn(
@@ -142,5 +165,26 @@ describe('spawnGrokTurn', () => {
     )
     await turn.waitExit()
     expect(parseGrokJson(turn.stdoutText())?.text).toBe('the prompt')
+  })
+
+  it('events() yields NDJSON objects in order while stdoutText still has the raw buffer', async () => {
+    const turn = spawnGrokTurn(
+      {
+        ...base,
+        binary: fakeScript(
+          '#!/usr/bin/env node\n' +
+            'process.stdout.write(\'{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"A"}}}\\n\');\n' +
+            'process.stdout.write(\'{"type":"result","session_id":"s1","usage":{"output_tokens":1}}\\n\');\n',
+        ),
+      },
+      'q',
+    )
+    const evs: unknown[] = []
+    for await (const e of turn.events()) evs.push(e)
+    expect(await turn.waitExit()).toBe(0)
+    expect(evs).toHaveLength(2)
+    expect(evs[0]).toMatchObject({ type: 'stream_event' })
+    expect(evs[1]).toMatchObject({ type: 'result', session_id: 's1' })
+    expect(turn.stdoutText()).toContain('"text":"A"')
   })
 })

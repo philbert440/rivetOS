@@ -1,19 +1,21 @@
 /**
  * spawn-turn — one headless Grok Build call per agent turn.
  *
- * `grok -p <prompt> --output-format json` runs a single non-interactive
- * session and prints ONE JSON object on stdout when it finishes:
+ * `grok -p <prompt> --output-format streaming-messages-json
+ * --include-partial-messages` runs a single non-interactive session and
+ * prints NDJSON on stdout: Anthropic Messages API wire events (the same
+ * shape claude-cli parses), including `stream_event` lines with
+ * `text_delta` / `thinking_delta` when partials are enabled, plus whole
+ * assistant/user/result messages.
  *
- *   { "text": "...", "thought": "...", "stopReason": "end_turn",
- *     "sessionId": "...", "usage": { input_tokens, output_tokens,
- *     cache_read_input_tokens, cache_creation_input_tokens, reasoning_tokens },
- *     "num_turns": 1, "total_cost_usd": 0.004, "modelUsage": { "<model>": {...} } }
+ * Facts checked against grok 1.0.13 (2026-09-05 / 2026-09-11): the prompt
+ * must be an argument (`-p -` is read literally and `-p ""` is rejected),
+ * there is no stdin prompt form, `--system-prompt-override` replaces the
+ * CLI's own system prompt, and a turn that hits `--max-turns` still prints
+ * its result first and then `Error: max turns reached`.
  *
- * Facts checked against grok 1.0.13 (2026-09-05): the prompt must be an
- * argument (`-p -` is read literally and `-p ""` is rejected), there is no
- * stdin prompt form, `--system-prompt-override` replaces the CLI's own system
- * prompt, and a turn that hits `--max-turns` still prints the JSON first and
- * then `Error: max turns reached`.
+ * The pre-streaming `--output-format json` blob is still recognized as a
+ * fallback when a turn produces no NDJSON events and exits 0.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 
@@ -54,7 +56,8 @@ export function buildArgs(flags: GrokSpawnFlags, prompt: string): string[] {
     '-p',
     prompt,
     '--output-format',
-    'json',
+    'streaming-messages-json',
+    '--include-partial-messages',
     '--permission-mode',
     flags.permissionMode,
     '--max-turns',
@@ -104,9 +107,45 @@ export interface GrokJsonResult {
 }
 
 /**
- * Extract the result object from grok's stdout. The CLI prints exactly one
- * pretty-printed JSON object; anything after it (e.g. "Error: max turns
- * reached") is trailing noise, anything before it is ignored.
+ * One NDJSON object from grok's streaming-messages-json stdout. Shapes we
+ * consume (mirroring claude-cli):
+ *
+ *   { type: "stream_event", event: { type: "content_block_delta",
+ *     delta: { type: "text_delta"|"thinking_delta", text|thinking } },
+ *     session_id? }
+ *   { type: "assistant"|"user"|"result"|"error"|"system"|"message", ... }
+ *
+ * Unwrapped Anthropic events (`content_block_delta`, `message_delta`, …)
+ * are also accepted. Unknown objects are still yielded so callers can
+ * inspect them; the model ignores unrecognized types.
+ */
+export type GrokCliEvent = {
+  type?: string
+  [key: string]: unknown
+}
+
+/**
+ * Parse one stdout line. Empty / non-JSON lines return null (they stay in
+ * the raw stdout buffer for the blob fallback).
+ */
+export function parseGrokStreamLine(line: string): GrokCliEvent | null {
+  const s = line.trim()
+  if (!s) return null
+  try {
+    const parsed: unknown = JSON.parse(s)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    return parsed as GrokCliEvent
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extract the result object from grok's stdout. Used as a defensive
+ * fallback when streaming produced no events and the process exited 0
+ * (pretty-printed `--output-format json` blob, or a single-line blob).
+ * Anything after the object (e.g. "Error: max turns reached") is trailing
+ * noise; anything before it is ignored.
  */
 export function parseGrokJson(stdout: string): GrokJsonResult | null {
   const s = stdout.trim()
@@ -155,6 +194,11 @@ export interface GrokTurn {
   waitExit(): Promise<number | null>
   stdoutText(): string
   stderrText(): string
+  /**
+   * Parsed NDJSON objects from stdout, yielded as lines arrive.
+   * Single-consumer: iterate exactly once. Non-JSON lines are skipped.
+   */
+  events(): AsyncIterable<GrokCliEvent>
 }
 
 export function spawnGrokTurn(
@@ -170,9 +214,51 @@ export function spawnGrokTurn(
   })
   let stdout = ''
   let stderr = ''
+  const parsedEvents: GrokCliEvent[] = []
+  const eventWaiters: Array<() => void> = []
+  let stdoutClosed = false
+
+  const notifyEvents = (): void => {
+    for (const w of eventWaiters.splice(0)) w()
+  }
+  const closeStdout = (): void => {
+    if (stdoutClosed) return
+    stdoutClosed = true
+    notifyEvents()
+  }
+
   // stdio is ['ignore', 'pipe', 'pipe'] so both streams exist.
   proc.stdout.setEncoding('utf8')
-  proc.stdout.on('data', (d: string) => (stdout += d))
+  let lineBuf = ''
+  const flushLineBuf = (): void => {
+    if (!lineBuf) return
+    const ev = parseGrokStreamLine(lineBuf)
+    if (ev) {
+      parsedEvents.push(ev)
+      notifyEvents()
+    }
+    lineBuf = ''
+  }
+  proc.stdout.on('data', (d: string) => {
+    stdout += d
+    lineBuf += d
+    let nl = lineBuf.indexOf('\n')
+    while (nl !== -1) {
+      const raw = lineBuf.slice(0, nl)
+      lineBuf = lineBuf.slice(nl + 1)
+      const ev = parseGrokStreamLine(raw.endsWith('\r') ? raw.slice(0, -1) : raw)
+      if (ev) {
+        parsedEvents.push(ev)
+        notifyEvents()
+      }
+      nl = lineBuf.indexOf('\n')
+    }
+  })
+  proc.stdout.on('end', () => {
+    flushLineBuf()
+    closeStdout()
+  })
+  proc.stdout.on('close', closeStdout)
   proc.stderr.setEncoding('utf8')
   proc.stderr.on('data', (d: string) => (stderr += d))
 
@@ -180,12 +266,16 @@ export function spawnGrokTurn(
   const exit = new Promise<number | null>((resolve) => {
     proc.once('exit', (code) => {
       exited = true
+      flushLineBuf()
+      closeStdout()
       resolve(code)
     })
     // spawn() failures (ENOENT, EACCES) surface as async 'error' events
     proc.once('error', (err) => {
       exited = true
       stderr += `spawn error: ${err.message}\n`
+      flushLineBuf()
+      closeStdout()
       resolve(null)
     })
   })
@@ -211,6 +301,19 @@ export function spawnGrokTurn(
     t.unref()
   }
 
+  async function* events(): AsyncIterable<GrokCliEvent> {
+    let i = 0
+    for (;;) {
+      while (i < parsedEvents.length) {
+        yield parsedEvents[i++]
+      }
+      if (stdoutClosed) return
+      await new Promise<void>((resolve) => {
+        eventWaiters.push(resolve)
+      })
+    }
+  }
+
   return {
     proc,
     args,
@@ -218,5 +321,6 @@ export function spawnGrokTurn(
     waitExit: () => exit,
     stdoutText: () => stdout,
     stderrText: () => stderr,
+    events,
   }
 }
