@@ -99,7 +99,7 @@
 </section>
 <section class="block" id="harnesses">
 <p class="kicker">What it connects</p>
-<h2>Works with six agent tools.</h2>
+<h2>Works with your agent tools.</h2>
 <p class="section-lede">For each of these it finds on your machine, the installer adds two things: <strong>capture</strong>, which records sessions to your hub, and <strong>recall</strong>, which lets the tool search that history before it answers.</p>
 <div class="table-scroll" role="region" aria-label="Supported agent tools" tabindex="0">
 <table><caption>Supported tools, with capture and recall wired in at install time</caption>
@@ -110,8 +110,7 @@
 <tr><th scope="row">Grok Build</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td></tr>
 <tr><th scope="row">Codex</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td></tr>
 <tr><th scope="row">Kimi Code</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td></tr>
-<tr><th scope="row">Hermes</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td></tr>
-<tr><th scope="row">DeepSeek</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td></tr></tbody></table>
+<tr><th scope="row">Hermes</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td></tr></tbody></table>
 </div>
 </section>
 <section class="block" id="phone">
@@ -119,20 +118,19 @@
 <div>
 <p class="kicker">Your phone</p>
 <h2>Check in from your phone.</h2>
-<p class="section-lede">Pairing starts in <strong>Settings → Devices</strong> on the desktop, which issues a device profile for your phone.</p><a href="apps.html">Get the apps →</a>
+<p class="section-lede">Pairing starts in <strong>Settings → Devices</strong> on the desktop, which shows a QR code your phone scans.</p><a href="apps.html">Get the apps →</a>
 </div>
 <figure class="diagram pairing-diagram"><svg viewBox="0 0 460 240" role="img" aria-labelledby="pair-title pair-desc"><title id="pair-title">Pair from Settings, Devices</title><desc id="pair-desc">A desktop device screen with an illustrative QR code connects to a phone. Use the real QR in your desktop app.</desc><rect class="d-box" x="10" y="20" width="270" height="170" rx="12"/><text class="d-label" x="30" y="50">Settings → Devices</text><rect class="qr-paper" x="98" y="70" width="82" height="82" rx="4"/><path class="qr-ink" d="M108 80h22v22h-22zM148 80h22v22h-22zM108 120h22v22h-22z"/><path class="qr-pixels" d="M136 80v30h30M110 110h22v8M140 120h10v20h20v-25M136 135v8"/><path class="d-chan" d="M280 110H340"/><rect class="d-hub" x="340" y="45" width="105" height="157" rx="16"/><text class="d-label" x="392" y="116" text-anchor="middle">Paired</text><text class="d-sub" x="392" y="139" text-anchor="middle">your node</text><path class="d-link" d="M370 187H413M105 208H185M145 190V208"/></svg><figcaption>Illustration only — use the QR shown in your own desktop app.</figcaption>
 </figure>
 </div>
 <div class="pair-grid">
 <article class="card"><span class="badge">Android</span>
-<h3>Import your device profile.</h3>
+<h3>Scan the pairing QR.</h3>
 <ol class="setup-list">
 <li>Install the <a href="apps.html#android">RivetHub Android app</a>.</li>
-<li>Create a device profile in <strong>Settings → Devices</strong> on the desktop and copy it to your phone.</li>
-<li>Open it in the app and enter its passphrase. Away from home, turn on Tailscale first.</li>
+<li>In <strong>Settings → Devices</strong> on the desktop, add your phone — a QR code appears.</li>
+<li>Open the app and scan the QR with the camera. Away from home, turn on Tailscale first.</li>
 </ol>
-<p class="small-note">Scanning the pairing QR from inside the app is on the way.</p>
 </article>
 <article class="card"><span class="badge badge--quiet">iPhone</span>
 <h3>Pair through Safari.</h3>
