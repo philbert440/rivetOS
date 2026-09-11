@@ -1093,7 +1093,15 @@ describe('capability runtime truthing', () => {
     const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
       harnesses: { harnessId: string; capabilities: HarnessCapabilities }[]
     }
-    expect(body.harnesses).toHaveLength(6)
+    expect(body.harnesses.map((h) => h.harnessId)).toEqual([
+      'claude-code',
+      'grok-build',
+      'hermes',
+      'kimi-code',
+      'pi',
+      'deepseek-harness',
+      'codex',
+    ])
     for (const h of body.harnesses) {
       expect(h.capabilities).toMatchObject({ interrupt: false, resume: false })
     }
@@ -1115,8 +1123,17 @@ describe('capability runtime truthing', () => {
       termsOnPtyBroken,
     )
     const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
-      harnesses: { capabilities: HarnessCapabilities }[]
+      harnesses: { harnessId: string; capabilities: HarnessCapabilities }[]
     }
+    expect(body.harnesses.map((h) => h.harnessId)).toEqual([
+      'claude-code',
+      'grok-build',
+      'hermes',
+      'kimi-code',
+      'pi',
+      'deepseek-harness',
+      'codex',
+    ])
     for (const h of body.harnesses) {
       expect(h.capabilities).toMatchObject({ interrupt: true, resume: true })
     }

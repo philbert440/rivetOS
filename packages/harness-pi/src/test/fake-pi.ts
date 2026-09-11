@@ -325,7 +325,12 @@ export function successLines(
     {
       type: 'message_update',
       usage: PENDING_USAGE,
-      assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'Bash_0', name: 'Bash' },
+      assistantMessageEvent: {
+        type: 'toolcall_start',
+        contentIndex: 1,
+        id: 'Bash_0',
+        name: 'Bash',
+      },
     },
     {
       type: 'message_update',

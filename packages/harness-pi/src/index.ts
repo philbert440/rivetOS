@@ -48,7 +48,7 @@ export {
   parsePiJsonLine,
   piHome,
   reconcileTurn,
-  resolveSessionDir,
+  resolveSessionPath,
   runtimeMessage,
   sessionsRoot,
   sessionIdFromEvent,

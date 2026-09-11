@@ -74,7 +74,9 @@ export function sessionsRoot(home: string): string {
  */
 export function encodePiCwd(cwd: string): string {
   const trimmed = cwd.replace(/\/+$/, '') || '/'
-  return `-${trimmed.replaceAll('/', '-')}-`
+  // Encode a trailing `/` so `/home/rivet` → `--home-rivet--`, not `--home-rivet-`.
+  const slashed = trimmed === '/' ? '/' : `${trimmed}/`
+  return `-${slashed.replaceAll('/', '-')}-`
 }
 
 export interface SessionLocation {
@@ -179,8 +181,8 @@ export function findSessionFile(loc: SessionLocation): string | undefined {
   return best?.path
 }
 
-/** @deprecated name kept for call-site parity — returns the jsonl path. */
-export function resolveSessionDir(loc: SessionLocation): string | undefined {
+/** Absolute jsonl path for a known session id, or undefined. */
+export function resolveSessionPath(loc: SessionLocation): string | undefined {
   return findSessionFile(loc)
 }
 
@@ -432,7 +434,7 @@ function contentItems(message: PiMessageBody | undefined): Record<string, unknow
     return content ? [{ type: 'text', text: content }] : []
   }
   if (!Array.isArray(content)) return []
-  return content.filter(isRecord)
+  return content.filter(isRecord).map((item) => Object.fromEntries(Object.entries(item)))
 }
 
 function toolResultOutput(raw: unknown): unknown {
