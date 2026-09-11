@@ -137,6 +137,7 @@ describe('executor registry harness keying', () => {
       { harnessId: 'hermes', registered: false, implemented: false },
       { harnessId: 'deepseek-harness', registered: false, implemented: false },
       { harnessId: 'codex', registered: false, implemented: false },
+      { harnessId: 'opencode', registered: false, implemented: false },
     ])
   })
 

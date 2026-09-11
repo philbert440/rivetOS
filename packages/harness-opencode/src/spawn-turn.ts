@@ -79,9 +79,10 @@ export interface OpencodeStreamLine {
 /**
  * A missing `-s/--session` id fails with a non-zero exit (wording unknown).
  * Any non-zero exit while `--session` was passed is treated as session_not_found.
- * The regex still matches the documented "Session not found" class on stderr.
+ * The regex matches the documented refusal family on stderr: "Session not
+ * found", "session … not found", "no session" (case-insensitive).
  */
-export const RESUME_REJECTED_RE = /session not found/i
+export const RESUME_REJECTED_RE = /no session|session(?:\s+\S+)*\s+not found/i
 
 /**
  * Map a RivetOS effort id onto OpenCode `--variant`.

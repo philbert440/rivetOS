@@ -132,6 +132,7 @@ describe('RESUME_REJECTED_RE', () => {
   it('matches the known Session-not-found class', () => {
     expect(RESUME_REJECTED_RE.test('Session not found')).toBe(true)
     expect(RESUME_REJECTED_RE.test('Error: session ses_abc not found')).toBe(true)
+    expect(RESUME_REJECTED_RE.test('no session')).toBe(true)
     expect(RESUME_REJECTED_RE.test('error: provider auth failed')).toBe(false)
   })
 })
