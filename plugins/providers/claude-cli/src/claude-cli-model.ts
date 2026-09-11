@@ -19,10 +19,10 @@
  * iterate on). This is the "Loop-in-AI-SDK" shape — the CLI owns the loop,
  * AI SDK owns the providerOptions / hook middleware / streaming surface.
  *
- * Constraint (locked per migration plan): no RivetOS-side max-output-tokens
- * or timeouts. Claude Code owns those; configure via SSH / claude config.
- * We forward AI SDK's `abortSignal` so the loop can still kill the spawn
- * when the user stops a turn or the outer turn-timeout fires.
+ * Optional `timeoutMs` (0 = none) is armed in spawn-turn. Max-output-tokens
+ * stay Claude Code-owned. We forward AI SDK's `abortSignal` so the loop can
+ * still kill the spawn when the user stops a turn or the outer turn-timeout
+ * fires.
  */
 
 import type {
@@ -82,6 +82,8 @@ export interface ClaudeCliModelConfig {
   tools: Tool[] | undefined
   /** Logical agent id — labels MCP tempfiles + log lines. */
   agentId: string | undefined
+  /** Per-spawn timeout in ms. 0 (default) = no timeout. */
+  timeoutMs?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +492,10 @@ export class ClaudeCliModel implements LanguageModelV3 {
 
     let turn: ReturnType<typeof spawnClaudeTurn>
     try {
-      turn = spawnClaudeTurn(flags, cliContent, { env: userRoutingEnv(options.providerOptions) })
+      turn = spawnClaudeTurn(flags, cliContent, {
+        env: userRoutingEnv(options.providerOptions),
+        timeoutMs: this.config.timeoutMs ?? 0,
+      })
     } catch (err: unknown) {
       if (bridge) await bridge.close().catch(() => undefined)
       const msg = err instanceof Error ? err.message : String(err)

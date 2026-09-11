@@ -23,10 +23,11 @@
  *     loop completes after a single `streamText` step since the model
  *     output contains text only — no model-side tool calls to iterate on.
  *
- * Constraint: no RivetOS-side max-output-tokens or per-spawn timeouts.
- * Claude Code owns those — configure on the box via `claude config` /
- * env if they need to change. AI SDK's `abortSignal` is forwarded so the
- * outer loop can still kill spawns on user stop / turn timeout.
+ * Optional `timeout_ms` (default 0 = none) arms a per-spawn timer in
+ * spawn-turn: SIGTERM the child, then SIGKILL after 3s, and reject the
+ * turn with a `timeout` error. Max-output-tokens stay Claude Code-owned.
+ * AI SDK's `abortSignal` is forwarded so the outer loop can still kill
+ * spawns on user stop / turn timeout.
  *
  * Set `RIVETOS_DISABLE_MCP_BRIDGE=1` to skip the embedded bridge (useful for
  * smoke testing the bare CLI shellout).
@@ -100,9 +101,18 @@ export interface ClaudeCliProviderConfig {
   contextWindow?: number
   /** Max output tokens (informational only — not passed to CLI; Claude Code owns it). */
   maxOutputTokens?: number
+  /** Per-spawn timeout in ms. 0 (default) = no timeout. When > 0, SIGTERM
+   *  the child then SIGKILL after KILL_GRACE_MS and reject with `timeout`. */
+  timeoutMs?: number
   /** Override the provider id / display name (used when boot registers us). */
   id?: string
   name?: string
+}
+
+function parseTimeoutMs(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.floor(n)
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +150,7 @@ export class ClaudeCliProvider implements Provider {
   private cwd: string | undefined
   private contextWindow: number
   private outputTokenLimit: number
+  private timeoutMs: number
   private available: boolean | null = null
 
   constructor(config: ClaudeCliProviderConfig) {
@@ -155,6 +166,7 @@ export class ClaudeCliProvider implements Provider {
     this.cwd = config.cwd
     this.contextWindow = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
+    this.timeoutMs = config.timeoutMs ?? 0
   }
 
   getModel(): string {
@@ -217,6 +229,7 @@ export class ClaudeCliProvider implements Provider {
           cwd: this.cwd,
           tools,
           agentId,
+          timeoutMs: this.timeoutMs,
         })
       },
 
@@ -256,6 +269,7 @@ export const manifest: PluginManifest = {
         name: (cfg.name as string | undefined) ?? 'claude-cli',
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
+        timeoutMs: parseTimeoutMs(cfg.timeout_ms),
       }),
     )
   },

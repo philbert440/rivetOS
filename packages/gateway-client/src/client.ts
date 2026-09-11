@@ -567,7 +567,8 @@ export class RivetGateway {
   }
 
   /** Answer an `approval-request` event (202). 501 when the driver reports
-   *  `approvals: false` — `claude-code` always does. */
+   *  `approvals: false`. The flag is capability-gated on the sheet (PTY +
+   *  herdr + adapter); `claude-code` is true when those are present. */
   resolveHarnessApproval(
     sessionId: string,
     requestId: string,

@@ -23,8 +23,6 @@ Web / Desktop / Android
         ├── claude-code   (reference)
         ├── grok-build
         ├── kimi-code
-        ├── opencode
-        ├── pi
         └── hermes
         │
    capture → memory     den events → hub dens / chat
@@ -32,8 +30,7 @@ Web / Desktop / Android
 
 | Who                                                      | Owns                                                                                              |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes, opencode) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
-| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes, pi) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
+| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
 | **Rivet** (this node)                                    | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
 | **Clients** (Hub web, desktop, Android)                  | Full clients of the **same** gateway, not separate agent runtimes                                 |
 
@@ -46,7 +43,7 @@ Web / Desktop / Android
 ## Design principles
 
 1. **Harness owns the loop**: Interactive coding is the host harness. Rivet adapts, does not replace.
-2. **One SessionId, four drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
+2. **One SessionId, seven drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
 3. **Honest capability flags**: Drivers advertise what is actually wired. Unsupported methods return typed `capability_unsupported` (HTTP 501). UIs gate on flags.
 4. **Domain-Driven Design**: Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
 5. **Clean Architecture**: Dependencies point inward. Core knows nothing about Telegram, Discord, PostgreSQL, or Anthropic. Plugins know about core, never the reverse.
@@ -81,8 +78,7 @@ Web / Desktop / Android
 │                               │ HarnessDriver registry                   │
 │       ┌───────────┬───────────┼───────────┬───────────┐                  │
 │       ▼           ▼           ▼           ▼           │                  │
-│  claude-code  grok-build  kimi-code  hermes  opencode │                  │
-│  claude-code  grok-build  kimi-code  pi  hermes      │                  │
+│  claude-code  grok-build  kimi-code    hermes        │                  │
 │  (reference)  PtyHarnessDriver subclasses            │                  │
 │       │           │           │           │           │                  │
 │       └───────────┴─────┬─────┴───────────┘           │                  │
@@ -111,9 +107,8 @@ Web / Desktop / Android
 ### What the harness does
 
 - Run the model and tool loop inside its own process (TUI or headless `-p`).
-- Mint and persist native session ids in its own store (`~/.claude/projects`, `~/.grok/sessions`, `~/.hermes/state.db`, `~/.kimi-code/sessions`, OpenCode native store).
-- Mint and persist native session ids in its own store (`~/.claude/projects`, `~/.grok/sessions`, `~/.hermes/state.db`, `~/.kimi-code/sessions`, pi native store confirmed at driver wiring).
-- Surface permission prompts inside its own TUI (none of the four PTY drivers expose approvals on the den wire today).
+- Mint and persist native session ids in its own store (`~/.claude/projects`, `~/.grok/sessions`, `~/.hermes/state.db`, `~/.kimi-code/sessions`).
+- Surface permission prompts inside its own TUI. When PTY + herdr + adapter allow it, the den also exposes `approvals` on the wire for clients to resolve.
 - Honor interrupt (Esc through the term manager) and resume flags when the binary supports them.
 
 ### What Rivet does
@@ -134,43 +129,51 @@ RivetHub (web + Tauri desktop) and Android are **remote faces of the node**. The
 
 ---
 
-## Four harness drivers
+## Harness drivers
 
 Contract types live in `@rivetos/types` (`harness.ts`, `harness-session-id.ts`).
-Implementations live under `services/den-server/src/harness/`. All four are thin
-subclasses of `PtyHarnessDriver`. Claude (`claude-code`) is the **reference**
-driver; the others match the same interface.
+Implementations live under `services/den-server/src/harness/`. Claude (`claude-code`)
+is the **reference** PTY driver; grok-build matches it on `PtyHarnessDriver`.
+kimi-code, hermes, opencode, and Codex PTY are **adopting** (no pin flag); pi pins via `--session-id`.
+Codex also has `CodexProtocolDriver` (app-server RPC).
 
-| HarnessId     | Store                   | startSession                  | Rotation                                      | Live stream notes                                                                                                   | Task executor                                               |
-| ------------- | ----------------------- | ----------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| `claude-code` | `~/.claude/projects`    | yes (pins via `--session-id`) | no                                            | den events; thinking as spinner status lines                                                                        | yes (`@rivetos/provider-claude-cli`, target `claude-code`)  |
-| `grok-build`  | `~/.grok/sessions`      | yes                           | no                                            | real `agent_thought_chunk` → `reasoning-delta`                                                                      | explicit rejection (ACP path recorded, not wired node-side) |
-| `hermes`      | `~/.hermes/state.db`    | **unsupported** (no pin flag) | **yes** (first rotating driver)               | full den mapping                                                                                                    | explicit rejection                                          |
-| `kimi-code`   | `~/.kimi-code/sessions` | **unsupported** (no pin flag) | room re-spawn only; native id does not rename | lifecycle + tools + turn boundaries; **no** assistant/reasoning deltas (hooks carry none); text from `transcript()` | yes (`@rivetos/harness-kimi-code`, headless `kimi -p`)      |
-| `opencode`    | native store (path confirmed by backend) | TBD (ACP / `opencode run`) | TBD | ACP nd-JSON + `opencode run`; default backend z.ai GLM (Anthropic-compatible) | planned (`@rivetos/harness-opencode`, provider `opencode-cli`) |
-| `pi`          | confirm at wiring       | confirm at wiring             | confirm at wiring                             | print/JSON or RPC (`pi` CLI, `@earendil-works/pi-coding-agent`)                                                     | yes (`@rivetos/harness-pi`, provider `pi-cli`; z.ai GLM recommended) |
+opencode and pi landed 2026-09-11 (#757/#758); deepseek-harness was removed (#764).
+
+| HarnessId          | Driver                                                 | Transcript store                                      | startSession                  | Approvals                                                         | liveStream                         | Models / efforts                                         |
+| ------------------ | ------------------------------------------------------ | ----------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------- |
+| `claude-code`      | `ClaudeCodeDriver` (PTY)                               | `~/.claude/projects/<slug>/<uuid>.jsonl`              | yes (pins via `--session-id`) | yes when PTY + herdr + adapter                                    | yes                                | static 7 / low..max                                      |
+| `grok-build`       | `GrokBuildDriver` (PTY)                                | `~/.grok/sessions/.../chat_history.jsonl`             | yes                           | yes                                                               | yes                                | `~/.grok/models_cache.json` / cache, fallback low..xhigh |
+| `kimi-code`        | `KimiCodeDriver` (adopting)                            | `agents/main/wire.jsonl`                              | **unsupported** (no pin flag) | yes (key map **unverified**)                                      | yes (deltas diffed from wire.jsonl) | kimi `config.toml` / none                                |
+| `hermes`           | `HermesDriver` (adopting)                              | `~/.hermes/state.db`                                  | **unsupported** (no pin flag) | **false** by design (`--yolo`)                                    | yes                                | none / low/med/high (`--reasoning`)                      |
+| `codex`            | `CodexDriver` (adopting PTY) / `CodexProtocolDriver` (RPC) | rollout jsonl (`~/.codex/sessions`)                | refused / n/a                 | PTY: **false** (no key map) / RPC: **true**                        | yes / yes                          | static default / RPC `model/list`; efforts low..xhigh    |
+| `opencode`         | `OpencodeDriver` (adopting)                            | `~/.local/share/opencode/opencode.db` (SQLite, WAL-watched) | **unsupported** (no pin flag) | false (opencode's own TUI prompts)                                | yes                                | `~/.config/opencode/opencode.json` / `--variant` low,med,high,max |
+| `pi`               | `PiDriver` (PTY)                                       | `~/.pi/agent/sessions/<cwd>/<ts>_<uuid>.jsonl`        | yes (pins via `--session-id`) | false (pi's own TUI prompts)                                      | yes                                | `~/.pi/agent/settings.json` / `--thinking` low..max      |
 
 ### Capability flags (as wired)
 
-Flags reflect what is actually available on the node, not aspirations:
+Flags reflect what is actually available on the node, not aspirations. PTY
+drivers compute `interrupt` / `resume` / `approvals` at read time from the live
+PTY + herdr + adapter sheet (`PtyHarnessDriver.capabilities`).
 
-| Flag           | All four when den terminals + event tap present | Notes                                         |
-| -------------- | ----------------------------------------------- | --------------------------------------------- |
-| `interrupt`    | true if terminals enabled                       | Esc via term manager inject                   |
-| `resume`       | true if terminals enabled                       | `--resume` / `--session` through spawn-or-get |
-| `approvals`    | **false** for all four                          | TUI-local only; `resolveApproval` → 501       |
-| `liveStream`   | true if den event tap present                   | kimi stream is thinner (see above)            |
-| `listSessions` | true                                            | store scan                                    |
+| Flag           | PTY drivers                                      | Notes                                                              |
+| -------------- | ------------------------------------------------ | ------------------------------------------------------------------ |
+| `interrupt`    | true if terminals enabled and PTY is available   | Esc via term manager inject; Codex RPC: true                       |
+| `resume`       | true if terminals enabled and PTY is available   | `--resume` / `--session` through spawn-or-get                      |
+| `approvals`    | PTY + herdr + adapter; not a constant false      | hermes/opencode/pi false; `claude-code` true when those gates pass    |
+| `liveStream`   | true if den event tap present                    | kimi stream is thinner (see above); pi tap-only              |
+| `listSessions` | true                                             | store scan                                                         |
 
-All four reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
+PTY drivers reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
 `sendUserTurn` with `capability_unsupported`. A PTY paste cannot hand a file to
 a TUI. Upload staging (`POST /api/uploads`) exists for clients; no PTY driver
-consumes staged URIs yet.
+consumes staged URIs yet. Codex protocol is the exception for native image
+attachments.
 
-**Adoption vs start:** `hermes` and `kimi-code` cannot pin a new native id, so
+**Adoption vs start:** `hermes`, `kimi-code`, `opencode`, and Codex PTY cannot pin a new native id, so
 `startSession` is unsupported. Sessions enter the plane by roster/term spawn or
 `resume`, and the driver **adopts** them when hooks announce a native id
 (`harnessSession` on den events). That is a harness limitation, not a contract gap.
+`claude-code` and `grok-build` pin via `--session-id`.
 
 ### Session identity
 
@@ -179,8 +182,7 @@ SessionId = <harness-id> ":" <native-session-id>
 ```
 
 - Split on the **first** colon only; native may contain `:` and `/`.
-- Examples: `claude-code:a1b2…`, `grok-build:<uuid>`, `kimi-code:session_<uuid>`, `hermes:YYYYMMDD_HHMMSS_<hex>`, `opencode:<native>`.
-- Examples: `claude-code:a1b2…`, `grok-build:<uuid>`, `kimi-code:session_<uuid>`, `hermes:YYYYMMDD_HHMMSS_<hex>`, `pi:<native>`.
+- Examples: `claude-code:a1b2…`, `grok-build:<uuid>`, `kimi-code:session_<uuid>`, `hermes:YYYYMMDD_HHMMSS_<hex>`.
 - Gateway path params use `enc(SessionId)` = **unpadded base64url** of the UTF-8 SessionId.
 - Capture key: `ros_conversations.session_key` = exact `SessionId` (with `agent`).
 - Legacy shapes (bare uuid, Claude path-fallback) resolve as **aliases** on the read path; write-side full canonicalization is still landing (see plan).
@@ -235,7 +237,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 │  sessions · identity · uploads · den · term · files    │
 ├────────────────────────────────────────────────────────┤
 │  Host harnesses (external processes)                   │
-│  claude · grok · kimi · hermes · opencode              │
+│  claude · grok · kimi · hermes                         │
 ├────────────────────────────────────────────────────────┤
 │                    Plugins (Adapters)                  │
 │                                                        │
@@ -305,7 +307,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps).
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
 
 ---
 
@@ -314,8 +316,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 ### Core concepts
 
 ```
-Harness      — external coding host (claude-code | grok-build | kimi-code | hermes | opencode)
-Harness      — external coding host (claude-code | grok-build | kimi-code | hermes | pi)
+Harness      — external coding host (claude-code | grok-build | kimi-code | hermes)
 SessionId    — canonical <harness-id>:<native-session-id>
 Driver       — per-node HarnessDriver adapting store + den + term to the contract
 Agent        — named identity with provider/workspace (secondary path + mesh identity)
@@ -463,8 +464,6 @@ rivetOS/
     den-protocol/                ← harness event contract
     gateway-client/              ← typed HTTP+WS client (Hub)
     harness-kimi-code/           ← headless kimi-code task executor
-    harness-opencode/            ← headless opencode task executor (provider opencode-cli)
-    harness-pi/                  ← headless pi task executor
     mcp/ · mcp-v2/
     nx-plugin/
   plugins/
@@ -472,14 +471,13 @@ rivetOS/
       agent/                     ← mesh agent-to-agent (social channels removed Phase 5)
     providers/                   ← headless / AI-SDK interactive demotion
       anthropic/ google/ xai/ ollama/ vllm/ llama-server/
-      claude-cli/ codex-cli/ opencode-cli/  ← CLI harness providers
-      claude-cli/ codex-cli/ pi-cli/ ← subscription-backed CLI providers
+      claude-cli/ codex-cli/     ← subscription-backed CLI providers
     memory/postgres/
     tools/   shell/ file/ search/ web-search/ interaction/ mcp-client/
     transports/mcp-server/
   services/
     den-server/
-      src/harness/               ← registry, PtyHarnessDriver, four drivers, routes, uploads
+      src/harness/               ← registry, PtyHarnessDriver, seven drivers, routes, uploads
     embedding-worker/            ← graphile-worker daemon (GPU embeddings)
     compaction-worker/           ← graphile-worker daemon (summarization + wiki)
     mcp-sidecar/
@@ -489,8 +487,7 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes, opencode)
-  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes, pi)
+  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
@@ -508,8 +505,7 @@ Skills are not part of the source tree. They are user-managed and live under the
 ### HarnessDriver: control-plane contract (primary)
 
 ```typescript
-export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes', 'opencode'] as const
-export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes', 'pi'] as const
+export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes'] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 export type SessionId = `${HarnessId}:${string}`
 
@@ -753,7 +749,7 @@ Composable async pipeline with priority ordering (0-99):
 - **Auto-actions**: Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks**: Daily context loading, session summaries, auto-commit, pre/post-compact
 
-Harness-side hooks (claude/grok/kimi/hermes/opencode den + memory integrations) are
+Harness-side hooks (claude/grok/kimi/hermes den + memory integrations) are
 **outside** this pipeline; they feed den AgentEvents and capture, not the AI-SDK hook bus.
 
 ---
@@ -761,15 +757,12 @@ Harness-side hooks (claude/grok/kimi/hermes/opencode den + memory integrations) 
 ## Tasks
 
 The task engine's `harness-session` registry is keyed by **harness id**
-(`claude-code | grok-build | kimi-code | hermes | opencode`).
-(`claude-code | grok-build | kimi-code | hermes | pi`).
+(`claude-code | grok-build | kimi-code | hermes`).
 
 | Target        | Status                                                                                                  |
 | ------------- | ------------------------------------------------------------------------------------------------------- |
 | `claude-code` | Implemented (headless `claude -p`); `claude-cli` accepted as **deprecated alias** for one deploy window |
 | `kimi-code`   | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile)                          |
-| `opencode`    | Planned (`@rivetos/harness-opencode`, `opencode run` + ACP; provider `opencode-cli`, default z.ai GLM)  |
-| `pi`          | Implemented (`@rivetos/harness-pi`, print/JSON or RPC; provider `pi-cli`)                               |
 | `grok-build`  | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path               |
 | `hermes`      | Explicit rejecting executor (cannot pin session for spawn-for-task)                                     |
 
@@ -854,9 +847,6 @@ deployment:
 #     kimi-code:
 #       binary: kimi
 #       cwd: /path/to/work
-#     pi:
-#       binary: pi
-#       cwd: /path/to/work
 ```
 
 `target` is the only key consumed at runtime under `deployment:`; provisioning
@@ -882,8 +872,7 @@ security boundary; agents can only touch what is inside their container.
 - `rivetos-shared` → shared storage (`/rivet-shared/`)
 - `.env` → API keys and secrets
 - `~/.rivetos/config.yaml` → runtime configuration
-- Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`, OpenCode native store) → native session stores
-- Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`, pi home confirmed at wiring) → native session stores
+- Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`) → native session stores
 
 **Update model:** Pull source → rebuild containers from source tree → restart.
 Plugins live in the source tree and survive updates automatically.
@@ -933,7 +922,7 @@ When documenting mesh peers, use hostnames or documentation address space
 | `RIVETOS_SESSION_KEY=task:<id>` write override | Deprecated            | Use `RIVETOS_TASK_ID` + capture association                                         |
 | Provider plugins for Hub coding UX             | Demoted               | Harness drivers own interactive coding                                              |
 
-**Still first-class:** agent channel (mesh), memory, MCP, den, gateway, four harness drivers, Hub/Android/desktop, tasks.
+**Still first-class:** agent channel (mesh), memory, MCP, den, gateway, seven harness drivers, Hub/Android/desktop, tasks.
 
 ---
 
