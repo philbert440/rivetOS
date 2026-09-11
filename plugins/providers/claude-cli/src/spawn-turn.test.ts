@@ -9,15 +9,30 @@
  * path — hangs with it. These pin the latch that replaced it.
  */
 
+import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ClaudeCliTimeoutError,
   KILL_GRACE_MS,
   spawnClaudeTurn,
 } from './spawn-turn.js'
+
+type SpawnFn = typeof import('node:child_process').spawn
+
+type FakeChild = EventEmitter & {
+  stdin: PassThrough
+  stdout: PassThrough
+  stderr: PassThrough
+  pid: number
+  exitCode: number | null
+  signalCode: NodeJS.Signals | null
+  killed: boolean
+  kill: (signal?: NodeJS.Signals | number) => boolean
+}
 
 const dirs: string[] = []
 afterAll(() => {
@@ -33,20 +48,58 @@ function fakeScript(body: string): string {
   return file
 }
 
+const FLAGS = {
+  binary: 'claude',
+  modelId: '',
+  toolsArg: '',
+  effort: 'low' as const,
+  permissionMode: 'default',
+  excludeDynamicSections: false,
+  systemText: '',
+}
+
 function spawnFake(body: string, opts?: { timeoutMs?: number }) {
-  return spawnClaudeTurn(
-    {
-      binary: fakeScript(body),
-      modelId: '',
-      toolsArg: '',
-      effort: 'low',
-      permissionMode: 'default',
-      excludeDynamicSections: false,
-      systemText: '',
-    },
-    'hi',
-    opts,
-  )
+  return spawnClaudeTurn({ ...FLAGS, binary: fakeScript(body) }, 'hi', opts)
+}
+
+function makeFakeChild(): { child: FakeChild; sent: Array<NodeJS.Signals | number | undefined> } {
+  const sent: Array<NodeJS.Signals | number | undefined> = []
+  const child = new EventEmitter() as FakeChild
+  child.stdin = new PassThrough()
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.pid = 4242
+  child.exitCode = null
+  child.signalCode = null
+  child.killed = false
+  child.kill = (signal?: NodeJS.Signals | number) => {
+    sent.push(signal)
+    child.killed = true
+    return true
+  }
+  return { child, sent }
+}
+
+function simulateExit(
+  child: FakeChild,
+  code: number | null = null,
+  signal: NodeJS.Signals | null = 'SIGTERM',
+): void {
+  child.exitCode = code
+  child.signalCode = signal
+  if (!child.stdout.writableEnded) child.stdout.end()
+  if (!child.stderr.writableEnded) child.stderr.end()
+  child.emit('exit', code, signal)
+  child.emit('close', code, signal)
+}
+
+function spawnFakeChild(opts?: { timeoutMs?: number }) {
+  const { child, sent } = makeFakeChild()
+  const turn = spawnClaudeTurn(FLAGS, 'hi', {
+    ...opts,
+    spawn: (() => child) as unknown as SpawnFn,
+  })
+  return { turn, child, sent }
 }
 
 describe('spawnClaudeTurn waitExit', () => {
@@ -72,9 +125,6 @@ describe('spawnClaudeTurn waitExit', () => {
   })
 })
 
-const SLEEP = '#!/usr/bin/env bash\ncat > /dev/null\nexec sleep 60\n'
-const IGNORE_TERM = "#!/usr/bin/env bash\ntrap '' TERM\ncat > /dev/null\nsleep 60\n"
-
 describe('spawnClaudeTurn timeout_ms', () => {
   const live: ReturnType<typeof spawnClaudeTurn>[] = []
 
@@ -83,29 +133,30 @@ describe('spawnClaudeTurn timeout_ms', () => {
   })
 
   afterEach(() => {
-    vi.useRealTimers()
     for (const t of live.splice(0)) t.kill()
+    vi.clearAllTimers()
+    vi.useRealTimers()
   })
 
   it('does not arm a timer when timeoutMs is 0 or omitted', async () => {
-    const turn = spawnFake(SLEEP, { timeoutMs: 0 })
+    const { turn, sent } = spawnFakeChild({ timeoutMs: 0 })
     live.push(turn)
     await vi.advanceTimersByTimeAsync(60_000)
+    expect(sent).toEqual([])
     expect(turn.proc.exitCode).toBeNull()
     expect(turn.proc.signalCode).toBeNull()
   })
 
-  it('rejects the event iterator with a timeout error after timeoutMs', async () => {
+  it('SIGTERM then clears the SIGKILL timer when the child exits', async () => {
     const timeoutMs = 1_000
-    const turn = spawnFake(SLEEP, { timeoutMs })
+    const { turn, child, sent } = spawnFakeChild({ timeoutMs })
     live.push(turn)
     const iterating = (async () => {
       for await (const _ of turn.events()) {
         /* drain */
       }
     })()
-    await vi.advanceTimersByTimeAsync(timeoutMs)
-    await expect(iterating).rejects.toSatisfy((err: unknown) => {
+    const rejected = expect(iterating).rejects.toSatisfy((err: unknown) => {
       return (
         err instanceof ClaudeCliTimeoutError &&
         err.code === 'timeout' &&
@@ -113,30 +164,30 @@ describe('spawnClaudeTurn timeout_ms', () => {
         err.message === `claude-cli spawn timed out after ${timeoutMs}ms`
       )
     })
+    await vi.advanceTimersByTimeAsync(timeoutMs)
+    expect(sent).toEqual(['SIGTERM'])
+    simulateExit(child, null, 'SIGTERM')
+    await vi.advanceTimersByTimeAsync(KILL_GRACE_MS)
+    expect(sent).toEqual(['SIGTERM'])
+    await rejected
   })
 
   it('SIGKILLs after KILL_GRACE_MS when SIGTERM is ignored', async () => {
     const timeoutMs = 500
-    const turn = spawnFake(IGNORE_TERM, { timeoutMs })
+    const { turn, child, sent } = spawnFakeChild({ timeoutMs })
     live.push(turn)
-    // Fake timers + a real child race `signalCode`: stdout can end before
-    // Node records the waitpid signal. Record kill() calls instead.
-    const sent: Array<NodeJS.Signals | number | undefined> = []
-    const nativeKill = turn.proc.kill.bind(turn.proc)
-    turn.proc.kill = ((signal?: NodeJS.Signals | number) => {
-      sent.push(signal)
-      return nativeKill(signal)
-    }) as typeof turn.proc.kill
     const iterating = (async () => {
       for await (const _ of turn.events()) {
         /* drain */
       }
     })()
+    const rejected = expect(iterating).rejects.toBeInstanceOf(ClaudeCliTimeoutError)
     await vi.advanceTimersByTimeAsync(timeoutMs)
     expect(sent).toEqual(['SIGTERM'])
     expect(turn.proc.signalCode).toBeNull()
     await vi.advanceTimersByTimeAsync(KILL_GRACE_MS)
     expect(sent).toEqual(['SIGTERM', 'SIGKILL'])
-    await expect(iterating).rejects.toBeInstanceOf(ClaudeCliTimeoutError)
+    simulateExit(child, null, 'SIGKILL')
+    await rejected
   })
 })

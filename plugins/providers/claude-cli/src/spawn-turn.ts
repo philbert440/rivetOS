@@ -255,12 +255,18 @@ export interface SpawnedTurn {
 export function spawnClaudeTurn(
   flags: SpawnTurnFlags,
   userContent: string | CliContentBlock[],
-  opts?: { env?: Record<string, string | undefined>; timeoutMs?: number },
+  opts?: {
+    env?: Record<string, string | undefined>
+    timeoutMs?: number
+    /** Injectable spawner; defaults to `node:child_process.spawn`. */
+    spawn?: typeof spawn
+  },
 ): SpawnedTurn {
   const args = buildArgs(flags)
   const timeoutMs = opts?.timeoutMs ?? 0
+  const spawnFn = opts?.spawn ?? spawn
 
-  const proc = spawn(flags.binary, args, {
+  const proc = spawnFn(flags.binary, args, {
     env: buildChildEnv(opts?.env),
     cwd: flags.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
