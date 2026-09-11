@@ -24,6 +24,7 @@ export const HARNESS_IDS = [
   'hermes',
   'deepseek-harness',
   'codex',
+  'opencode',
   'pi',
 ] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]

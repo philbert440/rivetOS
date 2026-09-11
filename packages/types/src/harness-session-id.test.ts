@@ -74,6 +74,7 @@ describe('formatSessionId', () => {
       ['hermes', '9b41-uuid'],
       ['deepseek-harness', 'session-86ffe759-cd7b-49a7-955d-c282631a935d'],
       ['codex', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
+      ['opencode', 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'],
       ['pi', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
     ]
     for (const [harnessId, nativeSessionId] of cases) {

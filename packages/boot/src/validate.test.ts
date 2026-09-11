@@ -362,6 +362,7 @@ describe('Config Validation', () => {
         'kimi-code',
         'claude-cli',
         'codex-cli',
+        'opencode-cli',
         'pi-cli',
       ]) {
         const cfg = validConfig()

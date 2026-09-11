@@ -135,6 +135,7 @@ interface LLMChunk {
 | grok-cli | `plugins/providers/grok-cli/` | Drives the Grok Build `grok` binary headlessly (`grok -p --output-format json`); one call per turn, subscription login, no API key |
 | hermes-cli | `plugins/providers/hermes-cli/` | Drives the local Hermes Agent CLI (`hermes chat -q`), Hermes's own tools/memory/model config; session map for continuity |
 | kimi-code | `plugins/providers/kimi-code/` | Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`); session map for continuity |
+| opencode-cli | `plugins/providers/opencode-cli/` | Drives the local OpenCode CLI (`opencode run`); harness id `opencode`; default backend z.ai GLM (Anthropic-compatible) |
 | pi-cli | `plugins/providers/pi-cli/` | Drives the local pi CLI (`pi`, `@earendil-works/pi-coding-agent`) via print/JSON or RPC; recommended default backend z.ai GLM |
 
 ---

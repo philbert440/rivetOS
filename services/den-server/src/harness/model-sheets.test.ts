@@ -12,6 +12,8 @@ import {
   grokSheet,
   hermesSheet,
   kimiSheet,
+  opencodeSheet,
+  parseOpencodeConfig,
   piSheet,
   MODEL_TOKEN_RE,
   parseKimiToml,
@@ -239,6 +241,71 @@ describe('hermesSheet / deepseekSheet', () => {
     expect(sheet.models?.map((m) => m.id)).toEqual(['deepseek/deepseek-v4-flash', 'openai/gpt-4'])
     expect(sheet.models?.[0]?.default).toBe(true)
     expect(sheet.models?.[0]?.label).toBe('DeepSeek V4 Flash')
+  })
+})
+
+describe('opencodeSheet', () => {
+  it('reads a default model from injected opencode.json', () => {
+    const sheet = opencodeSheet((path) => {
+      if (path.endsWith('opencode.json')) return { model: 'zai/glm-5.3-flash' }
+      throw new Error('missing')
+    }, '/home/tester')
+    expect(sheet.modelFlag).toBe('--model')
+    expect(sheet.effortFlag).toBe('--variant')
+    expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'max'])
+    expect(sheet.models).toEqual([
+      { id: 'zai/glm-5.3-flash', label: 'zai/glm-5.3-flash', default: true },
+    ])
+    expect(sheetForHarness('opencode', { readJson: () => ({ model: 'x' }) }).modelFlag).toBe(
+      '--model',
+    )
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+    ])
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash', 'low')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+      '--variant',
+      'minimal',
+    ])
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash', 'medium')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+    ])
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash', 'max')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+      '--variant',
+      'max',
+    ])
+  })
+
+  it('also lists provider.<id>.models keys', () => {
+    expect(
+      parseOpencodeConfig({
+        model: 'zai/glm-5.3-flash',
+        provider: {
+          zai: { models: { 'glm-5.3-flash': {}, 'glm-5': {} } },
+        },
+      }).map((m) => m.id),
+    ).toEqual(['zai/glm-5.3-flash', 'zai/glm-5'])
+  })
+
+  it('empty models when config is missing or the model token is junk', () => {
+    const empty = opencodeSheet(() => {
+      throw new Error('missing')
+    }, '/nope')
+    expect(empty.models).toEqual([])
+    expect(empty.modelFlag).toBe('--model')
+    expect(empty.effortFlag).toBe('--variant')
+    expect(parseOpencodeConfig({ model: '../x' })).toEqual([])
+    expect(parseOpencodeConfig({ model: 1 })).toEqual([])
+    expect(parseOpencodeConfig(null)).toEqual([])
   })
 })
 

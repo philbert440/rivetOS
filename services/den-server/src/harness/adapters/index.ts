@@ -4,6 +4,7 @@ import { deepseekAdapter } from './deepseek.js'
 import { grokAdapter } from './grok.js'
 import { hermesAdapter } from './hermes.js'
 import { kimiAdapter } from './kimi.js'
+import { opencodeAdapter } from './opencode.js'
 import { piAdapter } from './pi.js'
 import type { HarnessAdapter } from './types.js'
 
@@ -14,6 +15,7 @@ export { grokPickTurn, grokTurnsFromLines, grokAdapter } from './grok.js'
 export { readHermesTurns, hermesAdapter } from './hermes.js'
 export { readDshTurns, deepseekAdapter } from './deepseek.js'
 export { codexTurnsFromLines, codexAdapter } from './codex.js'
+export { opencodeTurnsFromMessages, readOpencodeTurns, opencodeAdapter } from './opencode.js'
 export { piTurnsFromLines, piAdapter } from './pi.js'
 
 const BY_COMMAND: Record<string, HarnessAdapter> = {
@@ -23,6 +25,7 @@ const BY_COMMAND: Record<string, HarnessAdapter> = {
   hermes: hermesAdapter,
   dsh: deepseekAdapter,
   codex: codexAdapter,
+  opencode: opencodeAdapter,
   pi: piAdapter,
 }
 

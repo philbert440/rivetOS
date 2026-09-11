@@ -514,6 +514,7 @@ class AttachTest {
         assertTrue(isLiveTurnStore("kimi-code"))
         assertTrue(isLiveTurnStore("pi"))
         assertTrue(isLiveTurnStore("codex"))
+        assertTrue(isLiveTurnStore("opencode"))
         assertFalse(isLiveTurnStore("dsh"))
     }
 

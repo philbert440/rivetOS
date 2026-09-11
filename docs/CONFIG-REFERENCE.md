@@ -366,6 +366,23 @@ providers:
 
 **Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does.
 
+### opencode-cli
+
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`; interactive/ACP is nd-JSON over stdin/stdout. Default model backend is z.ai GLM via an openai-compatible endpoint. Add `@rivetos/provider-opencode-cli` to `plugins`.
+
+```yaml
+providers:
+  opencode-cli:
+    binary: opencode # path or name on PATH
+    # model: zai/glm-5.3-flash  # optional — defaults to the CLI / z.ai GLM backend
+```
+
+| Key      | Type   | Default    | Description                         |
+| -------- | ------ | ---------- | ----------------------------------- |
+| `binary` | string | `opencode` | Path or name on PATH.               |
+| `model`  | string | `zai/glm-5.3-flash` | Model id as `provider/model`. |
+
+**Auth:** z.ai GLM (openai-compatible). No separate OpenCode OAuth in v1; keys stay in the CLI's own config.
 ### pi-cli
 
 Drives the local `pi` binary (`@earendil-works/pi-coding-agent`) headlessly — print/JSON or RPC. Harness id is `pi`; roster command is `pi`. Recommended default backend is z.ai GLM (reuse the coding-plan / Anthropic-compat key). Add `@rivetos/provider-pi-cli` to `plugins`.

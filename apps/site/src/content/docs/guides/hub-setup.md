@@ -22,6 +22,7 @@ description: Build and point RivetHub at a RivetOS node gateway
 | `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces               |
 
 **Primary interactive path:** harness sessions on the node
+(`claude-code`, `grok-build`, `kimi-code`, `hermes`, `opencode`) via the gateway contract.
 (`claude-code`, `grok-build`, `kimi-code`, `hermes`, `pi`) via the gateway contract.
 
 **Removed (Phase 5):** Telegram / Discord / voice-discord channel plugins are gone. Hub is the product path. Leftover `channels.telegram:` in config is a validation warning only (no crash-loop).
@@ -211,6 +212,8 @@ npx rivetos status
 curl -sS -H "Authorization: Bearer $RIVETOS_DEN_TOKEN" \
   "$GATEWAY/api/harnesses" | jq .
 
+# Expect harness ids when all drivers registered:
+# claude-code, grok-build, hermes, kimi-code, opencode
 # Expect ids when all drivers registered:
 # claude-code, grok-build, hermes, kimi-code, pi
 

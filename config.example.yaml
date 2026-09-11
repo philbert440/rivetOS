@@ -19,6 +19,10 @@ providers:
   #   sandbox: read-only
   #   session: resume
 
+  # opencode-cli:                         # harness id `opencode`; plugin @rivetos/provider-opencode-cli
+  #   binary: opencode                    # path or name on PATH
+  #   # Default backend: z.ai GLM (openai-compatible).
+  #   # model: zai/glm-5.3-flash
   # pi-cli:                            # @rivetos/provider-pi-cli; harness id `pi`
   #   binary: pi                       # @earendil-works/pi-coding-agent
   #   # model: glm-4.6                 # optional; recommended default backend is z.ai GLM
@@ -74,6 +78,7 @@ providers:
 #   - "@rivetos/provider-codex-cli"
 #   - "@rivetos/provider-anthropic"
 #   - "@rivetos/provider-claude-cli"
+#   - "@rivetos/provider-opencode-cli"
 #   - "@rivetos/provider-pi-cli"
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"

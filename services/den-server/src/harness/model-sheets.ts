@@ -36,6 +36,11 @@ export interface ModelSheet {
   efforts?: EffortOption[]
   modelFlag?: string
   effortFlag?: string
+  /**
+   * Effort id → CLI flag value. Present + empty string omits the flag
+   * (opencode medium → no `--variant`). Absent key → use the effort id.
+   */
+  effortArgValues?: Record<string, string>
 }
 
 export interface SheetOverride {
@@ -50,6 +55,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   hermes: 'hermes',
   dsh: 'deepseek-harness',
   codex: 'codex',
+  opencode: 'opencode',
   pi: 'pi',
 }
 
@@ -81,6 +87,22 @@ const CODEX_EFFORTS: EffortOption[] = [
   { id: 'high', label: 'High' },
   { id: 'xhigh', label: 'X-High' },
 ]
+
+/** RivetOS effort ids for OpenCode `--variant`. medium omits the flag. */
+const OPENCODE_EFFORTS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium', default: true },
+  { id: 'high', label: 'High' },
+  { id: 'max', label: 'Max' },
+]
+
+const OPENCODE_EFFORT_ARGS: Record<string, string> = {
+  low: 'minimal',
+  medium: '',
+  high: 'high',
+  max: 'max',
+  xhigh: 'max',
+}
 
 /**
  * pi `--thinking` levels `off|minimal|low|medium|high|xhigh|max` mapped onto
@@ -367,6 +389,40 @@ export function codexSheet(): ModelSheet {
 }
 
 /**
+ * Parse OpenCode's config JSON for a default `model` plus any
+ * `provider.<id>.models` keys. Config lives at
+ * `$XDG_CONFIG_HOME/opencode/opencode.json` else `~/.config/opencode/opencode.json`.
+ * Spawn flags: `--model`, `--variant` (effort).
+ */
+export function opencodeSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const flags: Pick<ModelSheet, 'modelFlag' | 'effortFlag' | 'efforts' | 'effortArgValues'> = {
+    modelFlag: '--model',
+    effortFlag: '--variant',
+    efforts: OPENCODE_EFFORTS,
+    effortArgValues: OPENCODE_EFFORT_ARGS,
+  }
+  const empty: ModelSheet = { models: [], ...flags }
+  const configRoot = process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config')
+  const paths = [
+    join(configRoot, 'opencode', 'opencode.json'),
+    join(configRoot, 'opencode', 'opencode.jsonc'),
+  ]
+  for (const path of paths) {
+    let raw: unknown
+    try {
+      raw = readJson(path)
+    } catch {
+      continue
+    }
+    return { models: parseOpencodeConfig(raw), ...flags }
+  }
+  return empty
+}
+
+/**
  * Pi — default model from `~/.pi/agent/settings.json`
  * (`defaultProvider`/`defaultModel` → `provider/model`). If
  * `models-store.json` lists models, those are exposed; otherwise the settings
@@ -417,60 +473,37 @@ export function piSheet(
   }
 }
 
-/** One models-store.json row: a model token or a loosely-shaped object. */
-type PiModelEntry = string | Record<string, unknown>
-
-function isPiModelEntryList(value: unknown): value is PiModelEntry[] {
-  return Array.isArray(value)
-}
-
-function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption[] {
-  let raw: unknown
-  try {
-    raw = readJson(path)
-  } catch {
-    return []
-  }
-  const items: unknown[] = []
-  if (isPiModelEntryList(raw)) items.push(...raw)
-  else if (isRecord(raw) && isPiModelEntryList(raw.models)) items.push(...raw.models)
-  else if (isRecord(raw)) {
-    for (const [id, entry] of Object.entries(raw)) {
-      if (id === 'models' || id === 'version') continue
-      items.push(isRecord(entry) ? { id, ...entry } : { id })
-    }
-  }
+/** Top-level `model` (`provider/model`) plus `provider.<id>.models` keys. */
+export function parseOpencodeConfig(raw: unknown): HarnessModelOption[] {
+  if (!isRecord(raw)) return []
   const out: HarnessModelOption[] = []
-  for (const entry of items) {
-    if (typeof entry === 'string') {
-      if (MODEL_TOKEN_RE.test(entry)) out.push({ id: entry, label: entry })
-      continue
+  const seen = new Set<string>()
+  const add = (id: string, isDefault: boolean): void => {
+    const trimmed = id.trim()
+    if (!trimmed || !MODEL_TOKEN_RE.test(trimmed) || seen.has(trimmed)) return
+    seen.add(trimmed)
+    const opt: HarnessModelOption = { id: trimmed, label: trimmed }
+    if (isDefault) opt.default = true
+    out.push(opt)
+  }
+  const defaultModel = typeof raw.model === 'string' ? raw.model.trim() : ''
+  if (defaultModel) add(defaultModel, true)
+  if (isRecord(raw.provider)) {
+    for (const [providerId, prov] of Object.entries(raw.provider)) {
+      if (!isRecord(prov)) continue
+      const models = prov.models
+      if (isRecord(models)) {
+        for (const modelId of Object.keys(models)) {
+          add(`${providerId}/${modelId}`, `${providerId}/${modelId}` === defaultModel)
+        }
+      } else if (Array.isArray(models)) {
+        for (const modelId of models) {
+          if (typeof modelId === 'string') {
+            add(`${providerId}/${modelId}`, `${providerId}/${modelId}` === defaultModel)
+          }
+        }
+      }
     }
-    if (!isRecord(entry)) continue
-    const provider =
-      typeof entry.provider === 'string'
-        ? entry.provider
-        : typeof entry.providerID === 'string'
-          ? entry.providerID
-          : ''
-    const modelId =
-      typeof entry.modelId === 'string'
-        ? entry.modelId
-        : typeof entry.model === 'string'
-          ? entry.model
-          : ''
-    const rawId = typeof entry.id === 'string' ? entry.id.trim() : ''
-    const id = rawId.includes('/')
-      ? rawId
-      : provider && modelId
-        ? `${provider}/${modelId}`
-        : rawId || modelId
-    if (!id || !MODEL_TOKEN_RE.test(id)) continue
-    const label =
-      (typeof entry.name === 'string' && entry.name.trim()) ||
-      (typeof entry.label === 'string' && entry.label.trim()) ||
-      id
-    out.push({ id, label })
   }
   return out
 }
@@ -492,6 +525,8 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return deepseekSheet()
     case 'codex':
       return codexSheet()
+    case 'opencode':
+      return opencodeSheet(readJson, home)
     case 'pi':
       return piSheet(readJson, home)
   }
@@ -543,7 +578,11 @@ export function appendModelEffortArgv(
     !!sheet.effortFlag &&
     effortIdsFor(sheet, modelOk ? model : undefined).includes(effort)
   if (effortOk && sheet.effortFlag && effort) {
-    out.push(sheet.effortFlag, effort)
+    const mapped =
+      sheet.effortArgValues && Object.prototype.hasOwnProperty.call(sheet.effortArgValues, effort)
+        ? sheet.effortArgValues[effort]
+        : effort
+    if (mapped) out.push(sheet.effortFlag, mapped)
   } else if (effort && log) {
     log(`[den-server] spawn: omitting effort ${JSON.stringify(effort)} (unknown or no flag)`)
   }

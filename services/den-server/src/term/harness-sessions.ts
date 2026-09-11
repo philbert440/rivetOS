@@ -9,13 +9,16 @@
 // ~/.hermes/state.db), Kimi Code
 // (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), DeepSeek
 // Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/), Codex
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and OpenCode
+// (~/.local/share/opencode/opencode.db SQLite). An unknown harness
+// yields [] — the drawer just shows nothing for it rather than breaking.
 // (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and Pi
 // (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl). An unknown
 // harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { type HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
@@ -26,11 +29,13 @@ import {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  readOpencodeTurns,
   piTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
+import { opencodeDataDir, opencodeDbPath, openOpencodeDb } from './opencode-db.js'
 import { resolveCodexRoomRollout } from './codex-room.js'
 
 export {
@@ -40,6 +45,7 @@ export {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  readOpencodeTurns,
   piTurnsFromLines,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
@@ -1261,6 +1267,192 @@ function codexSessionExists(id: string): boolean {
   return findCodexRolloutSync(id) !== undefined
 }
 
+// ---- OpenCode: ~/.local/share/opencode/opencode.db (SQLite, WAL) ------------
+//
+// Native ids are `ses_` + 20+ alphanumerics. Title = session.title.
+// List order: time_updated DESC. Transcript: message + part rows by time_created.
+
+/** OpenCode native ids are `ses_<alnum>` — the session table primary key. */
+const OPENCODE_ID_PREFIX = 'ses_'
+
+function opencodeIdSafe(id: string): boolean {
+  return !!id && !id.includes('/') && !id.includes('..')
+}
+
+function opencodeEpochMs(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v < 1e12 ? v * 1000 : v
+  if (typeof v === 'string') {
+    const t = Date.parse(v)
+    return Number.isFinite(t) ? t : 0
+  }
+  return 0
+}
+
+function opencodeModelLabel(raw: unknown): string | undefined {
+  let v: unknown = raw
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (!t) return undefined
+    try {
+      v = JSON.parse(t) as unknown
+    } catch {
+      return t
+    }
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const o = v as Record<string, unknown>
+  const id = typeof o.id === 'string' ? o.id : ''
+  const provider = typeof o.providerID === 'string' ? o.providerID : ''
+  if (provider && id) return `${provider}/${id}`
+  return id || undefined
+}
+
+function rowToOpencodeSession(r: {
+  id?: unknown
+  title?: unknown
+  time_updated?: unknown
+  time_created?: unknown
+  model?: unknown
+}): HarnessSession {
+  const id = typeof r.id === 'string' ? r.id : ''
+  const title = (typeof r.title === 'string' ? r.title : '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+  const created = opencodeEpochMs(r.time_created)
+  const model = opencodeModelLabel(r.model)
+  return {
+    id,
+    command: 'opencode',
+    title: title || id,
+    updatedAt: opencodeEpochMs(r.time_updated) || created,
+    ...(created ? { createdAt: created } : {}),
+    ...(model ? { model } : {}),
+  }
+}
+
+function listOpencodeSessions(limit: number): HarnessSession[] {
+  const db = openOpencodeDb()
+  if (!db) return []
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, title, model, time_created, time_updated
+         FROM session
+         ORDER BY time_updated DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+    return rows.map((r) => rowToOpencodeSession(r))
+  } catch {
+    return []
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function describeOpencodeSessionSync(id: string): HarnessSession | undefined {
+  if (!opencodeIdSafe(id)) return undefined
+  const db = openOpencodeDb()
+  if (!db) return undefined
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, title, model, time_created, time_updated
+         FROM session WHERE id = ? LIMIT 1`,
+      )
+      .get(id)
+    if (!row) return undefined
+    return rowToOpencodeSession(row)
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Async face of the sqlite lookup, so every driver's store port looks alike. */
+export function describeOpencodeSession(id: string): Promise<HarnessSession | undefined> {
+  return Promise.resolve(describeOpencodeSessionSync(id))
+}
+
+/**
+ * Newest OpenCode session for `cwd` created at or after `sinceMs`. Used by
+ * the adopting driver to learn a fresh roster spawn's native id when no
+ * hook stamped `harnessSession`.
+ */
+export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  const db = openOpencodeDb()
+  if (!db) return undefined
+  try {
+    const cwdResolved = cwd ? resolve(cwd) : ''
+    const rows = db
+      .prepare(
+        `SELECT id, directory, time_created FROM session
+         WHERE time_created >= ?
+         ORDER BY time_created DESC, time_updated DESC`,
+      )
+      .all(sinceMs)
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : ''
+      if (!id) continue
+      const dir = typeof r.directory === 'string' ? r.directory : undefined
+      if (dir !== undefined && cwdResolved && resolve(dir) !== cwdResolved) continue
+      return id
+    }
+    return undefined
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function opencodeSessionExists(id: string): boolean {
+  if (!opencodeIdSafe(id)) return false
+  const db = openOpencodeDb()
+  if (!db) return false
+  try {
+    return !!db.prepare('SELECT 1 FROM session WHERE id = ? LIMIT 1').get(id)
+  } catch {
+    return false
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * OpenCode-only transcript read — the `opencode` driver's hard-resync source.
+ *
+ * Store-scoped like its siblings: a missing session row reads as an empty
+ * transcript, never as whichever other store happens to hold that id.
+ */
+export function readOpencodeTranscript(id: string): Promise<HarnessTranscript> {
+  if (!opencodeIdSafe(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  if (!opencodeSessionExists(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  return Promise.resolve({ id, command: 'opencode', turns: readOpencodeTurns(id) })
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -1282,6 +1474,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
   if (command === 'dsh') return dshSessionExists(id) // session DIR under any cwd-slug bucket
   if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
+  if (command === 'opencode') return opencodeSessionExists(id)
   if (command === 'pi') return piSessionExists(id)
   let dir: string
   let hit: (top: string) => string
@@ -1323,6 +1516,7 @@ export async function listHarnessSessions(
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
+  if (commands.includes('opencode')) all.push(...listOpencodeSessions(limit))
   if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
@@ -1508,6 +1702,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (dsh.command === 'dsh') return { ...dsh, id }
   }
 
+  if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
+    const oc = await readOpencodeTranscript(native)
+    if (oc.turns.length > 0) return { ...oc, id }
+  }
+
   if (wants('pi')) {
     const pi = await readPiTranscript(native)
     if (pi.turns.length > 0) return { ...pi, id }
@@ -1675,6 +1874,16 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const dir = dshSessionDir(native)
     if (dir) return { command: 'dsh', path: join(dir, 'session.jsonl.zstd') }
   }
+  if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
+    if (opencodeSessionExists(native)) {
+      const path = opencodeDbPath()
+      return {
+        command: 'opencode',
+        path,
+        watchPaths: [path, `${path}-wal`, `${path}-shm`],
+      }
+    }
+  }
   if (wants('pi')) {
     const path = piTranscriptPath(native)
     if (path) return { command: 'pi', path }
@@ -1692,6 +1901,7 @@ export function harnessStoreDirs(): string[] {
     kimiSessionsDir(),
     dshSessionsDir(),
     codexSessionsDir(),
+    opencodeDataDir(),
     piSessionsDir(),
   ]
   return candidates.filter((d) => existsSync(d))

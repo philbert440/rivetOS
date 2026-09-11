@@ -41,7 +41,7 @@ const HARNESS_ID_SET = new Set<string>(HARNESS_IDS)
  *  so omitting it deletes the Shell picker entry. */
 export const DEFAULT_ROSTER_COMMANDS: Record<
   string,
-  { label: string; cmd: string[]; room: boolean }
+  { label: string; cmd: string[]; room: boolean; cwd?: string }
 > = {
   claude: { label: 'Claude Code', cmd: ['claude'], room: true },
   grok: {
@@ -53,13 +53,14 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   kimi: { label: 'Kimi Code', cmd: ['kimi', '--yolo'], room: true },
   dsh: { label: 'DeepSeek Harness', cmd: ['dsh', '--profile', 'tui'], room: true },
   codex: { label: 'Codex', cmd: ['codex'], room: true },
+  opencode: { label: 'OpenCode', cmd: ['opencode'], room: true },
   pi: { label: 'Pi', cmd: ['pi'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
 export interface TermRosterFile {
   default: string
-  commands: Record<string, { label: string; cmd: string[]; room: boolean }>
+  commands: Record<string, { label: string; cmd: string[]; room: boolean; cwd?: string }>
   cwd: string
   env: Record<string, string>
 }
@@ -264,6 +265,8 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'merge memory.provider: rivet_memory into ~/.hermes/config.yaml',
         'ensure RIVETOS_PG_URL in ~/.hermes/.env (from ~/.rivetos/.env)',
       ]
+    case 'opencode':
+      return ['no rivet-memory installer for opencode yet']
     case 'pi':
       return ['pi memory capture not wired yet']
   }
@@ -277,11 +280,14 @@ export function buildDenTermRoster(
   for (const h of harnesses) {
     const entry = DEFAULT_ROSTER_COMMANDS[h.command]
     if (!entry) continue
-    commands[h.command] = {
+    const built: TermRosterFile['commands'][string] = {
       label: entry.label,
       room: entry.room,
       cmd: [h.binary, ...entry.cmd.slice(1)],
     }
+    if (h.command === 'opencode') built.cwd = join(home, '.rivetos', 'workspace')
+    else if (entry.cwd) built.cwd = entry.cwd
+    commands[h.command] = built
   }
   const keys = Object.keys(commands)
   if (keys.length === 0) return null
@@ -1222,6 +1228,9 @@ export async function runPluginsInstall(
           break
         case 'hermes':
           result = await installHermes(h, root, home, exec, false, parsed.force)
+          break
+        case 'opencode':
+          result = { ok: false, detail: 'no rivet-memory installer for opencode yet' }
           break
         case 'kimi-code':
         case 'deepseek-harness':

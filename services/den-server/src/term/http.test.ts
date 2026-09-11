@@ -206,6 +206,7 @@ describe('term endpoints', () => {
       'grok',
       'hermes',
       'kimi',
+      'opencode',
       'pi',
       'shell',
     ])
