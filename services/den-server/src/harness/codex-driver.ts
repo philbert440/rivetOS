@@ -37,6 +37,13 @@
  * still honestly true when the tap is wired — session lifecycle that DOES
  * appear on the wire is real.
  *
+ * **Honest capabilities.** `approvals` is false on this PTY driver. Codex
+ * permission prompts are not keyed from the TUI path (codex-cli 0.153.4
+ * bindings were not verified from the binary); the protocol driver
+ * (`codexAppServerUrl`) is the only surface that can resolve them.
+ * `interrupt` / `resume` / `liveStream` are true only when the machinery
+ * behind them is wired here.
+ *
  * See docs/ARCHITECTURE.md.
  */
 

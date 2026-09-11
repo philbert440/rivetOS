@@ -4,7 +4,10 @@
  * without an exact entry.
  *
  * Claude Code is 200k by default; 1M only when the id carries `[1m]` / `-1m`.
- * grok Build is 500k; local/vllm is 262_144.
+ * grok Build is 500k; Codex / GPT-5-class is 400k; local/vllm is 262_144.
+ * Callers that already have a per-model `contextWindow` (session stamp /
+ * model sheet) must prefer it — this table is the fallback when the sheet
+ * is silent.
  */
 const WINDOWS: Array<{ match: RegExp; tokens: number }> = [
   // Claude 1M variant — request-side flag, not a transcript model id
@@ -13,6 +16,8 @@ const WINDOWS: Array<{ match: RegExp; tokens: number }> = [
   { match: /claude|anthropic|opus|sonnet|haiku|fable/i, tokens: 200_000 },
   // xAI grok family (API + Build harness ids)
   { match: /grok/i, tokens: 500_000 },
+  // Codex / GPT-5-class — 400k unless the sheet supplies contextWindow
+  { match: /^gpt-5|codex/i, tokens: 400_000 },
   // Local node / llama-server / vllm — 256k natively (262_144)
   { match: /local|vllm|llama-server|llama_server/i, tokens: 262_144 },
   // Other open-weight families commonly served locally at 256k

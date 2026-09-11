@@ -30,6 +30,16 @@ describe('contextWindowFor', () => {
     expect(contextWindowFor('grok-fast')).toBe(500_000)
   })
 
+  it('matches Codex / GPT-5-class at 400k', () => {
+    expect(contextWindowFor('gpt-5')).toBe(400_000)
+    expect(contextWindowFor('gpt-5-codex')).toBe(400_000)
+    expect(contextWindowFor('codex')).toBe(400_000)
+    expect(contextWindowFor('GPT-5.4')).toBe(400_000)
+    // gpt-4 stays the older 128k bucket — not GPT-5-class
+    expect(contextWindowFor('gpt-4')).toBe(128_000)
+    expect(contextWindowFor('gpt-4o')).toBe(128_000)
+  })
+
   it('matches local at 262_144', () => {
     expect(contextWindowFor('local')).toBe(262_144)
     expect(contextWindowFor('local-vllm')).toBe(262_144)
@@ -48,6 +58,7 @@ describe('compactAtFor', () => {
     expect(compactAtFor(200_000)).toBe(165_000)
     expect(compactAtFor(1_000_000)).toBe(965_000)
     expect(compactAtFor(500_000)).toBe(465_000)
+    expect(compactAtFor(400_000)).toBe(365_000)
   })
 })
 

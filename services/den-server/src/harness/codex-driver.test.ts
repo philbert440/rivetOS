@@ -133,7 +133,7 @@ describe('capability flags are honest', () => {
     expect(pick(caps, FIVE_FLAGS)).toEqual({
       interrupt: true,
       resume: true,
-      // No herdrStatus in the default fake — approvals need pty+herdr.
+      // PTY Codex cannot answer approvals — protocol driver only.
       approvals: false,
       liveStream: true,
       listSessions: true,
@@ -149,8 +149,8 @@ describe('capability flags are honest', () => {
     expect(caps.efforts?.find((e) => e.default)?.id).toBe('medium')
   })
 
-  it('approvals is true only with pty + herdr', () => {
-    expect(makeDriver({ herdrStatus: () => true }).driver.capabilities.approvals).toBe(true)
+  it('approvals stays false even with pty + herdr — PTY path cannot answer', () => {
+    expect(makeDriver({ herdrStatus: () => true }).driver.capabilities.approvals).toBe(false)
     expect(
       makeDriver({ withPty: false, herdrStatus: () => true }).driver.capabilities.approvals,
     ).toBe(false)
@@ -173,9 +173,13 @@ describe('capability-false paths reject with capability_unsupported', () => {
     await expect(run()).rejects.toMatchObject({ code: 'capability_unsupported' })
   }
 
-  it('resolveApproval rejects without herdr (approvals: false)', async () => {
+  it('resolveApproval always rejects — approvals: false (HTTP 501)', async () => {
     const { driver } = makeDriver()
+    expect(driver.capabilities.approvals).toBe(false)
     await expectUnsupported(() => driver.resolveApproval(SID, 'req-1', 'allow'))
+    const withHerdr = makeDriver({ herdrStatus: () => true }).driver
+    expect(withHerdr.capabilities.approvals).toBe(false)
+    await expectUnsupported(() => withHerdr.resolveApproval(SID, 'req-1', 'allow'))
   })
 
   it('rejects resume/turn when terminals are disabled', async () => {
@@ -532,7 +536,7 @@ runHarnessRotationConformance('codex', () => {
   }
 })
 
-describe('Codex screen approvals', () => {
+describe('PTY approvals stay honest', () => {
   const screen = async () => `Would you like to run the following command?
   Reason: Approval UI smoke test
   $ touch /tmp/rivetos-codex-approval-smoke
@@ -541,36 +545,24 @@ describe('Codex screen approvals', () => {
   3. No, and tell Codex what to do differently (esc)
   Press enter to confirm or esc to cancel`
 
-  it.each([
-    ['allow', 'y'],
-    ['deny', '\x1b'],
-  ] as const)(
-    'routes %s from a blocked screen to the actual TUI shortcut',
-    async (decision, key) => {
-      const f = makeDriver({ herdrStatus: true, screen })
-      const seen: HarnessEvent[] = []
-      f.driver.subscribeEvents((e) => seen.push(e))
-      f.driver.subscribe(SID, (e) => seen.push(e))
-      adopt(f, ROOM, NAT)
-      await vi.waitFor(() => expect(seen.some((e) => e.type === 'session-created')).toBe(true))
-      f.driver.applyHerdrStatus(ROOM, {
-        type: 'status',
-        sessionId: SID,
-        status: 'blocked',
-        since: Date.now(),
-        source: 'herdr',
-      })
-      await vi.waitFor(() => expect(seen.some((e) => e.type === 'approval-request')).toBe(true))
-      const request = seen.find((e) => e.type === 'approval-request')!
-      if (request.type !== 'approval-request') throw new Error('missing approval')
-      await expect(
-        f.driver.resolveApproval(SID, request.requestId, 'allow-session'),
-      ).rejects.toMatchObject({ code: 'bad_request' })
-      expect(seen.some((e) => e.type === 'approval-resolved')).toBe(false)
-      await f.driver.resolveApproval(SID, request.requestId, decision)
-      expect(f.pty.injects.at(-1)).toMatchObject({ text: key, submit: false })
-      expect(seen.some((e) => e.type === 'approval-resolved')).toBe(true)
-      f.driver.close()
-    },
-  )
+  it('resolveApproval is capability_unsupported even with herdr + a blocked screen', async () => {
+    const f = makeDriver({ herdrStatus: true, screen })
+    expect(f.driver.capabilities.approvals).toBe(false)
+    adopt(f, ROOM, NAT)
+    f.driver.applyHerdrStatus(ROOM, {
+      type: 'status',
+      sessionId: SID,
+      status: 'blocked',
+      since: Date.now(),
+      source: 'herdr',
+    })
+    await expect(f.driver.resolveApproval(SID, 'req-1', 'allow')).rejects.toMatchObject({
+      code: 'capability_unsupported',
+    })
+    await expect(f.driver.resolveApproval(SID, 'req-1', 'deny')).rejects.toMatchObject({
+      code: 'capability_unsupported',
+    })
+    expect(f.pty.injects).toEqual([])
+    f.driver.close()
+  })
 })

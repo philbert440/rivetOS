@@ -234,6 +234,15 @@ export function codexTurnsFromLines(lines: Record<string, unknown>[]): HarnessTu
   return turns
 }
 
+/**
+ * PTY-path Codex adapter.
+ *
+ * Approvals on Codex are served by the protocol driver (`codexAppServerUrl`)
+ * only. This adapter advertises `approvals: false`; `approvalKeys()` rejects
+ * with `capability_unsupported`. Codex-cli 0.153.4 TUI permission key
+ * bindings were not verified from the binary, so the PTY path does not
+ * pretend it can answer them.
+ */
 export const codexAdapter: HarnessAdapter = {
   id: 'codex',
   store: {
@@ -245,12 +254,12 @@ export const codexAdapter: HarnessAdapter = {
     },
   },
   promptToolNames: [],
-  capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
-  // Only use shortcuts parsed from the current, version-pinned dialog.
+  capabilities: () => ({ liveTurn: true, prompts: false, approvals: false }),
   approvalKeys() {
     throw new HarnessError(
-      'bad_request',
-      'This Codex approval choice is not available from the captured screen; answer it in the terminal.',
+      'capability_unsupported',
+      'codex: PTY approvals are not supported — Codex TUI key bindings are unverified; ' +
+        'approvals are served by the protocol driver (codexAppServerUrl) only.',
     )
   },
 }
