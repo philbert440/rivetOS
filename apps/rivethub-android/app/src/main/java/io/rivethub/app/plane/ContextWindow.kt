@@ -6,18 +6,19 @@ import kotlin.math.ceil
  * Model → max context window (tokens), for the header's context-fill bar.
  * Port of `apps/rivethub-web/src/lib/context-window.ts`.
  *
- * Claude Code's real window is 200k; the 1M window exists only on the
- * explicit `[1m]` / `-1m` model variant (transcripts carry no 1M marker, so
- * mapping every claude id to 1M understated a 200k session at 180k — about
- * to compact — as 18%).
+ * Claude Code's real window is 200k (Fable included); the 1M window exists
+ * only on the explicit `[1m]` / `-1m` model variant. grok is 500k; Codex /
+ * GPT-5-class is 400k. Callers that already have a per-model
+ * `contextWindow` must prefer it — this table is the fallback.
  */
 private data class WindowMatch(val match: Regex, val tokens: Int)
 
 private val WINDOWS: List<WindowMatch> = listOf(
-    WindowMatch(Regex("claude|anthropic|opus|sonnet|haiku", RegexOption.IGNORE_CASE), 200_000),
+    WindowMatch(Regex("claude|anthropic|opus|sonnet|haiku|fable", RegexOption.IGNORE_CASE), 200_000),
     WindowMatch(Regex("grok", RegexOption.IGNORE_CASE), 500_000),
+    WindowMatch(Regex("^gpt-5|codex", RegexOption.IGNORE_CASE), 400_000),
     WindowMatch(Regex("local|vllm|llama-server|llama_server", RegexOption.IGNORE_CASE), 262_144),
-    WindowMatch(Regex("qwen|deepseek|llama|mistral|mixtral|phi-|gemma|yi-|hermes|fable", RegexOption.IGNORE_CASE), 262_144),
+    WindowMatch(Regex("qwen|deepseek|llama|mistral|mixtral|phi-|gemma|yi-|hermes", RegexOption.IGNORE_CASE), 262_144),
     WindowMatch(Regex("gpt-4|gpt4|o1|o3", RegexOption.IGNORE_CASE), 128_000),
 )
 

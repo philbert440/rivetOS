@@ -1527,6 +1527,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
 
     if (!parsed) return
+    // Drivers advertising approvals:false must never mint these — Android
+    // renders every ApprovalRequest and every tap is 501.
+    if (this.adapter?.capabilities().approvals !== true) return
     state.approvalSeq += 1
     const requestId = `perm:${native}:${String(state.approvalSeq)}`
     state.pendingApproval = {
@@ -1619,7 +1622,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // socket open and nothing else re-mints an approval (the capture guard
     // returns while one is pending) — without this a wifi blip loses the card.
     const approval = state.pendingApproval
-    if (approval) {
+    if (approval && this.adapter?.capabilities().approvals === true) {
       try {
         sink({
           type: 'approval-request',

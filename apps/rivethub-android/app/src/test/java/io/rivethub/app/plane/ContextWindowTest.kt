@@ -13,6 +13,8 @@ class ContextWindowTest {
         assertEquals(200_000, contextWindowFor("claude-opus-4"))
         assertEquals(200_000, contextWindowFor("claude-sonnet-4"))
         assertEquals(200_000, contextWindowFor("anthropic"))
+        assertEquals(200_000, contextWindowFor("fable"))
+        assertEquals(200_000, contextWindowFor("claude-fable-5-1"))
     }
 
     @Test
@@ -20,6 +22,8 @@ class ContextWindowTest {
         assertEquals(1_000_000, contextWindowFor("claude-opus-4[1m]"))
         assertEquals(1_000_000, contextWindowFor("claude-sonnet-4-1m"))
         assertEquals(1_000_000, contextWindowFor("Claude-Opus-4.5[1M]"))
+        assertEquals(1_000_000, contextWindowFor("fable[1m]"))
+        assertEquals(1_000_000, contextWindowFor("fable-1m"))
     }
 
     @Test
@@ -34,6 +38,16 @@ class ContextWindowTest {
         assertEquals(500_000, contextWindowFor("grok"))
         assertEquals(500_000, contextWindowFor("grok-4"))
         assertEquals(500_000, contextWindowFor("grok-fast"))
+    }
+
+    @Test
+    fun `codex and gpt-5 class is 400k`() {
+        assertEquals(400_000, contextWindowFor("gpt-5"))
+        assertEquals(400_000, contextWindowFor("gpt-5-codex"))
+        assertEquals(400_000, contextWindowFor("codex"))
+        assertEquals(400_000, contextWindowFor("GPT-5.4"))
+        assertEquals(128_000, contextWindowFor("gpt-4"))
+        assertEquals(128_000, contextWindowFor("gpt-4o"))
     }
 
     @Test
