@@ -385,6 +385,14 @@ describe('term manager', () => {
     codexResume.manager.spawn('codex', 80, 24, '', uuid)
     expect(codexResume.spawns[0].argv).toEqual(['codex', 'resume', uuid])
 
+    // pi 0.85.1: `--session-id` pins a new session; `--session` resumes.
+    const piNew = makeManager({}, { sessionExists: () => false })
+    piNew.manager.spawn('pi', 80, 24, '', uuid)
+    expect(piNew.spawns[0].argv).toEqual(['pi', '--session-id', uuid])
+    const piResume = makeManager({}, { sessionExists: () => true })
+    piResume.manager.spawn('pi', 80, 24, '', uuid)
+    expect(piResume.spawns[0].argv).toEqual(['pi', '--session', uuid])
+
     // a non-harness command gets no flags; a claude non-UUID that isn't in the
     // store gets no flag either (no --session-id on a non-UUID).
     const shell = makeManager({})

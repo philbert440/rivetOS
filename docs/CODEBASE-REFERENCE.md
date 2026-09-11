@@ -62,7 +62,8 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── ollama/              # Local Ollama models
 │   │   ├── vllm/               # vLLM server (full vLLM surface)
 │   │   ├── llama-server/       # llama.cpp llama-server (lean)
-│   │   └── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
+│   │   ├── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
+│   │   └── opencode-cli/        # Drives `opencode` CLI (`opencode run` / ACP); harness id `opencode`
 │   │
 │   ├── channels/                # Messaging surface adapters
 │   │   └── agent/               # Agent-to-agent mesh (HTTPS/mTLS); social channels removed Phase 5
@@ -171,7 +172,7 @@ infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 `@rivetos/den-protocol`, which supplies the den event contract that the runtime types
 reference. Beyond that, if you need a class or function, it goes in `core`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`.
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps).
 
 ---
 

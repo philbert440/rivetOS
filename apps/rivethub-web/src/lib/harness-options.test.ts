@@ -66,6 +66,7 @@ describe('rowPillText', () => {
     expect(rowPillText({}, { model: '' }, 'claude-code')).toBe('Claude Code')
     expect(rowPillText(undefined, undefined, 'grok-build')).toBe('grok Build')
     expect(rowPillText(undefined, undefined, 'codex')).toBe('Codex')
+    expect(rowPillText(undefined, undefined, 'opencode')).toBe('opencode')
     expect(rowPillText(undefined, undefined, 'unknown-harness')).toBe('unknown-harness')
   })
 })
@@ -74,6 +75,7 @@ describe('harnessLabel', () => {
   it('uses the friendly name', () => {
     expect(harnessLabel('claude-code')).toBe('Claude Code')
     expect(harnessLabel('codex')).toBe('Codex')
+    expect(harnessLabel('opencode')).toBe('opencode')
     expect(harnessLabel('nope')).toBe('nope')
   })
 })

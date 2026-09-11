@@ -40,7 +40,13 @@ export function contextWindowFromModel(model: string | undefined, command?: stri
   const cmd = (command ?? '').trim().toLowerCase()
   const claudeCmd = cmd === 'claude' || cmd === 'claude-code'
   const grokCmd = cmd === 'grok' || cmd === 'grok-build'
-  const localCmd = cmd === 'hermes' || cmd === 'kimi' || cmd === 'kimi-code' || cmd === 'local'
+  const localCmd =
+    cmd === 'hermes' ||
+    cmd === 'kimi' ||
+    cmd === 'kimi-code' ||
+    cmd === 'opencode' ||
+    cmd === 'pi' ||
+    cmd === 'local'
 
   // 1M is a request-side flag, not a model family. Only this substring.
   if (/\[1m\]|-1m/i.test(id)) return 1_000_000

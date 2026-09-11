@@ -4,7 +4,6 @@
  * RivetOS is a per-node control plane for coding harnesses: the harness owns
  * the coding loop (tools, model turns, approvals, interrupt) and Rivet owns
  * sessions, identity, capture/memory, den, mesh, tasks and the gateway. Every
- * harness — Claude Code, Grok Build, Kimi, Hermes, Codex — is
  * reachable through the one `HarnessDriver` interface below, keyed by one
  * `SessionId` format.
  *
@@ -17,7 +16,15 @@
 import type { HarnessTranscriptTurn } from './gateway-api.js'
 
 /** Left half of SessionId. Fixed product tokens. */
-export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes', 'codex'] as const
+export const HARNESS_IDS = [
+  'claude-code',
+  'grok-build',
+  'kimi-code',
+  'hermes',
+  'codex',
+  'opencode',
+  'pi',
+] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 
 /**

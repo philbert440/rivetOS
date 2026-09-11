@@ -10,6 +10,9 @@ describe('denJoinKey', () => {
     expect(denJoinKey('kimi-code:session_abc')).toBe('session_abc')
     expect(denJoinKey(`hermes:${UUID}`)).toBe(UUID)
     expect(denJoinKey(`codex:${UUID}`)).toBe(UUID)
+    expect(denJoinKey('opencode:ses_01K8ABCDEFGHIJKLMNOPQRSTUV')).toBe(
+      'ses_01K8ABCDEFGHIJKLMNOPQRSTUV',
+    )
   })
 
   it('passes a bare native id through unchanged (the legacy shape)', () => {
@@ -46,6 +49,10 @@ describe('denSessionRef', () => {
     })
     expect(denSessionRef(`hermes:${UUID}`)).toEqual({ native: UUID, command: 'hermes' })
     expect(denSessionRef(`codex:${UUID}`)).toEqual({ native: UUID, command: 'codex' })
+    expect(denSessionRef('opencode:ses_01K8ABCDEFGHIJKLMNOPQRSTUV')).toEqual({
+      native: 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV',
+      command: 'opencode',
+    })
     // Path-fallback still names claude, and still collapses to the uuid.
     // SHARED VECTOR: `packages/core/src/domain/gateway-channel.test.ts`
     // asserts `bareAliasOf` resolves this exact input to the same native id —

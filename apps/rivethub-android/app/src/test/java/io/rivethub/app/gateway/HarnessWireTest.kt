@@ -327,6 +327,11 @@ class HarnessWireTest {
         assertTrue("codex" in HARNESS_IDS)
     }
 
+    @Test fun `nativeIdOf accepts opencode`() {
+        assertEquals("a1b2c3d4-1111-4222-8333-444455556666", nativeIdOf("opencode:a1b2c3d4-1111-4222-8333-444455556666"))
+        assertTrue("opencode" in HARNESS_IDS)
+    }
+
     @Test fun `isTurnInFlight matches only the typed 409`() {
         assertTrue(isTurnInFlight(TurnInFlight()))
         assertTrue(isTurnInFlightStatus(409, "turn_in_flight"))

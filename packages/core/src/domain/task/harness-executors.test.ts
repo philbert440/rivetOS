@@ -136,6 +136,8 @@ describe('executor registry harness keying', () => {
       { harnessId: 'kimi-code', registered: true, implemented: false },
       { harnessId: 'hermes', registered: false, implemented: false },
       { harnessId: 'codex', registered: false, implemented: false },
+      { harnessId: 'opencode', registered: false, implemented: false },
+      { harnessId: 'pi', registered: false, implemented: false },
     ])
   })
 
@@ -234,11 +236,11 @@ describe('not-implemented harness executor', () => {
     for (const id of ['grok-build', 'hermes', 'codex']) {
       expect(harnessExecutorGap(id).length).toBeGreaterThan(40)
     }
-    // claude-code and kimi-code are implemented — no recorded gap, so they
-    // fall back to the generic reason rather than keeping stale prose. A
-    // rejection for either can only come from boot's probe, which supplies
-    // its own reason (see the boot-override case below).
-    for (const id of ['claude-code', 'kimi-code']) {
+    // claude-code, kimi-code and opencode are implemented — no recorded gap,
+    // so they fall back to the generic reason rather than keeping stale prose.
+    // A rejection for any of them can only come from boot's probe, which
+    // supplies its own reason (see the boot-override case below).
+    for (const id of ['claude-code', 'kimi-code', 'opencode', 'pi']) {
       expect(HARNESS_EXECUTOR_GAPS[id]).toBeUndefined()
       expect(harnessExecutorGap(id)).toContain('no task executor is wired')
     }

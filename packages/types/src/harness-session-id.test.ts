@@ -74,6 +74,8 @@ describe('formatSessionId', () => {
       ['kimi-code', 'c7f2-uuid'],
       ['hermes', '9b41-uuid'],
       ['codex', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
+      ['opencode', 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'],
+      ['pi', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
     ]
     for (const [harnessId, nativeSessionId] of cases) {
       const id = formatSessionId(harnessId, nativeSessionId)

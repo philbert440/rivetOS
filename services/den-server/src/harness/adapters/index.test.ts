@@ -12,6 +12,7 @@ describe('adapterForCommand', () => {
     expect(adapterForCommand('hermes')?.capabilities().liveTurn).toBe(true)
     expect(adapterForCommand('kimi')?.capabilities().liveTurn).toBe(true)
     expect(adapterForCommand('codex')?.capabilities().liveTurn).toBe(true)
+    expect(adapterForCommand('opencode')?.capabilities().liveTurn).toBe(true)
   })
 
   it('every roster command in ROSTER_TO_HARNESS resolves to an adapter', () => {

@@ -212,7 +212,7 @@ const post = (base: string, path: string, body?: unknown): Promise<Response> =>
   })
 
 describe('GET /api/harnesses', () => {
-  it('lists the five built-in drivers a real node boots with', async () => {
+  it('lists the seven built-in drivers a real node boots with', async () => {
     // No fakes: this is what `createDenServer` actually registers. Reading the
     // capability sheet touches no harness store, so it is safe to boot for
     // real here.
@@ -225,6 +225,31 @@ describe('GET /api/harnesses', () => {
       'grok-build',
       'hermes',
       'kimi-code',
+      'pi',
+      'opencode',
+      'codex',
+    ])
+    // Terminals are off in this config, so interrupt/resume are honestly false
+    // and nobody claims approvals.
+    for (const h of body.harnesses) {
+      expect(h.capabilities).toMatchObject({ approvals: false, listSessions: true })
+    }
+  })
+  it('lists the built-in drivers a real node boots with', async () => {
+    // No fakes: this is what `createDenServer` actually registers. Reading the
+    // capability sheet touches no harness store, so it is safe to boot for
+    // real here.
+    const { base } = await startWith({})
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; capabilities: HarnessCapabilities }[]
+    }
+    expect(body.harnesses.map((h) => h.harnessId)).toEqual([
+      'claude-code',
+      'grok-build',
+      'hermes',
+      'kimi-code',
+      'pi',
+      'opencode',
       'codex',
     ])
     // Terminals are off in this config, so interrupt/resume are honestly false
@@ -1096,6 +1121,8 @@ describe('capability runtime truthing', () => {
       'grok-build',
       'hermes',
       'kimi-code',
+      'pi',
+      'opencode',
       'codex',
     ])
     for (const h of body.harnesses) {
@@ -1126,6 +1153,8 @@ describe('capability runtime truthing', () => {
       'grok-build',
       'hermes',
       'kimi-code',
+      'pi',
+      'opencode',
       'codex',
     ])
     for (const h of body.harnesses) {

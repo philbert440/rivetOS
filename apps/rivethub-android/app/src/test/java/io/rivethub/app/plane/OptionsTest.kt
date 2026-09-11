@@ -63,8 +63,10 @@ class OptionsTest {
         assertEquals("Claude Code", rowPillText(null, "", "claude-code"))
         assertEquals("grok Build", rowPillText(null, null, "grok-build"))
         assertEquals("Kimi Code", rowPillText(null, null, "kimi-code"))
+        assertEquals("opencode", rowPillText(null, null, "opencode"))
         assertEquals("Hermes", rowPillText(null, null, "hermes"))
         assertEquals("Codex", rowPillText(null, null, "codex"))
+        assertEquals("pi", rowPillText(null, null, "pi"))
     }
 
     @Test fun `native turn models require protocol transport and turnOptions`() {

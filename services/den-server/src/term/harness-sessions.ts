@@ -7,13 +7,17 @@
 // Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl), grok Build
 // (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
 // ~/.hermes/state.db), Kimi Code
-// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/) and Codex
-// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl). An unknown harness
+// (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), Codex
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and OpenCode
+// (~/.local/share/opencode/opencode.db SQLite). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and Pi
+// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl). An unknown
+// harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { type HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
@@ -24,10 +28,13 @@ import {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  readOpencodeTurns,
+  piTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
+import { opencodeDataDir, opencodeDbPath, openOpencodeDb } from './opencode-db.js'
 import { resolveCodexRoomRollout } from './codex-room.js'
 
 export {
@@ -37,6 +44,8 @@ export {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  readOpencodeTurns,
+  piTurnsFromLines,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -673,6 +682,226 @@ function kimiSessionExists(id: string): boolean {
   return wdDirs.some((wd) => existsSync(join(root, wd, id)))
 }
 
+// ---- Pi: ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<uuid>.jsonl ---------
+// encoded-cwd replaces every `/` with `-` and wraps in dashes
+// (`/home/rivet` → `--home-rivet--`). Native id is the UUID in the filename
+// (and on the first JSONL `session` line). Default layout is cwd-bucketed;
+// a custom `--session-dir` is FLAT (`<dir>/<ts>_<id>.jsonl`). Listing walks
+// both, newest by file mtime (timestamp prefix as a tie-break). No `$PI_HOME`.
+
+const PI_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const PI_SESSION_FILE_RE =
+  /^(.+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+let piHomeOverride: string | undefined
+
+/** Test-only: point the pi store at a temp dir. Call with no args to reset. */
+export function setPiHomeForTest(home?: string): void {
+  piHomeOverride = home
+}
+
+function piHome(): string {
+  return piHomeOverride ?? join(homedir(), '.pi', 'agent')
+}
+
+function piSessionsDir(): string {
+  return join(piHome(), 'sessions')
+}
+
+function piNativeFromFilename(name: string): string | undefined {
+  const m = name.match(PI_SESSION_FILE_RE)
+  return m?.[2]
+}
+
+function considerPiFile(
+  best: { path: string; mtime: number; prefix: string } | undefined,
+  full: string,
+  name: string,
+  id: string,
+): { path: string; mtime: number; prefix: string } | undefined {
+  if (piNativeFromFilename(name) !== id) return best
+  try {
+    const st = statSync(full)
+    if (!st.isFile()) return best
+    const prefix = name.slice(0, name.length - `_${id}.jsonl`.length)
+    if (!best || st.mtimeMs > best.mtime || (st.mtimeMs === best.mtime && prefix > best.prefix)) {
+      return { path: full, mtime: st.mtimeMs, prefix }
+    }
+  } catch {
+    /* skip */
+  }
+  return best
+}
+
+/** Newest jsonl for a native id: flat `--session-dir` files and every cwd bucket. */
+function piTranscriptPath(id: string): string | undefined {
+  if (!id || !PI_NATIVE_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
+  const root = piSessionsDir()
+  let entries: string[]
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number; prefix: string } | undefined
+  for (const entry of entries) {
+    if (entry.startsWith('.')) continue
+    const full = join(root, entry)
+    let st
+    try {
+      st = statSync(full)
+    } catch {
+      continue
+    }
+    if (st.isFile()) {
+      best = considerPiFile(best, full, entry, id)
+      continue
+    }
+    if (!st.isDirectory()) continue
+    let names: string[]
+    try {
+      names = readdirSync(full)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      best = considerPiFile(best, join(full, name), name, id)
+    }
+  }
+  return best?.path
+}
+
+async function piTitleFromTranscript(file: string): Promise<string> {
+  const parsed = await parseJsonlObjects(file)
+  for (const obj of parsed.objects) {
+    const t = obj.type
+    if (
+      (t === 'name' || t === 'session_name') &&
+      (typeof obj.name === 'string' || typeof obj.session_name === 'string')
+    ) {
+      const name = (typeof obj.name === 'string' ? obj.name : obj.session_name) as string
+      if (name.trim()) return name.trim().slice(0, 120)
+    }
+  }
+  for (const turn of piTurnsFromLines(parsed.objects)) {
+    if (turn.role === 'user' && turn.text.trim()) return turn.text.trim().slice(0, 120)
+  }
+  return ''
+}
+
+async function readPiSession(id: string): Promise<HarnessSession | undefined> {
+  const transcript = piTranscriptPath(id)
+  if (!transcript) return undefined
+  let mtime: number
+  let birth: number
+  try {
+    const st = await stat(transcript)
+    mtime = st.mtimeMs
+    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
+  } catch {
+    return undefined
+  }
+  const title = (await piTitleFromTranscript(transcript).catch(() => '')) || id
+  return {
+    id,
+    command: 'pi',
+    title,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
+}
+
+async function collectPiSessionFiles(): Promise<
+  Array<{ id: string; path: string; mtime: number }>
+> {
+  const root = piSessionsDir()
+  const out: Array<{ id: string; path: string; mtime: number }> = []
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  const pushFile = async (dir: string, name: string): Promise<void> => {
+    const id = piNativeFromFilename(name)
+    if (!id) return
+    const full = join(dir, name)
+    try {
+      const st = await stat(full)
+      if (!st.isFile()) return
+      out.push({ id, path: full, mtime: st.mtimeMs })
+    } catch {
+      /* skip */
+    }
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    if (entry.isFile()) {
+      await pushFile(root, entry.name)
+      continue
+    }
+    if (!entry.isDirectory()) continue
+    let files: import('node:fs').Dirent[]
+    try {
+      files = await readdir(join(root, entry.name), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      if (!f.isFile()) continue
+      await pushFile(join(root, entry.name), f.name)
+    }
+  }
+  return out
+}
+
+async function listPiSessions(limit: number): Promise<HarnessSession[]> {
+  const found = await collectPiSessionFiles()
+  const newest = new Map<string, { id: string; path: string; mtime: number }>()
+  for (const row of found) {
+    const prev = newest.get(row.id)
+    if (!prev || row.mtime >= prev.mtime) newest.set(row.id, row)
+  }
+  // Slice/sort by mtime BEFORE parsing (mirror listCodexSessions): only the
+  // `limit` newest jsonl files are read for titles.
+  const ranked = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+  const out: HarnessSession[] = []
+  for (const row of ranked) {
+    const parsed = await readPiSession(row.id)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+/**
+ * Describe ONE pi session by native id — the `pi` driver's `getSession`.
+ */
+export async function describePiSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  return readPiSession(id)
+}
+
+function piSessionExists(id: string): boolean {
+  return piTranscriptPath(id) !== undefined
+}
+
+/**
+ * Pi-only transcript read — the `pi` driver's hard-resync source.
+ *
+ * Store-scoped: a pi id whose file has been deleted reads as empty, never as
+ * another harness's transcript.
+ */
+export async function readPiTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = piTranscriptPath(id)
+  if (!path) return { id, command: '', turns: [] }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'pi', turns: piTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
+}
+
 // ---- Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl --------
 
 /** ~/.codex (respects CODEX_HOME, which the CLI itself reads). */
@@ -916,6 +1145,192 @@ function codexSessionExists(id: string): boolean {
   return findCodexRolloutSync(id) !== undefined
 }
 
+// ---- OpenCode: ~/.local/share/opencode/opencode.db (SQLite, WAL) ------------
+//
+// Native ids are `ses_` + 20+ alphanumerics. Title = session.title.
+// List order: time_updated DESC. Transcript: message + part rows by time_created.
+
+/** OpenCode native ids are `ses_<alnum>` — the session table primary key. */
+const OPENCODE_ID_PREFIX = 'ses_'
+
+function opencodeIdSafe(id: string): boolean {
+  return !!id && !id.includes('/') && !id.includes('..')
+}
+
+function opencodeEpochMs(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v < 1e12 ? v * 1000 : v
+  if (typeof v === 'string') {
+    const t = Date.parse(v)
+    return Number.isFinite(t) ? t : 0
+  }
+  return 0
+}
+
+function opencodeModelLabel(raw: unknown): string | undefined {
+  let v: unknown = raw
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (!t) return undefined
+    try {
+      v = JSON.parse(t) as unknown
+    } catch {
+      return t
+    }
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const o = v as Record<string, unknown>
+  const id = typeof o.id === 'string' ? o.id : ''
+  const provider = typeof o.providerID === 'string' ? o.providerID : ''
+  if (provider && id) return `${provider}/${id}`
+  return id || undefined
+}
+
+function rowToOpencodeSession(r: {
+  id?: unknown
+  title?: unknown
+  time_updated?: unknown
+  time_created?: unknown
+  model?: unknown
+}): HarnessSession {
+  const id = typeof r.id === 'string' ? r.id : ''
+  const title = (typeof r.title === 'string' ? r.title : '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120)
+  const created = opencodeEpochMs(r.time_created)
+  const model = opencodeModelLabel(r.model)
+  return {
+    id,
+    command: 'opencode',
+    title: title || id,
+    updatedAt: opencodeEpochMs(r.time_updated) || created,
+    ...(created ? { createdAt: created } : {}),
+    ...(model ? { model } : {}),
+  }
+}
+
+function listOpencodeSessions(limit: number): HarnessSession[] {
+  const db = openOpencodeDb()
+  if (!db) return []
+  try {
+    const rows = db
+      .prepare(
+        `SELECT id, title, model, time_created, time_updated
+         FROM session
+         ORDER BY time_updated DESC
+         LIMIT ?`,
+      )
+      .all(limit)
+    return rows.map((r) => rowToOpencodeSession(r))
+  } catch {
+    return []
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function describeOpencodeSessionSync(id: string): HarnessSession | undefined {
+  if (!opencodeIdSafe(id)) return undefined
+  const db = openOpencodeDb()
+  if (!db) return undefined
+  try {
+    const row = db
+      .prepare(
+        `SELECT id, title, model, time_created, time_updated
+         FROM session WHERE id = ? LIMIT 1`,
+      )
+      .get(id)
+    if (!row) return undefined
+    return rowToOpencodeSession(row)
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Async face of the sqlite lookup, so every driver's store port looks alike. */
+export function describeOpencodeSession(id: string): Promise<HarnessSession | undefined> {
+  return Promise.resolve(describeOpencodeSessionSync(id))
+}
+
+/**
+ * Newest OpenCode session for `cwd` created at or after `sinceMs`. Used by
+ * the adopting driver to learn a fresh roster spawn's native id when no
+ * hook stamped `harnessSession`.
+ */
+export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  const db = openOpencodeDb()
+  if (!db) return undefined
+  try {
+    const cwdResolved = cwd ? resolve(cwd) : ''
+    const rows = db
+      .prepare(
+        `SELECT id, directory, time_created FROM session
+         WHERE time_created >= ?
+         ORDER BY time_created DESC, time_updated DESC`,
+      )
+      .all(sinceMs)
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : ''
+      if (!id) continue
+      const dir = typeof r.directory === 'string' ? r.directory : undefined
+      if (dir !== undefined && cwdResolved && resolve(dir) !== cwdResolved) continue
+      return id
+    }
+    return undefined
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function opencodeSessionExists(id: string): boolean {
+  if (!opencodeIdSafe(id)) return false
+  const db = openOpencodeDb()
+  if (!db) return false
+  try {
+    return !!db.prepare('SELECT 1 FROM session WHERE id = ? LIMIT 1').get(id)
+  } catch {
+    return false
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * OpenCode-only transcript read — the `opencode` driver's hard-resync source.
+ *
+ * Store-scoped like its siblings: a missing session row reads as an empty
+ * transcript, never as whichever other store happens to hold that id.
+ */
+export function readOpencodeTranscript(id: string): Promise<HarnessTranscript> {
+  if (!opencodeIdSafe(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  if (!opencodeSessionExists(id)) {
+    return Promise.resolve({ id, command: '', turns: [] })
+  }
+  return Promise.resolve({ id, command: 'opencode', turns: readOpencodeTurns(id) })
+}
+
 /**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
@@ -936,6 +1351,8 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'hermes') return hermesSessionExists(id) // sqlite lookup
   if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
   if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
+  if (command === 'opencode') return opencodeSessionExists(id)
+  if (command === 'pi') return piSessionExists(id)
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -975,6 +1392,8 @@ export async function listHarnessSessions(
   if (commands.includes('hermes')) all.push(...listHermesSessions(limit))
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
+  if (commands.includes('opencode')) all.push(...listOpencodeSessions(limit))
+  if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1154,6 +1573,17 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (kimi.turns.length > 0) return { ...kimi, id }
   }
 
+
+  if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
+    const oc = await readOpencodeTranscript(native)
+    if (oc.turns.length > 0) return { ...oc, id }
+  }
+
+  if (wants('pi')) {
+    const pi = await readPiTranscript(native)
+    if (pi.turns.length > 0) return { ...pi, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -1312,6 +1742,20 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const dir = kimiSessionDir(native)
     if (dir) return { command: 'kimi', path: join(dir, 'agents', 'main', 'wire.jsonl') }
   }
+  if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
+    if (opencodeSessionExists(native)) {
+      const path = opencodeDbPath()
+      return {
+        command: 'opencode',
+        path,
+        watchPaths: [path, `${path}-wal`, `${path}-shm`],
+      }
+    }
+  }
+  if (wants('pi')) {
+    const path = piTranscriptPath(native)
+    if (path) return { command: 'pi', path }
+  }
   return undefined
 }
 
@@ -1324,6 +1768,8 @@ export function harnessStoreDirs(): string[] {
     join(hermesDbPath(), '..'),
     kimiSessionsDir(),
     codexSessionsDir(),
+    opencodeDataDir(),
+    piSessionsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }
