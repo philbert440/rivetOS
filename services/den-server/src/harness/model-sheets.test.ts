@@ -7,11 +7,13 @@ import {
   applySheetOverride,
   claudeSheet,
   codexSheet,
-  deepseekSheet,
   EFFORT_TOKEN_RE,
   grokSheet,
   hermesSheet,
   kimiSheet,
+  opencodeSheet,
+  parseOpencodeConfig,
+  piSheet,
   MODEL_TOKEN_RE,
   parseKimiToml,
   sanitizeEfforts,
@@ -185,7 +187,7 @@ describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
   })
 })
 
-describe('hermesSheet / deepseekSheet', () => {
+describe('hermesSheet', () => {
   it('hermes advertises no models (own picker) and --reasoning efforts', () => {
     const sheet = hermesSheet()
     expect(sheet.models).toEqual([])
@@ -195,7 +197,112 @@ describe('hermesSheet / deepseekSheet', () => {
   })
 
   it('deepseek is empty', () => {
-    expect(deepseekSheet()).toEqual({})
+  })
+
+  it('pi falls back to the fleet default and --thinking efforts when config is missing', () => {
+    const sheet = piSheet(() => {
+      throw new Error('ENOENT')
+    }, '/no-such-home')
+    expect(sheet.modelFlag).toBe('--model')
+    expect(sheet.effortFlag).toBe('--thinking')
+    expect(sheet.models?.map((m) => m.id)).toEqual(['deepseek/deepseek-v4-flash'])
+    expect(sheet.models?.[0]?.default).toBe(true)
+    expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(sheet.efforts?.some((e) => e.id === 'off' || e.id === 'minimal')).toBe(false)
+    expect(appendModelEffortArgv(['pi'], sheet, 'deepseek/deepseek-v4-flash', 'high')).toEqual([
+      'pi',
+      '--model',
+      'deepseek/deepseek-v4-flash',
+      '--thinking',
+      'high',
+    ])
+  })
+
+  it('pi reads settings.json default and models-store.json when present', () => {
+    const files: Record<string, unknown> = {
+      '/home/rivet/.pi/agent/settings.json': {
+        defaultModel: 'deepseek-v4-flash',
+      },
+      '/home/rivet/.pi/agent/models-store.json': {
+        models: [
+          { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+          { provider: 'openai', modelId: 'gpt-4' },
+        ],
+      },
+    }
+    const sheet = piSheet((p) => {
+      const v = files[p]
+      if (!v) throw new Error('ENOENT')
+      return v
+    }, '/home/rivet')
+    expect(sheet.models?.map((m) => m.id)).toEqual(['deepseek/deepseek-v4-flash', 'openai/gpt-4'])
+    expect(sheet.models?.[0]?.default).toBe(true)
+    expect(sheet.models?.[0]?.label).toBe('DeepSeek V4 Flash')
+  })
+})
+
+describe('opencodeSheet', () => {
+  it('reads a default model from injected opencode.json', () => {
+    const sheet = opencodeSheet((path) => {
+      if (path.endsWith('opencode.json')) return { model: 'zai/glm-5.3-flash' }
+      throw new Error('missing')
+    }, '/home/tester')
+    expect(sheet.modelFlag).toBe('--model')
+    expect(sheet.effortFlag).toBe('--variant')
+    expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'max'])
+    expect(sheet.models).toEqual([
+      { id: 'zai/glm-5.3-flash', label: 'zai/glm-5.3-flash', default: true },
+    ])
+    expect(sheetForHarness('opencode', { readJson: () => ({ model: 'x' }) }).modelFlag).toBe(
+      '--model',
+    )
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+    ])
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash', 'low')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+      '--variant',
+      'minimal',
+    ])
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash', 'medium')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+    ])
+    expect(appendModelEffortArgv(['opencode'], sheet, 'zai/glm-5.3-flash', 'max')).toEqual([
+      'opencode',
+      '--model',
+      'zai/glm-5.3-flash',
+      '--variant',
+      'max',
+    ])
+  })
+
+  it('also lists provider.<id>.models keys', () => {
+    expect(
+      parseOpencodeConfig({
+        model: 'zai/glm-5.3-flash',
+        provider: {
+          zai: { models: { 'glm-5.3-flash': {}, 'glm-5': {} } },
+        },
+      }).map((m) => m.id),
+    ).toEqual(['zai/glm-5.3-flash', 'zai/glm-5'])
+  })
+
+  it('empty models when config is missing or the model token is junk', () => {
+    const empty = opencodeSheet(() => {
+      throw new Error('missing')
+    }, '/nope')
+    expect(empty.models).toEqual([])
+    expect(empty.modelFlag).toBe('--model')
+    expect(empty.effortFlag).toBe('--variant')
+    expect(parseOpencodeConfig({ model: '../x' })).toEqual([])
+    expect(parseOpencodeConfig({ model: 1 })).toEqual([])
+    expect(parseOpencodeConfig(null)).toEqual([])
   })
 })
 
@@ -288,8 +395,8 @@ describe('appendModelEffortArgv', () => {
         'high',
       ),
     ).toEqual(['kimi'])
-    expect(appendModelEffortArgv(['dsh'], sheetForHarness('deepseek-harness'), 'x', 'y')).toEqual([
-      'dsh',
+    expect(appendModelEffortArgv(['codex'], sheetForHarness('codex'), 'x', 'y')).toEqual([
+      'codex',
     ])
   })
 

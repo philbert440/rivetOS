@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/provider-grok-cli",
   "version": "0.5.0",
-  "description": "Grok Build CLI provider \u2014 shells out to the local `grok` binary (headless `grok -p --output-format json`) using the user's Grok Build subscription. Makes `provider: grok-cli` agents answerable for mesh delegation, heartbeats and chat.",
+  "description": "Grok Build CLI provider \u2014 shells out to the local `grok` binary (headless `grok -p --output-format streaming-messages-json --include-partial-messages`) using the user's Grok Build subscription. Makes `provider: grok-cli` agents answerable for mesh delegation, heartbeats and chat.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

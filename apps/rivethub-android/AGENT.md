@@ -246,7 +246,7 @@ is the detach.
 - `POST /api/devices/enroll` is WireGuard pairing only (requires a WG `publicKey`, returns mesh config,
   issues NO cert). v1 enrollment = p12 import; QR-to-cert is a separate den+CA program.
 - Desktop `+ new` = bare UUID draft, adopted to `harness:uuid` via the registry stream. Never call
-  `startHarnessSession` on new (hermes/kimi/dsh refuse it).
+  `startHarnessSession` on new (hermes/kimi/codex refuse it).
 - Attachments = `[attached: <uri>]` lines in turn text after `POST /api/uploads` on the session's node;
   `UserTurn.attachments` is rejected by every PTY driver.
 - Two `SessionSummary` types: gateway (`id`, epoch-ms) vs `HarnessSessionSummary` (`sessionId`, ISO).

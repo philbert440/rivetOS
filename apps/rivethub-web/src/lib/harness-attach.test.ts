@@ -275,7 +275,7 @@ describe('attachHarnessSession', () => {
     })
     h.status('open')
     await flush()
-    h.emit(snapshot({ command: 'dsh' }))
+    h.emit(snapshot({ command: 'shell' }))
     live.length = 0
     h.emit({ type: 'assistant-delta', sessionId: SID, text: 'folded' })
     expect(live.at(-1)?.text).toBe('folded')

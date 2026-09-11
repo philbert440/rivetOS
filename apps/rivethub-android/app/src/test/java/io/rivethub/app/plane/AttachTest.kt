@@ -512,8 +512,9 @@ class AttachTest {
     @Test fun `codex is a live-turn store like kimi`() {
         assertTrue(isLiveTurnStore("kimi"))
         assertTrue(isLiveTurnStore("kimi-code"))
+        assertTrue(isLiveTurnStore("pi"))
         assertTrue(isLiveTurnStore("codex"))
-        assertFalse(isLiveTurnStore("dsh"))
+        assertTrue(isLiveTurnStore("opencode"))
     }
 
     @Test fun `hook deltas ignored on a live-turn store`() {
@@ -532,7 +533,7 @@ class AttachTest {
         val m = TranscriptMachine({ 0 })
         assertTrue(
             m.applyTranscriptFrame(
-                tx(rev = 1, from = 0, total = 1, turns = listOf(u("hi")), command = "dsh"),
+                tx(rev = 1, from = 0, total = 1, turns = listOf(u("hi")), command = "shell"),
             ),
         )
         assertEquals(LiveSource.HOOKS, m.liveSource)

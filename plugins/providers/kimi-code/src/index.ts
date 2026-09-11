@@ -66,9 +66,51 @@ export function buildArgs(flags: KimiSpawnFlags, prompt: string): string[] {
   return args
 }
 
-/** One parsed stream-json line: assistant text, a session resume hint, or nothing of interest. */
+/** One parsed stream-json line: assistant text, a session resume hint, usage, or nothing of interest. */
 export type KimiEvent =
-  { kind: 'text'; text: string } | { kind: 'session'; sessionId: string } | { kind: 'other' }
+  | { kind: 'text'; text: string; usage?: LanguageModelV3Usage }
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'usage'; usage: LanguageModelV3Usage }
+  | { kind: 'other' }
+
+function numField(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined
+}
+
+/**
+ * kimi 0.36.0 stream-json usage on the final assistant/result line.
+ * Wire.jsonl `step.end` uses `inputOther` / `inputCacheRead` / `inputCacheCreation` /
+ * `output`; the abbreviated `cacheRead` / `cacheCreation` aliases are accepted too.
+ */
+export function extractKimiUsage(obj: Record<string, unknown>): LanguageModelV3Usage | undefined {
+  const bagRaw = obj.usage ?? obj.token ?? obj.tokens
+  if (!bagRaw || typeof bagRaw !== 'object' || Array.isArray(bagRaw)) return undefined
+  const u = bagRaw as Record<string, unknown>
+  const other = numField(u.inputOther) ?? numField(u.input) ?? numField(u.input_tokens)
+  const cacheRead = numField(u.inputCacheRead) ?? numField(u.cacheRead) ?? numField(u.cache_read)
+  const cacheWrite =
+    numField(u.inputCacheCreation) ?? numField(u.cacheCreation) ?? numField(u.cache_write)
+  const output = numField(u.output) ?? numField(u.outputTokens) ?? numField(u.output_tokens)
+  if (
+    other === undefined &&
+    cacheRead === undefined &&
+    cacheWrite === undefined &&
+    output === undefined
+  ) {
+    return undefined
+  }
+  const prompt = (other ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
+  const hasInput = other !== undefined || cacheRead !== undefined || cacheWrite !== undefined
+  return {
+    inputTokens: {
+      total: hasInput ? prompt : undefined,
+      noCache: other,
+      cacheRead,
+      cacheWrite,
+    },
+    outputTokens: { total: output, text: output, reasoning: undefined },
+  }
+}
 
 export function parseKimiLine(line: string): KimiEvent {
   let ev: unknown
@@ -80,7 +122,8 @@ export function parseKimiLine(line: string): KimiEvent {
   if (!ev || typeof ev !== 'object') return { kind: 'other' }
   const o = ev as Record<string, unknown>
   if (o.role === 'assistant' && typeof o.content === 'string' && o.content) {
-    return { kind: 'text', text: o.content }
+    const usage = extractKimiUsage(o)
+    return usage ? { kind: 'text', text: o.content, usage } : { kind: 'text', text: o.content }
   }
   if (
     o.role === 'meta' &&
@@ -90,6 +133,8 @@ export function parseKimiLine(line: string): KimiEvent {
   ) {
     return { kind: 'session', sessionId: o.session_id }
   }
+  const usage = extractKimiUsage(o)
+  if (usage) return { kind: 'usage', usage }
   return { kind: 'other' }
 }
 
@@ -133,6 +178,7 @@ export class KimiCodeModel implements LanguageModelV3 {
     const result = await this.doStream(options)
     const reader = result.stream.getReader()
     let text = ''
+    let usage = emptyUsage()
     let finishReason: LanguageModelV3GenerateResult['finishReason'] = {
       unified: 'stop',
       raw: undefined,
@@ -141,9 +187,12 @@ export class KimiCodeModel implements LanguageModelV3 {
       const { done, value } = await reader.read()
       if (done) break
       if (value.type === 'text-delta') text += value.delta
-      else if (value.type === 'finish') finishReason = value.finishReason
+      else if (value.type === 'finish') {
+        usage = value.usage
+        finishReason = value.finishReason
+      }
     }
-    return { content: [{ type: 'text', text }], finishReason, usage: emptyUsage(), warnings: [] }
+    return { content: [{ type: 'text', text }], finishReason, usage, warnings: [] }
   }
 
   doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
@@ -165,6 +214,7 @@ export class KimiCodeModel implements LanguageModelV3 {
         let sawText = false
         let stderr = ''
         let buffer = ''
+        let usage = emptyUsage()
         controller.enqueue({ type: 'stream-start', warnings: [] })
 
         if (!existsSync(binary)) {
@@ -203,8 +253,12 @@ export class KimiCodeModel implements LanguageModelV3 {
         }
         const handleLine = (line: string): void => {
           const ev = parseKimiLine(line)
-          if (ev.kind === 'text') emitText(ev.text)
-          else if (
+          if (ev.kind === 'text') {
+            emitText(ev.text)
+            if (ev.usage) usage = ev.usage
+          } else if (ev.kind === 'usage') {
+            usage = ev.usage
+          } else if (
             ev.kind === 'session' &&
             ev.sessionId !== sessionId &&
             map[convKey] !== ev.sessionId
@@ -255,7 +309,7 @@ export class KimiCodeModel implements LanguageModelV3 {
             controller.enqueue({
               type: 'finish',
               finishReason: { unified: code === 0 ? 'stop' : 'error', raw: String(code) },
-              usage: emptyUsage(),
+              usage,
             })
             controller.close()
           } catch {
@@ -297,6 +351,7 @@ export class KimiCodeProvider implements Provider {
   private readonly kimiHome: string
   private readonly contextWindow: number
   private readonly outputTokenLimit: number
+  private available: boolean | null = null
 
   constructor(config: KimiCodeProviderConfig = {}) {
     this.name = config.name ?? 'Kimi Code (CLI)'
@@ -320,8 +375,36 @@ export class KimiCodeProvider implements Provider {
   getMaxOutputTokens(): number {
     return this.outputTokenLimit
   }
-  isAvailable(): Promise<boolean> {
-    return Promise.resolve(existsSync(this.binary))
+  /** `kimi --version` exits 0 → available. Cached after the first probe. */
+  async isAvailable(): Promise<boolean> {
+    if (this.available !== null) return this.available
+    this.available = await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (ok: boolean): void => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      try {
+        const proc = spawn(this.binary, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const t = setTimeout(() => {
+          proc.kill('SIGKILL')
+          done(false)
+        }, 15_000)
+        t.unref()
+        proc.once('error', () => {
+          clearTimeout(t)
+          done(false)
+        })
+        proc.once('exit', (code) => {
+          clearTimeout(t)
+          done(code === 0)
+        })
+      } catch {
+        done(false)
+      }
+    })
+    return this.available
   }
 
   aiSdkBridge(): ProviderAiSdkBridge {

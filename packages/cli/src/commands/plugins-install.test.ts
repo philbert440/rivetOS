@@ -33,7 +33,6 @@ import {
   systemdQuote,
   tomlHasUncommentedTable,
   watcherPathEnv,
-  yamlFileHasRivetMemory,
   type TermRosterFile,
 } from './plugins-install.js'
 import type { DetectedHarness, ExecResult } from '../lib/harness-detect.js'
@@ -86,16 +85,6 @@ function codexHarness(home: string, binary = '/tmp/bin/codex'): DetectedHarness 
     binary,
     providerKey: 'codex-cli',
     configHome: join(home, '.codex'),
-  }
-}
-
-function deepseekHarness(home: string, binary = '/tmp/bin/dsh'): DetectedHarness {
-  return {
-    id: 'deepseek-harness',
-    command: 'dsh',
-    binary,
-    providerKey: undefined,
-    configHome: join(home, '.dsh'),
   }
 }
 
@@ -1105,27 +1094,6 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/✅/)
   })
 
-  it('deepseek: exit 0 without cordis.patch.yml rivet-memory is ❌', async () => {
-    const scriptRel = join(
-      'integrations',
-      'deepseek',
-      'rivet-memory',
-      'bin',
-      'setup-deepseek-rivet-memory.sh',
-    )
-    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
-    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
-    const exec = async (): Promise<ExecResult> => okResult()
-    await expect(
-      runPluginsInstall(
-        { dryRun: false, force: true, root, harnesses: [] },
-        { home, detect: async () => [deepseekHarness(home)], exec },
-      ),
-    ).rejects.toThrow(/failed/)
-    expect(logs()).toMatch(/❌/)
-    expect(logs()).toMatch(/cordis\.patch\.yml missing rivet-memory/)
-  })
-
   it('runSetupScript without --force does not forward --force', async () => {
     const scriptRel = join(
       'integrations',
@@ -1661,7 +1629,7 @@ describe('artefact validation + grok hook bake', () => {
     expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
   })
 
-  it('rejects a commented TOML table and a YAML comment-only marker', () => {
+  it('rejects a commented TOML table', () => {
     dir = mkdtempSync(join(tmpdir(), 'artefact-'))
     writeFileSync(join(dir, 'config.toml'), '# [mcp_servers.rivetos]\ncommand = "x"\n')
     expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
@@ -1669,13 +1637,6 @@ describe('artefact validation + grok hook bake', () => {
     expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
     writeFileSync(join(dir, 'config.toml'), '[mcp_servers."rivetos"]\ncommand = "x"\n')
     expect(setupArtefactMissing('codex', dir, dir)).toBeNull()
-    writeFileSync(join(dir, 'cordis.patch.yml'), '# rivet-memory\n')
-    expect(yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml'))).toBe(false)
-    writeFileSync(
-      join(dir, 'cordis.patch.yml'),
-      '- insert:\n    - id: rivet-memory\n      name: ./plugin/index.js\n',
-    )
-    expect(yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml'))).toBe(true)
   })
 
   it('bakes the selected root into copied Grok hook commands', () => {
@@ -1734,20 +1695,14 @@ describe('artefact validation + grok hook bake', () => {
   it('artefactConfigHomes uses only the env override when set', () => {
     const prevCodex = process.env.CODEX_HOME
     const prevKimi = process.env.KIMI_CODE_HOME
-    const prevDsh = process.env.DSH_HOME
     const home = '/home/u'
     try {
       process.env.CODEX_HOME = '/custom/codex'
       process.env.KIMI_CODE_HOME = '/custom/kimi'
-      process.env.DSH_HOME = '/custom/dsh'
       expect(artefactConfigHomes('codex', home, join(home, '.codex'))).toEqual(['/custom/codex'])
       expect(artefactConfigHomes('kimi-code', home, join(home, '.kimi'))).toEqual(['/custom/kimi'])
-      expect(artefactConfigHomes('deepseek-harness', home, join(home, '.dsh'))).toEqual([
-        '/custom/dsh',
-      ])
       delete process.env.CODEX_HOME
       delete process.env.KIMI_CODE_HOME
-      delete process.env.DSH_HOME
       expect(artefactConfigHomes('codex', home, join(home, '.codex'))).toEqual([
         join(home, '.codex'),
       ])
@@ -1760,8 +1715,6 @@ describe('artefact validation + grok hook bake', () => {
       else process.env.CODEX_HOME = prevCodex
       if (prevKimi === undefined) delete process.env.KIMI_CODE_HOME
       else process.env.KIMI_CODE_HOME = prevKimi
-      if (prevDsh === undefined) delete process.env.DSH_HOME
-      else process.env.DSH_HOME = prevDsh
     }
   })
 })

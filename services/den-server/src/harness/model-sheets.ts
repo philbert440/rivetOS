@@ -36,6 +36,11 @@ export interface ModelSheet {
   efforts?: EffortOption[]
   modelFlag?: string
   effortFlag?: string
+  /**
+   * Effort id → CLI flag value. Present + empty string omits the flag
+   * (opencode medium → no `--variant`). Absent key → use the effort id.
+   */
+  effortArgValues?: Record<string, string>
 }
 
 export interface SheetOverride {
@@ -48,8 +53,9 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   grok: 'grok-build',
   kimi: 'kimi-code',
   hermes: 'hermes',
-  dsh: 'deepseek-harness',
   codex: 'codex',
+  opencode: 'opencode',
+  pi: 'pi',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -80,6 +86,22 @@ const CODEX_EFFORTS: EffortOption[] = [
   { id: 'high', label: 'High' },
   { id: 'xhigh', label: 'X-High' },
 ]
+
+/** RivetOS effort ids for OpenCode `--variant`. medium omits the flag. */
+const OPENCODE_EFFORTS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium', default: true },
+  { id: 'high', label: 'High' },
+  { id: 'max', label: 'Max' },
+]
+
+const OPENCODE_EFFORT_ARGS: Record<string, string> = {
+  low: 'minimal',
+  medium: '',
+  high: 'high',
+  max: 'max',
+  xhigh: 'max',
+}
 
 function defaultReadJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8'))
@@ -330,11 +352,6 @@ export function hermesSheet(): ModelSheet {
   }
 }
 
-/** DeepSeek Harness — no queryable list in v1. */
-export function deepseekSheet(): ModelSheet {
-  return {}
-}
-
 /**
  * Codex — static sheet. The CLI's model list is not queryable here; `default`
  * is the picker placeholder. Effort ids match #719 (`low|medium|high|xhigh`).
@@ -347,6 +364,200 @@ export function codexSheet(): ModelSheet {
     models: [{ id: 'default', label: 'Default', default: true }],
     efforts: CODEX_EFFORTS,
   }
+}
+
+/**
+ * Parse OpenCode's config JSON for a default `model` plus any
+ * `provider.<id>.models` keys. Config lives at
+ * `$XDG_CONFIG_HOME/opencode/opencode.json` else `~/.config/opencode/opencode.json`.
+ * Spawn flags: `--model`, `--variant` (effort).
+ */
+export function opencodeSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const flags: Pick<ModelSheet, 'modelFlag' | 'effortFlag' | 'efforts' | 'effortArgValues'> = {
+    modelFlag: '--model',
+    effortFlag: '--variant',
+    efforts: OPENCODE_EFFORTS,
+    effortArgValues: OPENCODE_EFFORT_ARGS,
+  }
+  const empty: ModelSheet = { models: [], ...flags }
+  const configRoot = process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config')
+  const paths = [
+    join(configRoot, 'opencode', 'opencode.json'),
+    join(configRoot, 'opencode', 'opencode.jsonc'),
+  ]
+  for (const path of paths) {
+    let raw: unknown
+    try {
+      raw = readJson(path)
+    } catch {
+      continue
+    }
+    return { models: parseOpencodeConfig(raw), ...flags }
+  }
+  return empty
+}
+
+/** Top-level `model` (`provider/model`) plus `provider.<id>.models` keys. */
+export function parseOpencodeConfig(raw: unknown): HarnessModelOption[] {
+  if (!isRecord(raw)) return []
+  const out: HarnessModelOption[] = []
+  const seen = new Set<string>()
+  const add = (id: string, isDefault: boolean): void => {
+    const trimmed = id.trim()
+    if (!trimmed || !MODEL_TOKEN_RE.test(trimmed) || seen.has(trimmed)) return
+    seen.add(trimmed)
+    const opt: HarnessModelOption = { id: trimmed, label: trimmed }
+    if (isDefault) opt.default = true
+    out.push(opt)
+  }
+  const defaultModel = typeof raw.model === 'string' ? raw.model.trim() : ''
+  if (defaultModel) add(defaultModel, true)
+  if (isRecord(raw.provider)) {
+    for (const [providerId, prov] of Object.entries(raw.provider)) {
+      if (!isRecord(prov)) continue
+      const models = prov.models
+      if (isRecord(models)) {
+        for (const modelId of Object.keys(models)) {
+          add(`${providerId}/${modelId}`, `${providerId}/${modelId}` === defaultModel)
+        }
+      } else if (Array.isArray(models)) {
+        for (const modelId of models) {
+          if (typeof modelId === 'string') {
+            add(`${providerId}/${modelId}`, `${providerId}/${modelId}` === defaultModel)
+          }
+        }
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * pi `--thinking` levels `off|minimal|low|medium|high|xhigh|max` mapped onto
+ * RivetOS effort ids `low|medium|high|xhigh|max`. `off` is dropped; `minimal`
+ * collapses to `low`. Spawn passes the RivetOS id (`--thinking high`), which
+ * pi accepts natively.
+ */
+const PI_EFFORTS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
+  { id: 'max', label: 'Max' },
+]
+
+const PI_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
+
+/**
+ * Pi — default model from `~/.pi/agent/settings.json`
+ * (`defaultProvider`/`defaultModel` → `provider/model`). If
+ * `models-store.json` lists models, those are exposed; otherwise the settings
+ * default (fleet: `deepseek/deepseek-v4-flash`) is the only row.
+ */
+export function piSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const agent = join(home, '.pi', 'agent')
+  let defaultId = PI_DEFAULT_MODEL
+  try {
+    const settings = readJson(join(agent, 'settings.json'))
+    if (isRecord(settings)) {
+      const provider =
+        typeof settings.defaultProvider === 'string' ? settings.defaultProvider.trim() : ''
+      const model = typeof settings.defaultModel === 'string' ? settings.defaultModel.trim() : ''
+      if (provider && model) defaultId = `${provider}/${model}`
+      else if (model.includes('/')) defaultId = model
+      else if (model) defaultId = provider ? `${provider}/${model}` : model
+    }
+  } catch {
+    /* missing settings → fleet default */
+  }
+
+  const fromStore = piModelsFromStore(readJson, join(agent, 'models-store.json'))
+  const models: HarnessModelOption[] =
+    fromStore.length > 0
+      ? fromStore
+      : MODEL_TOKEN_RE.test(defaultId)
+        ? [{ id: defaultId, label: defaultId, default: true, efforts: PI_EFFORTS }]
+        : []
+  const marked = models.find((m) => m.id === defaultId)
+  if (marked) {
+    for (const m of models) delete m.default
+    marked.default = true
+  } else if (models.length > 0) {
+    models[0].default = true
+  }
+  for (const m of models) {
+    if (!m.efforts) m.efforts = PI_EFFORTS
+  }
+  return {
+    models,
+    efforts: PI_EFFORTS,
+    modelFlag: '--model',
+    effortFlag: '--thinking',
+  }
+}
+
+/** One models-store.json row: a model token or a loosely-shaped object. */
+type PiModelEntry = string | Record<string, unknown>
+
+function isPiModelEntryList(value: unknown): value is PiModelEntry[] {
+  return Array.isArray(value)
+}
+
+function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption[] {
+  let raw: unknown
+  try {
+    raw = readJson(path)
+  } catch {
+    return []
+  }
+  const items: unknown[] = []
+  if (isPiModelEntryList(raw)) items.push(...raw)
+  else if (isRecord(raw) && isPiModelEntryList(raw.models)) items.push(...raw.models)
+  else if (isRecord(raw)) {
+    for (const [id, entry] of Object.entries(raw)) {
+      if (id === 'models' || id === 'version') continue
+      items.push(isRecord(entry) ? { id, ...entry } : { id })
+    }
+  }
+  const out: HarnessModelOption[] = []
+  for (const entry of items) {
+    if (typeof entry === 'string') {
+      if (MODEL_TOKEN_RE.test(entry)) out.push({ id: entry, label: entry })
+      continue
+    }
+    if (!isRecord(entry)) continue
+    const provider =
+      typeof entry.provider === 'string'
+        ? entry.provider
+        : typeof entry.providerID === 'string'
+          ? entry.providerID
+          : ''
+    const modelId =
+      typeof entry.modelId === 'string'
+        ? entry.modelId
+        : typeof entry.model === 'string'
+          ? entry.model
+          : ''
+    const rawId = typeof entry.id === 'string' ? entry.id.trim() : ''
+    const id = rawId.includes('/')
+      ? rawId
+      : provider && modelId
+        ? `${provider}/${modelId}`
+        : rawId || modelId
+    if (!id || !MODEL_TOKEN_RE.test(id)) continue
+    const label =
+      (typeof entry.name === 'string' && entry.name.trim()) ||
+      (typeof entry.label === 'string' && entry.label.trim()) ||
+      id
+    out.push({ id, label })
+  }
+  return out
 }
 
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
@@ -362,10 +573,12 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return kimiSheet(readText, home)
     case 'hermes':
       return hermesSheet()
-    case 'deepseek-harness':
-      return deepseekSheet()
     case 'codex':
       return codexSheet()
+    case 'opencode':
+      return opencodeSheet(readJson, home)
+    case 'pi':
+      return piSheet(readJson, home)
   }
 }
 
@@ -415,7 +628,11 @@ export function appendModelEffortArgv(
     !!sheet.effortFlag &&
     effortIdsFor(sheet, modelOk ? model : undefined).includes(effort)
   if (effortOk && sheet.effortFlag && effort) {
-    out.push(sheet.effortFlag, effort)
+    const mapped =
+      sheet.effortArgValues && Object.prototype.hasOwnProperty.call(sheet.effortArgValues, effort)
+        ? sheet.effortArgValues[effort]
+        : effort
+    if (mapped) out.push(sheet.effortFlag, mapped)
   } else if (effort && log) {
     log(`[den-server] spawn: omitting effort ${JSON.stringify(effort)} (unknown or no flag)`)
   }

@@ -9,8 +9,9 @@ import {
   describeClaudeSession,
   describeGrokSession,
   describeKimiSession,
+  describeOpencodeSession,
   describeCodexSession,
-  describeDshSession,
+  describePiSession,
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
@@ -19,8 +20,12 @@ import {
   readHarnessTranscript,
   readHermesTranscript,
   readKimiTranscript,
+  readOpencodeTranscript,
   readCodexTranscript,
+  readPiTranscript,
   resolveHarnessStore,
+  newestOpencodeSessionAfter,
+  setPiHomeForTest,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
 } from './harness-sessions.js'
@@ -34,8 +39,11 @@ afterEach(() => {
   delete process.env.GROK_HOME
   delete process.env.HERMES_HOME
   delete process.env.KIMI_CODE_HOME
-  delete process.env.DSH_HOME
   delete process.env.CODEX_HOME
+  delete process.env.OPENCODE_DATA_DIR
+  delete process.env.XDG_DATA_HOME
+  delete process.env.XDG_CONFIG_HOME
+  setPiHomeForTest()
 })
 
 /**
@@ -503,38 +511,197 @@ describe('listHarnessSessions', () => {
     process.env.GROK_HOME = join(tmpdir(), 'no-grok-' + String(process.pid))
     process.env.HERMES_HOME = join(tmpdir(), 'no-hermes-' + String(process.pid))
     process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
-    process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
-    expect(await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex'])).toEqual(
-      [],
-    )
+    process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
+    setPiHomeForTest(join(tmpdir(), 'no-pi-' + String(process.pid)))
+    expect(
+      await listHarnessSessions([
+        'claude',
+        'grok',
+        'hermes',
+        'kimi',
+        'codex',
+        'opencode',
+        'pi',
+      ]),
+    ).toEqual([])
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
     delete process.env.KIMI_CODE_HOME
-    delete process.env.DSH_HOME
     delete process.env.CODEX_HOME
+    delete process.env.XDG_DATA_HOME
   })
 
-  it('reads dsh sessions from ~/.dsh/sessions/<cwd-slug>/session-<uuid>/', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'dsh-store-'))
+
+  it('reads pi sessions from ~/.pi/agent/sessions/<cwd-bucket>/<ts>_<uuid>.jsonl', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-store-'))
     dirs.push(home)
-    process.env.DSH_HOME = home
-    const id = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
-    const dir = join(home, 'sessions', 'home-rivet-workspace', id)
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'session.jsonl.zstd'), '')
-    const sessions = await listHarnessSessions(['dsh'])
+    setPiHomeForTest(home)
+    const id = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+    const file = join(home, 'sessions', '--home-rivet--', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: 'session',
+          version: 3,
+          id,
+          timestamp: '2026-09-11T14:25:16.803Z',
+          cwd: '/home/rivet',
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'aaaaaaaa',
+          parentId: null,
+          timestamp: '2026-09-11T14:25:16.900Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'ship the pi wiring' }],
+            timestamp: 1_700_000_000_000,
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'bbbbbbbb',
+          parentId: 'aaaaaaaa',
+          timestamp: '2026-09-11T14:25:17.000Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'on it' }],
+            timestamp: 1_700_000_001_000,
+            usage: { input_tokens: 10, output_tokens: 4 },
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
     expect(sessions).toHaveLength(1)
-    expect(sessions[0]).toMatchObject({ id, command: 'dsh', title: id })
-    expect(await describeDshSession(id)).toEqual(sessions[0])
-    expect(harnessSessionExists('dsh', id)).toBe(true)
-    expect(harnessSessionExists('dsh', 'session-nope')).toBe(false)
-    expect(await describeDshSession('../../etc/passwd')).toBeUndefined()
-    expect(await resolveHarnessStore(`deepseek-harness:${id}`)).toEqual({
-      command: 'dsh',
-      path: join(dir, 'session.jsonl.zstd'),
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'ship the pi wiring' })
+    expect(await describePiSession(id)).toEqual(sessions[0])
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    expect(harnessSessionExists('pi', 'deadbeef')).toBe(false)
+    expect(await describePiSession('../../etc/passwd')).toBeUndefined()
+    expect(harnessSessionExists('pi', '../x')).toBe(false)
+    const tx = await readPiTranscript(id)
+    expect(tx).toMatchObject({
+      id,
+      command: 'pi',
+      turns: [
+        { role: 'user', text: 'ship the pi wiring' },
+        { role: 'assistant', text: 'on it' },
+      ],
     })
+    expect(tx.turns[1]?.usage).toEqual({ promptTokens: 10, completionTokens: 4, cachedTokens: 0 })
+    expect((await readHarnessTranscript(`pi:${id}`)).command).toBe('pi')
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({
+      command: 'pi',
+      path: file,
+    })
+  })
+
+  it('walks every cwd bucket and keeps the newest file for a uuid', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-buckets-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    const id = '42accb06-524a-47a6-b4b3-0991552914d7'
+    const other = '15cb936c-3364-49d6-8769-21f0c635f160'
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    mkdirSync(join(home, 'sessions', '--srv-work--'), { recursive: true })
+    const older = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${id}.jsonl`)
+    const newer = join(home, 'sessions', '--srv-work--', `2026-09-11T18-00-00-000Z_${id}.jsonl`)
+    const otherFile = join(home, 'sessions', '--srv-work--', `2026-09-11T12-00-00-000Z_${other}.jsonl`)
+    writeFileSync(
+      older,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'old cwd' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      newer,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'new cwd' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      otherFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'other session' }] },
+      }) + '\n',
+    )
+    utimesSync(older, 1_700_000_000, 1_700_000_000)
+    utimesSync(newer, 1_700_000_800, 1_700_000_800)
+    utimesSync(otherFile, 1_700_000_400, 1_700_000_400)
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions.map((s) => s.id).sort()).toEqual([other, id].sort())
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    expect((await readPiTranscript(id)).turns).toEqual([{ role: 'user', text: 'new cwd' }])
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({ command: 'pi', path: newer })
+  })
+
+  it('reads pi sessions written flat under sessions/ (custom --session-dir)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-flat-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    const id = '7e1c2a90-3b44-4d1a-9c0e-2f8b6d5a1c03'
+    mkdirSync(join(home, 'sessions'), { recursive: true })
+    const file = join(home, 'sessions', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'flat session' }] },
+      }) + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'flat session' })
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({ command: 'pi', path: file })
+  })
+
+  it('lists only the newest pi sessions up to limit', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-limit-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    const older = '11111111-1111-4111-8111-111111111111'
+    const newer = '22222222-2222-4222-8222-222222222222'
+    const olderFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${older}.jsonl`)
+    const newerFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T18-00-00-000Z_${newer}.jsonl`)
+    writeFileSync(
+      olderFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'old' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      newerFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'new' }] },
+      }) + '\n',
+    )
+    utimesSync(olderFile, 1_700_000_000, 1_700_000_000)
+    utimesSync(newerFile, 1_700_000_800, 1_700_000_800)
+    const sessions = await listHarnessSessions(['pi'], 1)
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].id).toBe(newer)
+  })
+
+  it('treats a missing pi jsonl as absent', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-empty-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    const id = '15cb936c-3364-49d6-8769-21f0c635f160'
+    expect(harnessSessionExists('pi', id)).toBe(false)
+    expect(await describePiSession(id)).toBeUndefined()
+    expect(await readPiTranscript(id)).toEqual({ id, command: '', turns: [] })
   })
 })
 
@@ -1562,5 +1729,135 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
   it('empty when CODEX_HOME has no sessions', async () => {
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
     expect(await listHarnessSessions(['codex'])).toEqual([])
+  })
+})
+
+describe('opencode store: ~/.local/share/opencode/opencode.db', () => {
+  const ID = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
+  const ID2 = 'ses_01K8QRSTUVWXYZABCDEFGHIJKL'
+
+  async function fakeOpencodeStore(): Promise<string | undefined> {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return undefined
+    }
+    const xdg = mkdtempSync(join(tmpdir(), 'opencode-store-'))
+    dirs.push(xdg)
+    process.env.XDG_DATA_HOME = xdg
+    mkdirSync(join(xdg, 'opencode'), { recursive: true })
+    const db = new DatabaseSync(join(xdg, 'opencode', 'opencode.db'))
+    const userData = JSON.stringify({
+      role: 'user',
+      time: { created: 1_700_000_000_100 },
+      agent: 'build',
+      model: { providerID: 'zai', modelID: 'glm-5.3-flash' },
+    }).replace(/'/g, "''")
+    const asstData = JSON.stringify({
+      parentID: 'msg_user',
+      role: 'assistant',
+      mode: 'build',
+      agent: 'build',
+      modelID: 'glm-5.3-flash',
+      providerID: 'zai',
+      tokens: { total: 130, input: 100, output: 20, reasoning: 5, cache: { write: 0, read: 10 } },
+      time: { created: 1_700_000_000_200, completed: 1_700_000_000_250 },
+    }).replace(/'/g, "''")
+    const model = JSON.stringify({
+      id: 'glm-5.3-flash',
+      providerID: 'zai',
+      variant: 'default',
+    }).replace(/'/g, "''")
+    db.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY, title TEXT, directory TEXT, model TEXT,
+        time_created INTEGER, time_updated INTEGER
+      );
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT
+      );
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT
+      );
+      INSERT INTO session VALUES
+        ('${ID}', 'review the opencode driver', '/work/rivetos', '${model}', 1700000000000, 1700000100000),
+        ('${ID2}', 'second session', '/work/rivetos', NULL, 1700000200000, 1700000300000);
+      INSERT INTO message VALUES
+        ('msg_user', '${ID}', 1700000000100, 1700000000100, '${userData}'),
+        ('msg_asst', '${ID}', 1700000000200, 1700000000250, '${asstData}');
+      INSERT INTO part VALUES
+        ('prt_1', 'msg_user', '${ID}', 1700000000110, '{"type":"text","text":"review the diff"}'),
+        ('prt_think', 'msg_asst', '${ID}', 1700000000210, '{"type":"reasoning","text":"weighing it"}'),
+        ('prt_tool', 'msg_asst', '${ID}', 1700000000220, '{"type":"tool","tool":"Bash","state":{"status":"completed","input":{"command":"git diff"},"output":"","title":"git diff"}}'),
+        ('prt_text', 'msg_asst', '${ID}', 1700000000230, '{"type":"text","text":"looks good"}');
+    `)
+    db.close()
+    return xdg
+  }
+
+  it('lists sessions newest-first and describe agrees', async () => {
+    if (!(await fakeOpencodeStore())) return
+    const listed = await listHarnessSessions(['opencode'])
+    expect(listed.map((s) => s.id)).toEqual([ID2, ID])
+    expect(listed[1]).toMatchObject({
+      id: ID,
+      command: 'opencode',
+      title: 'review the opencode driver',
+      updatedAt: 1_700_000_100_000,
+      createdAt: 1_700_000_000_000,
+      model: 'zai/glm-5.3-flash',
+    })
+    expect(await describeOpencodeSession(ID)).toEqual(listed.find((s) => s.id === ID))
+    expect(await describeOpencodeSession('ses_nope')).toBeUndefined()
+    expect(await describeOpencodeSession('../../etc/passwd')).toBeUndefined()
+  })
+
+  it('newestOpencodeSessionAfter is scoped to cwd and the spawn clock', async () => {
+    if (!(await fakeOpencodeStore())) return
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_000_000)).toBe(ID2)
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_015_000)).toBe(ID2)
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_200_001)).toBeUndefined()
+    expect(newestOpencodeSessionAfter('/work/other', 0)).toBeUndefined()
+  })
+
+  it('harnessSessionExists checks the session row, not a later message', async () => {
+    if (!(await fakeOpencodeStore())) return
+    expect(harnessSessionExists('opencode', ID)).toBe(true)
+    expect(harnessSessionExists('opencode', 'ses_deadbeefdeadbeef')).toBe(false)
+    expect(harnessSessionExists('opencode', '../x')).toBe(false)
+  })
+
+  it('folds user + assistant turns out of message/part rows', async () => {
+    if (!(await fakeOpencodeStore())) return
+    const t = await readOpencodeTranscript(ID)
+    expect(t.command).toBe('opencode')
+    expect(t.turns[0]).toEqual({ role: 'user', text: 'review the diff' })
+    expect(t.turns[1]).toMatchObject({
+      role: 'assistant',
+      text: 'looks good',
+      thinking: 'weighing it',
+      model: 'zai/glm-5.3-flash',
+      complete: true,
+      stopReason: 'end_turn',
+      lastBlock: 'text',
+      usage: { promptTokens: 110, completionTokens: 25, cachedTokens: 10 },
+      tools: [{ name: 'Bash', status: 'done', id: 'prt_tool', args: { command: 'git diff' } }],
+    })
+    expect((await readHarnessTranscript(`opencode:${ID}`)).command).toBe('opencode')
+    expect(await readOpencodeTranscript('ses_gonegonegone')).toEqual({
+      id: 'ses_gonegonegone',
+      command: '',
+      turns: [],
+    })
+    const ref = await resolveHarnessStore(`opencode:${ID}`)
+    expect(ref?.command).toBe('opencode')
+    expect(ref?.path).toContain('opencode.db')
+    expect(ref?.watchPaths).toEqual([ref?.path, `${ref?.path}-wal`, `${ref?.path}-shm`])
+  })
+
+  it('empty when XDG_DATA_HOME has no opencode.db', async () => {
+    process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
+    expect(await listHarnessSessions(['opencode'])).toEqual([])
   })
 })
