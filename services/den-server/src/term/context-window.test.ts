@@ -35,6 +35,7 @@ describe('contextWindowFromModel', () => {
     expect(contextWindowFromModel(undefined, 'grok-build')).toBe(500_000)
     expect(contextWindowFromModel(undefined, 'hermes')).toBe(262_144)
     expect(contextWindowFromModel(undefined, 'opencode')).toBe(262_144)
+    expect(contextWindowFromModel(undefined, 'pi')).toBe(262_144)
     expect(contextWindowFromModel('local-vllm')).toBe(262_144)
   })
 })

@@ -54,6 +54,7 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   dsh: { label: 'DeepSeek Harness', cmd: ['dsh', '--profile', 'tui'], room: true },
   codex: { label: 'Codex', cmd: ['codex'], room: true },
   opencode: { label: 'OpenCode', cmd: ['opencode'], room: true },
+  pi: { label: 'Pi', cmd: ['pi'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
@@ -266,6 +267,8 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       ]
     case 'opencode':
       return ['no rivet-memory installer for opencode yet']
+    case 'pi':
+      return ['pi memory capture not wired yet']
   }
 }
 
@@ -1245,6 +1248,9 @@ export async function runPluginsInstall(
               uid: deps.uid,
             },
           )
+          break
+        case 'pi':
+          result = { ok: true, detail: 'no capture installer yet' }
           break
       }
       oneLine(h.id, result.ok, result.detail, false)

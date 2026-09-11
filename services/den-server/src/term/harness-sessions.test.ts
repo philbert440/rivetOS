@@ -12,6 +12,7 @@ import {
   describeOpencodeSession,
   describeCodexSession,
   describeDshSession,
+  describePiSession,
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
@@ -22,8 +23,10 @@ import {
   readKimiTranscript,
   readOpencodeTranscript,
   readCodexTranscript,
+  readPiTranscript,
   resolveHarnessStore,
   newestOpencodeSessionAfter,
+  setPiHomeForTest,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
 } from './harness-sessions.js'
@@ -42,6 +45,7 @@ afterEach(() => {
   delete process.env.OPENCODE_DATA_DIR
   delete process.env.XDG_DATA_HOME
   delete process.env.XDG_CONFIG_HOME
+  setPiHomeForTest()
 })
 
 /**
@@ -512,8 +516,18 @@ describe('listHarnessSessions', () => {
     process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
     process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
+    setPiHomeForTest(join(tmpdir(), 'no-pi-' + String(process.pid)))
     expect(
-      await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex', 'opencode']),
+      await listHarnessSessions([
+        'claude',
+        'grok',
+        'hermes',
+        'kimi',
+        'dsh',
+        'codex',
+        'opencode',
+        'pi',
+      ]),
     ).toEqual([])
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
@@ -543,6 +557,176 @@ describe('listHarnessSessions', () => {
       command: 'dsh',
       path: join(dir, 'session.jsonl.zstd'),
     })
+  })
+
+  it('reads pi sessions from ~/.pi/agent/sessions/<cwd-bucket>/<ts>_<uuid>.jsonl', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-store-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    const id = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+    const file = join(home, 'sessions', '--home-rivet--', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          type: 'session',
+          version: 3,
+          id,
+          timestamp: '2026-09-11T14:25:16.803Z',
+          cwd: '/home/rivet',
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'aaaaaaaa',
+          parentId: null,
+          timestamp: '2026-09-11T14:25:16.900Z',
+          message: {
+            role: 'user',
+            content: [{ type: 'text', text: 'ship the pi wiring' }],
+            timestamp: 1_700_000_000_000,
+          },
+        }),
+        JSON.stringify({
+          type: 'message',
+          id: 'bbbbbbbb',
+          parentId: 'aaaaaaaa',
+          timestamp: '2026-09-11T14:25:17.000Z',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'on it' }],
+            timestamp: 1_700_000_001_000,
+            usage: { input_tokens: 10, output_tokens: 4 },
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'ship the pi wiring' })
+    expect(await describePiSession(id)).toEqual(sessions[0])
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    expect(harnessSessionExists('pi', 'deadbeef')).toBe(false)
+    expect(await describePiSession('../../etc/passwd')).toBeUndefined()
+    expect(harnessSessionExists('pi', '../x')).toBe(false)
+    const tx = await readPiTranscript(id)
+    expect(tx).toMatchObject({
+      id,
+      command: 'pi',
+      turns: [
+        { role: 'user', text: 'ship the pi wiring' },
+        { role: 'assistant', text: 'on it' },
+      ],
+    })
+    expect(tx.turns[1]?.usage).toEqual({ promptTokens: 10, completionTokens: 4, cachedTokens: 0 })
+    expect((await readHarnessTranscript(`pi:${id}`)).command).toBe('pi')
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({
+      command: 'pi',
+      path: file,
+    })
+  })
+
+  it('walks every cwd bucket and keeps the newest file for a uuid', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-buckets-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    const id = '42accb06-524a-47a6-b4b3-0991552914d7'
+    const other = '15cb936c-3364-49d6-8769-21f0c635f160'
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    mkdirSync(join(home, 'sessions', '--srv-work--'), { recursive: true })
+    const older = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${id}.jsonl`)
+    const newer = join(home, 'sessions', '--srv-work--', `2026-09-11T18-00-00-000Z_${id}.jsonl`)
+    const otherFile = join(home, 'sessions', '--srv-work--', `2026-09-11T12-00-00-000Z_${other}.jsonl`)
+    writeFileSync(
+      older,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'old cwd' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      newer,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'new cwd' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      otherFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'other session' }] },
+      }) + '\n',
+    )
+    utimesSync(older, 1_700_000_000, 1_700_000_000)
+    utimesSync(newer, 1_700_000_800, 1_700_000_800)
+    utimesSync(otherFile, 1_700_000_400, 1_700_000_400)
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions.map((s) => s.id).sort()).toEqual([other, id].sort())
+    expect(harnessSessionExists('pi', id)).toBe(true)
+    expect((await readPiTranscript(id)).turns).toEqual([{ role: 'user', text: 'new cwd' }])
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({ command: 'pi', path: newer })
+  })
+
+  it('reads pi sessions written flat under sessions/ (custom --session-dir)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-flat-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    const id = '7e1c2a90-3b44-4d1a-9c0e-2f8b6d5a1c03'
+    mkdirSync(join(home, 'sessions'), { recursive: true })
+    const file = join(home, 'sessions', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'flat session' }] },
+      }) + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'flat session' })
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({ command: 'pi', path: file })
+  })
+
+  it('lists only the newest pi sessions up to limit', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-limit-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    const older = '11111111-1111-4111-8111-111111111111'
+    const newer = '22222222-2222-4222-8222-222222222222'
+    const olderFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${older}.jsonl`)
+    const newerFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T18-00-00-000Z_${newer}.jsonl`)
+    writeFileSync(
+      olderFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'old' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      newerFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'new' }] },
+      }) + '\n',
+    )
+    utimesSync(olderFile, 1_700_000_000, 1_700_000_000)
+    utimesSync(newerFile, 1_700_000_800, 1_700_000_800)
+    const sessions = await listHarnessSessions(['pi'], 1)
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].id).toBe(newer)
+  })
+
+  it('treats a missing pi jsonl as absent', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-empty-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    const id = '15cb936c-3364-49d6-8769-21f0c635f160'
+    expect(harnessSessionExists('pi', id)).toBe(false)
+    expect(await describePiSession(id)).toBeUndefined()
+    expect(await readPiTranscript(id)).toEqual({ id, command: '', turns: [] })
   })
 })
 

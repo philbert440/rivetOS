@@ -56,6 +56,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   dsh: 'deepseek-harness',
   codex: 'codex',
   opencode: 'opencode',
+  pi: 'pi',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -440,6 +441,131 @@ export function parseOpencodeConfig(raw: unknown): HarnessModelOption[] {
   return out
 }
 
+/**
+ * pi `--thinking` levels `off|minimal|low|medium|high|xhigh|max` mapped onto
+ * RivetOS effort ids `low|medium|high|xhigh|max`. `off` is dropped; `minimal`
+ * collapses to `low`. Spawn passes the RivetOS id (`--thinking high`), which
+ * pi accepts natively.
+ */
+const PI_EFFORTS: EffortOption[] = [
+  { id: 'low', label: 'Low' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
+  { id: 'max', label: 'Max' },
+]
+
+const PI_DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
+
+/**
+ * Pi — default model from `~/.pi/agent/settings.json`
+ * (`defaultProvider`/`defaultModel` → `provider/model`). If
+ * `models-store.json` lists models, those are exposed; otherwise the settings
+ * default (fleet: `deepseek/deepseek-v4-flash`) is the only row.
+ */
+export function piSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const agent = join(home, '.pi', 'agent')
+  let defaultId = PI_DEFAULT_MODEL
+  try {
+    const settings = readJson(join(agent, 'settings.json'))
+    if (isRecord(settings)) {
+      const provider =
+        typeof settings.defaultProvider === 'string' ? settings.defaultProvider.trim() : ''
+      const model = typeof settings.defaultModel === 'string' ? settings.defaultModel.trim() : ''
+      if (provider && model) defaultId = `${provider}/${model}`
+      else if (model.includes('/')) defaultId = model
+      else if (model) defaultId = provider ? `${provider}/${model}` : model
+    }
+  } catch {
+    /* missing settings → fleet default */
+  }
+
+  const fromStore = piModelsFromStore(readJson, join(agent, 'models-store.json'))
+  const models: HarnessModelOption[] =
+    fromStore.length > 0
+      ? fromStore
+      : MODEL_TOKEN_RE.test(defaultId)
+        ? [{ id: defaultId, label: defaultId, default: true, efforts: PI_EFFORTS }]
+        : []
+  const marked = models.find((m) => m.id === defaultId)
+  if (marked) {
+    for (const m of models) delete m.default
+    marked.default = true
+  } else if (models.length > 0) {
+    models[0].default = true
+  }
+  for (const m of models) {
+    if (!m.efforts) m.efforts = PI_EFFORTS
+  }
+  return {
+    models,
+    efforts: PI_EFFORTS,
+    modelFlag: '--model',
+    effortFlag: '--thinking',
+  }
+}
+
+/** One models-store.json row: a model token or a loosely-shaped object. */
+type PiModelEntry = string | Record<string, unknown>
+
+function isPiModelEntryList(value: unknown): value is PiModelEntry[] {
+  return Array.isArray(value)
+}
+
+function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption[] {
+  let raw: unknown
+  try {
+    raw = readJson(path)
+  } catch {
+    return []
+  }
+  const items: unknown[] = []
+  if (isPiModelEntryList(raw)) items.push(...raw)
+  else if (isRecord(raw) && isPiModelEntryList(raw.models)) items.push(...raw.models)
+  else if (isRecord(raw)) {
+    for (const [id, entry] of Object.entries(raw)) {
+      if (id === 'models' || id === 'version') continue
+      items.push(isRecord(entry) ? { id, ...entry } : { id })
+    }
+  }
+  const out: HarnessModelOption[] = []
+  for (const entry of items) {
+    if (typeof entry === 'string') {
+      if (MODEL_TOKEN_RE.test(entry)) out.push({ id: entry, label: entry })
+      continue
+    }
+    if (!isRecord(entry)) continue
+    const provider =
+      typeof entry.provider === 'string'
+        ? entry.provider
+        : typeof entry.providerID === 'string'
+          ? entry.providerID
+          : ''
+    const modelId =
+      typeof entry.modelId === 'string'
+        ? entry.modelId
+        : typeof entry.model === 'string'
+          ? entry.model
+          : ''
+    const rawId = typeof entry.id === 'string' ? entry.id.trim() : ''
+    const id = rawId.includes('/')
+      ? rawId
+      : provider && modelId
+        ? `${provider}/${modelId}`
+        : rawId || modelId
+    if (!id || !MODEL_TOKEN_RE.test(id)) continue
+    const label =
+      (typeof entry.name === 'string' && entry.name.trim()) ||
+      (typeof entry.label === 'string' && entry.label.trim()) ||
+      id
+    out.push({ id, label })
+  }
+  return out
+}
+
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
   const home = readers?.home
   const readJson = readers?.readJson
@@ -459,6 +585,8 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return codexSheet()
     case 'opencode':
       return opencodeSheet(readJson, home)
+    case 'pi':
+      return piSheet(readJson, home)
   }
 }
 

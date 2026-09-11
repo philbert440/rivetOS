@@ -67,6 +67,7 @@ class OptionsTest {
         assertEquals("Hermes", rowPillText(null, null, "hermes"))
         assertEquals("DeepSeek", rowPillText(null, null, "deepseek-harness"))
         assertEquals("Codex", rowPillText(null, null, "codex"))
+        assertEquals("pi", rowPillText(null, null, "pi"))
     }
 
     @Test fun `native turn models require protocol transport and turnOptions`() {

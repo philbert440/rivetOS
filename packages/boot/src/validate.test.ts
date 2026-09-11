@@ -363,6 +363,7 @@ describe('Config Validation', () => {
         'claude-cli',
         'codex-cli',
         'opencode-cli',
+        'pi-cli',
       ]) {
         const cfg = validConfig()
         ;(cfg.providers as Record<string, unknown>)[name] = {}

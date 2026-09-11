@@ -1610,6 +1610,8 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
       return false // decided by `claude plugin list` below
     case 'opencode':
       return opencodePluginInstalled(h.configHome)
+    case 'pi':
+      return false
   }
 }
 

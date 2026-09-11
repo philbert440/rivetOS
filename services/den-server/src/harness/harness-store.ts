@@ -22,6 +22,7 @@ import {
   describeCodexSession,
   describeKimiSession,
   describeOpencodeSession,
+  describePiSession,
   harnessSessionExists,
   listHarnessSessions,
   newestOpencodeSessionAfter,
@@ -32,6 +33,7 @@ import {
   readHermesTranscript,
   readKimiTranscript,
   readOpencodeTranscript,
+  readPiTranscript,
   type HarnessSession,
   type HarnessTranscript,
 } from '../term/harness-sessions.js'
@@ -42,10 +44,11 @@ import { HERMES_ROSTER_COMMAND, type HermesStoreHost } from './hermes-driver.js'
 import { CODEX_ROSTER_COMMAND, type CodexStoreHost } from './codex-driver.js'
 import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
 import { OPENCODE_ROSTER_COMMAND, type OpencodeStoreHost } from './opencode-driver.js'
+import { PI_ROSTER_COMMAND, type PiStoreHost } from './pi-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
 export type HarnessStoreName =
-  'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode'
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode' | 'pi'
 
 type StoreByName = {
   claude: ClaudeStoreHost
@@ -55,6 +58,7 @@ type StoreByName = {
   deepseek: DeepseekStoreHost
   codex: CodexStoreHost
   opencode: OpencodeStoreHost
+  pi: PiStoreHost
 }
 
 type Adapter = {
@@ -98,6 +102,11 @@ const ADAPTERS: Record<HarnessStoreName, Adapter> = {
     roster: OPENCODE_ROSTER_COMMAND,
     describe: describeOpencodeSession,
     transcript: readOpencodeTranscript,
+  },
+  pi: {
+    roster: PI_ROSTER_COMMAND,
+    describe: describePiSession,
+    transcript: readPiTranscript,
   },
 }
 

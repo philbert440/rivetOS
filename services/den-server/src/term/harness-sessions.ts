@@ -12,6 +12,9 @@
 // (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and OpenCode
 // (~/.local/share/opencode/opencode.db SQLite). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and Pi
+// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl). An unknown
+// harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
@@ -27,6 +30,7 @@ import {
   readHermesTurns,
   codexTurnsFromLines,
   readOpencodeTurns,
+  piTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
@@ -42,6 +46,7 @@ export {
   readHermesTurns,
   codexTurnsFromLines,
   readOpencodeTurns,
+  piTurnsFromLines,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -799,6 +804,226 @@ function dshSessionExists(id: string): boolean {
   return dshSessionDir(id) !== undefined
 }
 
+// ---- Pi: ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<uuid>.jsonl ---------
+// encoded-cwd replaces every `/` with `-` and wraps in dashes
+// (`/home/rivet` → `--home-rivet--`). Native id is the UUID in the filename
+// (and on the first JSONL `session` line). Default layout is cwd-bucketed;
+// a custom `--session-dir` is FLAT (`<dir>/<ts>_<id>.jsonl`). Listing walks
+// both, newest by file mtime (timestamp prefix as a tie-break). No `$PI_HOME`.
+
+const PI_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const PI_SESSION_FILE_RE =
+  /^(.+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+
+let piHomeOverride: string | undefined
+
+/** Test-only: point the pi store at a temp dir. Call with no args to reset. */
+export function setPiHomeForTest(home?: string): void {
+  piHomeOverride = home
+}
+
+function piHome(): string {
+  return piHomeOverride ?? join(homedir(), '.pi', 'agent')
+}
+
+function piSessionsDir(): string {
+  return join(piHome(), 'sessions')
+}
+
+function piNativeFromFilename(name: string): string | undefined {
+  const m = name.match(PI_SESSION_FILE_RE)
+  return m?.[2]
+}
+
+function considerPiFile(
+  best: { path: string; mtime: number; prefix: string } | undefined,
+  full: string,
+  name: string,
+  id: string,
+): { path: string; mtime: number; prefix: string } | undefined {
+  if (piNativeFromFilename(name) !== id) return best
+  try {
+    const st = statSync(full)
+    if (!st.isFile()) return best
+    const prefix = name.slice(0, name.length - `_${id}.jsonl`.length)
+    if (!best || st.mtimeMs > best.mtime || (st.mtimeMs === best.mtime && prefix > best.prefix)) {
+      return { path: full, mtime: st.mtimeMs, prefix }
+    }
+  } catch {
+    /* skip */
+  }
+  return best
+}
+
+/** Newest jsonl for a native id: flat `--session-dir` files and every cwd bucket. */
+function piTranscriptPath(id: string): string | undefined {
+  if (!id || !PI_NATIVE_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
+  const root = piSessionsDir()
+  let entries: string[]
+  try {
+    entries = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number; prefix: string } | undefined
+  for (const entry of entries) {
+    if (entry.startsWith('.')) continue
+    const full = join(root, entry)
+    let st
+    try {
+      st = statSync(full)
+    } catch {
+      continue
+    }
+    if (st.isFile()) {
+      best = considerPiFile(best, full, entry, id)
+      continue
+    }
+    if (!st.isDirectory()) continue
+    let names: string[]
+    try {
+      names = readdirSync(full)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      best = considerPiFile(best, join(full, name), name, id)
+    }
+  }
+  return best?.path
+}
+
+async function piTitleFromTranscript(file: string): Promise<string> {
+  const parsed = await parseJsonlObjects(file)
+  for (const obj of parsed.objects) {
+    const t = obj.type
+    if (
+      (t === 'name' || t === 'session_name') &&
+      (typeof obj.name === 'string' || typeof obj.session_name === 'string')
+    ) {
+      const name = (typeof obj.name === 'string' ? obj.name : obj.session_name) as string
+      if (name.trim()) return name.trim().slice(0, 120)
+    }
+  }
+  for (const turn of piTurnsFromLines(parsed.objects)) {
+    if (turn.role === 'user' && turn.text.trim()) return turn.text.trim().slice(0, 120)
+  }
+  return ''
+}
+
+async function readPiSession(id: string): Promise<HarnessSession | undefined> {
+  const transcript = piTranscriptPath(id)
+  if (!transcript) return undefined
+  let mtime: number
+  let birth: number
+  try {
+    const st = await stat(transcript)
+    mtime = st.mtimeMs
+    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
+  } catch {
+    return undefined
+  }
+  const title = (await piTitleFromTranscript(transcript).catch(() => '')) || id
+  return {
+    id,
+    command: 'pi',
+    title,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
+}
+
+async function collectPiSessionFiles(): Promise<
+  Array<{ id: string; path: string; mtime: number }>
+> {
+  const root = piSessionsDir()
+  const out: Array<{ id: string; path: string; mtime: number }> = []
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await readdir(root, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  const pushFile = async (dir: string, name: string): Promise<void> => {
+    const id = piNativeFromFilename(name)
+    if (!id) return
+    const full = join(dir, name)
+    try {
+      const st = await stat(full)
+      if (!st.isFile()) return
+      out.push({ id, path: full, mtime: st.mtimeMs })
+    } catch {
+      /* skip */
+    }
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    if (entry.isFile()) {
+      await pushFile(root, entry.name)
+      continue
+    }
+    if (!entry.isDirectory()) continue
+    let files: import('node:fs').Dirent[]
+    try {
+      files = await readdir(join(root, entry.name), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      if (!f.isFile()) continue
+      await pushFile(join(root, entry.name), f.name)
+    }
+  }
+  return out
+}
+
+async function listPiSessions(limit: number): Promise<HarnessSession[]> {
+  const found = await collectPiSessionFiles()
+  const newest = new Map<string, { id: string; path: string; mtime: number }>()
+  for (const row of found) {
+    const prev = newest.get(row.id)
+    if (!prev || row.mtime >= prev.mtime) newest.set(row.id, row)
+  }
+  // Slice/sort by mtime BEFORE parsing (mirror listCodexSessions): only the
+  // `limit` newest jsonl files are read for titles.
+  const ranked = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+  const out: HarnessSession[] = []
+  for (const row of ranked) {
+    const parsed = await readPiSession(row.id)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+/**
+ * Describe ONE pi session by native id — the `pi` driver's `getSession`.
+ */
+export async function describePiSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  return readPiSession(id)
+}
+
+function piSessionExists(id: string): boolean {
+  return piTranscriptPath(id) !== undefined
+}
+
+/**
+ * Pi-only transcript read — the `pi` driver's hard-resync source.
+ *
+ * Store-scoped: a pi id whose file has been deleted reads as empty, never as
+ * another harness's transcript.
+ */
+export async function readPiTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = piTranscriptPath(id)
+  if (!path) return { id, command: '', turns: [] }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'pi', turns: piTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
+}
+
 // ---- Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl --------
 
 /** ~/.codex (respects CODEX_HOME, which the CLI itself reads). */
@@ -1250,6 +1475,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'dsh') return dshSessionExists(id) // session DIR under any cwd-slug bucket
   if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
   if (command === 'opencode') return opencodeSessionExists(id)
+  if (command === 'pi') return piSessionExists(id)
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -1291,6 +1517,7 @@ export async function listHarnessSessions(
   if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
   if (commands.includes('opencode')) all.push(...listOpencodeSessions(limit))
+  if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1480,6 +1707,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (oc.turns.length > 0) return { ...oc, id }
   }
 
+  if (wants('pi')) {
+    const pi = await readPiTranscript(native)
+    if (pi.turns.length > 0) return { ...pi, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -1652,6 +1884,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
       }
     }
   }
+  if (wants('pi')) {
+    const path = piTranscriptPath(native)
+    if (path) return { command: 'pi', path }
+  }
   return undefined
 }
 
@@ -1666,6 +1902,7 @@ export function harnessStoreDirs(): string[] {
     dshSessionsDir(),
     codexSessionsDir(),
     opencodeDataDir(),
+    piSessionsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

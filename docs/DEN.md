@@ -32,6 +32,9 @@ To stream a real session, install an adapter:
 - **opencode**: harness id `opencode`, provider `opencode-cli`, roster `opencode`.
   Drive via `opencode run` / ACP nd-JSON. Den hook layout is confirmed with
   the backend package; default model backend is z.ai GLM (Anthropic-compatible).
+- **pi**: CLI `@earendil-works/pi-coding-agent` (roster command `pi`, harness id
+  `pi`, provider `pi-cli`). Drive via print/JSON or RPC; native session store
+  confirmed at driver wiring. Recommended default backend is z.ai GLM.
 
 The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple

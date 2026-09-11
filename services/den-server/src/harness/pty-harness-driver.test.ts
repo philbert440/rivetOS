@@ -22,6 +22,7 @@ import { KimiCodeDriver } from './kimi-driver.js'
 import { DeepseekHarnessDriver } from './deepseek-driver.js'
 import { CodexDriver } from './codex-driver.js'
 import { OpencodeDriver } from './opencode-driver.js'
+import { PiDriver } from './pi-driver.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { composePromptText, type HarnessPtyHost, type PtyHarnessDriver } from './pty-harness-driver.js'
 
@@ -36,6 +37,7 @@ const DSH_NATIVE = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
 const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 /** OpenCode natives are `ses_` + alphanumerics. */
 const OPENCODE_NATIVE = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
+const PI_NATIVE = '15cb936c-3364-49d6-8769-21f0c635f160'
 
 interface Injected {
   id: string
@@ -240,6 +242,26 @@ const subjects: [name: string, make: () => Subject][] = [
       }
     },
   ],
+  [
+    'pi',
+    (): Subject => {
+      const pty = fakePty()
+      const store = fakeStore([{ id: PI_NATIVE, command: 'pi', title: 't', updatedAt: 1 }])
+      const driver = new PiDriver({
+        store,
+        pty: () => Promise.resolve(pty.host),
+        turnQuietMs: 0,
+      })
+      return {
+        driver,
+        sessionId: PiDriver.sessionId(PI_NATIVE),
+        injects: pty.injects,
+        activate: async () => {
+          await driver.resumeSession(PiDriver.sessionId(PI_NATIVE))
+        },
+      }
+    },
+  ],
 ]
 
 describe.each(subjects)('%s: the in-flight turn lock is not racy', (_name, make) => {
@@ -353,6 +375,14 @@ const capabilitySubjects: [
     (pty) =>
       new OpencodeDriver({
         store: fakeStore([{ id: OPENCODE_NATIVE, command: 'opencode', title: 't', updatedAt: 1 }]),
+        ...(pty ? { pty } : {}),
+      }),
+  ],
+  [
+    'pi',
+    (pty) =>
+      new PiDriver({
+        store: fakeStore([{ id: PI_NATIVE, command: 'pi', title: 't', updatedAt: 1 }]),
         ...(pty ? { pty } : {}),
       }),
   ],

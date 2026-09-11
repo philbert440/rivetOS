@@ -99,6 +99,9 @@ export function defaultRoster(): TermRoster {
         room: true,
         cwd: join(homedir(), '.rivetos', 'workspace'),
       },
+      // Pi 0.85.1: `--session-id` pins a new session, `--session` resumes
+      // (HARNESS_FLAGS). No --yolo equivalent on the confirmed flag set.
+      pi: { label: 'Pi', cmd: ['pi'], room: true },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }

@@ -36,6 +36,7 @@ val ROSTER_COMMAND: Map<String, String> = mapOf(
     "hermes" to "hermes",
     "deepseek-harness" to "dsh",
     "codex" to "codex",
+    "pi" to "pi",
 )
 
 fun rosterCommandFor(harnessId: String?): String? = harnessId?.let { ROSTER_COMMAND[it] }

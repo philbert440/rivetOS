@@ -47,6 +47,7 @@ export function contextWindowFromModel(model: string | undefined, command?: stri
     cmd === 'dsh' ||
     cmd === 'deepseek-harness' ||
     cmd === 'opencode' ||
+    cmd === 'pi' ||
     cmd === 'local'
 
   // 1M is a request-side flag, not a model family. Only this substring.

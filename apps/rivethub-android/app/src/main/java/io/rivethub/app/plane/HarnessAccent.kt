@@ -9,6 +9,7 @@ private fun isOpencodeAgent(agentId: String, provider: String?): Boolean {
         prov == "opencode" ||
         prov == "opencode-cli"
 }
+private val PI_TOKEN = Regex("""(?:^|[^a-z0-9])pi(?:-cli)?(?:[^a-z0-9]|$)""")
 
 fun harnessIdForAgent(agentId: String, provider: String? = null): String? {
     if (isOpencodeAgent(agentId, provider)) return "opencode"
@@ -20,6 +21,7 @@ fun harnessIdForAgent(agentId: String, provider: String? = null): String? {
         "hermes" in s -> "hermes"
         "deepseek" in s || "dsh" in s -> "deepseek-harness"
         "codex" in s -> "codex"
+        PI_TOKEN.containsMatchIn(s) -> "pi"
         else -> null
     }
 }

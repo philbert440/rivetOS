@@ -89,7 +89,7 @@ export interface ChatItem {
  * normal case (both surfaces read the same store). Roster tokens are UI/spawn
  * labels — never key material (harness-control-plane.md § Legacy keys).
  */
-export const ROSTER_COMMAND: Record<HarnessId, string> = {
+export const ROSTER_COMMAND: Record<HarnessId | 'pi', string> = {
   'claude-code': 'claude',
   'grok-build': 'grok',
   'kimi-code': 'kimi',
@@ -97,6 +97,7 @@ export const ROSTER_COMMAND: Record<HarnessId, string> = {
   hermes: 'hermes',
   'deepseek-harness': 'dsh',
   codex: 'codex',
+  pi: 'pi',
 }
 
 export function rosterCommandFor(harnessId: string | undefined): string | undefined {

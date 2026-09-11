@@ -25,12 +25,13 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
   'deepseek-harness': 'dsh',
   codex: 'codex',
   opencode: 'opencode',
+  pi: 'pi',
 }
 
 /** `providers.<key>` in config.yaml — deepseek-harness is not a CLI harness
  *  provider (`CLI_HARNESS_PROVIDERS` in @rivetos/boot). */
 export type HarnessProviderKey =
-  'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli' | 'opencode-cli'
+  'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli' | 'opencode-cli' | 'pi-cli'
 
 export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undefined> = {
   'claude-code': 'claude-cli',
@@ -40,6 +41,7 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   'deepseek-harness': undefined,
   codex: 'codex-cli',
   opencode: 'opencode-cli',
+  pi: 'pi-cli',
 }
 
 /** Config-home directory name under `$HOME`. Kimi's setup script also
@@ -53,6 +55,7 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   codex: '.codex',
   // OpenCode is XDG: `$XDG_CONFIG_HOME/opencode` else `~/.config/opencode`.
   opencode: '.config/opencode',
+  pi: '.pi/agent',
 }
 
 const HERMES_VENV_REL = join('hermes-agent', 'venv')

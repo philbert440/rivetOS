@@ -387,6 +387,9 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // OpenCode mints `ses_…` itself; `-s/--session` resumes an EXISTING id
   // (a missing id exits non-zero). No pin flag.
   opencode: { resumeFlag: '--session' },
+  // pi 0.85.1: `--session-id <uuid>` pins a NEW session (creates if missing);
+  // `--session <id>` resumes an existing one.
+  pi: { sessionFlag: '--session-id', resumeFlag: '--session' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:

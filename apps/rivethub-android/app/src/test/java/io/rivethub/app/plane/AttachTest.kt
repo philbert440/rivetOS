@@ -512,6 +512,7 @@ class AttachTest {
     @Test fun `codex is a live-turn store like kimi`() {
         assertTrue(isLiveTurnStore("kimi"))
         assertTrue(isLiveTurnStore("kimi-code"))
+        assertTrue(isLiveTurnStore("pi"))
         assertTrue(isLiveTurnStore("codex"))
         assertTrue(isLiveTurnStore("opencode"))
         assertFalse(isLiveTurnStore("dsh"))

@@ -23,6 +23,10 @@ providers:
   #   binary: opencode                    # path or name on PATH
   #   # Default backend: z.ai GLM (openai-compatible).
   #   # model: zai/glm-5.3-flash
+  # pi-cli:                            # @rivetos/provider-pi-cli; harness id `pi`
+  #   binary: pi                       # @earendil-works/pi-coding-agent
+  #   # model: glm-4.6                 # optional; recommended default backend is z.ai GLM
+  #                                    # (reuse the coding-plan / Anthropic-compat key)
 
   anthropic:
     model: claude-opus-4-7
@@ -75,6 +79,7 @@ providers:
 #   - "@rivetos/provider-anthropic"
 #   - "@rivetos/provider-claude-cli"
 #   - "@rivetos/provider-opencode-cli"
+#   - "@rivetos/provider-pi-cli"
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"
 #   - "@rivetos/provider-ollama"

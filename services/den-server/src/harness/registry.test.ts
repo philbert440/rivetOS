@@ -92,9 +92,8 @@ describe('isHarnessId', () => {
         'deepseek-harness',
         'codex',
         'opencode',
-      ].every(
-        isHarnessId,
-      ),
+        'pi',
+      ].every(isHarnessId),
     ).toBe(true)
     expect(isHarnessId('claude')).toBe(false)
     expect(isHarnessId('claude-cli')).toBe(false)

@@ -38,6 +38,11 @@ data class AgentStatus(
 fun isLiveTurnStore(command: String): Boolean {
     val c = command.lowercase()
     return listOf("claude", "kimi", "grok", "hermes", "codex", "opencode").any { c == it || c.startsWith(it) }
+ * adapter matrix (#709): claude, kimi, grok, hermes, codex, pi. dsh stays hook-sourced.
+ */
+fun isLiveTurnStore(command: String): Boolean {
+    val c = command.lowercase()
+    return listOf("claude", "kimi", "grok", "hermes", "codex", "pi").any { c == it || c.startsWith(it) }
 }
 
 /**

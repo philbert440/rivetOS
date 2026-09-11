@@ -138,6 +138,7 @@ describe('executor registry harness keying', () => {
       { harnessId: 'deepseek-harness', registered: false, implemented: false },
       { harnessId: 'codex', registered: false, implemented: false },
       { harnessId: 'opencode', registered: false, implemented: false },
+      { harnessId: 'pi', registered: false, implemented: false },
     ])
   })
 
@@ -240,7 +241,7 @@ describe('not-implemented harness executor', () => {
     // so they fall back to the generic reason rather than keeping stale prose.
     // A rejection for any of them can only come from boot's probe, which
     // supplies its own reason (see the boot-override case below).
-    for (const id of ['claude-code', 'kimi-code', 'opencode']) {
+    for (const id of ['claude-code', 'kimi-code', 'opencode', 'pi']) {
       expect(HARNESS_EXECUTOR_GAPS[id]).toBeUndefined()
       expect(harnessExecutorGap(id)).toContain('no task executor is wired')
     }

@@ -278,6 +278,7 @@ class ChatItemsTest {
     @Test fun `roster command maps kimi-code and codex`() {
         assertEquals("kimi", rosterCommandFor("kimi-code"))
         assertEquals("opencode", rosterCommandFor("opencode"))
+        assertEquals("pi", rosterCommandFor("pi"))
         assertEquals("codex", rosterCommandFor("codex"))
     }
 
