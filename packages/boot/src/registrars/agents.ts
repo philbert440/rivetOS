@@ -1016,10 +1016,7 @@ async function registerPiTaskExecutor(
     log.info(`Task executor registered: (harness-session, ${PI_HARNESS_ID}) via ${binary}`)
   } catch (err: unknown) {
     const message = (err as Error).message
-    gapOverrides.set(
-      'pi',
-      `the @rivetos/harness-pi package did not load on this node: ${message}`,
-    )
+    gapOverrides.set('pi', `the @rivetos/harness-pi package did not load on this node: ${message}`)
     log.warn(`@rivetos/harness-pi not loadable — pi task executor skipped: ${message}`)
   }
 }

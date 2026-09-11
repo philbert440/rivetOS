@@ -417,6 +417,13 @@ export function piSheet(
   }
 }
 
+/** One models-store.json row: a model token or a loosely-shaped object. */
+type PiModelEntry = string | Record<string, unknown>
+
+function isPiModelEntryList(value: unknown): value is PiModelEntry[] {
+  return Array.isArray(value)
+}
+
 function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption[] {
   let raw: unknown
   try {
@@ -425,8 +432,8 @@ function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption
     return []
   }
   const items: unknown[] = []
-  if (Array.isArray(raw)) items.push(...raw)
-  else if (isRecord(raw) && Array.isArray(raw.models)) items.push(...raw.models)
+  if (isPiModelEntryList(raw)) items.push(...raw)
+  else if (isRecord(raw) && isPiModelEntryList(raw.models)) items.push(...raw.models)
   else if (isRecord(raw)) {
     for (const [id, entry] of Object.entries(raw)) {
       if (id === 'models' || id === 'version') continue
@@ -453,7 +460,11 @@ function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption
           ? entry.model
           : ''
     const rawId = typeof entry.id === 'string' ? entry.id.trim() : ''
-    const id = rawId.includes('/') ? rawId : provider && modelId ? `${provider}/${modelId}` : rawId || modelId
+    const id = rawId.includes('/')
+      ? rawId
+      : provider && modelId
+        ? `${provider}/${modelId}`
+        : rawId || modelId
     if (!id || !MODEL_TOKEN_RE.test(id)) continue
     const label =
       (typeof entry.name === 'string' && entry.name.trim()) ||

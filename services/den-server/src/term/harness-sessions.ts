@@ -805,8 +805,7 @@ function dshSessionExists(id: string): boolean {
 // a custom `--session-dir` is FLAT (`<dir>/<ts>_<id>.jsonl`). Listing walks
 // both, newest by file mtime (timestamp prefix as a tie-break). No `$PI_HOME`.
 
-const PI_NATIVE_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const PI_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const PI_SESSION_FILE_RE =
   /^(.+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
 
@@ -841,11 +840,7 @@ function considerPiFile(
     const st = statSync(full)
     if (!st.isFile()) return best
     const prefix = name.slice(0, name.length - `_${id}.jsonl`.length)
-    if (
-      !best ||
-      st.mtimeMs > best.mtime ||
-      (st.mtimeMs === best.mtime && prefix > best.prefix)
-    ) {
+    if (!best || st.mtimeMs > best.mtime || (st.mtimeMs === best.mtime && prefix > best.prefix)) {
       return { path: full, mtime: st.mtimeMs, prefix }
     }
   } catch {
@@ -932,7 +927,9 @@ async function readPiSession(id: string): Promise<HarnessSession | undefined> {
   }
 }
 
-async function collectPiSessionFiles(): Promise<Array<{ id: string; path: string; mtime: number }>> {
+async function collectPiSessionFiles(): Promise<
+  Array<{ id: string; path: string; mtime: number }>
+> {
   const root = piSessionsDir()
   const out: Array<{ id: string; path: string; mtime: number }> = []
   let entries: import('node:fs').Dirent[]
