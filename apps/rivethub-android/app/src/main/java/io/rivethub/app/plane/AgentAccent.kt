@@ -13,12 +13,14 @@ private val HEX = Regex("^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 const val ACCENT_CLAUDE = "#CC785C"
 const val ACCENT_GROK = "#9ca3af"
 const val ACCENT_CODEX = "#5b8def"
+const val ACCENT_OPENCODE = "#f97316"
 const val ACCENT_LOCAL = "#34d399"
 
 fun harnessAccentHex(harnessId: String?, command: String? = null): String {
     val c = (harnessId ?: command).orEmpty().lowercase()
     if ("claude" in c) return ACCENT_CLAUDE
     if ("grok" in c) return ACCENT_GROK
+    if ("opencode" in c) return ACCENT_OPENCODE
     if ("codex" in c) return ACCENT_CODEX
     return ACCENT_LOCAL
 }

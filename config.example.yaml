@@ -19,6 +19,11 @@ providers:
   #   sandbox: read-only
   #   session: resume
 
+  # opencode-cli:                         # harness id `opencode`; plugin @rivetos/provider-opencode-cli
+  #   binary: opencode                    # path or name on PATH
+  #   # Default backend: z.ai GLM (Anthropic-compatible).
+  #   # model: glm-4.5
+
   anthropic:
     model: claude-opus-4-7
     max_tokens: 8192
@@ -69,6 +74,7 @@ providers:
 #   - "@rivetos/provider-codex-cli"
 #   - "@rivetos/provider-anthropic"
 #   - "@rivetos/provider-claude-cli"
+#   - "@rivetos/provider-opencode-cli"
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"
 #   - "@rivetos/provider-ollama"

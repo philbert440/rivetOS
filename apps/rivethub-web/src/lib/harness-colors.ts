@@ -8,6 +8,7 @@ export function harnessAccent(command?: string): string {
   const c = (command ?? '').toLowerCase()
   if (c.includes('claude')) return '#CC785C' // Anthropic clay
   if (c.includes('grok')) return '#9ca3af' // neutral grey
+  if (c.includes('opencode')) return '#f97316' // OpenCode orange — not clay / grey / blue / emerald
   if (c.includes('codex')) return '#5b8def' // Codex blue — not clay / grey / emerald
   return '#34d399' // local / rivet emerald
 }

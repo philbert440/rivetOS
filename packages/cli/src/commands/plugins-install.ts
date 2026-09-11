@@ -263,6 +263,8 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'merge memory.provider: rivet_memory into ~/.hermes/config.yaml',
         'ensure RIVETOS_PG_URL in ~/.hermes/.env (from ~/.rivetos/.env)',
       ]
+    case 'opencode':
+      return ['no rivet-memory installer for opencode yet']
   }
 }
 
@@ -1219,6 +1221,9 @@ export async function runPluginsInstall(
           break
         case 'hermes':
           result = await installHermes(h, root, home, exec, false, parsed.force)
+          break
+        case 'opencode':
+          result = { ok: false, detail: 'no rivet-memory installer for opencode yet' }
           break
         case 'kimi-code':
         case 'deepseek-harness':

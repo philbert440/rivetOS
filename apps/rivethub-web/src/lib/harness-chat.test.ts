@@ -367,6 +367,7 @@ describe('typed-error and id helpers', () => {
 
   it('maps every known harness onto a roster command, including codex', () => {
     expect(ROSTER_COMMAND['kimi-code']).toBe('kimi')
+    expect(ROSTER_COMMAND.opencode).toBe('opencode')
     expect(ROSTER_COMMAND.codex).toBe('codex')
   })
 

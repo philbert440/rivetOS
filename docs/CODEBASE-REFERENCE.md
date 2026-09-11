@@ -62,7 +62,8 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── ollama/              # Local Ollama models
 │   │   ├── vllm/               # vLLM server (full vLLM surface)
 │   │   ├── llama-server/       # llama.cpp llama-server (lean)
-│   │   └── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
+│   │   ├── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
+│   │   └── opencode-cli/        # Drives `opencode` CLI (`opencode run` / ACP); harness id `opencode`
 │   │
 │   ├── channels/                # Messaging surface adapters
 │   │   └── agent/               # Agent-to-agent mesh (HTTPS/mTLS); social channels removed Phase 5

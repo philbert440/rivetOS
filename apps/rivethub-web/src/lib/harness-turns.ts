@@ -37,6 +37,7 @@ export function isLiveTurnCommand(command: string): boolean {
     c === 'claude-code' ||
     c === 'kimi' ||
     c === 'kimi-code' ||
+    c === 'opencode' ||
     c === 'grok' ||
     c === 'grok-build' ||
     c === 'hermes' ||

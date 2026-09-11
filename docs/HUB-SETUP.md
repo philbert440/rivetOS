@@ -23,7 +23,7 @@
 | `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces               |
 
 **Primary interactive path:** harness sessions on the node
-(`claude-code`, `grok-build`, `kimi-code`, `hermes`) via the gateway contract.
+(`claude-code`, `grok-build`, `kimi-code`, `hermes`, `opencode`) via the gateway contract.
 
 **Removed (Phase 5):** Telegram / Discord / voice-discord channel plugins are gone. Hub is the product path. Leftover `channels.telegram:` in config is a validation warning only (no crash-loop).
 
@@ -217,8 +217,8 @@ curl -sS --cert /path/to/device.crt --key /path/to/device.key \
   --cacert /rivet-shared/rivet-ca/intermediate/chain.pem \
   "$GATEWAY/api/harnesses" | jq .
 
-# Expect four ids when all drivers registered:
-# claude-code, grok-build, hermes, kimi-code
+# Expect harness ids when all drivers registered:
+# claude-code, grok-build, hermes, kimi-code, opencode
 
 # 4. Open Hub, set gateway origin, present a device client cert, confirm drawer lists sessions
 # 5. Open a claude-code or grok-build session — Stop visible if terminals on

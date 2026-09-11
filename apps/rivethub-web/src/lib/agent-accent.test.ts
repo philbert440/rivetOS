@@ -45,6 +45,8 @@ describe('accentFor', () => {
     expect(accentFor({ harnessId: 'grok-build' })).toBe('#9ca3af')
     expect(accentFor({ harnessId: 'codex' })).toBe('#5b8def')
     expect(accentFor({ command: 'codex' })).toBe('#5b8def')
+    expect(accentFor({ harnessId: 'opencode' })).toBe('#f97316')
+    expect(accentFor({ command: 'opencode' })).toBe('#f97316')
     expect(accentFor({})).toBe('#34d399')
     expect(accentFor({ command: 'hermes' })).toBe('#34d399')
   })

@@ -12,6 +12,8 @@ import {
   grokSheet,
   hermesSheet,
   kimiSheet,
+  opencodeSheet,
+  parseOpencodeConfig,
   MODEL_TOKEN_RE,
   parseKimiToml,
   sanitizeEfforts,
@@ -196,6 +198,37 @@ describe('hermesSheet / deepseekSheet', () => {
 
   it('deepseek is empty', () => {
     expect(deepseekSheet()).toEqual({})
+  })
+})
+
+describe('opencodeSheet', () => {
+  it('reads a default model from injected opencode.json', () => {
+    const sheet = opencodeSheet((path) => {
+      if (path.endsWith('opencode.json')) return { model: 'anthropic/claude-sonnet-4-5' }
+      throw new Error('missing')
+    }, '/home/tester')
+    expect(sheet.modelFlag).toBe('--model')
+    expect(sheet.effortFlag).toBeUndefined()
+    expect(sheet.models).toEqual([
+      { id: 'anthropic/claude-sonnet-4-5', label: 'anthropic/claude-sonnet-4-5', default: true },
+    ])
+    expect(sheetForHarness('opencode', { readJson: () => ({ model: 'x' }) }).modelFlag).toBe(
+      '--model',
+    )
+    expect(appendModelEffortArgv(['opencode'], sheet, 'anthropic/claude-sonnet-4-5')).toEqual([
+      'opencode',
+      '--model',
+      'anthropic/claude-sonnet-4-5',
+    ])
+  })
+
+  it('empty models when config is missing or the model token is junk', () => {
+    expect(opencodeSheet(() => {
+      throw new Error('missing')
+    }, '/nope')).toEqual({ models: [], modelFlag: '--model' })
+    expect(parseOpencodeConfig({ model: '../x' })).toEqual([])
+    expect(parseOpencodeConfig({ model: 1 })).toEqual([])
+    expect(parseOpencodeConfig(null)).toEqual([])
   })
 })
 

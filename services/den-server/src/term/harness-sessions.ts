@@ -8,8 +8,9 @@
 // (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
 // ~/.hermes/state.db), Kimi Code
 // (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), DeepSeek
-// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/) and Codex
-// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl). An unknown harness
+// Harness (~/.dsh/sessions/<cwd-slug>/session-<uuid>/), Codex
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and OpenCode
+// (~/.local/share/opencode/storage/session/<projectID>/<id>.json). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
@@ -25,6 +26,7 @@ import {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  opencodeTurnsFromMessages,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
@@ -38,6 +40,7 @@ export {
   kimiTurnsFromLines,
   readHermesTurns,
   codexTurnsFromLines,
+  opencodeTurnsFromMessages,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -1039,6 +1042,207 @@ function codexSessionExists(id: string): boolean {
 }
 
 /**
+// ---- OpenCode: ~/.local/share/opencode/storage/session/<projectID>/<id>.json ----
+//
+// REVIEWER-CONFIRM: on-disk layout is OpenCode's XDG data dir
+// (`$OPENCODE_DATA_DIR` or `$XDG_DATA_HOME/opencode` or `~/.local/share/opencode`)
+// with session metadata at `storage/session/<projectID>/<ses_…>.json`,
+// messages at `storage/message/<ses_…>/*.json`, parts at
+// `storage/part/<msg_…>/*.json`. Native ids assumed `ses_<alnum>`.
+
+function opencodeDataDir(): string {
+  const explicit = process.env.OPENCODE_DATA_DIR?.trim()
+  if (explicit) return explicit
+  const xdg = process.env.XDG_DATA_HOME?.trim()
+  return join(xdg || join(homedir(), '.local', 'share'), 'opencode')
+}
+
+function opencodeSessionRoot(): string {
+  return join(opencodeDataDir(), 'storage', 'session')
+}
+
+/** OpenCode native ids are `ses_<alnum>` — the session JSON basename. */
+const OPENCODE_ID_PREFIX = 'ses_'
+
+function opencodeIdSafe(id: string): boolean {
+  return !!id && !id.includes('/') && !id.includes('..')
+}
+
+function findOpencodeSessionFileSync(id: string): string | undefined {
+  if (!opencodeIdSafe(id)) return undefined
+  const root = opencodeSessionRoot()
+  let projects: string[]
+  try {
+    projects = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number } | undefined
+  for (const project of projects) {
+    const path = join(root, project, `${id}.json`)
+    try {
+      const st = statSync(path)
+      if (st.isFile() && (!best || st.mtimeMs > best.mtime)) best = { path, mtime: st.mtimeMs }
+    } catch {
+      /* miss */
+    }
+  }
+  return best?.path
+}
+
+function opencodeTime(v: unknown): number {
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return v < 1e12 ? v * 1000 : v
+  }
+  if (typeof v === 'string') {
+    const t = Date.parse(v)
+    return Number.isFinite(t) ? t : 0
+  }
+  return 0
+}
+
+function readOpencodeSessionFile(path: string, id: string): HarnessSession | undefined {
+  let raw: string
+  let mtime: number
+  let birth: number
+  try {
+    const st = statSync(path)
+    if (!st.isFile()) return undefined
+    mtime = st.mtimeMs
+    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
+    raw = readFileSync(path, 'utf8')
+  } catch {
+    return undefined
+  }
+  let obj: Record<string, unknown>
+  try {
+    obj = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return {
+      id,
+      command: 'opencode',
+      title: id,
+      updatedAt: Math.floor(mtime),
+      createdAt: Math.floor(birth),
+    }
+  }
+  const title =
+    (typeof obj.title === 'string' ? obj.title.trim() : '') ||
+    (typeof obj.directory === 'string' ? obj.directory.trim() : '') ||
+    id
+  const time =
+    obj.time && typeof obj.time === 'object' && obj.time !== null && !Array.isArray(obj.time)
+      ? (obj.time as Record<string, unknown>)
+      : undefined
+  const updated = opencodeTime(time?.updated) || Math.floor(mtime)
+  const created = opencodeTime(time?.created) || Math.floor(birth)
+  return {
+    id,
+    command: 'opencode',
+    title: title.replace(/\s+/g, ' ').trim().slice(0, 120) || id,
+    updatedAt: Math.floor(updated),
+    createdAt: Math.floor(created),
+  }
+}
+
+async function listOpencodeSessions(limit: number): Promise<HarnessSession[]> {
+  const root = opencodeSessionRoot()
+  let projects: string[]
+  try {
+    projects = await readdir(root)
+  } catch {
+    return []
+  }
+  const found: { id: string; path: string; mtime: number }[] = []
+  for (const project of projects) {
+    let files: string[]
+    try {
+      files = await readdir(join(root, project))
+    } catch {
+      continue
+    }
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue
+      const id = file.slice(0, -'.json'.length)
+      if (!id || id.includes('..')) continue
+      const path = join(root, project, file)
+      try {
+        const st = await stat(path)
+        if (st.isFile()) found.push({ id, path, mtime: st.mtimeMs })
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  found.sort((a, b) => b.mtime - a.mtime)
+  const out: HarnessSession[] = []
+  for (const f of found.slice(0, limit)) {
+    const row = readOpencodeSessionFile(f.path, f.id)
+    if (row) out.push(row)
+  }
+  return out
+}
+
+/**
+ * Describe ONE OpenCode session by native id — the `opencode` driver's
+ * `getSession`, without paying a whole-store title scan.
+ */
+export async function describeOpencodeSession(id: string): Promise<HarnessSession | undefined> {
+  if (!opencodeIdSafe(id)) return undefined
+  const path = findOpencodeSessionFileSync(id)
+  if (!path) return undefined
+  return readOpencodeSessionFile(path, id)
+}
+
+function opencodeSessionExists(id: string): boolean {
+  return findOpencodeSessionFileSync(id) !== undefined
+}
+
+function readJsonFilesInDir(dir: string): Array<Record<string, unknown>> {
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return []
+  }
+  const out: Array<Record<string, unknown>> = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    try {
+      const raw = readFileSync(join(dir, name), 'utf8')
+      const obj = JSON.parse(raw) as unknown
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        out.push(obj as Record<string, unknown>)
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return out
+}
+
+/**
+ * OpenCode-only transcript read — the `opencode` driver's hard-resync source.
+ *
+ * Store-scoped like its siblings: a missing session file reads as an empty
+ * transcript, never as whichever other store happens to hold that id.
+ */
+export async function readOpencodeTranscript(id: string): Promise<HarnessTranscript> {
+  if (!opencodeIdSafe(id)) return { id, command: '', turns: [] }
+  const sessionFile = findOpencodeSessionFileSync(id)
+  if (!sessionFile) return { id, command: '', turns: [] }
+  const dataDir = opencodeDataDir()
+  const messages = readJsonFilesInDir(join(dataDir, 'storage', 'message', id))
+  const partsByMessage = new Map<string, Array<Record<string, unknown>>>()
+  for (const msg of messages) {
+    const mid = typeof msg.id === 'string' ? msg.id : ''
+    if (!mid) continue
+    partsByMessage.set(mid, readJsonFilesInDir(join(dataDir, 'storage', 'part', mid)))
+  }
+  return { id, command: 'opencode', turns: opencodeTurnsFromMessages(messages, partsByMessage) }
+}
+
+/**
  * Does a harness already have an on-disk session with this id? Store existence
  * is the ground truth for choosing --resume (continue) vs --session-id (pin a
  * NEW id) when re-spawning a conversation whose PTY was evicted (#318 review).
@@ -1059,6 +1263,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'kimi') return kimiSessionExists(id) // session DIR under any workspace bucket
   if (command === 'dsh') return dshSessionExists(id) // session DIR under any cwd-slug bucket
   if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
+  if (command === 'opencode') return opencodeSessionExists(id)
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -1099,6 +1304,7 @@ export async function listHarnessSessions(
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))
   if (commands.includes('dsh')) all.push(...(await listDshSessions(limit)))
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
+  if (commands.includes('opencode')) all.push(...(await listOpencodeSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1283,6 +1489,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (dsh.command === 'dsh') return { ...dsh, id }
   }
 
+  if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
+    const oc = await readOpencodeTranscript(native)
+    if (oc.turns.length > 0) return { ...oc, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -1445,6 +1656,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const dir = dshSessionDir(native)
     if (dir) return { command: 'dsh', path: join(dir, 'session.jsonl.zstd') }
   }
+  if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
+    const path = findOpencodeSessionFileSync(native)
+    if (path) return { command: 'opencode', path }
+  }
   return undefined
 }
 
@@ -1458,6 +1673,7 @@ export function harnessStoreDirs(): string[] {
     kimiSessionsDir(),
     dshSessionsDir(),
     codexSessionsDir(),
+    join(opencodeDataDir(), 'storage'),
   ]
   return candidates.filter((d) => existsSync(d))
 }

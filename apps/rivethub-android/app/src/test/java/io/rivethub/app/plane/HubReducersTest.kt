@@ -11,6 +11,7 @@ class HubReducersTest {
         assertEquals("claude-code", harnessIdForAgent("claude", "claude-cli"))
         assertEquals("grok-build", harnessIdForAgent("grok", null))
         assertEquals("kimi-code", harnessIdForAgent("kimi-code", null))
+        assertEquals("opencode", harnessIdForAgent("opencode", null))
         assertEquals("hermes", harnessIdForAgent("hermes", null))
         assertEquals("deepseek-harness", harnessIdForAgent("dsh", null))
         assertEquals("codex", harnessIdForAgent("codex", null))

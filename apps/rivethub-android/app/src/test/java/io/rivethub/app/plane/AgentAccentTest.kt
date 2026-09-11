@@ -39,6 +39,17 @@ class AgentAccentTest {
     }
 
     @Test
+    fun `opencode accent is distinct`() {
+        assertEquals(ACCENT_OPENCODE, harnessAccentHex("opencode", null))
+        assertEquals(ACCENT_OPENCODE, harnessAccentHex(null, "opencode"))
+        assertEquals(ACCENT_OPENCODE, accentFor(null, "opencode", null))
+        assertTrue(ACCENT_OPENCODE != ACCENT_CLAUDE)
+        assertTrue(ACCENT_OPENCODE != ACCENT_GROK)
+        assertTrue(ACCENT_OPENCODE != ACCENT_CODEX)
+        assertTrue(ACCENT_OPENCODE != ACCENT_LOCAL)
+    }
+
+    @Test
     fun `same inputs match on agent and conversation surfaces`() {
         val a = accentFor("#CC785C", "claude-code", "claude")
         val b = accentFor("#CC785C", "claude-code", "claude")

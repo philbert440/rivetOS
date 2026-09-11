@@ -1573,6 +1573,8 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
       return hermesPluginInstalled(h.configHome)
     case 'claude-code':
       return false // decided by `claude plugin list` below
+    case 'opencode':
+      return false
   }
 }
 

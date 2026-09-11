@@ -87,6 +87,7 @@ import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-drive
 import { GrokBuildDriver } from './harness/grok-driver.js'
 import { HermesDriver } from './harness/hermes-driver.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
+import { OpencodeDriver } from './harness/opencode-driver.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -117,7 +118,7 @@ export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcri
 
 // Harness control plane (docs/ARCHITECTURE.md) — the registry,
 // the `claude-code` reference driver, the `grok-build`, `hermes`,
-// `kimi-code`, `deepseek-harness` and `codex` drivers, the `PtyHarnessDriver` base
+// `kimi-code`, `deepseek-harness`, `codex` and `opencode` drivers, the `PtyHarnessDriver` base
 // they share, and the alias/codec helpers around them. Re-exported here so
 // consumers have one entry point.
 export {
@@ -200,6 +201,14 @@ export {
   type CodexPtyHost,
   type CodexStoreHost,
 } from './harness/codex-driver.js'
+export {
+  OpencodeDriver,
+  OPENCODE_HARNESS_ID,
+  OPENCODE_ROSTER_COMMAND,
+  type OpencodeDriverDeps,
+  type OpencodePtyHost,
+  type OpencodeStoreHost,
+} from './harness/opencode-driver.js'
 export { createHarnessStore, type HarnessStoreName } from './harness/harness-store.js'
 export {
   PtyHarnessDriver,
@@ -733,6 +742,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('dsh'),
         log: console.error,
         sheetOverride: config.harnesses?.['deepseek-harness'],
+        transcript: opts.transcriptWatcher,
+        screen: screenFor,
+      }),
+      new OpencodeDriver({
+        store: createHarnessStore('opencode'),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
+        cwd: rosterCwdFor('opencode'),
+        log: console.error,
+        sheetOverride: config.harnesses?.opencode,
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),

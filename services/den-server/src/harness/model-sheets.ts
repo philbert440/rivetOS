@@ -50,6 +50,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   hermes: 'hermes',
   dsh: 'deepseek-harness',
   codex: 'codex',
+  opencode: 'opencode',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -349,6 +350,43 @@ export function codexSheet(): ModelSheet {
   }
 }
 
+/**
+ * Parse OpenCode's config JSON for a default `model`. Config missing →
+ * `models: []`. Spawn flag is `--model`.
+ *
+ * // REVIEWER-CONFIRM: config path (`~/.config/opencode/opencode.json`) and
+ * whether the CLI advertises a model list we should parse (provider tables).
+ */
+export function opencodeSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const empty: ModelSheet = { models: [], modelFlag: '--model' }
+  const paths = [
+    join(home, '.config', 'opencode', 'opencode.json'),
+    join(home, '.config', 'opencode', 'opencode.jsonc'),
+    join(home, '.opencode', 'opencode.json'),
+  ]
+  for (const path of paths) {
+    let raw: unknown
+    try {
+      raw = readJson(path)
+    } catch {
+      continue
+    }
+    return { models: parseOpencodeConfig(raw), modelFlag: '--model' }
+  }
+  return empty
+}
+
+/** Tiny JSON grab: top-level `model` string becomes the default (and only) picker row. */
+export function parseOpencodeConfig(raw: unknown): HarnessModelOption[] {
+  if (!isRecord(raw) || typeof raw.model !== 'string') return []
+  const id = raw.model.trim()
+  if (!id || !MODEL_TOKEN_RE.test(id)) return []
+  return [{ id, label: id, default: true }]
+}
+
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
   const home = readers?.home
   const readJson = readers?.readJson
@@ -366,6 +404,8 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return deepseekSheet()
     case 'codex':
       return codexSheet()
+    case 'opencode':
+      return opencodeSheet(readJson, home)
   }
 }
 

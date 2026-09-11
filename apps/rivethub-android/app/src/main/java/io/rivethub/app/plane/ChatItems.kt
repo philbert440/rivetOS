@@ -32,6 +32,7 @@ val ROSTER_COMMAND: Map<String, String> = mapOf(
     "claude-code" to "claude",
     "grok-build" to "grok",
     "kimi-code" to "kimi",
+    "opencode" to "opencode",
     "hermes" to "hermes",
     "deepseek-harness" to "dsh",
     "codex" to "codex",
