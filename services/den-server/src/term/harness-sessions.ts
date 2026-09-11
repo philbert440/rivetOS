@@ -1573,7 +1573,6 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (kimi.turns.length > 0) return { ...kimi, id }
   }
 
-
   if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
     const oc = await readOpencodeTranscript(native)
     if (oc.turns.length > 0) return { ...oc, id }
