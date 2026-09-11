@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import type { HarnessTranscriptTurn } from '@rivetos/types'
 import { claudeAdapter } from './adapters/claude.js'
-import { deepseekAdapter } from './adapters/deepseek.js'
 import { grokAdapter } from './adapters/grok.js'
+import type { HarnessAdapter } from './adapters/types.js'
 import { createTurnTracker } from './turn-tracker.js'
+
+const textOnlyAdapter: HarnessAdapter = {
+  id: 'hermes',
+  store: {},
+  promptToolNames: [],
+  capabilities: () => ({ liveTurn: false, prompts: false, approvals: false }),
+}
 
 const ASK_INPUT = {
   questions: [
@@ -151,7 +158,7 @@ describe('createTurnTracker', () => {
   })
 
   it('text-only store → inFlight() === undefined and no edges', () => {
-    const t = createTurnTracker(deepseekAdapter)
+    const t = createTurnTracker(textOnlyAdapter)
     const turns: HarnessTranscriptTurn[] = [
       { role: 'user', text: 'hi' },
       asst({
@@ -161,7 +168,7 @@ describe('createTurnTracker', () => {
         tools: [{ name: 'AskUserQuestion', status: 'running', id: 'x', input: ASK_INPUT }],
       }),
     ]
-    expect(t.apply(turns, 'dsh')).toEqual({ promptsOpened: [], promptsResolved: [] })
+    expect(t.apply(turns, 'hermes')).toEqual({ promptsOpened: [], promptsResolved: [] })
     expect(t.inFlight()).toBeUndefined()
     expect(t.pendingPromptIds()).toEqual([])
   })

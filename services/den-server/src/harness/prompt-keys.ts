@@ -163,12 +163,24 @@ export function grokApprovalKeys(decision: ApprovalDecision): Uint8Array[] {
 }
 
 /**
- * kimi-code 0.36.0 approval panel — key mapping unverified. Treat as
- * `1`=allow, `2`=allow-session, `3`=deny (digits/Enter). Capture log only
- * showed the bottom of the panel (`3. Reject` / `4. Reject with feedback`).
+ * kimi-code 0.36.0 permission panel labels in order: "Yes", "Yes, for this
+ * session", "Reject" (allow / allow-session / deny). Other variants exist
+ * ("Reject with feedback", "Approve for this session") and are resolved by
+ * `approvalKeyFromOptions` when the screen scrape has those rows.
+ *
+ * Selection is driven the same way grok's map drives its list: one digit
+ * keystroke per decision, option 1/2/3.
+ *
+ * UNVERIFIED: digit-vs-arrow selection on kimi 0.36.0. If digits do not
+ * select, the injected key leaves the TUI prompt up and the next `blocked`
+ * capture re-raises the request — the driver does not observe acceptance.
  */
 export function kimiApprovalKeys(decision: ApprovalDecision): Uint8Array[] {
-  return claudeApprovalKeys(decision)
+  // UNVERIFIED: digit-vs-arrow selection on kimi 0.36.0
+  if (decision === 'allow') return [enc('1')]
+  if (decision === 'allow-session') return [enc('2')]
+  if (decision === 'deny') return [enc('3')]
+  bad(`unsupported approval decision: ${decision}`)
 }
 
 /**

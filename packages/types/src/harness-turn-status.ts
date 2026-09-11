@@ -47,6 +47,6 @@ export function deriveTurnStatus(
   if (last.complete) return { inFlight: false }
   if (last.lastBlock === 'thinking') return { inFlight: true, phase: 'thinking' }
   if (last.lastBlock === 'text') return { inFlight: true, phase: 'writing' }
-  // Trailing assistant with neither stopReason nor lastBlock (grok/hermes/dsh).
+  // Trailing assistant with neither stopReason nor lastBlock (grok/hermes).
   return {}
 }

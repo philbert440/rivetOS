@@ -70,7 +70,7 @@ with submit.
 → **400** malformed decision
 → **404** `unknown_approval` (not pending)
 → **501** `capabilities.approvals` is false (no PTY, mux is not herdr, or the
-adapter has no permission keys — hermes / deepseek)
+adapter has no permission keys — hermes)
 
 Permission prompts are herdr-`blocked` plus a screen capture
 (`HerdrCtl.capture`). The driver emits `approval-request` with parsed

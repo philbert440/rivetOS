@@ -377,20 +377,6 @@ describe('term manager', () => {
     hermesResume.manager.spawn('hermes', 80, 24, '', 'sess_abc123')
     expect(hermesResume.spawns[0].argv).toEqual([...hermesBase, '--resume', 'sess_abc123'])
 
-    // dsh: --resume only (no sessionFlag), after the roster's `--profile tui`.
-    // Fresh spawn stays `dsh --profile tui`; an existing native id resumes.
-    const dshBase = ['dsh', '--profile', 'tui']
-    const dshNew = makeManager({}, { sessionExists: () => false })
-    dshNew.manager.spawn('dsh', 80, 24, '', uuid)
-    expect(dshNew.spawns[0].argv).toEqual(dshBase)
-    const dshResume = makeManager({}, { sessionExists: () => true })
-    dshResume.manager.spawn('dsh', 80, 24, '', 'session-86ffe759-cd7b-49a7-955d-c282631a935d')
-    expect(dshResume.spawns[0].argv).toEqual([
-      ...dshBase,
-      '--resume',
-      'session-86ffe759-cd7b-49a7-955d-c282631a935d',
-    ])
-
     // Codex: resume is a subcommand (`codex resume <uuid>`), no sessionFlag.
     const codexNew = makeManager({}, { sessionExists: () => false })
     codexNew.manager.spawn('codex', 80, 24, '', uuid)
@@ -398,6 +384,14 @@ describe('term manager', () => {
     const codexResume = makeManager({}, { sessionExists: () => true })
     codexResume.manager.spawn('codex', 80, 24, '', uuid)
     expect(codexResume.spawns[0].argv).toEqual(['codex', 'resume', uuid])
+
+    // pi 0.85.1: `--session-id` pins a new session; `--session` resumes.
+    const piNew = makeManager({}, { sessionExists: () => false })
+    piNew.manager.spawn('pi', 80, 24, '', uuid)
+    expect(piNew.spawns[0].argv).toEqual(['pi', '--session-id', uuid])
+    const piResume = makeManager({}, { sessionExists: () => true })
+    piResume.manager.spawn('pi', 80, 24, '', uuid)
+    expect(piResume.spawns[0].argv).toEqual(['pi', '--session', uuid])
 
     // a non-harness command gets no flags; a claude non-UUID that isn't in the
     // store gets no flag either (no --session-id on a non-UUID).

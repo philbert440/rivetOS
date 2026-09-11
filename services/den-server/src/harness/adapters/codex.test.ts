@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { codexTurnsFromLines } from './codex.js'
+import { HarnessError } from '@rivetos/types'
+import { codexAdapter, codexTurnsFromLines } from './codex.js'
 
 const item = (payload: Record<string, unknown>): Record<string, unknown> => ({
   type: 'response_item',
@@ -175,5 +176,20 @@ describe('codexTurnsFromLines', () => {
         { type: 'event_msg', payload: { type: 'token_count' } },
       ]),
     ).toEqual([])
+  })
+})
+
+describe('honest PTY approvals', () => {
+  it('advertises approvals: false and approvalKeys rejects capability_unsupported', () => {
+    expect(codexAdapter.capabilities().approvals).toBe(false)
+    expect(typeof codexAdapter.approvalKeys).toBe('function')
+    expect(() => codexAdapter.approvalKeys!('allow')).toThrowError(HarnessError)
+    let thrown: unknown
+    try {
+      codexAdapter.approvalKeys!('deny')
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toMatchObject({ code: 'capability_unsupported' })
   })
 })

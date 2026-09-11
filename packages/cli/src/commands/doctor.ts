@@ -84,7 +84,6 @@ import {
   mcpJsonHasRivetos,
   tomlFileHasRivetosTable,
   uncommentedLineContains,
-  yamlFileHasRivetMemory,
 } from './plugins-install.js'
 
 // ---------------------------------------------------------------------------
@@ -1535,6 +1534,41 @@ function hermesPluginInstalled(configHome: string): boolean {
   }
 }
 
+/** Best-effort: a `rivetos` entry in opencode.json `plugin` array. JSONC
+ *  comments make parse fail → treated as not installed. */
+function opencodePluginInstalled(configHome: string): boolean {
+  for (const name of ['opencode.json', 'opencode.jsonc']) {
+    let raw: string
+    try {
+      raw = readFileSync(join(configHome, name), 'utf-8')
+    } catch {
+      continue
+    }
+    try {
+      const cfg = JSON.parse(raw) as { plugin?: unknown }
+      const plugin = cfg.plugin
+      if (!Array.isArray(plugin)) continue
+      if (
+        plugin.some((p) => {
+          if (typeof p === 'string') return /rivetos/i.test(p)
+          if (p && typeof p === 'object' && 'name' in p) {
+            return (
+              typeof (p as { name?: unknown }).name === 'string' &&
+              /rivetos/i.test((p as { name: string }).name)
+            )
+          }
+          return false
+        })
+      ) {
+        return true
+      }
+    } catch {
+      // invalid JSON / JSONC — not installed
+    }
+  }
+  return false
+}
+
 function kimiPluginInstalled(home: string, configHome: string): boolean {
   for (const dir of kimiConfigHomes(home, configHome)) {
     if (mcpJsonHasRivetos(join(dir, 'mcp.json'))) return true
@@ -1559,10 +1593,6 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
       return tomlFileHasRivetosTable(join(h.configHome, 'config.toml'))
     case 'kimi-code':
       return kimiPluginInstalled(home, h.configHome)
-    case 'deepseek-harness':
-      return artefactConfigHomes(h.id, home, h.configHome).some((dir) =>
-        yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml')),
-      )
     case 'codex':
       return artefactConfigHomes(h.id, home, h.configHome).some(
         (dir) =>
@@ -1573,6 +1603,10 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
       return hermesPluginInstalled(h.configHome)
     case 'claude-code':
       return false // decided by `claude plugin list` below
+    case 'opencode':
+      return opencodePluginInstalled(h.configHome)
+    case 'pi':
+      return false
   }
 }
 

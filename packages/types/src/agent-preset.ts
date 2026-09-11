@@ -13,8 +13,6 @@ export const CATALOG_AGENT_TO_HARNESS: Record<string, HarnessId> = {
   'grok-fast': 'grok-build',
   kimi: 'kimi-code',
   hermes: 'hermes',
-  deepseek: 'deepseek-harness',
-  dsh: 'deepseek-harness',
 }
 
 /** Map a catalog agent id (or an already-canonical harness id) to a HarnessId. */

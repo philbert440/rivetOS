@@ -3,7 +3,6 @@
  * harness control plane.
  *
  * The executor registry keys `harness-session` on a HARNESS ID, the same
- * `claude-code | grok-build | kimi-code | hermes | deepseek-harness | codex`
  * vocabulary `SessionId`,
  * `HarnessDriver` and the gateway already speak. Before this, the one CLI
  * executor registered under the PROVIDER name `claude-cli`, so a task row and
@@ -16,13 +15,18 @@
  *     session keys: resolve it, warn once, keep reads working while the rows
  *     that predate the rename drain. Nothing writes the legacy target anymore.
  *
- *   - **Honest not-implemented executors.** grok-build, hermes and
- *     deepseek-harness cannot spawn a session for a task to run in — the grok
- *     and dsh drivers spawn a PTY, and hermes/dsh can only ADOPT a session the
- *     roster started (neither has a flag to pin a new id) — so their
+ *   - **Honest not-implemented executors.** grok-build and hermes cannot spawn
+ *     a session for a task to run in — the grok driver spawns a PTY, and
+ *     hermes can only ADOPT a session the roster started (no flag to pin a
+ *     new id) — so their
  *     executors are explicit rejections, not absences. `kimi-code` has a real
- *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`), and
- *     registers a rejection only where boot's binary probe fails, carrying
+ *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`),
+ *     `opencode` has a real executor over headless `opencode run`
+ *     (`@rivetos/harness-opencode`), and each registers a rejection only where
+ *     boot's binary probe fails, carrying the probe's own reason.
+ *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`), `pi`
+ *     has a real executor over the `pi` binary (`@rivetos/harness-pi`), and
+ *     each registers a rejection only where boot's binary probe fails, carrying
  *     the probe's own reason.
  *     A task aimed at a rejection fails immediately with the typed
  *     `capability_unsupported` code and a message that says what is missing,
@@ -207,10 +211,13 @@ export function harnessExecutorCoverage(
  * message a failing task shows is the same one the code review can check.
  *
  * Not aspirational text: each line is what the repo actually has today. A
- * harness that GAINS an executor loses its entry — `claude-code` and
- * `kimi-code` both have one, so a rejection registered for either can only
- * come from boot's probe (binary not resolvable, package would not load) and
- * carries that reason instead.
+ * harness that GAINS an executor loses its entry — `claude-code`,
+ * `kimi-code` and `opencode` all have one, so a rejection registered for any
+ * of them can only come from boot's probe (binary not resolvable, package
+ * would not load) and carries that reason instead.
+ * `kimi-code` and `pi` all have one, so a rejection registered for any of
+ * them can only come from boot's probe (binary not resolvable, package would
+ * not load) and carries that reason instead.
  */
 export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = Object.freeze({
   'grok-build':
@@ -224,11 +231,6 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'the hermes driver cannot START a session for a task to run in: hermes has no flag ' +
     'to pin a new session id, so it only ever adopts sessions the roster spawned ' +
     '(HermesDriver.startSession answers capability_unsupported for the same reason)',
-  'deepseek-harness':
-    'no node-side headless task executor: dsh mints its own session id (no --session-id ' +
-    'to pin a new one) and capture is out-of-band via the Cordis session/event plugin. ' +
-    'The den term manager spawns the interactive TUI (`dsh --profile tui [--resume]`); ' +
-    'a headless profile exists but is not wired as a HarnessExecutor',
   codex:
     'the codex driver cannot START a session for a task to run in: Codex mints its own ' +
     'rollout UUID and `codex resume` references existing sessions only (no --session-id). ' +

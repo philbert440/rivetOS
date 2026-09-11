@@ -49,6 +49,7 @@ import {
   listSessions,
   parseEvent,
   reduceDen,
+  type AgentEvent,
   type DenState,
 } from '@rivetos/den-protocol'
 import { MeshParseError, type HarnessDriver, type UserContext } from '@rivetos/types'
@@ -87,10 +88,11 @@ import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-drive
 import { GrokBuildDriver } from './harness/grok-driver.js'
 import { HermesDriver } from './harness/hermes-driver.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
+import { OpencodeDriver } from './harness/opencode-driver.js'
+import { PiDriver } from './harness/pi-driver.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
-import { DeepseekHarnessDriver } from './harness/deepseek-driver.js'
 import { createHarnessStore } from './harness/harness-store.js'
 import { createHarnessRoutes, harnessErrorStatus } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
@@ -117,7 +119,6 @@ export { createTranscriptWatcher, type TranscriptWatcher } from './term/transcri
 
 // Harness control plane (docs/ARCHITECTURE.md) — the registry,
 // the `claude-code` reference driver, the `grok-build`, `hermes`,
-// `kimi-code`, `deepseek-harness` and `codex` drivers, the `PtyHarnessDriver` base
 // they share, and the alias/codec helpers around them. Re-exported here so
 // consumers have one entry point.
 export {
@@ -185,13 +186,13 @@ export {
   type KimiStoreHost,
 } from './harness/kimi-driver.js'
 export {
-  DeepseekHarnessDriver,
-  DEEPSEEK_HARNESS_ID,
-  DEEPSEEK_ROSTER_COMMAND,
-  type DeepseekDriverDeps,
-  type DeepseekPtyHost,
-  type DeepseekStoreHost,
-} from './harness/deepseek-driver.js'
+  PiDriver,
+  PI_HARNESS_ID,
+  PI_ROSTER_COMMAND,
+  type PiDriverDeps,
+  type PiPtyHost,
+  type PiStoreHost,
+} from './harness/pi-driver.js'
 export {
   CodexDriver,
   CODEX_HARNESS_ID,
@@ -200,6 +201,14 @@ export {
   type CodexPtyHost,
   type CodexStoreHost,
 } from './harness/codex-driver.js'
+export {
+  OpencodeDriver,
+  OPENCODE_HARNESS_ID,
+  OPENCODE_ROSTER_COMMAND,
+  type OpencodeDriverDeps,
+  type OpencodePtyHost,
+  type OpencodeStoreHost,
+} from './harness/opencode-driver.js'
 export { createHarnessStore, type HarnessStoreName } from './harness/harness-store.js'
 export {
   PtyHarnessDriver,
@@ -286,8 +295,7 @@ export interface DenServer {
   state(): DenState
   /**
    * Harness control plane (docs/ARCHITECTURE.md): the node's
-   * `HarnessDriver` registry. The six built-in drivers (`claude-code`,
-   * `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`, `codex`) register
+   * `HarnessDriver` registry. The built-in drivers (`claude-code`,
    * here at boot. Extra drivers can still be added via `DenServerOptions.harnessDrivers`.
    */
   harnesses: HarnessRegistry
@@ -348,13 +356,11 @@ export interface DenServerOptions {
    */
   onAgentEvent?: (ev: { session: string; type: string; [k: string]: unknown }) => void
   /**
-   * Extra HarnessDrivers to register alongside the six built-in drivers
-   * (`claude-code`, `grok-build`, `hermes`, `kimi-code`, `deepseek-harness`, `codex`).
+   * Extra HarnessDrivers to register alongside the built-in drivers
    */
   harnessDrivers?: HarnessDriver[]
   /**
    * Skip registering the built-in `claude-code` + `grok-build` + `hermes` +
-   * `kimi-code` + `deepseek-harness` + `codex` drivers — tests that drive the
    * registry with a fake, and nodes that want their own wiring. They are skipped
    * together: they share the PTY host and the den event tap, so a node that
    * replaces one is replacing that wiring for all of them.
@@ -480,31 +486,41 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     getLocalLatest: () => {
       const sessions = listSessions(state)
       if (sessions.length === 0) return null
-      const room = state.rooms[sessions[0].id] as typeof initialRoomState | undefined
+      const room = state.rooms[sessions[0].id]
       return room ? { activity: room.activity, title: room.title } : null
     },
   })
 
   /** Raw AgentEvent subscribers — the harness drivers' live event source. */
-  const denEventSinks = new Set<(ev: { session: string; type: string }) => void>()
+  const denEventSinks = new Set<(ev: DenAgentEventLike) => void>()
+
+  // AgentEvent is a union of bodies with no index signature; the taps
+  // (onAgentEvent / DenAgentEventLike) require one. Copy onto that shape
+  // rather than asserting.
+  const asDenTapEvent = (ev: AgentEvent): DenAgentEventLike => {
+    const out: DenAgentEventLike = { session: ev.session, type: ev.type }
+    Object.assign(out, ev)
+    return out
+  }
 
   // Ingestion is serialized by construction: everything from parse to
   // broadcast is synchronous, so Node's event loop applies each caller's
   // events atomically and in arrival order — there is no await between
   // reading `state` and writing it back. Cross-request ORDER is the client's
   // job: send one batch, or sequential single POSTs.
-  const ingest = (ev: NonNullable<ReturnType<typeof parseEvent>>): void => {
+  const ingest = (ev: AgentEvent): void => {
     state = reduceDen(state, ev)
     // ended sessions linger for the TTL so the room is still visible
     // asleep, then get evicted; any newer event cancels the eviction
     clearEviction(ev.session)
     if (ev.type === 'session.end') scheduleEviction(ev.session)
     broadcast(JSON.stringify(ev), ev.session)
+    const tap = asDenTapEvent(ev)
     // Seamless-modes tap: bridge to the chat view (5d). Never let it throw
     // into ingest.
     if (opts.onAgentEvent) {
       try {
-        opts.onAgentEvent(ev as unknown as { session: string; type: string })
+        opts.onAgentEvent(tap)
       } catch {
         /* bridge errors must not break den ingest */
       }
@@ -513,7 +529,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // a driver bug must never break den ingest.
     for (const sink of [...denEventSinks]) {
       try {
-        sink(ev)
+        sink(tap)
       } catch {
         /* as above */
       }
@@ -565,7 +581,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (ev) ingest(ev)
         },
         roomOpen: (s) => {
-          const room = state.rooms[s] as typeof initialRoomState | undefined
+          const room = state.rooms[s]
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
@@ -610,18 +626,18 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     const roster = rosterProvider.get()
     if (!Object.hasOwn(roster.commands, key)) return roster.cwd
     const entry = roster.commands[key]
-    // Mirrors the spawn rule in term/manager.ts: harness entries run in home.
-    if (entry.room) return homedir()
+    // Mirrors the spawn rule in term/manager.ts: harness cwd is forced to
+    // home except OpenCode, whose file picker refuses `$HOME`.
+    if (entry.room) return key === 'opencode' && entry.cwd ? entry.cwd : homedir()
     return entry.cwd ?? roster.cwd
   }
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
-  // All six built-in drivers formalize the machinery right above them — the
+  // All built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
   // the den AgentEvent stream — behind the one contract, and share it through
   // `PtyHarnessDriver`. Capability flags follow what is ACTUALLY wired here: no
   // terminals on this node means no interrupt/resume, no den tap means no
   // liveStream, and `approvals` is true only with PTY + herdr + adapter keys
-  // (lane A2 for Codex). `hermes`, `kimi-code`, `deepseek-harness` and `codex`
   // cannot pin a new session's id, so they refuse `startSession`, adopt
   // sessions (den stream and/or store), and report a room whose session
   // changed as a rotation.
@@ -722,17 +738,25 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
-      new DeepseekHarnessDriver({
-        store: createHarnessStore('deepseek'),
+      new PiDriver({
+        store: createHarnessStore('pi'),
         pty: termEnabled ? () => ensureManager() : undefined,
-        // Tap is wired so a future harnessSession stamp can adopt a drawer
-        // spawn. dsh itself has no hook-fed events today; liveStream then
-        // reports the tap, not a fake assistant stream.
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
-        cwd: rosterCwdFor('dsh'),
+        cwd: rosterCwdFor('pi'),
         log: console.error,
-        sheetOverride: config.harnesses?.['deepseek-harness'],
+        sheetOverride: config.harnesses?.pi,
+        transcript: opts.transcriptWatcher,
+        screen: screenFor,
+      }),
+      new OpencodeDriver({
+        store: createHarnessStore('opencode'),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
+        cwd: rosterCwdFor('opencode'),
+        log: console.error,
+        sheetOverride: config.harnesses?.opencode,
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
@@ -1582,7 +1606,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         const id = rawId ? denJoinKey(rawId) : rawId
         if (!rawId || !id) return json(res, 404, { error: 'unknown session' })
         if (denyIfForbidden('GET /state', id)) return
-        const room = state.rooms[id] as typeof initialRoomState | undefined
+        const room = state.rooms[id]
         if (!room) return json(res, 404, { error: 'unknown session' })
         return json(res, 200, { session: rawId, state: room })
       }

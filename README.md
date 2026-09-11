@@ -17,7 +17,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 - **Tiny core, fat plugins**: The runtime kernel is a small, stable surface: a loop, a router, a queue, a hook pipeline. Everything else is swappable.
 - **Streaming-first**: `AsyncIterable<StreamEvent>` from every provider. Responses stream in real-time.
-- **7 LLM providers**: Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription).
+- **8 LLM providers**: Anthropic (Claude), xAI (Grok), Google (Gemini), Ollama, vLLM, llama-server (llama.cpp), claude-cli (Claude Code subscription), opencode-cli (OpenCode; default z.ai GLM).
 - **1 channel plugin**: Agent (HTTP inter-agent / mesh). Human UX is RivetHub via the node gateway. Social bots (Discord, Telegram, Voice) were removed in Phase 5.
 - **MCP transport plugin**: Expose RivetOS tools (memory, web, skills) to external MCP clients over StreamableHTTP.
 - **20+ built-in tools**: Shell, file I/O, search, web, memory, skills, interaction, MCP client, delegation, sub-agents.
@@ -100,7 +100,7 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way, discovery plus `manifest.register()`. `boot` additionally lists five workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`, `harness-kimi-code`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them.
+**Dependency rule:** Everything points inward. Plugins → Types. Domain → Types. Every plugin is registered the same way, discovery plus `manifest.register()`. `boot` additionally lists five workspace packages (`provider-claude-cli`, `memory-postgres`, `den-server`, `workflows`, `harness-kimi-code`) as direct dependencies so a default install always has them on disk, and imports specific symbols from them. The `pi` harness (provider `pi-cli`, package `@rivetos/harness-pi`) is discovered the same way as other harness plugins.
 
 ## Monorepo structure
 
@@ -152,6 +152,7 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 | `provider-vllm`         | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`) |
 | `provider-llama-server` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body` escape hatch)                                |
 | `provider-claude-cli`   | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token                   |
+| `provider-opencode-cli` | Drives the local `opencode` binary (harness id `opencode`); default backend z.ai GLM |
 
 ### Channels
 

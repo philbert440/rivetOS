@@ -9,6 +9,61 @@ import {
 import { kimiApprovalKeys } from '../prompt-keys.js'
 import type { HarnessAdapter } from './types.js'
 
+export type KimiLiveDelta = { kind: 'assistant' | 'reasoning'; text: string }
+
+/**
+ * Untruncated thinking for the in-flight turn. `thinking` on the turn is the
+ * display-capped tail; deltas must diff this instead or the 8k window rewrite
+ * looks like a brand-new string. WeakMap so the extra field is not part of
+ * the turn object clients/tests compare.
+ */
+const rawThinkingByTurn = new WeakMap<HarnessTranscriptTurn, string>()
+
+function thinkingForDelta(t: HarnessTranscriptTurn | undefined): string {
+  if (!t) return ''
+  return rawThinkingByTurn.get(t) ?? t.thinking ?? ''
+}
+
+function grownSuffix(prev: string, next: string): string {
+  if (!next || next === prev) return ''
+  if (!prev) return next
+  if (next.startsWith(prev)) return next.slice(prev.length)
+  return next
+}
+
+/**
+ * Live-turn deltas from a growing `wire.jsonl` parse.
+ *
+ * First snapshot (`prev` undefined or empty) emits nothing — that text belongs
+ * on `transcript()`, not a replay of the whole conversation as deltas. An
+ * empty `from:0` frame is the store-not-yet-resolved snapshot, not a real
+ * baseline. Later parses emit thinking then text suffixes for every assistant
+ * turn that grew, including when a user turn follows in the same snapshot.
+ * Thinking is diffed on the untruncated accumulation; the display cap is
+ * applied to the stored `thinking` field after.
+ */
+export function kimiDeltasFromTurns(
+  prev: readonly HarnessTranscriptTurn[] | undefined,
+  next: readonly HarnessTranscriptTurn[],
+): KimiLiveDelta[] {
+  if (!prev || prev.length === 0) return []
+  if (next.length < prev.length) return []
+
+  const out: KimiLiveDelta[] = []
+  for (let i = 0; i < next.length; i++) {
+    const last = next[i]
+    if (!last || last.role !== 'assistant') continue
+    const prior = i < prev.length ? prev[i] : undefined
+    const priorText = prior?.role === 'assistant' ? (prior.text ?? '') : ''
+    const priorThinking = prior?.role === 'assistant' ? thinkingForDelta(prior) : ''
+    const reasoning = grownSuffix(priorThinking, thinkingForDelta(last))
+    const text = grownSuffix(priorText, last.text ?? '')
+    if (reasoning) out.push({ kind: 'reasoning', text: reasoning })
+    if (text) out.push({ kind: 'assistant', text })
+  }
+  return out
+}
+
 /**
  * Fold kimi `wire.jsonl` records into LOGICAL turns.
  *
@@ -48,6 +103,8 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
   const finishAssistant = (): void => {
     if (cur) {
       if (thinking) {
+        // Diff live reasoning against the raw string; cap only the displayed field.
+        rawThinkingByTurn.set(cur, thinking)
         cur.thinking =
           thinking.length > THINKING_TAIL_CHARS
             ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
@@ -174,9 +231,11 @@ export const kimiAdapter: HarnessAdapter = {
     },
   },
   promptToolNames: [],
+  // liveTurn: wire.jsonl exposes in-flight text/think; the driver tails it
+  // via the transcript watcher and emits assistant/reasoning deltas.
   capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
-  // kimi-code 0.36.0 approval panel key mapping is unverified (capture log
-  // truncated the 1/2 rows). Treat as 1=allow, 2=allow-session, 3=deny.
+  // kimi-code 0.36.0 labels in order: Yes / Yes, for this session / Reject.
+  // UNVERIFIED: digit-vs-arrow selection on kimi 0.36.0
   approvalKeys(decision) {
     return kimiApprovalKeys(decision)
   },
