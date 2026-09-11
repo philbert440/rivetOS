@@ -31,11 +31,17 @@ export function harnessAccent(command?: string): string {
   const c = (command ?? '').toLowerCase()
   if (!c) return ACCENT_FALLBACK
   if (Object.hasOwn(HARNESS_ACCENTS, c)) return HARNESS_ACCENTS[c]
+  // Bounded match: a harness key may appear as one of at most two delimited
+  // tokens (`pi-cli`, `rivet-kimi`, `opencode:ses_…`), never as a substring
+  // (`gippity`, `copilot`) and never buried in a longer name
+  // (`opencode-migration-helper`).
   const tokens = c.split(/[^a-z0-9]+/).filter(Boolean)
-  const keys = Object.keys(HARNESS_ACCENTS).sort((a, b) => b.length - a.length)
-  for (const id of keys) {
-    if (tokens.includes(id) && Object.hasOwn(HARNESS_ACCENTS, id)) {
-      return HARNESS_ACCENTS[id]
+  if (tokens.length <= 2) {
+    const keys = Object.keys(HARNESS_ACCENTS).sort((a, b) => b.length - a.length)
+    for (const id of keys) {
+      if (tokens.includes(id) && Object.hasOwn(HARNESS_ACCENTS, id)) {
+        return HARNESS_ACCENTS[id]
+      }
     }
   }
   return ACCENT_FALLBACK

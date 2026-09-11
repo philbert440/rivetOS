@@ -37,7 +37,10 @@ fun harnessAccentHex(harnessId: String?, command: String? = null): String {
     val c = (harnessId ?: command).orEmpty().lowercase()
     if (c.isEmpty()) return ACCENT_LOCAL
     HARNESS_ACCENTS[c]?.let { return it }
+    // Bounded match (mirrors web harness-colors.ts): a key may be one of at
+    // most two delimited tokens; never a substring, never inside a longer name.
     val tokens = c.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+    if (tokens.size > 2) return ACCENT_LOCAL
     val match = HARNESS_ACCENTS.keys.sortedByDescending { it.length }.firstOrNull { it in tokens }
     return if (match != null) HARNESS_ACCENTS.getValue(match) else ACCENT_LOCAL
 }
