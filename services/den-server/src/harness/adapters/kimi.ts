@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs'
 import type { HarnessTranscriptTool, HarnessTranscriptTurn } from '@rivetos/types'
 import {
   extractTurnText,
@@ -10,15 +9,19 @@ import {
 import { kimiApprovalKeys } from '../prompt-keys.js'
 import type { HarnessAdapter } from './types.js'
 
-/** Cadence matches `term/transcript-watch.ts` (debounce + missed-event poll). */
-const WIRE_DEBOUNCE_MS = 250
-const WIRE_SAFETY_POLL_MS = 10_000
-
 export type KimiLiveDelta = { kind: 'assistant' | 'reasoning'; text: string }
 
-export interface KimiWireWatchTimings {
-  debounceMs?: number
-  safetyPollMs?: number
+/**
+ * Untruncated thinking for the in-flight turn. `thinking` on the turn is the
+ * display-capped tail; deltas must diff this instead or the 8k window rewrite
+ * looks like a brand-new string. WeakMap so the extra field is not part of
+ * the turn object clients/tests compare.
+ */
+const rawThinkingByTurn = new WeakMap<HarnessTranscriptTurn, string>()
+
+function thinkingForDelta(t: HarnessTranscriptTurn | undefined): string {
+  if (!t) return ''
+  return rawThinkingByTurn.get(t) ?? t.thinking ?? ''
 }
 
 function grownSuffix(prev: string, next: string): string {
@@ -31,118 +34,34 @@ function grownSuffix(prev: string, next: string): string {
 /**
  * Live-turn deltas from a growing `wire.jsonl` parse.
  *
- * First snapshot (`prev` undefined) emits nothing — that text belongs on
- * `transcript()`, not a replay of the whole conversation as deltas. Later
- * parses emit the suffix of the last assistant turn's thinking then text.
+ * First snapshot (`prev` undefined or empty) emits nothing — that text belongs
+ * on `transcript()`, not a replay of the whole conversation as deltas. An
+ * empty `from:0` frame is the store-not-yet-resolved snapshot, not a real
+ * baseline. Later parses emit thinking then text suffixes for every assistant
+ * turn that grew, including when a user turn follows in the same snapshot.
+ * Thinking is diffed on the untruncated accumulation; the display cap is
+ * applied to the stored `thinking` field after.
  */
 export function kimiDeltasFromTurns(
   prev: readonly HarnessTranscriptTurn[] | undefined,
   next: readonly HarnessTranscriptTurn[],
 ): KimiLiveDelta[] {
-  if (!prev) return []
+  if (!prev || prev.length === 0) return []
   if (next.length < prev.length) return []
-  const last = next[next.length - 1]
-  if (!last || last.role !== 'assistant') return []
-
-  let priorText = ''
-  let priorThinking = ''
-  if (next.length === prev.length) {
-    const prior = prev[prev.length - 1]
-    if (prior?.role === 'assistant') {
-      priorText = prior.text ?? ''
-      priorThinking = prior.thinking ?? ''
-    }
-  }
 
   const out: KimiLiveDelta[] = []
-  const reasoning = grownSuffix(priorThinking, last.thinking ?? '')
-  const text = grownSuffix(priorText, last.text ?? '')
-  if (reasoning) out.push({ kind: 'reasoning', text: reasoning })
-  if (text) out.push({ kind: 'assistant', text })
+  for (let i = 0; i < next.length; i++) {
+    const last = next[i]
+    if (!last || last.role !== 'assistant') continue
+    const prior = i < prev.length ? prev[i] : undefined
+    const priorText = prior?.role === 'assistant' ? (prior.text ?? '') : ''
+    const priorThinking = prior?.role === 'assistant' ? thinkingForDelta(prior) : ''
+    const reasoning = grownSuffix(priorThinking, thinkingForDelta(last))
+    const text = grownSuffix(priorText, last.text ?? '')
+    if (reasoning) out.push({ kind: 'reasoning', text: reasoning })
+    if (text) out.push({ kind: 'assistant', text })
+  }
   return out
-}
-
-function readKimiWireTurns(path: string): HarnessTranscriptTurn[] {
-  if (!existsSync(path)) return []
-  const raw = readFileSync(path, 'utf8')
-  return kimiTurnsFromLines(objectsFromLines(raw.split('\n')))
-}
-
-/**
- * Tail `agents/main/wire.jsonl` for the turn in flight: fs.watch plus a
- * safety poll, same cadence as the transcript reader. Emits assistant /
- * reasoning deltas as new `content.part` lines land.
- */
-export function watchKimiWire(
-  path: string,
-  onDelta: (d: KimiLiveDelta) => void,
-  timings: KimiWireWatchTimings = {},
-): () => void {
-  const debounceMs = timings.debounceMs ?? WIRE_DEBOUNCE_MS
-  const safetyPollMs = timings.safetyPollMs ?? WIRE_SAFETY_POLL_MS
-  let prev: HarnessTranscriptTurn[] | undefined
-  let debounce: NodeJS.Timeout | undefined
-  let closed = false
-  let lastSize = -1
-  let lastMtime = -1
-
-  const parse = (): void => {
-    if (closed) return
-    let next: HarnessTranscriptTurn[]
-    try {
-      next = readKimiWireTurns(path)
-      if (existsSync(path)) {
-        const st = statSync(path)
-        lastSize = st.size
-        lastMtime = st.mtimeMs
-      }
-    } catch {
-      return
-    }
-    const deltas = kimiDeltasFromTurns(prev, next)
-    prev = next
-    for (const d of deltas) onDelta(d)
-  }
-
-  const schedule = (): void => {
-    if (closed) return
-    if (debounceMs <= 0) {
-      parse()
-      return
-    }
-    if (debounce) clearTimeout(debounce)
-    debounce = setTimeout(parse, debounceMs)
-    debounce.unref?.()
-  }
-
-  parse()
-
-  let fsWatcher: FSWatcher | undefined
-  try {
-    fsWatcher = watch(path, () => schedule())
-    fsWatcher.on('error', () => undefined)
-  } catch {
-    // file not there yet — safety poll will pick it up
-  }
-
-  const poll = setInterval(() => {
-    if (closed) return
-    try {
-      if (!existsSync(path)) return
-      const st = statSync(path)
-      if (st.size !== lastSize || st.mtimeMs !== lastMtime) schedule()
-    } catch {
-      /* gone */
-    }
-  }, safetyPollMs)
-  poll.unref?.()
-
-  return () => {
-    closed = true
-    if (debounce) clearTimeout(debounce)
-    clearInterval(poll)
-    fsWatcher?.close()
-  }
 }
 
 /**
@@ -184,6 +103,8 @@ export function kimiTurnsFromLines(lines: Record<string, unknown>[]): HarnessTur
   const finishAssistant = (): void => {
     if (cur) {
       if (thinking) {
+        // Diff live reasoning against the raw string; cap only the displayed field.
+        rawThinkingByTurn.set(cur, thinking)
         cur.thinking =
           thinking.length > THINKING_TAIL_CHARS
             ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
@@ -311,7 +232,7 @@ export const kimiAdapter: HarnessAdapter = {
   },
   promptToolNames: [],
   // liveTurn: wire.jsonl exposes in-flight text/think; the driver tails it
-  // (transcript watcher + watchKimiWire) and emits assistant/reasoning deltas.
+  // via the transcript watcher and emits assistant/reasoning deltas.
   capabilities: () => ({ liveTurn: true, prompts: false, approvals: true }),
   // kimi-code 0.36.0 labels in order: Yes / Yes, for this session / Reject.
   // UNVERIFIED: digit-vs-arrow selection on kimi 0.36.0

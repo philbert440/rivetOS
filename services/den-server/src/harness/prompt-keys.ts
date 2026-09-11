@@ -170,6 +170,10 @@ export function grokApprovalKeys(decision: ApprovalDecision): Uint8Array[] {
  *
  * Selection is driven the same way grok's map drives its list: one digit
  * keystroke per decision, option 1/2/3.
+ *
+ * UNVERIFIED: digit-vs-arrow selection on kimi 0.36.0. If digits do not
+ * select, the injected key leaves the TUI prompt up and the next `blocked`
+ * capture re-raises the request — the driver does not observe acceptance.
  */
 export function kimiApprovalKeys(decision: ApprovalDecision): Uint8Array[] {
   // UNVERIFIED: digit-vs-arrow selection on kimi 0.36.0

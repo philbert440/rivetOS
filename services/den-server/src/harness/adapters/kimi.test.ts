@@ -1,15 +1,20 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  kimiDeltasFromTurns,
-  kimiTurnsFromLines,
-  watchKimiWire,
-  type KimiLiveDelta,
-} from './kimi.js'
-import { objectsFromLines } from './parse-helpers.js'
+import type { HarnessTranscriptTurn } from '@rivetos/types'
+import { kimiDeltasFromTurns, kimiTurnsFromLines, type KimiLiveDelta } from './kimi.js'
+import { objectsFromLines, THINKING_TAIL_CHARS } from './parse-helpers.js'
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -37,6 +42,84 @@ async function until<T>(pick: () => T | undefined, ms = 2000): Promise<T> {
     if (v !== undefined) return v
     if (Date.now() > deadline) throw new Error('condition not met in time')
     await new Promise((r) => setTimeout(r, 15))
+  }
+}
+
+/** Test helper: production tails wire.jsonl via the transcript watcher, not this. */
+function watchKimiWire(
+  path: string,
+  onDelta: (d: KimiLiveDelta) => void,
+  timings: { debounceMs?: number; safetyPollMs?: number } = {},
+): () => void {
+  const debounceMs = timings.debounceMs ?? 250
+  const safetyPollMs = timings.safetyPollMs ?? 10_000
+  let prev: HarnessTranscriptTurn[] | undefined
+  let debounce: NodeJS.Timeout | undefined
+  let closed = false
+  let lastSize = -1
+  let lastMtime = -1
+
+  const readTurns = (): HarnessTranscriptTurn[] => {
+    if (!existsSync(path)) return []
+    return kimiTurnsFromLines(objectsFromLines(readFileSync(path, 'utf8').split('\n')))
+  }
+
+  const parse = (): void => {
+    if (closed) return
+    let next: HarnessTranscriptTurn[]
+    try {
+      next = readTurns()
+      if (existsSync(path)) {
+        const st = statSync(path)
+        lastSize = st.size
+        lastMtime = st.mtimeMs
+      }
+    } catch {
+      return
+    }
+    const deltas = kimiDeltasFromTurns(prev, next)
+    prev = next
+    for (const d of deltas) onDelta(d)
+  }
+
+  const schedule = (): void => {
+    if (closed) return
+    if (debounceMs <= 0) {
+      parse()
+      return
+    }
+    if (debounce) clearTimeout(debounce)
+    debounce = setTimeout(parse, debounceMs)
+    debounce.unref?.()
+  }
+
+  parse()
+
+  let fsWatcher: FSWatcher | undefined
+  try {
+    fsWatcher = watch(path, () => schedule())
+    fsWatcher.on('error', () => undefined)
+  } catch {
+    // file not there yet — safety poll will pick it up
+  }
+
+  const poll = setInterval(() => {
+    if (closed) return
+    try {
+      if (!existsSync(path)) return
+      const st = statSync(path)
+      if (st.size !== lastSize || st.mtimeMs !== lastMtime) schedule()
+    } catch {
+      /* gone */
+    }
+  }, safetyPollMs)
+  poll.unref?.()
+
+  return () => {
+    closed = true
+    if (debounce) clearTimeout(debounce)
+    clearInterval(poll)
+    fsWatcher?.close()
   }
 }
 
@@ -85,10 +168,8 @@ describe('kimiDeltasFromTurns', () => {
       ev({ type: 'content.part', part: { type: 'text', text: 'done' } }),
     ])
     expect(kimiDeltasFromTurns(undefined, next)).toEqual([])
-    expect(kimiDeltasFromTurns([], next)).toEqual([
-      { kind: 'reasoning', text: 'plan' },
-      { kind: 'assistant', text: 'done' },
-    ])
+    // Empty from:0 (store not resolved yet) is the same as no baseline.
+    expect(kimiDeltasFromTurns([], next)).toEqual([])
   })
 
   it('emits thinking then text suffixes as the last assistant turn grows', () => {
@@ -115,7 +196,7 @@ describe('kimiDeltasFromTurns', () => {
     expect(kimiDeltasFromTurns(grewThink, grewText)).toEqual([{ kind: 'assistant', text: '\n\ngood' }])
   })
 
-  it('does not emit when the tail is a user turn or the parse shrinks', () => {
+  it('does not emit when an unchanged assistant is followed by a user, or the parse shrinks', () => {
     const asst = kimiTurnsFromLines([
       user,
       ev({ type: 'content.part', part: { type: 'text', text: 'done' } }),
@@ -126,6 +207,86 @@ describe('kimiDeltasFromTurns', () => {
     ]
     expect(kimiDeltasFromTurns(asst, plusUser)).toEqual([])
     expect(kimiDeltasFromTurns(asst, [asst[0]!])).toEqual([])
+  })
+
+  it('emits the assistant suffix when a coalesced snapshot finishes it then appends a user', () => {
+    const partial = kimiTurnsFromLines([
+      user,
+      ev({ type: 'content.part', part: { type: 'text', text: 'looks' } }),
+    ])
+    const finishedThenUser = kimiTurnsFromLines([
+      user,
+      ev({ type: 'content.part', part: { type: 'text', text: 'looks' } }),
+      ev({ type: 'content.part', part: { type: 'text', text: 'good' } }),
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'again' }],
+          origin: { kind: 'user' },
+        },
+      },
+    ])
+    expect(finishedThenUser.map((t) => t.role)).toEqual(['user', 'assistant', 'user'])
+    expect(kimiDeltasFromTurns(partial, finishedThenUser)).toEqual([
+      { kind: 'assistant', text: '\n\ngood' },
+    ])
+
+    const finishedThenNextAsst = kimiTurnsFromLines([
+      user,
+      ev({ type: 'content.part', part: { type: 'text', text: 'looks' } }),
+      ev({ type: 'content.part', part: { type: 'text', text: 'good' } }),
+      {
+        type: 'context.append_message',
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: 'again' }],
+          origin: { kind: 'user' },
+        },
+      },
+      ev({ type: 'content.part', part: { type: 'text', text: 'on it' } }),
+    ])
+    expect(kimiDeltasFromTurns(partial, finishedThenNextAsst)).toEqual([
+      { kind: 'assistant', text: '\n\ngood' },
+      { kind: 'assistant', text: 'on it' },
+    ])
+  })
+
+  it('diffs untruncated thinking across the 8k display cap without replaying the window', () => {
+    const parseThink = (think: string) =>
+      kimiTurnsFromLines([user, ev({ type: 'content.part', part: { type: 'think', think } })])
+
+    const rawA = 'a'.repeat(THINKING_TAIL_CHARS)
+    const rawB = rawA + 'X'
+    const rawC = rawB + 'Y'.repeat(80)
+    const rawD = rawC + 'Z'
+
+    const a = parseThink(rawA)
+    const b = parseThink(rawB)
+    const c = parseThink(rawC)
+    const d = parseThink(rawD)
+
+    expect(a[1]?.thinking).toBe(rawA)
+    expect(b[1]?.thinking?.startsWith('…')).toBe(true)
+    expect(b[1]?.thinking).toHaveLength(1 + THINKING_TAIL_CHARS)
+    expect(c[1]?.thinking).toBe('…' + rawC.slice(-THINKING_TAIL_CHARS))
+
+    expect(kimiDeltasFromTurns(undefined, a)).toEqual([])
+    const d1 = kimiDeltasFromTurns(a, b)
+    const d2 = kimiDeltasFromTurns(b, c)
+    const d3 = kimiDeltasFromTurns(c, d)
+    expect(d1).toEqual([{ kind: 'reasoning', text: 'X' }])
+    expect(d2).toEqual([{ kind: 'reasoning', text: 'Y'.repeat(80) }])
+    expect(d3).toEqual([{ kind: 'reasoning', text: 'Z' }])
+
+    const emitted = [...d1, ...d2, ...d3]
+      .filter((x) => x.kind === 'reasoning')
+      .map((x) => x.text)
+      .join('')
+    const growth = rawD.slice(rawA.length)
+    expect(emitted).toBe(growth)
+    expect(emitted).toHaveLength(rawD.length - rawA.length)
+    expect(emitted.includes('…')).toBe(false)
   })
 })
 

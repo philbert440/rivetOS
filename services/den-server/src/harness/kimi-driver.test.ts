@@ -705,6 +705,122 @@ describe('live deltas from wire.jsonl via the transcript watcher', () => {
     ])
     f.driver.close()
   })
+
+  it('emits final deltas before turn-complete when the same frame finishes the turn', () => {
+    const tx = fakeTranscript()
+    const f = makeDriver({ transcript: tx })
+    const seen: HarnessEvent[] = []
+    f.driver.subscribe(SID, (e) => seen.push(e))
+
+    const user = { role: 'user' as const, text: 'review the diff' }
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [user, { role: 'assistant', text: 'looks', lastBlock: 'text' }],
+    })
+    seen.length = 0
+
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 2,
+      from: 1,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        {
+          role: 'assistant',
+          text: 'looks\n\ngood',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+      ],
+    })
+    const types = seen.map((e) => e.type)
+    const deltaAt = types.indexOf('assistant-delta')
+    const completeAt = types.indexOf('turn-complete')
+    expect(seen[deltaAt]).toEqual({
+      type: 'assistant-delta',
+      sessionId: SID,
+      text: '\n\ngood',
+    })
+    expect(completeAt).toBeGreaterThan(deltaAt)
+    f.driver.close()
+  })
+
+  it('emits nothing on the successor first snapshot after a rotation with distinct history', () => {
+    const tx = fakeTranscript()
+    const f = makeDriver({ transcript: tx })
+    adopt(f, ROOM, NAT)
+    const seen: HarnessEvent[] = []
+    f.driver.subscribe(SID, (e) => seen.push(e))
+
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        { role: 'user', text: 'old question' },
+        { role: 'assistant', text: 'predecessor reply', thinking: 'old think' },
+      ],
+    })
+    expect(seen.filter((e) => e.type === 'assistant-delta' || e.type === 'reasoning-delta')).toEqual(
+      [],
+    )
+
+    f.emitDen(kimiEvent(ROOM, NAT2, { type: 'session.start', title: 'kimi session' }))
+    const SID2 = `kimi-code:${NAT2}` as SessionId
+    const seen2: HarnessEvent[] = []
+    f.driver.subscribe(SID2, (e) => seen2.push(e))
+
+    tx.emit(SID2, {
+      kind: 'transcript',
+      session: SID2,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        { role: 'user', text: 'new question' },
+        {
+          role: 'assistant',
+          text: 'successor reply that does not share a prefix',
+          thinking: 'fresh',
+        },
+      ],
+    })
+    expect(
+      seen2.filter((e) => e.type === 'assistant-delta' || e.type === 'reasoning-delta'),
+    ).toEqual([])
+
+    tx.emit(SID2, {
+      kind: 'transcript',
+      session: SID2,
+      rev: 2,
+      from: 1,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        {
+          role: 'assistant',
+          text: 'successor reply that does not share a prefix!',
+          thinking: 'fresh',
+        },
+      ],
+    })
+    expect(seen2.filter((e) => e.type === 'assistant-delta')).toEqual([
+      { type: 'assistant-delta', sessionId: SID2, text: '!' },
+    ])
+    f.driver.close()
+  })
 })
 
 describe('kimi never renames its own session — the non-rotation pin', () => {

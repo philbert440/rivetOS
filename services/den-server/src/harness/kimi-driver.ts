@@ -88,7 +88,12 @@
  * See docs/ARCHITECTURE.md.
  */
 
-import { formatSessionId, type SessionId, type TranscriptWsFrame } from '@rivetos/types'
+import {
+  formatSessionId,
+  type HarnessTranscriptTurn,
+  type SessionId,
+  type TranscriptWsFrame,
+} from '@rivetos/types'
 import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
 import { kimiDeltasFromTurns } from './adapters/kimi.js'
 import {
@@ -146,6 +151,13 @@ export type KimiDriverDeps = PtyHarnessDriverDeps<KimiStoreHost>
  *     with it.
  */
 export class KimiCodeDriver extends AdoptingPtyHarnessDriver<KimiStoreHost> {
+  /**
+   * Per-native previous parse used only for live deltas. Not copied on
+   * rotation — `state.turns` is, and comparing a successor snapshot against
+   * a predecessor history would replay it as live text.
+   */
+  private readonly deltaBaseline = new Map<string, readonly HarnessTranscriptTurn[]>()
+
   constructor(deps: KimiDriverDeps) {
     super(
       {
@@ -203,21 +215,49 @@ export class KimiCodeDriver extends AdoptingPtyHarnessDriver<KimiStoreHost> {
 
   /**
    * The transcript watcher already tails `agents/main/wire.jsonl` at the
-   * harness-store cadence. Diff the last assistant turn against the previous
-   * parse and emit live deltas — kimi's Stop hook never will.
+   * harness-store cadence. Diff against the previous parse and emit live
+   * deltas *before* the base frame (which may emit turn-complete) — kimi's
+   * Stop hook never will.
    */
   protected override onTranscriptFrame(native: string, f: TranscriptWsFrame): void {
-    const prev = this.live.get(native)?.turns
-    super.onTranscriptFrame(native, f)
-    const next = this.live.get(native)?.turns
-    if (!next) return
-    const sessionId = this.sid(native)
-    for (const d of kimiDeltasFromTurns(prev, next)) {
-      if (d.kind === 'reasoning') {
-        this.emit(native, { type: 'reasoning-delta', sessionId, text: d.text })
-      } else {
-        this.emit(native, { type: 'assistant-delta', sessionId, text: d.text })
+    const next = this.nextTurnsFromFrame(native, f)
+    if (next) {
+      const prev = this.deltaBaseline.get(native)
+      const sessionId = this.sid(native)
+      for (const d of kimiDeltasFromTurns(prev, next)) {
+        if (d.kind === 'reasoning') {
+          this.emit(native, { type: 'reasoning-delta', sessionId, text: d.text })
+        } else {
+          this.emit(native, { type: 'assistant-delta', sessionId, text: d.text })
+        }
       }
+      this.deltaBaseline.set(native, next)
     }
+    super.onTranscriptFrame(native, f)
+  }
+
+  /**
+   * Reconstruct the full turn list the base will store, without waiting for
+   * `super` (which also emits completion edges).
+   */
+  private nextTurnsFromFrame(
+    native: string,
+    f: TranscriptWsFrame,
+  ): HarnessTranscriptTurn[] | undefined {
+    if (f.from === 0) return f.turns.slice()
+    const cur = this.live.get(native)?.turns
+    if (cur === undefined) return undefined
+    return [...cur.slice(0, f.from), ...f.turns]
+  }
+
+  protected override rotate(previous: string, next: string): void {
+    this.deltaBaseline.delete(previous)
+    this.deltaBaseline.delete(next)
+    super.rotate(previous, next)
+  }
+
+  override close(): void {
+    this.deltaBaseline.clear()
+    super.close()
   }
 }
