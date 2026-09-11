@@ -12,21 +12,25 @@
  *     the prompt text of every turn.
  *   - JSON stream → TaskEvent: text parts → den message.agent, tool-use
  *     running → den tool.start, tool-use completed → den tool.end.
- *     Session id is adopted from SQLite (newest `session` row for this cwd
- *     created after spawn start) or, if present, from a json event.
- *     Canonicalized onto `opencode:<native-id>`. There is no flag to pin a
- *     NEW session id.
+ *     Session id is taken from the stream's `sessionID` (present on every
+ *     real `--format json` line), falling back to the newest `session` row
+ *     for this cwd created after spawn start, then the `--session` resume
+ *     id. Canonicalized onto `opencode:<native-id>`. There is no flag to pin
+ *     a NEW session id.
  *   - Usage arrives POST-HOC from the session's message rows after the child
- *     exits — see wire.ts. Stream `step-finish` / assistant-envelope tokens
- *     are a fallback when the store is empty. A reconcile that finds nothing
- *     degrades to zero usage and a warning; it can never fail a turn.
+ *     exits — see wire.ts. Stream `step_finish` `part.tokens` are a fallback
+ *     when the store is empty (accumulated across every step of the turn).
+ *     A reconcile that finds nothing degrades to zero usage and a warning;
+ *     it can never fail a turn.
  *   - Structured result: `parseTaskResultBlock` over the turn's text, falling
  *     back to {verdict:'completed', summary:<last text>}. `result` NEVER
  *     rejects.
  *   - kill(): SIGTERM then SIGKILL after the grace period → verdict 'killed'.
  *
- * A refused `--session` (any non-zero exit while `-s` was passed) retries
- * once fresh. A fresh spawn that exits non-zero is a failed turn.
+ * A refused `--session` (stderr/stdout matching the session-not-found
+ * family) retries once fresh. Other non-zero resumed exits propagate as
+ * errors — they must not replay the task in a new session. A fresh spawn
+ * that exits non-zero is a failed turn.
  *
  * Task association (#467) is the claude contract verbatim: `RIVETOS_TASK_ID`
  * on the child env, the inherited `RIVETOS_SESSION_KEY` explicitly DELETED,
@@ -55,9 +59,10 @@ import {
   taskResultFenceInstructions,
 } from '@rivetos/types'
 import { createLogger, type HarnessLogger } from './log.js'
-import { spawnOpencodeTurn, type SpawnedTurn } from './spawn-turn.js'
+import { spawnOpencodeTurn, RESUME_REJECTED_RE, type SpawnedTurn } from './spawn-turn.js'
 import {
   emptyWireTurnFacts,
+  effectiveOpencodeHome,
   newestSessionAfter,
   opencodeHome,
   parseOpencodeEvent,
@@ -519,7 +524,7 @@ export class OpencodeExecutor implements HarnessExecutor {
     }
 
     const cwd = spec.workingDir ?? this.cfg.cwd ?? process.cwd()
-    const home = this.cfg.opencodeHome ?? opencodeHome()
+    const home = effectiveOpencodeHome(this.cfg.opencodeHome ?? opencodeHome())
 
     let spawned: SpawnedTurn
     try {
@@ -632,8 +637,14 @@ export class OpencodeExecutor implements HarnessExecutor {
       if (exitCode !== 0 && error === undefined && !run.isKilled()) {
         error = `opencode CLI exited ${String(exitCode)}: ${stderrTail}`
       }
-      // A missing `-s` id (or any failure while resuming) is session_not_found.
-      if (exitCode !== 0 && turn.resumeSessionId !== undefined) {
+      // Only the session-not-found family is resumeRejected. A provider /
+      // network failure after tools have already run must not replay the
+      // turn in a fresh session.
+      if (
+        exitCode !== 0 &&
+        turn.resumeSessionId !== undefined &&
+        RESUME_REJECTED_RE.test(`${spawned.stderrText()}\n${text}`)
+      ) {
         return { text, error, resumeRejected: true }
       }
     } catch (err: unknown) {
@@ -644,10 +655,10 @@ export class OpencodeExecutor implements HarnessExecutor {
     }
 
     const fromStore =
-      turn.resumeSessionId === undefined
+      sessionId === undefined && turn.resumeSessionId === undefined
         ? newestSessionAfter(home, cwd, spawned.startedAtMs)
         : undefined
-    sessionId = fromStore ?? sessionId ?? turn.resumeSessionId
+    sessionId = sessionId ?? fromStore ?? turn.resumeSessionId
     if (!sessionId && error === undefined && !run.isKilled()) {
       error = 'opencode CLI stream ended without a session id'
     }

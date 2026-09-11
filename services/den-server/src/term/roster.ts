@@ -24,8 +24,9 @@ export interface RosterEntry {
    *  process, no synthetic events ever. */
   room: boolean
   /** Working directory override. Non-harness entries fall back to the roster
-   *  cwd; harness entries (`room: true`) fall back to `homedir()` unless this
-   *  is set (opencode must not spawn in `$HOME` — its file picker refuses it). */
+   *  cwd. Harness entries (`room: true`) spawn in `homedir()` — except the
+   *  `opencode` command, which honours this because its file picker refuses
+   *  `$HOME`. A stale `cwd` on any other harness entry is ignored. */
   cwd?: string
   /** Extra env for this entry (layered over the top-level roster env). */
   env?: Record<string, string>
@@ -36,7 +37,8 @@ export interface TermRoster {
   default: string
   commands: Record<string, RosterEntry>
   /** Default working directory for non-harness entries. Harness sessions
-   *  (`room: true`) spawn in `homedir()` unless the entry sets `cwd`. */
+   *  (`room: true`) spawn in `homedir()`; only the `opencode` command honours
+   *  a per-entry `cwd`. */
   cwd: string
   /** Env layered over the inherited service env for all entries. */
   env: Record<string, string>
@@ -68,9 +70,10 @@ export function defaultRoster(): TermRoster {
       //             reason hermes uses it — the operator can trade up in
       //             den-term.json, and the roster should not be the place a
       //             node quietly loses its last "are you sure".
-      // Harness cwd defaults to homedir() at spawn (manager.ts) unless the
-      // entry sets `cwd`. Shared trees belong in the prompt, not here —
-      // except OpenCode, whose file picker refuses `$HOME`.
+      // Harness cwd is forced to homedir() at spawn (manager.ts). Shared
+      // trees belong in the prompt, not here — except OpenCode, whose file
+      // picker refuses `$HOME` and is the only room:true command that
+      // honours `entry.cwd`.
       // claude trusts its cwd via ~/.claude.json and needs no flag here.
       claude: { label: 'Claude Code', cmd: ['claude'], room: true },
       grok: {

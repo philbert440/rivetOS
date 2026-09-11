@@ -23,6 +23,7 @@ import {
   readOpencodeTranscript,
   readCodexTranscript,
   resolveHarnessStore,
+  newestOpencodeSessionAfter,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
 } from './harness-sessions.js'
@@ -1653,6 +1654,14 @@ describe('opencode store: ~/.local/share/opencode/opencode.db', () => {
     expect(await describeOpencodeSession('../../etc/passwd')).toBeUndefined()
   })
 
+  it('newestOpencodeSessionAfter is scoped to cwd and the spawn clock', async () => {
+    if (!(await fakeOpencodeStore())) return
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_000_000)).toBe(ID2)
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_015_000)).toBe(ID2)
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_200_001)).toBeUndefined()
+    expect(newestOpencodeSessionAfter('/work/other', 0)).toBeUndefined()
+  })
+
   it('harnessSessionExists checks the session row, not a later message', async () => {
     if (!(await fakeOpencodeStore())) return
     expect(harnessSessionExists('opencode', ID)).toBe(true)
@@ -1670,6 +1679,10 @@ describe('opencode store: ~/.local/share/opencode/opencode.db', () => {
       text: 'looks good',
       thinking: 'weighing it',
       model: 'zai/glm-5.3-flash',
+      complete: true,
+      stopReason: 'end_turn',
+      lastBlock: 'text',
+      usage: { promptTokens: 110, completionTokens: 25, cachedTokens: 10 },
       tools: [{ name: 'Bash', status: 'done', id: 'prt_tool', args: { command: 'git diff' } }],
     })
     expect((await readHarnessTranscript(`opencode:${ID}`)).command).toBe('opencode')
@@ -1681,6 +1694,7 @@ describe('opencode store: ~/.local/share/opencode/opencode.db', () => {
     const ref = await resolveHarnessStore(`opencode:${ID}`)
     expect(ref?.command).toBe('opencode')
     expect(ref?.path).toContain('opencode.db')
+    expect(ref?.watchPaths).toEqual([ref?.path, `${ref?.path}-wal`, `${ref?.path}-shm`])
   })
 
   it('empty when XDG_DATA_HOME has no opencode.db', async () => {

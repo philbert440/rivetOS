@@ -14,9 +14,11 @@ field below is optional if the CLI's own config already pins GLM. The `[1m]`
 suffix is not valid on z.ai.
 
 `--variant` maps RivetOS effort: low→`minimal`, medium→omit, high→`high`,
-xhigh/max→`max`. Usage is taken from the assistant message envelope
-`tokens{input,output,reasoning,cache{read,write}}`. `isAvailable` probes
-`opencode --version` (cached).
+xhigh/max→`max`. Usage is accumulated from `step_finish` `part.tokens`
+(`input` + cache read/write in the input total). `isAvailable` probes
+`opencode --version` (cached). Default `context_window` is 128000 (override
+with `context_window`); this is the advertised provider window, not a z.ai
+`[1m]` model id.
 
 ```yaml
 agents:
@@ -24,8 +26,8 @@ agents:
     provider: opencode-cli
 providers:
   opencode-cli:
-    binary: /home/rivet/.local/bin/opencode   # default ~/.local/bin/opencode or $OPENCODE_BINARY
-    home: /home/rivet/.local/share/opencode   # data dir; sets XDG_DATA_HOME
+    binary: opencode   # path or name on PATH; override with $OPENCODE_BINARY
+    # home: /home/rivet/.local/share/opencode   # optional; only then overrides XDG_DATA_HOME
     model: zai/glm-5.3-flash
     cwd: /home/rivet/.rivetos/workspace
 ```

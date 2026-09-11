@@ -21,6 +21,7 @@
 
 import { watch, type FSWatcher } from 'node:fs'
 import { stat } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { mergeTranscriptWindow, type SessionWsFrame, type TranscriptWsFrame } from '@rivetos/types'
 import {
   harnessStoreDirs,
@@ -76,6 +77,7 @@ interface Watched {
   wantSnapshot: boolean
   lastSize: number
   lastMtime: number
+  extraWatchers?: FSWatcher[]
   sinks: Set<(f: TranscriptWsFrame) => void>
 }
 
@@ -256,6 +258,8 @@ export function createTranscriptWatcher(
   const dropToResolution = (session: string, s: Watched): void => {
     s.fsWatcher?.close()
     s.fsWatcher = undefined
+    for (const w of s.extraWatchers ?? []) w.close()
+    s.extraWatchers = undefined
     s.store = undefined
     if (!closed && watched.get(session) === s) {
       s.resolvePoll ??= setInterval(() => void tryResolve(session), resolvePollMs)
@@ -264,12 +268,33 @@ export function createTranscriptWatcher(
 
   const startFileWatch = (session: string, s: Watched, ref: HarnessStoreRef): void => {
     s.store = ref
-    try {
-      s.fsWatcher = watch(ref.path, () => scheduleParse(session))
-      s.fsWatcher.on('error', () => dropToResolution(session, s))
-    } catch {
-      dropToResolution(session, s)
+    for (const w of s.extraWatchers ?? []) w.close()
+    const extras: FSWatcher[] = []
+    s.extraWatchers = extras
+    const targets = new Set<string>(ref.watchPaths ?? [ref.path])
+    if (ref.command === 'opencode') targets.add(dirname(ref.path))
+    let primary: FSWatcher | undefined
+    for (const t of targets) {
+      try {
+        const w = watch(t, () => scheduleParse(session))
+        if (!primary) {
+          primary = w
+          primary.on('error', () => dropToResolution(session, s))
+        } else {
+          w.on('error', () => {
+            /* a missing WAL sibling is normal */
+          })
+          extras.push(w)
+        }
+      } catch {
+        /* wal/shm may not exist yet */
+      }
     }
+    if (!primary) {
+      dropToResolution(session, s)
+      return
+    }
+    s.fsWatcher = primary
   }
 
   const tryResolve = async (session: string): Promise<void> => {
@@ -294,16 +319,28 @@ export function createTranscriptWatcher(
       if (!file) {
         continue // resolve poll owns unresolved sessions
       }
-      void stat(file).then(
-        (st) => {
-          if (st.size !== s.lastSize || st.mtimeMs !== s.lastMtime) {
-            s.lastSize = st.size
-            s.lastMtime = st.mtimeMs
-            scheduleParse(session)
-          }
-        },
-        () => dropToResolution(session, s), // store file vanished
-      )
+      const files = s.store?.watchPaths ?? [file]
+      void Promise.all(
+        files.map((f) =>
+          stat(f).then(
+            (st) => ({ size: st.size, mtimeMs: st.mtimeMs, path: f }),
+            () => null,
+          ),
+        ),
+      ).then((stats) => {
+        const present = stats.filter((x): x is { size: number; mtimeMs: number; path: string } => x !== null)
+        if (present.length === 0) {
+          dropToResolution(session, s)
+          return
+        }
+        const size = present.reduce((n, st) => n + st.size, 0)
+        const mtime = Math.max(...present.map((st) => st.mtimeMs))
+        if (size !== s.lastSize || mtime !== s.lastMtime) {
+          s.lastSize = size
+          s.lastMtime = mtime
+          scheduleParse(session)
+        }
+      })
     }
   }, safetyPollMs)
   safety.unref()
@@ -381,6 +418,7 @@ export function createTranscriptWatcher(
     if (s.debounce) clearTimeout(s.debounce)
     if (s.resolvePoll) clearInterval(s.resolvePoll)
     s.fsWatcher?.close()
+    for (const w of s.extraWatchers ?? []) w.close()
     watched.delete(session)
   }
 
@@ -422,6 +460,7 @@ export function createTranscriptWatcher(
         if (s.debounce) clearTimeout(s.debounce)
         if (s.resolvePoll) clearInterval(s.resolvePoll)
         s.fsWatcher?.close()
+        for (const w of s.extraWatchers ?? []) w.close()
       }
       watched.clear()
     },

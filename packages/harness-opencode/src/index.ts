@@ -41,6 +41,7 @@ export {
   newestSessionAfter,
   opencodeDbPath,
   opencodeHome,
+  effectiveOpencodeHome,
   parseOpencodeEvent,
   reconcileTurn,
   xdgDataHomeFor,

@@ -130,7 +130,11 @@ if (fixture.onResume && args.includes('--session')) {
 
 if (fixture.writeStore) {
   const { DatabaseSync } = require('node:sqlite')
-  const dbPath = path.join(fixture.home, 'opencode.db')
+  const { mkdirSync } = require('node:fs')
+  const xdg = process.env.XDG_DATA_HOME || fixture.home
+  const dbDir = path.join(xdg, 'opencode')
+  mkdirSync(dbDir, { recursive: true })
+  const dbPath = path.join(dbDir, 'opencode.db')
   const db = new DatabaseSync(dbPath)
   db.exec(\`
     CREATE TABLE IF NOT EXISTS session (
@@ -246,19 +250,40 @@ process.exit(fixture.exitCode)
 
 /** `--format json` lines a healthy opencode 1.18.30 turn prints. */
 export function successLines(finalText: string, sessionId?: string): unknown[] {
+  const sid = sessionId ?? 'ses_11111111111111111111111111'
   return [
-    { type: 'step-start', ...(sessionId ? { sessionID: sessionId } : {}) },
+    { type: 'step_start', timestamp: 1, sessionID: sid, part: { type: 'step_start' } },
     {
       type: 'tool',
-      tool: 'bash',
-      state: { status: 'running', input: { command: 'ls' } },
+      timestamp: 2,
+      sessionID: sid,
+      part: {
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'running', input: { command: 'ls' } },
+      },
     },
     {
       type: 'tool',
-      tool: 'bash',
-      state: { status: 'completed', output: 'a\nb\n', title: 'ls' },
+      timestamp: 3,
+      sessionID: sid,
+      part: {
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'completed', output: 'a\nb\n', title: 'ls' },
+      },
     },
-    { type: 'text', text: finalText },
-    { type: 'step-finish' },
+    {
+      type: 'text',
+      timestamp: 4,
+      sessionID: sid,
+      part: { type: 'text', text: finalText },
+    },
+    {
+      type: 'step_finish',
+      timestamp: 5,
+      sessionID: sid,
+      part: { type: 'step_finish' },
+    },
   ]
 }

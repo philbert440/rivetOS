@@ -1138,10 +1138,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // The conversation join key IS the den session, so den (?session), the
       // capture hooks (RIVETOS_SESSION_KEY), and this PTY all share one id.
       const denSession = session ?? `den-${id}`
-      // Harness sessions (room: true) spawn in the user's home unless the
-      // roster entry sets cwd (OpenCode's file picker refuses `$HOME`).
-      // Non-harness entries keep the roster/entry cwd.
-      const cwd = entry.room ? (entry.cwd ?? homedir()) : (entry.cwd ?? roster.cwd)
+      // Harness sessions (room: true) spawn in the user's home. OpenCode is
+      // the exception: its file picker refuses `$HOME`, so honour `entry.cwd`
+      // for the `opencode` roster command only. Other harnesses stay forced
+      // to home even if a stale cwd is sitting on the entry.
+      const cwd = entry.room
+        ? key === 'opencode' && entry.cwd
+          ? entry.cwd
+          : homedir()
+        : (entry.cwd ?? roster.cwd)
 
       // tmux reattach path (T1): if a tmux session for this den session
       // already exists on our socket, the harness is STILL RUNNING (it

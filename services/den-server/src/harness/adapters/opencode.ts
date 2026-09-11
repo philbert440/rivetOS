@@ -27,6 +27,24 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0
+}
+
+function usageFromMsg(msg: Record<string, unknown>): HarnessTranscriptTurn['usage'] | undefined {
+  const tokens = isRecord(msg.tokens) ? msg.tokens : undefined
+  if (!tokens) return undefined
+  const cache = isRecord(tokens.cache) ? tokens.cache : undefined
+  const prompt = num(tokens.input) + num(cache?.read) + num(cache?.write)
+  const completion = num(tokens.output) + num(tokens.reasoning)
+  if (prompt <= 0 && completion <= 0) return undefined
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    cachedTokens: num(cache?.read),
+  }
+}
+
 function partText(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (isRecord(part.text) && typeof part.text.value === 'string') return part.text.value
@@ -74,19 +92,21 @@ export function opencodeTurnsFromMessages(
     }
     let text = ''
     let thinking = ''
+    let lastBlock: HarnessTurn['lastBlock']
+    let sawStepFinish = false
     const tools: HarnessTranscriptTool[] = []
     for (const part of parts) {
       const type = typeof part.type === 'string' ? part.type : ''
-      if (
-        type === 'step-start' ||
-        type === 'step_start' ||
-        type === 'step-finish' ||
-        type === 'step_finish'
-      ) {
+      if (type === 'step-start' || type === 'step_start') {
+        continue
+      }
+      if (type === 'step-finish' || type === 'step_finish') {
+        sawStepFinish = true
         continue
       }
       if (type === 'reasoning' || type === 'thinking' || type === 'think') {
         thinking += partText(part)
+        lastBlock = 'thinking'
         continue
       }
       if (type === 'tool' || type === 'tool_use' || type === 'tool-call') {
@@ -118,10 +138,12 @@ export function opencodeTurnsFromMessages(
           args: summarizeTurnArgs(args),
           id: callId,
         })
+        lastBlock = status === 'running' ? 'tool_use' : 'tool_result'
         continue
       }
       if (type === 'text' || type === '' || type === 'content') {
         text += partText(part)
+        if (partText(part)) lastBlock = 'text'
       }
     }
     if (!text && typeof msg.content === 'string') text = msg.content
@@ -141,6 +163,20 @@ export function opencodeTurnsFromMessages(
       turn.model = msg.model.modelID
     } else if (typeof msg.model === 'string') {
       turn.model = msg.model
+    }
+    const usage = usageFromMsg(msg)
+    if (usage) turn.usage = usage
+    const time = isRecord(msg.time) ? msg.time : undefined
+    const completedAt = typeof time?.completed === 'number' ? time.completed : undefined
+    const running = tools.some((t) => t.status === 'running')
+    const finished = sawStepFinish || completedAt !== undefined
+    if (lastBlock) turn.lastBlock = lastBlock
+    if (running) {
+      turn.stopReason = 'tool_use'
+    } else if (finished) {
+      turn.stopReason = 'end_turn'
+      if (turn.text) turn.lastBlock = 'text'
+      turn.complete = true
     }
     if (turn.text || turn.thinking || turn.tools) turns.push(turn)
   }

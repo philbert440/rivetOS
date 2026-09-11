@@ -12,6 +12,7 @@ import {
   newestSessionAfter,
   opencodeDbPath,
   opencodeHome,
+  effectiveOpencodeHome,
   parseOpencodeEvent,
   reconcileTurn,
   xdgDataHomeFor,
@@ -64,6 +65,8 @@ describe('home resolution', () => {
     expect(opencodeHome({})).toBe(path.join(os.homedir(), '.local', 'share', 'opencode'))
     expect(xdgDataHomeFor('/tmp/share/opencode')).toBe('/tmp/share')
     expect(xdgDataHomeFor('/tmp/opencode-home')).toBe('/tmp/opencode-home')
+    expect(effectiveOpencodeHome('/tmp/share/opencode')).toBe('/tmp/share/opencode')
+    expect(effectiveOpencodeHome('/tmp/oc-data')).toBe(path.join('/tmp/oc-data', 'opencode'))
   })
 })
 
@@ -217,6 +220,23 @@ describe('parseOpencodeEvent', () => {
     expect(ev).toMatchObject({
       kind: 'usage',
       usage: { inputTokens: 112, outputTokens: 23 },
+    })
+  })
+
+  it('reads part.tokens from a real step_finish line', () => {
+    const ev = parseOpencodeEvent({
+      type: 'step_finish',
+      timestamp: 9,
+      sessionID: 'ses_aaaaaaaaaaaaaaaaaaaa',
+      part: {
+        type: 'step_finish',
+        tokens: { input: 100, output: 25, reasoning: 0, cache: { read: 10, write: 0 } },
+      },
+    })
+    expect(ev).toMatchObject({
+      kind: 'usage',
+      sessionId: 'ses_aaaaaaaaaaaaaaaaaaaa',
+      usage: { inputTokens: 110, outputTokens: 25 },
     })
   })
 

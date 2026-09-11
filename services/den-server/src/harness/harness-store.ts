@@ -24,6 +24,7 @@ import {
   describeOpencodeSession,
   harnessSessionExists,
   listHarnessSessions,
+  newestOpencodeSessionAfter,
   readClaudeTranscript,
   readCodexTranscript,
   readDshTranscript,
@@ -118,6 +119,9 @@ export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreBy
     // summary/state file — a describable session is a strict subset of an
     // existing one.
     host.exists = (nativeId) => harnessSessionExists(roster, nativeId)
+  }
+  if (name === 'opencode') {
+    ;(host as OpencodeStoreHost).newestAfter = newestOpencodeSessionAfter
   }
   return host as StoreByName[N]
 }

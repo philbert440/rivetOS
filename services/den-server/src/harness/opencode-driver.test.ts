@@ -26,7 +26,9 @@ interface Fakes {
   emitDen: (ev: DenAgentEventLike) => void
 }
 
-function fakeStore(rows: HarnessSession[] = []) {
+type FakeRow = HarnessSession & { directory?: string }
+
+function fakeStore(rows: FakeRow[] = []) {
   const byId = new Map(rows.map((r) => [r.id, r]))
   const sessions = new Set(rows.map((r) => r.id))
   return {
@@ -39,6 +41,20 @@ function fakeStore(rows: HarnessSession[] = []) {
         describe: (id) => Promise.resolve(byId.get(id)),
         exists: (id) => sessions.has(id),
         transcript: (id) => Promise.resolve(this.transcripts.get(id) ?? { turns: [] }),
+        newestAfter: (cwd, sinceMs) => {
+          let best: string | undefined
+          let bestT = Number.NEGATIVE_INFINITY
+          for (const r of byId.values()) {
+            const created = r.createdAt ?? 0
+            if (created < sinceMs) continue
+            if (r.directory && cwd && r.directory !== cwd) continue
+            if (created >= bestT) {
+              bestT = created
+              best = r.id
+            }
+          }
+          return best
+        },
       }
     },
   }
@@ -77,10 +93,11 @@ function fakePty() {
 
 function makeDriver(
   opts: {
-    rows?: HarnessSession[]
+    rows?: FakeRow[]
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    now?: () => number
     sheetReaders?: SheetReaders
   } = {},
 ): Fakes {
@@ -100,6 +117,7 @@ function makeDriver(
         }
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
+    now: opts.now,
     turnQuietMs: 0,
     sheetReaders: opts.sheetReaders,
   })
@@ -340,6 +358,39 @@ describe('adoption — how an opencode session enters the control plane', () => 
       title: 'Hermes',
     })
     expect(seen).toHaveLength(before)
+  })
+
+  it('learns a fresh roster spawn’s native id from the newest session row for cwd', async () => {
+    const now = 10_000
+    const f = makeDriver({
+      rows: [
+        {
+          id: NAT,
+          command: 'opencode',
+          title: 'fresh',
+          updatedAt: now,
+          createdAt: now,
+          directory: '/home/rivet',
+        },
+      ],
+      cwd: () => '/home/rivet',
+      now: () => now,
+    })
+    const seen: HarnessEvent[] = []
+    f.driver.subscribeEvents((e) => seen.push(e))
+    f.emitDen({
+      v: 1,
+      session: ROOM,
+      harness: 'rivetos',
+      name: 'rivet-node:opencode',
+      type: 'session.start',
+      title: 'OpenCode',
+    })
+    expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'idle' })
+    await vi.waitFor(() => {
+      expect(seen.some((e) => e.type === 'session-created' && e.sessionId === SID)).toBe(true)
+    })
+    expect(await f.driver.getSession(SID)).toMatchObject({ sessionId: SID, status: 'idle' })
   })
 
   it('keeps streaming a session it resumed itself when the hook is too old to send the id', async () => {

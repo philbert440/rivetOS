@@ -38,6 +38,16 @@ export function xdgDataHomeFor(dataDir: string): string {
   return path.basename(dataDir) === 'opencode' ? path.dirname(dataDir) : dataDir
 }
 
+/**
+ * Directory that actually holds `opencode.db`. A configured home that is an
+ * XDG root (`/tmp/oc-data`) maps to `<home>/opencode`; a home that already
+ * ends with `/opencode` is used as-is. Matches the path the CLI writes when
+ * `XDG_DATA_HOME` is set via `xdgDataHomeFor`.
+ */
+export function effectiveOpencodeHome(home: string): string {
+  return path.basename(home) === 'opencode' ? home : path.join(home, 'opencode')
+}
+
 interface SqliteRow {
   [k: string]: unknown
 }
@@ -102,7 +112,9 @@ export function listSessionIds(home: string, cwd: string): Set<string> {
 
 /**
  * Newest `session` row for this cwd with `time_created >= sinceMs`.
- * Prefer this over JSON-event session ids (user envelopes carry none).
+ * Fallback when the JSON stream carried no `sessionID` (every real
+ * `--format json` line has one). Concurrent tasks in the same cwd can
+ * otherwise steal each other's newest row.
  */
 export function newestSessionAfter(home: string, cwd: string, sinceMs: number): string | undefined {
   const db = openDb(home)
@@ -194,9 +206,13 @@ function sessionIdOf(
 /**
  * Interpret one JSON object from `opencode run --format json`.
  *
- * Real 1.18.30 lines match message/part rows: `{type: text|reasoning|tool|
- * step-start|step-finish}` and `{role: user|assistant, tokens?}`. Unknown
- * types are `other`, never fatal.
+ * Real 1.18.30 `--format json` lines are
+ * `{type:"step_finish"|"step_start"|"text"|"reasoning"|"tool"…, timestamp,
+ * sessionID, part}` — the payload is under `part`, tokens are in
+ * `part.tokens` on `step_finish`, and `sessionID` is on every line. There is
+ * no `role:"assistant"` envelope on stdout (that shape exists only in DB
+ * `message` rows). Hyphenated `step-finish` / top-level `tokens` are still
+ * accepted. Unknown types are `other`, never fatal.
  */
 export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefined {
   if (!isRecord(row)) return undefined
@@ -252,7 +268,11 @@ export function parseOpencodeEvent(row: unknown): ParsedOpencodeEvent | undefine
     type === 'step.finish' ||
     type === 'usage'
   ) {
-    const tokens = isRecord(row.tokens) ? row.tokens : undefined
+    const tokens = isRecord(row.tokens)
+      ? row.tokens
+      : part && isRecord(part.tokens)
+        ? part.tokens
+        : undefined
     const usage = tokens ? tokensToUsage(tokens) : undefined
     return { kind: usage ? 'usage' : 'other', sessionId, usage, raw: row }
   }

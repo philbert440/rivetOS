@@ -15,7 +15,7 @@
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { type HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
@@ -1159,6 +1159,42 @@ export function describeOpencodeSession(id: string): Promise<HarnessSession | un
   return Promise.resolve(describeOpencodeSessionSync(id))
 }
 
+/**
+ * Newest OpenCode session for `cwd` created at or after `sinceMs`. Used by
+ * the adopting driver to learn a fresh roster spawn's native id when no
+ * hook stamped `harnessSession`.
+ */
+export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  const db = openOpencodeDb()
+  if (!db) return undefined
+  try {
+    const cwdResolved = cwd ? resolve(cwd) : ''
+    const rows = db
+      .prepare(
+        `SELECT id, directory, time_created FROM session
+         WHERE time_created >= ?
+         ORDER BY time_created DESC, time_updated DESC`,
+      )
+      .all(sinceMs)
+    for (const r of rows) {
+      const id = typeof r.id === 'string' ? r.id : ''
+      if (!id) continue
+      const dir = typeof r.directory === 'string' ? r.directory : undefined
+      if (dir !== undefined && cwdResolved && resolve(dir) !== cwdResolved) continue
+      return id
+    }
+    return undefined
+  } catch {
+    return undefined
+  } finally {
+    try {
+      db.close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function opencodeSessionExists(id: string): boolean {
   if (!opencodeIdSafe(id)) return false
   const db = openOpencodeDb()
@@ -1607,7 +1643,14 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     if (dir) return { command: 'dsh', path: join(dir, 'session.jsonl.zstd') }
   }
   if (wants('opencode') && native.startsWith(OPENCODE_ID_PREFIX)) {
-    if (opencodeSessionExists(native)) return { command: 'opencode', path: opencodeDbPath() }
+    if (opencodeSessionExists(native)) {
+      const path = opencodeDbPath()
+      return {
+        command: 'opencode',
+        path,
+        watchPaths: [path, `${path}-wal`, `${path}-shm`],
+      }
+    }
   }
   return undefined
 }

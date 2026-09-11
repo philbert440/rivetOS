@@ -152,7 +152,7 @@ Skills are user-managed and live outside the source tree (default: `~/.rivetos/w
 | `provider-vllm`         | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`) |
 | `provider-llama-server` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body` escape hatch)                                |
 | `provider-claude-cli`   | Drives the local `claude` binary (Claude Code) using the user's subscription OAuth token                   |
-| `provider-opencode-cli` | Drives the local `opencode` binary (harness id `opencode`); default backend z.ai GLM (Anthropic-compatible) |
+| `provider-opencode-cli` | Drives the local `opencode` binary (harness id `opencode`); default backend z.ai GLM |
 
 ### Channels
 

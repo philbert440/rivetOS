@@ -176,6 +176,23 @@ describe('OpencodeExecutor', () => {
     expect(prompt).toContain('/goal ship the widget')
   })
 
+  it('prefers the stream sessionID over a newer store row', async () => {
+    const streamId = 'ses_streamstreamstreamstrea'
+    const storeId = 'ses_storestorestorestoresto'
+    const fake = makeFakeOpencode({
+      lines: successLines('done', streamId),
+      sessionId: storeId,
+    })
+    const handle = makeExecutor(fake).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    })
+    const [events, result] = await Promise.all([drain(handle.events), handle.result])
+    expect(result.verdict).toBe('completed')
+    expect(events.find((e) => e.type === 'turn.end')).toMatchObject({
+      harnessSessionId: `opencode:${streamId}`,
+    })
+  })
+
   it('steers onto the SAME native session with --session', async () => {
     const fake = successFake()
     const handle = makeExecutor(fake).start(makeConformanceSpec(), {
@@ -193,6 +210,24 @@ describe('OpencodeExecutor', () => {
       .filter((e) => e.type === 'turn.end')
       .map((e) => (e as { harnessSessionId?: string }).harnessSessionId)
     expect(ids).toEqual([`opencode:${SESSION}`, `opencode:${SESSION}`])
+  })
+
+  it('does not replay a resumed turn when the failure is not session-not-found', async () => {
+    const fake = makeFakeOpencode({
+      lines: successLines('done', SESSION),
+      sessionId: SESSION,
+      onResume: { stderr: 'error: provider auth failed', exitCode: 1 },
+    })
+    const handle = makeExecutor(fake).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    })
+    await handle.steer('carry on')
+    const result = await handle.result
+    const invocations = fake.invocations()
+    expect(invocations).toHaveLength(2)
+    expect(invocations[1]).toContain('--session')
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toMatch(/provider auth failed/)
   })
 
   it('falls back to a fresh session when opencode refuses the resume', async () => {
@@ -291,13 +326,23 @@ describe('OpencodeExecutor', () => {
   })
 
   it('degrades to zero usage rather than failing when the transcript is unreadable', async () => {
-    // Reconcile against a home that holds no transcript at all, and the
-    // default success stream has no step_finish tokens either.
-    const fake = successFake()
+    // No store, and the stream has no step_finish tokens either.
+    const fake = makeFakeOpencode({
+      lines: [
+        {
+          type: 'text',
+          timestamp: 1,
+          sessionID: SESSION,
+          part: { type: 'text', text: 'All done.' },
+        },
+      ],
+      sessionId: SESSION,
+      writeStore: false,
+    })
     const executor = new OpencodeExecutor({
       binary: fake.binary,
       cwd: fake.cwd,
-      opencodeHome: fake.dir, // not fake.home — nothing was written here
+      opencodeHome: fake.dir,
       killGraceMs: 200,
     })
     const result = await executor.start(makeConformanceSpec(), {
@@ -313,12 +358,16 @@ describe('OpencodeExecutor', () => {
         ...successLines('All done.', SESSION).slice(0, -1),
         {
           type: 'step_finish',
+          timestamp: 9,
           sessionID: SESSION,
-          reason: 'stop',
-          tokens: { input: 100, output: 25, reasoning: 0, cache: { read: 10, write: 0 } },
+          part: {
+            type: 'step_finish',
+            tokens: { input: 100, output: 25, reasoning: 0, cache: { read: 10, write: 0 } },
+          },
         },
       ],
       sessionId: SESSION,
+      writeStore: false,
     })
     const executor = new OpencodeExecutor({
       binary: fake.binary,

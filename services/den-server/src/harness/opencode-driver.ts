@@ -49,6 +49,12 @@ export type OpencodePtyHost = HarnessPtyHost
 export interface OpencodeStoreHost extends HarnessStoreHost {
   /** Does the session row exist in opencode.db? Sync. */
   exists(nativeId: string): boolean
+  /**
+   * Newest session id for `cwd` created at or after `sinceMs`. Fresh roster
+   * spawns learn their native id from this when no hook stamped
+   * `harnessSession`. Optional so existing test fakes still typecheck.
+   */
+  newestAfter?(cwd: string, sinceMs: number): string | undefined
 }
 
 export type OpencodeDriverDeps = PtyHarnessDriverDeps<OpencodeStoreHost>
@@ -101,5 +107,54 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
     if (!room.startsWith(prefix)) return undefined
     const native = room.slice(prefix.length)
     return OPENCODE_NATIVE_RE.test(native) ? native : undefined
+  }
+
+  /**
+   * Fresh roster spawn: den emits a synthetic `rivetos` session.start with
+   * no `harnessSession` (OpenCode has no den hook). Learn the native id from
+   * the newest session row for the room's cwd created after spawn, then bind
+   * as if the hook had stamped it.
+   */
+  protected override nativeFor(ev: DenAgentEventLike): string | undefined {
+    const existing = super.nativeFor(ev)
+    if (existing) return existing
+    const room = ev.session
+    if (!room) return undefined
+    const isRoster =
+      ev.harness === 'rivetos' &&
+      typeof ev.name === 'string' &&
+      ev.name.endsWith(`:${this.rosterCommand}`)
+    if (!isRoster) return undefined
+    if (ev.type === 'session.start') this.pendingSpawn.set(room, this.now())
+    const native = this.adoptFromStore(room)
+    if (native) {
+      this.bindRoom(room, native)
+      return native
+    }
+    if (ev.type === 'session.start') this.scheduleAdopt(room)
+    return undefined
+  }
+
+  private readonly pendingSpawn = new Map<string, number>()
+
+  private adoptFromStore(room: string): string | undefined {
+    const newest = this.deps.store.newestAfter
+    if (typeof newest !== 'function') return undefined
+    const cwd = this.deps.cwd?.() ?? ''
+    const since = (this.pendingSpawn.get(room) ?? this.now()) - 2_000
+    const id = newest(cwd, since)
+    if (id && OPENCODE_NATIVE_RE.test(id)) return id
+    return undefined
+  }
+
+  private scheduleAdopt(room: string): void {
+    for (const ms of [250, 1_000, 3_000]) {
+      const t = setTimeout(() => {
+        if (this.roomNative.has(room)) return
+        const native = this.adoptFromStore(room)
+        if (native) this.bindRoom(room, native)
+      }, ms)
+      t.unref()
+    }
   }
 }

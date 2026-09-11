@@ -42,6 +42,8 @@ class AgentAccentTest {
     fun `opencode accent is distinct`() {
         assertEquals(ACCENT_OPENCODE, harnessAccentHex("opencode", null))
         assertEquals(ACCENT_OPENCODE, harnessAccentHex(null, "opencode"))
+        assertEquals(ACCENT_OPENCODE, harnessAccentHex("opencode-cli", null))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex("opencode-migration-helper", null))
         assertEquals(ACCENT_OPENCODE, accentFor(null, "opencode", null))
         assertTrue(ACCENT_OPENCODE != ACCENT_CLAUDE)
         assertTrue(ACCENT_OPENCODE != ACCENT_GROK)

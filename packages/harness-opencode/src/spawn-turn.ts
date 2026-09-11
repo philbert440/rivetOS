@@ -6,11 +6,12 @@
  *
  *   opencode run --format json [-m provider/model] [--variant v] [-s id] <prompt>
  *
- * `--format json` writes one JSON object per line (the same objects as the
- * `message`/`part` rows in opencode.db). `--session`/`-s` resumes an existing
- * session; a missing id exits non-zero (treated as session_not_found). There
- * is no flag to pin a NEW session id. `--variant` is the effort flag:
- * RivetOS low→minimal, medium→omit, high→high, xhigh/max→max.
+ * `--format json` writes one JSON object per line
+ * (`{type, timestamp, sessionID, part}`). `--session`/`-s` resumes an existing
+ * session; a missing id exits non-zero (session_not_found family). Other
+ * non-zero resumed exits are ordinary failures. There is no flag to pin a
+ * NEW session id. `--variant` is the effort flag: RivetOS low→minimal,
+ * medium→omit, high→high, xhigh/max→max.
  *
  * Locked constraint (same as the claude-cli / kimi-code executor): no
  * RivetOS-side per-turn timeout. The runner enforces budgets between turns
@@ -78,9 +79,8 @@ export interface OpencodeStreamLine {
 
 /**
  * A missing `-s/--session` id fails with a non-zero exit (wording unknown).
- * Any non-zero exit while `--session` was passed is treated as session_not_found.
- * The regex matches the documented refusal family on stderr: "Session not
- * found", "session … not found", "no session" (case-insensitive).
+ * Only this family is `resumeRejected`; other resumed failures propagate.
+ * Matches "Session not found", "session … not found", "no session".
  */
 export const RESUME_REJECTED_RE = /no session|session(?:\s+\S+)*\s+not found/i
 

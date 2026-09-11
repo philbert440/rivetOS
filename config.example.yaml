@@ -21,8 +21,8 @@ providers:
 
   # opencode-cli:                         # harness id `opencode`; plugin @rivetos/provider-opencode-cli
   #   binary: opencode                    # path or name on PATH
-  #   # Default backend: z.ai GLM (Anthropic-compatible).
-  #   # model: glm-4.5
+  #   # Default backend: z.ai GLM (openai-compatible).
+  #   # model: zai/glm-5.3-flash
 
   anthropic:
     model: claude-opus-4-7

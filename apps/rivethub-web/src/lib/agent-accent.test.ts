@@ -47,6 +47,8 @@ describe('accentFor', () => {
     expect(accentFor({ command: 'codex' })).toBe('#5b8def')
     expect(accentFor({ harnessId: 'opencode' })).toBe('#f97316')
     expect(accentFor({ command: 'opencode' })).toBe('#f97316')
+    expect(accentFor({ harnessId: 'opencode-cli' })).toBe('#f97316')
+    expect(accentFor({ command: 'opencode-migration-helper' })).toBe('#34d399')
     expect(accentFor({})).toBe('#34d399')
     expect(accentFor({ command: 'hermes' })).toBe('#34d399')
   })

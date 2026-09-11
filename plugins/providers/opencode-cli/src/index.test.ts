@@ -8,6 +8,7 @@ import {
   OpencodeCliModel,
   OpencodeCliProvider,
   buildArgs,
+  defaultOpencodeBinary,
   isSessionNotFound,
   loadSessionMap,
   manifest,
@@ -76,6 +77,7 @@ describe('helpers', () => {
       'q',
     ])
     expect(buildArgs({ binary: 'k', effort: 'medium' }, 'q')).not.toContain('--variant')
+    expect(defaultOpencodeBinary({})).toBe('opencode')
   })
   it('parseOpencodeLine classifies assistant text, session ids, usage and noise', () => {
     expect(parseOpencodeLine(JSON.stringify({ type: 'text', text: 'hi' }))).toEqual({ kind: 'text', text: 'hi' })
@@ -94,12 +96,32 @@ describe('helpers', () => {
         }),
       ).kind,
     ).toBe('usage')
+    const step = parseOpencodeLine(
+      JSON.stringify({
+        type: 'step_finish',
+        timestamp: 9,
+        sessionID: 'ses_1',
+        part: {
+          type: 'step_finish',
+          tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 3, write: 1 } },
+        },
+      }),
+    )
+    expect(step.kind).toBe('usage')
+    if (step.kind === 'usage') {
+      expect(step.usage.inputTokens.total).toBe(14)
+      expect(step.usage.inputTokens.cacheRead).toBe(3)
+      expect(step.usage.inputTokens.cacheWrite).toBe(1)
+      expect(step.usage.outputTokens.total).toBe(3)
+    }
     expect(parseOpencodeLine(JSON.stringify({ type: 'step-start' }))).toEqual({ kind: 'other' })
     expect(parseOpencodeLine(JSON.stringify({ type: 'text', text: '' }))).toEqual({ kind: 'other' })
     expect(parseOpencodeLine('not json')).toEqual({ kind: 'other' })
   })
   it('isSessionNotFound', () => {
     expect(isSessionNotFound('Error: Session not found')).toBe(true)
+    expect(isSessionNotFound('Error: session ses_abc not found')).toBe(true)
+    expect(isSessionNotFound('error: provider auth failed')).toBe(false)
     expect(isSessionNotFound('ok')).toBe(false)
   })
 })
@@ -143,6 +165,66 @@ printf '{"type":"text","text":"NG-'"$XDG_DATA_HOME"'"}'
     expect(text(parts)).toContain('Session not found')
     expect(loadSessionMap(mapPath)).toEqual({})
   })
+  it('a non-session failure keeps the mapped id', async () => {
+    const bin = fakeScript('#!/usr/bin/env bash\necho "error: provider auth failed" >&2\nexit 1\n')
+    const mapPath = path.join(tmp(), 'map.json')
+    saveSessionMap(mapPath, { 'conv-1': 'keep-me' })
+    await collect(model(bin, mapPath), prompt)
+    expect(loadSessionMap(mapPath)).toEqual({ 'conv-1': 'keep-me' })
+  })
+  it('accumulates part.tokens across multiple step_finish lines', async () => {
+    const bin = fakeScript(`#!/usr/bin/env bash
+echo '{"type":"step_finish","sessionID":"ses_1","part":{"type":"step_finish","tokens":{"input":10,"output":2,"reasoning":0,"cache":{"read":3,"write":0}}}}'
+echo '{"type":"text","sessionID":"ses_1","part":{"text":"hi"}}'
+echo '{"type":"step_finish","sessionID":"ses_1","part":{"type":"step_finish","tokens":{"input":4,"output":1,"reasoning":1,"cache":{"read":0,"write":2}}}}'
+`)
+    const parts = await collect(model(bin, path.join(tmp(), 'm.json')), prompt)
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : undefined).toBe(19)
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : undefined).toBe(4)
+    expect(text(parts)).toBe('hi')
+  })
+  it('spawns a PATH-resolved binary name without an existsSync gate', async () => {
+    const dir = tmp()
+    const bin = path.join(dir, 'opencode')
+    fs.writeFileSync(
+      bin,
+      `#!/usr/bin/env bash
+echo '{"type":"text","sessionID":"ses_path","part":{"text":"from-path"}}'
+`,
+      { mode: 0o755 },
+    )
+    const prev = process.env.PATH
+    process.env.PATH = `${dir}${path.delimiter}${prev ?? ''}`
+    try {
+      const parts = await collect(model('opencode', path.join(tmp(), 'm.json')), prompt)
+      expect(text(parts)).toBe('from-path')
+    } finally {
+      process.env.PATH = prev
+    }
+  })
+  it('abort escalates SIGTERM to SIGKILL when the child ignores SIGTERM', async () => {
+    const bin = fakeScript(`#!/usr/bin/env node
+process.on('SIGTERM', () => {})
+setInterval(() => {}, 1 << 30)
+`)
+    const ac = new AbortController()
+    const m = model(bin, path.join(tmp(), 'm.json'))
+    const { stream } = await m.doStream({ prompt, abortSignal: ac.signal })
+    const reader = stream.getReader()
+    const collected = (async () => {
+      const parts: LanguageModelV3StreamPart[] = []
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        parts.push(value)
+      }
+      return parts
+    })()
+    ac.abort()
+    const parts = await collected
+    expect(parts.some((p) => p.type === 'finish')).toBe(true)
+  }, 15_000)
 })
 
 describe('provider + manifest', () => {
@@ -150,6 +232,7 @@ describe('provider + manifest', () => {
     const p = new OpencodeCliProvider({ binary: '/nonexistent/opencode' })
     expect(p.id).toBe('opencode-cli')
     expect(p.getModel()).toBe('zai/glm-5.3-flash')
+    expect(p.getContextWindow()).toBe(128_000)
     expect(await p.isAvailable()).toBe(false)
   })
   it('manifest registers from snake_case config incl. home', () => {

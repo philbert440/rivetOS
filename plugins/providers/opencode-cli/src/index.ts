@@ -12,7 +12,6 @@
  * nd-JSON server (`opencode acp`). The harness package owns ACP/PTY.
  */
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -35,9 +34,11 @@ export const OPENCODE_CLI_PROVIDER_ID = 'opencode-cli'
 export const DEFAULT_MODEL = 'zai/glm-5.3-flash'
 export const SESSION_MAP_FILE = 'opencode-cli-sessions.json'
 const NO_INSTRUCTION = '(no instruction was provided for this turn)'
+/** Grace period between SIGTERM and SIGKILL when aborting the child. */
+export const KILL_GRACE_MS = 3_000
 
 export function defaultOpencodeBinary(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OPENCODE_BINARY || join(homedir(), '.local/bin/opencode')
+  return env.OPENCODE_BINARY || 'opencode'
 }
 
 /** The newest user message as plain text — OpenCode keeps its own history via --session. */
@@ -145,9 +146,13 @@ function usageFromTokens(tokens: Record<string, unknown>): LanguageModelV3Usage 
   const reasoning = num(tokens.reasoning)
   const cacheRead = cache ? num(cache.read) : undefined
   const cacheWrite = cache ? num(cache.write) : undefined
+  const inputTotal =
+    input !== undefined || cacheRead !== undefined || cacheWrite !== undefined
+      ? (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0)
+      : undefined
   return {
     inputTokens: {
-      total: input,
+      total: inputTotal,
       noCache: input,
       cacheRead,
       cacheWrite,
@@ -163,9 +168,45 @@ function usageFromTokens(tokens: Record<string, unknown>): LanguageModelV3Usage 
   }
 }
 
+function addNum(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined && b === undefined) return undefined
+  return (a ?? 0) + (b ?? 0)
+}
+
+function addUsage(a: LanguageModelV3Usage, b: LanguageModelV3Usage): LanguageModelV3Usage {
+  return {
+    inputTokens: {
+      total: addNum(a.inputTokens.total, b.inputTokens.total),
+      noCache: addNum(a.inputTokens.noCache, b.inputTokens.noCache),
+      cacheRead: addNum(a.inputTokens.cacheRead, b.inputTokens.cacheRead),
+      cacheWrite: addNum(a.inputTokens.cacheWrite, b.inputTokens.cacheWrite),
+    },
+    outputTokens: {
+      total: addNum(a.outputTokens.total, b.outputTokens.total),
+      text: addNum(a.outputTokens.text, b.outputTokens.text),
+      reasoning: addNum(a.outputTokens.reasoning, b.outputTokens.reasoning),
+    },
+  }
+}
+
+function tokensFromObject(o: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (o.tokens && typeof o.tokens === 'object' && !Array.isArray(o.tokens)) {
+    return o.tokens as Record<string, unknown>
+  }
+  if (o.part && typeof o.part === 'object' && !Array.isArray(o.part)) {
+    const p = o.part as Record<string, unknown>
+    if (p.tokens && typeof p.tokens === 'object' && !Array.isArray(p.tokens)) {
+      return p.tokens as Record<string, unknown>
+    }
+  }
+  return undefined
+}
+
 /**
- * JSON line shapes for `opencode run --format json` (same objects as
- * message/part rows). Unknown `type` → ignore.
+ * JSON line shapes for `opencode run --format json`:
+ * `{type, timestamp, sessionID, part}` with tokens in `part.tokens` on
+ * `step_finish`. Unknown `type` → ignore. DB `role:"assistant"` envelopes
+ * are still accepted.
  */
 export function parseOpencodeLine(line: string): OpencodeEvent {
   let ev: unknown
@@ -180,13 +221,12 @@ export function parseOpencodeLine(line: string): OpencodeEvent {
   const text = type === 'text' || type === '' ? textFromObject(o) : undefined
   const sessionId = sessionIdFromObject(o)
   if (text) return sessionId ? { kind: 'text', text, sessionId } : { kind: 'text', text }
-  if (o.role === 'assistant' && o.tokens && typeof o.tokens === 'object') {
-    return { kind: 'usage', usage: usageFromTokens(o.tokens as Record<string, unknown>) }
+  const tokens = tokensFromObject(o)
+  if (o.role === 'assistant' && tokens) {
+    return { kind: 'usage', usage: usageFromTokens(tokens) }
   }
   if (type === 'step-finish' || type === 'step_finish') {
-    if (o.tokens && typeof o.tokens === 'object') {
-      return { kind: 'usage', usage: usageFromTokens(o.tokens as Record<string, unknown>) }
-    }
+    if (tokens) return { kind: 'usage', usage: usageFromTokens(tokens) }
   }
   if (sessionId) return { kind: 'session', sessionId }
   return { kind: 'other' }
@@ -194,7 +234,7 @@ export function parseOpencodeLine(line: string): OpencodeEvent {
 
 /** A missing `-s` id exits non-zero; wording is unknown so this is a stderr hint. */
 export function isSessionNotFound(text: string): boolean {
-  return /session not found/i.test(text)
+  return /no session|session(?:\s+\S+)*\s+not found/i.test(text)
 }
 
 function emptyUsage(): LanguageModelV3Usage {
@@ -280,6 +320,9 @@ export class OpencodeCliModel implements LanguageModelV3 {
           : opencodeHome
     }
 
+    let kill = (): void => {
+      /* assigned once the child is spawned */
+    }
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
         const TEXT_ID = 'opencode-text'
@@ -288,28 +331,30 @@ export class OpencodeCliModel implements LanguageModelV3 {
         let stderr = ''
         let buffer = ''
         let usage = emptyUsage()
+        let spawnFailed = false
+        let killTimer: ReturnType<typeof setTimeout> | undefined
         controller.enqueue({ type: 'stream-start', warnings: [] })
 
-        if (!existsSync(binary)) {
-          controller.enqueue({
-            type: 'error',
-            error: new Error(`opencode binary not found at ${binary}`),
-          })
-          controller.enqueue({
-            type: 'finish',
-            finishReason: { unified: 'error', raw: 'missing-binary' },
-            usage: emptyUsage(),
-          })
-          controller.close()
-          return
-        }
-
         const child = spawn(binary, args, { cwd, env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] })
-        const kill = (): void => {
+        const exited = (): boolean => child.exitCode !== null || child.signalCode !== null
+        kill = (): void => {
+          if (exited()) return
           try {
-            child.kill('SIGTERM')
+            if (!child.killed) child.kill('SIGTERM')
           } catch {
             /* already gone */
+          }
+          if (!killTimer) {
+            killTimer = setTimeout(() => {
+              if (!exited()) {
+                try {
+                  child.kill('SIGKILL')
+                } catch {
+                  /* gone */
+                }
+              }
+            }, KILL_GRACE_MS)
+            killTimer.unref()
           }
         }
         if (abortSignal?.aborted) kill()
@@ -338,7 +383,7 @@ export class OpencodeCliModel implements LanguageModelV3 {
           } else if (ev.kind === 'session') {
             rememberSession(ev.sessionId)
           } else if (ev.kind === 'usage') {
-            usage = ev.usage
+            usage = addUsage(usage, ev.usage)
           }
         }
 
@@ -359,6 +404,7 @@ export class OpencodeCliModel implements LanguageModelV3 {
           if (stderr.length > 64_000) stderr = stderr.slice(-32_000)
         })
         child.on('error', (err) => {
+          spawnFailed = true
           try {
             controller.enqueue({ type: 'error', error: err })
           } catch {
@@ -367,21 +413,20 @@ export class OpencodeCliModel implements LanguageModelV3 {
         })
         child.on('close', (code) => {
           try {
+            if (killTimer) clearTimeout(killTimer)
             abortSignal?.removeEventListener('abort', kill)
             const tail = buffer.trim()
             if (tail) handleLine(tail)
-            // A missing `-s` id exits non-zero. Drop the mapped id so the
-            // next turn creates a session (no in-turn retry).
-            if (sessionId && (code !== 0 || isSessionNotFound(stderr) || isSessionNotFound(tail))) {
+            // Drop the mapped id only on a session-not-found refusal so a
+            // provider/network/abort failure does not discard continuity.
+            if (sessionId && (isSessionNotFound(stderr) || isSessionNotFound(tail))) {
               if (map[convKey]) {
-                const next = Object.fromEntries(
-                  Object.entries(map).filter(([k]) => k !== convKey),
-                )
+                const next = Object.fromEntries(Object.entries(map).filter(([k]) => k !== convKey))
                 saveSessionMap(mapPath, next)
               }
             }
             if (textOpen) controller.enqueue({ type: 'text-end', id: TEXT_ID })
-            if (!sawText && code !== 0) {
+            if (!sawText && code !== 0 && !spawnFailed) {
               controller.enqueue({ type: 'text-start', id: TEXT_ID })
               controller.enqueue({
                 type: 'text-delta',
@@ -404,6 +449,9 @@ export class OpencodeCliModel implements LanguageModelV3 {
             }
           }
         })
+      },
+      cancel() {
+        kill()
       },
     })
 
@@ -435,7 +483,7 @@ export class OpencodeCliProvider implements Provider {
   private model: string
   private readonly binary: string
   private readonly cwd: string
-  private readonly opencodeHome: string
+  private readonly opencodeHome: string | undefined
   private readonly contextWindow: number
   private readonly outputTokenLimit: number
   private available: boolean | null = null
@@ -445,8 +493,10 @@ export class OpencodeCliProvider implements Provider {
     this.model = config.model ?? DEFAULT_MODEL
     this.binary = config.binary ?? defaultOpencodeBinary()
     this.cwd = config.cwd ?? join(homedir(), '.rivetos', 'workspace')
-    this.opencodeHome = config.home ?? join(homedir(), '.local/share/opencode')
-    this.contextWindow = config.contextWindow ?? 1_000_000
+    // Only override XDG when the operator configured `home`. An inherited
+    // XDG_DATA_HOME must keep pointing at the same store den reads.
+    this.opencodeHome = config.home
+    this.contextWindow = config.contextWindow ?? 128_000
     this.outputTokenLimit = config.maxOutputTokens ?? 8_192
   }
 

@@ -16,11 +16,14 @@ const val ACCENT_CODEX = "#5b8def"
 const val ACCENT_OPENCODE = "#f97316"
 const val ACCENT_LOCAL = "#34d399"
 
+private fun isOpencodeId(c: String): Boolean =
+    c == "opencode" || c == "opencode-cli" || c.startsWith("opencode:")
+
 fun harnessAccentHex(harnessId: String?, command: String? = null): String {
     val c = (harnessId ?: command).orEmpty().lowercase()
     if ("claude" in c) return ACCENT_CLAUDE
     if ("grok" in c) return ACCENT_GROK
-    if ("opencode" in c) return ACCENT_OPENCODE
+    if (isOpencodeId(c)) return ACCENT_OPENCODE
     if ("codex" in c) return ACCENT_CODEX
     return ACCENT_LOCAL
 }
