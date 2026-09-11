@@ -1089,7 +1089,7 @@ function rowToOpencodeSession(r: {
   time_created?: unknown
   model?: unknown
 }): HarnessSession {
-  const id = String(r.id ?? '')
+  const id = typeof r.id === 'string' ? r.id : ''
   const title = (typeof r.title === 'string' ? r.title : '')
     .replace(/\s+/g, ' ')
     .trim()

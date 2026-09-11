@@ -23,6 +23,10 @@ function parseJson(value: unknown): Record<string, unknown> {
   }
 }
 
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : ''
+}
+
 function partText(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (isRecord(part.text) && typeof part.text.value === 'string') return part.text.value
@@ -168,12 +172,12 @@ export function readOpencodeTurns(id: string): HarnessTurn[] {
       .all(id)
     const partsByMessage = new Map<string, Array<Record<string, unknown>>>()
     for (const p of parts) {
-      const mid = typeof p.message_id === 'string' ? p.message_id : String(p.message_id ?? '')
+      const mid = str(p.message_id)
       if (!mid) continue
       const data = parseJson(p.data)
       const rec: Record<string, unknown> = {
         ...data,
-        id: String(p.id ?? ''),
+        id: str(p.id),
         time_created: p.time_created,
       }
       const arr = partsByMessage.get(mid) ?? []
@@ -182,7 +186,7 @@ export function readOpencodeTurns(id: string): HarnessTurn[] {
     }
     const msgs = messages.map((m) => {
       const data = parseJson(m.data)
-      return { ...data, id: String(m.id ?? ''), time_created: m.time_created }
+      return { ...data, id: str(m.id), time_created: m.time_created }
     })
     return opencodeTurnsFromMessages(msgs, partsByMessage)
   } catch {

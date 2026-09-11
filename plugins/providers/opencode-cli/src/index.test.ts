@@ -107,10 +107,11 @@ describe('helpers', () => {
 describe('OpencodeCliModel.doStream', () => {
   it('replays text parts, remembers the session id, sets XDG_DATA_HOME', async () => {
     const bin = fakeScript(
-      '#!/usr/bin/env bash\n' +
-        'echo \'{"type":"session","sessionID":"session_42"}\'\n' +
-        'echo \'{"type":"text","part":{"text":"PO"}}\'\n' +
-        'printf \'{"type":"text","text":"NG-'"$XDG_DATA_HOME"\'"}\'\n',
+      `#!/usr/bin/env bash
+echo '{"type":"session","sessionID":"session_42"}'
+echo '{"type":"text","part":{"text":"PO"}}'
+printf '{"type":"text","text":"NG-'"$XDG_DATA_HOME"'"}'
+`,
     )
     const mapPath = path.join(tmp(), 'map.json')
     const parts = await collect(model(bin, mapPath), prompt)

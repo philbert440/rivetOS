@@ -374,8 +374,10 @@ export class OpencodeCliModel implements LanguageModelV3 {
             // next turn creates a session (no in-turn retry).
             if (sessionId && (code !== 0 || isSessionNotFound(stderr) || isSessionNotFound(tail))) {
               if (map[convKey]) {
-                delete map[convKey]
-                saveSessionMap(mapPath, map)
+                const next = Object.fromEntries(
+                  Object.entries(map).filter(([k]) => k !== convKey),
+                )
+                saveSessionMap(mapPath, next)
               }
             }
             if (textOpen) controller.enqueue({ type: 'text-end', id: TEXT_ID })
