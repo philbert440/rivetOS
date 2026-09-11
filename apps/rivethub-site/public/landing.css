@@ -56,10 +56,8 @@
 .recall-note p span { font-size:10px; color:var(--soft); }
 .window-bottom { justify-content:flex-start; font-size:10px; border-top:1px solid var(--rule); }
 .local-label { margin-left:auto; }
-.tool-strip { border-block:1px solid var(--rule); }
-.tool-strip>.landing-wrap { display:flex; gap:18px; align-items:center; flex-wrap:wrap; padding-block:24px; }
-.tool-strip ul { display:flex; gap:21px; padding:0; margin:0; list-style:none; flex-wrap:wrap; font-size:13px; font-weight:700; }
-.tool-strip a { font-size:11px; margin-left:auto; }
+.hero-tools { font-size:13px; margin-top:14px; color:var(--soft); }
+.hero-tools a { color:var(--ink); font-weight:500; }
 .section { padding-top:88px; padding-bottom:88px; scroll-margin-top:20px; }
 .section-intro { max-width:710px; margin-bottom:38px; }
 .section-intro h2 { margin-top:16px; }
@@ -113,7 +111,6 @@
 .setup-after { border-top:1px solid #d1d8ca; margin-top:36px; padding-top:24px; display:flex; gap:24px; flex-wrap:wrap; font-size:12px; }
 .setup-after>span { color:var(--soft); }
 .use-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:22px; }
-.now-grid { grid-template-columns:1fr 1fr; }
 .use-grid article { border:1px solid var(--rule); border-radius:10px; padding:28px; background:#fffef9; }
 .use-icon { font-size:38px; color:var(--green); display:block; line-height:1; margin-bottom:30px; }
 .use-grid h3 { margin:13px 0; font-size:23px; }
@@ -154,7 +151,7 @@
 @media(min-width:901px) { .memory-window:hover { transform:rotate(0); } }
 @media(prefers-reduced-motion:no-preference) { .memory-window { transition:transform .3s ease; } .landing .button { transition:background .15s ease; } }
 @media(max-width:1000px) { .hero { gap:32px; } .wide-break { display:none; } .story-scene { gap:30px; } .setup-layout,.ownership-grid,.next-section { gap:35px; } .use-grid article { padding:20px; } }
-@media(max-width:760px) { .landing-wrap { padding-inline:23px; } .header-inner { min-height:75px; gap:12px; } .header-inner nav { gap:12px; } .header-inner nav>a:not(.nav-start) { display:none; } .header-inner nav .nav-start { padding-inline:13px; gap:12px; font-size:12px; } .hero { grid-template-columns:1fr; gap:42px; padding-top:48px; padding-bottom:52px; } .landing h1 { font-size:clamp(2.6rem,9vw,3.8rem); } .hero-description { font-size:16px; } .memory-window { max-width:520px; width:calc(100% - 10px); transform:none; } .hero .eyebrow { font-size:10px; } .actions { gap:20px; } .tool-strip>.landing-wrap { gap:15px; } .tool-strip ul { gap:10px 19px; } .tool-strip a { margin-left:0; } .section { padding-block:54px; } .story-controls { gap:5px; } .story-controls button { flex:1; display:block; padding:12px 7px; text-align:left; } .story-controls button span { display:block; font-size:11px; margin-top:5px; } .story-stage { padding:20px; } .story-scene { grid-template-columns:1fr; gap:25px; } .scene-copy h3 { font-size:29px; } .record-card { padding:17px; } .record-header { flex-wrap:wrap; } .setup-layout,.ownership-grid,.next-section,.use-grid { grid-template-columns:1fr; } .installer-card { padding:19px; } .setup-steps { margin-top:5px; } .setup-after { gap:14px; flex-direction:column; } .use-grid article { padding:25px; } .use-icon { margin-bottom:22px; } .ownership-grid { gap:38px; } .next-section { gap:28px; } .settings-heading { flex-wrap:wrap; } .landing-footer>.landing-wrap { flex-direction:column; gap:16px; } .landing-footer nav { gap:15px; } }
+@media(max-width:760px) { .landing-wrap { padding-inline:23px; } .header-inner { min-height:75px; gap:12px; } .header-inner nav { gap:12px; } .header-inner nav>a:not(.nav-start) { display:none; } .header-inner nav .nav-start { padding-inline:13px; gap:12px; font-size:12px; } .hero { grid-template-columns:1fr; gap:42px; padding-top:48px; padding-bottom:52px; } .landing h1 { font-size:clamp(2.6rem,9vw,3.8rem); } .hero-description { font-size:16px; } .memory-window { max-width:520px; width:calc(100% - 10px); transform:none; } .hero .eyebrow { font-size:10px; } .actions { gap:20px; } .section { padding-block:54px; } .story-controls { gap:5px; } .story-controls button { flex:1; display:block; padding:12px 7px; text-align:left; } .story-controls button span { display:block; font-size:11px; margin-top:5px; } .story-stage { padding:20px; } .story-scene { grid-template-columns:1fr; gap:25px; } .scene-copy h3 { font-size:29px; } .record-card { padding:17px; } .record-header { flex-wrap:wrap; } .setup-layout,.ownership-grid,.next-section,.use-grid { grid-template-columns:1fr; } .installer-card { padding:19px; } .setup-steps { margin-top:5px; } .setup-after { gap:14px; flex-direction:column; } .use-grid article { padding:25px; } .use-icon { margin-bottom:22px; } .ownership-grid { gap:38px; } .next-section { gap:28px; } .settings-heading { flex-wrap:wrap; } .landing-footer>.landing-wrap { flex-direction:column; gap:16px; } .landing-footer nav { gap:15px; } }
 /* Hero command block: the install command is the primary CTA. */
 .hero .term { max-width:580px; margin:28px 0 6px; }
 .hero .term pre { white-space:pre-wrap; overflow-wrap:anywhere; }
