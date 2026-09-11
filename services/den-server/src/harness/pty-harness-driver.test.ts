@@ -1,4 +1,4 @@
-// Contract tests for the shared `PtyHarnessDriver` base, run against ALL SIX
+// Contract tests for the shared `PtyHarnessDriver` base, run against ALL SEVEN
 // real drivers rather than a stand-in subclass — the point is that every driver
 // inherits the behaviour, so every driver is asserted.
 //
@@ -21,6 +21,7 @@ import { HermesDriver } from './hermes-driver.js'
 import { KimiCodeDriver } from './kimi-driver.js'
 import { DeepseekHarnessDriver } from './deepseek-driver.js'
 import { CodexDriver } from './codex-driver.js'
+import { OpencodeDriver } from './opencode-driver.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { composePromptText, type HarnessPtyHost, type PtyHarnessDriver } from './pty-harness-driver.js'
 
@@ -33,6 +34,8 @@ const KIMI_NATIVE = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 const DSH_NATIVE = 'session-86ffe759-cd7b-49a7-955d-c282631a935d'
 /** Codex natives are a bare rollout UUID. */
 const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+/** OpenCode natives are `ses_` + alphanumerics. */
+const OPENCODE_NATIVE = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
 
 interface Injected {
   id: string
@@ -215,6 +218,28 @@ const subjects: [name: string, make: () => Subject][] = [
       }
     },
   ],
+  [
+    'opencode',
+    (): Subject => {
+      const pty = fakePty()
+      const store = fakeStore([
+        { id: OPENCODE_NATIVE, command: 'opencode', title: 't', updatedAt: 1 },
+      ])
+      const driver = new OpencodeDriver({
+        store,
+        pty: () => Promise.resolve(pty.host),
+        turnQuietMs: 0,
+      })
+      return {
+        driver,
+        sessionId: OpencodeDriver.sessionId(OPENCODE_NATIVE),
+        injects: pty.injects,
+        activate: async () => {
+          await driver.resumeSession(OpencodeDriver.sessionId(OPENCODE_NATIVE))
+        },
+      }
+    },
+  ],
 ]
 
 describe.each(subjects)('%s: the in-flight turn lock is not racy', (_name, make) => {
@@ -323,6 +348,14 @@ const capabilitySubjects: [
         ...(pty ? { pty } : {}),
       }),
   ],
+  [
+    'opencode',
+    (pty) =>
+      new OpencodeDriver({
+        store: fakeStore([{ id: OPENCODE_NATIVE, command: 'opencode', title: 't', updatedAt: 1 }]),
+        ...(pty ? { pty } : {}),
+      }),
+  ],
 ]
 
 /** A PTY dep that resolves null — den terminals enabled, `node-pty` absent. */
@@ -338,7 +371,9 @@ describe.each(capabilitySubjects)('%s: capabilities are runtime-truthed', (name,
           ? (`deepseek-harness:${DSH_NATIVE}` as SessionId)
           : name === 'codex'
             ? (`codex:${CODEX_NATIVE}` as SessionId)
-            : (`${driver.harnessId}:${UUID}` as SessionId)
+            : name === 'opencode'
+              ? (`opencode:${OPENCODE_NATIVE}` as SessionId)
+              : (`${driver.harnessId}:${UUID}` as SessionId)
 
   it('advertises interrupt/resume false once the probe finds no PTY backend', async () => {
     const driver = make(failedPtyLoad())

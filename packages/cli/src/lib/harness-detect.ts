@@ -24,12 +24,13 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
   hermes: 'hermes',
   'deepseek-harness': 'dsh',
   codex: 'codex',
+  opencode: 'opencode',
 }
 
 /** `providers.<key>` in config.yaml — deepseek-harness is not a CLI harness
  *  provider (`CLI_HARNESS_PROVIDERS` in @rivetos/boot). */
 export type HarnessProviderKey =
-  'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli'
+  'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli' | 'opencode-cli'
 
 export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undefined> = {
   'claude-code': 'claude-cli',
@@ -38,6 +39,7 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   hermes: 'hermes-cli',
   'deepseek-harness': undefined,
   codex: 'codex-cli',
+  opencode: 'opencode-cli',
 }
 
 /** Config-home directory name under `$HOME`. Kimi's setup script also
@@ -49,6 +51,8 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   hermes: '.hermes',
   'deepseek-harness': '.dsh',
   codex: '.codex',
+  // OpenCode is XDG: `$XDG_CONFIG_HOME/opencode` else `~/.config/opencode`.
+  opencode: '.config/opencode',
 }
 
 const HERMES_VENV_REL = join('hermes-agent', 'venv')
@@ -80,6 +84,8 @@ export interface DetectedHarness {
   version?: string
   /** Hermes only: `~/.hermes/hermes-agent/venv` when that directory exists. */
   venv?: string
+  /** OpenCode only: `$XDG_DATA_HOME/opencode` else `~/.local/share/opencode`. */
+  dataHome?: string
 }
 
 export interface DetectHarnessesOpts {
@@ -236,7 +242,10 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
       home,
     })
     if (!binary) continue
-    const configHome = join(home, HARNESS_CONFIG_DIRS[id])
+    const configHome =
+      id === 'opencode'
+        ? join(process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config'), 'opencode')
+        : join(home, HARNESS_CONFIG_DIRS[id])
     const harness: DetectedHarness = {
       id,
       command,
@@ -247,6 +256,12 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
     if (id === 'hermes') {
       const venv = join(configHome, HERMES_VENV_REL)
       if (existsSync(venv)) harness.venv = venv
+    }
+    if (id === 'opencode') {
+      harness.dataHome = join(
+        process.env.XDG_DATA_HOME?.trim() || join(home, '.local', 'share'),
+        'opencode',
+      )
     }
     found.push(harness)
   }

@@ -2,8 +2,9 @@
  * Default on-disk store host for a harness driver. Thin adapter:
  * `term/harness-sessions.ts` stays the one place that knows each store's
  * layout (`~/.claude/projects/…`, `~/.grok/sessions/…`, `~/.hermes/state.db`,
- * `~/.kimi-code/sessions/…`, `~/.dsh/sessions/…`), and tests swap this whole
- * object for a fake rather than shimming the filesystem or node:sqlite.
+ * `~/.kimi-code/sessions/…`, `~/.dsh/sessions/…`, `~/.local/share/opencode/opencode.db`),
+ * and tests swap this whole object for a fake rather than shimming the
+ * filesystem or node:sqlite.
  *
  * Five files used to say the same thing with a different name in each slot.
  * The one real difference is Claude: its store is one `<uuid>.jsonl`, so
@@ -20,14 +21,17 @@ import {
   describeHermesSession,
   describeCodexSession,
   describeKimiSession,
+  describeOpencodeSession,
   harnessSessionExists,
   listHarnessSessions,
+  newestOpencodeSessionAfter,
   readClaudeTranscript,
   readCodexTranscript,
   readDshTranscript,
   readGrokTranscript,
   readHermesTranscript,
   readKimiTranscript,
+  readOpencodeTranscript,
   type HarnessSession,
   type HarnessTranscript,
 } from '../term/harness-sessions.js'
@@ -37,9 +41,11 @@ import { GROK_ROSTER_COMMAND, type GrokStoreHost } from './grok-driver.js'
 import { HERMES_ROSTER_COMMAND, type HermesStoreHost } from './hermes-driver.js'
 import { CODEX_ROSTER_COMMAND, type CodexStoreHost } from './codex-driver.js'
 import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
+import { OPENCODE_ROSTER_COMMAND, type OpencodeStoreHost } from './opencode-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
-export type HarnessStoreName = 'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex'
+export type HarnessStoreName =
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'deepseek' | 'codex' | 'opencode'
 
 type StoreByName = {
   claude: ClaudeStoreHost
@@ -48,6 +54,7 @@ type StoreByName = {
   kimi: KimiStoreHost
   deepseek: DeepseekStoreHost
   codex: CodexStoreHost
+  opencode: OpencodeStoreHost
 }
 
 type Adapter = {
@@ -87,6 +94,11 @@ const ADAPTERS: Record<HarnessStoreName, Adapter> = {
     describe: describeCodexSession,
     transcript: readCodexTranscript,
   },
+  opencode: {
+    roster: OPENCODE_ROSTER_COMMAND,
+    describe: describeOpencodeSession,
+    transcript: readOpencodeTranscript,
+  },
 }
 
 export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreByName[N] {
@@ -107,6 +119,9 @@ export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreBy
     // summary/state file — a describable session is a strict subset of an
     // existing one.
     host.exists = (nativeId) => harnessSessionExists(roster, nativeId)
+  }
+  if (name === 'opencode') {
+    ;(host as OpencodeStoreHost).newestAfter = newestOpencodeSessionAfter
   }
   return host as StoreByName[N]
 }

@@ -9,6 +9,7 @@ import {
   describeClaudeSession,
   describeGrokSession,
   describeKimiSession,
+  describeOpencodeSession,
   describeCodexSession,
   describeDshSession,
   claudeTurnsFromLines,
@@ -19,8 +20,10 @@ import {
   readHarnessTranscript,
   readHermesTranscript,
   readKimiTranscript,
+  readOpencodeTranscript,
   readCodexTranscript,
   resolveHarnessStore,
+  newestOpencodeSessionAfter,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
 } from './harness-sessions.js'
@@ -36,6 +39,9 @@ afterEach(() => {
   delete process.env.KIMI_CODE_HOME
   delete process.env.DSH_HOME
   delete process.env.CODEX_HOME
+  delete process.env.OPENCODE_DATA_DIR
+  delete process.env.XDG_DATA_HOME
+  delete process.env.XDG_CONFIG_HOME
 })
 
 /**
@@ -505,15 +511,17 @@ describe('listHarnessSessions', () => {
     process.env.KIMI_CODE_HOME = join(tmpdir(), 'no-kimi-' + String(process.pid))
     process.env.DSH_HOME = join(tmpdir(), 'no-dsh-' + String(process.pid))
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
-    expect(await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex'])).toEqual(
-      [],
-    )
+    process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
+    expect(
+      await listHarnessSessions(['claude', 'grok', 'hermes', 'kimi', 'dsh', 'codex', 'opencode']),
+    ).toEqual([])
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
     delete process.env.GROK_HOME
     delete process.env.HERMES_HOME
     delete process.env.KIMI_CODE_HOME
     delete process.env.DSH_HOME
     delete process.env.CODEX_HOME
+    delete process.env.XDG_DATA_HOME
   })
 
   it('reads dsh sessions from ~/.dsh/sessions/<cwd-slug>/session-<uuid>/', async () => {
@@ -1562,5 +1570,135 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
   it('empty when CODEX_HOME has no sessions', async () => {
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
     expect(await listHarnessSessions(['codex'])).toEqual([])
+  })
+})
+
+describe('opencode store: ~/.local/share/opencode/opencode.db', () => {
+  const ID = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
+  const ID2 = 'ses_01K8QRSTUVWXYZABCDEFGHIJKL'
+
+  async function fakeOpencodeStore(): Promise<string | undefined> {
+    let DatabaseSync: (new (p: string) => { exec(sql: string): void; close(): void }) | undefined
+    try {
+      ;({ DatabaseSync } = await import('node:sqlite'))
+    } catch {
+      return undefined
+    }
+    const xdg = mkdtempSync(join(tmpdir(), 'opencode-store-'))
+    dirs.push(xdg)
+    process.env.XDG_DATA_HOME = xdg
+    mkdirSync(join(xdg, 'opencode'), { recursive: true })
+    const db = new DatabaseSync(join(xdg, 'opencode', 'opencode.db'))
+    const userData = JSON.stringify({
+      role: 'user',
+      time: { created: 1_700_000_000_100 },
+      agent: 'build',
+      model: { providerID: 'zai', modelID: 'glm-5.3-flash' },
+    }).replace(/'/g, "''")
+    const asstData = JSON.stringify({
+      parentID: 'msg_user',
+      role: 'assistant',
+      mode: 'build',
+      agent: 'build',
+      modelID: 'glm-5.3-flash',
+      providerID: 'zai',
+      tokens: { total: 130, input: 100, output: 20, reasoning: 5, cache: { write: 0, read: 10 } },
+      time: { created: 1_700_000_000_200, completed: 1_700_000_000_250 },
+    }).replace(/'/g, "''")
+    const model = JSON.stringify({
+      id: 'glm-5.3-flash',
+      providerID: 'zai',
+      variant: 'default',
+    }).replace(/'/g, "''")
+    db.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY, title TEXT, directory TEXT, model TEXT,
+        time_created INTEGER, time_updated INTEGER
+      );
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT
+      );
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT
+      );
+      INSERT INTO session VALUES
+        ('${ID}', 'review the opencode driver', '/work/rivetos', '${model}', 1700000000000, 1700000100000),
+        ('${ID2}', 'second session', '/work/rivetos', NULL, 1700000200000, 1700000300000);
+      INSERT INTO message VALUES
+        ('msg_user', '${ID}', 1700000000100, 1700000000100, '${userData}'),
+        ('msg_asst', '${ID}', 1700000000200, 1700000000250, '${asstData}');
+      INSERT INTO part VALUES
+        ('prt_1', 'msg_user', '${ID}', 1700000000110, '{"type":"text","text":"review the diff"}'),
+        ('prt_think', 'msg_asst', '${ID}', 1700000000210, '{"type":"reasoning","text":"weighing it"}'),
+        ('prt_tool', 'msg_asst', '${ID}', 1700000000220, '{"type":"tool","tool":"Bash","state":{"status":"completed","input":{"command":"git diff"},"output":"","title":"git diff"}}'),
+        ('prt_text', 'msg_asst', '${ID}', 1700000000230, '{"type":"text","text":"looks good"}');
+    `)
+    db.close()
+    return xdg
+  }
+
+  it('lists sessions newest-first and describe agrees', async () => {
+    if (!(await fakeOpencodeStore())) return
+    const listed = await listHarnessSessions(['opencode'])
+    expect(listed.map((s) => s.id)).toEqual([ID2, ID])
+    expect(listed[1]).toMatchObject({
+      id: ID,
+      command: 'opencode',
+      title: 'review the opencode driver',
+      updatedAt: 1_700_000_100_000,
+      createdAt: 1_700_000_000_000,
+      model: 'zai/glm-5.3-flash',
+    })
+    expect(await describeOpencodeSession(ID)).toEqual(listed.find((s) => s.id === ID))
+    expect(await describeOpencodeSession('ses_nope')).toBeUndefined()
+    expect(await describeOpencodeSession('../../etc/passwd')).toBeUndefined()
+  })
+
+  it('newestOpencodeSessionAfter is scoped to cwd and the spawn clock', async () => {
+    if (!(await fakeOpencodeStore())) return
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_000_000)).toBe(ID2)
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_015_000)).toBe(ID2)
+    expect(newestOpencodeSessionAfter('/work/rivetos', 1_700_000_200_001)).toBeUndefined()
+    expect(newestOpencodeSessionAfter('/work/other', 0)).toBeUndefined()
+  })
+
+  it('harnessSessionExists checks the session row, not a later message', async () => {
+    if (!(await fakeOpencodeStore())) return
+    expect(harnessSessionExists('opencode', ID)).toBe(true)
+    expect(harnessSessionExists('opencode', 'ses_deadbeefdeadbeef')).toBe(false)
+    expect(harnessSessionExists('opencode', '../x')).toBe(false)
+  })
+
+  it('folds user + assistant turns out of message/part rows', async () => {
+    if (!(await fakeOpencodeStore())) return
+    const t = await readOpencodeTranscript(ID)
+    expect(t.command).toBe('opencode')
+    expect(t.turns[0]).toEqual({ role: 'user', text: 'review the diff' })
+    expect(t.turns[1]).toMatchObject({
+      role: 'assistant',
+      text: 'looks good',
+      thinking: 'weighing it',
+      model: 'zai/glm-5.3-flash',
+      complete: true,
+      stopReason: 'end_turn',
+      lastBlock: 'text',
+      usage: { promptTokens: 110, completionTokens: 25, cachedTokens: 10 },
+      tools: [{ name: 'Bash', status: 'done', id: 'prt_tool', args: { command: 'git diff' } }],
+    })
+    expect((await readHarnessTranscript(`opencode:${ID}`)).command).toBe('opencode')
+    expect(await readOpencodeTranscript('ses_gonegonegone')).toEqual({
+      id: 'ses_gonegonegone',
+      command: '',
+      turns: [],
+    })
+    const ref = await resolveHarnessStore(`opencode:${ID}`)
+    expect(ref?.command).toBe('opencode')
+    expect(ref?.path).toContain('opencode.db')
+    expect(ref?.watchPaths).toEqual([ref?.path, `${ref?.path}-wal`, `${ref?.path}-shm`])
+  })
+
+  it('empty when XDG_DATA_HOME has no opencode.db', async () => {
+    process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
+    expect(await listHarnessSessions(['opencode'])).toEqual([])
   })
 })

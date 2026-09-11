@@ -767,9 +767,10 @@ export async function registerAgentTools(
 /**
  * Register one `harness-session` executor per harness id (Phase 3).
  *
- * `claude-code` and `kimi-code` get the real thing — the claude-cli plugin's
- * headless `claude -p` executor and `@rivetos/harness-kimi-code`'s `kimi -p`
- * one — when their binary probes pass. Every id left over (including those two
+ * `claude-code`, `kimi-code` and `opencode` get the real thing — the claude-cli
+ * plugin's headless `claude -p` executor, `@rivetos/harness-kimi-code`'s
+ * `kimi -p` one, and `@rivetos/harness-opencode`'s `opencode run` one — when
+ * their binary probes pass. Every id left over (including those three
  * when the probe fails, with the probe's own reason rather than the generic
  * one) gets an explicit rejecting executor carrying that reason, so the
  * registry answers "no, and here is why" rather than going silent. That is
@@ -789,6 +790,7 @@ async function registerHarnessTaskExecutors(
   const gapOverrides = new Map<HarnessId, string>()
   await registerClaudeCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   await registerKimiCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
+  await registerOpencodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   // Exact per-harness lookup (not resolve(), whose kind-level fallback would
   // report every harness as covered once any one of them registered).
   for (const { harnessId, registered } of executors.harnesses()) {
@@ -962,6 +964,60 @@ async function registerKimiCodeTaskExecutor(
     log.warn(
       `@rivetos/harness-kimi-code not loadable — kimi-code task executor skipped: ${message}`,
     )
+  }
+}
+
+/**
+ * Register the `opencode` harness-session executor when the `opencode` binary
+ * is resolvable.
+ *
+ * Same probe-or-record-why shape as kimi. A sibling provider plugin
+ * (`opencode-cli`) owns the LanguageModel bridge; the executor still takes
+ * binary / model / effort / cwd / home from `tasks.harnesses.opencode` so the
+ * two id-spaces stay distinct (harness `opencode` vs provider `opencode-cli`).
+ */
+async function registerOpencodeTaskExecutor(
+  runtime: Runtime,
+  config: RivetConfig,
+  executors: ReturnType<typeof createExecutorRegistry>,
+  workspaceDir: string,
+  gapOverrides: Map<HarnessId, string>,
+): Promise<void> {
+  const harnessCfg = config.tasks?.harnesses?.opencode ?? {}
+  const binary = harnessCfg.binary ?? 'opencode'
+
+  const available = await probeBinaryVersion(binary, { harnessId: 'opencode' })
+  if (!available) {
+    const reason =
+      `the \`opencode\` binary is not resolvable on this node (tried "${binary}"): install ` +
+      `OpenCode, or set tasks.harnesses.opencode.binary to its path`
+    gapOverrides.set('opencode', reason)
+    log.info(`opencode binary "${binary}" not resolvable — opencode task executor not registered`)
+    return
+  }
+
+  try {
+    const { OpencodeExecutor, OPENCODE_HARNESS_ID } = await import('@rivetos/harness-opencode')
+    executors.register(
+      'harness-session',
+      new OpencodeExecutor({
+        binary,
+        modelId: harnessCfg.model,
+        effort: harnessCfg.effort,
+        cwd: harnessCfg.cwd ?? workspaceDir,
+        opencodeHome: harnessCfg.home,
+        memory: runtime.getMemory(),
+      }),
+      OPENCODE_HARNESS_ID,
+    )
+    log.info(`Task executor registered: (harness-session, ${OPENCODE_HARNESS_ID}) via ${binary}`)
+  } catch (err: unknown) {
+    const message = (err as Error).message
+    gapOverrides.set(
+      'opencode',
+      `the @rivetos/harness-opencode package did not load on this node: ${message}`,
+    )
+    log.warn(`@rivetos/harness-opencode not loadable — opencode task executor skipped: ${message}`)
   }
 }
 

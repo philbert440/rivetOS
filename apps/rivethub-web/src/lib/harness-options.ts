@@ -15,6 +15,7 @@ const HARNESS_LABEL: Record<HarnessId, string> = {
   'claude-code': 'Claude Code',
   'grok-build': 'grok Build',
   'kimi-code': 'Kimi Code',
+  opencode: 'opencode',
   hermes: 'Hermes',
   'deepseek-harness': 'DeepSeek',
   codex: 'Codex',

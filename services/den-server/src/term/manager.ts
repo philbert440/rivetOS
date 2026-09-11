@@ -384,6 +384,9 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // Codex resume is a subcommand, not a dashed flag: `codex resume <uuid>`.
   // There is no --session-id; a fresh spawn is just `codex`.
   codex: { resumeFlag: 'resume' },
+  // OpenCode mints `ses_…` itself; `-s/--session` resumes an EXISTING id
+  // (a missing id exits non-zero). No pin flag.
+  opencode: { resumeFlag: '--session' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
@@ -1135,11 +1138,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // The conversation join key IS the den session, so den (?session), the
       // capture hooks (RIVETOS_SESSION_KEY), and this PTY all share one id.
       const denSession = session ?? `den-${id}`
-      // Harness sessions (room: true) always spawn in the user's home: the
-      // harness owns its working tree via the prompt/session, and a roster or
-      // entry cwd pointing at a shared tree made every harness start there.
-      // Non-harness entries keep the roster/entry cwd.
-      const cwd = entry.room ? homedir() : (entry.cwd ?? roster.cwd)
+      // Harness sessions (room: true) spawn in the user's home. OpenCode is
+      // the exception: its file picker refuses `$HOME`, so honour `entry.cwd`
+      // for the `opencode` roster command only. Other harnesses stay forced
+      // to home even if a stale cwd is sitting on the entry.
+      const cwd = entry.room
+        ? key === 'opencode' && entry.cwd
+          ? entry.cwd
+          : homedir()
+        : (entry.cwd ?? roster.cwd)
 
       // tmux reattach path (T1): if a tmux session for this den session
       // already exists on our socket, the harness is STILL RUNNING (it

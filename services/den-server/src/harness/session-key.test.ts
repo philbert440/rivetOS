@@ -13,6 +13,9 @@ describe('denJoinKey', () => {
       'session-86ffe759-cd7b-49a7-955d-c282631a935d',
     )
     expect(denJoinKey(`codex:${UUID}`)).toBe(UUID)
+    expect(denJoinKey('opencode:ses_01K8ABCDEFGHIJKLMNOPQRSTUV')).toBe(
+      'ses_01K8ABCDEFGHIJKLMNOPQRSTUV',
+    )
   })
 
   it('passes a bare native id through unchanged (the legacy shape)', () => {
@@ -55,6 +58,10 @@ describe('denSessionRef', () => {
       command: 'dsh',
     })
     expect(denSessionRef(`codex:${UUID}`)).toEqual({ native: UUID, command: 'codex' })
+    expect(denSessionRef('opencode:ses_01K8ABCDEFGHIJKLMNOPQRSTUV')).toEqual({
+      native: 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV',
+      command: 'opencode',
+    })
     // Path-fallback still names claude, and still collapses to the uuid.
     // SHARED VECTOR: `packages/core/src/domain/gateway-channel.test.ts`
     // asserts `bareAliasOf` resolves this exact input to the same native id —

@@ -12,6 +12,7 @@
 
 import { statSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 export interface RosterEntry {
   /** Human label shown by the viewer. */
@@ -22,8 +23,10 @@ export interface RosterEntry {
    *  session.end on exit if the harness never sent one). false: plain
    *  process, no synthetic events ever. */
   room: boolean
-  /** Working directory override for non-harness (`room: false`) entries.
-   *  Harness sessions ignore this and always spawn in `homedir()`. */
+  /** Working directory override. Non-harness entries fall back to the roster
+   *  cwd. Harness entries (`room: true`) spawn in `homedir()` — except the
+   *  `opencode` command, which honours this because its file picker refuses
+   *  `$HOME`. A stale `cwd` on any other harness entry is ignored. */
   cwd?: string
   /** Extra env for this entry (layered over the top-level roster env). */
   env?: Record<string, string>
@@ -34,7 +37,8 @@ export interface TermRoster {
   default: string
   commands: Record<string, RosterEntry>
   /** Default working directory for non-harness entries. Harness sessions
-   *  (`room: true`) always spawn in `homedir()` regardless of this value. */
+   *  (`room: true`) spawn in `homedir()`; only the `opencode` command honours
+   *  a per-entry `cwd`. */
   cwd: string
   /** Env layered over the inherited service env for all entries. */
   env: Record<string, string>
@@ -67,7 +71,9 @@ export function defaultRoster(): TermRoster {
       //             den-term.json, and the roster should not be the place a
       //             node quietly loses its last "are you sure".
       // Harness cwd is forced to homedir() at spawn (manager.ts). Shared
-      // trees belong in the prompt, not here.
+      // trees belong in the prompt, not here — except OpenCode, whose file
+      // picker refuses `$HOME` and is the only room:true command that
+      // honours `entry.cwd`.
       // claude trusts its cwd via ~/.claude.json and needs no flag here.
       claude: { label: 'Claude Code', cmd: ['claude'], room: true },
       grok: {
@@ -86,6 +92,13 @@ export function defaultRoster(): TermRoster {
       // HARNESS_FLAGS (subcommand, not a dashed flag). No --yolo equivalent
       // is wired here — permission prompts stay in the TUI (lane A2 keys).
       codex: { label: 'Codex', cmd: ['codex'], room: true },
+      // OpenCode's file picker refuses `$HOME`; spawn in the RivetOS workspace.
+      opencode: {
+        label: 'OpenCode',
+        cmd: ['opencode'],
+        room: true,
+        cwd: join(homedir(), '.rivetos', 'workspace'),
+      },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }

@@ -7,9 +7,11 @@ import type {
 
 /** Resolved on-disk store the transcript watcher / readers parse. */
 export interface HarnessStoreRef {
-  command: 'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh' | 'codex'
+  command: 'claude' | 'grok' | 'hermes' | 'kimi' | 'dsh' | 'codex' | 'opencode'
   /** The file to watch for changes (jsonl / chat_history / sqlite db). */
   path: string
+  /** Extra files whose size/mtime should wake the watcher (sqlite WAL/SHM). */
+  watchPaths?: string[]
 }
 
 export interface HarnessAdapter {
