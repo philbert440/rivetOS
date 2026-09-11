@@ -12,8 +12,12 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
-import { spawnClaudeTurn } from './spawn-turn.js'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  ClaudeCliTimeoutError,
+  KILL_GRACE_MS,
+  spawnClaudeTurn,
+} from './spawn-turn.js'
 
 const dirs: string[] = []
 afterAll(() => {
@@ -29,7 +33,7 @@ function fakeScript(body: string): string {
   return file
 }
 
-function spawnFake(body: string) {
+function spawnFake(body: string, opts?: { timeoutMs?: number }) {
   return spawnClaudeTurn(
     {
       binary: fakeScript(body),
@@ -41,6 +45,7 @@ function spawnFake(body: string) {
       systemText: '',
     },
     'hi',
+    opts,
   )
 }
 
@@ -64,5 +69,65 @@ describe('spawnClaudeTurn waitExit', () => {
   it('answers every concurrent caller', async () => {
     const turn = spawnFake('#!/usr/bin/env bash\ncat > /dev/null\nexit 0\n')
     await expect(Promise.all([turn.waitExit(), turn.waitExit()])).resolves.toEqual([0, 0])
+  })
+})
+
+const SLEEP = '#!/usr/bin/env bash\ncat > /dev/null\nexec sleep 60\n'
+const IGNORE_TERM = "#!/usr/bin/env bash\ntrap '' TERM\ncat > /dev/null\nsleep 60\n"
+
+describe('spawnClaudeTurn timeout_ms', () => {
+  const live: ReturnType<typeof spawnClaudeTurn>[] = []
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    for (const t of live.splice(0)) t.kill()
+  })
+
+  it('does not arm a timer when timeoutMs is 0 or omitted', async () => {
+    const turn = spawnFake(SLEEP, { timeoutMs: 0 })
+    live.push(turn)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(turn.proc.exitCode).toBeNull()
+    expect(turn.proc.signalCode).toBeNull()
+  })
+
+  it('rejects the event iterator with a timeout error after timeoutMs', async () => {
+    const timeoutMs = 1_000
+    const turn = spawnFake(SLEEP, { timeoutMs })
+    live.push(turn)
+    const iterating = (async () => {
+      for await (const _ of turn.events()) {
+        /* drain */
+      }
+    })()
+    await vi.advanceTimersByTimeAsync(timeoutMs)
+    await expect(iterating).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ClaudeCliTimeoutError &&
+        err.code === 'timeout' &&
+        err.timeoutMs === timeoutMs &&
+        err.message === `claude-cli spawn timed out after ${timeoutMs}ms`
+      )
+    })
+  })
+
+  it('SIGKILLs after KILL_GRACE_MS when SIGTERM is ignored', async () => {
+    const timeoutMs = 500
+    const turn = spawnFake(IGNORE_TERM, { timeoutMs })
+    live.push(turn)
+    const iterating = (async () => {
+      for await (const _ of turn.events()) {
+        /* drain */
+      }
+    })()
+    await vi.advanceTimersByTimeAsync(timeoutMs)
+    expect(turn.proc.signalCode).toBeNull()
+    await vi.advanceTimersByTimeAsync(KILL_GRACE_MS)
+    await expect(iterating).rejects.toBeInstanceOf(ClaudeCliTimeoutError)
+    expect(turn.proc.signalCode).toBe('SIGKILL')
   })
 })

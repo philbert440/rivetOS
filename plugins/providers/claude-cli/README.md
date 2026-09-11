@@ -85,4 +85,5 @@ providers:
     cwd: ~/.rivetos/workspace # cwd for the spawned process
     context_window: 200000
     max_output_tokens: 32000
+    timeout_ms: 0 # optional; 0 = no timeout. When > 0, SIGTERM then SIGKILL after 3s
 ```

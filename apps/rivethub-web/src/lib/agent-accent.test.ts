@@ -46,7 +46,7 @@ describe('accentFor', () => {
     expect(accentFor({ harnessId: 'codex' })).toBe('#5b8def')
     expect(accentFor({ command: 'codex' })).toBe('#5b8def')
     expect(accentFor({})).toBe('#34d399')
-    expect(accentFor({ command: 'hermes' })).toBe('#34d399')
+    expect(accentFor({ command: 'hermes' })).toBe('#e0a340')
   })
 
   it('aligns rail and conversation colour for a node-default preset', () => {

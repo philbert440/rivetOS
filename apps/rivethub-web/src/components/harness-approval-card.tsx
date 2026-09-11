@@ -8,10 +8,11 @@ import { humanToolTitle } from '../lib/tool-titles.js'
 /**
  * Tool-approval prompt for a harness that surfaces its permission gate on the
  * wire. Rendered only when the driver reports `approvals: true` — the page
- * gates on the capability flag, so a driver whose prompts live inside its own
- * TUI (`claude-code`, always) never shows this. Decisions post to
- * `POST /api/harness-sessions/:enc/approvals/:requestId`; the resolution is
- * broadcast to every subscriber, so a second client's card clears itself.
+ * gates on the capability flag from the sheet. The den sets that flag when
+ * PTY, herdr, and the adapter all allow it (`claude-code` included). Decisions
+ * post to `POST /api/harness-sessions/:enc/approvals/:requestId`; the
+ * resolution is broadcast to every subscriber, so a second client's card
+ * clears itself.
  */
 export function HarnessApprovalCard(props: {
   pending: PendingApproval[]

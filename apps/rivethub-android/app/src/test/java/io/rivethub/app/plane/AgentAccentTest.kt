@@ -20,12 +20,43 @@ class AgentAccentTest {
     }
 
     @Test
-    fun `claude clay and grok grey and local emerald`() {
+    fun `every known harness id maps to a distinct colour`() {
+        val ids = listOf(
+            "claude-code",
+            "grok-build",
+            "codex",
+            "kimi-code",
+            "hermes",
+            "opencode",
+            "pi",
+        )
+        val expected = mapOf(
+            "claude-code" to ACCENT_CLAUDE,
+            "grok-build" to ACCENT_GROK,
+            "codex" to ACCENT_CODEX,
+            "kimi-code" to ACCENT_KIMI,
+            "hermes" to ACCENT_HERMES,
+            "opencode" to ACCENT_OPENCODE,
+            "pi" to ACCENT_PI,
+        )
+        val colors = ids.map { harnessAccentHex(it, null) }
+        assertEquals(ids.size, colors.toSet().size)
+        for (id in ids) {
+            assertEquals(expected[id], harnessAccentHex(id, null))
+        }
+        assertEquals(ACCENT_LOCAL, harnessAccentHex("unknown-bot", null))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex("deepseek-harness", null))
+        assertTrue(ACCENT_LOCAL !in colors)
+    }
+
+    @Test
+    fun `claude clay and grok grey and roster aliases`() {
         assertEquals(ACCENT_CLAUDE, harnessAccentHex("claude-code", null))
         assertEquals(ACCENT_GROK, harnessAccentHex("grok-build", null))
-        assertEquals(ACCENT_LOCAL, harnessAccentHex("hermes", null))
+        assertEquals(ACCENT_HERMES, harnessAccentHex("hermes", null))
         assertEquals(ACCENT_CLAUDE, harnessAccentHex(null, "claude"))
         assertEquals(ACCENT_GROK, harnessAccentHex("grok-build", "claude"))
+        assertEquals(ACCENT_KIMI, harnessAccentHex(null, "kimi"))
     }
 
     @Test
