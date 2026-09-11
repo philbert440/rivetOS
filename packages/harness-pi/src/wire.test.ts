@@ -72,6 +72,16 @@ describe('home + session resolution', () => {
     expect(findSessionFile({ home, cwd: CWD, sessionId: SID })).toBe(file)
   })
 
+  it('resolves a flat --session-dir file (<dir>/<ts>_<id>.jsonl, no cwd bucket)', () => {
+    const home = tmpHome()
+    const root = sessionsRoot(home)
+    fs.mkdirSync(root, { recursive: true })
+    const file = path.join(root, `2026-09-11T14-25-16-803Z_${SID}.jsonl`)
+    fs.writeFileSync(file, '')
+    expect(findSessionFile({ home, cwd: CWD, sessionId: SID })).toBe(file)
+    expect([...listSessionIds(home, CWD)]).toEqual([SID])
+  })
+
   it('returns undefined for a session that is not on disk', () => {
     const home = tmpHome()
     expect(
@@ -121,7 +131,6 @@ describe('toHarnessEvents', () => {
             content: [
               { type: 'thinking', thinking: 'hmm' },
               { type: 'toolCall', id: 't1', name: 'Bash', arguments: { command: 'ls' } },
-              { type: 'toolResult', id: 't1', result: 'ok' },
               { type: 'text', text: 'hello' },
             ],
           },
@@ -137,14 +146,29 @@ describe('toHarnessEvents', () => {
         name: 'Bash',
         input: { command: 'ls' },
       },
+      { type: 'assistant-delta', sessionId: sid, text: 'hello' },
+    ])
+    expect(
+      toHarnessEvents(
+        {
+          type: 'message',
+          message: {
+            role: 'toolResult',
+            toolCallId: 't1',
+            toolName: 'Bash',
+            content: [{ type: 'text', text: 'ok' }],
+          },
+        },
+        sid,
+      ),
+    ).toEqual([
       {
         type: 'tool-result',
         sessionId: sid,
         toolCallId: 't1',
-        name: '',
+        name: 'Bash',
         output: 'ok',
       },
-      { type: 'assistant-delta', sessionId: sid, text: 'hello' },
     ])
   })
 
@@ -158,6 +182,9 @@ describe('toHarnessEvents', () => {
 describe('usageFromEvent / tokensFromUsage', () => {
   it('sums input + cache into inputTokens from assistant message.usage', () => {
     expect(
+      tokensFromUsage({ input: 1516, output: 10, cacheRead: 2, cacheWrite: 3, reasoning: 0, totalTokens: 1526 }),
+    ).toEqual({ inputTokens: 1521, outputTokens: 10 })
+    expect(
       tokensFromUsage({ input_tokens: 100, output_tokens: 25, cache_read_tokens: 10 }),
     ).toEqual({ inputTokens: 110, outputTokens: 25 })
     expect(
@@ -166,14 +193,14 @@ describe('usageFromEvent / tokensFromUsage', () => {
         message: {
           role: 'assistant',
           content: [],
-          usage: { input_tokens: 40, output_tokens: 5 },
+          usage: { input: 40, output: 5, cacheRead: 0, cacheWrite: 0 },
         },
       }),
     ).toEqual({ inputTokens: 40, outputTokens: 5 })
     expect(
       usageFromEvent({
         type: 'message',
-        message: { role: 'user', content: [], usage: { input_tokens: 9, output_tokens: 1 } },
+        message: { role: 'user', content: [], usage: { input: 9, output: 1 } },
       }),
     ).toBeUndefined()
   })
@@ -193,7 +220,7 @@ describe('reconcileTurn', () => {
             role: 'assistant',
             content: [{ type: 'text', text: 'old' }],
             timestamp: 1000,
-            usage: { input_tokens: 100, output_tokens: 10 },
+            usage: { input: 100, output: 10 },
           },
         },
         {
@@ -202,7 +229,7 @@ describe('reconcileTurn', () => {
             role: 'assistant',
             content: [{ type: 'text', text: 'new' }],
             timestamp: 2000,
-            usage: { input_tokens: 200, output_tokens: 20 },
+            usage: { input: 200, output: 20, cacheRead: 0, cacheWrite: 0 },
             stopReason: 'end_turn',
           },
         },
@@ -228,7 +255,7 @@ describe('reconcileTurn', () => {
             role: 'assistant',
             content: [],
             timestamp: 3000,
-            usage: { input_tokens: 100, output_tokens: 10, cache_read_tokens: 5 },
+            usage: { input: 100, output: 10, cacheRead: 5, cacheWrite: 0 },
           },
         },
         '{"type":"message","message":{"role":"assistant"',

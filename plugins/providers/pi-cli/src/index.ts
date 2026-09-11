@@ -2,7 +2,7 @@
  * @rivetos/provider-pi-cli — Pi CLI provider.
  *
  * Each turn shells out to the local pi coding agent
- * (`pi --print --mode json <prompt>`) and replays assistant text / thinking
+ * (`pi --print --mode json -- <prompt>`) and replays assistant text / thinking
  * of its JSON stream. A `type: "session"` event carries the native UUID,
  * remembered per RivetOS conversation (~/.rivetos/pi-cli-sessions.json) and
  * passed back as `--session` so the conversation continues in one pi session.
@@ -35,9 +35,13 @@ export const DEFAULT_MODEL = 'deepseek/deepseek-v4-flash'
 export const SESSION_MAP_FILE = 'pi-cli-sessions.json'
 const NO_INSTRUCTION = '(no instruction was provided for this turn)'
 
-/** Binary name is `pi` (not `pi-coding-agent`); override via $PI_BINARY. */
+/** Binary name is `pi` on PATH (not `pi-coding-agent`); override via $PI_BINARY. */
 export function defaultPiBinary(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PI_BINARY || join(homedir(), '.local/bin/pi')
+  return env.PI_BINARY || 'pi'
+}
+
+function binaryIsPath(binary: string): boolean {
+  return binary.includes('/') || binary.includes('\\')
 }
 
 /** The newest user message as plain text — pi keeps its own history via --session. */
@@ -63,7 +67,7 @@ export interface PiSpawnFlags {
 
 /**
  * `pi --print --mode json [--model m] [--session-id id | --session id]
- * [--session-dir d] <prompt>`
+ * [--session-dir d] -- <prompt>`
  */
 export function buildArgs(flags: PiSpawnFlags, prompt: string): string[] {
   const args = ['--print', '--mode', 'json']
@@ -71,7 +75,7 @@ export function buildArgs(flags: PiSpawnFlags, prompt: string): string[] {
   else if (flags.sessionId) args.push('--session', flags.sessionId)
   if (flags.sessionDir) args.push('--session-dir', flags.sessionDir)
   if (flags.modelId) args.push('--model', flags.modelId)
-  args.push(prompt || NO_INSTRUCTION)
+  args.push('--', prompt || NO_INSTRUCTION)
   return args
 }
 
@@ -79,7 +83,13 @@ export type PiEvent =
   | { kind: 'text'; text: string }
   | { kind: 'reasoning'; text: string }
   | { kind: 'session'; sessionId: string }
-  | { kind: 'usage'; inputTokens: number; outputTokens: number }
+  | {
+      kind: 'usage'
+      inputTokens: number
+      outputTokens: number
+      cacheRead?: number
+      cacheWrite?: number
+    }
   | { kind: 'other' }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,12 +126,27 @@ export function parsePiLine(line: string): PiEvent[] {
     const msg = ev.message
     const out: PiEvent[] = []
     if (msg.role === 'assistant' && isRecord(msg.usage)) {
-      const input = num(msg.usage.input_tokens) || num(msg.usage.inputTokens) || num(msg.usage.promptTokens)
+      const input =
+        num(msg.usage.input) ||
+        num(msg.usage.input_tokens) ||
+        num(msg.usage.inputTokens) ||
+        num(msg.usage.promptTokens)
       const output =
-        num(msg.usage.output_tokens) || num(msg.usage.outputTokens) || num(msg.usage.completionTokens)
-      const cache = num(msg.usage.cache_read_tokens)
+        num(msg.usage.output) ||
+        num(msg.usage.output_tokens) ||
+        num(msg.usage.outputTokens) ||
+        num(msg.usage.completionTokens)
+      const cacheRead = num(msg.usage.cacheRead) || num(msg.usage.cache_read_tokens)
+      const cacheWrite = num(msg.usage.cacheWrite) || num(msg.usage.cache_write_tokens)
+      const cache = cacheRead + cacheWrite
       if (input + cache > 0 || output > 0) {
-        out.push({ kind: 'usage', inputTokens: input + cache, outputTokens: output })
+        out.push({
+          kind: 'usage',
+          inputTokens: input + cache,
+          outputTokens: output,
+          cacheRead,
+          cacheWrite,
+        })
       }
     }
     const content = Array.isArray(msg.content)
@@ -156,10 +181,17 @@ function emptyUsage(): LanguageModelV3Usage {
   }
 }
 
-function usageFromTokens(input?: number, output?: number): LanguageModelV3Usage {
+function usageFromTokens(
+  input?: number,
+  output?: number,
+  cacheRead?: number,
+  cacheWrite?: number,
+): LanguageModelV3Usage {
   const u = emptyUsage()
   if (input && input > 0) u.inputTokens.total = input
   if (output && output > 0) u.outputTokens.total = output
+  if (cacheRead && cacheRead > 0) u.inputTokens.cacheRead = cacheRead
+  if (cacheWrite && cacheWrite > 0) u.inputTokens.cacheWrite = cacheWrite
   return u
 }
 
@@ -232,11 +264,15 @@ export class PiCliModel implements LanguageModelV3 {
         let sawText = false
         let inputTokens = 0
         let outputTokens = 0
+        let cacheReadTokens = 0
+        let cacheWriteTokens = 0
         let stderr = ''
         let buffer = ''
         controller.enqueue({ type: 'stream-start', warnings: [] })
 
-        if (!existsSync(binary)) {
+        // Bare names (`pi`) resolve via PATH — same as isAvailable. existsSync
+        // is only meaningful for an explicit path.
+        if (binaryIsPath(binary) && !existsSync(binary)) {
           controller.enqueue({
             type: 'error',
             error: new Error(`pi binary not found at ${binary}`),
@@ -285,6 +321,8 @@ export class PiCliModel implements LanguageModelV3 {
             else if (ev.kind === 'usage') {
               inputTokens += ev.inputTokens
               outputTokens += ev.outputTokens
+              cacheReadTokens += ev.cacheRead ?? 0
+              cacheWriteTokens += ev.cacheWrite ?? 0
             } else if (
               ev.kind === 'session' &&
               ev.sessionId !== sessionId &&
@@ -338,7 +376,7 @@ export class PiCliModel implements LanguageModelV3 {
             controller.enqueue({
               type: 'finish',
               finishReason: { unified: code === 0 ? 'stop' : 'error', raw: String(code) },
-              usage: usageFromTokens(inputTokens, outputTokens),
+              usage: usageFromTokens(inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens),
             })
             controller.close()
           } catch {

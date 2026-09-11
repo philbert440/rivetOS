@@ -97,8 +97,8 @@ describe('PiExecutor', () => {
       lines: successLines('All done.', SESSION),
       sessionId: SESSION,
       usage: [
-        { input_tokens: 100, output_tokens: 25, cache_read_tokens: 10 },
-        { input_tokens: 40, output_tokens: 5, cache_read_tokens: 0 },
+        { input: 100, output: 25, cacheRead: 10 },
+        { input: 40, output: 5, cacheRead: 0 },
       ],
     })
     const handle = makeExecutor(fake).start(makeConformanceSpec(), {
@@ -141,6 +141,8 @@ describe('PiExecutor', () => {
       expect(args[args.indexOf('--thinking') + 1]).toBe('high')
       expect(args[args.indexOf('--mode') + 1]).toBe('json')
       expect(args).toContain('--print')
+      expect(args).toContain('--')
+      expect(args).toContain('--append-system-prompt')
       expect(args[args.indexOf('--session-dir') + 1]).toBe(path.join(fake.home, 'sessions'))
       // Turn 1 opens a fresh session (den pinning uses --session-id; the
       // executor adopts the id from the stdout session line).
@@ -154,7 +156,7 @@ describe('PiExecutor', () => {
     }
   })
 
-  it('carries the task scaffold in the prompt, never a leading slash command', async () => {
+  it('carries the task scaffold via --append-system-prompt, prompt after --', async () => {
     const fake = successFake()
     const spec = makeConformanceSpec({
       goal: '/goal ship the widget',
@@ -163,7 +165,10 @@ describe('PiExecutor', () => {
     await makeExecutor(fake).start(spec, { signal: new AbortController().signal }).result
 
     const args = fake.args()
-    expect(args).toContain('## Task Context')
+    expect(args).toContain('--append-system-prompt')
+    expect(args).toContain('--')
+    const sys = args[args.indexOf('--append-system-prompt') + 1]
+    expect(sys).toContain('## Task Context')
     const prompt = fake.invocationTexts()[0]
     expect(prompt).toContain('[c1] widget ships')
     expect(prompt).toContain('TASK_RESULT')
@@ -308,10 +313,12 @@ describe('canonicalPiSessionId', () => {
 })
 
 describe('buildTurnPrompt', () => {
-  it('puts the scaffold first so a slash-shaped goal cannot hijack print mode', () => {
-    const prompt = buildTurnPrompt({ scaffold: '## Task Context', message: '/goal do a thing' })
-    expect(prompt.startsWith('## Task Context')).toBe(true)
-    expect(prompt).toContain('## This turn\n/goal do a thing')
+  it('wraps the turn message; scaffold is optional (goes out as --append-system-prompt)', () => {
+    const prompt = buildTurnPrompt({ message: '/goal do a thing' })
+    expect(prompt).toBe('## This turn\n/goal do a thing')
+    const withScaffold = buildTurnPrompt({ scaffold: '## Task Context', message: '/goal do a thing' })
+    expect(withScaffold.startsWith('## Task Context')).toBe(true)
+    expect(withScaffold).toContain('## This turn\n/goal do a thing')
   })
 
   it('includes the rendered transcript when one is supplied', () => {

@@ -27,23 +27,43 @@ function contentItems(message: Record<string, unknown>): Record<string, unknown>
   return content.filter(isRecord)
 }
 
+function num(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
 function usageFromMessage(message: Record<string, unknown>): HarnessTurn['usage'] | undefined {
   const u = message.usage
   if (!isRecord(u)) return undefined
-  const input =
-    (typeof u.input_tokens === 'number' ? u.input_tokens : 0) ||
-    (typeof u.inputTokens === 'number' ? u.inputTokens : 0) ||
-    (typeof u.promptTokens === 'number' ? u.promptTokens : 0)
+  // Real pi 0.85.1 keys: input/output/cacheRead/cacheWrite. Snake/camel aliases are fallbacks.
+  const input = num(u.input) || num(u.input_tokens) || num(u.inputTokens) || num(u.promptTokens)
   const output =
-    (typeof u.output_tokens === 'number' ? u.output_tokens : 0) ||
-    (typeof u.outputTokens === 'number' ? u.outputTokens : 0) ||
-    (typeof u.completionTokens === 'number' ? u.completionTokens : 0)
-  const cached = typeof u.cache_read_tokens === 'number' ? u.cache_read_tokens : 0
-  if (input <= 0 && output <= 0) return undefined
+    num(u.output) || num(u.output_tokens) || num(u.outputTokens) || num(u.completionTokens)
+  const cached = num(u.cacheRead) || num(u.cache_read_tokens)
+  const cacheWrite = num(u.cacheWrite) || num(u.cache_write_tokens)
+  const cachedTokens = cached + cacheWrite
+  if (input <= 0 && output <= 0 && cachedTokens <= 0) return undefined
   return {
-    promptTokens: input + cached,
+    promptTokens: input + cachedTokens,
     completionTokens: output,
-    cachedTokens: cached,
+    cachedTokens,
+  }
+}
+
+function completeRunningTool(
+  turns: HarnessTurn[],
+  id: string | undefined,
+  name: string | undefined,
+): void {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const tools = turns[i].tools
+    if (!tools) continue
+    const entry = id
+      ? tools.find((t) => t.id === id && t.status === 'running')
+      : tools.find((t) => t.status === 'running' && (!name || t.name === name))
+    if (entry) {
+      entry.status = 'done'
+      return
+    }
   }
 }
 
@@ -51,16 +71,32 @@ function usageFromMessage(message: Record<string, unknown>): HarnessTurn['usage'
  * Fold a pi session JSONL (version 3) into logical turns.
  *
  * Message lines map to turns. Assistant content items become text / thinking
- * / tool events. Usage is taken from assistant `message.usage` when present.
- * Tool-call / tool-result fields are read defensively (`name`/`toolName`,
- * `id`/`toolCallId`, `arguments`/`input`, `result`/`content`).
+ * / tool-call events. Tool results arrive as a SEPARATE message
+ * `{role:"toolResult", toolCallId, toolName, content:[…]}` (not an assistant
+ * content item) and complete the matching running tool on the prior turn.
+ * Usage is taken from assistant `message.usage` when present
+ * (`input`/`output`/`cacheRead`/`cacheWrite`; snake/camel aliases as fallbacks).
+ * Tool-call fields are read defensively (`name`/`toolName`, `id`/`toolCallId`,
+ * `arguments`/`input`). Nested `type:toolResult` content items are still
+ * honoured as a fallback.
  */
 export function piTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
   const turns: HarnessTurn[] = []
   for (const obj of lines) {
     if (obj.type !== 'message' || !isRecord(obj.message)) continue
     const message = obj.message
-    const role = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : ''
+    const rawRole = typeof message.role === 'string' ? message.role : ''
+
+    if (rawRole === 'toolResult' || rawRole === 'tool_result') {
+      completeRunningTool(
+        turns,
+        pickStr(message, 'toolCallId', 'id'),
+        pickStr(message, 'toolName', 'name'),
+      )
+      continue
+    }
+
+    const role = rawRole === 'assistant' ? 'assistant' : rawRole === 'user' ? 'user' : ''
     if (!role) continue
 
     const tools: HarnessTranscriptTool[] = []
@@ -82,7 +118,8 @@ export function piTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[
         if (summarized) entry.args = summarized
         tools.push(entry)
       } else if (t === 'toolResult' || t === 'tool_result') {
-        const last = tools.at(-1)
+        const id = pickStr(item, 'id', 'toolCallId')
+        const last = (id ? tools.find((t) => t.id === id && t.status === 'running') : undefined) ?? tools.at(-1)
         if (last && last.status === 'running') last.status = 'done'
       }
     }

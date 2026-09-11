@@ -5,17 +5,20 @@
  * Confirmed against pi 0.85.1 (`@earendil-works/pi-coding-agent`, bin `pi`):
  *
  *   pi --print --mode json [--model m] [--session-id id | --session id]
- *      [--session-dir d] [--thinking level] <prompt>
+ *      [--session-dir d] [--thinking level] [--append-system-prompt text]
+ *      -- <prompt>
  *
  *   - Binary name is `pi` (not `pi-coding-agent`).
- *   - The prompt is a positional ARGV value, not stdin. Linux caps a single
- *     argv element at 128 KiB (MAX_ARG_STRLEN), so the prompt is clamped —
- *     see `clampPrompt`.
+ *   - The prompt is a positional ARGV value after `--`, not stdin. `--` stops
+ *     flag parsing so a message starting with `-` or `@` is not a flag/include.
+ *     Linux caps a single argv element at 128 KiB (MAX_ARG_STRLEN), so the
+ *     prompt is clamped — see `clampPrompt`.
  *   - `--mode json` writes the session JSONL (version 3) to stdout, one object
  *     per line, `session` line first. Parsed by `parsePiJsonLine` in wire.ts.
  *   - `--session <id>` resumes an existing session. `--session-id <uuid>` pins
  *     a NEW session (creates the id if missing). Do not pass both.
- *   - `--thinking` is `off|minimal|low|medium|high|max`. Unset = CLI default.
+ *   - `--thinking` is `off|minimal|low|medium|high|xhigh|max`. Unset = CLI default.
+ *   - `--append-system-prompt` carries the task scaffold.
  *
  * Locked constraint (same as the claude-cli / kimi-code executors): no
  * RivetOS-side per-turn timeout. The runner enforces budgets between turns
@@ -94,13 +97,16 @@ export interface PiSpawnFlags {
   /** `--session-dir` override (tests / non-default data dir). */
   sessionDir?: string
   /** Reasoning effort for `--thinking`. Unset = CLI default. */
-  thinking?: 'low' | 'medium' | 'high' | 'max' | 'minimal'
+  thinking?: 'low' | 'medium' | 'high' | 'max' | 'minimal' | 'xhigh'
+  /** `--append-system-prompt` (task scaffold). Omit when empty. */
+  appendSystemPrompt?: string
   /** Working directory. Sessions are bucketed per cwd on disk. */
   cwd?: string
 }
 
 /**
- * Assemble one `pi --print --mode json` argv. Prompt is positional last.
+ * Assemble one `pi --print --mode json` argv. Prompt is positional last,
+ * after `--` so a leading `-`/`@` is not parsed as a flag or file include.
  * `--session-id` (pin new) and `--session` (resume existing) are mutually
  * exclusive — pin wins if both are set.
  */
@@ -111,7 +117,8 @@ export function buildArgs(flags: PiSpawnFlags, prompt: string): string[] {
   if (flags.sessionDir) args.push('--session-dir', flags.sessionDir)
   if (flags.modelId) args.push('--model', flags.modelId)
   if (flags.thinking) args.push('--thinking', flags.thinking)
-  args.push(clampPrompt(prompt))
+  if (flags.appendSystemPrompt) args.push('--append-system-prompt', flags.appendSystemPrompt)
+  args.push('--', clampPrompt(prompt))
   return args
 }
 

@@ -2,7 +2,7 @@
 
 Pi CLI provider for the [pi](https://github.com/earendil-works/pi) harness
 (`npm i -g @earendil-works/pi-coding-agent`). Each turn runs the local
-`pi --print --mode json <prompt>` (print/JSON mode) and replays the stream as a
+`pi --print --mode json -- <prompt>` (print/JSON mode) and replays the stream as a
 turn; per-conversation continuity via a session map in
 `~/.rivetos/pi-cli-sessions.json`. Implements `aiSdkBridge()` (LanguageModelV3).
 
@@ -22,7 +22,7 @@ agents:
     provider: pi-cli
 providers:
   pi-cli:
-    binary: /home/rivet/.local/bin/pi     # default ~/.local/bin/pi or $PI_BINARY
+    binary: pi                            # default `pi` on PATH, or $PI_BINARY
     home: /home/rivet/.pi/agent           # optional --session-dir <home>/sessions
     model: deepseek/deepseek-v4-flash     # --model
     cwd: /home/rivet/.rivetos/workspace

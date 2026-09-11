@@ -15,7 +15,6 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { encodePiCwd } from '../wire.js'
 
 const INVOCATION_MARK = '--invocation--'
 
@@ -30,8 +29,16 @@ export interface FakePiOptions {
   stderr?: string
   /** Native session id the fake writes a session jsonl for. */
   sessionId?: string
-  /** Per-request usage stamped on the on-disk assistant message. */
-  usage?: Array<{ input_tokens: number; output_tokens: number; cache_read_tokens?: number }>
+  /** Per-request usage stamped on the on-disk assistant message (real keys). */
+  usage?: Array<{
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+    input_tokens?: number
+    output_tokens?: number
+    cache_read_tokens?: number
+  }>
   /** Behave differently when spawned with `--session` (resume-rejection tests). */
   onResume?: { stderr: string; exitCode: number }
   /** Hang until signalled instead of doing anything else. */
@@ -103,25 +110,27 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
         'done',
       )
     }
-    const usage = opts.usage ?? [{ input_tokens: 100, output_tokens: 25, cache_read_tokens: 10 }]
-    const encoded = encodePiCwd(cwd)
-    const bucket = path.join(home, 'sessions', encoded)
-    const wire = path.join(bucket, `2026-09-11T14-25-16-803Z_${sessionId}.jsonl`)
+    const usage = opts.usage ?? [{ input: 100, output: 25, cacheRead: 10 }]
+    // Custom `--session-dir` is flat: <dir>/<ts>_<id>.jsonl (no cwd bucket).
+    const sessionsDir = path.join(home, 'sessions')
+    const wire = path.join(sessionsDir, `2026-09-11T14-25-16-803Z_${sessionId}.jsonl`)
     script.push(
       'NOW=$(date +%s%3N)',
-      `mkdir -p ${shellQuote(bucket)}`,
+      `mkdir -p ${shellQuote(sessionsDir)}`,
       `printf '%s\\n' '{"type":"session","version":3,"id":"${sessionId}","timestamp":"2026-09-11T14:25:16.803Z","cwd":${JSON.stringify(cwd)}}' >> ${shellQuote(wire)}`,
     )
     let inTokens = 0
     let outTokens = 0
     let cacheRead = 0
+    let cacheWrite = 0
     for (const u of usage) {
-      inTokens += u.input_tokens
-      outTokens += u.output_tokens
-      cacheRead += u.cache_read_tokens ?? 0
+      inTokens += u.input ?? u.input_tokens ?? 0
+      outTokens += u.output ?? u.output_tokens ?? 0
+      cacheRead += u.cacheRead ?? u.cache_read_tokens ?? 0
+      cacheWrite += u.cacheWrite ?? 0
     }
     script.push(
-      `printf '%s\\n' '{"type":"message","id":"bbbbbbbb","parentId":"aaaaaaaa","timestamp":"2026-09-11T14:25:17.000Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"timestamp":'"$NOW"',"usage":{"input_tokens":${String(inTokens)},"output_tokens":${String(outTokens)},"cache_read_tokens":${String(cacheRead)}}}}' >> ${shellQuote(wire)}`,
+      `printf '%s\\n' '{"type":"message","id":"bbbbbbbb","parentId":"aaaaaaaa","timestamp":"2026-09-11T14:25:17.000Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}],"timestamp":'"$NOW"',"usage":{"input":${String(inTokens)},"output":${String(outTokens)},"cacheRead":${String(cacheRead)},"cacheWrite":${String(cacheWrite)},"reasoning":0,"totalTokens":${String(inTokens + outTokens)}}}}' >> ${shellQuote(wire)}`,
     )
     if (opts.stderr !== undefined) {
       script.push(`printf '%s\\n' ${shellQuote(opts.stderr)} >&2`)
@@ -220,10 +229,31 @@ export function successLines(finalText: string, sessionId: string): unknown[] {
         content: [
           { type: 'thinking', thinking: 'plan' },
           { type: 'toolCall', id: 'Bash_0', name: 'Bash', arguments: { command: 'ls' } },
-          { type: 'toolResult', id: 'Bash_0', result: 'a\nb\n' },
-          { type: 'text', text: finalText },
         ],
         timestamp: 1_700_000_001_000,
+      },
+    },
+    {
+      type: 'message',
+      id: 'cccccccc',
+      parentId: 'bbbbbbbb',
+      timestamp: '2026-09-11T14:25:17.100Z',
+      message: {
+        role: 'toolResult',
+        toolCallId: 'Bash_0',
+        toolName: 'Bash',
+        content: [{ type: 'text', text: 'a\nb\n' }],
+      },
+    },
+    {
+      type: 'message',
+      id: 'dddddddd',
+      parentId: 'cccccccc',
+      timestamp: '2026-09-11T14:25:17.200Z',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: finalText }],
+        timestamp: 1_700_000_001_200,
       },
     },
   ]

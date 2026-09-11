@@ -6,12 +6,13 @@
  *     `steer()` queues follow-up turns; turn N spawns
  *     `pi --print --mode json --session <native-id>`, so every turn of a task
  *     shares ONE native session and its context.
- *   - There is no `--append-system` on the confirmed flag set, so the task
- *     scaffold (context + acceptance criteria + the TASK_RESULT fence
- *     contract) is PREPENDED to the prompt text of every turn.
+ *   - The task scaffold (context + acceptance criteria + the TASK_RESULT
+ *     fence contract) is passed as `--append-system-prompt` (pi 0.85.1 has
+ *     the flag). The turn message is a positional argv value after `--`.
  *   - print/JSON is the session JSONL on stdout. `type:session` (first line)
  *     carries the native UUID; `type:message` assistant content maps to den
- *     `message.agent` / `tool.start` / `tool.end`. Canonical id is `pi:<uuid>`.
+ *     `message.agent` / `tool.start`. Tool results are a separate
+ *     `{role:"toolResult"}` message → `tool.end`. Canonical id is `pi:<uuid>`.
  *   - Usage arrives from assistant `message.usage` on stdout when present,
  *     else POST-HOC from the session jsonl after the child exits. A reconcile
  *     that finds nothing degrades to zero usage and a warning; it can never
@@ -79,7 +80,7 @@ export interface PiExecutorConfig {
    * Default reasoning effort (spec.effort overrides). Passed as `--thinking`.
    * Unset by default; nothing is passed when neither side sets it.
    */
-  effort?: 'low' | 'medium' | 'high'
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /**
    * Default working directory (spec.workingDir overrides). Pins resume —
    * every turn of a task uses the same one (sessions are cwd-bucketed).
@@ -111,9 +112,8 @@ const RESUME_HISTORY_LIMIT = 1000
 // ---------------------------------------------------------------------------
 
 /**
- * The task scaffold. Mirrors the claude executor's system append field for
- * field — same contract, different delivery channel (prompt text, because
- * this package does not assume `--append-system`).
+ * The task scaffold. Delivered via `--append-system-prompt` (same contract
+ * as the claude executor's system append).
  */
 export function buildTaskScaffold(spec: TaskSpec): string {
   const parts = [
@@ -132,18 +132,17 @@ export function buildTaskScaffold(spec: TaskSpec): string {
 }
 
 /**
- * One turn's prompt: scaffold, optional rehydrated transcript, then the turn's
- * message under a heading.
- *
- * The scaffold going first is load-bearing beyond readability: a prompt that
- * STARTS with a slash command must not be able to hijack print mode.
+ * One turn's prompt: optional rehydrated transcript, then the turn's message
+ * under a heading. The task scaffold is NOT inlined — it goes out as
+ * `--append-system-prompt`. The prompt is passed after `--` so a leading
+ * `-` / `@` / `/` cannot be parsed as a flag, file include, or slash command.
  */
 export function buildTurnPrompt(parts: {
-  scaffold: string
+  scaffold?: string
   transcript?: string
   message: string
 }): string {
-  return [parts.scaffold, parts.transcript ?? '', `## This turn\n${parts.message}`]
+  return [parts.scaffold ?? '', parts.transcript ?? '', `## This turn\n${parts.message}`]
     .filter(Boolean)
     .join('\n\n')
 }
@@ -391,7 +390,8 @@ export class PiExecutor implements HarnessExecutor {
       run.events.push({ ts: Date.now(), type: 'turn.start', turn: usage.turns })
 
       let turn = await this.runOneSpawn(spec, run, usage, {
-        prompt: buildTurnPrompt({ scaffold, transcript, message }),
+        prompt: buildTurnPrompt({ transcript, message }),
+        systemText: scaffold,
         resumeSessionId: nativeSessionId,
       })
 
@@ -414,7 +414,8 @@ export class PiExecutor implements HarnessExecutor {
         nativeSessionId = undefined
         transcript = await this.renderTaskTranscript(spec)
         turn = await this.runOneSpawn(spec, run, usage, {
-          prompt: buildTurnPrompt({ scaffold, transcript, message }),
+          prompt: buildTurnPrompt({ transcript, message }),
+          systemText: scaffold,
         })
       }
 
@@ -500,7 +501,7 @@ export class PiExecutor implements HarnessExecutor {
       setActiveSpawn: (s: SpawnedTurn | undefined) => void
     },
     usage: TaskUsage,
-    turn: { prompt: string; resumeSessionId?: string },
+    turn: { prompt: string; resumeSessionId?: string; systemText?: string },
   ): Promise<SpawnOutcome> {
     const den = (event: AgentEventBody): void => {
       run.events.push({ ts: Date.now(), type: 'den', event })
@@ -521,6 +522,7 @@ export class PiExecutor implements HarnessExecutor {
           resumeSessionId: turn.resumeSessionId,
           sessionDir: this.cfg.piHome ? path.join(this.cfg.piHome, 'sessions') : undefined,
           thinking: effort,
+          appendSystemPrompt: turn.systemText,
           cwd,
         },
         turn.prompt,
@@ -664,12 +666,27 @@ export class PiExecutor implements HarnessExecutor {
       case 'message': {
         const msg = (line as PiMessageEvent).message
         if (!msg || typeof msg !== 'object') return
+        const rec = msg as unknown as Record<string, unknown>
+        const role = msg.role
+        if (role === 'toolResult' || role === 'tool_result') {
+          const id =
+            (typeof rec.toolCallId === 'string' && rec.toolCallId) ||
+            (typeof rec.id === 'string' && rec.id) ||
+            undefined
+          const named =
+            (typeof rec.toolName === 'string' && rec.toolName) ||
+            (typeof rec.name === 'string' && rec.name) ||
+            (typeof id === 'string' ? into.toolNamesById.get(id) : undefined)
+          if (id && named) into.toolNamesById.set(id, named)
+          into.den({ type: 'tool.end', tool: named })
+          return
+        }
         const content = Array.isArray(msg.content)
           ? msg.content
           : typeof msg.content === 'string'
             ? [{ type: 'text', text: msg.content }]
             : []
-        if (msg.role !== 'assistant') return
+        if (role !== 'assistant') return
         for (const raw of content) {
           if (!raw || typeof raw !== 'object') continue
           const item = raw as Record<string, unknown>

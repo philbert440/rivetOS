@@ -21,12 +21,21 @@
  *   {"type":"model_change","provider":"deepseek","modelId":"deepseek-v4-flash"}
  *   {"type":"thinking_level_change","thinkingLevel":"high"}
  *   {"type":"message","id":"<8-hex>","parentId":…,"timestamp":"…",
- *     "message":{"role":"user"|"assistant","content":[…],"timestamp":ms,"usage"?}}
+ *     "message":{"role":"user"|"assistant"|"toolResult","content":[…],"timestamp":ms,"usage"?}}
  *
  * Assistant `content` items: `{type:text,text}`, `{type:thinking,thinking}`,
- * `{type:toolCall,…}`, `{type:toolResult,…}` — tool fields are read
- * defensively (`name`/`toolName`, `id`/`toolCallId`, `arguments`/`input`,
- * `result`/`content`).
+ * `{type:toolCall, id, name, arguments}`. Tool results are a SEPARATE
+ * message `{role:"toolResult", toolCallId, toolName, content:[…]}` — not an
+ * assistant content item. Nested `type:toolResult` items are still read as
+ * a fallback. Tool fields: `name`/`toolName`, `id`/`toolCallId`,
+ * `arguments`/`input`, `result`/`content`.
+ *
+ * Assistant `message.usage` is `{input, output, cacheRead, cacheWrite,
+ * reasoning, totalTokens}` (snake/camel aliases as fallbacks).
+ *
+ * Session files are cwd-bucketed under `~/.pi/agent/sessions/<encoded-cwd>/`
+ * by default. A custom `--session-dir` is FLAT: `<dir>/<ts>_<id>.jsonl`
+ * (no cwd bucket). Readers/listers accept both layouts.
  *
  * Reconcile is POST-HOC: the executor reads the jsonl after the child has
  * exited. A finished process leaves a complete file, and the one damaged
@@ -76,36 +85,54 @@ function nativeFromFilename(name: string): string | undefined {
   return m?.[2]
 }
 
+function pushSessionFile(
+  out: Array<{ id: string; path: string; mtime: number }>,
+  full: string,
+  name: string,
+): void {
+  const id = nativeFromFilename(name)
+  if (!id) return
+  try {
+    const st = fs.statSync(full)
+    if (!st.isFile()) return
+    out.push({ id, path: full, mtime: st.mtimeMs })
+  } catch {
+    /* skip */
+  }
+}
+
 function walkSessionFiles(home: string): Array<{ id: string; path: string; mtime: number }> {
   const out: Array<{ id: string; path: string; mtime: number }> = []
   const root = sessionsRoot(home)
-  let buckets: string[]
+  let entries: string[]
   try {
-    buckets = fs.readdirSync(root)
+    entries = fs.readdirSync(root)
   } catch {
     return out
   }
-  for (const bucket of buckets) {
-    if (bucket.startsWith('.')) continue
-    const dir = path.join(root, bucket)
+  for (const entry of entries) {
+    if (entry.startsWith('.')) continue
+    const full = path.join(root, entry)
+    let st
+    try {
+      st = fs.statSync(full)
+    } catch {
+      continue
+    }
+    // Custom `--session-dir` writes `<dir>/<ts>_<id>.jsonl` with no cwd bucket.
+    if (st.isFile()) {
+      pushSessionFile(out, full, entry)
+      continue
+    }
+    if (!st.isDirectory()) continue
     let names: string[]
     try {
-      if (!fs.statSync(dir).isDirectory()) continue
-      names = fs.readdirSync(dir)
+      names = fs.readdirSync(full)
     } catch {
       continue
     }
     for (const name of names) {
-      const id = nativeFromFilename(name)
-      if (!id) continue
-      const full = path.join(dir, name)
-      try {
-        const st = fs.statSync(full)
-        if (!st.isFile()) continue
-        out.push({ id, path: full, mtime: st.mtimeMs })
-      } catch {
-        continue
-      }
+      pushSessionFile(out, path.join(full, name), name)
     }
   }
   return out
@@ -113,7 +140,8 @@ function walkSessionFiles(home: string): Array<{ id: string; path: string; mtime
 
 /**
  * Absolute jsonl path for a known session id, preferring the cwd bucket when
- * given, else the newest mtime across every cwd bucket.
+ * given, else the newest mtime across flat `--session-dir` files and every
+ * cwd bucket.
  */
 export function findSessionFile(loc: SessionLocation): string | undefined {
   if (!PI_NATIVE_RE.test(loc.sessionId)) return undefined
@@ -154,8 +182,9 @@ export function resolveSessionDir(loc: SessionLocation): string | undefined {
 }
 
 /**
- * Every session id pi knows under `home`. Walks all cwd buckets. `cwd` is
- * accepted for signature parity; listing is not scoped to it.
+ * Every session id pi knows under `home`. Walks flat files at the sessions
+ * root (custom `--session-dir`) and every cwd bucket. `cwd` is accepted for
+ * signature parity; listing is not scoped to it.
  */
 export function listSessionIds(home: string, _cwd: string): Set<string> {
   const ids = new Set<string>()
@@ -223,6 +252,12 @@ export type PiContentItem =
   | { type: string; [key: string]: unknown }
 
 export interface PiUsageFields {
+  input?: number
+  output?: number
+  cacheRead?: number
+  cacheWrite?: number
+  reasoning?: number
+  totalTokens?: number
   input_tokens?: number
   output_tokens?: number
   cache_read_tokens?: number
@@ -231,8 +266,6 @@ export interface PiUsageFields {
   outputTokens?: number
   promptTokens?: number
   completionTokens?: number
-  input?: number
-  output?: number
 }
 
 export interface PiMessageBody {
@@ -241,6 +274,10 @@ export interface PiMessageBody {
   timestamp?: number
   usage?: PiUsageFields
   stopReason?: string
+  toolCallId?: string
+  toolName?: string
+  id?: string
+  name?: string
 }
 
 export interface PiMessageEvent {
@@ -312,6 +349,35 @@ function contentItems(message: PiMessageBody | undefined): Record<string, unknow
   return content.filter(isRecord)
 }
 
+function toolResultOutput(raw: unknown): unknown {
+  if (typeof raw === 'string') return raw
+  if (Array.isArray(raw)) {
+    const texts = raw.filter(isRecord).flatMap((item) => {
+      if (typeof item.text === 'string' && item.text !== '') return [item.text]
+      if (typeof item.result === 'string' && item.result !== '') return [item.result]
+      return []
+    })
+    if (texts.length > 0) return texts.join('\n')
+  }
+  return raw ?? ''
+}
+
+function emitToolResult(
+  out: HarnessEvent[],
+  sid: SessionId,
+  rec: Record<string, unknown>,
+): void {
+  const id = pickStr(rec, 'toolCallId', 'id')
+  if (!id) return
+  out.push({
+    type: 'tool-result',
+    sessionId: sid,
+    toolCallId: id,
+    name: pickStr(rec, 'toolName', 'name') ?? '',
+    output: rec.result ?? toolResultOutput(rec.content) ?? '',
+  })
+}
+
 /**
  * Map one print/JSON event onto control-plane `HarnessEvent`s.
  *
@@ -330,6 +396,10 @@ export function toHarnessEvents(event: PiJsonEvent, sessionId: string): HarnessE
       if (!isRecord(msg)) return []
       const role = msg.role
       const out: HarnessEvent[] = []
+      if (role === 'toolResult' || role === 'tool_result') {
+        emitToolResult(out, sid, msg as unknown as Record<string, unknown>)
+        return out
+      }
       for (const item of contentItems(msg)) {
         const t = item.type
         if (t === 'text' && typeof item.text === 'string' && item.text !== '') {
@@ -350,15 +420,7 @@ export function toHarnessEvents(event: PiJsonEvent, sessionId: string): HarnessE
             input: item.arguments ?? item.input ?? {},
           })
         } else if (t === 'toolResult' || t === 'tool_result') {
-          const id = pickStr(item, 'id', 'toolCallId')
-          if (!id) continue
-          out.push({
-            type: 'tool-result',
-            sessionId: sid,
-            toolCallId: id,
-            name: '',
-            output: item.result ?? item.content ?? '',
-          })
+          emitToolResult(out, sid, item)
         }
       }
       return out
@@ -368,15 +430,15 @@ export function toHarnessEvents(event: PiJsonEvent, sessionId: string): HarnessE
   }
 }
 
-/** Sum token fields; unknown shapes degrade to 0. */
+/** Sum token fields; unknown shapes degrade to 0. Real keys first, aliases fallback. */
 export function tokensFromUsage(u: PiUsageFields | undefined): { inputTokens: number; outputTokens: number } {
   if (u === undefined) return { inputTokens: 0, outputTokens: 0 }
   const input =
-    num(u.input_tokens) || num(u.inputTokens) || num(u.promptTokens) || num(u.input)
+    num(u.input) || num(u.input_tokens) || num(u.inputTokens) || num(u.promptTokens)
   const output =
-    num(u.output_tokens) || num(u.outputTokens) || num(u.completionTokens) || num(u.output)
-  const cacheRead = num(u.cache_read_tokens)
-  const cacheWrite = num(u.cache_write_tokens)
+    num(u.output) || num(u.output_tokens) || num(u.outputTokens) || num(u.completionTokens)
+  const cacheRead = num(u.cacheRead) || num(u.cache_read_tokens)
+  const cacheWrite = num(u.cacheWrite) || num(u.cache_write_tokens)
   return {
     inputTokens: input + cacheRead + cacheWrite,
     outputTokens: output,

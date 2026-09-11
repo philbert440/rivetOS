@@ -83,15 +83,16 @@ const CODEX_EFFORTS: EffortOption[] = [
 ]
 
 /**
- * pi `--thinking` levels `off|minimal|low|medium|high|max` mapped onto RivetOS
- * effort ids. `off` is dropped; `minimal` collapses to `low`; there is no pi
- * equivalent of `xhigh`, so that id is omitted. Spawn passes the RivetOS id
- * (`--thinking low|medium|high|max`), which pi accepts natively.
+ * pi `--thinking` levels `off|minimal|low|medium|high|xhigh|max` mapped onto
+ * RivetOS effort ids `low|medium|high|xhigh|max`. `off` is dropped; `minimal`
+ * collapses to `low`. Spawn passes the RivetOS id (`--thinking high`), which
+ * pi accepts natively.
  */
 const PI_EFFORTS: EffortOption[] = [
   { id: 'low', label: 'Low' },
   { id: 'medium', label: 'Medium' },
   { id: 'high', label: 'High' },
+  { id: 'xhigh', label: 'X-High' },
   { id: 'max', label: 'Max' },
 ]
 

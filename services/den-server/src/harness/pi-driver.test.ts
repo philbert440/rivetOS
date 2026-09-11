@@ -137,7 +137,7 @@ describe('capability flags are honest', () => {
     expect(caps.modelFlag).toBe('--model')
     expect(caps.effortFlag).toBe('--thinking')
     expect(caps.models?.[0]?.id).toBe('deepseek/deepseek-v4-flash')
-    expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'max'])
+    expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
 
   it('drops interrupt/resume when den terminals are off', () => {

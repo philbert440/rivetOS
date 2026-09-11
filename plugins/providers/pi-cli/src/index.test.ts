@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { LanguageModelV3Prompt, LanguageModelV3StreamPart } from '@ai-sdk/provider'
 import type { Provider, RegistrationContext } from '@rivetos/types'
-import { PiCliModel, PiCliProvider, buildArgs, loadSessionMap, manifest, parsePiLine, promptFromV3, saveSessionMap } from './index.js'
+import { PiCliModel, PiCliProvider, buildArgs, defaultPiBinary, loadSessionMap, manifest, parsePiLine, promptFromV3, saveSessionMap } from './index.js'
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pi-cli-'))
@@ -43,10 +43,13 @@ const SID = '01a090db-c402-71cb-a954-6066b9493630'
 describe('helpers', () => {
   it('promptFromV3 → newest user text; empty prompt gets the placeholder in args', () => {
     expect(promptFromV3(prompt)).toBe('hello')
+    expect(defaultPiBinary({})).toBe('pi')
+    expect(defaultPiBinary({ PI_BINARY: '/x/pi' })).toBe('/x/pi')
     expect(buildArgs({ binary: 'k' }, '')).toEqual([
       '--print',
       '--mode',
       'json',
+      '--',
       '(no instruction was provided for this turn)',
     ])
     expect(buildArgs({ binary: 'k', modelId: 'm', sessionId: 's' }, 'q')).toEqual([
@@ -57,8 +60,10 @@ describe('helpers', () => {
       's',
       '--model',
       'm',
+      '--',
       'q',
     ])
+    expect(buildArgs({ binary: 'k' }, '-not-a-flag').slice(-2)).toEqual(['--', '-not-a-flag'])
   })
   it('parsePiLine classifies session ids, assistant text/thinking, and noise', () => {
     expect(parsePiLine(JSON.stringify({ type: 'session', version: 3, id: SID }))).toEqual([
@@ -74,17 +79,25 @@ describe('helpers', () => {
               { type: 'thinking', thinking: 'hmm' },
               { type: 'text', text: 'hi' },
             ],
-            usage: { input_tokens: 3, output_tokens: 1 },
+            usage: { input: 3, output: 1, cacheRead: 2, cacheWrite: 0 },
           },
         }),
       ),
     ).toEqual([
-      { kind: 'usage', inputTokens: 3, outputTokens: 1 },
+      { kind: 'usage', inputTokens: 5, outputTokens: 1, cacheRead: 2, cacheWrite: 0 },
       { kind: 'reasoning', text: 'hmm' },
       { kind: 'text', text: 'hi' },
     ])
     expect(parsePiLine(JSON.stringify({ type: 'text', text: '' }))).toEqual([{ kind: 'other' }])
     expect(parsePiLine('not json')).toEqual([{ kind: 'other' }])
+    expect(
+      parsePiLine(
+        JSON.stringify({
+          type: 'message',
+          message: { role: 'assistant', content: [], usage: { input_tokens: 4, output_tokens: 2 } },
+        }),
+      ),
+    ).toEqual([{ kind: 'usage', inputTokens: 4, outputTokens: 2, cacheRead: 0, cacheWrite: 0 }])
   })
 })
 

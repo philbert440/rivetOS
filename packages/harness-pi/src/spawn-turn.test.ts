@@ -27,8 +27,20 @@ describe('buildArgs', () => {
       '--print',
       '--mode',
       'json',
+      '--',
       'do the thing',
     ])
+  })
+
+  it('puts the prompt after -- so a leading - or @ is not a flag or file include', () => {
+    expect(buildArgs({ binary: 'pi' }, '-not-a-flag')).toEqual([
+      '--print',
+      '--mode',
+      'json',
+      '--',
+      '-not-a-flag',
+    ])
+    expect(buildArgs({ binary: 'pi' }, '@notes.md').slice(-2)).toEqual(['--', '@notes.md'])
   })
 
   it('adds --session for a resumed turn, --model and --thinking when set', () => {
@@ -52,7 +64,19 @@ describe('buildArgs', () => {
       '--thinking',
       'high',
     ])
-    expect(args[args.length - 1]).toBe('go on')
+    expect(args.slice(-2)).toEqual(['--', 'go on'])
+  })
+
+  it('passes --append-system-prompt when the scaffold is set', () => {
+    expect(buildArgs({ binary: 'pi', appendSystemPrompt: '## Task Context' }, 'hi')).toEqual([
+      '--print',
+      '--mode',
+      'json',
+      '--append-system-prompt',
+      '## Task Context',
+      '--',
+      'hi',
+    ])
   })
 
   it('pins a new session with --session-id and optional --session-dir', () => {
@@ -72,6 +96,7 @@ describe('buildArgs', () => {
       '01a090db-c402-71cb-a954-6066b9493630',
       '--session-dir',
       '/tmp/pi-sessions',
+      '--',
       'hi',
     ])
     expect(args).not.toContain('--session')

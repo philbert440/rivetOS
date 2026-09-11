@@ -651,6 +651,56 @@ describe('listHarnessSessions', () => {
     expect(await resolveHarnessStore(`pi:${id}`)).toEqual({ command: 'pi', path: newer })
   })
 
+  it('reads pi sessions written flat under sessions/ (custom --session-dir)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-flat-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    const id = '7e1c2a90-3b44-4d1a-9c0e-2f8b6d5a1c03'
+    mkdirSync(join(home, 'sessions'), { recursive: true })
+    const file = join(home, 'sessions', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'flat session' }] },
+      }) + '\n',
+    )
+    const sessions = await listHarnessSessions(['pi'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({ id, command: 'pi', title: 'flat session' })
+    expect(await resolveHarnessStore(`pi:${id}`)).toEqual({ command: 'pi', path: file })
+  })
+
+  it('lists only the newest pi sessions up to limit', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pi-limit-'))
+    dirs.push(home)
+    setPiHomeForTest(home)
+    mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
+    const older = '11111111-1111-4111-8111-111111111111'
+    const newer = '22222222-2222-4222-8222-222222222222'
+    const olderFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${older}.jsonl`)
+    const newerFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T18-00-00-000Z_${newer}.jsonl`)
+    writeFileSync(
+      olderFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'old' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      newerFile,
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'new' }] },
+      }) + '\n',
+    )
+    utimesSync(olderFile, 1_700_000_000, 1_700_000_000)
+    utimesSync(newerFile, 1_700_000_800, 1_700_000_800)
+    const sessions = await listHarnessSessions(['pi'], 1)
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].id).toBe(newer)
+  })
+
   it('treats a missing pi jsonl as absent', async () => {
     const home = mkdtempSync(join(tmpdir(), 'pi-empty-'))
     dirs.push(home)

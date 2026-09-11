@@ -15,6 +15,9 @@ class HubReducersTest {
         assertEquals("deepseek-harness", harnessIdForAgent("dsh", null))
         assertEquals("codex", harnessIdForAgent("codex", null))
         assertEquals("pi", harnessIdForAgent("pi", "pi-cli"))
+        assertEquals("pi", harnessIdForAgent("pi", null))
+        assertEquals(null, harnessIdForAgent("gippity", null))
+        assertEquals(null, harnessIdForAgent("copilot", null))
         assertEquals(null, harnessIdForAgent("wiki", "local"))
     }
 

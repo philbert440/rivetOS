@@ -801,8 +801,9 @@ function dshSessionExists(id: string): boolean {
 // ---- Pi: ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<uuid>.jsonl ---------
 // encoded-cwd replaces every `/` with `-` and wraps in dashes
 // (`/home/rivet` → `--home-rivet--`). Native id is the UUID in the filename
-// (and on the first JSONL `session` line). Listing walks every cwd bucket;
-// newest by file mtime (timestamp prefix as a tie-break). No `$PI_HOME`.
+// (and on the first JSONL `session` line). Default layout is cwd-bucketed;
+// a custom `--session-dir` is FLAT (`<dir>/<ts>_<id>.jsonl`). Listing walks
+// both, newest by file mtime (timestamp prefix as a tie-break). No `$PI_HOME`.
 
 const PI_NATIVE_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -829,44 +830,63 @@ function piNativeFromFilename(name: string): string | undefined {
   return m?.[2]
 }
 
-/** Newest jsonl for a native id across every cwd bucket. */
+function considerPiFile(
+  best: { path: string; mtime: number; prefix: string } | undefined,
+  full: string,
+  name: string,
+  id: string,
+): { path: string; mtime: number; prefix: string } | undefined {
+  if (piNativeFromFilename(name) !== id) return best
+  try {
+    const st = statSync(full)
+    if (!st.isFile()) return best
+    const prefix = name.slice(0, name.length - `_${id}.jsonl`.length)
+    if (
+      !best ||
+      st.mtimeMs > best.mtime ||
+      (st.mtimeMs === best.mtime && prefix > best.prefix)
+    ) {
+      return { path: full, mtime: st.mtimeMs, prefix }
+    }
+  } catch {
+    /* skip */
+  }
+  return best
+}
+
+/** Newest jsonl for a native id: flat `--session-dir` files and every cwd bucket. */
 function piTranscriptPath(id: string): string | undefined {
   if (!id || !PI_NATIVE_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
   const root = piSessionsDir()
-  let buckets: string[]
+  let entries: string[]
   try {
-    buckets = readdirSync(root)
+    entries = readdirSync(root)
   } catch {
     return undefined
   }
   let best: { path: string; mtime: number; prefix: string } | undefined
-  for (const bucket of buckets) {
-    if (bucket.startsWith('.')) continue
-    const dir = join(root, bucket)
+  for (const entry of entries) {
+    if (entry.startsWith('.')) continue
+    const full = join(root, entry)
+    let st
+    try {
+      st = statSync(full)
+    } catch {
+      continue
+    }
+    if (st.isFile()) {
+      best = considerPiFile(best, full, entry, id)
+      continue
+    }
+    if (!st.isDirectory()) continue
     let names: string[]
     try {
-      if (!statSync(dir).isDirectory()) continue
-      names = readdirSync(dir)
+      names = readdirSync(full)
     } catch {
       continue
     }
     for (const name of names) {
-      if (piNativeFromFilename(name) !== id) continue
-      const full = join(dir, name)
-      try {
-        const st = statSync(full)
-        if (!st.isFile()) continue
-        const prefix = name.slice(0, name.length - `_${id}.jsonl`.length)
-        if (
-          !best ||
-          st.mtimeMs > best.mtime ||
-          (st.mtimeMs === best.mtime && prefix > best.prefix)
-        ) {
-          best = { path: full, mtime: st.mtimeMs, prefix }
-        }
-      } catch {
-        continue
-      }
+      best = considerPiFile(best, join(full, name), name, id)
     }
   }
   return best?.path
@@ -912,44 +932,64 @@ async function readPiSession(id: string): Promise<HarnessSession | undefined> {
   }
 }
 
-async function listPiSessions(limit: number): Promise<HarnessSession[]> {
+async function collectPiSessionFiles(): Promise<Array<{ id: string; path: string; mtime: number }>> {
   const root = piSessionsDir()
-  let buckets: import('node:fs').Dirent[]
+  const out: Array<{ id: string; path: string; mtime: number }> = []
+  let entries: import('node:fs').Dirent[]
   try {
-    buckets = await readdir(root, { withFileTypes: true })
+    entries = await readdir(root, { withFileTypes: true })
   } catch {
-    return []
+    return out
   }
-  const newest = new Map<string, { path: string; mtime: number }>()
-  for (const bucket of buckets) {
-    if (!bucket.isDirectory() || bucket.name.startsWith('.')) continue
+  const pushFile = async (dir: string, name: string): Promise<void> => {
+    const id = piNativeFromFilename(name)
+    if (!id) return
+    const full = join(dir, name)
+    try {
+      const st = await stat(full)
+      if (!st.isFile()) return
+      out.push({ id, path: full, mtime: st.mtimeMs })
+    } catch {
+      /* skip */
+    }
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue
+    if (entry.isFile()) {
+      await pushFile(root, entry.name)
+      continue
+    }
+    if (!entry.isDirectory()) continue
     let files: import('node:fs').Dirent[]
     try {
-      files = await readdir(join(root, bucket.name), { withFileTypes: true })
+      files = await readdir(join(root, entry.name), { withFileTypes: true })
     } catch {
       continue
     }
     for (const f of files) {
       if (!f.isFile()) continue
-      const id = piNativeFromFilename(f.name)
-      if (!id) continue
-      const full = join(root, bucket.name, f.name)
-      let mtime: number
-      try {
-        mtime = (await stat(full)).mtimeMs
-      } catch {
-        continue
-      }
-      const prev = newest.get(id)
-      if (!prev || mtime >= prev.mtime) newest.set(id, { path: full, mtime })
+      await pushFile(join(root, entry.name), f.name)
     }
   }
-  const out: HarnessSession[] = []
-  for (const id of newest.keys()) {
-    const row = await readPiSession(id)
-    if (row) out.push(row)
+  return out
+}
+
+async function listPiSessions(limit: number): Promise<HarnessSession[]> {
+  const found = await collectPiSessionFiles()
+  const newest = new Map<string, { id: string; path: string; mtime: number }>()
+  for (const row of found) {
+    const prev = newest.get(row.id)
+    if (!prev || row.mtime >= prev.mtime) newest.set(row.id, row)
   }
-  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+  // Slice/sort by mtime BEFORE parsing (mirror listCodexSessions): only the
+  // `limit` newest jsonl files are read for titles.
+  const ranked = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+  const out: HarnessSession[] = []
+  for (const row of ranked) {
+    const parsed = await readPiSession(row.id)
+    if (parsed) out.push(parsed)
+  }
+  return out
 }
 
 /**

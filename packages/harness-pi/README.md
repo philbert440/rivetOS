@@ -6,7 +6,8 @@ The `pi` half of the harness control plane's task side: a
 
 ```
 pi --print --mode json [--model m] [--session-id id | --session id]
-   [--session-dir d] [--thinking low|medium|high|max] <prompt>
+   [--session-dir d] [--thinking low|medium|high|xhigh|max]
+   [--append-system-prompt text] -- <prompt>
 ```
 
 Not a provider plugin — there is no `LanguageModel` here and no
@@ -18,15 +19,19 @@ can register a real executor for harness id `pi`. The provider-plugin id
 
 1. **Spawn.** One `pi --print --mode json` per turn, in a fixed `cwd`. The task
    scaffold (context, acceptance criteria, the `TASK_RESULT` fence contract) is
-   prepended to the prompt: this package does not assume `--append-system`.
+   passed as `--append-system-prompt`. The turn prompt is positional after `--`
+   so a leading `-` or `@` is not parsed as a flag or file include.
 2. **Stream.** Print/JSON is the session JSONL (version 3) on stdout — a
-   `session` line first (native UUID), then `message` lines whose assistant
-   content is text / thinking / toolCall / toolResult — translated to den
-   `message.agent` / `tool.start` / `tool.end`. The native id is canonicalized
-   to `pi:<uuid>`.
+   `session` line first (native UUID), then `message` lines. Assistant content
+   is text / thinking / `{type:toolCall,id,name,arguments}`; tool results are a
+   separate `{role:"toolResult", toolCallId, toolName, content}` message —
+   translated to den `message.agent` / `tool.start` / `tool.end`. The native id
+   is canonicalized to `pi:<uuid>`.
 3. **Reconcile.** If the stream carried no usage, after the child exits the
-   executor reads the session jsonl under `~/.pi/agent/sessions/<cwd-bucket>/`
-   and reports the turn's tokens from assistant `message.usage`. Post-hoc,
+   executor reads the session jsonl (cwd-bucketed under
+   `~/.pi/agent/sessions/<cwd-bucket>/`, or flat `<session-dir>/<ts>_<id>.jsonl`
+   when `--session-dir` is set) and reports the turn's tokens from assistant
+   `message.usage` (`input`/`output`/`cacheRead`/`cacheWrite`). Post-hoc,
    because the process has exited: no tailing, no attribution race, no
    torn-read handling beyond skipping the one line a SIGKILL can damage.
 4. **Steer.** Follow-up turns spawn `--session <native-id>`, so the whole task

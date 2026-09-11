@@ -207,10 +207,8 @@ describe('hermesSheet / deepseekSheet', () => {
     expect(sheet.effortFlag).toBe('--thinking')
     expect(sheet.models?.map((m) => m.id)).toEqual(['deepseek/deepseek-v4-flash'])
     expect(sheet.models?.[0]?.default).toBe(true)
-    expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'max'])
-    expect(sheet.efforts?.some((e) => e.id === 'xhigh' || e.id === 'off' || e.id === 'minimal')).toBe(
-      false,
-    )
+    expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(sheet.efforts?.some((e) => e.id === 'off' || e.id === 'minimal')).toBe(false)
     expect(appendModelEffortArgv(['pi'], sheet, 'deepseek/deepseek-v4-flash', 'high')).toEqual([
       'pi',
       '--model',
