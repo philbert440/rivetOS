@@ -1123,10 +1123,9 @@ describe('capability runtime truthing', () => {
       'grok-build',
       'hermes',
       'kimi-code',
-      'deepseek-harness',
-      'opencode',
       'pi',
       'deepseek-harness',
+      'opencode',
       'codex',
     ])
     for (const h of body.harnesses) {
@@ -1157,10 +1156,9 @@ describe('capability runtime truthing', () => {
       'grok-build',
       'hermes',
       'kimi-code',
-      'deepseek-harness',
-      'opencode',
       'pi',
       'deepseek-harness',
+      'opencode',
       'codex',
     ])
     for (const h of body.harnesses) {
