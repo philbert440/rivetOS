@@ -162,10 +162,6 @@
 /* Bridge line closing a section (full-weight sentence, not a fragment). */
 .section-close { margin-top:32px; font-size:17px; font-weight:500; color:var(--ink); max-width:640px; }
 
-/* Shipped/planned comparison block. */
-.settings-preview .spaced-heading { margin-top:22px; padding-top:18px; border-top:1px solid var(--rule); }
-.settings-preview .setting-row:last-child { border-bottom:0; padding-bottom:4px; }
-
 .faq-section { border-top:1px solid var(--rule); }
 .faq-grid { display:grid; grid-template-columns:1fr 1fr; gap:0 40px; align-items:start; }
 .faq-grid details { border-top:1px solid var(--rule); padding:18px 0; }
