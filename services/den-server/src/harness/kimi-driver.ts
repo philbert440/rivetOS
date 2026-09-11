@@ -64,18 +64,17 @@
  * means "this room moved on", never "kimi renamed itself", and this class's
  * doc comment is where that distinction is written down.
  *
- * **What the live stream does not carry, stated rather than faked.** kimi's
- * `Stop` hook payload is `{ stop_hook_active }` — no reply text — and no kimi
- * hook is given thinking text at all. Its den translator therefore emits
- * neither `message.agent` nor `thinking.delta`, so this driver emits **no
- * `assistant-delta` and no `reasoning-delta`**: the base maps both the moment
- * such an event appears, and until the harness produces one there is nothing to
- * carry. Inventing a spinner line to fill the gap would be a lie about what the
- * node observed. `liveStream` is still honestly true when the tap is wired —
- * session lifecycle, tool calls and turn boundaries are all real — and the
- * assistant/thinking text is served by `transcript()`, which reads kimi's own
- * `content.part` `text` and `think` parts out of `wire.jsonl`. A
- * transcript-watch-fed delta stream is the documented follow-up, not a fake.
+ * **Live deltas come from `wire.jsonl`, not the Stop hook.** kimi's `Stop`
+ * hook payload is `{ stop_hook_active }` — no reply text — and no kimi hook
+ * is given thinking text at all, so the den translator still emits neither
+ * `message.agent` nor `thinking.delta`. The base would map those the moment
+ * they appeared; until then this driver tails the same `agents/main/wire.jsonl`
+ * the transcript reader already watches (`onTranscriptFrame` →
+ * `kimiDeltasFromTurns`) and emits `assistant-delta` / `reasoning-delta` as
+ * new `content.part` text/think lands. Inventing a spinner would still be a
+ * lie. `liveStream` is true when the tap **or** the transcript watcher is
+ * wired — session lifecycle, tools, turn boundaries, and now the in-flight
+ * reply.
  *
  * **Honest capabilities.** `approvals` is true when a PTY is available and
  * herdr is the mux (approval-panel keys, mapping unverified). Under tmux it
@@ -89,8 +88,9 @@
  * See docs/ARCHITECTURE.md.
  */
 
-import { formatSessionId, type SessionId } from '@rivetos/types'
+import { formatSessionId, type SessionId, type TranscriptWsFrame } from '@rivetos/types'
 import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
+import { kimiDeltasFromTurns } from './adapters/kimi.js'
 import {
   type DenAgentEventLike,
   type HarnessPtyHost,
@@ -199,5 +199,25 @@ export class KimiCodeDriver extends AdoptingPtyHarnessDriver<KimiStoreHost> {
     if (!room.startsWith(prefix)) return undefined
     const native = room.slice(prefix.length)
     return native.startsWith('session_') ? native : undefined
+  }
+
+  /**
+   * The transcript watcher already tails `agents/main/wire.jsonl` at the
+   * harness-store cadence. Diff the last assistant turn against the previous
+   * parse and emit live deltas — kimi's Stop hook never will.
+   */
+  protected override onTranscriptFrame(native: string, f: TranscriptWsFrame): void {
+    const prev = this.live.get(native)?.turns
+    super.onTranscriptFrame(native, f)
+    const next = this.live.get(native)?.turns
+    if (!next) return
+    const sessionId = this.sid(native)
+    for (const d of kimiDeltasFromTurns(prev, next)) {
+      if (d.kind === 'reasoning') {
+        this.emit(native, { type: 'reasoning-delta', sessionId, text: d.text })
+      } else {
+        this.emit(native, { type: 'assistant-delta', sessionId, text: d.text })
+      }
+    }
   }
 }

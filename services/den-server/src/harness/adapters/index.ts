@@ -9,7 +9,7 @@ import type { HarnessAdapter } from './types.js'
 
 export type { HarnessAdapter, HarnessStoreRef } from './types.js'
 export { claudeTurnsFromLines, claudeAdapter } from './claude.js'
-export { kimiTurnsFromLines, kimiAdapter } from './kimi.js'
+export { kimiTurnsFromLines, kimiDeltasFromTurns, watchKimiWire, kimiAdapter } from './kimi.js'
 export { grokPickTurn, grokTurnsFromLines, grokAdapter } from './grok.js'
 export { readHermesTurns, hermesAdapter } from './hermes.js'
 export { codexTurnsFromLines, codexAdapter } from './codex.js'
