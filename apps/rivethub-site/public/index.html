@@ -22,7 +22,7 @@
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="The RivetHub desktop app, showing saved agent conversations and a completed memory search.">
+<meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Automatic memory. Nothing to remember to write down.”">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="RivetHub — self-hosted memory for your AI agents">
 <meta name="twitter:description" content="RivetHub records every session your coding agents run on your own hardware, so the next session picks up where the last one left off.">
@@ -47,7 +47,7 @@
     </div>
     <div class="actions"><a class="text-action" href="#how-it-works">See how it works <span aria-hidden="true">↓</span></a><a class="text-action" href="install-local.html">Read the quickstart <span aria-hidden="true">→</span></a></div>
     <p class="small-note">Runs on Linux and macOS. Installs Node.js 22+ if you don’t have it.</p>
-    <p class="hero-tools">Works with <a href="install-local.html#harnesses">Claude Code, Codex, Grok Build, Kimi Code, Hermes, opencode, and pi</a>.</p>
+    <p class="hero-tools">Works with <a href="install-local.html#harnesses">Claude Code, Codex, Grok Build, Kimi Code, and Hermes</a>. opencode and pi are on the way.</p>
   </div>
 <figure class="product-shot"><a href="images/omarchy/osaka-jade-chat-expanded.png" aria-label="View full-size screenshot: the RivetHub desktop app with saved conversations and a completed memory search"><img src="images/omarchy/osaka-jade-chat-expanded.png" width="1280" height="800" alt="The RivetHub desktop app with saved conversations and a completed memory search" loading="eager" fetchpriority="high"></a><figcaption>The RivetHub desktop app, running on Omarchy. Open the full screenshot <span aria-hidden="true">↗</span></figcaption></figure>
 </section>
@@ -73,14 +73,17 @@
 <section class="landing-wrap section" id="what-you-get" aria-labelledby="get-title"><div class="section-intro"><p class="eyebrow">What you get</p><h2 id="get-title">More than a chat log.</h2></div>
   <div class="use-grid"><article><h3>Search that works from the first session</h3><p>Full-text and fuzzy search are built in — no models to configure, nothing to sign up for. When you want semantic search, point the hub at any OpenAI-compatible embedding endpoint, local or cloud.</p></article><article><h3>Your work stays yours</h3><p>The hub runs on your hardware and needs no account. Your agent providers still see the prompts you send them. What RivetHub saves is yours — it stays on your hardware until you decide otherwise.</p></article><article><h3>Grows from one laptop to a fleet</h3><p>Add a dedicated datahub and enroll more nodes when you need always-on, shared memory. Releases are pinned to exact tags and checksums, and backups are built in.</p></article></div>
 </section>
+<section class="landing-wrap section" id="now" aria-labelledby="now-title"><div class="section-intro"><p class="eyebrow">Availability</p><h2 id="now-title">Here today, and on the way.</h2></div>
+  <div class="now-grid"><article><h3>Here today</h3><p>Claude Code, Codex, Grok Build, Kimi Code, and Hermes. Local mode (<code>rivetos local</code>). Desktop apps for Linux and Windows, plus Android.</p></article><article><h3>On the way</h3><p>opencode and pi harnesses.</p></article></div>
+</section>
 <section class="landing-wrap section faq-section" id="questions" aria-labelledby="faq-title"><div class="section-intro"><p class="eyebrow">Questions</p><h2 id="faq-title">Asked often.</h2></div><div class="faq-grid">
 <details open id="what-is-rivethub"><summary>What is RivetHub?</summary><p>A self-hosted hub for your AI coding tools, built on the open-source <a href="https://rivetos.dev">RivetOS</a> runtime. It records sessions, tool calls, and outputs from connected tools, and makes that history searchable — by you, and by the tools themselves.</p></details>
-<details id="supported-tools"><summary>Which tools does it work with?</summary><p>Claude Code, Codex, Grok Build, Kimi Code, Hermes, opencode, and pi. The installer wires capture and recall into whichever of these it finds on your machine — the <a href="install-local.html#harnesses">quickstart</a> shows exactly how each one connects.</p></details>
+<details id="supported-tools"><summary>Which tools does it work with?</summary><p>Claude Code, Codex, Grok Build, Kimi Code, and Hermes. opencode and pi are on the way. The installer wires capture and recall into whichever of the shipped tools it finds on your machine — the <a href="install-local.html#harnesses">quickstart</a> shows exactly how each one connects.</p></details>
 <details id="embedding-required"><summary>Do I need an embedding model to start?</summary><p>No. Search works out of the box. Semantic search is an optional upgrade that uses an embedding endpoint you choose and configure on the server.</p></details>
 <details id="local-data"><summary>Where does my data go?</summary><p>The record lives on your hardware. Your agent providers still process the prompts you send them, and if you configure cloud embedding or compaction services, those process the content sent to them. Choose local services and everything stays local.</p></details>
 <details id="windows-support"><summary>Can I run the hub on Windows?</summary><p>The hub installer supports Linux and macOS. On Windows, the desktop app connects to a hub running elsewhere — your Linux server or another machine on the network.</p></details>
 </div></section>
-<section class="final-section"><div class="landing-wrap"><h2>Set it up once.<br><span>Remember everything after.</span></h2><a class="button primary" href="install-local.html">Get started with the quickstart →</a><p>One command. Your own hardware. Apache 2.0, no account required.</p></div></section>
+<section class="final-section"><div class="landing-wrap"><h2>Set it up once, and remember everything after.</h2><a class="button primary" href="install-local.html">Get started with the quickstart →</a><p>One command installs it on your own hardware — Apache 2.0, and no account required.</p></div></section>
 </main>
 <footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script><script src="landing.js"></script>
