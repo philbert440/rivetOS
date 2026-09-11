@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ package.json",
     "test": "vitest run --passWithNoTests",
+    "theme:opencode": "tsx scripts/rivethub-opencode-theme.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
