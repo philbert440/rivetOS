@@ -23,7 +23,7 @@
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="RivetHub: Automatic memory. Nothing to remember to write down.">
+<meta property="og:image:alt" content="Install a RivetHub agent node: the RivetOS runtime, SSH enrollment, and a systemd unit.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Install an agent node — RivetHub">
 <meta name="twitter:description" content="Install a RivetHub agent node: the RivetOS runtime, mesh enrollment over SSH, and a systemd unit.">
@@ -41,7 +41,7 @@
 <div class="wrap-wide">
 
   <div class="page-head guide-head">
-    <p class="kicker">// install · agent node</p>
+    <p class="kicker">install · agent node</p>
     <h1>Install an agent node</h1><p><a href="server.html">← Server setup overview</a></p>
     <p class="lede">An agent node runs the RivetOS runtime and enrolls
     against your datahub over SSH. You need a working
@@ -73,7 +73,7 @@
   </section>
 
   <section class="block">
-    <p class="kicker">// the command</p>
+    <p class="kicker">the command</p>
     <h2>Curl-pipe is supported</h2>
     <div class="term">
       <div class="term__bar"><i></i><i></i><i></i><span class="term__title">node installer — curl-pipe</span></div>
@@ -90,7 +90,7 @@
   </section>
 
   <section class="block">
-    <p class="kicker">// the prompts</p>
+    <p class="kicker">the prompts</p>
     <h2>What the installer asks</h2>
     <p>On a TTY, unset fields are prompted, then a SUMMARY, then an
     explicit <code>yes</code>. <code>--yes</code> skips the confirm; on
@@ -112,13 +112,13 @@
     <code>rivethub-hub enroll &lt;node-name&gt; &lt;advertise-host&gt;</code>
     on the datahub, and stdout is only a base64 tarball (leaf cert + key,
     <code>ca-chain.pem</code>, current <code>mesh.json</code>, node config
-    snippet), unpacked into the local shared dir.
-    <code>rivetos mesh enroll</code> is not merged upstream yet — the
-    installer implements the same tarball contract today.</p>
+    snippet), unpacked into the local shared dir. On an existing RivetOS
+    install, <code>rivetos mesh enroll</code> drives the same contract
+    from the CLI.</p>
   </section>
 
   <section class="block">
-    <p class="kicker">// layout</p>
+    <p class="kicker">layout</p>
     <h2>What gets installed where</h2>
     <dl class="what">
       <div>
@@ -159,7 +159,7 @@
   </section>
 
   <section class="block">
-    <p class="kicker">// verify</p>
+    <p class="kicker">verify</p>
     <h2>Verify</h2>
     <div class="term">
       <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the node</span></div>
@@ -182,7 +182,7 @@
   </section>
 
   <section class="block">
-    <p class="kicker">// next</p>
+    <p class="kicker">next</p>
     <h2>Add the next node</h2>
     <p>Run the same command on another host, with a fresh name and
     address:</p>
@@ -192,18 +192,15 @@
     </div>
 
     <h2 class="spaced">Renew certificates</h2>
-    <p>Renewal is driven from the datahub, which re-issues the node's leaf
-    and emits the same tarball:</p>
-    <div class="term">
-      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">on the datahub</span></div>
-      <pre tabindex="0" data-copy="rivethub-hub renew &lt;node-name&gt;"><code><span class="ps">$ </span>rivethub-hub renew &lt;node-name&gt;</code></pre>
-    </div>
-    <p>To change a node's address, re-enroll it instead of renewing.</p>
+    <p>Renewal is driven from the datahub:
+    <code>rivethub-hub renew &lt;node-name&gt;</code> re-issues the node’s
+    leaf certificate and emits the same tarball as enrollment. To change a
+    node’s address, re-enroll it instead of renewing.</p>
   </section>
 
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Automatic memory for your agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 </body>
 </html>

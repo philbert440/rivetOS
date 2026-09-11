@@ -23,7 +23,7 @@
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="RivetHub: Automatic memory. Nothing to remember to write down.">
+<meta property="og:image:alt" content="RivetHub on Omarchy: the app and terminal follow your desktop theme.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="RivetHub on Omarchy — setup and desktop themes">
 <meta name="twitter:description" content="Set up local agent memory on Omarchy, connect your tools, and make RivetHub and its terminal follow your desktop theme.">
@@ -39,23 +39,23 @@
     </a>
     <nav class="site-nav" aria-label="Site">
       <a href="index.html">Home</a>
-      <a href="install-local.html">Run locally</a>
+      <a href="install-local.html">Quickstart</a>
+      <a href="server.html">Server</a>
+      <a href="apps.html">Apps / Downloads</a>
+      <a href="support.html">Support</a>
       <a href="omarchy.html" aria-current="page">Omarchy</a>
-      <a href="apps.html">Apps</a>
-      <a href="install-datahub.html">Datahub</a>
-      <a href="install-node.html">Add a node</a>
       <a href="releases.html">Releases</a>
     </nav>
   </div>
 </header>
 <main id="main"><div class="wrap-wide">
 <div class="page-head guide-head">
-<p class="kicker">Your desktop. Your agents. Your memory.</p>
+<p class="kicker">RivetHub on Omarchy</p>
 <h1>Your Omarchy.<br>With a memory.</h1>
-<p class="lede">A private home for your agent sessions, tool calls, and outputs. Set up RivetHub locally, match your desktop theme, and let your next agent pick up the thread.</p>
+<p class="lede">A hub on your own machine for your agent sessions, tool calls, and outputs — themed to match your desktop. Set it up locally, then let your next session pick up where this one ends.</p>
 <nav class="jump-links" aria-label="On this page"><a href="#gallery">Find your theme</a><a href="#setup">Get running</a><a href="#appearance">Match your theme</a><a href="#first-memory">Make your first memory</a></nav>
 </div>
-<section class="block" id="gallery"><p class="kicker">Find your colors</p><h2>Same memory. Your kind of desktop.</h2><p class="section-lede">Browse the screenshots. The whole page follows the Omarchy theme you choose. Switch between chat and terminal, then explore different views of the same workspace.</p>
+<section class="block" id="gallery"><p class="kicker">Find your colors</p><h2>One workspace, every palette.</h2><p class="section-lede">Pick a theme and the whole page follows it. Every capture below is the same RivetHub workspace — chat or terminal, expanded or collapsed.</p>
 <div class="theme-controls" hidden><label class="theme-picker-label" for="theme-choice">Your desktop palette</label><div class="theme-navigation"><button type="button" id="theme-prev" aria-label="Previous Omarchy theme"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M14 6l-6 6 6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button><div class="theme-select"><select id="theme-choice">
 <option value="tokyo-night">Tokyo Night</option>
 <option value="catppuccin">Catppuccin</option>
@@ -260,28 +260,28 @@
 
 <figure data-workspace="terminal" data-variant="collapsed"><a href="images/omarchy/white-terminal-collapsed.png?v=desktop-3" target="_blank" rel="noopener"><img src="images/omarchy/white-terminal-collapsed.png?v=desktop-3" width="1280" height="800" loading="lazy" alt="RivetHub in White: terminal, collapsed view, showing a saved memory-recall conversation. Open full-size screenshot."></a><figcaption>White / Terminal / Collapsed<a href="images/omarchy/white-terminal-collapsed.png?v=desktop-3" target="_blank" rel="noopener">Open full size ↗</a></figcaption></figure>
 </section>
-</div><div class="harness-strip"><p>Bring your agent tools</p><ul aria-label="Supported harnesses"><li>Claude Code</li><li>Codex</li><li>Grok Build</li><li>Kimi Code</li><li>Hermes</li><li>DeepSeek</li></ul><a href="install-local.html#harnesses">Integration details ↗</a></div><p class="gallery-provenance">Real desktop captures · 22 installed themes · four screenshot variants. Expanded and Collapsed keep the same window framing over the Omarchy desktop. Chat shows a real Claude Code memory-recall exchange copied to the demo node; Terminal displays that saved exchange. The demo roster uses the owner’s chosen agent names. Agent names are customizable; supported harnesses are listed above.</p></section>
+</div><div class="harness-strip"><p>Works with your agent tools</p><ul aria-label="Supported harnesses"><li>Claude Code</li><li>Codex</li><li>Grok Build</li><li>Kimi Code</li><li>Hermes</li><li>DeepSeek</li></ul><a href="install-local.html#harnesses">How each one connects →</a></div><p class="gallery-provenance">All 88 captures were taken on a real Omarchy desktop, one theme at a time. Chat shows a saved Claude Code memory-recall exchange; Terminal replays it. The agent names in the demo roster are the owner’s — yours are customizable.</p></section>
 <section class="block guide-section" id="setup">
-<div><p class="kicker">01 / Get running</p><h2>One command.<br>Your own hub.</h2></div>
-<div><p>Open a terminal on your Omarchy desktop and run the Linux local installer. It sets up the local runtime, memory storage, and RivetHub desktop app, and detects supported agent tools already installed on your machine.</p>
+<div><p class="kicker">Step 01 · Install</p><h2>One command, as usual.</h2></div>
+<div><p>Open a terminal on your Omarchy desktop and run the Linux local installer. It sets up the runtime, memory storage, and the desktop app, then wires capture and recall into the supported agent tools it finds on your machine.</p>
 <div class="term"><div class="term__bar"><i></i><i></i><i></i><span class="term__title">your Omarchy terminal</span></div><pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre></div>
 <p><a href="https://get.rivethub.io/local.sh">Read the installer</a> · <a href="install-local.html">Full local setup guide</a></p>
 <ol class="setup-list"><li><strong>Follow the setup output.</strong> Review the detected tools and connection instructions.</li><li><strong>Open RivetHub.</strong> The Linux desktop app should find your local node. If it opens without a connection, go to Settings, set the Gateway URL to <code>https://localhost:5174</code>, and save. You can also use <a href="https://localhost:5174">the local browser interface</a>.</li><li><strong>Check your node.</strong> Run <code>rivetos local status</code> if setup or connection needs checking.</li></ol>
 <p class="note">Already running a hub? <a href="apps.html">Get the Linux desktop app</a> and connect to that hub instead of installing another one.</p></div>
 </section>
 <section class="block guide-section" id="appearance">
-<div><p class="kicker">02 / Make it yours</p><h2>Your palette.<br>All the way through.</h2></div>
+<div><p class="kicker">Step 02 · Theme</p><h2>Make it follow your theme.</h2></div>
 <div><ol class="setup-list"><li><strong>Choose a theme in Omarchy.</strong> Open the Omarchy Menu with <kbd>Super</kbd> + <kbd>Alt</kbd> + <kbd>Space</kbd>, then choose <strong>Style → Theme</strong>.</li><li><strong>Open RivetHub desktop Settings → Appearance.</strong> Select <strong>Omarchy</strong> to use the detected desktop palette. The selected theme’s name appears there.</li><li><strong>Match the terminal.</strong> In terminal settings, set <strong>Color palette → App theme</strong> so the terminal follows the app’s Omarchy colors too.</li><li><strong>Switch whenever you like.</strong> After changing your Omarchy theme, bring RivetHub back into focus to refresh its colors.</li></ol>
 <p class="note"><strong>System and Omarchy are different choices.</strong> System follows light or dark mode. Omarchy reads the active theme’s palette. An imported terminal palette is a saved selection; choose App theme to keep following desktop changes.</p>
 <p>Theme switching shortcuts and community themes are covered in the <a href="https://learn.omacom.io/2/the-omarchy-manual/52/themes">official Omarchy theme guide</a>.</p></div>
 </section>
 <section class="block guide-section" id="first-memory">
-<div><p class="kicker">04 / Pick up the thread</p><h2>Leave a memory.<br>Skip the handoff doc.</h2></div>
+<div><p class="kicker">Step 03 · First memory</p><h2>Make your first memory.</h2></div>
 <div><ol class="setup-list"><li><strong>Start with a connected tool.</strong> Ask your agent to complete a small task with a recognizable detail, such as explaining a function in a sample project.</li><li><strong>Find the captured session.</strong> Open it in RivetHub and check that the conversation and tool output you expect are there.</li><li><strong>Ask another connected agent to recall it.</strong> Have it search memory for that detail and continue the work using the saved context.</li></ol>
 <p>Capture and recall depend on each integration being connected and your node running. <a href="install-local.html#harnesses">Check supported integrations</a> before relying on a new tool.</p>
-<p>Your collection lives locally. Agent providers still process the prompts you send them; optional embedding and compaction providers process the content sent to those services. Full-text and fuzzy search work without an embedding service.</p></div>
+<p>Your record lives locally. Agent providers still process the prompts you send them; optional embedding and compaction services process the content sent to them.</p></div>
 </section>
-<section class="block guide-section" id="questions"><div><p class="kicker">A few useful details</p><h2>Settle in.</h2></div><div>
+<section class="block guide-section" id="questions"><div><p class="kicker">Questions</p><h2>Good to know.</h2></div><div>
 <details><summary>Why is the Omarchy appearance option unavailable?</summary><p>Theme detection requires the desktop app running on the Omarchy machine and a readable active Omarchy theme. The browser cannot read your desktop theme files. Check that Omarchy has an active theme, then refocus the desktop app.</p></details>
 <details><summary>Why does my terminal keep its old colors?</summary><p>Check terminal settings: Color palette should be set to App theme. A selected color scheme or imported palette can keep the terminal on its own colors.</p></details>
 <details><summary>Do I need to configure embeddings before I start?</summary><p>No. Begin with local capture, full-text search, and fuzzy search. Semantic search requires an optional embedding service. Desktop controls for choosing embedding and compaction models are planned.</p></details>
