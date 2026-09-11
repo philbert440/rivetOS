@@ -6,12 +6,17 @@
 // "cannot pin a new session's id" shape — plus the three places kimi is its own
 // thing: its natives are `session_<uuid>` rather than a timestamp, a kimi
 // running outside den announces itself through the ROOM KEY (its hook posts
-// under the canonical id when nothing pins a room), and its live stream carries
-// no assistant text and no thinking, which is asserted here rather than papered
-// over.
+// under the canonical id when nothing pins a room), and its live assistant
+// text is tailed from wire.jsonl via the transcript watcher rather than the
+// Stop hook.
 
 import { describe, expect, it, vi } from 'vitest'
-import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
+import {
+  HarnessError,
+  type HarnessEvent,
+  type SessionId,
+  type TranscriptWsFrame,
+} from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { KimiCodeDriver, type KimiPtyHost, type KimiStoreHost } from './kimi-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
@@ -89,6 +94,33 @@ function fakePty() {
   }
 }
 
+function fakeTranscript(): {
+  subscribe: (session: string, sink: (f: TranscriptWsFrame) => void) => () => void
+  sync: (session: string) => void
+  emit: (session: string, frame: TranscriptWsFrame) => void
+} {
+  const bySession = new Map<string, Set<(f: TranscriptWsFrame) => void>>()
+  return {
+    subscribe(session, sink) {
+      let set = bySession.get(session)
+      if (!set) {
+        set = new Set()
+        bySession.set(session, set)
+      }
+      set.add(sink)
+      return () => {
+        set!.delete(sink)
+      }
+    },
+    sync() {
+      /* tests drive frames via emit */
+    },
+    emit(session, frame) {
+      for (const s of bySession.get(session) ?? []) s(frame)
+    },
+  }
+}
+
 function makeDriver(
   opts: {
     rows?: HarnessSession[]
@@ -96,6 +128,7 @@ function makeDriver(
     withEvents?: boolean
     cwd?: () => string | undefined
     sheetReaders?: SheetReaders
+    transcript?: ReturnType<typeof fakeTranscript>
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -113,6 +146,7 @@ function makeDriver(
           }
         }
       : undefined,
+    transcript: opts.transcript,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
     sheetReaders: opts.sheetReaders,
@@ -163,9 +197,8 @@ describe('capability flags are honest', () => {
       // `kimi --yolo` so ordinary tool calls never prompt. Never faked true.
       approvals: false,
       // True for what the stream really carries — session lifecycle, tools,
-      // turn boundaries. kimi contributes no assistant or thinking text (see
-      // the "what the live stream does not carry" suite below), and that is a
-      // gap in the harness's hooks, not in the tap.
+      // turn boundaries. Assistant/thinking text is tailed from wire.jsonl
+      // (transcript watcher), not the Stop hook.
       liveStream: true,
       listSessions: true,
     })
@@ -188,6 +221,12 @@ describe('capability flags are honest', () => {
 
   it('drops liveStream without a den event tap', () => {
     expect(makeDriver({ withEvents: false }).driver.capabilities.liveStream).toBe(false)
+  })
+
+  it('liveStream is true with a transcript watcher even without a den tap', () => {
+    const { driver } = makeDriver({ withEvents: false, transcript: fakeTranscript() })
+    expect(driver.capabilities.liveStream).toBe(true)
+    driver.close()
   })
 })
 
@@ -591,13 +630,12 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
   })
 })
 
-describe('what the live stream does NOT carry — stated, not faked', () => {
-  it('emits no assistant-delta and no reasoning-delta, because kimi emits neither source', () => {
+describe('what the live stream does NOT carry from the den tap — stated, not faked', () => {
+  it('emits no assistant-delta and no reasoning-delta from den events that carry no text', () => {
     // kimi's `Stop` payload is `{ stop_hook_active }` — no reply text — and no
     // kimi hook is given thinking text at all, so its den translator emits
-    // neither `message.agent` nor `thinking.delta`. This pins the honest
-    // consequence: a kimi conversation's assistant text and thoughts come from
-    // `transcript()` (wire.jsonl `content.part` text/think parts), not the tap.
+    // neither `message.agent` nor `thinking.delta`. The tap still must not
+    // invent a spinner; live text comes from the wire.jsonl tail below.
     const f = makeDriver()
     adopt(f, ROOM, NAT)
     const seen: HarnessEvent[] = []
@@ -607,12 +645,10 @@ describe('what the live stream does NOT carry — stated, not faked', () => {
     f.emitDen(kimiEvent(ROOM, NAT, { type: 'turn.end' }))
     expect(seen.some((e) => e.type === 'assistant-delta')).toBe(false)
     expect(seen.some((e) => e.type === 'reasoning-delta')).toBe(false)
+    f.driver.close()
   })
 
   it('still folds both the day kimi’s hooks learn to send them', () => {
-    // The mapping is the base's and is not conditioned on the harness — this is
-    // a gap in kimi's hooks, not a hole in the driver, and the follow-up that
-    // closes it needs no driver change.
     const f = makeDriver()
     adopt(f, ROOM, NAT)
     const seen: HarnessEvent[] = []
@@ -623,6 +659,167 @@ describe('what the live stream does NOT carry — stated, not faked', () => {
       { type: 'assistant-delta', sessionId: SID, text: 'done' },
       { type: 'reasoning-delta', sessionId: SID, text: 'hmm' },
     ])
+    f.driver.close()
+  })
+})
+
+describe('live deltas from wire.jsonl via the transcript watcher', () => {
+  it('emits reasoning-delta then assistant-delta as the last assistant turn grows', () => {
+    const tx = fakeTranscript()
+    const f = makeDriver({ transcript: tx })
+    const seen: HarnessEvent[] = []
+    f.driver.subscribe(SID, (e) => seen.push(e))
+
+    const user = { role: 'user' as const, text: 'review the diff' }
+    const first = {
+      role: 'assistant' as const,
+      text: 'looks',
+      thinking: 'weighing ',
+      lastBlock: 'text' as const,
+    }
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [user, first],
+    })
+    expect(seen.filter((e) => e.type === 'assistant-delta' || e.type === 'reasoning-delta')).toEqual(
+      [],
+    )
+
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 2,
+      from: 1,
+      total: 2,
+      command: 'kimi',
+      turns: [{ ...first, thinking: 'weighing it', text: 'looks\n\ngood' }],
+    })
+    expect(seen.filter((e) => e.type === 'reasoning-delta' || e.type === 'assistant-delta')).toEqual([
+      { type: 'reasoning-delta', sessionId: SID, text: 'it' },
+      { type: 'assistant-delta', sessionId: SID, text: '\n\ngood' },
+    ])
+    f.driver.close()
+  })
+
+  it('emits final deltas before turn-complete when the same frame finishes the turn', () => {
+    const tx = fakeTranscript()
+    const f = makeDriver({ transcript: tx })
+    const seen: HarnessEvent[] = []
+    f.driver.subscribe(SID, (e) => seen.push(e))
+
+    const user = { role: 'user' as const, text: 'review the diff' }
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [user, { role: 'assistant', text: 'looks', lastBlock: 'text' }],
+    })
+    seen.length = 0
+
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 2,
+      from: 1,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        {
+          role: 'assistant',
+          text: 'looks\n\ngood',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+      ],
+    })
+    const types = seen.map((e) => e.type)
+    const deltaAt = types.indexOf('assistant-delta')
+    const completeAt = types.indexOf('turn-complete')
+    expect(seen[deltaAt]).toEqual({
+      type: 'assistant-delta',
+      sessionId: SID,
+      text: '\n\ngood',
+    })
+    expect(completeAt).toBeGreaterThan(deltaAt)
+    f.driver.close()
+  })
+
+  it('emits nothing on the successor first snapshot after a rotation with distinct history', () => {
+    const tx = fakeTranscript()
+    const f = makeDriver({ transcript: tx })
+    adopt(f, ROOM, NAT)
+    const seen: HarnessEvent[] = []
+    f.driver.subscribe(SID, (e) => seen.push(e))
+
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        { role: 'user', text: 'old question' },
+        { role: 'assistant', text: 'predecessor reply', thinking: 'old think' },
+      ],
+    })
+    expect(seen.filter((e) => e.type === 'assistant-delta' || e.type === 'reasoning-delta')).toEqual(
+      [],
+    )
+
+    f.emitDen(kimiEvent(ROOM, NAT2, { type: 'session.start', title: 'kimi session' }))
+    const SID2 = `kimi-code:${NAT2}` as SessionId
+    const seen2: HarnessEvent[] = []
+    f.driver.subscribe(SID2, (e) => seen2.push(e))
+
+    tx.emit(SID2, {
+      kind: 'transcript',
+      session: SID2,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        { role: 'user', text: 'new question' },
+        {
+          role: 'assistant',
+          text: 'successor reply that does not share a prefix',
+          thinking: 'fresh',
+        },
+      ],
+    })
+    expect(
+      seen2.filter((e) => e.type === 'assistant-delta' || e.type === 'reasoning-delta'),
+    ).toEqual([])
+
+    tx.emit(SID2, {
+      kind: 'transcript',
+      session: SID2,
+      rev: 2,
+      from: 1,
+      total: 2,
+      command: 'kimi',
+      turns: [
+        {
+          role: 'assistant',
+          text: 'successor reply that does not share a prefix!',
+          thinking: 'fresh',
+        },
+      ],
+    })
+    expect(seen2.filter((e) => e.type === 'assistant-delta')).toEqual([
+      { type: 'assistant-delta', sessionId: SID2, text: '!' },
+    ])
+    f.driver.close()
   })
 })
 

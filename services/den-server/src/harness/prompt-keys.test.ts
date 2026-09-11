@@ -7,6 +7,7 @@ import {
   claudeApprovalKeys,
   claudeAskAnswerKeys,
   grokApprovalKeys,
+  kimiApprovalKeys,
 } from './prompt-keys.js'
 
 function decode(chunks: Uint8Array[]): string[] {
@@ -166,6 +167,12 @@ describe('approval keys', () => {
     expect(decode(grokApprovalKeys('allow'))).toEqual(['2'])
     expect(decode(grokApprovalKeys('deny'))).toEqual(['3'])
   })
+
+  it('kimi: allow=1 allow-session=2 deny=3 (label order Yes / Yes, for this session / Reject)', () => {
+    expect(decode(kimiApprovalKeys('allow'))).toEqual(['1'])
+    expect(decode(kimiApprovalKeys('allow-session'))).toEqual(['2'])
+    expect(decode(kimiApprovalKeys('deny'))).toEqual(['3'])
+  })
 })
 
 describe('approvalKeyFromOptions (the screen decides the key, adapter map is the fallback)', () => {
@@ -184,6 +191,11 @@ describe('approvalKeyFromOptions (the screen decides the key, adapter map is the
     { key: '3', label: 'Reject' },
     { key: '4', label: 'Reject with feedback' },
   ]
+  const kimiFull = [
+    { key: '1', label: 'Yes' },
+    { key: '2', label: 'Yes, for this session' },
+    { key: '3', label: 'Reject' },
+  ]
   it('maps allow / allow-session / deny by label on Claude and on grok (inverted order)', () => {
     expect(approvalKeyFromOptions(claude, 'allow')).toBe('1')
     expect(approvalKeyFromOptions(claude, 'allow-session')).toBe('2')
@@ -196,6 +208,11 @@ describe('approvalKeyFromOptions (the screen decides the key, adapter map is the
     expect(approvalKeyFromOptions(kimiBottom, 'deny')).toBe('3')
     expect(approvalKeyFromOptions(kimiBottom, 'allow')).toBeUndefined()
     expect(approvalKeyFromOptions(undefined, 'allow')).toBeUndefined()
+  })
+  it('kimi full panel: Yes / Yes, for this session / Reject maps allow / allow-session / deny', () => {
+    expect(approvalKeyFromOptions(kimiFull, 'allow')).toBe('1')
+    expect(approvalKeyFromOptions(kimiFull, 'allow-session')).toBe('2')
+    expect(approvalKeyFromOptions(kimiFull, 'deny')).toBe('3')
   })
 })
 
