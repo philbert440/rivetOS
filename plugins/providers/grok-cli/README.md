@@ -1,7 +1,8 @@
 # @rivetos/provider-grok-cli
 
 Grok Build CLI provider for RivetOS. Shells out to the local `grok` binary for
-every turn — `grok -p <prompt> --output-format json` — so `provider: grok-cli`
+every turn — `grok -p <prompt> --output-format streaming-messages-json
+--include-partial-messages` — so `provider: grok-cli`
 agents run on the user's Grok Build subscription (OIDC login in `~/.grok`), not
 the metered xAI API. Sanctioned CLI-harness pattern, same shape as `claude-cli`.
 
@@ -40,8 +41,8 @@ turn and on later `--resume` turns.
 conversation. The first turn sends `--session-id <uuid>` (deterministic from
 the conversation id) plus the full rendered transcript; later turns send
 `--resume <id>` and only the newest `USER:` chunk. Ids live in
-`~/.rivetos/grok-cli-sessions.json`; a successful JSON `sessionId` overwrites
-the synthetic uuid when they differ. If `--resume` exits non-zero (session
+`~/.rivetos/grok-cli-sessions.json`; a successful stream `session_id` /
+`sessionId` overwrites the synthetic uuid when they differ. If `--resume` exits non-zero (session
 gone), the provider falls back once to a fresh `--session-id` with the full
 prompt. `replay` is the old behavior: full transcript every turn, no session
 flags.
@@ -51,15 +52,22 @@ flags.
 The AI SDK loop hands the provider the whole conversation. In `resume` mode
 that is rendered in full only on the first turn (`SYSTEM:` / `USER:` /
 `ASSISTANT:` / `TOOL RESULT` sections); later turns pass the newest user
-message and grok holds the history. grok runs once, and its JSON result is
-replayed as stream parts: reasoning (`thought`), text, then `finish` with
-token usage, `sessionId` and cost in `providerMetadata['grok-cli']`. Request
-logs redact the `-p` prompt and `--system-prompt-override` text.
+message and grok holds the history. grok runs once; stdout is Anthropic
+Messages API NDJSON (`stream_event` lines with `text_delta` /
+`thinking_delta`, plus whole messages / a final `result`). Those become
+`text-delta` and `reasoning-delta` as they arrive, then `finish` with token
+usage, `sessionId` and cost in `providerMetadata['grok-cli']`. A successful
+`session_id` / `sessionId` on the stream overwrites the synthetic uuid when
+they differ. Request logs redact the `-p` prompt and
+`--system-prompt-override` text.
+
+If the stream produces no recognized events and grok exits 0, a leftover
+`--output-format json` blob is still accepted as a defensive fallback.
 
 ## Limits (v1)
 
-- No incremental streaming — `--output-format json` arrives when grok finishes.
 - No RivetOS tool bridge: grok cannot call `delegate_task`, `memory_*` etc. as
   RivetOS tools. It does have its own MCP servers from `~/.grok/config.toml`.
+  Tool calls stay inside grok's loop (not emitted as AI SDK tool-call parts).
 - Session capture of these runs is done by the rivet-memory Grok hooks
   (`~/.grok/hooks/rivet-memory.json`), not by this provider.
