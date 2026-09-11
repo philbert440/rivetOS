@@ -38,6 +38,12 @@ describe('contextWindowFromModel', () => {
     expect(contextWindowFromModel(undefined, 'pi')).toBe(262_144)
     expect(contextWindowFromModel('local-vllm')).toBe(262_144)
   })
+
+  it('stamps Codex / GPT-5-class at 400k', () => {
+    expect(contextWindowFromModel('gpt-5')).toBe(400_000)
+    expect(contextWindowFromModel('gpt-5-codex')).toBe(400_000)
+    expect(contextWindowFromModel(undefined, 'codex')).toBe(400_000)
+  })
 })
 
 describe('compactAtFor', () => {
@@ -108,6 +114,15 @@ describe('overlaySessionContext', () => {
     expect(stamp).toEqual({
       contextWindow: 200_000,
       compactAt: 165_000,
+      contextSource: 'default',
+    })
+  })
+
+  it('defaults Codex transcripts den did not spawn to 400k', () => {
+    const stamp = overlaySessionContext('codex:abc', [{ role: 'user' }], 'codex')
+    expect(stamp).toEqual({
+      contextWindow: 400_000,
+      compactAt: 365_000,
       contextSource: 'default',
     })
   })

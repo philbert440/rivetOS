@@ -549,6 +549,8 @@ describe('PTY approvals stay honest', () => {
     const f = makeDriver({ herdrStatus: true, screen })
     expect(f.driver.capabilities.approvals).toBe(false)
     adopt(f, ROOM, NAT)
+    const seen: HarnessEvent[] = []
+    f.driver.subscribe(SID, (e) => seen.push(e))
     f.driver.applyHerdrStatus(ROOM, {
       type: 'status',
       sessionId: SID,
@@ -556,6 +558,9 @@ describe('PTY approvals stay honest', () => {
       since: Date.now(),
       source: 'herdr',
     })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(seen.some((e) => e.type === 'approval-request')).toBe(false)
     await expect(f.driver.resolveApproval(SID, 'req-1', 'allow')).rejects.toMatchObject({
       code: 'capability_unsupported',
     })
