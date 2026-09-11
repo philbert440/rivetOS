@@ -13,8 +13,10 @@
  *     flag parsing so a message starting with `-` or `@` is not a flag/include.
  *     Linux caps a single argv element at 128 KiB (MAX_ARG_STRLEN), so the
  *     prompt is clamped — see `clampPrompt`.
- *   - `--mode json` writes the session JSONL (version 3) to stdout, one object
- *     per line, `session` line first. Parsed by `parsePiJsonLine` in wire.ts.
+ *   - `--mode json` writes a runtime event stream to stdout (session,
+ *     agent_start, message_update deltas, message_end, agent_settled — NOT
+ *     the on-disk `type:message` jsonl). Parsed by `parsePiJsonLine` in wire.ts.
+ *   - Print mode blocks if stdin is open. Spawn with stdin ignored.
  *   - `--session <id>` resumes an existing session. `--session-id <uuid>` pins
  *     a NEW session (creates the id if missing). Do not pass both.
  *   - `--thinking` is `off|minimal|low|medium|high|xhigh|max`. Unset = CLI default.
@@ -25,7 +27,7 @@
  * via the abort signal; `kill()` here only bounds how long a kill can hang.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
 import { parsePiJsonLine, type PiJsonEvent } from './wire.js'
 
@@ -160,8 +162,8 @@ export async function* iterateLines(stream: NodeJS.ReadableStream): AsyncIterabl
 // ---------------------------------------------------------------------------
 
 export interface SpawnedTurn {
-  /** The child process (pid / exitCode inspection). */
-  proc: ChildProcessWithoutNullStreams
+  /** The child process (pid / exitCode inspection). stdin is ignored. */
+  proc: ChildProcess
   /** The exact argv the child was spawned with. */
   args: string[]
   /** Wall clock immediately before spawn — the floor for the transcript reconcile. */
@@ -193,12 +195,9 @@ export function spawnPiTurn(
   const proc = spawn(flags.binary, args, {
     env: buildChildEnv(opts?.env),
     cwd: flags.cwd,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    // pi 0.85.1 print mode blocks reading stdin when the fd is open.
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
-
-  // Nothing is written on stdin — the prompt is argv. Close it so a pi build
-  // that ever reads stdin sees EOF instead of hanging.
-  proc.stdin.end()
 
   const graceMs = opts?.killGraceMs ?? KILL_GRACE_MS
   let killTimer: ReturnType<typeof setTimeout> | undefined
@@ -235,7 +234,9 @@ export function spawnPiTurn(
   })
 
   async function* events(): AsyncIterable<PiJsonEvent> {
-    for await (const line of iterateLines(proc.stdout)) {
+    const stdout = proc.stdout
+    if (!stdout) return
+    for await (const line of iterateLines(stdout)) {
       const parsed = parsePiJsonLine(line)
       if (parsed) yield parsed
     }

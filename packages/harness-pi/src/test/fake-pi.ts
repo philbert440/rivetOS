@@ -93,6 +93,12 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
 
   const script: string[] = [
     '#!/usr/bin/env bash',
+    // pi 0.85.1 print mode blocks when stdin is an open pipe. The executor
+    // must spawn with stdin ignored; a pipe (even closed) fails this check.
+    'if [ -p /dev/stdin ]; then',
+    "  printf '%s\\n' 'stdin was a pipe' >&2",
+    '  exit 99',
+    'fi',
     `printf '%s\\n' "${INVOCATION_MARK}" "$@" >> "${dir}/args.txt"`,
     `env > "${dir}/env.txt"`,
   ]
@@ -196,8 +202,98 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
   }
 }
 
-/** print/JSON lines a healthy pi turn prints (session JSONL version 3). */
-export function successLines(finalText: string, sessionId: string): unknown[] {
+const PENDING_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+}
+
+/** Default assistant usage on the runtime stream (real pi keys). */
+export const SUCCESS_USAGE = {
+  input: 100,
+  output: 25,
+  cacheRead: 10,
+  cacheWrite: 0,
+  reasoning: 0,
+  totalTokens: 125,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+}
+
+/**
+ * Runtime print/JSON stdout for a healthy pi 0.85.1 turn — shape copied from
+ * the captured `pi -p --mode json` stream (session, agent_start, turn_start,
+ * message_start/update/end, turn_end, agent_end, agent_settled). Text is
+ * split into two `text_delta`s like the real sample (`"p"` + `"ong"`).
+ */
+export function successLines(
+  finalText: string,
+  sessionId: string,
+  usage: typeof SUCCESS_USAGE = SUCCESS_USAGE,
+): unknown[] {
+  const head = finalText.slice(0, 1)
+  const rest = finalText.slice(1)
+  const userMsg = {
+    role: 'user',
+    content: [{ type: 'text', text: 'hi' }],
+    timestamp: 1_700_000_000_000,
+  }
+  const assistantPending = {
+    role: 'assistant',
+    content: [] as unknown[],
+    api: 'openai-completions',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    usage: PENDING_USAGE,
+    stopReason: 'pending',
+    timestamp: 1_700_000_001_000,
+  }
+  const toolAssistantEnd = {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: 'plan' },
+      { type: 'toolCall', id: 'Bash_0', name: 'Bash', arguments: { command: 'ls' } },
+    ],
+    api: 'openai-completions',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    usage: PENDING_USAGE,
+    stopReason: 'toolUse',
+    timestamp: 1_700_000_001_000,
+  }
+  const toolResultMsg = {
+    role: 'toolResult',
+    toolCallId: 'Bash_0',
+    toolName: 'Bash',
+    content: [{ type: 'text', text: 'a\nb\n' }],
+  }
+  const finalAssistant = {
+    role: 'assistant',
+    content: [{ type: 'text', text: finalText }],
+    api: 'openai-completions',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+    usage,
+    stopReason: 'stop',
+    timestamp: 1_700_000_001_200,
+  }
+  const textDeltas: unknown[] = []
+  if (head) {
+    textDeltas.push({
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: head },
+    })
+  }
+  if (rest) {
+    textDeltas.push({
+      type: 'message_update',
+      usage,
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: rest },
+    })
+  }
   return [
     {
       type: 'session',
@@ -206,56 +302,66 @@ export function successLines(finalText: string, sessionId: string): unknown[] {
       timestamp: '2026-09-11T14:25:16.803Z',
       cwd: '/home/rivet',
     },
-    { type: 'model_change', provider: 'deepseek', modelId: 'deepseek-v4-flash' },
-    { type: 'thinking_level_change', thinkingLevel: 'high' },
+    { type: 'agent_start' },
+    { type: 'turn_start' },
+    { type: 'message_start', message: userMsg },
+    { type: 'message_end', message: userMsg },
+    { type: 'message_start', message: assistantPending },
     {
-      type: 'message',
-      id: 'aaaaaaaa',
-      parentId: null,
-      timestamp: '2026-09-11T14:25:16.900Z',
-      message: {
-        role: 'user',
-        content: [{ type: 'text', text: 'hi' }],
-        timestamp: 1_700_000_000_000,
-      },
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 },
     },
     {
-      type: 'message',
-      id: 'bbbbbbbb',
-      parentId: 'aaaaaaaa',
-      timestamp: '2026-09-11T14:25:17.000Z',
-      message: {
-        role: 'assistant',
-        content: [
-          { type: 'thinking', thinking: 'plan' },
-          { type: 'toolCall', id: 'Bash_0', name: 'Bash', arguments: { command: 'ls' } },
-        ],
-        timestamp: 1_700_000_001_000,
-      },
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'plan' },
     },
     {
-      type: 'message',
-      id: 'cccccccc',
-      parentId: 'bbbbbbbb',
-      timestamp: '2026-09-11T14:25:17.100Z',
-      message: {
-        role: 'toolResult',
-        toolCallId: 'Bash_0',
-        toolName: 'Bash',
-        content: [{ type: 'text', text: 'a\nb\n' }],
-      },
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: 'plan' },
     },
     {
-      type: 'message',
-      id: 'dddddddd',
-      parentId: 'cccccccc',
-      timestamp: '2026-09-11T14:25:17.200Z',
-      message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: finalText }],
-        timestamp: 1_700_000_001_200,
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'Bash_0', name: 'Bash' },
+    },
+    {
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 1, delta: '{"command":"ls"}' },
+    },
+    {
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: {
+        type: 'toolcall_end',
+        contentIndex: 1,
+        id: 'Bash_0',
+        name: 'Bash',
+        arguments: { command: 'ls' },
       },
     },
+    { type: 'message_end', message: toolAssistantEnd },
+    { type: 'message_start', message: toolResultMsg },
+    { type: 'message_end', message: toolResultMsg },
+    { type: 'message_start', message: { ...assistantPending, timestamp: 1_700_000_001_200 } },
+    {
+      type: 'message_update',
+      usage: PENDING_USAGE,
+      assistantMessageEvent: { type: 'text_start', contentIndex: 0 },
+    },
+    ...textDeltas,
+    {
+      type: 'message_update',
+      usage,
+      assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: finalText },
+    },
+    { type: 'message_end', message: finalAssistant },
+    { type: 'turn_end', message: finalAssistant },
+    { type: 'agent_end', messages: [userMsg, toolAssistantEnd, toolResultMsg, finalAssistant] },
+    { type: 'agent_settled' },
   ]
 }
 

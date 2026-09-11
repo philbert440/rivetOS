@@ -119,7 +119,9 @@ export function piTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[
         tools.push(entry)
       } else if (t === 'toolResult' || t === 'tool_result') {
         const id = pickStr(item, 'id', 'toolCallId')
-        const last = (id ? tools.find((t) => t.id === id && t.status === 'running') : undefined) ?? tools.at(-1)
+        const last =
+          (id ? tools.find((t) => t.id === id && t.status === 'running') : undefined) ??
+          tools.at(-1)
         if (last && last.status === 'running') last.status = 'done'
       }
     }
@@ -131,7 +133,9 @@ export function piTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[
     const turn: HarnessTurn = { role, text: text || '' }
     if (thinking) {
       turn.thinking =
-        thinking.length > THINKING_TAIL_CHARS ? '…' + thinking.slice(-THINKING_TAIL_CHARS) : thinking
+        thinking.length > THINKING_TAIL_CHARS
+          ? '…' + thinking.slice(-THINKING_TAIL_CHARS)
+          : thinking
     }
     if (tools.length > 0) turn.tools = tools
     if (role === 'assistant') {

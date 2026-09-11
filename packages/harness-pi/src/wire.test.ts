@@ -11,12 +11,14 @@ import { afterAll, describe, expect, it } from 'vitest'
 import {
   encodePiCwd,
   findSessionFile,
+  isFatalPiStopReason,
   listSessionIds,
   parsePiJsonLine,
   piHome,
   reconcileTurn,
   sessionsRoot,
   toHarnessEvents,
+  toHarnessEventsFromDisk,
   tokensFromUsage,
   transcriptFilesFor,
   usageFromEvent,
@@ -115,15 +117,110 @@ describe('parsePiJsonLine', () => {
   })
 })
 
-describe('toHarnessEvents', () => {
+describe('toHarnessEvents (runtime stdout)', () => {
   const sid = `pi:${SID}`
 
-  it('maps session + assistant message text / thinking / tools', () => {
+  it('maps session + text/thinking deltas + toolcall + toolResult', () => {
     expect(toHarnessEvents({ type: 'session', id: SID }, sid)).toEqual([
       { type: 'session-updated', sessionId: sid, status: 'active' },
     ])
     expect(
       toHarnessEvents(
+        { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'p' } },
+        sid,
+      ),
+    ).toEqual([{ type: 'assistant-delta', sessionId: sid, text: 'p' }])
+    expect(
+      toHarnessEvents(
+        {
+          type: 'message_update',
+          assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'hmm' },
+        },
+        sid,
+      ),
+    ).toEqual([{ type: 'reasoning-delta', sessionId: sid, text: 'hmm' }])
+    expect(
+      toHarnessEvents(
+        {
+          type: 'message_update',
+          assistantMessageEvent: {
+            type: 'toolcall_end',
+            contentIndex: 1,
+            id: 't1',
+            name: 'Bash',
+            arguments: { command: 'ls' },
+          },
+        },
+        sid,
+      ),
+    ).toEqual([
+      { type: 'tool-use', sessionId: sid, toolCallId: 't1', name: 'Bash', input: { command: 'ls' } },
+    ])
+    expect(
+      toHarnessEvents(
+        {
+          type: 'message_end',
+          message: {
+            role: 'toolResult',
+            toolCallId: 't1',
+            toolName: 'Bash',
+            content: [{ type: 'text', text: 'ok' }],
+          },
+        },
+        sid,
+      ),
+    ).toEqual([
+      { type: 'tool-result', sessionId: sid, toolCallId: 't1', name: 'Bash', output: 'ok' },
+    ])
+  })
+
+  it('does not replay message_end snapshot text (deltas already streamed)', () => {
+    expect(
+      toHarnessEvents(
+        {
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'pong' }],
+            stopReason: 'stop',
+          },
+        },
+        sid,
+      ),
+    ).toEqual([])
+  })
+
+  it('propagates stopReason error/aborted and turn_end', () => {
+    expect(isFatalPiStopReason('error')).toBe(true)
+    expect(isFatalPiStopReason('aborted')).toBe(true)
+    expect(isFatalPiStopReason('stop')).toBe(false)
+    expect(
+      toHarnessEvents(
+        { type: 'message_end', message: { role: 'assistant', content: [], stopReason: 'aborted' } },
+        sid,
+      ),
+    ).toEqual([{ type: 'error', sessionId: sid, code: 'aborted', message: 'pi stopReason: aborted' }])
+    expect(toHarnessEvents({ type: 'turn_end', message: { role: 'assistant', stopReason: 'stop' } }, sid)).toEqual([
+      { type: 'turn-complete', sessionId: sid, stopReason: 'stop' },
+    ])
+  })
+
+  it('returns nothing without a session id to attribute', () => {
+    expect(
+      toHarnessEvents(
+        { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'x' } },
+        '',
+      ),
+    ).toEqual([])
+  })
+})
+
+describe('toHarnessEventsFromDisk (session jsonl)', () => {
+  const sid = `pi:${SID}`
+
+  it('maps assistant message text / thinking / tools', () => {
+    expect(
+      toHarnessEventsFromDisk(
         {
           type: 'message',
           message: {
@@ -148,34 +245,6 @@ describe('toHarnessEvents', () => {
       },
       { type: 'assistant-delta', sessionId: sid, text: 'hello' },
     ])
-    expect(
-      toHarnessEvents(
-        {
-          type: 'message',
-          message: {
-            role: 'toolResult',
-            toolCallId: 't1',
-            toolName: 'Bash',
-            content: [{ type: 'text', text: 'ok' }],
-          },
-        },
-        sid,
-      ),
-    ).toEqual([
-      {
-        type: 'tool-result',
-        sessionId: sid,
-        toolCallId: 't1',
-        name: 'Bash',
-        output: 'ok',
-      },
-    ])
-  })
-
-  it('returns nothing without a session id to attribute', () => {
-    expect(
-      toHarnessEvents({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'x' }] } }, ''),
-    ).toEqual([])
   })
 })
 
@@ -201,6 +270,34 @@ describe('usageFromEvent / tokensFromUsage', () => {
       usageFromEvent({
         type: 'message',
         message: { role: 'user', content: [], usage: { input: 9, output: 1 } },
+      }),
+    ).toBeUndefined()
+    expect(
+      usageFromEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          usage: { input: 1145, output: 3, cacheRead: 384, cacheWrite: 0 },
+          stopReason: 'stop',
+        },
+      }),
+    ).toEqual({ inputTokens: 1529, outputTokens: 3 })
+    expect(
+      usageFromEvent({
+        type: 'message_update',
+        usage: { input: 1145, output: 3, cacheRead: 384 },
+      }),
+    ).toBeUndefined()
+    expect(
+      usageFromEvent({
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [],
+          usage: { input: 0, output: 0 },
+          stopReason: 'pending',
+        },
       }),
     ).toBeUndefined()
   })

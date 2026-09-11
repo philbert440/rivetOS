@@ -92,14 +92,10 @@ describe('PiExecutor', () => {
     expect(makeExecutor(successFake()).name).toBe('pi')
   })
 
-  it('translates print/JSON into den events and reconciles usage off the session jsonl', async () => {
+  it('translates the runtime stdout stream into den events, text, and usage', async () => {
     const fake = makeFakePi({
       lines: successLines('All done.', SESSION),
       sessionId: SESSION,
-      usage: [
-        { input: 100, output: 25, cacheRead: 10 },
-        { input: 40, output: 5, cacheRead: 0 },
-      ],
     })
     const handle = makeExecutor(fake).start(makeConformanceSpec(), {
       signal: new AbortController().signal,
@@ -107,17 +103,23 @@ describe('PiExecutor', () => {
     const [events, result] = await Promise.all([drain(handle.events), handle.result])
 
     const den = events.filter((e) => e.type === 'den').map((e) => e.event)
-    expect(den).toContainEqual({ type: 'message.agent', text: 'All done.' })
+    // Deltas are "A" + "ll done." — must concatenate, not replay message_end.
+    const agentText = den
+      .filter((e) => e.type === 'message.agent')
+      .map((e) => ('text' in e ? e.text : ''))
+      .join('')
+    expect(agentText).toBe('All done.')
+    expect(den).toContainEqual({ type: 'thinking.delta', text: 'plan' })
     expect(den).toContainEqual({ type: 'tool.start', tool: 'Bash' })
     expect(den).toContainEqual({ type: 'tool.end', tool: 'Bash' })
 
     expect(events.find((e) => e.type === 'turn.end')).toMatchObject({
       harnessSessionId: `pi:${SESSION}`,
-      // 100+10 + 40 in, 25+5 out, summed onto the on-disk assistant message.
-      usage: { inputTokens: 150, outputTokens: 30, totalTokens: 180, turns: 1 },
+      // 100 + cacheRead 10 in, 25 out, from the final assistant message_end.
+      usage: { inputTokens: 110, outputTokens: 25, totalTokens: 135, turns: 1 },
     })
     expect(result.verdict).toBe('completed')
-    expect(result.usage.totalTokens).toBe(180)
+    expect(result.usage.totalTokens).toBe(135)
     expect(events.some((e) => e.type === 'cost')).toBe(false)
     expect(result.usage.costUsd).toBeUndefined()
   })
@@ -150,6 +152,7 @@ describe('PiExecutor', () => {
       expect(args).not.toContain('--session-id')
       expect(args).not.toContain('--auto')
       expect(args).not.toContain('--yolo')
+      // fake-pi exits 99 if stdin is a pipe — success implies stdin ignored.
     } finally {
       if (previous === undefined) delete process.env.RIVETOS_SESSION_KEY
       else process.env.RIVETOS_SESSION_KEY = previous
@@ -264,13 +267,34 @@ describe('PiExecutor', () => {
     expect(result.error).toContain('model alias unknown')
   })
 
-  it('resolves failed on a clean exit with no session event', async () => {
+  it('resolves failed on a clean exit with no terminal event', async () => {
     const fake = makeFakePi({ raw: ['not json at all', '{"role": 42'] })
     const result = await makeExecutor(fake).start(makeConformanceSpec(), {
       signal: new AbortController().signal,
     }).result
     expect(result.verdict).toBe('failed')
-    expect(result.error).toMatch(/without a session event/)
+    expect(result.error).toMatch(/without a terminal event/)
+  })
+
+  it('fails the turn when stopReason is error or aborted', async () => {
+    const fake = makeFakePi({
+      lines: [
+        { type: 'session', version: 3, id: SESSION },
+        { type: 'agent_start' },
+        {
+          type: 'message_end',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'nope' }], stopReason: 'aborted' },
+        },
+        { type: 'turn_end', message: { role: 'assistant', stopReason: 'aborted' } },
+        { type: 'agent_settled' },
+      ],
+      sessionId: SESSION,
+    })
+    const result = await makeExecutor(fake).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toMatch(/stopReason: aborted/)
   })
 
   it('resolves failed when the binary does not exist', async () => {
@@ -283,7 +307,19 @@ describe('PiExecutor', () => {
   })
 
   it('degrades to zero usage rather than failing when the transcript is unreadable', async () => {
-    const fake = successFake()
+    const zero = {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    }
+    const fake = makeFakePi({
+      lines: successLines('Just prose.', SESSION, zero),
+      sessionId: SESSION,
+    })
     const executor = new PiExecutor({
       binary: fake.binary,
       cwd: fake.cwd,

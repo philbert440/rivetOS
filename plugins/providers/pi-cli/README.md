@@ -2,8 +2,10 @@
 
 Pi CLI provider for the [pi](https://github.com/earendil-works/pi) harness
 (`npm i -g @earendil-works/pi-coding-agent`). Each turn runs the local
-`pi --print --mode json -- <prompt>` (print/JSON mode) and replays the stream as a
-turn; per-conversation continuity via a session map in
+`pi --print --mode json -- <prompt>` (print/JSON mode) and replays the runtime
+event stream (text/thinking deltas, usage on `message_end`) as a turn. System
+messages go out as `--append-system-prompt`. Stdin is ignored. Abort/cancel is
+SIGTERM then SIGKILL after 3s. Per-conversation continuity via a session map in
 `~/.rivetos/pi-cli-sessions.json`. Implements `aiSdkBridge()` (LanguageModelV3).
 
 Two id-spaces (they do not match):

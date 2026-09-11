@@ -37,26 +37,25 @@ export type { PiSpawnFlags, SpawnedTurn } from './spawn-turn.js'
 
 export {
   PI_NATIVE_RE,
+  RUNTIME_TERMINAL_TYPES,
   SESSION_TYPE,
+  assistantMessageEvent,
   emptyPiTurnFacts,
   encodePiCwd,
   findSessionFile,
+  isFatalPiStopReason,
   listSessionIds,
   parsePiJsonLine,
   piHome,
   reconcileTurn,
   resolveSessionDir,
+  runtimeMessage,
   sessionsRoot,
   sessionIdFromEvent,
   toHarnessEvents,
+  toHarnessEventsFromDisk,
   tokensFromUsage,
   transcriptFilesFor,
   usageFromEvent,
 } from './wire.js'
-export type {
-  PiJsonEvent,
-  PiTurnEnd,
-  PiTurnFacts,
-  PiTurnUsage,
-  SessionLocation,
-} from './wire.js'
+export type { PiJsonEvent, PiTurnEnd, PiTurnFacts, PiTurnUsage, SessionLocation } from './wire.js'

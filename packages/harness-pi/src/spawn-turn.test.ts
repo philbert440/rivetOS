@@ -170,6 +170,15 @@ describe('RESUME_REJECTED_RE', () => {
   })
 })
 
+describe('stdin', () => {
+  it('spawns with stdin ignored so print mode cannot block on an open pipe', async () => {
+    const binary = fakeScript('#!/usr/bin/env bash\nexit 0\n')
+    const turn = spawnPiTurn({ binary }, 'hi')
+    expect(turn.proc.stdin).toBeNull()
+    await expect(turn.waitExit()).resolves.toBe(0)
+  })
+})
+
 describe('waitExit', () => {
   it('resolves after a signal death whose close already fired', async () => {
     const binary = fakeScript('#!/usr/bin/env bash\nexec sleep 60\n')

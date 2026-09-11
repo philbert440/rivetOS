@@ -9,14 +9,16 @@
  *   - The task scaffold (context + acceptance criteria + the TASK_RESULT
  *     fence contract) is passed as `--append-system-prompt` (pi 0.85.1 has
  *     the flag). The turn message is a positional argv value after `--`.
- *   - print/JSON is the session JSONL on stdout. `type:session` (first line)
- *     carries the native UUID; `type:message` assistant content maps to den
- *     `message.agent` / `tool.start`. Tool results are a separate
- *     `{role:"toolResult"}` message → `tool.end`. Canonical id is `pi:<uuid>`.
- *   - Usage arrives from assistant `message.usage` on stdout when present,
- *     else POST-HOC from the session jsonl after the child exits. A reconcile
- *     that finds nothing degrades to zero usage and a warning; it can never
- *     fail a turn. No `cost` events: tokens, not money.
+ *   - print/JSON stdout is a runtime event stream (not the on-disk session
+ *     jsonl). `type:session` (first line) carries the native UUID;
+ *     `message_update.assistantMessageEvent` text/thinking deltas map to den
+ *     `message.agent` / `thinking.delta`; `toolcall_*` → `tool.start`;
+ *     `role:toolResult` message_end → `tool.end`. Canonical id is `pi:<uuid>`.
+ *   - Usage + stopReason arrive from the final assistant `message_end` /
+ *     `turn_end`. stopReason error/aborted fails the turn. If stdout carried
+ *     no usage, reconcile POST-HOC from the session jsonl. A reconcile that
+ *     finds nothing degrades to zero usage and a warning; it can never fail
+ *     a turn. No `cost` events: tokens, not money.
  *   - Structured result: `parseTaskResultBlock` over the turn's text, falling
  *     back to {verdict:'completed', summary:<last text>}. `result` NEVER rejects.
  *   - kill(): SIGTERM then SIGKILL after the grace period → verdict 'killed'.
@@ -51,16 +53,19 @@ import {
 import { createLogger, type HarnessLogger } from './log.js'
 import { RESUME_REJECTED_RE, spawnPiTurn, type SpawnedTurn } from './spawn-turn.js'
 import {
+  assistantMessageEvent,
   emptyPiTurnFacts,
   findSessionFile,
+  isFatalPiStopReason,
   listSessionIds,
   piHome,
   reconcileTurn,
+  RUNTIME_TERMINAL_TYPES,
+  runtimeMessage,
   SESSION_TYPE,
   sessionIdFromEvent,
   usageFromEvent,
   type PiJsonEvent,
-  type PiMessageEvent,
   type PiTurnFacts,
 } from './wire.js'
 
@@ -278,7 +283,7 @@ export class PiExecutor implements HarnessExecutor {
     return {
       steerable: true, // between turns — no mid-spawn steering
       multiTurn: true, // native `--session` resume, one session across the task
-      structuredStream: true, // print/JSON session + message lines
+      structuredStream: true, // print/JSON runtime event stream
       usageInResult: true, // assistant message.usage or session jsonl
       sessionIdCapture: true, // session.id on the first stdout line, plus a disk fallback
       slashCommands: false,
@@ -555,15 +560,15 @@ export class PiExecutor implements HarnessExecutor {
     spawned.proc.once('error', (err) => {
       spawnFailure ??= `Failed to spawn ${this.cfg.binary}: ${err.message}`
     })
-    spawned.proc.stdin.on('error', () => {
-      /* EPIPE on a dead child — the proc 'error'/exit path reports it */
-    })
 
     let text = ''
     let sessionId: string | undefined
     let sawTerminal = false
+    let sawTextDelta = false
+    let sawThinkingDelta = false
     let error: string | undefined
     const toolNamesById = new Map<string, string>()
+    const startedTools = new Set<string>()
     let stdoutInput = 0
     let stdoutOutput = 0
     let stdoutUsageRecords = 0
@@ -572,8 +577,26 @@ export class PiExecutor implements HarnessExecutor {
       for await (const line of spawned.events()) {
         this.consumeLine(line, {
           den,
-          onText: (chunk) => {
+          onTextDelta: (chunk) => {
+            sawTextDelta = true
+            text += chunk
+            den({ type: 'message.agent', text: chunk })
+          },
+          onTextSnapshot: (chunk) => {
+            if (sawTextDelta || chunk === '') return
             text += text === '' ? chunk : `\n${chunk}`
+            den({ type: 'message.agent', text: chunk })
+          },
+          onThinkingDelta: (chunk) => {
+            sawThinkingDelta = true
+            den({ type: 'thinking.delta', text: chunk })
+          },
+          onThinkingSnapshot: (chunk) => {
+            if (sawThinkingDelta || chunk === '') return
+            den({ type: 'thinking.delta', text: chunk })
+          },
+          onTextBlockStart: () => {
+            if (text !== '') text += '\n'
           },
           onSessionId: (id) => {
             sessionId = id
@@ -582,9 +605,14 @@ export class PiExecutor implements HarnessExecutor {
             sawTerminal = true
           },
           onUsage: (tokens) => {
-            stdoutInput += tokens.inputTokens
-            stdoutOutput += tokens.outputTokens
+            stdoutInput = tokens.inputTokens
+            stdoutOutput = tokens.outputTokens
             stdoutUsageRecords += 1
+          },
+          onStopReason: (reason) => {
+            if (isFatalPiStopReason(reason)) {
+              error ??= `pi stopReason: ${reason}`
+            }
           },
           onErrorMessage: (msg) => {
             run.events.push({
@@ -595,6 +623,7 @@ export class PiExecutor implements HarnessExecutor {
             })
           },
           toolNamesById,
+          startedTools,
         })
       }
 
@@ -605,7 +634,7 @@ export class PiExecutor implements HarnessExecutor {
         error = `pi CLI exited ${String(exitCode)}: ${stderrTail}`
       }
       if (!sawTerminal && error === undefined && !run.isKilled()) {
-        error = 'pi CLI stream ended without a session event'
+        error = 'pi CLI stream ended without a terminal event'
       }
       if (error !== undefined && RESUME_REJECTED_RE.test(spawned.stderrText())) {
         return { text, error, resumeRejected: turn.resumeSessionId !== undefined }
@@ -651,88 +680,144 @@ export class PiExecutor implements HarnessExecutor {
     line: PiJsonEvent,
     into: {
       den: (event: AgentEventBody) => void
-      onText: (chunk: string) => void
+      onTextDelta: (chunk: string) => void
+      onTextSnapshot: (chunk: string) => void
+      onThinkingDelta: (chunk: string) => void
+      onThinkingSnapshot: (chunk: string) => void
+      onTextBlockStart: () => void
       onSessionId: (id: string) => void
       onTerminal: () => void
       onUsage: (tokens: { inputTokens: number; outputTokens: number }) => void
+      onStopReason: (reason: string) => void
       onErrorMessage: (msg: string) => void
       toolNamesById: Map<string, string>
+      startedTools: Set<string>
     },
   ): void {
     const tokens = usageFromEvent(line)
     if (tokens) into.onUsage(tokens)
 
-    switch (line.type) {
-      case 'message': {
-        const msg = (line as PiMessageEvent).message
-        if (!msg || typeof msg !== 'object') return
-        const rec = msg as unknown as Record<string, unknown>
-        const role = msg.role
-        if (role === 'toolResult' || role === 'tool_result') {
-          const id =
-            (typeof rec.toolCallId === 'string' && rec.toolCallId) ||
-            (typeof rec.id === 'string' && rec.id) ||
-            undefined
-          const named =
-            (typeof rec.toolName === 'string' && rec.toolName) ||
-            (typeof rec.name === 'string' && rec.name) ||
-            (typeof id === 'string' ? into.toolNamesById.get(id) : undefined)
-          if (id && named) into.toolNamesById.set(id, named)
-          into.den({ type: 'tool.end', tool: named })
-          return
-        }
-        const content = Array.isArray(msg.content)
-          ? msg.content
-          : typeof msg.content === 'string'
-            ? [{ type: 'text', text: msg.content }]
-            : []
-        if (role !== 'assistant') return
-        for (const raw of content) {
-          if (!raw || typeof raw !== 'object') continue
-          const item = raw as Record<string, unknown>
-          const t = item.type
-          if (t === 'text' && typeof item.text === 'string' && item.text !== '') {
-            into.onText(item.text)
-            into.den({ type: 'message.agent', text: item.text })
-          } else if (t === 'toolCall' || t === 'tool_call' || t === 'toolUse' || t === 'tool_use') {
-            const name =
-              (typeof item.name === 'string' && item.name) ||
-              (typeof item.toolName === 'string' && item.toolName) ||
-              ''
-            if (!name) continue
-            const id =
-              (typeof item.id === 'string' && item.id) ||
-              (typeof item.toolCallId === 'string' && item.toolCallId) ||
-              undefined
-            if (id) into.toolNamesById.set(id, name)
-            into.den({ type: 'tool.start', tool: name })
-          } else if (t === 'toolResult' || t === 'tool_result') {
-            const id =
-              (typeof item.id === 'string' && item.id) ||
-              (typeof item.toolCallId === 'string' && item.toolCallId) ||
-              undefined
-            into.den({
-              type: 'tool.end',
-              tool: typeof id === 'string' ? into.toolNamesById.get(id) : undefined,
-            })
-          }
-        }
-        return
-      }
-      case SESSION_TYPE: {
-        const id = sessionIdFromEvent(line)
-        if (id) into.onSessionId(id)
-        into.onTerminal()
-        return
-      }
-      case 'error': {
-        const msg = (line as { message?: unknown }).message
-        if (typeof msg === 'string' && msg !== '') into.onErrorMessage(msg)
-        return
-      }
-      default:
-        return
+    if (line.type === SESSION_TYPE) {
+      const id = sessionIdFromEvent(line)
+      if (id) into.onSessionId(id)
+      return
     }
+    if (RUNTIME_TERMINAL_TYPES.has(line.type)) {
+      into.onTerminal()
+      if (line.type === 'turn_end') {
+        const stop = runtimeMessage(line)?.stopReason
+        if (typeof stop === 'string' && stop !== '') into.onStopReason(stop)
+      }
+      return
+    }
+    if (line.type === 'error') {
+      const msg = (line as { message?: unknown }).message
+      if (typeof msg === 'string' && msg !== '') into.onErrorMessage(msg)
+      return
+    }
+    if (line.type === 'message_update') {
+      const inner = assistantMessageEvent(line)
+      if (!inner) return
+      const t = inner.type
+      if (t === 'text_start') {
+        into.onTextBlockStart()
+        return
+      }
+      if (t === 'text_delta' && typeof inner.delta === 'string' && inner.delta !== '') {
+        into.onTextDelta(inner.delta)
+        return
+      }
+      if (t === 'thinking_delta' && typeof inner.delta === 'string' && inner.delta !== '') {
+        into.onThinkingDelta(inner.delta)
+        return
+      }
+      if (
+        t === 'toolcall_start' ||
+        t === 'toolcall_end' ||
+        t === 'tool_call_start' ||
+        t === 'tool_call_end'
+      ) {
+        this.emitToolStart(inner as unknown as Record<string, unknown>, into)
+      }
+      return
+    }
+    if (line.type === 'message_start' || line.type === 'message_end') {
+      const msg = runtimeMessage(line)
+      if (!msg) return
+      if (msg.role === 'toolResult' || msg.role === 'tool_result') {
+        if (line.type === 'message_end')
+          this.emitToolEnd(msg as unknown as Record<string, unknown>, into)
+        return
+      }
+      if (msg.role !== 'assistant' || line.type !== 'message_end') return
+      if (typeof msg.stopReason === 'string' && msg.stopReason !== '')
+        into.onStopReason(msg.stopReason)
+      const content = Array.isArray(msg.content)
+        ? msg.content
+        : typeof msg.content === 'string'
+          ? [{ type: 'text', text: msg.content }]
+          : []
+      for (const raw of content) {
+        if (!raw || typeof raw !== 'object') continue
+        const item = raw as Record<string, unknown>
+        const t = item.type
+        if (t === 'text' && typeof item.text === 'string' && item.text !== '') {
+          into.onTextSnapshot(item.text)
+        } else if (t === 'thinking' && typeof item.thinking === 'string' && item.thinking !== '') {
+          into.onThinkingSnapshot(item.thinking)
+        } else if (t === 'toolCall' || t === 'tool_call' || t === 'toolUse' || t === 'tool_use') {
+          this.emitToolStart(item, into)
+        } else if (t === 'toolResult' || t === 'tool_result') {
+          this.emitToolEnd(item, into)
+        }
+      }
+    }
+  }
+
+  private emitToolStart(
+    rec: Record<string, unknown>,
+    into: {
+      den: (event: AgentEventBody) => void
+      toolNamesById: Map<string, string>
+      startedTools: Set<string>
+    },
+  ): void {
+    const nested = isObj(rec.content)
+      ? rec.content
+      : isObj(rec.partial)
+        ? rec.partial
+        : isObj(rec.toolCall)
+          ? rec.toolCall
+          : undefined
+    const name =
+      str(rec.name) ||
+      str(rec.toolName) ||
+      (nested ? str(nested.name) || str(nested.toolName) : '') ||
+      ''
+    const id =
+      str(rec.id) ||
+      str(rec.toolCallId) ||
+      (nested ? str(nested.id) || str(nested.toolCallId) : undefined)
+    if (!name) return
+    if (id) into.toolNamesById.set(id, name)
+    const key = id ?? name
+    if (into.startedTools.has(key)) return
+    into.startedTools.add(key)
+    into.den({ type: 'tool.start', tool: name })
+  }
+
+  private emitToolEnd(
+    rec: Record<string, unknown>,
+    into: {
+      den: (event: AgentEventBody) => void
+      toolNamesById: Map<string, string>
+    },
+  ): void {
+    const id = str(rec.toolCallId) || str(rec.id)
+    const named =
+      str(rec.toolName) || str(rec.name) || (id ? into.toolNamesById.get(id) : undefined)
+    if (id && named) into.toolNamesById.set(id, named)
+    into.den({ type: 'tool.end', tool: named })
   }
 
   /**
@@ -774,4 +859,12 @@ export class PiExecutor implements HarnessExecutor {
       return emptyPiTurnFacts()
     }
   }
+}
+
+function str(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined
+}
+
+function isObj(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

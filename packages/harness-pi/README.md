@@ -21,12 +21,15 @@ can register a real executor for harness id `pi`. The provider-plugin id
    scaffold (context, acceptance criteria, the `TASK_RESULT` fence contract) is
    passed as `--append-system-prompt`. The turn prompt is positional after `--`
    so a leading `-` or `@` is not parsed as a flag or file include.
-2. **Stream.** Print/JSON is the session JSONL (version 3) on stdout — a
-   `session` line first (native UUID), then `message` lines. Assistant content
-   is text / thinking / `{type:toolCall,id,name,arguments}`; tool results are a
-   separate `{role:"toolResult", toolCallId, toolName, content}` message —
-   translated to den `message.agent` / `tool.start` / `tool.end`. The native id
-   is canonicalized to `pi:<uuid>`.
+2. **Stream.** Print/JSON stdout is a runtime event stream (not the on-disk
+   session jsonl): `session` (native UUID), `agent_start`, `turn_start`,
+   `message_start`/`message_update`/`message_end`, `turn_end`, `agent_end`,
+   `agent_settled`. Assistant text/thinking arrive as
+   `message_update.assistantMessageEvent` deltas; tool calls as `toolcall_*`;
+   tool results as `role:toolResult` `message_end`. Usage + `stopReason` come
+   from the final assistant `message_end` / `turn_end`. The native id is
+   canonicalized to `pi:<uuid>`. Spawn stdin is ignored — print mode blocks
+   if the fd is open.
 3. **Reconcile.** If the stream carried no usage, after the child exits the
    executor reads the session jsonl (cwd-bucketed under
    `~/.pi/agent/sessions/<cwd-bucket>/`, or flat `<session-dir>/<ts>_<id>.jsonl`
