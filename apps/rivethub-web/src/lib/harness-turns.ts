@@ -13,15 +13,34 @@
  * in-place `status` flip detectable on the next frame.
  */
 
-import type {
-  HarnessStatusFrame,
-  HarnessTranscriptTool,
-  HarnessTranscriptTurn,
-  SessionMessage,
+import {
+  splitHermesReasoning,
+  type HarnessStatusFrame,
+  type HarnessTranscriptTool,
+  type HarnessTranscriptTurn,
+  type SessionMessage,
 } from '@rivetos/types'
 import { humanToolTitle } from './tool-titles.js'
 import { statusActivity } from './harness-fold.js'
 import type { LiveToolEntry, LiveTurn } from './fold-stream.js'
+
+/**
+ * Hermes TUI paints a `┌─ Reasoning ─┐` box into assistant text. Peel the
+ * body into `thinking` and strip the chrome from the reply — Android
+ * (`HarnessChatScreen` + `splitHermesReasoning`) does the same at render.
+ * No-op when there is no box, so other harnesses are unchanged.
+ */
+export function foldHermesAssistant(
+  role: HarnessTranscriptTurn['role'],
+  text: string,
+  thinking: string | undefined,
+): { text: string; thinking?: string } {
+  if (role === 'user') return { text, ...(thinking ? { thinking } : {}) }
+  const split = splitHermesReasoning(text)
+  if (!split.reasoning) return { text, ...(thinking ? { thinking } : {}) }
+  const next = thinking || split.reasoning
+  return { text: split.text, ...(next ? { thinking: next } : {}) }
+}
 
 /**
  * Roster / harness tokens whose on-disk store carries in-flight turns
@@ -58,6 +77,7 @@ export function liveFromTranscript(
   if (status?.status !== 'working' && status?.status !== 'blocked') return undefined
   const last = turns.at(-1)
   if (!last || last.role !== 'assistant' || last.complete === true) return undefined
+  const folded = foldHermesAssistant(last.role, last.text, last.thinking)
   const tools: LiveToolEntry[] = (last.tools ?? []).map((t, i) => {
     const args = t.args
     return {
@@ -68,10 +88,12 @@ export function liveFromTranscript(
       ...(args ? { args } : {}),
     }
   })
+  const text = folded.text
+  const reasoningText = folded.thinking ?? ''
   return {
-    text: last.text,
-    reasoning: last.lastBlock === 'thinking' && !last.text,
-    reasoningText: last.thinking ?? '',
+    text,
+    reasoning: !text && (last.lastBlock === 'thinking' || Boolean(reasoningText)),
+    reasoningText,
     tools,
     activity: statusActivity(status),
   }
@@ -110,13 +132,14 @@ export function messagesFromHarnessTurns(
   return list.map((t, i) => {
     const id = `harness:${sessionId}:${String(i)}`
     const tools = t.tools && t.tools.length > 0 ? t.tools : undefined
+    const folded = foldHermesAssistant(t.role, t.text, t.thinking)
     const prevMsg = prev?.[i]
     if (
       prevMsg &&
       prevMsg.id === id &&
       prevMsg.role === t.role &&
-      prevMsg.text === t.text &&
-      prevMsg.thinking === (t.thinking ? t.thinking : undefined) &&
+      prevMsg.text === folded.text &&
+      prevMsg.thinking === (folded.thinking ? folded.thinking : undefined) &&
       prevMsg.model === (t.model ? t.model : undefined) &&
       sameUsage(prevMsg.usage, t.usage) &&
       sameTools(prevMsg.tools, tools)
@@ -127,9 +150,9 @@ export function messagesFromHarnessTurns(
       id,
       sessionId,
       role: t.role,
-      text: t.text,
+      text: folded.text,
       ts: i + 1,
-      ...(t.thinking ? { thinking: t.thinking } : {}),
+      ...(folded.thinking ? { thinking: folded.thinking } : {}),
       ...(tools ? { tools: tools.map((x) => ({ ...x })) } : {}),
       ...(t.usage ? { usage: { ...t.usage } } : {}),
       ...(t.model ? { model: t.model } : {}),

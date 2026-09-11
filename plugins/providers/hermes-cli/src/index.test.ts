@@ -40,8 +40,21 @@ async function collect(model: HermesCliModel, p: LanguageModelV3Prompt): Promise
   }
   return parts
 }
-function model(binary: string, mapPath: string, conversationId = 'conv-1'): HermesCliModel {
-  return new HermesCliModel({ providerId: 'hermes-cli', modelId: 'qwen-27b', binary, cwd: undefined, conversationId, sessionMapPath: mapPath })
+function model(
+  binary: string,
+  mapPath: string,
+  conversationId = 'conv-1',
+  hermesDbPath?: string,
+): HermesCliModel {
+  return new HermesCliModel({
+    providerId: 'hermes-cli',
+    modelId: 'qwen-27b',
+    binary,
+    cwd: undefined,
+    conversationId,
+    sessionMapPath: mapPath,
+    hermesDbPath,
+  })
 }
 
 describe('helpers', () => {
@@ -108,6 +121,54 @@ describe('HermesCliModel.doStream', () => {
     const r = await model(bin, path.join(tmp(), 'm.json')).doGenerate({ prompt })
     expect(r.content).toEqual([{ type: 'text', text: 'ab' }])
   })
+
+  it('finish.usage is empty when state.db is missing (does not throw)', async () => {
+    const bin = fakeScript('#!/usr/bin/env bash\necho "session_id: sess-9" >&2\nprintf "PONG"\n')
+    const parts = await collect(
+      model(bin, path.join(tmp(), 'map.json'), 'conv-1', path.join(tmp(), 'state.db')),
+      prompt,
+    )
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : 'missing').toBeUndefined()
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : 'missing').toBeUndefined()
+  })
+
+  it('finish.usage reads session totals from state.db after exit', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbFile = path.join(tmp(), 'state.db')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER,
+        input_tokens INTEGER, output_tokens INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess-9', 1000, 2000, 42, 7);
+    `)
+    db.close()
+    const bin = fakeScript('#!/usr/bin/env bash\necho "session_id: sess-9" >&2\nprintf "PONG"\n')
+    const parts = await collect(model(bin, path.join(tmp(), 'map.json'), 'conv-1', dbFile), prompt)
+    const fin = parts.find((p) => p.type === 'finish')
+    expect(fin && fin.type === 'finish' ? fin.usage.inputTokens.total : undefined).toBe(42)
+    expect(fin && fin.type === 'finish' ? fin.usage.outputTokens.total : undefined).toBe(7)
+  })
+
+  it('doGenerate usage matches the stream finish usage', async () => {
+    const { DatabaseSync } = await import('node:sqlite')
+    const dbFile = path.join(tmp(), 'state.db')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY, started_at INTEGER, ended_at INTEGER,
+        input_tokens INTEGER, output_tokens INTEGER
+      );
+      INSERT INTO sessions VALUES ('sess-g', 1, 2, 9, 3);
+    `)
+    db.close()
+    const bin = fakeScript('#!/usr/bin/env bash\necho "session_id: sess-g" >&2\nprintf "ok"\n')
+    const r = await model(bin, path.join(tmp(), 'm.json'), 'conv-1', dbFile).doGenerate({ prompt })
+    expect(r.usage.inputTokens.total).toBe(9)
+    expect(r.usage.outputTokens.total).toBe(3)
+  })
 })
 
 describe('provider + manifest', () => {
@@ -121,6 +182,28 @@ describe('provider + manifest', () => {
     expect(m.modelId).toBe('x')
     expect(m.provider).toBe('hermes-cli')
     expect(p.aiSdkBridge().buildProviderOptions([], undefined)).toBeUndefined()
+  })
+
+  it('isAvailable is true when hermes --version exits 0, and the verdict is cached', async () => {
+    const dir = tmp()
+    const stamp = path.join(dir, 'probes')
+    const bin = path.join(dir, 'hermes')
+    fs.writeFileSync(
+      bin,
+      `#!/usr/bin/env bash\necho probed >> ${JSON.stringify(stamp)}\necho "Hermes Agent v0.20.0 (2026.8.3)"\nexit 0\n`,
+      { mode: 0o755 },
+    )
+    const p = new HermesCliProvider({ binary: bin })
+    expect(await p.isAvailable()).toBe(true)
+    expect(await p.isAvailable()).toBe(true)
+    expect(fs.readFileSync(stamp, 'utf8').trim().split('\n')).toEqual(['probed'])
+  })
+
+  it('isAvailable is false when --version exits non-zero (cached)', async () => {
+    const bin = fakeScript('#!/usr/bin/env bash\nexit 3\n')
+    const p = new HermesCliProvider({ binary: bin })
+    expect(await p.isAvailable()).toBe(false)
+    expect(await p.isAvailable()).toBe(false)
   })
   it('manifest registers from snake_case config', () => {
     let registered: Provider | undefined

@@ -23,13 +23,29 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
   LanguageModelV3StreamResult,
-  LanguageModelV3Usage,
 } from '@ai-sdk/provider'
 import type { Provider, PluginManifest } from '@rivetos/types'
 import type { ProviderAiSdkBridge, GetModelInput } from '@rivetos/aisdk'
 import { defaultSessionMapPath, loadSessionMap, saveSessionMap } from './session-map.js'
+import {
+  emptyUsage,
+  hermesDbPath,
+  readHermesSessionTokens,
+  usageDelta,
+  usageFromTokens,
+} from './hermes-db.js'
 
 export { loadSessionMap, saveSessionMap } from './session-map.js'
+export {
+  emptyUsage,
+  hermesDbPath,
+  openHermesDb,
+  readHermesSessionTokens,
+  readHermesUsage,
+  tokensFromRow,
+  usageDelta,
+  usageFromTokens,
+} from './hermes-db.js'
 
 export const HERMES_CLI_PROVIDER_ID = 'hermes-cli'
 export const DEFAULT_MODEL = 'qwen-27b'
@@ -75,18 +91,6 @@ export function sessionIdFromStderr(stderr: string): string | undefined {
   return m?.[1] || undefined
 }
 
-function emptyUsage(): LanguageModelV3Usage {
-  return {
-    inputTokens: {
-      total: undefined,
-      noCache: undefined,
-      cacheRead: undefined,
-      cacheWrite: undefined,
-    },
-    outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-  }
-}
-
 export interface HermesCliModelConfig {
   providerId: string
   modelId: string
@@ -95,6 +99,8 @@ export interface HermesCliModelConfig {
   conversationId: string | undefined
   /** Injected in tests. */
   sessionMapPath?: string
+  /** Injected in tests. Overrides `HERMES_HOME/state.db`. */
+  hermesDbPath?: string
 }
 
 export class HermesCliModel implements LanguageModelV3 {
@@ -118,13 +124,17 @@ export class HermesCliModel implements LanguageModelV3 {
       unified: 'stop',
       raw: undefined,
     }
+    let usage = emptyUsage()
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
       if (value.type === 'text-delta') text += value.delta
-      else if (value.type === 'finish') finishReason = value.finishReason
+      else if (value.type === 'finish') {
+        finishReason = value.finishReason
+        usage = value.usage
+      }
     }
-    return { content: [{ type: 'text', text }], finishReason, usage: emptyUsage(), warnings: [] }
+    return { content: [{ type: 'text', text }], finishReason, usage, warnings: [] }
   }
 
   doStream(options: LanguageModelV3CallOptions): Promise<LanguageModelV3StreamResult> {
@@ -136,6 +146,11 @@ export class HermesCliModel implements LanguageModelV3 {
     const sessionId = map[convKey]
     const args = buildArgs({ binary, modelId: this.modelId, cwd, sessionId }, prompt)
     const abortSignal = options.abortSignal
+    const dbPath = this.config.hermesDbPath ?? hermesDbPath()
+    // Snapshot cumulative session totals before spawn so a --resume turn can
+    // report the delta. New sessions have no prior row; after-exit totals
+    // are the turn.
+    const priorTokens = sessionId ? readHermesSessionTokens(sessionId, dbPath) : {}
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
@@ -216,10 +231,22 @@ export class HermesCliModel implements LanguageModelV3 {
               })
               controller.enqueue({ type: 'text-end', id: TEXT_ID })
             }
+            const sid = sessionIdFromStderr(stderr) || sessionId
+            let usage = emptyUsage()
+            try {
+              if (sid) {
+                const after = readHermesSessionTokens(sid, dbPath)
+                const tokens =
+                  sessionId && sid === sessionId ? usageDelta(priorTokens, after) : after
+                usage = usageFromTokens(tokens)
+              }
+            } catch {
+              /* DB unreadable → empty usage */
+            }
             controller.enqueue({
               type: 'finish',
               finishReason: { unified: code === 0 ? 'stop' : 'error', raw: String(code) },
-              usage: emptyUsage(),
+              usage,
             })
             controller.close()
           } catch {
@@ -259,6 +286,7 @@ export class HermesCliProvider implements Provider {
   private readonly cwd: string
   private readonly contextWindow: number
   private readonly outputTokenLimit: number
+  private available: boolean | null = null
 
   constructor(config: HermesCliProviderConfig = {}) {
     this.name = config.name ?? 'Hermes Agent (CLI)'
@@ -281,8 +309,36 @@ export class HermesCliProvider implements Provider {
   getMaxOutputTokens(): number {
     return this.outputTokenLimit
   }
-  isAvailable(): Promise<boolean> {
-    return Promise.resolve(existsSync(this.binary))
+  /** `hermes --version` exits 0 → available. Cached after the first probe. */
+  async isAvailable(): Promise<boolean> {
+    if (this.available !== null) return this.available
+    this.available = await new Promise<boolean>((resolve) => {
+      let settled = false
+      const done = (ok: boolean): void => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      try {
+        const proc = spawn(this.binary, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] })
+        const t = setTimeout(() => {
+          proc.kill('SIGKILL')
+          done(false)
+        }, 15_000)
+        t.unref()
+        proc.once('error', () => {
+          clearTimeout(t)
+          done(false)
+        })
+        proc.once('exit', (code) => {
+          clearTimeout(t)
+          done(code === 0)
+        })
+      } catch {
+        done(false)
+      }
+    })
+    return this.available
   }
 
   aiSdkBridge(): ProviderAiSdkBridge {
