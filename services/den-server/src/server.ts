@@ -49,6 +49,7 @@ import {
   listSessions,
   parseEvent,
   reduceDen,
+  type AgentEvent,
   type DenState,
 } from '@rivetos/den-protocol'
 import { MeshParseError, type HarnessDriver, type UserContext } from '@rivetos/types'
@@ -495,25 +496,35 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   })
 
   /** Raw AgentEvent subscribers — the harness drivers' live event source. */
-  const denEventSinks = new Set<(ev: { session: string; type: string }) => void>()
+  const denEventSinks = new Set<(ev: DenAgentEventLike) => void>()
+
+  // AgentEvent is a union of bodies with no index signature; the taps
+  // (onAgentEvent / DenAgentEventLike) require one. Copy onto that shape
+  // rather than asserting.
+  const asDenTapEvent = (ev: AgentEvent): DenAgentEventLike => {
+    const out: DenAgentEventLike = { session: ev.session, type: ev.type }
+    Object.assign(out, ev)
+    return out
+  }
 
   // Ingestion is serialized by construction: everything from parse to
   // broadcast is synchronous, so Node's event loop applies each caller's
   // events atomically and in arrival order — there is no await between
   // reading `state` and writing it back. Cross-request ORDER is the client's
   // job: send one batch, or sequential single POSTs.
-  const ingest = (ev: NonNullable<ReturnType<typeof parseEvent>>): void => {
+  const ingest = (ev: AgentEvent): void => {
     state = reduceDen(state, ev)
     // ended sessions linger for the TTL so the room is still visible
     // asleep, then get evicted; any newer event cancels the eviction
     clearEviction(ev.session)
     if (ev.type === 'session.end') scheduleEviction(ev.session)
     broadcast(JSON.stringify(ev), ev.session)
+    const tap = asDenTapEvent(ev)
     // Seamless-modes tap: bridge to the chat view (5d). Never let it throw
     // into ingest.
     if (opts.onAgentEvent) {
       try {
-        opts.onAgentEvent(ev)
+        opts.onAgentEvent(tap)
       } catch {
         /* bridge errors must not break den ingest */
       }
@@ -522,7 +533,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // a driver bug must never break den ingest.
     for (const sink of [...denEventSinks]) {
       try {
-        sink(ev)
+        sink(tap)
       } catch {
         /* as above */
       }
