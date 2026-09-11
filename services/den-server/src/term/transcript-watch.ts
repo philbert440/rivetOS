@@ -328,7 +328,9 @@ export function createTranscriptWatcher(
           ),
         ),
       ).then((stats) => {
-        const present = stats.filter((x): x is { size: number; mtimeMs: number; path: string } => x !== null)
+        const present = stats.filter(
+          (x): x is { size: number; mtimeMs: number; path: string } => x !== null,
+        )
         if (present.length === 0) {
           dropToResolution(session, s)
           return
