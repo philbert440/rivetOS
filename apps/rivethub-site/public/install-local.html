@@ -110,7 +110,9 @@
 <tr><th scope="row">Grok Build</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Grok’s hooks signal each session event; the recorder parses the session log.</td></tr>
 <tr><th scope="row">Codex</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>A small watcher follows Codex’s session files and records new turns as they land.</td></tr>
 <tr><th scope="row">Kimi Code</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>Hooks plus a content-hash backfill, so nothing gets recorded twice.</td></tr>
-<tr><th scope="row">Hermes</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>An in-harness Python provider streams turns to your hub in the background.</td></tr></tbody></table>
+<tr><th scope="row">Hermes</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>An in-harness Python provider streams turns to your hub in the background.</td></tr>
+<tr><th scope="row">opencode</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>opencode keeps its sessions in a local database; the hub watches it and records new turns as they land.</td></tr>
+<tr><th scope="row">pi</th><td><span class="yes">✓</span> Yes</td><td><span class="yes">✓</span> Yes</td><td>pi writes one transcript per session on disk; the recorder parses each new turn from it.</td></tr></tbody></table>
 </div>
 <p class="small-note">Recording and recall work across every tool in the table. Deeper controls in the apps — interrupts, approvals, model pickers — vary by tool today; Claude Code is the reference, and parity across the set is active work. The integration bundles live in <code>integrations/</code> in the <a href="https://github.com/philbert440/rivetOS">RivetOS repo</a>.</p>
 </section>

@@ -4,10 +4,10 @@
 
 ## Start here
 
-- [Product and examples](https://rivethub.io/): the problem RivetHub solves, how capture and recall work, and what is shipped versus planned. Product screenshots show the real desktop app, including a memory search inside a live session and a terminal replay of a saved exchange.
+- [Product and examples](https://rivethub.io/): the problem RivetHub solves, how capture and recall work, and which agent tools it supports. Product screenshots show the real desktop app, including a memory search inside a live session and a terminal replay of a saved exchange.
 - [Quickstart](https://rivethub.io/install-local.html): Linux and macOS installation and first use.
 - [Omarchy setup](https://rivethub.io/omarchy.html): Linux desktop installation, Omarchy appearance, terminal palette sync, and first capture verification. Theme detection requires the desktop app; refocus it after changing themes.
-- [Supported integrations](https://rivethub.io/install-local.html#harnesses): Claude Code, Codex, Grok Build, Kimi Code, and Hermes; verify capture and recall for each configured integration.
+- [Supported integrations](https://rivethub.io/install-local.html#harnesses): Claude Code, Codex, Grok Build, Kimi Code, Hermes, opencode, and pi; verify capture and recall for each configured integration.
 - [Applications](https://rivethub.io/apps.html): Linux and Windows desktop clients, Android app, macOS browser use, and iPhone browser pairing guidance.
 - [Common questions](https://rivethub.io/#questions): current capabilities, local processing boundaries, and planned features.
 
