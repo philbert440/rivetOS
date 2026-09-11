@@ -37,7 +37,8 @@ fun harnessAccentHex(harnessId: String?, command: String? = null): String {
     val c = (harnessId ?: command).orEmpty().lowercase()
     if (c.isEmpty()) return ACCENT_LOCAL
     HARNESS_ACCENTS[c]?.let { return it }
-    val match = HARNESS_ACCENTS.keys.sortedByDescending { it.length }.firstOrNull { it in c }
+    val tokens = c.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+    val match = HARNESS_ACCENTS.keys.sortedByDescending { it.length }.firstOrNull { it in tokens }
     return if (match != null) HARNESS_ACCENTS.getValue(match) else ACCENT_LOCAL
 }
 

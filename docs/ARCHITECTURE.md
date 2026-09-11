@@ -43,7 +43,7 @@ Web / Desktop / Android
 ## Design principles
 
 1. **Harness owns the loop**: Interactive coding is the host harness. Rivet adapts, does not replace.
-2. **One SessionId, four drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
+2. **One SessionId, six drivers** (opencode/pi in flight): Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
 3. **Honest capability flags**: Drivers advertise what is actually wired. Unsupported methods return typed `capability_unsupported` (HTTP 501). UIs gate on flags.
 4. **Domain-Driven Design**: Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
 5. **Clean Architecture**: Dependencies point inward. Core knows nothing about Telegram, Discord, PostgreSQL, or Anthropic. Plugins know about core, never the reverse.
@@ -476,7 +476,7 @@ rivetOS/
     transports/mcp-server/
   services/
     den-server/
-      src/harness/               ← registry, PtyHarnessDriver, four drivers, routes, uploads
+      src/harness/               ← registry, PtyHarnessDriver, six drivers (opencode/pi in flight), routes, uploads
     embedding-worker/            ← graphile-worker daemon (GPU embeddings)
     compaction-worker/           ← graphile-worker daemon (summarization + wiki)
     mcp-sidecar/
@@ -921,7 +921,7 @@ When documenting mesh peers, use hostnames or documentation address space
 | `RIVETOS_SESSION_KEY=task:<id>` write override | Deprecated            | Use `RIVETOS_TASK_ID` + capture association                                         |
 | Provider plugins for Hub coding UX             | Demoted               | Harness drivers own interactive coding                                              |
 
-**Still first-class:** agent channel (mesh), memory, MCP, den, gateway, four harness drivers, Hub/Android/desktop, tasks.
+**Still first-class:** agent channel (mesh), memory, MCP, den, gateway, six harness drivers (opencode/pi in flight), Hub/Android/desktop, tasks.
 
 ---
 

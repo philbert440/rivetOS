@@ -167,8 +167,36 @@ describe('spawnClaudeTurn timeout_ms', () => {
     await vi.advanceTimersByTimeAsync(timeoutMs)
     expect(sent).toEqual(['SIGTERM'])
     simulateExit(child, null, 'SIGTERM')
+    expect(vi.getTimerCount()).toBe(0)
     await vi.advanceTimersByTimeAsync(KILL_GRACE_MS)
     expect(sent).toEqual(['SIGTERM'])
+    await rejected
+  })
+
+  it('rejects the iterator when the child ignores kill and stdout stays open', async () => {
+    const timeoutMs = 1_000
+    const { turn, sent } = spawnFakeChild({ timeoutMs })
+    live.push(turn)
+    const iterating = (async () => {
+      for await (const _ of turn.events()) {
+        /* drain */
+      }
+    })()
+    const rejected = expect(iterating).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ClaudeCliTimeoutError &&
+        err.code === 'timeout' &&
+        err.timeoutMs === timeoutMs &&
+        err.message === `claude-cli spawn timed out after ${timeoutMs}ms`
+      )
+    })
+    await vi.advanceTimersByTimeAsync(timeoutMs)
+    expect(sent).toEqual(['SIGTERM'])
+    expect(turn.proc.exitCode).toBeNull()
+    expect(turn.proc.signalCode).toBeNull()
+    await vi.advanceTimersByTimeAsync(KILL_GRACE_MS)
+    expect(sent).toEqual(['SIGTERM', 'SIGKILL'])
+    // stdout never ends; iterator must still reject from the terminate latch.
     await rejected
   })
 

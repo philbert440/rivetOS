@@ -96,6 +96,26 @@ class AgentAccentTest {
     }
 
     @Test
+    fun `short keys do not match inside free-form agent names`() {
+        assertEquals(ACCENT_LOCAL, harnessAccentHex("gippity", null))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex("copilot", null))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex("pixtral", null))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex(null, "gippity"))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex(null, "copilot"))
+        assertEquals(ACCENT_LOCAL, harnessAccentHex(null, "pixtral"))
+    }
+
+    @Test
+    fun `delimited tokens and cli aliases keep their colours`() {
+        assertEquals(ACCENT_PI, harnessAccentHex("pi", null))
+        assertEquals(ACCENT_PI, harnessAccentHex("pi-cli", null))
+        assertEquals(ACCENT_OPENCODE, harnessAccentHex("opencode", null))
+        assertEquals(ACCENT_KIMI, harnessAccentHex("rivet-kimi", null))
+        assertEquals(ACCENT_PI, harnessAccentHex(null, "pi-cli"))
+        assertEquals(ACCENT_KIMI, harnessAccentHex(null, "rivet-kimi"))
+    }
+
+    @Test
     fun `parseAccentArgb reads 3 and 6 digit hex`() {
         assertEquals(0xFFAABBCCL, parseAccentArgb("#abc"))
         assertEquals(0xFFCC785CL, parseAccentArgb("#CC785C"))

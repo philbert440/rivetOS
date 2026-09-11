@@ -30,11 +30,13 @@ export const HARNESS_ACCENTS: Record<string, string> = {
 export function harnessAccent(command?: string): string {
   const c = (command ?? '').toLowerCase()
   if (!c) return ACCENT_FALLBACK
-  const exact = HARNESS_ACCENTS[c]
-  if (exact) return exact
+  if (Object.hasOwn(HARNESS_ACCENTS, c)) return HARNESS_ACCENTS[c]
+  const tokens = c.split(/[^a-z0-9]+/).filter(Boolean)
   const keys = Object.keys(HARNESS_ACCENTS).sort((a, b) => b.length - a.length)
   for (const id of keys) {
-    if (c.includes(id)) return HARNESS_ACCENTS[id]
+    if (tokens.includes(id) && Object.hasOwn(HARNESS_ACCENTS, id)) {
+      return HARNESS_ACCENTS[id]
+    }
   }
   return ACCENT_FALLBACK
 }

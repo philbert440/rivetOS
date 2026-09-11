@@ -58,4 +58,22 @@ describe('harnessAccent', () => {
     expect(harnessAccent('deepseek-harness')).toBe(ACCENT_FALLBACK)
     expect(KNOWN_IDS.map((id) => harnessAccent(id))).not.toContain(ACCENT_FALLBACK)
   })
+
+  it('does not match short keys inside free-form agent names', () => {
+    expect(harnessAccent('gippity')).toBe(ACCENT_FALLBACK)
+    expect(harnessAccent('copilot')).toBe(ACCENT_FALLBACK)
+    expect(harnessAccent('pixtral')).toBe(ACCENT_FALLBACK)
+  })
+
+  it('matches delimited tokens and cli aliases', () => {
+    expect(harnessAccent('pi')).toBe(ACCENT_PI)
+    expect(harnessAccent('pi-cli')).toBe(ACCENT_PI)
+    expect(harnessAccent('opencode')).toBe(ACCENT_OPENCODE)
+    expect(harnessAccent('rivet-kimi')).toBe(ACCENT_KIMI)
+  })
+
+  it('falls back to emerald for inherited object property names', () => {
+    expect(harnessAccent('constructor')).toBe(ACCENT_FALLBACK)
+    expect(harnessAccent('__proto__')).toBe(ACCENT_FALLBACK)
+  })
 })

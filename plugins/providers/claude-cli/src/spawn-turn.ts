@@ -302,11 +302,23 @@ export function spawnClaudeTurn(
     armSigkillFallback()
   }
 
+  // events() races each stdout chunk against this latch so a timeout (or
+  // close with stdout still open) cannot leave the iterator pending.
+  let notifyTerminate: (() => void) | undefined
+  const terminated = new Promise<void>((resolve) => {
+    notifyTerminate = resolve
+  })
+  const wakeIterator = (): void => {
+    notifyTerminate?.()
+    notifyTerminate = undefined
+  }
+
   // Optional per-spawn timeout (0 = none). SIGTERM then SIGKILL after grace.
   if (timeoutMs > 0) {
     timeoutTimer = setTimeout(() => {
       timeoutError = new ClaudeCliTimeoutError(timeoutMs)
       kill()
+      wakeIterator()
     }, timeoutMs)
     timeoutTimer.unref()
   }
@@ -325,6 +337,7 @@ export function spawnClaudeTurn(
     if (killTimer) clearTimeout(killTimer)
     if (timeoutTimer) clearTimeout(timeoutTimer)
     for (const waiter of exitWaiters.splice(0)) waiter(code)
+    wakeIterator()
   })
 
   // Cap stderr accumulation — callers only ever surface the first 500 chars,
@@ -336,8 +349,18 @@ export function spawnClaudeTurn(
   })
 
   async function* events(): AsyncIterable<CliEvent> {
+    const iter = iterateLines(proc.stdout)[Symbol.asyncIterator]()
     try {
-      for await (const line of iterateLines(proc.stdout)) {
+      while (true) {
+        const nextLine = iter.next().then((result) => ({ tag: 'line' as const, result }))
+        const nextStop = terminated.then(() => ({ tag: 'stop' as const }))
+        const winner = await Promise.race([nextLine, nextStop])
+        if (winner.tag === 'stop') {
+          if (timeoutError) throw timeoutError
+          break
+        }
+        if (winner.result.done) break
+        const line = winner.result.value
         if (!line.trim()) continue
         let event: CliEvent
         try {
