@@ -23,7 +23,7 @@
 <meta property="og:image" content="https://rivethub.io/social-preview.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="RivetHub: Automatic memory. Nothing to remember to write down.">
+<meta property="og:image:alt" content="RivetHub banner with the robot mark and wordmark, and the headline “Automatic memory. Nothing to remember to write down.”">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Releases — RivetHub">
 <meta name="twitter:description" content="How RivetHub stable releases work: pinned tags, digests, checksums, latest.json, and changelog.">
@@ -41,14 +41,14 @@
 <div class="wrap">
 
   <div class="page-head">
-    <p class="kicker">// releases</p>
+    <p class="kicker">releases</p>
     <h1>Stable means pinned</h1>
     <p class="lede">A RivetHub stable release is a set of exact tags,
     digests, and checksums — not a floating <code>latest</code>.</p>
   </div>
 
   <section class="block">
-    <p class="kicker">// the pin file</p>
+    <p class="kicker">the pin file</p>
     <h2>What "stable" means here</h2>
     <p>Every fetch the installers make from RivetOS goes through one pin
     file, <code>pins/stable.json</code> in the distro repository:</p>
@@ -73,8 +73,8 @@
       </div>
       <div>
         <dt><code>hub_helper_version</code></dt>
-        <dd>version of the <code>rivethub-hub</code> helper (already a real
-        value, <code>0.1.0</code>)</dd>
+        <dd>version of the <code>rivethub-hub</code> helper (currently
+        <code>0.1.0</code>)</dd>
       </div>
     </dl>
     <p>When you install from the stable channel, you get exactly those
@@ -82,17 +82,17 @@
   </section>
 
   <section class="block">
-    <p class="kicker">// current channel state</p>
+    <p class="kicker">current channel state</p>
     <h2>Current channel state</h2>
-    <div class="note"><strong>Apps and runtime have separate release versions.</strong> The published local installer uses an explicit runtime reference; the current feed identifies a release-candidate runtime. Linux, Windows, and Android app downloads have their own versions and checksums. A stable app channel does not mean the runtime version is a final stable release.</div>
+    <div class="note"><strong>Apps and the runtime release separately.</strong> The app downloads have their own versions and checksums; the runtime the installers fetch is pinned independently, and the current feed pins a release candidate. In other words: a stable app download doesn’t imply a final stable runtime — consult the feed below if that distinction matters to you.</div>
     <p>The machine-readable channel file is served at
     <a href="releases/latest.json"><code>releases/latest.json</code></a>.
     It includes the runtime channel, installer checksums, and an <code>apps</code> object for Linux, Windows and Android. Each app entry has <code>version</code>, <code>file</code>, <code>sha256</code> and <code>sizeMB</code> (rounded decimal MB). Downloads use <code>https://rivethub.io/releases/&lt;file&gt;</code>; the local guide and <a href="apps.html">Apps page</a> read this feed.</p>
-    <dl class="what"><div><dt><code>local.sh</code></dt><dd>One laptop: datahub + agent + den. Published at <code>https://get.rivethub.io/local.sh</code>; SHA256 in <code>local_sh_sha256</code>.</dd></div><div><dt><code>datahub.sh</code></dt><dd>Dedicated datahub. Checksum in <code>datahub_sh_sha256</code>.</dd></div><div><dt><code>node.sh</code></dt><dd>Join an agent node. Checksum in <code>node_sh_sha256</code>.</dd></div></dl>
+    <dl class="what"><div><dt><code>local.sh</code></dt><dd>The full laptop setup: hub, agent runtime, and local UI. Published at <code>https://get.rivethub.io/local.sh</code>; SHA256 in <code>local_sh_sha256</code>.</dd></div><div><dt><code>datahub.sh</code></dt><dd>Dedicated datahub. Published for reading and checksum verification (<code>datahub_sh_sha256</code>) — running it requires a distro checkout, as the <a href="install-datahub.html">datahub guide</a> explains.</dd></div><div><dt><code>node.sh</code></dt><dd>Enroll an agent node. Checksum in <code>node_sh_sha256</code>.</dd></div></dl>
   </section>
 
   <section class="block">
-    <p class="kicker">// changelog</p>
+    <p class="kicker">changelog</p>
     <h2>Changelog</h2>
     <p>Release notes and the changelog live with the source: the distro
     repository (<code>pins/README.md</code> documents each pin field) and
@@ -102,7 +102,7 @@
 
 </div>
 </main>
-<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Automatic memory for your agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
+<footer class="landing-footer"><div class="landing-wrap"><div><a class="wordmark" href="index.html"><img class="brand-mark robot-logo" src="robot.png" width="35" height="40" alt="">rivet<span>hub</span>.</a><p>Self-hosted memory for your AI agents.<br>Built on the open-source RivetOS runtime.</p></div><nav aria-label="Footer navigation"><a href="index.html">Home</a><a href="install-local.html">Quickstart</a><a href="server.html">Server</a><a href="apps.html">Apps / Downloads</a><a href="support.html">Support</a><a href="omarchy.html">Omarchy</a><a href="releases.html">Releases</a><a href="llms.txt">Agent-readable guide</a><a href="https://rivetos.dev">Documentation</a></nav></div><div class="landing-wrap theme-footer"><label hidden data-theme-control>Appearance <select aria-label="Site appearance" data-theme-select><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></footer>
 <script src="site.js"></script>
 </body>
 </html>
