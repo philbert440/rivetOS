@@ -1,3 +1,0 @@
-# RETIRED 2026-09-12
-# OpenCode capture is now a native plugin (~/.config/opencode/plugins/rivet-memory.ts).
-# Do not enable this unit. Reviewer should delete integrations/opencode/rivet-memory/systemd/.

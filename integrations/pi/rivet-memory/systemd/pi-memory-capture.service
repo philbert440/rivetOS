@@ -1,3 +1,0 @@
-# RETIRED 2026-09-12 — capture is the pi extension
-# ~/.pi/agent/extensions/rivet-memory.ts (see bin/setup-pi-rivet-memory.sh --apply).
-# This unit is no longer used. Reviewer: delete integrations/pi/rivet-memory/systemd/.
