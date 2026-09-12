@@ -423,6 +423,113 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
     const extracted = readOpencodePart(dbFile, 'prt_tool1')
     expect(extracted?.toolResult).toBe(big)
   })
+
+  it('recovers truncated OpenCode tool arguments from state.input', async () => {
+    const bigArgs = { patch: 'p'.repeat(30_000) }
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-oc-args-'))
+    const dbFile = join(dir, 'opencode.db')
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY,
+        message_id TEXT,
+        session_id TEXT,
+        time_created INTEGER,
+        data TEXT
+      );
+    `)
+    db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      'prt_args1',
+      'msg_asst1',
+      'ses_abcdefghijklmnopqrstuvwxyz',
+      Date.now(),
+      JSON.stringify({
+        type: 'tool',
+        tool: 'edit',
+        state: { status: 'completed', input: bigArgs, output: 'ok' },
+      }),
+    )
+    db.close()
+
+    const row = {
+      id: 'row-oc-args',
+      content: '[tool-result] edit',
+      tool_name: 'edit',
+      tool_result: 'ok',
+      agent: 'rivet-glm',
+      metadata: {
+        truncated: true,
+        session_sqlite_path: dbFile,
+        session_sqlite_part_id: 'prt_args1',
+        full_tool_args_length: JSON.stringify(bigArgs).length,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+    const out = await createGetFullTool(pool).execute({ id: 'row-oc-args' })
+    expect(out).toContain('## Full payload for row-oc-args')
+    expect(out).toContain('### tool_args (edit)')
+    expect(out).toContain(bigArgs.patch)
+    expect(out).not.toContain('could not re-derive')
+    const extracted = readOpencodePart(dbFile, 'prt_args1')
+    expect(extracted?.toolArgs).toBe(JSON.stringify(bigArgs))
+    expect(extracted?.toolResult).toBe('ok')
+  })
+
+  it('recovers truncated OpenCode tool arguments and output together', async () => {
+    const bigArgs = { patch: 'a'.repeat(20_000) }
+    const bigOut = 'o'.repeat(20_000)
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-oc-both-'))
+    const dbFile = join(dir, 'opencode.db')
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY,
+        message_id TEXT,
+        session_id TEXT,
+        time_created INTEGER,
+        data TEXT
+      );
+    `)
+    db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      'prt_both1',
+      'msg_asst1',
+      'ses_abcdefghijklmnopqrstuvwxyz',
+      Date.now(),
+      JSON.stringify({
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'completed', input: bigArgs, output: bigOut },
+      }),
+    )
+    db.close()
+
+    const row = {
+      id: 'row-oc-both',
+      content: '[tool-result] bash',
+      tool_name: 'bash',
+      tool_result: 'preview…',
+      agent: 'rivet-glm',
+      metadata: {
+        truncated: true,
+        session_sqlite_path: dbFile,
+        session_sqlite_part_id: 'prt_both1',
+        full_tool_args_length: JSON.stringify(bigArgs).length,
+        full_tool_result_length: bigOut.length,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+    const out = await createGetFullTool(pool).execute({ id: 'row-oc-both' })
+    expect(out).toContain('### tool_args (bash)')
+    expect(out).toContain(bigArgs.patch)
+    expect(out).toContain('### tool_result (bash)')
+    expect(out).toContain(bigOut)
+  })
 })
 
 describe('extractOpencodeFromPart', () => {
@@ -439,5 +546,15 @@ describe('extractOpencodeFromPart', () => {
     })
     expect(out.content).toBe('[tool-result] bash')
     expect(out.toolResult).toBe('a.txt')
+  })
+
+  it('extracts tool arguments from state.input', () => {
+    const out = extractOpencodeFromPart({
+      type: 'tool',
+      tool: 'edit',
+      state: { status: 'completed', input: { path: '/tmp/a.ts', patch: 'x' }, output: 'ok' },
+    })
+    expect(out.toolArgs).toBe(JSON.stringify({ path: '/tmp/a.ts', patch: 'x' }))
+    expect(out.toolResult).toBe('ok')
   })
 })

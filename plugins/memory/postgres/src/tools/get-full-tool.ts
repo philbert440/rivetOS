@@ -22,7 +22,9 @@ import { createRequire } from 'node:module'
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
 
-const require_ = createRequire(import.meta.url)
+// This package emits CJS (`import.meta` is TS1470). Prefer a real `require`
+// when the compiled file has one; otherwise `createRequire(__filename)`.
+const require_ = typeof require === 'function' ? require : createRequire(__filename)
 
 const PREVIEW_GUARD = 512 * 1024 // sanity cap on what we return in one call
 
@@ -325,20 +327,30 @@ function partTextFromData(part: Record<string, unknown>): string {
   return ''
 }
 
-/**
- * OpenCode `part.data` JSON → content + toolResult. Exported for tests.
- */
-export function extractOpencodeFromPart(
-  data: unknown,
-): { content: string; toolResult: string | null } {
+function stringifyToolArgs(args: unknown): string | null {
+  if (args == null) return null
+  if (typeof args === 'string') return args
+  try {
+    return JSON.stringify(args)
+  } catch {
+    return String(args)
+  }
+}
+
+/** OpenCode `part.data` JSON → content + toolResult + toolArgs. Exported for tests. */
+export function extractOpencodeFromPart(data: unknown): {
+  content: string
+  toolResult: string | null
+  toolArgs: string | null
+} {
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    return { content: '', toolResult: null }
+    return { content: '', toolResult: null, toolArgs: null }
   }
   const part = data as Record<string, unknown>
   const type = typeof part.type === 'string' ? part.type : ''
   if (type === 'reasoning' || type === 'thinking' || type === 'think') {
     const chunk = partTextFromData(part).trim()
-    return { content: chunk ? `[thinking] ${chunk}` : '', toolResult: null }
+    return { content: chunk ? `[thinking] ${chunk}` : '', toolResult: null, toolArgs: null }
   }
   if (type === 'tool' || type === 'tool_use' || type === 'tool-call') {
     const name =
@@ -352,22 +364,32 @@ export function extractOpencodeFromPart(
         ? (part.state as Record<string, unknown>)
         : undefined
     const out = state && 'output' in state ? state.output : (part.output ?? part.result)
-    const toolResult =
-      typeof out === 'string' ? out : out != null ? JSON.stringify(out) : null
+    const toolResult = typeof out === 'string' ? out : out != null ? JSON.stringify(out) : null
+    const nestedTool =
+      part.tool && typeof part.tool === 'object' && !Array.isArray(part.tool)
+        ? (part.tool as Record<string, unknown>)
+        : undefined
+    const args =
+      (state && 'input' in state ? state.input : undefined) ??
+      nestedTool?.input ??
+      nestedTool?.args ??
+      part.input ??
+      part.args
     const isError = part.isError === true || state?.status === 'error'
     return {
       content: isError ? `[tool-failure] ${name}` : `[tool-result] ${name}`,
       toolResult,
+      toolArgs: stringifyToolArgs(args),
     }
   }
-  return { content: partTextFromData(part), toolResult: null }
+  return { content: partTextFromData(part), toolResult: null, toolArgs: null }
 }
 
 /** Re-read one OpenCode part by id from a read-only SQLite db. */
 export function readOpencodePart(
   dbPath: string,
   partId: string,
-): { content: string; toolResult: string | null } | null {
+): { content: string; toolResult: string | null; toolArgs: string | null } | null {
   try {
     const { DatabaseSync } = require_('node:sqlite') as {
       DatabaseSync: new (
@@ -387,7 +409,7 @@ export function readOpencodePart(
         try {
           data = JSON.parse(data)
         } catch {
-          return { content: data, toolResult: null }
+          return { content: typeof data === 'string' ? data : '', toolResult: null, toolArgs: null }
         }
       }
       return extractOpencodeFromPart(data)
@@ -532,6 +554,11 @@ export function createGetFullTool(pool: pg.Pool): Tool {
         if (typeof meta.full_content_length === 'number' && extracted.content) {
           sections.push(
             `### content (${String(extracted.content.length)} chars)\n${extracted.content.slice(0, PREVIEW_GUARD)}`,
+          )
+        }
+        if (typeof meta.full_tool_args_length === 'number' && extracted.toolArgs) {
+          sections.push(
+            `### tool_args${row.tool_name ? ` (${row.tool_name})` : ''} (${String(extracted.toolArgs.length)} chars)\n${extracted.toolArgs.slice(0, PREVIEW_GUARD)}`,
           )
         }
         if (typeof meta.full_tool_result_length === 'number' && extracted.toolResult) {

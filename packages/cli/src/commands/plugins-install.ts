@@ -1016,6 +1016,8 @@ export function opencodeSystemdUnit(opts: {
   nodeBinDir?: string
   pgUrl?: string
   rivetosEnvFile?: string
+  opencodeDb?: string
+  xdgDataHome?: string
 }): string {
   const captureSh = opencodeCaptureScriptPath(opts.root)
   const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
@@ -1032,6 +1034,8 @@ export function opencodeSystemdUnit(opts: {
   if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
   lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
   lines.push(systemdEnvironment('PATH', pathEnv))
+  if (opts.opencodeDb) lines.push(systemdEnvironment('OPENCODE_DB', opts.opencodeDb))
+  if (opts.xdgDataHome) lines.push(systemdEnvironment('XDG_DATA_HOME', opts.xdgDataHome))
   if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
   if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
   lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
@@ -1047,12 +1051,24 @@ export function opencodeLaunchdPlist(opts: {
   pathEnv?: string
   nodeBinDir?: string
   rivetosEnvFile?: string
+  opencodeDb?: string
+  xdgDataHome?: string
 }): string {
   const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
   const envEntries = [
     `    <key>RIVETOS_ROOT</key>\n    <string>${xmlEscape(opts.root)}</string>`,
     `    <key>PATH</key>\n    <string>${xmlEscape(pathEnv)}</string>`,
   ]
+  if (opts.opencodeDb) {
+    envEntries.push(
+      `    <key>OPENCODE_DB</key>\n    <string>${xmlEscape(opts.opencodeDb)}</string>`,
+    )
+  }
+  if (opts.xdgDataHome) {
+    envEntries.push(
+      `    <key>XDG_DATA_HOME</key>\n    <string>${xmlEscape(opts.xdgDataHome)}</string>`,
+    )
+  }
   if (opts.rivetosEnvFile) {
     envEntries.push(
       `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
@@ -1109,6 +1125,8 @@ export async function installOpencodeCaptureWatcher(opts: {
   const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
   const captureSh = opencodeCaptureScriptPath(rivetRoot)
   const manual = `${BASH} ${captureSh} --watch`
+  const opencodeDb = nonemptyEnv(process.env.OPENCODE_DB)
+  const xdgDataHome = nonemptyEnv(process.env.XDG_DATA_HOME)
 
   if (opts.platform === 'linux') {
     const probe = await opts.exec('systemctl', ['--user', '--version'], { timeoutMs: 5_000 })
@@ -1126,6 +1144,8 @@ export async function installOpencodeCaptureWatcher(opts: {
         envFile: envFileExists ? envFile : undefined,
         rivetosEnvFile: customEnvFile,
         pgUrl: pgUrlFromFile ? undefined : pgUrl,
+        opencodeDb,
+        xdgDataHome,
       }),
     )
     const reload = await opts.exec('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 15_000 })
@@ -1159,6 +1179,8 @@ export async function installOpencodeCaptureWatcher(opts: {
         logPath,
         pgUrl,
         rivetosEnvFile: customEnvFile,
+        opencodeDb,
+        xdgDataHome,
       }),
     )
     const uid = opts.uid ?? process.getuid?.()

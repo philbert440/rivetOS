@@ -10,6 +10,8 @@
  *   5. watchTick boot race against PGlite must not kill the watcher.
  *   6. Streaming text/reasoning wait for time.end; errored tools keep
  *      error text; part.time_updated overlap; --backfill 0; coalesced ticks.
+ *   7. Truncated tool args keep sqlite pointers; widening --backfill
+ *      catches history already behind the saved cursor.
  */
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -31,6 +33,7 @@ import {
   backfillCutoffMs,
   parseBackfill,
   createCoalescedRunner,
+  insertMessage,
   CURSOR_OVERLAP_MS,
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
@@ -180,6 +183,12 @@ console.log('\n— foldPart —')
     isRecord(tool?.toolArgs) && (tool?.toolArgs as { command?: string }).command === 'ls',
     `args=${JSON.stringify(tool?.toolArgs)}`,
   )
+  check(
+    'tool row points at sqlite db + part id',
+    tool?.extra?.session_sqlite_path === '/tmp/opencode.db' &&
+      tool?.extra?.session_sqlite_part_id === 'prt_tool1',
+    `path=${String(tool?.extra?.session_sqlite_path)} part=${String(tool?.extra?.session_sqlite_part_id)}`,
+  )
 
   const running = foldPart(
     base({
@@ -286,6 +295,67 @@ console.log('\n— foldPart —')
     skipped,
   )
   eq('errored tool falls back to title', erroredFallback?.toolResult, 'command failed')
+}
+
+// =============================================================================
+// Truncated tool args keep sqlite pointer for memory_get_full
+// =============================================================================
+console.log('\n— truncated tool args keep sqlite pointer —')
+{
+  const msgs: Array<{ tool_args: string | null; metadata: Record<string, unknown> }> = []
+  const client: Queryable = {
+    async query(sql: string, params: unknown[] = []) {
+      const s = sql.replace(/\s+/g, ' ').trim()
+      if (s.startsWith('SELECT 1 FROM ros_messages')) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (s.startsWith('INSERT INTO ros_messages')) {
+        const meta =
+          typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
+        msgs.push({
+          tool_args: typeof params[6] === 'string' ? params[6] : null,
+          metadata: meta,
+        })
+        return { rows: [], rowCount: 1 }
+      }
+      throw new Error(`unexpected sql: ${s}`)
+    },
+  }
+  const big = { patch: 'x'.repeat(MAX_CONTENT + 80) }
+  await insertMessage(
+    client,
+    'conv-1',
+    {
+      role: 'tool',
+      content: '[tool-result] edit',
+      toolName: 'edit',
+      toolArgs: big,
+      toolResult: 'ok',
+      eventId: 'prt_bigargs',
+      extra: {
+        session_sqlite_path: '/tmp/opencode.db',
+        session_sqlite_part_id: 'prt_bigargs',
+      },
+    },
+    '/tmp/opencode.db',
+  )
+  const row = msgs[0]
+  check('truncated tool-args row inserted', Boolean(row))
+  check(
+    'truncated tool-args row keeps sqlite path + part id',
+    row?.metadata.session_sqlite_path === '/tmp/opencode.db' &&
+      row?.metadata.session_sqlite_part_id === 'prt_bigargs',
+  )
+  eq('truncated flag set for tool args', row?.metadata.truncated, true)
+  eq(
+    'full_tool_args_length recorded',
+    row?.metadata.full_tool_args_length,
+    JSON.stringify(big).length,
+  )
+  check(
+    'stored tool_args were capped',
+    typeof row?.tool_args === 'string' && row.tool_args.includes('…[truncated]'),
+  )
 }
 
 // =============================================================================
@@ -1058,6 +1128,51 @@ await withBlankDb(async (dbFile) => {
   const second = await scanOnce(dbFile, stub.client, state, { backfillDays: 0, stateFile })
   eq('second pass does not dump pre-start history', second.inserted, 0)
   check('old part stays uncaptured', !stub.eventIds().includes('prt_old'))
+})
+
+// =============================================================================
+// Widening --backfill catches history already behind the saved cursor
+// =============================================================================
+console.log('\n— widening --backfill catches history behind the cursor —')
+await withBlankDb(async (dbFile) => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const now = Date.now()
+  const old = now - 30 * 24 * 60 * 60 * 1000
+  const db = new DatabaseSync(dbFile)
+  db.prepare(
+    `INSERT INTO session (id, title, directory, time_created, time_updated)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(SESSION, 'old-session', '/tmp', old, old)
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run('msg_old30', SESSION, old, old, JSON.stringify({ role: 'user' }))
+  db.prepare(
+    `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'prt_old30',
+    'msg_old30',
+    SESSION,
+    old,
+    old,
+    JSON.stringify({ type: 'text', text: 'thirty days ago' }),
+  )
+  db.close()
+
+  const stub = makeStub()
+  const stateFile = path.join(path.dirname(dbFile), 'state.json')
+  const firstState = createWatcherState(emptyState())
+  const first = await scanOnce(dbFile, stub.client, firstState, { backfillDays: 14, stateFile })
+  eq('14-day window misses 30-day-old session', first.inserted, 0)
+  check('14-day window does not store old part', !stub.eventIds().includes('prt_old30'))
+
+  const secondState = createWatcherState(loadState(stateFile))
+  const second = await scanOnce(dbFile, stub.client, secondState, { backfillDays: 90, stateFile })
+  eq('90-day backfill catches the 30-day-old part', second.inserted, 1)
+  check('old part stored after wider backfill', stub.eventIds().includes('prt_old30'))
+
+  const third = await scanOnce(dbFile, stub.client, secondState, { backfillDays: 90, stateFile })
+  eq('after catch-up, incremental tick inserts nothing', third.inserted, 0)
 })
 
 // =============================================================================

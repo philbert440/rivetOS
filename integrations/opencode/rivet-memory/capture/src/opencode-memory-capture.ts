@@ -21,9 +21,10 @@
  *
  * Incremental cursor: part.time_updated high-water (30s overlap) plus
  * message.time_updated so skipped in-flight parts re-queue on completion.
- * Persisted in ~/.rivetos/opencode-capture-state.json. On start, the first
- * pass backfills sessions updated in the last N days (`--backfill`, default
- * 14; 0 = no backfill). Later ticks are cursor-only.
+ * Persisted in ~/.rivetos/opencode-capture-state.json. On start, `--backfill N`
+ * (default 14; 0 = no backfill) is a one-off catch-up: sessions updated in
+ * the last N days are scanned even if the saved cursor has already moved
+ * past those rows. Later ticks are cursor-only.
  *
  * Best-effort ticks: ingest/connect failures are logged and retried. Uncaught
  * fatals exit 1 so systemd/launchd can restart the watcher. Log:
@@ -303,14 +304,18 @@ function partCursorFloor(state: CaptureState): number {
  * Parts newer than the high-water mark (with overlap), or whose parent
  * message was updated after it (in-flight text/tool parts complete in place).
  * `cutoffMs === 0` drops the session-age filter (incremental ticks).
+ * `ignoreCursor` drops the part/message high-water so a start-up `--backfill N`
+ * can catch rows older than the saved cursor but still inside the window.
  */
 export function loadNewParts(
   db: SqliteDb,
   state: CaptureState,
   cutoffMs: number,
+  opts: { ignoreCursor?: boolean } = {},
 ): PartRow[] {
-  const partFloor = partCursorFloor(state)
-  const msgHw = Math.max(state.messageTimeUpdated, 0)
+  const ignoreCursor = opts.ignoreCursor === true ? 1 : 0
+  const partFloor = ignoreCursor ? 0 : partCursorFloor(state)
+  const msgHw = ignoreCursor ? 0 : Math.max(state.messageTimeUpdated, 0)
   const rows = db
     .prepare(
       `SELECT p.id AS id, p.message_id AS message_id, p.session_id AS session_id,
@@ -323,10 +328,10 @@ export function loadNewParts(
          JOIN message m ON m.id = p.message_id
          JOIN session s ON s.id = p.session_id
         WHERE (? = 0 OR s.time_updated >= ?)
-          AND (p.time_updated > ? OR m.time_updated > ?)
+          AND (? = 1 OR p.time_updated > ? OR m.time_updated > ?)
         ORDER BY p.time_updated ASC, p.id ASC`,
     )
-    .all(cutoffMs, cutoffMs, partFloor, msgHw)
+    .all(cutoffMs, cutoffMs, ignoreCursor, partFloor, msgHw)
 
   const out: PartRow[] = []
   for (const r of rows) {
@@ -781,7 +786,11 @@ export async function scanOnce(
     const days = opts.backfillDays ?? DEFAULT_BACKFILL_DAYS
     const applyCutoff = !state.initialPassDone
     const cutoff = applyCutoff ? backfillCutoffMs(days) : 0
-    const parts = loadNewParts(db, state.capture, cutoff)
+    // On start, `--backfill N` (N > 0) ignores the saved cursor for rows
+    // older than the high-water but inside the session window. Dedup by
+    // part.id absorbs already-captured rows. Later ticks stay incremental.
+    const ignoreCursor = applyCutoff && days > 0
+    const parts = loadNewParts(db, state.capture, cutoff, { ignoreCursor })
     const stateFile = opts.stateFile ?? captureStatePath()
     if (parts.length === 0) {
       // Empty first pass must still advance the cursor so a later uncut
@@ -1041,7 +1050,8 @@ export const USAGE = `opencode-memory-capture — ingest OpenCode SQLite session
   --watch            poll + fs.watch $XDG_DATA_HOME/opencode/opencode.db
   --once             ingest then exit
   --db FILE          override the SQLite path
-  --backfill DAYS    first-pass session window (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = no backfill)
+  --backfill DAYS    start-up catch-up window (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = none);
+                     ignores the saved cursor for older rows still inside the window
 `
 
 async function main(): Promise<void> {

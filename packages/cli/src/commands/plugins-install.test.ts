@@ -1620,6 +1620,63 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/✅/)
   })
 
+  it('opencode: persists OPENCODE_DB and XDG_DATA_HOME into the systemd unit', async () => {
+    const prevDb = process.env.OPENCODE_DB
+    const prevXdg = process.env.XDG_DATA_HOME
+    process.env.OPENCODE_DB = '/data/user-store/opencode/opencode.db'
+    process.env.XDG_DATA_HOME = '/data/user-store'
+    try {
+      const scriptRel = join(
+        'integrations',
+        'opencode',
+        'rivet-memory',
+        'bin',
+        'setup-opencode-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.rivetos'), { recursive: true })
+      writeFileSync(
+        join(home, '.rivetos', '.env'),
+        'RIVETOS_ROOT=/opt/rivetos\nRIVETOS_PG_URL=postgres://192.0.2.1/rivetos\n',
+      )
+      const exec = async (file: string): Promise<ExecResult> => {
+        if (file === 'bash') {
+          mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+          writeFileSync(
+            join(home, '.config', 'opencode', 'opencode.json'),
+            JSON.stringify({
+              mcp: { rivetos: { type: 'local', command: ['bash', 'x'], enabled: true } },
+            }),
+          )
+          return okResult()
+        }
+        return okResult()
+      }
+      await runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [opencodeHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      )
+      const unit = readFileSync(
+        join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT),
+        'utf-8',
+      )
+      expect(unit).toContain('Environment=OPENCODE_DB=/data/user-store/opencode/opencode.db')
+      expect(unit).toContain('Environment=XDG_DATA_HOME=/data/user-store')
+      expect(logs()).toMatch(/✅/)
+    } finally {
+      if (prevDb === undefined) delete process.env.OPENCODE_DB
+      else process.env.OPENCODE_DB = prevDb
+      if (prevXdg === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = prevXdg
+    }
+  })
+
   it('opencode: writes launchd plist and bootstraps on darwin', async () => {
     const scriptRel = join(
       'integrations',
@@ -1822,6 +1879,46 @@ describe('opencode watcher unit/plist builders', () => {
     expect(plist).toContain('<string>/bin/bash</string>')
     expect(plist).toContain('<string>--watch</string>')
     expect(plist).toContain('a&amp;b')
+  })
+
+  it('omits OPENCODE_DB and XDG_DATA_HOME when they were not set at install', () => {
+    const unit = opencodeSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+    })
+    expect(unit).not.toContain('OPENCODE_DB')
+    expect(unit).not.toContain('XDG_DATA_HOME')
+    const plist = opencodeLaunchdPlist({
+      captureSh: '/opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh',
+      root: '/opt/rivetos',
+      home: '/home/u',
+      logPath: '/home/u/.rivetos/opencode-memory-capture.log',
+    })
+    expect(plist).not.toContain('OPENCODE_DB')
+    expect(plist).not.toContain('XDG_DATA_HOME')
+  })
+
+  it('passes OPENCODE_DB and XDG_DATA_HOME through systemd and launchd', () => {
+    const unit = opencodeSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+      opencodeDb: '/data/user-store/opencode/opencode.db',
+      xdgDataHome: '/data/user-store',
+    })
+    expect(unit).toContain('Environment=OPENCODE_DB=/data/user-store/opencode/opencode.db')
+    expect(unit).toContain('Environment=XDG_DATA_HOME=/data/user-store')
+    const plist = opencodeLaunchdPlist({
+      captureSh: '/opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh',
+      root: '/opt/rivetos',
+      home: '/home/u',
+      logPath: '/home/u/.rivetos/opencode-memory-capture.log',
+      opencodeDb: '/data/user-store/opencode/opencode.db',
+      xdgDataHome: '/data/user-store',
+    })
+    expect(plist).toContain('<key>OPENCODE_DB</key>')
+    expect(plist).toContain('<string>/data/user-store/opencode/opencode.db</string>')
+    expect(plist).toContain('<key>XDG_DATA_HOME</key>')
+    expect(plist).toContain('<string>/data/user-store</string>')
   })
 })
 
