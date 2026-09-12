@@ -4,9 +4,10 @@ This directory is a workspace package (`@rivetos/opencode-rivet-memory-capture`)
 that writes OpenCode CLI sessions into the shared RivetOS memory store under
 `agent = 'rivet-glm'`, `channel = 'opencode'`.
 
-OpenCode has no Claude/kimi-style hooks and no jsonl transcript. Sessions live
-in SQLite (`opencode.db`, WAL mode). Capture is a read-only poller plus
-`fs.watch` on `opencode.db` / `opencode.db-wal`.
+Sessions live in SQLite (`opencode.db`). The OpenCode plugin
+(`plugin/rivet-memory.ts`) spawns `--ingest-session <id>` on `session.idle`
+(debounced), `session.compacted`, `session.deleted`, and `session.error`.
+`--backfill [--days N]` is the one-shot catch-up. There is no file watcher.
 
 ## Layout
 
@@ -42,7 +43,7 @@ falls back to `npx --yes tsx` against the .ts source if the build is missing.
 | title | `session.title` |
 | cwd | `session.directory` |
 | dedup | `part.id` (`prt_…`) — never a content hash |
-| cursor | `part.time_updated` (30s overlap) / `message.time_updated` in `~/.rivetos/opencode-capture-state.json` |
+| cursor | per-session `part.time_updated` (30s overlap) / `message.time_updated` in `~/.rivetos/opencode-capture-state.json` |
 
 Folding rules match den-server `opencodeTurnsFromMessages` (skip system /
 step-start / step-finish; keep user text, assistant text, reasoning, tools)
@@ -57,13 +58,15 @@ ingest. Pool size is 1.
 ## CLI
 
 ```
-opencode-rivet-memory-capture --watch [--db FILE] [--backfill DAYS]
-opencode-rivet-memory-capture --once  [--db FILE] [--backfill DAYS]
+opencode-rivet-memory-capture --ingest-session <id> [--db FILE]
+opencode-rivet-memory-capture --backfill [--days N] [--db FILE]
+opencode-rivet-memory-capture --status
 ```
 
-`--watch` backfills sessions updated in the last N days on the first pass
-(default 14; `--backfill 0` skips history) then polls with the incremental
-cursor. `--once` is the cron/backstop path.
+`--ingest-session` loads that session's parts newer than the persisted
+per-session cursor, upserts, and always exits 0. `--backfill` is the
+one-shot catch-up (default 14 days; `--days 0` skips history). `--status`
+prints `lastIngestAt` / `lastIngestSource` / counts from the state file.
 
 ## Tests
 

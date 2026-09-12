@@ -11,10 +11,11 @@
 #
 # Flags:
 #   --link    Create symlinks for bin scripts into /usr/local/bin (uses sudo).
-#   --apply   Best-effort registration in opencode.json, skills copy, and AGENTS.md
-#             into the detected OpenCode config home (skips if already present unless
-#             --force). OpenCode has no lifecycle hooks — capture is a watcher.
-#   --force   With --apply, overwrite existing files.
+#   --apply   Copy plugin/rivet-memory.ts → $OPENCODE_CONFIG_HOME/plugins/
+#             with PLUGIN_PATH rewritten; merge MCP into opencode.json; stop
+#             and remove the old watcher unit/plist if present.
+#   --remove  Delete the copied plugin file.
+#   --force   With --apply, overwrite existing MCP / AGENTS.md / skills.
 #
 set -euo pipefail
 
@@ -26,13 +27,15 @@ PLUGIN_PATH="$RIVETOS_ROOT/integrations/opencode/rivet-memory"
 DO_LINK=0
 DO_APPLY=0
 DO_FORCE=0
+DO_REMOVE=0
 for arg in "$@"; do
   case "$arg" in
     --link) DO_LINK=1 ;;
     --apply) DO_APPLY=1 ;;
     --force) DO_FORCE=1 ;;
+    --remove) DO_REMOVE=1 ;;
     -h|--help)
-      sed -n '2,22p' "$0"
+      sed -n '2,24p' "$0"
       exit 0
       ;;
   esac
@@ -51,11 +54,94 @@ detect_opencode_config_home() {
 }
 
 OPENCODE_CONFIG_HOME="$(detect_opencode_config_home)"
+PLUGIN_DEST="$OPENCODE_CONFIG_HOME/plugins/rivet-memory.ts"
+
+remove_old_watcher() {
+  local unit="opencode-memory-capture.service"
+  local label="dev.rivetos.opencode-capture"
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user stop "$unit" 2>/dev/null || true
+    systemctl --user disable "$unit" 2>/dev/null || true
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit"
+  local plist="$HOME/Library/LaunchAgents/${label}.plist"
+  if [ -f "$plist" ]; then
+    if command -v launchctl >/dev/null 2>&1; then
+      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || \
+        launchctl unload "$plist" 2>/dev/null || true
+    fi
+    rm -f "$plist"
+  fi
+  echo "Removed old capture watcher unit/plist if present ($unit / $label)"
+}
+
+stamp_hook_installed() {
+  local state="${HOME}/.rivetos/opencode-capture-state.json"
+  mkdir -p "$(dirname "$state")"
+  node - "$state" <<'JS'
+const fs = require('node:fs')
+const file = process.argv[2]
+let data = { version: 1, partTimeUpdated: 0, messageTimeUpdated: 0, sessions: {} }
+if (fs.existsSync(file)) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed
+  } catch { /* keep default */ }
+}
+if (data.version !== 1) data.version = 1
+if (typeof data.partTimeUpdated !== 'number') data.partTimeUpdated = 0
+if (typeof data.messageTimeUpdated !== 'number') data.messageTimeUpdated = 0
+data.hookInstalledAt = new Date().toISOString()
+fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`)
+JS
+}
+
+install_plugin_copy() {
+  local src="$PLUGIN_PATH/plugin/rivet-memory.ts"
+  if [ ! -f "$src" ]; then
+    echo "❌ Plugin source missing: $src"
+    return 1
+  fi
+  mkdir -p "$(dirname "$PLUGIN_DEST")"
+  node - "$src" "$PLUGIN_DEST" "$PLUGIN_PATH" <<'JS'
+const fs = require('node:fs')
+const src = process.argv[2]
+const dest = process.argv[3]
+const pluginPath = process.argv[4]
+let text = fs.readFileSync(src, 'utf8')
+const next = text.replace(
+  /const PLUGIN_PATH = ["'][^"']*["']/,
+  `const PLUGIN_PATH = ${JSON.stringify(pluginPath)}`,
+)
+if (!/const PLUGIN_PATH = /.test(next)) {
+  console.log('⚠️  PLUGIN_PATH const not found in plugin source — copying unmodified')
+}
+if (fs.existsSync(dest) && fs.readFileSync(dest, 'utf8') === next) {
+  console.log(`Plugin already installed at ${dest} (idempotent)`)
+} else {
+  fs.writeFileSync(dest, next)
+  console.log(`✅ Copied plugin to ${dest} (PLUGIN_PATH=${pluginPath})`)
+}
+JS
+}
+
+if [ "$DO_REMOVE" -eq 1 ]; then
+  echo "=== RivetOS + OpenCode rivet-memory --remove ==="
+  if [ -f "$PLUGIN_DEST" ]; then
+    rm -f "$PLUGIN_DEST"
+    echo "✅ Deleted $PLUGIN_DEST"
+  else
+    echo "Plugin not present at $PLUGIN_DEST"
+  fi
+  exit 0
+fi
 
 echo "=== RivetOS + OpenCode rivet-memory Setup ==="
 echo "Plugin directory: $PLUGIN_DIR"
 echo "RivetOS root:     $RIVETOS_ROOT"
 echo "OpenCode config:  $OPENCODE_CONFIG_HOME  (override with OPENCODE_CONFIG_DIR)"
+echo "Plugin dest:      $PLUGIN_DEST"
 echo
 
 CLI="$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js"
@@ -70,7 +156,7 @@ CAPTURE_BUILT="$PLUGIN_PATH/capture/dist/opencode-memory-capture.js"
 if [ -f "$CAPTURE_BUILT" ]; then
   echo "✅ Capture worker built at $CAPTURE_BUILT"
 else
-  echo "⚠️  Capture worker not built. Watcher will fall back to npx tsx (slow cold path)."
+  echo "⚠️  Capture worker not built. Plugin ingest will fall back to npx tsx (slow cold path)."
   echo "   To build: cd $RIVETOS_ROOT && npm install && npm run build"
   echo "   (ensure workspaces includes integrations/opencode/rivet-memory/capture)"
 fi
@@ -111,28 +197,32 @@ cp $PLUGIN_PATH/OPENCODE.md $OPENCODE_CONFIG_HOME/AGENTS.md
 EOF
 
 echo
-echo "=== 4. Automatic Capture (watcher — OpenCode has no hooks) ==="
-echo "Run the SQLite watcher on the node that writes opencode.db:"
+echo "=== 4. Automatic Capture (OpenCode plugin) ==="
+echo "Copy plugin/rivet-memory.ts into $OPENCODE_CONFIG_HOME/plugins/"
+echo "with PLUGIN_PATH rewritten to $PLUGIN_PATH."
+echo "On session.idle (debounced 1.5s) / compacted / deleted / error the plugin"
+echo "spawns: bash $PLUGIN_PATH/bin/opencode-memory-capture.sh --ingest-session <id>"
 cat <<EOF
 
-# One-shot ingest of recent sessions (last 14 days):
-$PLUGIN_PATH/bin/opencode-memory-capture.sh --once --backfill 14
+# One-shot catch-up of recent sessions (last 14 days):
+$PLUGIN_PATH/bin/opencode-memory-capture.sh --backfill --days 14
 
-# Long-running poll + WAL watch:
-$PLUGIN_PATH/bin/opencode-memory-capture.sh --watch --backfill 14
-
-# systemd user unit:
-# ExecStart=$PLUGIN_PATH/bin/opencode-memory-capture.sh --watch
+# Status (last ingest time + counts):
+$PLUGIN_PATH/bin/opencode-memory-capture.sh --status
 EOF
 echo
 echo "The capture writes under agent='rivet-glm' channel='opencode'."
-echo "Logs: ~/.rivetos/opencode-memory-capture.log"
+echo "Logs: ~/.rivetos/logs/opencode-capture.log"
 echo "Cursor: ~/.rivetos/opencode-capture-state.json"
 
 if [ "$DO_APPLY" -eq 1 ]; then
   echo
   echo "=== Applying config (--apply) ==="
   mkdir -p "$OPENCODE_CONFIG_HOME"
+
+  install_plugin_copy
+  remove_old_watcher
+  stamp_hook_installed
 
   CFG="$OPENCODE_CONFIG_HOME/opencode.json"
   MCP_CMD="$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
@@ -195,8 +285,8 @@ echo "=== Next Steps ==="
 echo "1. Configure the MCP server ($OPENCODE_CONFIG_HOME/opencode.json)"
 echo "2. Install skills"
 echo "3. Add OPENCODE.md / AGENTS.md reflex"
-echo "4. (Recommended) run the capture watcher on the OpenCode node"
-echo "5. Ensure the capture workspace is in root package.json + built"
+echo "4. Confirm $PLUGIN_DEST is present (or re-run with --apply)"
+echo "5. Optional one-shot: opencode-memory-capture.sh --backfill --days 14"
 echo "6. Test with a memory-stats or time-bounded recall question"
 echo
 echo "Done. Memory should now feel dramatically better in OpenCode sessions."

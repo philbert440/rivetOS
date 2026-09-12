@@ -3,9 +3,10 @@
 One-shot recovery tool. Replays Codex CLI rollout jsonl files into the shared
 RivetOS memory store as `agent = 'rivet-gpt'` / `channel = 'codex'` rows.
 
-Live capture is a watcher over the same files (`../capture`). This tool exists
-to ingest history that accumulated before the watcher was installed. Identity
-matches capture so a re-run is a no-op.
+Live capture is native Codex hooks over the same files (`../capture`). This tool exists
+to ingest history that accumulated before hooks were installed. Identity
+matches capture so a re-run is a no-op. Prefer
+`../bin/codex-memory-capture.sh --backfill [--days N]` for a one-shot walk.
 
 ## Transcript layout
 
@@ -32,7 +33,7 @@ node dist/codex-transcript-backfill.js --write
 ```
 
 Writes take `pg_advisory_xact_lock(hashtext(session_key))` — the same lock the
-capture watcher takes.
+capture hook ingest takes.
 
 ## Tests
 

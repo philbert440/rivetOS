@@ -3,14 +3,16 @@
  * Codex Memory Capture — ingest Codex CLI rollout jsonl into the shared
  * RivetOS memory DB as `rivet-gpt` conversations.
  *
- * Codex has no Claude/kimi-style lifecycle hooks. The capture source is the
- * append-only rollout the CLI writes:
+ * Trigger: Codex lifecycle hooks (`UserPromptSubmit`, `Stop`, `SessionEnd`)
+ * invoke this worker with `--hook` and one JSON object on stdin. The payload's
+ * `transcript_path` is the absolute rollout jsonl:
  *
  *   $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl
  *
- * A file watcher over that tree tails new lines, folds with the same rules as
- * den-server's `codexTurnsFromLines` (drop developer / injection wrappers;
- * keep user + assistant + tool), and upserts ros_conversations / ros_messages.
+ * Each fire tails that file from a persisted per-file cursor, folds with the
+ * same rules as den-server's `codexTurnsFromLines` (drop developer / injection
+ * wrappers; keep user + assistant + tool), and upserts ros_conversations /
+ * ros_messages. `--backfill` is the one-shot walk of existing rollouts.
  *
  * Identity: agent='rivet-gpt', channel='codex', session_key='codex:<uuid>'.
  * Dedup: rollout item id (`rs_…` / `ctc_…` / `ctco_…`); messages without an
@@ -19,9 +21,9 @@
  * Truncation: 16K cap only when the row carries an absolute rollout path +
  * line offset so memory_get_full can re-read from disk.
  *
- * Best-effort ticks: ingest/connect failures are logged and retried. Uncaught
- * fatals exit 1 so systemd/launchd can restart the watcher. Log:
- * ~/.rivetos/codex-memory-capture.log.
+ * `--hook` never throws (log + exit 0) so the CLI is never blocked. Log:
+ * ~/.rivetos/codex-memory-capture.log. State:
+ * ~/.rivetos/codex-capture-state.json.
  */
 
 import fs from 'node:fs'
@@ -40,7 +42,7 @@ export const CAPTURE_SOURCE = 'codex-rollout'
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'codex-memory-capture.log')
 export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
-const WATCH_POLL_MS = 2000
+const DEFAULT_STATE_FILE = path.join(os.homedir(), '.rivetos', 'codex-capture-state.json')
 
 const CODEX_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -290,8 +292,8 @@ function isoFromObj(obj: Record<string, unknown>): string | null {
  */
 export function parseRolloutText(
   text: string,
-  sessionIdHint: string | null,
-  transcriptPath: string | null,
+  sessionIdHint: string | null = null,
+  transcriptPath: string | null = null,
 ): ParseResult {
   const lines = text.split('\n')
   const skipped: Record<string, number> = {}
@@ -750,7 +752,7 @@ export async function ingestMessages(
     finalize?: boolean
     triggerEvent?: string
     lock?: boolean
-    /** Per-conversation in-memory dedup set (watcher). Primed from the DB once. */
+    /** Per-conversation in-memory dedup set. Primed from the DB once. */
     seen?: Set<string>
   } = {},
 ): Promise<{ inserted: number; skipped: number; conversationId: string; sessionKey: string }> {
@@ -832,7 +834,180 @@ export async function ingestRolloutFile(
 }
 
 // ---------------------------------------------------------------------------
-// Watcher
+// Persisted state (cursors + last ingest; doctor reads --status)
+// ---------------------------------------------------------------------------
+
+export interface PersistedCursor {
+  offset: number
+  pending: string
+}
+
+export interface ClosedSession {
+  closedAt: string
+  transcriptPath?: string | null
+  reason?: string
+}
+
+export interface CaptureState {
+  version: 1
+  lastIngestAt?: string
+  lastIngestSource?: string
+  hookInstalledAt?: string
+  files?: number
+  inserted?: number
+  skipped?: number
+  cursors: Record<string, PersistedCursor>
+  closedSessions?: Record<string, ClosedSession>
+}
+
+export function captureStatePath(): string {
+  const env = process.env.RIVETOS_CODEX_STATE?.trim()
+  return env && env.length > 0 ? env : DEFAULT_STATE_FILE
+}
+
+export function emptyCaptureState(): CaptureState {
+  return { version: 1, cursors: {} }
+}
+
+export function loadCaptureState(file = captureStatePath()): CaptureState {
+  try {
+    const raw = fs.readFileSync(file, 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    if (!isRecord(parsed)) return emptyCaptureState()
+    const cursors: Record<string, PersistedCursor> = {}
+    if (isRecord(parsed.cursors)) {
+      for (const [k, v] of Object.entries(parsed.cursors)) {
+        if (!isRecord(v)) continue
+        const offset = typeof v.offset === 'number' && Number.isFinite(v.offset) ? v.offset : 0
+        const pending = typeof v.pending === 'string' ? v.pending : ''
+        cursors[k] = { offset, pending }
+      }
+    }
+    const closedSessions: Record<string, ClosedSession> = {}
+    if (isRecord(parsed.closedSessions)) {
+      for (const [k, v] of Object.entries(parsed.closedSessions)) {
+        if (!isRecord(v) || typeof v.closedAt !== 'string') continue
+        closedSessions[k] = {
+          closedAt: v.closedAt,
+          transcriptPath: typeof v.transcriptPath === 'string' ? v.transcriptPath : null,
+          reason: typeof v.reason === 'string' ? v.reason : undefined,
+        }
+      }
+    }
+    return {
+      version: 1,
+      lastIngestAt: typeof parsed.lastIngestAt === 'string' ? parsed.lastIngestAt : undefined,
+      lastIngestSource:
+        typeof parsed.lastIngestSource === 'string' ? parsed.lastIngestSource : undefined,
+      hookInstalledAt:
+        typeof parsed.hookInstalledAt === 'string' ? parsed.hookInstalledAt : undefined,
+      files: typeof parsed.files === 'number' ? parsed.files : undefined,
+      inserted: typeof parsed.inserted === 'number' ? parsed.inserted : undefined,
+      skipped: typeof parsed.skipped === 'number' ? parsed.skipped : undefined,
+      cursors,
+      closedSessions: Object.keys(closedSessions).length > 0 ? closedSessions : undefined,
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log(`state load failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return emptyCaptureState()
+  }
+}
+
+export function saveCaptureState(state: CaptureState, file = captureStatePath()): void {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.tmp`
+    fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`)
+    fs.renameSync(tmp, file)
+  } catch (err) {
+    log(`state save failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+function cursorFromState(state: CaptureState, file: string): FileCursor {
+  const abs = path.resolve(file)
+  const saved = state.cursors[abs] ?? state.cursors[file]
+  if (saved) return { offset: saved.offset, pending: saved.pending }
+  return { offset: 0, pending: '' }
+}
+
+function writeCursor(state: CaptureState, file: string, cursor: FileCursor): void {
+  state.cursors[path.resolve(file)] = { offset: cursor.offset, pending: cursor.pending }
+}
+
+function stateToWatcher(state: CaptureState): WatcherState {
+  const w = createWatcherState()
+  for (const [file, cur] of Object.entries(state.cursors)) {
+    w.cursors.set(file, { offset: cur.offset, pending: cur.pending })
+    w.known.add(file)
+  }
+  return w
+}
+
+function watcherToCursors(state: WatcherState): Record<string, PersistedCursor> {
+  const cursors: Record<string, PersistedCursor> = {}
+  for (const [file, cur] of state.cursors) {
+    cursors[path.resolve(file)] = { offset: cur.offset, pending: cur.pending }
+  }
+  return cursors
+}
+
+function pickPayloadString(payload: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const v = payload[key]
+    if (typeof v === 'string' && v.trim().length > 0) return v
+  }
+  return null
+}
+
+/** Newest `rollout-*.jsonl` whose filename UUID matches `sessionId`. */
+export function newestRolloutForSession(sessionId: string, root?: string): string | null {
+  if (!sessionId) return null
+  const files = discoverRolloutFiles(root ?? codexSessionsDir()).filter(
+    (f) => uuidFromRolloutName(path.basename(f)) === sessionId,
+  )
+  if (files.length === 0) return null
+  files.sort((a, b) => {
+    let am = 0
+    let bm = 0
+    try {
+      am = fs.statSync(a).mtimeMs
+    } catch {
+      am = 0
+    }
+    try {
+      bm = fs.statSync(b).mtimeMs
+    } catch {
+      bm = 0
+    }
+    if (am !== bm) return bm - am
+    return a < b ? 1 : -1
+  })
+  return files[0] ?? null
+}
+
+function rolloutWithinDays(file: string, days: number): boolean {
+  const parts = file.split(path.sep)
+  for (let i = 0; i + 2 < parts.length; i++) {
+    if (!isDateDir(parts[i] ?? '', 4)) continue
+    if (!isDateDir(parts[i + 1] ?? '', 2)) continue
+    if (!isDateDir(parts[i + 2] ?? '', 2)) continue
+    const ms = Date.parse(`${parts[i]}-${parts[i + 1]}-${parts[i + 2]}T00:00:00Z`)
+    if (Number.isNaN(ms)) continue
+    const cutoff = Date.now() - days * 86400000
+    return ms >= cutoff - 86400000
+  }
+  try {
+    return Date.now() - fs.statSync(file).mtimeMs <= days * 86400000
+  } catch {
+    return false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cursor ingest (shared by --hook and --backfill)
 // ---------------------------------------------------------------------------
 
 export interface WatcherState {
@@ -861,13 +1036,15 @@ async function ingestNewLines(
   cursor: FileCursor,
   client: Queryable,
   seenByKey?: Map<string, Set<string>>,
+  triggerEvent = 'ingest',
+  finalize = false,
 ): Promise<{ inserted: number; skipped: number } | null> {
   const newLines = consumeNewLines(file, cursor)
-  if (newLines.length === 0) return null
+  if (newLines.length === 0 && !finalize) return null
   // Re-parse the whole file so tool call/output pairing still works when the
-  // pair straddles two watch ticks. The in-memory seen-set keeps re-ticks O(new).
+  // pair straddles two ingest ticks. The in-memory seen-set keeps re-ticks O(new).
   const parsed = parseRolloutFile(file)
-  if (parsed.messages.length === 0) return { inserted: 0, skipped: 0 }
+  if (parsed.messages.length === 0 && !finalize) return { inserted: 0, skipped: 0 }
   const abs = path.resolve(file)
   let seen: Set<string> | undefined
   if (seenByKey) {
@@ -882,11 +1059,12 @@ async function ingestNewLines(
     title: parsed.title,
     cwd: parsed.cwd,
     transcriptPath: abs,
-    triggerEvent: 'watch',
+    triggerEvent,
+    finalize,
     seen,
   })
   log(
-    `watch ${result.sessionKey}: file=${abs} newLines=${newLines.length} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
+    `ingest ${result.sessionKey}: file=${abs} newLines=${newLines.length} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped} event=${triggerEvent}`,
   )
   return { inserted: result.inserted, skipped: result.skipped }
 }
@@ -896,19 +1074,29 @@ export async function scanOnce(
   client: Queryable,
   state: WatcherState,
   fromStart: boolean,
+  opts: { days?: number; triggerEvent?: string } = {},
 ): Promise<{ files: number; inserted: number; skipped: number }> {
-  const files = discoverRolloutFiles(root)
+  let files = discoverRolloutFiles(root)
+  if (typeof opts.days === 'number' && opts.days >= 0) {
+    files = files.filter((f) => rolloutWithinDays(f, opts.days as number))
+  }
   let inserted = 0
   let skipped = 0
+  const triggerEvent = opts.triggerEvent ?? 'backfill'
   for (const file of files) {
-    if (!state.cursors.has(file)) {
-      state.cursors.set(file, primeCursor(file, fromStart || !state.known.has(file)))
+    const abs = path.resolve(file)
+    if (!state.cursors.has(abs)) {
+      const prior = state.cursors.get(file)
+      state.cursors.set(
+        abs,
+        prior ?? primeCursor(abs, fromStart || !state.known.has(abs)),
+      )
     }
-    state.known.add(file)
-    const cursor = state.cursors.get(file)!
+    state.known.add(abs)
+    const cursor = state.cursors.get(abs)!
     const before = { ...cursor }
     try {
-      const r = await ingestNewLines(file, cursor, client, state.seen)
+      const r = await ingestNewLines(abs, cursor, client, state.seen, triggerEvent, false)
       if (r) {
         inserted += r.inserted
         skipped += r.skipped
@@ -934,82 +1122,194 @@ async function withPool<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   }
 }
 
-export async function runOnce(sessionsDir?: string): Promise<void> {
+export async function runBackfill(
+  sessionsDir?: string,
+  days?: number,
+  stateFile = captureStatePath(),
+): Promise<void> {
   const root = sessionsDir ?? codexSessionsDir()
-  const state = createWatcherState()
-  const summary = await withPool((client) => scanOnce(root, client, state, true))
+  const persisted = loadCaptureState(stateFile)
+  const state = stateToWatcher(persisted)
+  const source =
+    typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
+  const summary = await withPool((client) =>
+    scanOnce(root, client, state, true, { days, triggerEvent: source }),
+  )
+  const next: CaptureState = {
+    ...persisted,
+    lastIngestAt: new Date().toISOString(),
+    lastIngestSource: source,
+    files: summary.files,
+    inserted: summary.inserted,
+    skipped: summary.skipped,
+    cursors: { ...persisted.cursors, ...watcherToCursors(state) },
+  }
+  saveCaptureState(next, stateFile)
   log(
-    `once ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    `backfill ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
   )
   console.log(
-    `codex-memory-capture --once: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    `codex-memory-capture --backfill: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
   )
 }
 
-export type WatchClient = Queryable & { release: () => void }
-export type WatchPool = { connect: () => Promise<WatchClient> }
+/** @deprecated alias of runBackfill */
+export async function runOnce(sessionsDir?: string): Promise<void> {
+  await runBackfill(sessionsDir)
+}
 
-/** One watch poll. Connect failures (PGlite not up yet) are logged, not thrown. */
-export async function watchTick(
-  pool: WatchPool,
-  root: string,
-  state: WatcherState,
-  fromStart: boolean,
-): Promise<void> {
-  let client: WatchClient | undefined
+export interface HookHandleOpts {
+  client: Queryable
+  stateFile?: string
+  sessionsDir?: string
+}
+
+export interface HookHandleResult {
+  inserted: number
+  skipped: number
+  file: string | null
+  event: string
+  finalized: boolean
+  sessionId: string | null
+}
+
+/**
+ * Ingest one Codex hook payload. Never throws — callers still wrap for
+ * belt-and-suspenders, but failures here are logged and return zeros.
+ */
+export async function handleHookPayload(
+  payload: Record<string, unknown>,
+  opts: HookHandleOpts,
+): Promise<HookHandleResult> {
+  const event =
+    pickPayloadString(payload, 'hook_event_name', 'hookEventName') ?? 'unknown'
+  const source = `hook:${event}`
+  const finalize = /^sessionend$/i.test(event)
+  const sessionsDir = opts.sessionsDir ?? codexSessionsDir()
+  const stateFile = opts.stateFile ?? captureStatePath()
+  const empty: HookHandleResult = {
+    inserted: 0,
+    skipped: 0,
+    file: null,
+    event,
+    finalized: false,
+    sessionId: pickPayloadString(payload, 'session_id', 'sessionId'),
+  }
+
   try {
-    // pool.connect() must sit inside the try: a boot race against PGlite
-    // (ECONNREFUSED :5433) used to reject runWatch, and main() then exited 0
-    // so systemd Restart=on-failure never came back.
-    client = await pool.connect()
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
-    await scanOnce(root, client, state, fromStart)
+    const sessionId = empty.sessionId
+    let transcript =
+      pickPayloadString(payload, 'transcript_path', 'transcriptPath') ?? null
+    if (!transcript && sessionId) {
+      transcript = newestRolloutForSession(sessionId, sessionsDir)
+      if (transcript) log(`hook ${event}: transcript_path missing, fallback ${transcript}`)
+    }
+    if (!transcript) {
+      log(`hook ${event}: no transcript_path and no rollout for session ${sessionId ?? '?'}`)
+      return empty
+    }
+
+    const abs = path.resolve(transcript)
+    const state = loadCaptureState(stateFile)
+    if (!state.hookInstalledAt) state.hookInstalledAt = new Date().toISOString()
+    const cursor = cursorFromState(state, abs)
+    const before = { offset: cursor.offset, pending: cursor.pending }
+    const seenByKey = new Map<string, Set<string>>()
+
+    let inserted = 0
+    let skipped = 0
+    try {
+      const r = await ingestNewLines(abs, cursor, opts.client, seenByKey, source, finalize)
+      if (r) {
+        inserted = r.inserted
+        skipped = r.skipped
+      }
+    } catch (err) {
+      Object.assign(cursor, before)
+      log(`hook ${event} ingest failed: ${err instanceof Error ? err.message : String(err)}`)
+      return { ...empty, file: abs, sessionId: sessionId ?? empty.sessionId }
+    }
+
+    writeCursor(state, abs, cursor)
+    state.lastIngestAt = new Date().toISOString()
+    state.lastIngestSource = source
+    state.inserted = inserted
+    state.skipped = skipped
+    state.files = 1
+    const sid = sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null
+    if (finalize && sid) {
+      const closed = state.closedSessions ?? {}
+      closed[sid] = {
+        closedAt: state.lastIngestAt,
+        transcriptPath: abs,
+        reason: pickPayloadString(payload, 'reason') ?? undefined,
+      }
+      state.closedSessions = closed
+    }
+    saveCaptureState(state, stateFile)
+    return {
+      inserted,
+      skipped,
+      file: abs,
+      event,
+      finalized: finalize,
+      sessionId: sid,
+    }
   } catch (err) {
-    log(`watch tick failed: ${err instanceof Error ? err.message : String(err)}`)
-  } finally {
-    client?.release()
+    log(`hook ${event} failed: ${err instanceof Error ? err.message : String(err)}`)
+    return empty
   }
 }
 
-export async function runWatch(sessionsDir?: string): Promise<void> {
-  const root = sessionsDir ?? codexSessionsDir()
-  try {
-    fs.mkdirSync(root, { recursive: true })
-  } catch (err) {
-    log(`watch: cannot create ${root}: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  const pool = new Pool({ connectionString: resolvePgUrl(), max: 1 })
-  const state = createWatcherState()
-  log(`watch starting on ${root}`)
-
-  const tick = (fromStart: boolean): Promise<void> => watchTick(pool, root, state, fromStart)
-
-  await tick(true)
-
-  let watching = false
-  const startWatch = (): void => {
-    if (watching) return
-    try {
-      const watcher = fs.watch(root, { recursive: true }, () => {
-        void tick(false)
-      })
-      watcher.on('error', (err) => {
-        log(`fs.watch error: ${err.message}`)
-        watching = false
-      })
-      watching = true
-      log(`fs.watch attached to ${root}`)
-    } catch (err) {
-      log(`fs.watch unavailable: ${err instanceof Error ? err.message : String(err)}`)
+export async function readStdinObject(): Promise<Record<string, unknown>> {
+  if (process.stdin.isTTY) return {}
+  const input = await new Promise<string>((resolve) => {
+    let data = ''
+    process.stdin.setEncoding('utf8')
+    const onData = (chunk: string): void => {
+      data += chunk
     }
-  }
-  startWatch()
+    process.stdin.on('data', onData)
+    process.stdin.on('end', () => resolve(data))
+    process.stdin.on('error', () => resolve(data))
+  })
+  const trimmed = input.trim()
+  if (!trimmed) return {}
+  const parsed: unknown = JSON.parse(trimmed)
+  return isRecord(parsed) ? parsed : {}
+}
 
-  setInterval(() => {
-    if (!watching) startWatch()
-    void tick(false)
-  }, WATCH_POLL_MS)
+async function runHook(): Promise<void> {
+  try {
+    const payload = await readStdinObject()
+    await withPool(async (client) => {
+      const result = await handleHookPayload(payload, { client })
+      log(
+        `hook ${result.event}: file=${result.file ?? 'none'} inserted=${result.inserted} skipped=${result.skipped}${result.finalized ? ' finalized' : ''}`,
+      )
+    })
+  } catch (err) {
+    log(`hook failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export function formatStatus(state: CaptureState, file = captureStatePath()): string {
+  if (!state.lastIngestAt && Object.keys(state.cursors).length === 0) {
+    return `codex-memory-capture --status: no ingest yet (${file})`
+  }
+  const closed = state.closedSessions ? Object.keys(state.closedSessions).length : 0
+  return (
+    `codex-memory-capture --status: lastIngestAt=${state.lastIngestAt ?? 'n/a'} ` +
+    `lastIngestSource=${state.lastIngestSource ?? 'n/a'} ` +
+    `files=${String(state.files ?? Object.keys(state.cursors).length)} ` +
+    `inserted=${String(state.inserted ?? 0)} skipped=${String(state.skipped ?? 0)} ` +
+    `closed=${String(closed)}`
+  )
+}
+
+export function runStatus(stateFile = captureStatePath()): void {
+  const state = loadCaptureState(stateFile)
+  console.log(formatStatus(state, stateFile))
 }
 
 function loadEnvFile(): void {
@@ -1029,15 +1329,24 @@ function loadEnvFile(): void {
 
 export const USAGE = `codex-memory-capture — ingest Codex rollout jsonl into RivetOS memory
 
-  codex-rivet-memory-capture --watch [--sessions-dir DIR]
-  codex-rivet-memory-capture --once [--sessions-dir DIR]
-  codex-rivet-memory-capture --ingest <rollout.jsonl>
+  codex-rivet-memory-capture --hook
+  codex-rivet-memory-capture --ingest-file <rollout.jsonl>
+  codex-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
+  codex-rivet-memory-capture --status
 
-  --watch            tail $CODEX_HOME/sessions (default ~/.codex/sessions)
-  --once             ingest existing rollout files then exit
-  --ingest FILE      ingest one rollout file then exit
+  --hook             read one Codex hook JSON object from stdin and ingest
+  --ingest-file FILE ingest one rollout file then exit
+  --backfill         one-shot walk of existing rollout files
+  --days N           with --backfill, only rollouts from the last N days
+  --status           print last ingest time + counts from the state file
   --sessions-dir DIR override the sessions root
 `
+
+function flagValue(args: string[], name: string): string | undefined {
+  const idx = args.indexOf(name)
+  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1]
+  return undefined
+}
 
 async function main(): Promise<void> {
   loadEnvFile()
@@ -1047,27 +1356,40 @@ async function main(): Promise<void> {
     return
   }
 
-  const sessionsIdx = args.indexOf('--sessions-dir')
-  const sessionsDir = sessionsIdx >= 0 ? args[sessionsIdx + 1] : undefined
+  const sessionsDir = flagValue(args, '--sessions-dir')
+  const mode = args[0]
 
-  if (args[0] === '--watch') {
-    await runWatch(sessionsDir)
+  if (mode === '--hook') {
+    await runHook()
     return
   }
-  if (args[0] === '--once') {
-    await runOnce(sessionsDir)
+  if (mode === '--status') {
+    runStatus()
     return
   }
-  if (args[0] === '--ingest') {
+  if (mode === '--backfill' || mode === '--once') {
+    const daysRaw = flagValue(args, '--days')
+    let days: number | undefined
+    if (daysRaw !== undefined) {
+      const n = Number(daysRaw)
+      if (!Number.isFinite(n) || n < 0) {
+        console.error('Usage: codex-memory-capture --backfill [--days N]')
+        return
+      }
+      days = n
+    }
+    await runBackfill(sessionsDir, days)
+    return
+  }
+  if (mode === '--ingest-file' || mode === '--ingest') {
     const file = args[1]
-    if (!file) {
-      console.error('Usage: codex-memory-capture --ingest <rollout.jsonl>')
-      process.exitCode = 1
+    if (!file || file.startsWith('--')) {
+      console.error('Usage: codex-memory-capture --ingest-file <rollout.jsonl>')
       return
     }
     await withPool(async (client) => {
       const { parsed, result } = await ingestRolloutFile(file, client, {
-        triggerEvent: 'ingest',
+        triggerEvent: 'ingest-file',
       })
       console.log(
         `${file}: session=${parsed.sessionId} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
@@ -1085,8 +1407,9 @@ const invokedDirectly =
     /codex-memory-capture\.(ts|js)$/.test(process.argv[1]))
 
 if (invokedDirectly) {
+  const isHook = process.argv.slice(2)[0] === '--hook'
   main().catch((err: unknown) => {
     log(`fatal: ${err instanceof Error ? err.stack : String(err)}`)
-    process.exitCode = 1
+    if (!isHook) process.exitCode = 1
   })
 }

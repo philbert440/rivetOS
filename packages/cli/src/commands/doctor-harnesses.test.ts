@@ -150,15 +150,33 @@ describe('checkHarnesses', () => {
     }
   }
 
-  it('codex row reports capture watcher active/inactive', async () => {
-    mkdirSync(join(home, '.codex'), { recursive: true })
+  function writeCodexHooks(dir: string): void {
+    mkdirSync(dir, { recursive: true })
     writeFileSync(
-      join(home, '.codex', 'mcp.json'),
-      JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+      join(dir, 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              matcher: '',
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    '/opt/rivetos/integrations/codex/rivet-memory/bin/codex-memory-capture.sh --hook',
+                  timeout: 10,
+                },
+              ],
+            },
+          ],
+        },
+      }),
     )
+  }
+
+  it('codex row warns without the native hook artefact', async () => {
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.1.0')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
       return ok()
     })
     const results = await checkHarnesses({
@@ -166,57 +184,44 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [codexHarness(home)],
       exec,
-      platform: 'linux',
+    })
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/memory plugin not installed/)
+    expect(results[0].message).toMatch(/never captured yet/)
+    expect(results[0].message).not.toMatch(/hooks:/)
+    expect(results[0].detail).toMatch(/rivetos plugins install/)
+  })
+
+  it('codex row passes with hooks.json, last-capture, and user-hooks hint', async () => {
+    writeCodexHooks(join(home, '.codex'))
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'codex-capture-state.json'),
+      JSON.stringify({ lastIngestAt: '2026-09-12T12:00:00.000Z' }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.1.0')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [codexHarness(home)],
+      exec,
+      now: new Date('2026-09-12T12:05:00.000Z'),
     })
     expect(results[0].status).toBe('pass')
     expect(results[0].message).toMatch(/memory plugin installed/)
-    expect(results[0].message).toMatch(/capture watcher: active/)
-    expect(exec.mock.calls.some((c) => c[1]?.includes('NRestarts,ActiveState'))).toBe(true)
-
-    const inactive = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('0.1.0')
-      if (args.includes('show')) return ok('NRestarts=1\nActiveState=inactive\n')
-      return ok()
-    })
-    const results2 = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [codexHarness(home)],
-      exec: inactive,
-      platform: 'linux',
-    })
-    expect(results2[0].status).toBe('warn')
-    expect(results2[0].message).toMatch(/capture watcher: inactive/)
-    expect(results2[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/last capture: 5m ago/)
+    expect(results[0].message).toMatch(/hooks: user \(trust once via \/hooks\)/)
+    expect(results[0].message).not.toMatch(/capture watcher/)
   })
 
-  it('codex row reports crash-looping when NRestarts > 3', async () => {
-    mkdirSync(join(home, '.codex'), { recursive: true })
+  it('codex row reports hooks: managed when requirements.toml carries our entry', async () => {
+    const req = join(home, 'requirements.toml')
     writeFileSync(
-      join(home, '.codex', 'mcp.json'),
-      JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
-    )
-    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('0.1.0')
-      if (args.includes('show')) return ok('NRestarts=4\nActiveState=active\n')
-      return ok()
-    })
-    const results = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [codexHarness(home)],
-      exec,
-      platform: 'linux',
-    })
-    expect(results[0].status).toBe('warn')
-    expect(results[0].message).toMatch(/capture watcher: crash-looping/)
-  })
-
-  it('codex row reports capture watcher n/a on win32', async () => {
-    mkdirSync(join(home, '.codex'), { recursive: true })
-    writeFileSync(
-      join(home, '.codex', 'mcp.json'),
-      JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+      req,
+      '[[hooks.Stop]]\ncommand = "/opt/rivetos/integrations/codex/rivet-memory/bin/codex-memory-capture.sh --hook"\n',
     )
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.1.0')
@@ -227,50 +232,12 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [codexHarness(home)],
       exec,
-      platform: 'win32',
+      codexRequirementsPath: req,
     })
     expect(results[0].status).toBe('pass')
-    expect(results[0].message).toMatch(/capture watcher: n\/a/)
-    expect(exec.mock.calls.some((c) => String(c[0]).includes('systemctl'))).toBe(false)
-  })
-
-  it('codex launchd is active only when print shows state = running', async () => {
-    mkdirSync(join(home, '.codex'), { recursive: true })
-    writeFileSync(
-      join(home, '.codex', 'mcp.json'),
-      JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
-    )
-    const registered = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('0.1.0')
-      if (args[0] === 'print') return ok('state = not running\npid = 0\n')
-      return ok()
-    })
-    const results = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [codexHarness(home)],
-      exec: registered,
-      platform: 'darwin',
-      uid: 501,
-    })
-    expect(results[0].status).toBe('warn')
-    expect(results[0].message).toMatch(/capture watcher: inactive/)
-
-    const running = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('0.1.0')
-      if (args[0] === 'print') return ok('state = running\npid = 1234\n')
-      return ok()
-    })
-    const results2 = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [codexHarness(home)],
-      exec: running,
-      platform: 'darwin',
-      uid: 501,
-    })
-    expect(results2[0].status).toBe('pass')
-    expect(results2[0].message).toMatch(/capture watcher: active/)
+    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/hooks: managed/)
+    expect(results[0].message).toMatch(/never captured yet/)
   })
 
   function piHarness(h: string): DetectedHarness {
@@ -283,7 +250,7 @@ describe('checkHarnesses', () => {
     }
   }
 
-  it('pi row warns when neither state file nor unit is present', async () => {
+  it('pi row warns when the extension file is absent', async () => {
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.85.1')
       return ok()
@@ -293,19 +260,18 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [piHarness(home)],
       exec,
-      platform: 'linux',
     })
     expect(results[0].status).toBe('warn')
     expect(results[0].message).toMatch(/memory plugin not installed/)
+    expect(results[0].message).toMatch(/never captured yet/)
     expect(results[0].detail).toMatch(/rivetos plugins install/)
   })
 
-  it('pi row passes when pi-capture-state.json is present and watcher is active', async () => {
-    mkdirSync(join(home, '.rivetos'), { recursive: true })
-    writeFileSync(join(home, '.rivetos', 'pi-capture-state.json'), '{"version":1}\n')
+  it('pi row passes when the extension exists, even without a state file', async () => {
+    mkdirSync(join(home, '.pi', 'agent', 'extensions'), { recursive: true })
+    writeFileSync(join(home, '.pi', 'agent', 'extensions', 'rivet-memory.ts'), 'export default {}\n')
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.85.1')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
       return ok()
     })
     const results = await checkHarnesses({
@@ -313,21 +279,41 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [piHarness(home)],
       exec,
-      platform: 'linux',
     })
     expect(results[0].status).toBe('pass')
     expect(results[0].message).toMatch(/memory plugin installed/)
-    expect(results[0].message).toMatch(/capture watcher: active/)
-    expect(exec.mock.calls.some((c) => c[1]?.includes('NRestarts,ActiveState'))).toBe(true)
-    expect(exec.mock.calls.some((c) => c[1]?.includes('pi-memory-capture.service'))).toBe(true)
+    expect(results[0].message).toMatch(/never captured yet/)
+    expect(results[0].message).not.toMatch(/capture watcher/)
   })
 
-  it('pi row treats the systemd unit file as installed', async () => {
+  it('pi row appends last capture from the state file without failing', async () => {
+    mkdirSync(join(home, '.pi', 'agent', 'extensions'), { recursive: true })
+    writeFileSync(join(home, '.pi', 'agent', 'extensions', 'rivet-memory.ts'), 'export default {}\n')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'pi-capture-state.json'),
+      JSON.stringify({ lastIngestAt: '2026-09-12T11:00:00.000Z' }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.85.1')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [piHarness(home)],
+      exec,
+      now: new Date('2026-09-12T12:00:00.000Z'),
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/last capture: 1h ago/)
+  })
+
+  it('a leftover systemd unit is not the installed marker', async () => {
     mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true })
     writeFileSync(join(home, '.config', 'systemd', 'user', 'pi-memory-capture.service'), '[Unit]\n')
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.85.1')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
       return ok()
     })
     const results = await checkHarnesses({
@@ -335,30 +321,9 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [piHarness(home)],
       exec,
-      platform: 'linux',
-    })
-    expect(results[0].status).toBe('pass')
-    expect(results[0].message).toMatch(/memory plugin installed/)
-  })
-
-  it('pi row reports capture watcher inactive when the unit is down', async () => {
-    mkdirSync(join(home, '.rivetos'), { recursive: true })
-    writeFileSync(join(home, '.rivetos', 'pi-capture-state.json'), '{"version":1}\n')
-    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('0.85.1')
-      if (args.includes('show')) return ok('NRestarts=1\nActiveState=inactive\n')
-      return ok()
-    })
-    const results = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [piHarness(home)],
-      exec,
-      platform: 'linux',
     })
     expect(results[0].status).toBe('warn')
-    expect(results[0].message).toMatch(/capture watcher: inactive/)
-    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/memory plugin not installed/)
   })
 
   it('warns for claude when neither plugin list nor hooks.js --status show installed', async () => {
@@ -391,60 +356,14 @@ describe('checkHarnesses', () => {
     }
   }
 
-  it('opencode row warns when neither watcher unit nor state file is present', async () => {
-    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('1.18.30')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=inactive\n')
-      return ok()
-    })
-    const results = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [opencodeHarness(home)],
-      exec,
-      platform: 'linux',
-    })
-    expect(results[0].status).toBe('warn')
-    expect(results[0].message).toMatch(/memory plugin not installed/)
-    expect(results[0].message).toMatch(/capture watcher: inactive/)
-  })
-
-  it('opencode row warns when the state file exists but MCP artefact is missing', async () => {
-    mkdirSync(join(home, '.rivetos'), { recursive: true })
-    writeFileSync(
-      join(home, '.rivetos', 'opencode-capture-state.json'),
-      JSON.stringify({ version: 1, partTimeUpdated: 1, messageTimeUpdated: 1 }),
-    )
-    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
-      if (args[0] === '--version') return ok('1.18.30')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
-      return ok()
-    })
-    const results = await checkHarnesses({
-      home,
-      root,
-      detect: async () => [opencodeHarness(home)],
-      exec,
-      platform: 'linux',
-    })
-    expect(results[0].status).toBe('warn')
-    expect(results[0].message).toMatch(/memory plugin not installed/)
-  })
-
-  it('opencode row passes when the capture state file exists and watcher is active', async () => {
-    mkdirSync(join(home, '.rivetos'), { recursive: true })
+  it('opencode row warns without the plugin file', async () => {
     mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
-    writeFileSync(
-      join(home, '.rivetos', 'opencode-capture-state.json'),
-      JSON.stringify({ version: 1, partTimeCreated: 1, messageTimeUpdated: 1 }),
-    )
     writeFileSync(
       join(home, '.config', 'opencode', 'opencode.json'),
       JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
     )
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('1.18.30')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
       return ok()
     })
     const results = await checkHarnesses({
@@ -452,28 +371,25 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [opencodeHarness(home)],
       exec,
-      platform: 'linux',
     })
-    expect(results[0].status).toBe('pass')
-    expect(results[0].message).toMatch(/memory plugin installed/)
-    expect(results[0].message).toMatch(/capture watcher: active/)
-    expect(exec.mock.calls.some((c) => c[1]?.includes('NRestarts,ActiveState'))).toBe(true)
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/memory plugin not installed/)
+    expect(results[0].message).toMatch(/never captured yet/)
   })
 
-  it('opencode row passes when MCP lives in opencode.jsonc', async () => {
+  it('opencode row passes when the plugin file exists', async () => {
+    mkdirSync(join(home, '.config', 'opencode', 'plugins'), { recursive: true })
+    writeFileSync(
+      join(home, '.config', 'opencode', 'plugins', 'rivet-memory.ts'),
+      'export const RivetMemory = async () => ({})\n',
+    )
     mkdirSync(join(home, '.rivetos'), { recursive: true })
-    mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
     writeFileSync(
       join(home, '.rivetos', 'opencode-capture-state.json'),
-      JSON.stringify({ version: 1, partTimeUpdated: 1, messageTimeUpdated: 1 }),
-    )
-    writeFileSync(
-      join(home, '.config', 'opencode', 'opencode.jsonc'),
-      JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
+      JSON.stringify({ lastIngestAt: 1_778_000_000_000 }),
     )
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('1.18.30')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
       return ok()
     })
     const results = await checkHarnesses({
@@ -481,15 +397,17 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [opencodeHarness(home)],
       exec,
-      platform: 'linux',
+      now: new Date(1_778_000_000_000 + 30_000),
     })
     expect(results[0].status).toBe('pass')
     expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/last capture: 30s ago/)
+    expect(results[0].message).not.toMatch(/capture watcher/)
   })
 
-  it('opencode row passes when the systemd unit file exists even without a state file', async () => {
-    mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true })
+  it('opencode MCP-only is not installed without the plugin file', async () => {
     mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+    mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true })
     writeFileSync(join(home, '.config', 'systemd', 'user', 'opencode-memory-capture.service'), '')
     writeFileSync(
       join(home, '.config', 'opencode', 'opencode.json'),
@@ -497,7 +415,6 @@ describe('checkHarnesses', () => {
     )
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('1.18.30')
-      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
       return ok()
     })
     const results = await checkHarnesses({
@@ -505,9 +422,8 @@ describe('checkHarnesses', () => {
       root,
       detect: async () => [opencodeHarness(home)],
       exec,
-      platform: 'linux',
     })
-    expect(results[0].status).toBe('pass')
-    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/memory plugin not installed/)
   })
 })

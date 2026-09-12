@@ -3,14 +3,14 @@
  * OpenCode Memory Capture — ingest OpenCode SQLite sessions into the shared
  * RivetOS memory DB as `rivet-glm` conversations.
  *
- * OpenCode has no Claude/kimi-style lifecycle hooks and no jsonl transcript.
  * Sessions live in `$XDG_DATA_HOME/opencode/opencode.db` (else
- * `~/.local/share/opencode/opencode.db`), WAL mode.
+ * `~/.local/share/opencode/opencode.db`). The OpenCode plugin fires
+ * `--ingest-session <id>` on session.idle / compacted / deleted / error.
+ * `--backfill [--days N]` is the one-shot catch-up. There is no watcher.
  *
- * A read-only poller + fs.watch on `opencode.db` / `opencode.db-wal` folds
- * with the same rules as den-server `opencodeTurnsFromMessages` (skip system
- * / step-start / step-finish; keep user + assistant + reasoning + tool) and
- * upserts ros_conversations / ros_messages.
+ * Fold rules match den-server `opencodeTurnsFromMessages` (skip system /
+ * step-start / step-finish; keep user + assistant + reasoning + tool) and
+ * upsert ros_conversations / ros_messages.
  *
  * Identity: agent='rivet-glm' (RIVETOS_CAPTURE_AGENT), channel='opencode',
  * session_key='opencode:<ses_id>'. Dedup: part.id (`prt_…`). Content-hash
@@ -19,16 +19,16 @@
  * Truncation: 16K cap only when the row carries an absolute db path + part
  * id so memory_get_full can re-read from SQLite.
  *
- * Incremental cursor: part.time_updated high-water (30s overlap) plus
- * message.time_updated so skipped in-flight parts re-queue on completion.
- * Persisted in ~/.rivetos/opencode-capture-state.json. On start, `--backfill N`
- * (default 14; 0 = no backfill) is a one-off catch-up: sessions updated in
- * the last N days are scanned even if the saved cursor has already moved
- * past those rows. Later ticks are cursor-only.
+ * Incremental cursor: per-session part.time_updated high-water (30s overlap)
+ * plus message.time_updated so skipped in-flight parts re-queue on
+ * completion. Persisted in ~/.rivetos/opencode-capture-state.json.
+ * `--backfill N` (default 14; 0 = no backfill) is a one-off catch-up:
+ * sessions updated in the last N days are scanned even if the saved cursor
+ * has already moved past those rows.
  *
- * Best-effort ticks: ingest/connect failures are logged and retried. Uncaught
- * fatals exit 1 so systemd/launchd can restart the watcher. Log:
- * ~/.rivetos/opencode-memory-capture.log.
+ * Best-effort: ingest/connect failures are logged. Always exit 0 so the
+ * OpenCode plugin never breaks the harness. Log:
+ * ~/.rivetos/logs/opencode-capture.log.
  */
 
 import fs from 'node:fs'
@@ -48,10 +48,9 @@ export const CAPTURE_CHANNEL = 'opencode'
 export const CAPTURE_SOURCE = 'opencode-sqlite'
 export const DEFAULT_BACKFILL_DAYS = 14
 
-const LOG_FILE = path.join(os.homedir(), '.rivetos', 'opencode-memory-capture.log')
+const LOG_FILE = path.join(os.homedir(), '.rivetos', 'logs', 'opencode-capture.log')
 export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
-const WATCH_POLL_MS = 3000
 /** Re-read parts this close to the high-water so a late commit with an
  *  earlier stamp is not skipped. Part-id dedup absorbs the overlap. */
 export const CURSOR_OVERLAP_MS = 30_000
@@ -86,11 +85,21 @@ export interface ParseResult {
   skipped: Record<string, number>
 }
 
+export interface SessionCursor {
+  partTimeUpdated: number
+  messageTimeUpdated: number
+}
+
 export interface CaptureState {
   version: typeof STATE_VERSION
   /** High-water of `part.time_updated` (legacy files used `partTimeCreated`). */
   partTimeUpdated: number
   messageTimeUpdated: number
+  lastIngestAt?: string | null
+  lastIngestSource?: string | null
+  hookInstalledAt?: string | null
+  /** Per-session high-water used by `--ingest-session`. */
+  sessions?: Record<string, SessionCursor>
 }
 
 export interface Queryable {
@@ -167,10 +176,6 @@ export function captureStatePath(): string {
 
 export function deriveSessionKey(sessionId: string): string {
   return `opencode:${sessionId}`
-}
-
-export function dbWatchPaths(dbPath: string): string[] {
-  return [dbPath, `${dbPath}-wal`]
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -264,7 +269,28 @@ export function openOpencodeDb(dbPath = opencodeDbPath()): SqliteDb | null {
 }
 
 export function emptyState(): CaptureState {
-  return { version: STATE_VERSION, partTimeUpdated: 0, messageTimeUpdated: 0 }
+  return {
+    version: STATE_VERSION,
+    partTimeUpdated: 0,
+    messageTimeUpdated: 0,
+    lastIngestAt: null,
+    lastIngestSource: null,
+    hookInstalledAt: null,
+    sessions: {},
+  }
+}
+
+function parseSessionCursors(raw: unknown): Record<string, SessionCursor> {
+  const out: Record<string, SessionCursor> = {}
+  if (!isRecord(raw)) return out
+  for (const [id, cur] of Object.entries(raw)) {
+    if (!id || !isRecord(cur)) continue
+    out[id] = {
+      partTimeUpdated: asNumber(cur.partTimeUpdated),
+      messageTimeUpdated: asNumber(cur.messageTimeUpdated),
+    }
+  }
+  return out
 }
 
 export function loadState(file = captureStatePath()): CaptureState {
@@ -277,6 +303,10 @@ export function loadState(file = captureStatePath()): CaptureState {
       version: STATE_VERSION,
       partTimeUpdated: asNumber(raw.partTimeUpdated) || asNumber(raw.partTimeCreated),
       messageTimeUpdated: asNumber(raw.messageTimeUpdated),
+      lastIngestAt: asString(raw.lastIngestAt),
+      lastIngestSource: asString(raw.lastIngestSource),
+      hookInstalledAt: asString(raw.hookInstalledAt),
+      sessions: parseSessionCursors(raw.sessions),
     }
   } catch {
     return emptyState()
@@ -311,11 +341,12 @@ export function loadNewParts(
   db: SqliteDb,
   state: CaptureState,
   cutoffMs: number,
-  opts: { ignoreCursor?: boolean } = {},
+  opts: { ignoreCursor?: boolean; sessionId?: string } = {},
 ): PartRow[] {
   const ignoreCursor = opts.ignoreCursor === true ? 1 : 0
   const partFloor = ignoreCursor ? 0 : partCursorFloor(state)
   const msgHw = ignoreCursor ? 0 : Math.max(state.messageTimeUpdated, 0)
+  const sessionId = opts.sessionId ?? ''
   const rows = db
     .prepare(
       `SELECT p.id AS id, p.message_id AS message_id, p.session_id AS session_id,
@@ -329,9 +360,10 @@ export function loadNewParts(
          JOIN session s ON s.id = p.session_id
         WHERE (? = 0 OR s.time_updated >= ?)
           AND (? = 1 OR p.time_updated > ? OR m.time_updated > ?)
+          AND (? = '' OR p.session_id = ?)
         ORDER BY p.time_updated ASC, p.id ASC`,
     )
-    .all(cutoffMs, cutoffMs, ignoreCursor, partFloor, msgHw)
+    .all(cutoffMs, cutoffMs, ignoreCursor, partFloor, msgHw, sessionId, sessionId)
 
   const out: PartRow[] = []
   for (const r of rows) {
@@ -519,7 +551,12 @@ export function advanceState(state: CaptureState, parts: PartRow[]): CaptureStat
     if (stamp > partTimeUpdated) partTimeUpdated = stamp
     if (p.message_time_updated > messageTimeUpdated) messageTimeUpdated = p.message_time_updated
   }
-  return { version: STATE_VERSION, partTimeUpdated, messageTimeUpdated }
+  return {
+    ...state,
+    version: STATE_VERSION,
+    partTimeUpdated,
+    messageTimeUpdated,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -752,7 +789,7 @@ export async function ingestMessages(
 }
 
 // ---------------------------------------------------------------------------
-// Watcher
+// Ingest (plugin --ingest-session + --backfill)
 // ---------------------------------------------------------------------------
 
 export interface WatcherState {
@@ -769,20 +806,49 @@ export function createWatcherState(capture: CaptureState = emptyState()): Watche
 function seedCursorIfEmpty(state: WatcherState, now = Date.now()): void {
   if (state.capture.partTimeUpdated > 0) return
   state.capture = {
+    ...state.capture,
     version: STATE_VERSION,
     partTimeUpdated: now,
     messageTimeUpdated: Math.max(state.capture.messageTimeUpdated, now),
   }
 }
 
+function stampIngest(
+  state: CaptureState,
+  source: string,
+  nowIso = new Date().toISOString(),
+): CaptureState {
+  return { ...state, lastIngestAt: nowIso, lastIngestSource: source }
+}
+
+function mergeSessionCursors(state: CaptureState, parts: PartRow[]): Record<string, SessionCursor> {
+  const sessions: Record<string, SessionCursor> = { ...(state.sessions ?? {}) }
+  const bySid = new Map<string, PartRow[]>()
+  for (const p of parts) {
+    const arr = bySid.get(p.session_id) ?? []
+    arr.push(p)
+    bySid.set(p.session_id, arr)
+  }
+  for (const [sid, sp] of bySid) {
+    const prior = sessions[sid] ?? { partTimeUpdated: 0, messageTimeUpdated: 0 }
+    const next = advanceState({ version: STATE_VERSION, ...prior }, sp)
+    sessions[sid] = {
+      partTimeUpdated: next.partTimeUpdated,
+      messageTimeUpdated: next.messageTimeUpdated,
+    }
+  }
+  return sessions
+}
+
 export async function scanOnce(
   dbPath: string,
   client: Queryable,
   state: WatcherState,
-  opts: { backfillDays?: number; stateFile?: string } = {},
+  opts: { backfillDays?: number; stateFile?: string; source?: string } = {},
 ): Promise<{ parts: number; inserted: number; skipped: number }> {
   const db = openOpencodeDb(dbPath)
   if (!db) return { parts: 0, inserted: 0, skipped: 0 }
+  const source = opts.source ?? 'backfill'
   try {
     const days = opts.backfillDays ?? DEFAULT_BACKFILL_DAYS
     const applyCutoff = !state.initialPassDone
@@ -799,6 +865,7 @@ export async function scanOnce(
       state.initialPassDone = true
       if (applyCutoff) {
         seedCursorIfEmpty(state)
+        state.capture = stampIngest(state.capture, source)
         saveState(state.capture, stateFile)
       }
       return { parts: 0, inserted: 0, skipped: 0 }
@@ -826,18 +893,19 @@ export async function scanOnce(
         title: meta?.title,
         cwd: meta?.directory ?? null,
         dbPath: abs,
-        triggerEvent: 'watch',
+        triggerEvent: source,
         seen,
       })
       inserted += result.inserted
       skipped += result.skipped
       log(
-        `watch ${result.sessionKey}: db=${abs} msgs=${msgs.length} inserted=${result.inserted} skipped=${result.skipped}`,
+        `ingest ${result.sessionKey}: db=${abs} msgs=${msgs.length} inserted=${result.inserted} skipped=${result.skipped}`,
       )
     }
     // Advance the cursor past every loaded part (including skipped running
     // tools / streaming text). Completions re-queue via message.time_updated.
-    state.capture = advanceState(state.capture, parts)
+    const sessions = mergeSessionCursors(state.capture, parts)
+    state.capture = stampIngest({ ...advanceState(state.capture, parts), sessions }, source)
     if (applyCutoff && days === 0) seedCursorIfEmpty(state)
     saveState(state.capture, stateFile)
     state.initialPassDone = true
@@ -852,101 +920,75 @@ export async function scanOnce(
   }
 }
 
-export type WatchClient = Queryable & { release: () => void }
-export type WatchPool = { connect: () => Promise<WatchClient> }
-
-/** One watch poll. Connect failures (PGlite not up yet) are logged, not thrown. */
-export async function watchTick(
-  pool: WatchPool,
+/**
+ * Ingest one OpenCode session newer than its persisted per-session cursor.
+ * Reuses loadNewParts / foldPart / upserts. Dedup keys unchanged.
+ */
+export async function ingestSession(
   dbPath: string,
+  sessionId: string,
+  client: Queryable,
   state: WatcherState,
-  opts: { backfillDays?: number; stateFile?: string } = {},
-): Promise<void> {
-  let client: WatchClient | undefined
+  opts: { stateFile?: string; source?: string } = {},
+): Promise<{ parts: number; inserted: number; skipped: number }> {
+  const sid = sessionId.trim()
+  if (!sid) return { parts: 0, inserted: 0, skipped: 0 }
+  const db = openOpencodeDb(dbPath)
+  const source = opts.source ?? 'plugin'
+  const stateFile = opts.stateFile ?? captureStatePath()
+  if (!db) {
+    state.capture = stampIngest(state.capture, source)
+    saveState(state.capture, stateFile)
+    return { parts: 0, inserted: 0, skipped: 0 }
+  }
   try {
-    client = await pool.connect()
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
-    await scanOnce(dbPath, client, state, opts)
-  } catch (err) {
-    log(`watch tick failed: ${err instanceof Error ? err.message : String(err)}`)
-  } finally {
-    client?.release()
-  }
-}
-
-export type WatchFn = (
-  filename: fs.PathLike,
-  options: fs.WatchOptions,
-  listener: (event: string, fname: string | Buffer | null) => void,
-) => fs.FSWatcher
-
-/**
- * WAL bursts call onWake many times. One in-flight scan + a dirty bit
- * collapses the rest into a single queued rescan.
- */
-export function createCoalescedRunner(run: () => Promise<void>): () => void {
-  let inFlight = false
-  let dirty = false
-  const kick = (): void => {
-    if (inFlight) {
-      dirty = true
-      return
+    const prior = state.capture.sessions?.[sid]
+    const sessionCursor: CaptureState = {
+      version: STATE_VERSION,
+      partTimeUpdated: prior?.partTimeUpdated ?? 0,
+      messageTimeUpdated: prior?.messageTimeUpdated ?? 0,
     }
-    inFlight = true
-    void run()
-      .catch(() => undefined)
-      .finally(() => {
-        inFlight = false
-        if (dirty) {
-          dirty = false
-          kick()
-        }
-      })
-  }
-  return kick
-}
-
-/**
- * Watch the SQLite file and its WAL sibling. Missing WAL is fine — we also
- * watch the parent directory so a later -wal create still wakes us.
- */
-export function attachDbWatchers(
-  dbPath: string,
-  onWake: () => void,
-  watchFn: WatchFn = fs.watch,
-): { close: () => void; watching: string[] } {
-  const watchers: fs.FSWatcher[] = []
-  const watching: string[] = []
-  const start = (target: string, recursive = false): void => {
-    try {
-      const w = watchFn(target, { persistent: true, recursive }, () => {
-        onWake()
-      })
-      w.on('error', (err) => {
-        log(`fs.watch error on ${target}: ${err.message}`)
-      })
-      watchers.push(w)
-      watching.push(target)
-    } catch (err) {
-      log(`fs.watch unavailable for ${target}: ${err instanceof Error ? err.message : String(err)}`)
-    }
-  }
-  for (const p of dbWatchPaths(dbPath)) {
-    if (fs.existsSync(p)) start(p)
-  }
-  const dir = path.dirname(dbPath)
-  if (fs.existsSync(dir)) start(dir)
-  return {
-    watching,
-    close: () => {
-      for (const w of watchers) {
-        try {
-          w.close()
-        } catch {
-          // ignore
-        }
+    const parts = loadNewParts(db, sessionCursor, 0, {
+      ignoreCursor: !prior,
+      sessionId: sid,
+    })
+    const abs = path.resolve(dbPath)
+    const parsed = foldParts(parts, abs)
+    const msgs = parsed.messages.filter((m) => m.sessionId === sid)
+    let inserted = 0
+    let skipped = 0
+    if (msgs.length > 0) {
+      const meta = parsed.sessions.get(sid)
+      let seen = state.seen.get(deriveSessionKey(sid))
+      if (!seen) {
+        seen = new Set()
+        state.seen.set(deriveSessionKey(sid), seen)
       }
-    },
+      const result = await ingestMessages(client, sid, msgs, {
+        title: meta?.title,
+        cwd: meta?.directory ?? null,
+        dbPath: abs,
+        triggerEvent: source,
+        seen,
+        finalize: source === 'session.deleted',
+      })
+      inserted = result.inserted
+      skipped = result.skipped
+      log(
+        `plugin ${result.sessionKey}: db=${abs} msgs=${msgs.length} inserted=${result.inserted} skipped=${result.skipped}`,
+      )
+    }
+    const sessions = mergeSessionCursors(state.capture, parts)
+    state.capture = stampIngest({ ...advanceState(state.capture, parts), sessions }, source)
+    saveState(state.capture, stateFile)
+    const foldSkipped = Object.values(parsed.skipped).reduce((a, b) => a + b, 0)
+    return { parts: parts.length, inserted, skipped: skipped + foldSkipped }
+  } finally {
+    try {
+      db.close()
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -965,55 +1007,65 @@ async function withPool<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
 export async function runOnce(
   opts: { dbPath?: string; backfillDays?: number } = {},
 ): Promise<void> {
-  const dbPath = opts.dbPath ?? opencodeDbPath()
-  const stateFile = captureStatePath()
-  const state = createWatcherState(loadState(stateFile))
-  const summary = await withPool((client) =>
-    scanOnce(dbPath, client, state, { backfillDays: opts.backfillDays, stateFile }),
-  )
-  log(
-    `once ${dbPath}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
-  )
-  console.log(
-    `opencode-memory-capture --once: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
-  )
+  try {
+    const dbPath = opts.dbPath ?? opencodeDbPath()
+    const stateFile = captureStatePath()
+    const state = createWatcherState(loadState(stateFile))
+    const summary = await withPool((client) =>
+      scanOnce(dbPath, client, state, {
+        backfillDays: opts.backfillDays,
+        stateFile,
+        source: 'backfill',
+      }),
+    )
+    log(
+      `backfill ${dbPath}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    )
+    console.log(
+      `opencode-memory-capture --backfill: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    )
+  } catch (err) {
+    log(`backfill failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
-export async function runWatch(
-  opts: { dbPath?: string; backfillDays?: number } = {},
+export async function runIngestSession(
+  sessionId: string,
+  opts: { dbPath?: string } = {},
 ): Promise<void> {
-  const dbPath = opts.dbPath ?? opencodeDbPath()
-  const stateFile = captureStatePath()
   try {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    const dbPath = opts.dbPath ?? opencodeDbPath()
+    const stateFile = captureStatePath()
+    const state = createWatcherState(loadState(stateFile))
+    const summary = await withPool((client) =>
+      ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' }),
+    )
+    log(
+      `ingest-session ${sessionId}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    )
   } catch (err) {
     log(
-      `watch: cannot create ${path.dirname(dbPath)}: ${err instanceof Error ? err.message : String(err)}`,
+      `ingest-session ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
+}
 
-  const pool = new Pool({ connectionString: resolvePgUrl(), max: 1 })
-  const state = createWatcherState(loadState(stateFile))
-  log(`watch starting on ${dbPath}`)
+export function formatStatus(state: CaptureState, file = captureStatePath()): string {
+  const sessionCount = state.sessions ? Object.keys(state.sessions).length : 0
+  return [
+    'opencode-memory-capture --status',
+    `  stateFile: ${file}`,
+    `  lastIngestAt: ${state.lastIngestAt ?? 'never'}`,
+    `  lastIngestSource: ${state.lastIngestSource ?? 'none'}`,
+    `  partTimeUpdated: ${state.partTimeUpdated}`,
+    `  messageTimeUpdated: ${state.messageTimeUpdated}`,
+    `  sessions: ${sessionCount}`,
+  ].join('\n')
+}
 
-  const tick = (): Promise<void> =>
-    watchTick(pool, dbPath, state, { backfillDays: opts.backfillDays, stateFile })
-
-  await tick()
-
-  const kick = createCoalescedRunner(tick)
-  let handle: { close: () => void } | null = null
-  const startWatch = (): void => {
-    if (handle) return
-    handle = attachDbWatchers(dbPath, kick)
-    log(`fs.watch attached to ${handle ? dbWatchPaths(dbPath).join(', ') : dbPath}`)
-  }
-  startWatch()
-
-  setInterval(() => {
-    if (!handle) startWatch()
-    kick()
-  }, WATCH_POLL_MS)
+export function runStatus(): void {
+  const file = captureStatePath()
+  console.log(formatStatus(loadState(file), file))
 }
 
 function loadEnvFile(): void {
@@ -1032,10 +1084,24 @@ function loadEnvFile(): void {
 }
 
 export function parseBackfill(args: string[]): number {
+  const daysIdx = args.indexOf('--days')
+  if (daysIdx >= 0) {
+    const n = Number(args[daysIdx + 1])
+    return Number.isFinite(n) && n >= 0 ? n : DEFAULT_BACKFILL_DAYS
+  }
   const idx = args.indexOf('--backfill')
   if (idx < 0) return DEFAULT_BACKFILL_DAYS
-  const n = Number(args[idx + 1])
+  const next = args[idx + 1]
+  if (next == null || next.startsWith('-')) return DEFAULT_BACKFILL_DAYS
+  const n = Number(next)
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_BACKFILL_DAYS
+}
+
+export function parseIngestSession(args: string[]): string | null {
+  const idx = args.indexOf('--ingest-session')
+  if (idx < 0) return null
+  const id = args[idx + 1]
+  return typeof id === 'string' && id.length > 0 && !id.startsWith('-') ? id : null
 }
 
 function parseDb(args: string[]): string | undefined {
@@ -1045,14 +1111,14 @@ function parseDb(args: string[]): string | undefined {
 
 export const USAGE = `opencode-memory-capture — ingest OpenCode SQLite sessions into RivetOS memory
 
-  opencode-rivet-memory-capture --watch [--db FILE] [--backfill DAYS]
-  opencode-rivet-memory-capture --once  [--db FILE] [--backfill DAYS]
+  opencode-rivet-memory-capture --ingest-session <id> [--db FILE]
+  opencode-rivet-memory-capture --backfill [--days N] [--db FILE]
+  opencode-rivet-memory-capture --status
 
-  --watch            poll + fs.watch $XDG_DATA_HOME/opencode/opencode.db
-  --once             ingest then exit
-  --db FILE          override the SQLite path
-  --backfill DAYS    start-up catch-up window (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = none);
-                     ignores the saved cursor for older rows still inside the window
+  --ingest-session ID  ingest one session (plugin trigger; always exit 0)
+  --backfill [--days N] one-shot catch-up (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = none)
+  --status             print last ingest time + counts from the state file
+  --db FILE            override the SQLite path
 `
 
 async function main(): Promise<void> {
@@ -1066,12 +1132,26 @@ async function main(): Promise<void> {
   const dbPath = parseDb(args)
   const backfillDays = parseBackfill(args)
 
-  if (args[0] === '--watch') {
-    await runWatch({ dbPath, backfillDays })
+  if (args[0] === '--status') {
+    runStatus()
     return
   }
-  if (args[0] === '--once') {
+  if (args[0] === '--ingest-session') {
+    const sessionId = parseIngestSession(args)
+    if (!sessionId) {
+      log('ingest-session: missing session id')
+      return
+    }
+    await runIngestSession(sessionId, { dbPath })
+    return
+  }
+  if (args[0] === '--backfill' || args[0] === '--once') {
     await runOnce({ dbPath, backfillDays })
+    return
+  }
+  if (args[0] === '--watch') {
+    log('opencode-memory-capture --watch removed; use the OpenCode plugin + --backfill')
+    console.log('opencode-memory-capture --watch has been removed. Use --backfill or the plugin.')
     return
   }
 
@@ -1086,6 +1166,5 @@ const invokedDirectly =
 if (invokedDirectly) {
   main().catch((err: unknown) => {
     log(`fatal: ${err instanceof Error ? err.stack : String(err)}`)
-    process.exitCode = 1
   })
 }

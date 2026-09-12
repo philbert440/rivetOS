@@ -9,9 +9,11 @@
  *      with truncation pointers. Stands in for sqlite/pg-lite; this package
  *      does not add deps beyond kimi's (pg).
  *   4. File-cursor tailing (incomplete last line stays pending).
- *   5. Watch tick over a temp cwd-bucket tree + a flat --session-dir.
+ *   5. Backfill scan over a temp cwd-bucket tree + a flat --session-dir.
  *   6. Fold-parity against den-server `piTurnsFromLines`. Import failure
  *      (missing @rivetos/types or the den adapter) is a test failure.
+ *   7. --ingest-file tails the persisted per-file cursor (fixture → rows;
+ *      again → 0 new; append → only new rows).
  */
 import {
   mkdtempSync,
@@ -37,7 +39,10 @@ import {
   ingestMessages,
   createWatcherState,
   scanOnce,
-  watchTick,
+  ingestFileFromCursor,
+  loadCaptureState,
+  parseCli,
+  formatStatus,
   encodePiCwd,
   captureAgent,
   CAPTURE_AGENT,
@@ -906,40 +911,79 @@ console.log('\n— fold-parity with piTurnsFromLines —')
 }
 
 // =============================================================================
-// watchTick — boot race against PGlite must not kill the watcher
+// --ingest-file tails the persisted per-file cursor
 // =============================================================================
-console.log('\n— watchTick boot race —')
+console.log('\n— ingest-file cursor (fixture → rows; again → 0; append → new) —')
 {
-  const dir = mkdtempSync(path.join(tmpdir(), 'pi-watch-boot-'))
-  const state = createWatcherState()
-  let released = 0
-  const refused = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:5433'), {
-    code: 'ECONNREFUSED',
-  })
+  const prevState = process.env.RIVETOS_PI_CAPTURE_STATE
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-ingest-file-'))
+  const stateFile = path.join(dir, 'pi-capture-state.json')
+  process.env.RIVETOS_PI_CAPTURE_STATE = stateFile
+  try {
+    const stub = stubClient()
+    const file = path.join(dir, path.basename(FIXTURE))
+    writeFileSync(file, readFileSync(FIXTURE, 'utf8'))
 
-  await watchTick({ connect: async () => { throw refused } }, dir, state, true)
-  eq('ECONNREFUSED first tick does not throw', released, 0)
+    const first = await ingestFileFromCursor(file, stub.client)
+    eq('ingest-file first pass inserts parsed rows', first.inserted, 4)
+    eq('ingest-file first pass skips none', first.skipped, 0)
+    eq('ingest-file stored session_key', stub.convs[0]?.session_key, `pi:${SESSION}`)
+    eq('ingest-file stored agent', stub.convs[0]?.agent, 'rivet-deepseek')
+    eq('ingest-file stored channel', stub.convs[0]?.channel, 'pi')
 
-  let connects = 0
-  const recovering = {
-    connect: async () => {
-      connects++
-      if (connects === 1) throw refused
-      return {
-        query: async () => ({ rows: [], rowCount: 0 }),
-        release: () => {
-          released++
-        },
-      }
-    },
+    const persisted = loadCaptureState()
+    eq('ingest-file lastIngestSource is extension', persisted.lastIngestSource, 'extension')
+    check('ingest-file lastIngestAt is set', typeof persisted.lastIngestAt === 'string' && persisted.lastIngestAt.length > 0)
+    check('ingest-file persisted a cursor offset', (persisted.cursors[path.resolve(file)]?.offset ?? 0) > 0)
+
+    const second = await ingestFileFromCursor(file, stub.client)
+    eq('ingest-file second pass inserts nothing', second.inserted, 0)
+    eq(
+      'ingest-file second pass skips none (cursor at EOF, no full re-ingest)',
+      second.skipped,
+      0,
+    )
+    eq('message count unchanged on re-ingest', stub.msgs.length, 4)
+
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: 'message',
+        id: 'ff00aa11',
+        message: { role: 'user', content: [{ type: 'text', text: 'and again' }] },
+      }) + '\n',
+      'utf8',
+    )
+    const tailed = await ingestFileFromCursor(file, stub.client)
+    eq('ingest-file append inserts one new user row', tailed.inserted, 1)
+    const users = stub.msgs.filter((m) => m.role === 'user')
+    check(
+      'ingest-file tailed user content present',
+      users.some((m) => m.content === 'and again'),
+    )
+    eq('ingest-file after append has five rows', stub.msgs.length, 5)
+
+    const status = formatStatus()
+    check('status mentions lastIngestSource', status.includes('lastIngestSource: extension'))
+    check('status mentions lastIngestAt', status.includes('lastIngestAt:'))
+  } finally {
+    if (prevState === undefined) delete process.env.RIVETOS_PI_CAPTURE_STATE
+    else process.env.RIVETOS_PI_CAPTURE_STATE = prevState
+    rmSync(dir, { recursive: true, force: true })
   }
-  await watchTick(recovering, dir, state, true)
-  eq('first recovering tick still refuses without release', released, 0)
-  await watchTick(recovering, dir, state, false)
-  eq('second tick acquires a client', connects, 2)
-  eq('release runs only after successful connect', released, 1)
+}
 
-  rmSync(dir, { recursive: true, force: true })
+console.log('\n— parseCli —')
+{
+  const ingest = parseCli(['--ingest-file', '/tmp/demo.jsonl'])
+  eq('parseCli ingest-file mode', ingest.mode, 'ingest-file')
+  eq('parseCli ingest-file path', ingest.file, '/tmp/demo.jsonl')
+  const backfill = parseCli(['--backfill', '--days', '7', '--sessions-dir', '/tmp/sessions'])
+  eq('parseCli backfill mode', backfill.mode, 'backfill')
+  eq('parseCli backfill days', backfill.days, 7)
+  eq('parseCli sessions-dir', backfill.sessionsDir, '/tmp/sessions')
+  eq('parseCli status mode', parseCli(['--status']).mode, 'status')
+  eq('parseCli rejects --watch as unknown', parseCli(['--watch']).mode, 'unknown')
 }
 
 if (failed > 0) {

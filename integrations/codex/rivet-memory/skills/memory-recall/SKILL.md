@@ -170,4 +170,4 @@ This skill prevents repeating that expensive mistake.
 
 - Write synonym-bridging memory entries when you discover facts through probing or user correction.
 - Use `memory_stats` to understand coverage and health.
-- Codex capture is a rollout jsonl watcher (no hooks). Pre-compaction context is whatever the rollout still holds.
+- Codex capture is native hooks (`UserPromptSubmit`, `Stop`, `SessionEnd`) over the rollout jsonl. Pre-compaction context is whatever the rollout still holds.

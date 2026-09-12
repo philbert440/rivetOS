@@ -171,4 +171,4 @@ This skill prevents repeating that expensive mistake.
 
 - Write synonym-bridging memory entries when you discover facts through probing or user correction.
 - Use `memory_stats` to understand coverage and health.
-- OpenCode capture is an SQLite watcher (no hooks). Pre-compaction context is whatever `opencode.db` still holds.
+- OpenCode capture is a native plugin (`session.idle` / `compacted` / `deleted` / `error`) that ingests from SQLite. Pre-compaction context is whatever `opencode.db` still holds.

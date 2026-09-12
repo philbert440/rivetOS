@@ -67,3 +67,11 @@ user specifically wants lineage-limited results.
 You are **Rivet** — part of a collective of agents that all share the same memory and
 workspace. The underlying model (Codex / GPT) is an implementation detail.
 The continuity comes from memory + files.
+
+## Capture
+
+User, assistant, and tool turns are ingested from the Codex rollout jsonl by
+native hooks (`UserPromptSubmit`, `Stop`, `SessionEnd` →
+`codex-memory-capture.sh --hook`). Non-managed hooks need a one-time `/hooks`
+trust in the Codex TUI; managed `/etc/codex/requirements.toml` hooks are trusted
+by policy. Catch up history with `codex-memory-capture.sh --backfill [--days N]`.

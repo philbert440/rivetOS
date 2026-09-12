@@ -11,6 +11,7 @@
  *   4. File-cursor tailing (incomplete last line stays pending).
  *   5. Fold-parity against den-server `codexTurnsFromLines` when that module
  *      is importable from this worktree.
+ *   6. scanOnce retries after a DB failure without requiring a new append.
  */
 import {
   mkdtempSync,
@@ -35,7 +36,6 @@ import {
   ingestMessages,
   createWatcherState,
   scanOnce,
-  watchTick,
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
   MAX_CONTENT,
@@ -446,10 +446,10 @@ console.log('\n— stub pool ingest —')
     const state = createWatcherState()
     failEvent = 'watch-retry-assistant'
     await scanOnce(dir, client, state, true)
-    eq('failed watch preserves its file offset for retry', state.cursors.get(file)?.offset, 0)
+    eq('failed scan preserves its file offset for retry', state.cursors.get(file)?.offset, 0)
     failEvent = undefined
     const retried = await scanOnce(dir, client, state, false)
-    eq('watch retries without requiring another file append', retried.inserted, 2)
+    eq('scan retries without requiring another file append', retried.inserted, 2)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -527,43 +527,6 @@ console.log('\n— fold-parity with codexTurnsFromLines —')
       turns.some((t) => t.role === 'assistant' && t.text === 'here they are'),
     )
   }
-}
-
-// =============================================================================
-// watchTick — boot race against PGlite must not kill the watcher
-// =============================================================================
-console.log('\n— watchTick boot race —')
-{
-  const dir = mkdtempSync(path.join(tmpdir(), 'codex-watch-'))
-  const state = createWatcherState()
-  let released = 0
-  const refused = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:5433'), {
-    code: 'ECONNREFUSED',
-  })
-
-  await watchTick({ connect: async () => { throw refused } }, dir, state, true)
-  eq('ECONNREFUSED first tick does not throw', released, 0)
-
-  let connects = 0
-  const recovering = {
-    connect: async () => {
-      connects++
-      if (connects === 1) throw refused
-      return {
-        query: async () => ({ rows: [], rowCount: 0 }),
-        release: () => {
-          released++
-        },
-      }
-    },
-  }
-  await watchTick(recovering, dir, state, true)
-  eq('first recovering tick still refuses without release', released, 0)
-  await watchTick(recovering, dir, state, false)
-  eq('second tick acquires a client', connects, 2)
-  eq('release runs only after successful connect', released, 1)
-
-  rmSync(dir, { recursive: true, force: true })
 }
 
 if (failed > 0) {

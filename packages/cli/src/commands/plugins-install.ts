@@ -10,7 +10,7 @@
  *   rivetos plugins install [--harness <id>…] [--dry-run] [--root <dir>] [--force]
  */
 
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
@@ -92,12 +92,19 @@ export interface PluginsInstallDeps {
   uid?: number
 }
 
-export const CODEX_WATCHER_UNIT = 'codex-memory-capture.service'
-export const CODEX_LAUNCHD_LABEL = 'dev.rivetos.codex-capture'
-export const PI_WATCHER_UNIT = 'pi-memory-capture.service'
-export const PI_LAUNCHD_LABEL = 'dev.rivetos.pi-capture'
-export const OPENCODE_WATCHER_UNIT = 'opencode-memory-capture.service'
-export const OPENCODE_LAUNCHD_LABEL = 'dev.rivetos.opencode-capture'
+/** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
+const LEGACY_CAPTURE_WATCHER: Record<
+  'codex' | 'pi' | 'opencode',
+  { unit: string; label: string }
+> = {
+  codex: { unit: 'codex-memory-capture.service', label: 'dev.rivetos.codex-capture' },
+  pi: { unit: 'pi-memory-capture.service', label: 'dev.rivetos.pi-capture' },
+  opencode: { unit: 'opencode-memory-capture.service', label: 'dev.rivetos.opencode-capture' },
+}
+
+/** Marker the Codex hook command must end with (user hooks.json or managed requirements.toml). */
+export const CODEX_HOOK_COMMAND_SUFFIX = 'codex-memory-capture.sh --hook'
+export const CODEX_REQUIREMENTS_TOML = '/etc/codex/requirements.toml'
 
 const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
   'kimi-code': join('integrations', 'kimi', 'rivet-memory', 'bin', 'setup-kimi-rivet-memory.sh'),
@@ -253,10 +260,7 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
     case 'kimi-code':
       return [`run ${SETUP_SCRIPTS['kimi-code']} --apply`]
     case 'codex':
-      return [
-        `run ${SETUP_SCRIPTS.codex} --apply`,
-        'install + enable capture watcher (systemd user unit / launchd)',
-      ]
+      return [`run ${SETUP_SCRIPTS.codex} --apply`, 'register Codex hooks (hooks.json)']
     case 'hermes':
       return [
         'sync hermes plugin + memory-recall skill + den hooks',
@@ -267,15 +271,9 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'ensure RIVETOS_PG_URL in ~/.hermes/.env (from ~/.rivetos/.env)',
       ]
     case 'opencode':
-      return [
-        `run ${SETUP_SCRIPTS.opencode} --apply`,
-        'install + enable capture watcher (systemd user unit / launchd)',
-      ]
+      return [`run ${SETUP_SCRIPTS.opencode} --apply`, 'install OpenCode plugin']
     case 'pi':
-      return [
-        `run ${SETUP_SCRIPTS.pi} --apply`,
-        'install + enable capture watcher (systemd user unit / launchd)',
-      ]
+      return [`run ${SETUP_SCRIPTS.pi} --apply`, 'install pi extension']
   }
 }
 
@@ -633,11 +631,78 @@ export function kimiConfigHomes(home: string, configHome: string): string[] {
   return artefactConfigHomes('kimi-code', home, configHome)
 }
 
+function commandEndsWithCodexHook(command: string): boolean {
+  const trimmed = command.trim().replace(/^['"]|['"]$/g, '').trim()
+  return trimmed.endsWith(CODEX_HOOK_COMMAND_SUFFIX)
+}
+
+function jsonCommandEndsWithCodexHook(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(jsonCommandEndsWithCodexHook)
+  if (value && typeof value === 'object') {
+    const rec = value as Record<string, unknown>
+    if (typeof rec.command === 'string' && commandEndsWithCodexHook(rec.command)) return true
+    return Object.values(rec).some(jsonCommandEndsWithCodexHook)
+  }
+  return false
+}
+
+/** True when hooks.json has a command entry ending in `codex-memory-capture.sh --hook`. */
+export function hooksJsonHasCodexCapture(path: string): boolean {
+  try {
+    return jsonCommandEndsWithCodexHook(JSON.parse(readFileSync(path, 'utf-8')))
+  } catch {
+    return false
+  }
+}
+
+export function requirementsTomlHasCodexHook(path: string): boolean {
+  try {
+    return uncommentedLineContains(readFileSync(path, 'utf-8'), CODEX_HOOK_COMMAND_SUFFIX)
+  } catch {
+    return false
+  }
+}
+
+export interface NativeCaptureOpts {
+  /** Override `/etc/codex/requirements.toml` (tests). */
+  codexRequirementsPath?: string
+}
+
+/** Null when the native capture trigger is registered; otherwise a short missing-reason. */
+export function nativeCaptureArtefactMissing(
+  id: HarnessId,
+  home: string,
+  configHome: string,
+  opts: NativeCaptureOpts = {},
+): string | null {
+  const homes = artefactConfigHomes(id, home, configHome)
+  switch (id) {
+    case 'codex': {
+      const hooks = homes.some((dir) => hooksJsonHasCodexCapture(join(dir, 'hooks.json')))
+      const managed = requirementsTomlHasCodexHook(
+        opts.codexRequirementsPath ?? CODEX_REQUIREMENTS_TOML,
+      )
+      return hooks || managed ? null : 'hooks.json missing codex-memory-capture.sh --hook'
+    }
+    case 'pi': {
+      const ext = homes.some((dir) => existsSync(join(dir, 'extensions', 'rivet-memory.ts')))
+      return ext ? null : 'pi extension missing (extensions/rivet-memory.ts)'
+    }
+    case 'opencode': {
+      const plugin = homes.some((dir) => existsSync(join(dir, 'plugins', 'rivet-memory.ts')))
+      return plugin ? null : 'OpenCode plugin missing (plugins/rivet-memory.ts)'
+    }
+    default:
+      return null
+  }
+}
+
 /** Null when the harness artefact is present; otherwise a short missing-reason. */
 export function setupArtefactMissing(
   id: HarnessId,
   home: string,
   configHome: string,
+  opts: NativeCaptureOpts = {},
 ): string | null {
   const homes = artefactConfigHomes(id, home, configHome)
   switch (id) {
@@ -651,15 +716,18 @@ export function setupArtefactMissing(
           mcpJsonHasRivetos(join(dir, 'mcp.json')) ||
           tomlFileHasRivetosTable(join(dir, 'config.toml')),
       )
-      return mcp ? null : 'mcp.json / config.toml missing rivetos MCP block'
+      if (!mcp) return 'mcp.json / config.toml missing rivetos MCP block'
+      return nativeCaptureArtefactMissing(id, home, configHome, opts)
     }
     case 'pi': {
       const mcp = homes.some((dir) => mcpJsonHasRivetos(join(dir, 'mcp.json')))
-      return mcp ? null : 'mcp.json missing rivetos server'
+      if (!mcp) return 'mcp.json missing rivetos server'
+      return nativeCaptureArtefactMissing(id, home, configHome, opts)
     }
     case 'opencode': {
       const mcp = homes.some((dir) => opencodeJsonHasRivetos(join(dir, 'opencode.json')))
-      return mcp ? null : 'opencode.json / opencode.jsonc missing rivetos MCP block'
+      if (!mcp) return 'opencode.json / opencode.jsonc missing rivetos MCP block'
+      return nativeCaptureArtefactMissing(id, home, configHome, opts)
     }
     default:
       return null
@@ -770,650 +838,47 @@ function ensureSetupArtefact(id: HarnessId, h: DetectedHarness, root: string, ho
   }
 }
 
-function xmlEscape(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-/** PATH baked into the Codex watcher unit/plist so `node`/`npx` resolve
- *  under systemd/launchd's minimal default PATH (Homebrew / fnm / nvm). */
-export function watcherPathEnv(home: string, nodeBinDir = dirname(process.execPath)): string {
-  const dirs = [
-    nodeBinDir,
-    join(home, '.local', 'bin'),
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    '/usr/bin',
-    '/bin',
-  ]
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const d of dirs) {
-    if (!d || seen.has(d)) continue
-    seen.add(d)
-    out.push(d)
+function unlinkQuiet(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch {
+    // ENOENT or already gone
   }
-  return out.join(':')
 }
 
-/** Quote a systemd unit-file token; `%` → `%%` so specifiers are not expanded. */
-export function systemdQuote(value: string): string {
-  const escapedPct = value.replace(/%/g, '%%')
-  if (escapedPct === '' || /[\s"'\\$`]/.test(escapedPct)) {
-    return `"${escapedPct.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
-  }
-  return escapedPct
-}
-
-export function systemdEnvironment(key: string, value: string): string {
-  const escapedPct = value.replace(/%/g, '%%')
-  if (escapedPct === '' || /[\s"'\\$`]/.test(escapedPct)) {
-    const inner = escapedPct.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
-    return `Environment="${key}=${inner}"`
-  }
-  return `Environment=${key}=${escapedPct}`
-}
-
-/** EnvironmentFile= is a bare path, not a command line — systemd rejects
- *  quoted paths. Escape `%` → `%%` only. */
-export function systemdEnvironmentFile(path: string): string {
-  return `EnvironmentFile=-${path.replace(/%/g, '%%')}`
-}
-
-function captureScriptPath(root: string, harness: 'codex' | 'pi' = 'codex'): string {
-  if (harness === 'pi') {
-    return join(root, 'integrations', 'pi', 'rivet-memory', 'bin', 'pi-memory-capture.sh')
-  }
-  return join(root, 'integrations', 'codex', 'rivet-memory', 'bin', 'codex-memory-capture.sh')
-}
-
-function opencodeCaptureScriptPath(root: string): string {
-  return join(root, 'integrations', 'opencode', 'rivet-memory', 'bin', 'opencode-memory-capture.sh')
-}
-
-/** systemd user unit for the Codex capture watcher. ExecStart is always
- *  `/bin/bash <script> --watch` so the unit does not depend on the
- *  launcher's executable bit (mode bits do not survive every copy path). */
-export function codexSystemdUnit(opts: {
-  root: string
+/** Stop + disable + delete leftover capture-watcher units/plists. Idempotent. */
+export async function removeLegacyCaptureWatcher(opts: {
+  id: 'codex' | 'pi' | 'opencode'
   home: string
-  envFile?: string
-  pathEnv?: string
-  nodeBinDir?: string
-  codexHome?: string
-  pgUrl?: string
-  rivetosEnvFile?: string
-}): string {
-  const captureSh = captureScriptPath(opts.root)
-  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
-  const lines = [
-    '[Unit]',
-    'Description=RivetOS Codex memory capture watcher',
-    'After=network.target rivetos.service',
-    'Wants=rivetos.service',
-    '',
-    '[Service]',
-    'Type=simple',
-    `ExecStart=${BASH} ${systemdQuote(captureSh)} --watch`,
-  ]
-  if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
-  lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
-  lines.push(systemdEnvironment('PATH', pathEnv))
-  if (opts.codexHome) lines.push(systemdEnvironment('CODEX_HOME', opts.codexHome))
-  if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
-  if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
-  lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
-  return lines.join('\n')
-}
-
-export function codexLaunchdPlist(opts: {
-  captureSh: string
-  root: string
-  home: string
-  logPath: string
-  pgUrl?: string
-  pathEnv?: string
-  nodeBinDir?: string
-  codexHome?: string
-  rivetosEnvFile?: string
-}): string {
-  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
-  const envEntries = [
-    `    <key>RIVETOS_ROOT</key>\n    <string>${xmlEscape(opts.root)}</string>`,
-    `    <key>PATH</key>\n    <string>${xmlEscape(pathEnv)}</string>`,
-  ]
-  if (opts.codexHome) {
-    envEntries.push(`    <key>CODEX_HOME</key>\n    <string>${xmlEscape(opts.codexHome)}</string>`)
-  }
-  if (opts.rivetosEnvFile) {
-    envEntries.push(
-      `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
-    )
-  }
-  if (opts.pgUrl) {
-    envEntries.push(`    <key>RIVETOS_PG_URL</key>\n    <string>${xmlEscape(opts.pgUrl)}</string>`)
-  }
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${CODEX_LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${BASH}</string>
-    <string>${xmlEscape(opts.captureSh)}</string>
-    <string>--watch</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-${envEntries.join('\n')}
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(opts.logPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(opts.logPath)}</string>
-</dict>
-</plist>
-`
-}
-
-function isSpawnEnoent(result: ExecResult): boolean {
-  return result.code === null && /ENOENT/i.test(result.stderr)
-}
-
-export async function installCodexCaptureWatcher(opts: {
-  home: string
-  root: string
   exec: typeof execFileAsync
   platform: NodeJS.Platform
   uid?: number
-}): Promise<{ ok: boolean; detail: string }> {
-  const customEnvFile = nonemptyEnv(process.env.RIVETOS_ENV_FILE)
-  const defaultEnvFile = join(opts.home, '.rivetos', '.env')
-  const envFile = customEnvFile ?? defaultEnvFile
-  const envFileExists = existsSync(envFile)
-  const envText = envFileExists ? readFileSync(envFile, 'utf-8') : ''
-  const pgUrlFromFile = envFileExists
-    ? nonemptyEnv(readEnvKey(envText, 'RIVETOS_PG_URL'))
-    : undefined
-  const pgUrl = pgUrlFromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
-  const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
-  const captureSh = captureScriptPath(rivetRoot)
-  const codexHome = process.env.CODEX_HOME || join(opts.home, '.codex')
-  const manual = `${BASH} ${captureSh} --watch`
+}): Promise<boolean> {
+  const { unit, label } = LEGACY_CAPTURE_WATCHER[opts.id]
+  const unitPath = join(opts.home, '.config', 'systemd', 'user', unit)
+  const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${label}.plist`)
+  let removed = false
 
-  if (opts.platform === 'linux') {
-    const probe = await opts.exec('systemctl', ['--user', '--version'], { timeoutMs: 5_000 })
-    if (isSpawnEnoent(probe)) {
-      console.log(`   no systemctl — run: ${manual}`)
-      return { ok: true, detail: `no systemctl (run: ${manual})` }
+  if (existsSync(unitPath)) {
+    if (opts.platform === 'linux') {
+      await opts.exec('systemctl', ['--user', 'disable', '--now', unit], { timeoutMs: 15_000 })
     }
-    const unitPath = join(opts.home, '.config', 'systemd', 'user', CODEX_WATCHER_UNIT)
-    mkdirSync(dirname(unitPath), { recursive: true })
-    writeFileSync(
-      unitPath,
-      codexSystemdUnit({
-        root: rivetRoot,
-        home: opts.home,
-        envFile: envFileExists ? envFile : undefined,
-        rivetosEnvFile: customEnvFile,
-        pgUrl: pgUrlFromFile ? undefined : pgUrl,
-        codexHome,
-      }),
-    )
-    const reload = await opts.exec('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 15_000 })
-    const enable = await opts.exec('systemctl', ['--user', 'enable', '--now', CODEX_WATCHER_UNIT], {
-      timeoutMs: 15_000,
-    })
-    if (reload.code !== 0 || enable.code !== 0) {
-      return {
-        ok: false,
-        detail: `capture watcher enable failed (daemon-reload exit ${reload.code ?? 'n/a'}, enable exit ${enable.code ?? 'n/a'})`,
+    unlinkQuiet(unitPath)
+    removed = true
+  }
+
+  if (existsSync(plistPath)) {
+    if (opts.platform === 'darwin') {
+      const uid = opts.uid ?? process.getuid?.()
+      if (uid !== undefined) {
+        await opts.exec('launchctl', ['bootout', `gui/${uid}/${label}`], { timeoutMs: 15_000 })
       }
     }
-    return { ok: true, detail: `capture watcher enabled (${CODEX_WATCHER_UNIT})` }
+    unlinkQuiet(plistPath)
+    removed = true
   }
 
-  if (opts.platform === 'darwin') {
-    const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${CODEX_LAUNCHD_LABEL}.plist`)
-    mkdirSync(dirname(plistPath), { recursive: true })
-    const logPath = join(opts.home, '.rivetos', 'codex-memory-capture.log')
-    mkdirSync(dirname(logPath), { recursive: true })
-    writeFileSync(
-      plistPath,
-      codexLaunchdPlist({
-        captureSh,
-        root: rivetRoot,
-        home: opts.home,
-        logPath,
-        pgUrl,
-        codexHome,
-        rivetosEnvFile: customEnvFile,
-      }),
-    )
-    const uid = opts.uid ?? process.getuid?.()
-    if (uid === undefined) {
-      console.log(`   run: launchctl bootstrap gui/$UID ${plistPath}`)
-      return { ok: true, detail: `wrote ${plistPath}; run launchctl bootstrap gui/$UID` }
-    }
-    const boot = await opts.exec('launchctl', ['bootstrap', `gui/${uid}`, plistPath], {
-      timeoutMs: 15_000,
-    })
-    if (isSpawnEnoent(boot)) {
-      console.log(`   no launchctl — run: ${manual}`)
-      return { ok: true, detail: `wrote ${plistPath}; no launchctl (run: ${manual})` }
-    }
-    const out = `${boot.stderr}${boot.stdout}`
-    if (boot.code !== 0 && !/already bootstrapped|already loaded/i.test(out)) {
-      return {
-        ok: false,
-        detail: `capture watcher bootstrap failed (exit ${boot.code ?? 'n/a'})`,
-      }
-    }
-    return { ok: true, detail: `capture watcher enabled (${CODEX_LAUNCHD_LABEL})` }
-  }
-
-  console.log(`   no service manager — run: ${manual}`)
-  return { ok: true, detail: `no service manager (run: ${manual})` }
-}
-
-/** systemd user unit for the pi capture watcher. ExecStart is always
- *  `/bin/bash <script> --watch` so the unit does not depend on the
- *  launcher's executable bit (mode bits do not survive every copy path). */
-export function piSystemdUnit(opts: {
-  root: string
-  home: string
-  envFile?: string
-  pathEnv?: string
-  nodeBinDir?: string
-  rivetosEnvFile?: string
-  pgUrl?: string
-  sessionsDir?: string
-}): string {
-  const captureSh = captureScriptPath(opts.root, 'pi')
-  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
-  const lines = [
-    '[Unit]',
-    'Description=RivetOS pi memory capture watcher',
-    'After=network.target rivetos.service',
-    'Wants=rivetos.service',
-    '',
-    '[Service]',
-    'Type=simple',
-    `ExecStart=${BASH} ${systemdQuote(captureSh)} --watch`,
-  ]
-  if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
-  lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
-  lines.push(systemdEnvironment('PATH', pathEnv))
-  if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
-  if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
-  if (opts.sessionsDir) lines.push(systemdEnvironment('PI_SESSIONS_DIR', opts.sessionsDir))
-  lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
-  return lines.join('\n')
-}
-
-export function piLaunchdPlist(opts: {
-  captureSh: string
-  root: string
-  home: string
-  logPath: string
-  pgUrl?: string
-  pathEnv?: string
-  nodeBinDir?: string
-  rivetosEnvFile?: string
-  sessionsDir?: string
-}): string {
-  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
-  const envEntries = [
-    `    <key>RIVETOS_ROOT</key>\n    <string>${xmlEscape(opts.root)}</string>`,
-    `    <key>PATH</key>\n    <string>${xmlEscape(pathEnv)}</string>`,
-  ]
-  if (opts.rivetosEnvFile) {
-    envEntries.push(
-      `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
-    )
-  }
-  if (opts.pgUrl) {
-    envEntries.push(`    <key>RIVETOS_PG_URL</key>\n    <string>${xmlEscape(opts.pgUrl)}</string>`)
-  }
-  if (opts.sessionsDir) {
-    envEntries.push(
-      `    <key>PI_SESSIONS_DIR</key>\n    <string>${xmlEscape(opts.sessionsDir)}</string>`,
-    )
-  }
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${PI_LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${BASH}</string>
-    <string>${xmlEscape(opts.captureSh)}</string>
-    <string>--watch</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-${envEntries.join('\n')}
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(opts.logPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(opts.logPath)}</string>
-</dict>
-</plist>
-`
-}
-
-export async function installPiCaptureWatcher(opts: {
-  home: string
-  root: string
-  exec: typeof execFileAsync
-  platform: NodeJS.Platform
-  uid?: number
-}): Promise<{ ok: boolean; detail: string }> {
-  const customEnvFile = nonemptyEnv(process.env.RIVETOS_ENV_FILE)
-  const defaultEnvFile = join(opts.home, '.rivetos', '.env')
-  const envFile = customEnvFile ?? defaultEnvFile
-  const envFileExists = existsSync(envFile)
-  const envText = envFileExists ? readFileSync(envFile, 'utf-8') : ''
-  const pgUrlFromFile = envFileExists
-    ? nonemptyEnv(readEnvKey(envText, 'RIVETOS_PG_URL'))
-    : undefined
-  const pgUrl = pgUrlFromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
-  const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
-  const captureSh = captureScriptPath(rivetRoot, 'pi')
-  const sessionsDir = nonemptyEnv(process.env.PI_SESSIONS_DIR)
-  const manual = `${BASH} ${captureSh} --watch`
-
-  if (opts.platform === 'linux') {
-    const probe = await opts.exec('systemctl', ['--user', '--version'], { timeoutMs: 5_000 })
-    if (isSpawnEnoent(probe)) {
-      console.log(`   no systemctl — run: ${manual}`)
-      return { ok: true, detail: `no systemctl (run: ${manual})` }
-    }
-    const unitPath = join(opts.home, '.config', 'systemd', 'user', PI_WATCHER_UNIT)
-    mkdirSync(dirname(unitPath), { recursive: true })
-    writeFileSync(
-      unitPath,
-      piSystemdUnit({
-        root: rivetRoot,
-        home: opts.home,
-        envFile: envFileExists ? envFile : undefined,
-        rivetosEnvFile: customEnvFile,
-        pgUrl: pgUrlFromFile ? undefined : pgUrl,
-        sessionsDir,
-      }),
-    )
-    const reload = await opts.exec('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 15_000 })
-    const enable = await opts.exec('systemctl', ['--user', 'enable', '--now', PI_WATCHER_UNIT], {
-      timeoutMs: 15_000,
-    })
-    if (reload.code !== 0 || enable.code !== 0) {
-      return {
-        ok: false,
-        detail: `capture watcher enable failed (daemon-reload exit ${reload.code ?? 'n/a'}, enable exit ${enable.code ?? 'n/a'})`,
-      }
-    }
-    return { ok: true, detail: `capture watcher enabled (${PI_WATCHER_UNIT})` }
-  }
-
-  if (opts.platform === 'darwin') {
-    const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`)
-    mkdirSync(dirname(plistPath), { recursive: true })
-    const logPath = join(opts.home, '.rivetos', 'pi-memory-capture.log')
-    mkdirSync(dirname(logPath), { recursive: true })
-    writeFileSync(
-      plistPath,
-      piLaunchdPlist({
-        captureSh,
-        root: rivetRoot,
-        home: opts.home,
-        logPath,
-        pgUrl,
-        rivetosEnvFile: customEnvFile,
-        sessionsDir,
-      }),
-    )
-    const uid = opts.uid ?? process.getuid?.()
-    if (uid === undefined) {
-      console.log(`   run: launchctl bootstrap gui/$UID ${plistPath}`)
-      return { ok: true, detail: `wrote ${plistPath}; run launchctl bootstrap gui/$UID` }
-    }
-    const boot = await opts.exec('launchctl', ['bootstrap', `gui/${uid}`, plistPath], {
-      timeoutMs: 15_000,
-    })
-    if (isSpawnEnoent(boot)) {
-      console.log(`   no launchctl — run: ${manual}`)
-      return { ok: true, detail: `wrote ${plistPath}; no launchctl (run: ${manual})` }
-    }
-    const out = `${boot.stderr}${boot.stdout}`
-    if (boot.code !== 0 && !/already bootstrapped|already loaded/i.test(out)) {
-      return {
-        ok: false,
-        detail: `capture watcher bootstrap failed (exit ${boot.code ?? 'n/a'})`,
-      }
-    }
-    return { ok: true, detail: `capture watcher enabled (${PI_LAUNCHD_LABEL})` }
-  }
-
-  console.log(`   no service manager — run: ${manual}`)
-  return { ok: true, detail: `no service manager (run: ${manual})` }
-}
-
-/** systemd user unit for the OpenCode capture watcher. */
-export function opencodeSystemdUnit(opts: {
-  root: string
-  home: string
-  envFile?: string
-  pathEnv?: string
-  nodeBinDir?: string
-  pgUrl?: string
-  rivetosEnvFile?: string
-  opencodeDb?: string
-  xdgDataHome?: string
-}): string {
-  const captureSh = opencodeCaptureScriptPath(opts.root)
-  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
-  const lines = [
-    '[Unit]',
-    'Description=RivetOS OpenCode memory capture watcher',
-    'After=network.target rivetos.service',
-    'Wants=rivetos.service',
-    '',
-    '[Service]',
-    'Type=simple',
-    `ExecStart=${BASH} ${systemdQuote(captureSh)} --watch`,
-  ]
-  if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
-  lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
-  lines.push(systemdEnvironment('PATH', pathEnv))
-  if (opts.opencodeDb) lines.push(systemdEnvironment('OPENCODE_DB', opts.opencodeDb))
-  if (opts.xdgDataHome) lines.push(systemdEnvironment('XDG_DATA_HOME', opts.xdgDataHome))
-  if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
-  if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
-  lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
-  return lines.join('\n')
-}
-
-export function opencodeLaunchdPlist(opts: {
-  captureSh: string
-  root: string
-  home: string
-  logPath: string
-  pgUrl?: string
-  pathEnv?: string
-  nodeBinDir?: string
-  rivetosEnvFile?: string
-  opencodeDb?: string
-  xdgDataHome?: string
-}): string {
-  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
-  const envEntries = [
-    `    <key>RIVETOS_ROOT</key>\n    <string>${xmlEscape(opts.root)}</string>`,
-    `    <key>PATH</key>\n    <string>${xmlEscape(pathEnv)}</string>`,
-  ]
-  if (opts.opencodeDb) {
-    envEntries.push(
-      `    <key>OPENCODE_DB</key>\n    <string>${xmlEscape(opts.opencodeDb)}</string>`,
-    )
-  }
-  if (opts.xdgDataHome) {
-    envEntries.push(
-      `    <key>XDG_DATA_HOME</key>\n    <string>${xmlEscape(opts.xdgDataHome)}</string>`,
-    )
-  }
-  if (opts.rivetosEnvFile) {
-    envEntries.push(
-      `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
-    )
-  }
-  if (opts.pgUrl) {
-    envEntries.push(`    <key>RIVETOS_PG_URL</key>\n    <string>${xmlEscape(opts.pgUrl)}</string>`)
-  }
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${OPENCODE_LAUNCHD_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${BASH}</string>
-    <string>${xmlEscape(opts.captureSh)}</string>
-    <string>--watch</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-${envEntries.join('\n')}
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>${xmlEscape(opts.logPath)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xmlEscape(opts.logPath)}</string>
-</dict>
-</plist>
-`
-}
-
-export async function installOpencodeCaptureWatcher(opts: {
-  home: string
-  root: string
-  exec: typeof execFileAsync
-  platform: NodeJS.Platform
-  uid?: number
-}): Promise<{ ok: boolean; detail: string }> {
-  const customEnvFile = nonemptyEnv(process.env.RIVETOS_ENV_FILE)
-  const defaultEnvFile = join(opts.home, '.rivetos', '.env')
-  const envFile = customEnvFile ?? defaultEnvFile
-  const envFileExists = existsSync(envFile)
-  const envText = envFileExists ? readFileSync(envFile, 'utf-8') : ''
-  const pgUrlFromFile = envFileExists
-    ? nonemptyEnv(readEnvKey(envText, 'RIVETOS_PG_URL'))
-    : undefined
-  const pgUrl = pgUrlFromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
-  const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
-  const captureSh = opencodeCaptureScriptPath(rivetRoot)
-  const manual = `${BASH} ${captureSh} --watch`
-  const opencodeDb = nonemptyEnv(process.env.OPENCODE_DB)
-  const xdgDataHome = nonemptyEnv(process.env.XDG_DATA_HOME)
-
-  if (opts.platform === 'linux') {
-    const probe = await opts.exec('systemctl', ['--user', '--version'], { timeoutMs: 5_000 })
-    if (isSpawnEnoent(probe)) {
-      console.log(`   no systemctl — run: ${manual}`)
-      return { ok: true, detail: `no systemctl (run: ${manual})` }
-    }
-    const unitPath = join(opts.home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT)
-    mkdirSync(dirname(unitPath), { recursive: true })
-    writeFileSync(
-      unitPath,
-      opencodeSystemdUnit({
-        root: rivetRoot,
-        home: opts.home,
-        envFile: envFileExists ? envFile : undefined,
-        rivetosEnvFile: customEnvFile,
-        pgUrl: pgUrlFromFile ? undefined : pgUrl,
-        opencodeDb,
-        xdgDataHome,
-      }),
-    )
-    const reload = await opts.exec('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 15_000 })
-    const enable = await opts.exec(
-      'systemctl',
-      ['--user', 'enable', '--now', OPENCODE_WATCHER_UNIT],
-      {
-        timeoutMs: 15_000,
-      },
-    )
-    if (reload.code !== 0 || enable.code !== 0) {
-      return {
-        ok: false,
-        detail: `capture watcher enable failed (daemon-reload exit ${reload.code ?? 'n/a'}, enable exit ${enable.code ?? 'n/a'})`,
-      }
-    }
-    return { ok: true, detail: `capture watcher enabled (${OPENCODE_WATCHER_UNIT})` }
-  }
-
-  if (opts.platform === 'darwin') {
-    const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)
-    mkdirSync(dirname(plistPath), { recursive: true })
-    const logPath = join(opts.home, '.rivetos', 'opencode-memory-capture.log')
-    mkdirSync(dirname(logPath), { recursive: true })
-    writeFileSync(
-      plistPath,
-      opencodeLaunchdPlist({
-        captureSh,
-        root: rivetRoot,
-        home: opts.home,
-        logPath,
-        pgUrl,
-        rivetosEnvFile: customEnvFile,
-        opencodeDb,
-        xdgDataHome,
-      }),
-    )
-    const uid = opts.uid ?? process.getuid?.()
-    if (uid === undefined) {
-      console.log(`   run: launchctl bootstrap gui/$UID ${plistPath}`)
-      return { ok: true, detail: `wrote ${plistPath}; run launchctl bootstrap gui/$UID` }
-    }
-    const boot = await opts.exec('launchctl', ['bootstrap', `gui/${uid}`, plistPath], {
-      timeoutMs: 15_000,
-    })
-    if (isSpawnEnoent(boot)) {
-      console.log(`   no launchctl — run: ${manual}`)
-      return { ok: true, detail: `wrote ${plistPath}; no launchctl (run: ${manual})` }
-    }
-    const out = `${boot.stderr}${boot.stdout}`
-    if (boot.code !== 0 && !/already bootstrapped|already loaded/i.test(out)) {
-      return {
-        ok: false,
-        detail: `capture watcher bootstrap failed (exit ${boot.code ?? 'n/a'})`,
-      }
-    }
-    return { ok: true, detail: `capture watcher enabled (${OPENCODE_LAUNCHD_LABEL})` }
-  }
-
-  console.log(`   no service manager — run: ${manual}`)
-  return { ok: true, detail: `no service manager (run: ${manual})` }
+  return removed
 }
 
 const SETUP_BIN_ENV: Partial<Record<HarnessId, string>> = {
@@ -1476,38 +941,15 @@ async function runSetupScript(
     return { ok: false, detail: `${scriptRel} --apply exited 0 but ${missing}` }
   }
   const bits = [`${scriptRel} --apply`]
-  if (id === 'codex') {
-    const w = await installCodexCaptureWatcher({
+  if (id === 'codex' || id === 'pi' || id === 'opencode') {
+    const removed = await removeLegacyCaptureWatcher({
+      id,
       home,
-      root,
       exec,
       platform: watcher.platform,
       uid: watcher.uid,
     })
-    bits.push(w.detail)
-    if (!w.ok) return { ok: false, detail: bits.join('; ') }
-  }
-  if (id === 'pi') {
-    const w = await installPiCaptureWatcher({
-      home,
-      root,
-      exec,
-      platform: watcher.platform,
-      uid: watcher.uid,
-    })
-    bits.push(w.detail)
-    if (!w.ok) return { ok: false, detail: bits.join('; ') }
-  }
-  if (id === 'opencode') {
-    const w = await installOpencodeCaptureWatcher({
-      home,
-      root,
-      exec,
-      platform: watcher.platform,
-      uid: watcher.uid,
-    })
-    bits.push(w.detail)
-    if (!w.ok) return { ok: false, detail: bits.join('; ') }
+    if (removed) bits.push('removed legacy capture watcher')
   }
   return { ok: true, detail: bits.join('; ') }
 }

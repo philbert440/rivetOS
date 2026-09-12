@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
-# codex-memory-capture — start the RivetOS capture watcher for Codex CLI.
+# codex-memory-capture — RivetOS memory ingest for Codex CLI.
 #
-# Codex has no lifecycle hooks. This script launches the rollout jsonl
-# watcher (`--watch`) or a one-shot ingest (`--once`, `--ingest FILE`).
-# Best-effort: ingest failures are logged, the watcher keeps running.
+# Codex lifecycle hooks (`UserPromptSubmit`, `Stop`, `SessionEnd`) invoke this
+# launcher with `--hook` and one JSON object on stdin. Also supports
+# `--ingest-file`, `--backfill [--days N]`, and `--status`.
 #
-# Path discovery: respects $RIVETOS_ROOT (default /opt/rivetos). Prefers the
+# Best-effort: always exits 0 so the CLI is never blocked.
+#
+# Path discovery: this script lives at .../rivet-memory/bin/. Prefers the
 # built artifact at .../capture/dist/codex-memory-capture.js. Falls back to
 # running the .ts source via `npx --yes tsx` on unbuilt checkouts.
 #
-set -euo pipefail
-
-RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
-CAPTURE_DIR="$RIVETOS_ROOT/integrations/codex/rivet-memory/capture"
-CAPTURE_BUILT="$CAPTURE_DIR/dist/codex-memory-capture.js"
-CAPTURE_SRC="$CAPTURE_DIR/src/codex-memory-capture.ts"
+set -u
 
 RIVETOS_ENV="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
 if [ -f "$RIVETOS_ENV" ]; then
@@ -24,11 +21,30 @@ if [ -f "$RIVETOS_ENV" ]; then
   set +a
 fi
 
+SELF="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED="$(readlink -f "$SELF" 2>/dev/null || true)"
+  if [ -n "${RESOLVED:-}" ]; then
+    SELF="$RESOLVED"
+  fi
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ -n "${RIVETOS_ROOT:-}" ] && [ -d "$RIVETOS_ROOT/integrations/codex/rivet-memory/capture" ]; then
+  CAPTURE_DIR="$RIVETOS_ROOT/integrations/codex/rivet-memory/capture"
+else
+  CAPTURE_DIR="$PLUGIN_DIR/capture"
+fi
+CAPTURE_BUILT="$CAPTURE_DIR/dist/codex-memory-capture.js"
+CAPTURE_SRC="$CAPTURE_DIR/src/codex-memory-capture.ts"
+
 if [ -f "$CAPTURE_BUILT" ]; then
-  exec node "$CAPTURE_BUILT" "$@"
+  node "$CAPTURE_BUILT" "$@" || true
 elif [ -f "$CAPTURE_SRC" ]; then
-  exec npx --yes tsx "$CAPTURE_SRC" "$@"
+  npx --yes tsx "$CAPTURE_SRC" "$@" || true
 else
   echo "codex-memory-capture: capture not found at $CAPTURE_BUILT or $CAPTURE_SRC" >&2
-  exit 1
 fi
+
+exit 0

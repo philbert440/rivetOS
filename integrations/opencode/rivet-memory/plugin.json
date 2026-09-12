@@ -1,7 +1,7 @@
 {
   "name": "rivet-memory",
   "version": "0.1.0",
-  "description": "RivetOS persistent cross-agent memory for OpenCode CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via an SQLite watcher.",
+  "description": "RivetOS persistent cross-agent memory for OpenCode CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via a native OpenCode plugin.",
   "keywords": [
     "memory",
     "recall",

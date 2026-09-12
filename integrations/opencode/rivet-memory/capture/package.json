@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Capture worker for the OpenCode CLI rivet-memory integration. Watches ~/.local/share/opencode/opencode.db (WAL) and writes sessions into the shared RivetOS memory store under agent='rivet-glm'.",
+  "description": "Capture worker for the OpenCode CLI rivet-memory integration. Ingests OpenCode SQLite sessions (--ingest-session / --backfill) into the shared RivetOS memory store under agent='rivet-glm'.",
   "license": "Apache-2.0",
   "main": "dist/opencode-memory-capture.js",
   "bin": {

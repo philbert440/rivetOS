@@ -78,21 +78,15 @@ import { loadRivetEnv } from '../lib/env-file.js'
 import {
   detectHarnesses,
   execFileAsync,
-  isWatcherCaptureHarness,
   type DetectedHarness,
 } from '../lib/harness-detect.js'
 import { findRoot } from './plugins-sync.js'
 import {
-  CODEX_LAUNCHD_LABEL,
-  CODEX_WATCHER_UNIT,
-  PI_LAUNCHD_LABEL,
-  PI_WATCHER_UNIT,
-  OPENCODE_LAUNCHD_LABEL,
-  OPENCODE_WATCHER_UNIT,
-  artefactConfigHomes,
+  CODEX_HOOK_COMMAND_SUFFIX,
+  CODEX_REQUIREMENTS_TOML,
   kimiConfigHomes,
   mcpJsonHasRivetos,
-  opencodeJsonHasRivetos,
+  nativeCaptureArtefactMissing,
   tomlFileHasRivetosTable,
   uncommentedLineContains,
 } from './plugins-install.js'
@@ -1556,6 +1550,10 @@ export interface HarnessDoctorProbe {
   root?: string
   platform?: NodeJS.Platform
   uid?: number
+  /** Override `/etc/codex/requirements.toml` (tests). */
+  codexRequirementsPath?: string
+  /** Freeze "last capture" relative time (tests). */
+  now?: Date
 }
 
 function hermesPluginInstalled(configHome: string): boolean {
@@ -1569,19 +1567,6 @@ function hermesPluginInstalled(configHome: string): boolean {
   } catch {
     return false
   }
-}
-
-/** Watcher unit/state file plus the OpenCode MCP artefact (like Codex). */
-function opencodeCaptureInstalled(home: string, configHome: string): boolean {
-  const mcp = artefactConfigHomes('opencode', home, configHome).some((dir) =>
-    opencodeJsonHasRivetos(join(dir, 'opencode.json')),
-  )
-  if (!mcp) return false
-  if (existsSync(join(home, '.rivetos', 'opencode-capture-state.json'))) return true
-  if (existsSync(join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT))) return true
-  if (existsSync(join(home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)))
-    return true
-  return false
 }
 
 function kimiPluginInstalled(home: string, configHome: string): boolean {
@@ -1602,36 +1587,25 @@ function kimiPluginInstalled(home: string, configHome: string): boolean {
   return false
 }
 
-function pluginMarker(h: DetectedHarness, home: string): boolean {
+function pluginMarker(h: DetectedHarness, home: string, probe: HarnessDoctorProbe = {}): boolean {
   switch (h.id) {
     case 'grok-build':
       return tomlFileHasRivetosTable(join(h.configHome, 'config.toml'))
     case 'kimi-code':
       return kimiPluginInstalled(home, h.configHome)
     case 'codex':
-      return artefactConfigHomes(h.id, home, h.configHome).some(
-        (dir) =>
-          mcpJsonHasRivetos(join(dir, 'mcp.json')) ||
-          tomlFileHasRivetosTable(join(dir, 'config.toml')),
+    case 'pi':
+    case 'opencode':
+      return (
+        nativeCaptureArtefactMissing(h.id, home, h.configHome, {
+          codexRequirementsPath: probe.codexRequirementsPath,
+        }) === null
       )
     case 'hermes':
       return hermesPluginInstalled(h.configHome)
     case 'claude-code':
       return false // decided by `claude plugin list` below
-    case 'opencode':
-      return opencodeCaptureInstalled(home, h.configHome)
-    case 'pi':
-      return piPluginInstalled(home)
   }
-}
-
-/** Installed when the watcher has written its doctor marker, or the
- *  systemd/launchd unit file is present (enabled by `plugins install`). */
-function piPluginInstalled(home: string): boolean {
-  if (existsSync(join(home, '.rivetos', 'pi-capture-state.json'))) return true
-  if (existsSync(join(home, '.config', 'systemd', 'user', PI_WATCHER_UNIT))) return true
-  if (existsSync(join(home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`))) return true
-  return false
 }
 
 async function claudePluginListed(
@@ -1643,59 +1617,50 @@ async function claudePluginListed(
   return /rivet-memory/i.test(result.stdout + result.stderr)
 }
 
-export type CaptureWatcherHealth = 'active' | 'inactive' | 'crash-looping' | 'n/a'
-export type CaptureWatcherHarness = 'codex' | 'pi' | 'opencode'
-
-function parseSystemctlShow(text: string): { nRestarts: number; activeState: string } {
-  let nRestarts = 0
-  let activeState = ''
-  for (const line of text.split('\n')) {
-    const eq = line.indexOf('=')
-    if (eq < 0) continue
-    const k = line.slice(0, eq)
-    const v = line.slice(eq + 1).trim()
-    if (k === 'NRestarts') nRestarts = Number.parseInt(v, 10) || 0
-    if (k === 'ActiveState') activeState = v
-  }
-  return { nRestarts, activeState }
+function isNativeCaptureHarness(id: DetectedHarness['id']): id is 'codex' | 'pi' | 'opencode' {
+  return id === 'codex' || id === 'pi' || id === 'opencode'
 }
 
-function watcherUnit(harness: CaptureWatcherHarness): { unit: string; label: string } {
-  switch (harness) {
-    case 'opencode':
-      return { unit: OPENCODE_WATCHER_UNIT, label: OPENCODE_LAUNCHD_LABEL }
-    case 'pi':
-      return { unit: PI_WATCHER_UNIT, label: PI_LAUNCHD_LABEL }
-    default:
-      return { unit: CODEX_WATCHER_UNIT, label: CODEX_LAUNCHD_LABEL }
-  }
+export function formatRelativeCapture(value: string | number, nowMs = Date.now()): string | null {
+  const t = typeof value === 'number' ? value : Date.parse(value)
+  if (!Number.isFinite(t)) return null
+  const sec = Math.max(0, Math.round((nowMs - t) / 1000))
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.round(min / 60)
+  if (hr < 48) return `${hr}h ago`
+  return `${Math.round(hr / 24)}d ago`
 }
 
-export async function captureWatcherStatus(
-  exec: typeof execFileAsync,
-  platform: NodeJS.Platform,
-  uid?: number,
-  harness: CaptureWatcherHarness = 'codex',
-): Promise<CaptureWatcherHealth> {
-  const { unit, label } = watcherUnit(harness)
-  if (platform === 'darwin') {
-    const id = uid ?? process.getuid?.() ?? 0
-    const r = await exec('launchctl', ['print', `gui/${id}/${label}`], {
-      timeoutMs: 5_000,
-    })
-    if (r.code !== 0) return 'inactive'
-    const blob = `${r.stdout}\n${r.stderr}`
-    return /\bstate\s*=\s*running\b/i.test(blob) ? 'active' : 'inactive'
+function lastCaptureSuffix(
+  home: string,
+  id: 'codex' | 'pi' | 'opencode',
+  nowMs: number,
+): string {
+  const path = join(home, '.rivetos', `${id}-capture-state.json`)
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { lastIngestAt?: unknown }
+    const raw = parsed?.lastIngestAt
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      const rel = formatRelativeCapture(raw, nowMs)
+      if (rel) return ` — last capture: ${rel}`
+    }
+  } catch {
+    // missing or unreadable state file
   }
-  if (platform === 'linux') {
-    const r = await exec('systemctl', ['--user', 'show', '-p', 'NRestarts,ActiveState', unit], {
-      timeoutMs: 5_000,
-    })
-    const { nRestarts, activeState } = parseSystemctlShow(`${r.stdout}\n${r.stderr}`)
-    if (nRestarts > 3) return 'crash-looping'
-    return activeState === 'active' ? 'active' : 'inactive'
+  return ' — never captured yet'
+}
+
+function codexHooksHint(requirementsPath: string): string {
+  try {
+    if (uncommentedLineContains(readFileSync(requirementsPath, 'utf-8'), CODEX_HOOK_COMMAND_SUFFIX)) {
+      return ' — hooks: managed'
+    }
+  } catch {
+    // missing requirements.toml
   }
-  return 'n/a'
+  return ' — hooks: user (trust once via /hooks)'
 }
 
 async function claudeHooksStatus(
@@ -1747,24 +1712,19 @@ export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<Ch
 
   for (const h of found) {
     const ver = h.version ? ` ${h.version}` : ''
-    let installed = pluginMarker(h, home)
+    let installed = pluginMarker(h, home, probe)
     if (h.id === 'claude-code') {
       const listed = await claudePluginListed(h.binary, exec)
       installed = listed === true || (await claudeHooksStatus(exec, root))
     }
     let extra = ''
-    let watcher: CaptureWatcherHealth | undefined
-    if (isWatcherCaptureHarness(h.id)) {
-      watcher = await captureWatcherStatus(
-        exec,
-        probe.platform ?? process.platform,
-        probe.uid,
-        h.id,
-      )
-      extra = ` — capture watcher: ${watcher}`
+    if (isNativeCaptureHarness(h.id)) {
+      extra += lastCaptureSuffix(home, h.id, probe.now?.getTime() ?? Date.now())
+      if (installed && h.id === 'codex') {
+        extra += codexHooksHint(probe.codexRequirementsPath ?? CODEX_REQUIREMENTS_TOML)
+      }
     }
-    const watcherBroken = watcher === 'inactive' || watcher === 'crash-looping'
-    if (installed && !watcherBroken) {
+    if (installed) {
       results.push(
         check(
           'harnesses',
@@ -1779,7 +1739,7 @@ export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<Ch
           'harnesses',
           h.id,
           'warn',
-          `Harness ${h.id}: ${h.binary}${ver} — memory plugin ${installed ? 'installed' : 'not installed'}${extra}`,
+          `Harness ${h.id}: ${h.binary}${ver} — memory plugin not installed${extra}`,
           'Run: rivetos plugins install',
         ),
       )
