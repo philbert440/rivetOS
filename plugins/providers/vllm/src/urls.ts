@@ -35,11 +35,7 @@ export function chatCompletionsUrl(baseUrl: string, apiPrefix: string): string {
  * Models probe / discovery URL. An absolute `modelsUrl` wins when set;
  * otherwise `<base><prefix>/models`.
  */
-export function modelsProbeUrl(
-  baseUrl: string,
-  apiPrefix: string,
-  modelsUrl?: string,
-): string {
+export function modelsProbeUrl(baseUrl: string, apiPrefix: string, modelsUrl?: string): string {
   if (modelsUrl) return modelsUrl
   return `${baseUrl}${apiPrefix}/models`
 }

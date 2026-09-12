@@ -1802,7 +1802,7 @@ function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): 
   const raw = config.api_prefix
   let prefix = '/v1'
   if (raw !== undefined && raw !== null) {
-    const trimmed = String(raw).trim()
+    const trimmed = (typeof raw === 'string' ? raw : '').trim()
     if (trimmed === '') prefix = ''
     else prefix = (trimmed.startsWith('/') ? trimmed : `/${trimmed}`).replace(/\/+$/, '')
   }
