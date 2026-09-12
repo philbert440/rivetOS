@@ -74,7 +74,12 @@ import {
   readEmbeddedConfig,
 } from '../lib/embedded.js'
 import { loadRivetEnv } from '../lib/env-file.js'
-import { detectHarnesses, execFileAsync, type DetectedHarness } from '../lib/harness-detect.js'
+import {
+  detectHarnesses,
+  execFileAsync,
+  isWatcherCaptureHarness,
+  type DetectedHarness,
+} from '../lib/harness-detect.js'
 import { findRoot } from './plugins-sync.js'
 import {
   CODEX_LAUNCHD_LABEL,
@@ -84,6 +89,7 @@ import {
   artefactConfigHomes,
   kimiConfigHomes,
   mcpJsonHasRivetos,
+  opencodeJsonHasRivetos,
   tomlFileHasRivetosTable,
   uncommentedLineContains,
 } from './plugins-install.js'
@@ -1536,8 +1542,12 @@ function hermesPluginInstalled(configHome: string): boolean {
   }
 }
 
-/** Watcher unit enabled (unit/plist on disk) or the capture cursor file. */
-function opencodeCaptureInstalled(home: string): boolean {
+/** Watcher unit/state file plus the OpenCode MCP artefact (like Codex). */
+function opencodeCaptureInstalled(home: string, configHome: string): boolean {
+  const mcp = artefactConfigHomes('opencode', home, configHome).some((dir) =>
+    opencodeJsonHasRivetos(join(dir, 'opencode.json')),
+  )
+  if (!mcp) return false
   if (existsSync(join(home, '.rivetos', 'opencode-capture-state.json'))) return true
   if (existsSync(join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT))) return true
   if (existsSync(join(home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)))
@@ -1580,7 +1590,7 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
     case 'claude-code':
       return false // decided by `claude plugin list` below
     case 'opencode':
-      return opencodeCaptureInstalled(home)
+      return opencodeCaptureInstalled(home, h.configHome)
     case 'pi':
       return false
   }
@@ -1701,7 +1711,7 @@ export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<Ch
     }
     let extra = ''
     let watcher: CaptureWatcherHealth | undefined
-    if (h.id === 'codex' || h.id === 'opencode') {
+    if (isWatcherCaptureHarness(h.id)) {
       watcher = await captureWatcherStatus(
         exec,
         probe.platform ?? process.platform,

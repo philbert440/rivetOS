@@ -42,7 +42,7 @@ falls back to `npx --yes tsx` against the .ts source if the build is missing.
 | title | `session.title` |
 | cwd | `session.directory` |
 | dedup | `part.id` (`prt_…`) — never a content hash |
-| cursor | `part.time_created` / `message.time_updated` in `~/.rivetos/opencode-capture-state.json` |
+| cursor | `part.time_updated` (30s overlap) / `message.time_updated` in `~/.rivetos/opencode-capture-state.json` |
 
 Folding rules match den-server `opencodeTurnsFromMessages` (skip system /
 step-start / step-finish; keep user text, assistant text, reasoning, tools)
@@ -61,8 +61,9 @@ opencode-rivet-memory-capture --watch [--db FILE] [--backfill DAYS]
 opencode-rivet-memory-capture --once  [--db FILE] [--backfill DAYS]
 ```
 
-`--watch` backfills sessions updated in the last N days (default 14) then
-polls. `--once` is the cron/backstop path.
+`--watch` backfills sessions updated in the last N days on the first pass
+(default 14; `--backfill 0` skips history) then polls with the incremental
+cursor. `--once` is the cron/backstop path.
 
 ## Tests
 

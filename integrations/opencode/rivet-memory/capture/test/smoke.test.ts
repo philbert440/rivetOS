@@ -8,6 +8,8 @@
  *      sqlite pointers. Dedup on a second tick.
  *   4. WAL wake-up path (fs.watch targets + injected watcher).
  *   5. watchTick boot race against PGlite must not kill the watcher.
+ *   6. Streaming text/reasoning wait for time.end; errored tools keep
+ *      error text; part.time_updated overlap; --backfill 0; coalesced ticks.
  */
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -27,6 +29,9 @@ import {
   emptyState,
   advanceState,
   backfillCutoffMs,
+  parseBackfill,
+  createCoalescedRunner,
+  CURSOR_OVERLAP_MS,
   CAPTURE_AGENT,
   CAPTURE_CHANNEL,
   DEFAULT_CAPTURE_AGENT,
@@ -68,6 +73,10 @@ console.log('— identity constants —')
   eq('deriveSessionKey prefixes opencode:', deriveSessionKey(SESSION), `opencode:${SESSION}`)
   eq('default backfill is 14 days', DEFAULT_BACKFILL_DAYS, 14)
   check('backfill cutoff is in the past', backfillCutoffMs(14) < Date.now())
+  eq('backfill 0 cutoff is now (no backfill)', backfillCutoffMs(0, 1_700_000_000_000), 1_700_000_000_000)
+  eq('parse --backfill 0 stays 0', parseBackfill(['--backfill', '0']), 0)
+  eq('parse missing --backfill is default', parseBackfill([]), DEFAULT_BACKFILL_DAYS)
+  eq('cursor overlap is 30s', CURSOR_OVERLAP_MS, 30_000)
 }
 
 // =============================================================================
@@ -101,6 +110,7 @@ console.log('\n— foldPart —')
     message_id: 'msg_x',
     session_id: SESSION,
     time_created: 1_700_000_000_000,
+    time_updated: 1_700_000_000_000,
     data: {},
     message_data: { role: 'user' },
     message_time_updated: 1_700_000_000_000,
@@ -135,7 +145,7 @@ console.log('\n— foldPart —')
   const think = foldPart(
     base({
       id: 'prt_think1',
-      data: { type: 'reasoning', text: 'I should list' },
+      data: { type: 'reasoning', text: 'I should list', time: { start: 1, end: 2 } },
       message_data: { role: 'assistant', modelID: 'glm-5.3-flash', providerID: 'zai' },
     }),
     '/tmp/opencode.db',
@@ -196,6 +206,86 @@ console.log('\n— foldPart —')
     skipped,
   )
   eq('system skipped', sys, null)
+
+  const streamingText = foldPart(
+    base({
+      id: 'prt_stream',
+      data: { type: 'text', text: 'hel' },
+      message_data: { role: 'assistant' },
+    }),
+    '/tmp/opencode.db',
+    skipped,
+  )
+  eq('assistant text without time.end is not inserted', streamingText, null)
+  eq('streaming text skip counted', skipped['text:streaming'], 1)
+
+  const finishedText = foldPart(
+    base({
+      id: 'prt_stream',
+      data: { type: 'text', text: 'hello world', time: { start: 1, end: 24 } },
+      message_data: { role: 'assistant' },
+    }),
+    '/tmp/opencode.db',
+    skipped,
+  )
+  eq('assistant text with time.end is inserted', finishedText?.content, 'hello world')
+
+  const streamingThink = foldPart(
+    base({
+      id: 'prt_think_s',
+      data: { type: 'reasoning', text: 'hmm' },
+      message_data: { role: 'assistant' },
+    }),
+    '/tmp/opencode.db',
+    skipped,
+  )
+  eq('reasoning without time.end is not inserted', streamingThink, null)
+
+  const finishedThink = foldPart(
+    base({
+      id: 'prt_think_s',
+      data: { type: 'reasoning', text: 'hmm done', time: { end: 9 } },
+      message_data: { role: 'assistant' },
+    }),
+    '/tmp/opencode.db',
+    skipped,
+  )
+  eq(
+    'reasoning with time.end is inserted',
+    finishedThink?.content,
+    '[thinking] hmm done',
+  )
+
+  const errored = foldPart(
+    base({
+      id: 'prt_err',
+      data: {
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'error', error: 'exit 1', title: 'bash', input: { command: 'false' } },
+      },
+      message_data: { role: 'assistant' },
+    }),
+    '/tmp/opencode.db',
+    skipped,
+  )
+  eq('errored tool keeps error text', errored?.toolResult, 'exit 1')
+  eq('errored tool content', errored?.content, '[tool-failure] bash')
+
+  const erroredFallback = foldPart(
+    base({
+      id: 'prt_err2',
+      data: {
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'error', title: 'command failed' },
+      },
+      message_data: { role: 'assistant' },
+    }),
+    '/tmp/opencode.db',
+    skipped,
+  )
+  eq('errored tool falls back to title', erroredFallback?.toolResult, 'command failed')
 }
 
 // =============================================================================
@@ -239,6 +329,7 @@ async function withFixture<T>(fn: (dbFile: string) => Promise<T> | T): Promise<T
         message_id TEXT,
         session_id TEXT,
         time_created INTEGER,
+        time_updated INTEGER,
         data TEXT
       );
     `)
@@ -292,61 +383,66 @@ async function withFixture<T>(fn: (dbFile: string) => Promise<T> | T): Promise<T
         time: { created: now - 800, completed: now },
       }),
     )
-    db.prepare(
-      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
-    ).run(
+    const insertPart = db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    insertPart.run(
       'prt_user1',
       'msg_user1',
       SESSION,
       now - 900,
+      now - 900,
       JSON.stringify({ type: 'text', text: 'list the files' }),
     )
-    db.prepare(
-      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
-    ).run(
+    insertPart.run(
       'prt_think1',
       'msg_asst1',
       SESSION,
       now - 850,
-      JSON.stringify({ type: 'reasoning', text: 'I should list' }),
+      now - 840,
+      JSON.stringify({
+        type: 'reasoning',
+        text: 'I should list',
+        time: { start: now - 850, end: now - 840 },
+      }),
     )
-    db.prepare(
-      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
-    ).run(
+    insertPart.run(
       'prt_step1',
       'msg_asst1',
       SESSION,
       now - 840,
+      now - 840,
       JSON.stringify({ type: 'step-start' }),
     )
-    db.prepare(
-      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
-    ).run(
+    insertPart.run(
       'prt_tool1',
       'msg_asst1',
       SESSION,
       now - 820,
+      now - 810,
       JSON.stringify({
         type: 'tool',
         tool: 'bash',
         state: { status: 'completed', input: { command: 'ls' }, output: 'a.txt', title: 'ls' },
       }),
     )
-    db.prepare(
-      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
-    ).run(
+    insertPart.run(
       'prt_text1',
       'msg_asst1',
       SESSION,
       now - 800,
-      JSON.stringify({ type: 'text', text: 'here they are' }),
+      now - 790,
+      JSON.stringify({
+        type: 'text',
+        text: 'here they are',
+        time: { start: now - 800, end: now - 790 },
+      }),
     )
-    db.prepare(
-      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
-    ).run(
+    insertPart.run(
       'prt_step2',
       'msg_asst1',
       SESSION,
+      now - 790,
       now - 790,
       JSON.stringify({ type: 'step-finish' }),
     )
@@ -366,7 +462,8 @@ await withFixture(async (dbFile) => {
   const rows = db
     .prepare(
       `SELECT p.id AS id, p.message_id AS message_id, p.session_id AS session_id,
-              p.time_created AS time_created, p.data AS data,
+              p.time_created AS time_created, p.time_updated AS time_updated,
+              p.data AS data,
               m.data AS message_data, m.time_updated AS message_time_updated,
               s.title AS session_title, s.directory AS session_directory
          FROM part p
@@ -381,6 +478,7 @@ await withFixture(async (dbFile) => {
     message_id: String(r.message_id),
     session_id: String(r.session_id),
     time_created: Number(r.time_created),
+    time_updated: Number(r.time_updated),
     data: JSON.parse(String(r.data)) as Record<string, unknown>,
     message_data: JSON.parse(String(r.message_data)) as Record<string, unknown>,
     message_time_updated: Number(r.message_time_updated),
@@ -562,7 +660,7 @@ console.log('\n— stub pool ingest —')
     )
     check('state file written', existsSync(stateFile))
     const persisted = loadState(stateFile)
-    check('state high-water advanced', persisted.partTimeCreated > 0)
+    check('state high-water advanced', persisted.partTimeUpdated > 0)
 
     const before = msgs.length
     const second = await scanOnce(dbFile, client, state, { backfillDays: 14, stateFile })
@@ -580,17 +678,23 @@ console.log('\n— capture state —')
   const file = path.join(dir, 'opencode-capture-state.json')
   try {
     const empty = loadState(file)
-    eq('missing state is zeros', empty.partTimeCreated, 0)
-    saveState({ version: 1, partTimeCreated: 42, messageTimeUpdated: 99 }, file)
+    eq('missing state is zeros', empty.partTimeUpdated, 0)
+    saveState({ version: 1, partTimeUpdated: 42, messageTimeUpdated: 99 }, file)
     const loaded = loadState(file)
-    eq('round-trip partTimeCreated', loaded.partTimeCreated, 42)
+    eq('round-trip partTimeUpdated', loaded.partTimeUpdated, 42)
     eq('round-trip messageTimeUpdated', loaded.messageTimeUpdated, 99)
+    writeFileSync(
+      file,
+      `${JSON.stringify({ version: 1, partTimeCreated: 7, messageTimeUpdated: 8 })}\n`,
+    )
+    eq('legacy partTimeCreated loads as partTimeUpdated', loadState(file).partTimeUpdated, 7)
     const next = advanceState(loaded, [
       {
         id: 'prt_z',
         message_id: 'msg_z',
         session_id: SESSION,
-        time_created: 100,
+        time_created: 50,
+        time_updated: 100,
         data: {},
         message_data: {},
         message_time_updated: 200,
@@ -598,7 +702,7 @@ console.log('\n— capture state —')
         session_directory: null,
       },
     ])
-    eq('advance part high-water', next.partTimeCreated, 100)
+    eq('advance part high-water from time_updated', next.partTimeUpdated, 100)
     eq('advance message high-water', next.messageTimeUpdated, 200)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -695,6 +799,295 @@ console.log('\n— watchTick boot race —')
   eq('release runs only after successful connect', released, 1)
 
   rmSync(dir, { recursive: true, force: true })
+}
+
+function makeStub(): { client: Queryable; eventIds: () => string[] } {
+  const convs: Array<{ id: string; session_key: string; agent: string }> = []
+  const msgs: Array<{ conversation_id: string; metadata: Record<string, unknown> }> = []
+  let ids = 0
+  const client: Queryable = {
+    async query(sql: string, params: unknown[] = []) {
+      const s = sql.replace(/\s+/g, ' ').trim()
+      if (
+        s === 'BEGIN' ||
+        s === 'COMMIT' ||
+        s === 'ROLLBACK' ||
+        s.startsWith('SELECT pg_advisory_xact_lock') ||
+        s.startsWith('UPDATE ros_conversations')
+      ) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (s.startsWith('INSERT INTO ros_conversations')) {
+        const found = convs.find(
+          (c) => c.session_key === String(params[0]) && c.agent === String(params[1]),
+        )
+        if (found) return { rows: [{ id: found.id, created: false }], rowCount: 1 }
+        const row = {
+          id: `conv-${String(++ids)}`,
+          session_key: String(params[0]),
+          agent: String(params[1]),
+        }
+        convs.push(row)
+        return { rows: [{ id: row.id, created: true }], rowCount: 1 }
+      }
+      if (s.startsWith("SELECT metadata->>'event_id'")) {
+        const rows = msgs
+          .filter((m) => m.conversation_id === params[0] && m.metadata.event_id)
+          .map((m) => ({ e: String(m.metadata.event_id) }))
+        return { rows, rowCount: rows.length }
+      }
+      if (s.startsWith('SELECT 1 FROM ros_messages')) {
+        const hit = msgs.some(
+          (m) => m.conversation_id === params[0] && m.metadata.event_id === params[1],
+        )
+        return { rows: hit ? [{ '?column?': 1 }] : [], rowCount: hit ? 1 : 0 }
+      }
+      if (s.startsWith('INSERT INTO ros_messages')) {
+        const meta =
+          typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
+        msgs.push({ conversation_id: String(params[0]), metadata: meta })
+        return { rows: [], rowCount: 1 }
+      }
+      throw new Error(`unexpected sql: ${s}`)
+    },
+  }
+  return {
+    client,
+    eventIds: () =>
+      msgs.map((m) => String(m.metadata.event_id ?? '')).filter((id) => id.length > 0),
+  }
+}
+
+async function withBlankDb(fn: (dbFile: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(path.join(tmpdir(), 'opencode-cap-blank-'))
+  const dbFile = path.join(dir, 'opencode.db')
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(dbFile)
+  db.exec(`
+    CREATE TABLE session (
+      id TEXT PRIMARY KEY, slug TEXT, title TEXT, directory TEXT, model TEXT, agent TEXT,
+      tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER,
+      tokens_cache_read INTEGER, tokens_cache_write INTEGER, cost REAL,
+      time_created INTEGER, time_updated INTEGER, time_archived INTEGER
+    );
+    CREATE TABLE message (
+      id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT
+    );
+    CREATE TABLE part (
+      id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+      time_created INTEGER, time_updated INTEGER, data TEXT
+    );
+  `)
+  db.close()
+  try {
+    await fn(dbFile)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// =============================================================================
+// Streaming text: skip until time.end, then capture
+// =============================================================================
+console.log('\n— streaming text waits for time.end —')
+await withBlankDb(async (dbFile) => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const now = Date.now()
+  const db = new DatabaseSync(dbFile)
+  db.prepare(
+    `INSERT INTO session (id, title, directory, time_created, time_updated)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(SESSION, 'stream', '/tmp', now, now)
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    'msg_a',
+    SESSION,
+    now,
+    now,
+    JSON.stringify({ role: 'assistant', time: { created: now } }),
+  )
+  db.prepare(
+    `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'prt_stream',
+    'msg_a',
+    SESSION,
+    now,
+    now,
+    JSON.stringify({ type: 'text', text: 'hel' }),
+  )
+  db.close()
+
+  const stub = makeStub()
+  const stateFile = path.join(path.dirname(dbFile), 'state.json')
+  const state = createWatcherState(emptyState())
+  const first = await scanOnce(dbFile, stub.client, state, { backfillDays: 14, stateFile })
+  eq('streaming part is not inserted', first.inserted, 0)
+  check('streaming part id is not stored', !stub.eventIds().includes('prt_stream'))
+
+  const db2 = new DatabaseSync(dbFile)
+  db2.prepare(`UPDATE part SET data = ?, time_updated = ? WHERE id = ?`).run(
+    JSON.stringify({ type: 'text', text: 'hello world', time: { start: now, end: now + 1 } }),
+    now + 1,
+    'prt_stream',
+  )
+  db2.prepare(`UPDATE message SET time_updated = ? WHERE id = ?`).run(now + 1, 'msg_a')
+  db2.prepare(`UPDATE session SET time_updated = ? WHERE id = ?`).run(now + 1, SESSION)
+  db2.close()
+
+  const second = await scanOnce(dbFile, stub.client, state, { backfillDays: 14, stateFile })
+  eq('finished part is inserted', second.inserted, 1)
+  check('finished part id stored', stub.eventIds().includes('prt_stream'))
+})
+
+// =============================================================================
+// Out-of-order part.time_updated within overlap
+// =============================================================================
+console.log('\n— out-of-order cursor overlap —')
+await withBlankDb(async (dbFile) => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const t = 1_800_000_000_000
+  const db = new DatabaseSync(dbFile)
+  db.prepare(
+    `INSERT INTO session (id, title, directory, time_created, time_updated)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(SESSION, 'ooo', '/tmp', t, t)
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run('msg_u', SESSION, t, t, JSON.stringify({ role: 'user' }))
+  db.prepare(
+    `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'prt_first',
+    'msg_u',
+    SESSION,
+    t,
+    t,
+    JSON.stringify({ type: 'text', text: 'first' }),
+  )
+  db.close()
+
+  const stub = makeStub()
+  const stateFile = path.join(path.dirname(dbFile), 'state.json')
+  const state = createWatcherState(emptyState())
+  const first = await scanOnce(dbFile, stub.client, state, { backfillDays: 14, stateFile })
+  eq('first out-of-order tick inserts', first.inserted, 1)
+  eq('cursor at first part time_updated', state.capture.partTimeUpdated, t)
+
+  const lateStamp = t - 10_000
+  const db2 = new DatabaseSync(dbFile)
+  db2
+    .prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      'prt_late',
+      'msg_u',
+      SESSION,
+      lateStamp,
+      lateStamp,
+      JSON.stringify({ type: 'text', text: 'late but in overlap' }),
+    )
+  db2.close()
+  const second = await scanOnce(dbFile, stub.client, state, { backfillDays: 14, stateFile })
+  eq('overlap window captures late row', second.inserted, 1)
+  check('late part stored', stub.eventIds().includes('prt_late'))
+
+  const tooOld = t - CURSOR_OVERLAP_MS - 5_000
+  const db3 = new DatabaseSync(dbFile)
+  db3
+    .prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      'prt_too_old',
+      'msg_u',
+      SESSION,
+      tooOld,
+      tooOld,
+      JSON.stringify({ type: 'text', text: 'outside overlap' }),
+    )
+  db3.close()
+  const third = await scanOnce(dbFile, stub.client, state, { backfillDays: 14, stateFile })
+  eq('row older than overlap is skipped', third.inserted, 0)
+  check('too-old part not stored', !stub.eventIds().includes('prt_too_old'))
+})
+
+// =============================================================================
+// --backfill 0 = no history
+// =============================================================================
+console.log('\n— backfill 0 skips history —')
+await withBlankDb(async (dbFile) => {
+  const { DatabaseSync } = await import('node:sqlite')
+  const now = Date.now()
+  const old = now - 86_400_000
+  const db = new DatabaseSync(dbFile)
+  db.prepare(
+    `INSERT INTO session (id, title, directory, time_created, time_updated)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(SESSION, 'old', '/tmp', old, old)
+  db.prepare(
+    `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
+  ).run('msg_old', SESSION, old, old, JSON.stringify({ role: 'user' }))
+  db.prepare(
+    `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'prt_old',
+    'msg_old',
+    SESSION,
+    old,
+    old,
+    JSON.stringify({ type: 'text', text: 'yesterday' }),
+  )
+  db.close()
+
+  const stub = makeStub()
+  const stateFile = path.join(path.dirname(dbFile), 'state.json')
+  const state = createWatcherState(emptyState())
+  const first = await scanOnce(dbFile, stub.client, state, { backfillDays: 0, stateFile })
+  eq('backfill 0 first pass inserts nothing', first.inserted, 0)
+  check('backfill 0 first pass seeds cursor', state.capture.partTimeUpdated >= now - 1000)
+  eq('cutoff applied only once', state.initialPassDone, true)
+
+  const second = await scanOnce(dbFile, stub.client, state, { backfillDays: 0, stateFile })
+  eq('second pass does not dump pre-start history', second.inserted, 0)
+  check('old part stays uncaptured', !stub.eventIds().includes('prt_old'))
+})
+
+// =============================================================================
+// Coalesced ticks
+// =============================================================================
+console.log('\n— coalesced ticks —')
+{
+  const releases: Array<() => void> = []
+  let runs = 0
+  const kick = createCoalescedRunner(
+    () =>
+      new Promise<void>((resolve) => {
+        runs++
+        releases.push(resolve)
+      }),
+  )
+  kick()
+  kick()
+  kick()
+  eq('burst starts one in-flight run', runs, 1)
+  releases[0]?.()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  eq('dirty bit queues exactly one rescan', runs, 2)
+  releases[1]?.()
+  await Promise.resolve()
+  await Promise.resolve()
+  await Promise.resolve()
+  eq('drain does not start a third run', runs, 2)
 }
 
 if (failed > 0) {

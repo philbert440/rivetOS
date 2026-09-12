@@ -566,17 +566,23 @@ export function mcpJsonHasRivetos(path: string): boolean {
   }
 }
 
-/** OpenCode `opencode.json` MCP block (`mcp.rivetos`). */
-export function opencodeJsonHasRivetos(path: string): boolean {
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { mcp?: unknown }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
-    const mcp = parsed.mcp
-    if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) return false
-    return Boolean((mcp as Record<string, unknown>).rivetos)
-  } catch {
-    return false
+/** OpenCode `opencode.json` / `opencode.jsonc` MCP block (`mcp.rivetos`). */
+export function opencodeJsonHasRivetos(cfgPath: string): boolean {
+  const candidates = new Set<string>([cfgPath])
+  if (cfgPath.endsWith('.jsonc')) candidates.add(cfgPath.slice(0, -1))
+  else if (cfgPath.endsWith('.json')) candidates.add(`${cfgPath}c`)
+  for (const p of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(p, 'utf-8')) as { mcp?: unknown }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+      const mcp = parsed.mcp
+      if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) continue
+      if (Boolean((mcp as Record<string, unknown>).rivetos)) return true
+    } catch {
+      // missing or non-JSON (comments-only jsonc) — try the sibling
+    }
   }
+  return false
 }
 
 export function tomlFileHasRivetosTable(path: string): boolean {
@@ -639,7 +645,7 @@ export function setupArtefactMissing(
     }
     case 'opencode': {
       const mcp = homes.some((dir) => opencodeJsonHasRivetos(join(dir, 'opencode.json')))
-      return mcp ? null : 'opencode.json missing rivetos MCP block'
+      return mcp ? null : 'opencode.json / opencode.jsonc missing rivetos MCP block'
     }
     default:
       return null

@@ -46,6 +46,10 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
 /** Harnesses whose rivet-memory capture is a long-running watcher (no hooks). */
 export const WATCHER_CAPTURE_HARNESSES: HarnessId[] = ['codex', 'opencode']
 
+export function isWatcherCaptureHarness(id: HarnessId): id is 'codex' | 'opencode' {
+  return WATCHER_CAPTURE_HARNESSES.includes(id)
+}
+
 export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   'claude-code': '.claude',
   'grok-build': '.grok',

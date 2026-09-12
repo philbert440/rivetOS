@@ -1840,6 +1840,18 @@ describe('artefact validation + grok hook bake', () => {
     expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
   })
 
+  it('treats opencode.jsonc mcp.rivetos as the OpenCode artefact', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const cfgHome = join(dir, '.config', 'opencode')
+    mkdirSync(cfgHome, { recursive: true })
+    writeFileSync(
+      join(cfgHome, 'opencode.jsonc'),
+      JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
+    )
+    expect(opencodeJsonHasRivetos(join(cfgHome, 'opencode.json'))).toBe(true)
+    expect(setupArtefactMissing('opencode', dir, cfgHome)).toBeNull()
+  })
+
   it('rejects a commented TOML table', () => {
     dir = mkdtempSync(join(tmpdir(), 'artefact-'))
     writeFileSync(join(dir, 'config.toml'), '# [mcp_servers.rivetos]\ncommand = "x"\n')

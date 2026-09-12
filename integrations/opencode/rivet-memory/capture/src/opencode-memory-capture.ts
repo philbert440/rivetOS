@@ -19,9 +19,11 @@
  * Truncation: 16K cap only when the row carries an absolute db path + part
  * id so memory_get_full can re-read from SQLite.
  *
- * Incremental cursor: part.time_created / message.time_updated high-water
- * in ~/.rivetos/opencode-capture-state.json. On start, backfill sessions
- * updated in the last N days (`--backfill`, default 14).
+ * Incremental cursor: part.time_updated high-water (30s overlap) plus
+ * message.time_updated so skipped in-flight parts re-queue on completion.
+ * Persisted in ~/.rivetos/opencode-capture-state.json. On start, the first
+ * pass backfills sessions updated in the last N days (`--backfill`, default
+ * 14; 0 = no backfill). Later ticks are cursor-only.
  *
  * Best-effort ticks: ingest/connect failures are logged and retried. Uncaught
  * fatals exit 1 so systemd/launchd can restart the watcher. Log:
@@ -49,6 +51,9 @@ const LOG_FILE = path.join(os.homedir(), '.rivetos', 'opencode-memory-capture.lo
 export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
 const WATCH_POLL_MS = 3000
+/** Re-read parts this close to the high-water so a late commit with an
+ *  earlier stamp is not skipped. Part-id dedup absorbs the overlap. */
+export const CURSOR_OVERLAP_MS = 30_000
 export const STATE_VERSION = 1 as const
 
 // ---------------------------------------------------------------------------
@@ -82,7 +87,8 @@ export interface ParseResult {
 
 export interface CaptureState {
   version: typeof STATE_VERSION
-  partTimeCreated: number
+  /** High-water of `part.time_updated` (legacy files used `partTimeCreated`). */
+  partTimeUpdated: number
   messageTimeUpdated: number
 }
 
@@ -110,6 +116,7 @@ export interface PartRow {
   message_id: string
   session_id: string
   time_created: number
+  time_updated: number
   data: Record<string, unknown>
   message_data: Record<string, unknown>
   message_time_updated: number
@@ -208,6 +215,16 @@ function partText(part: Record<string, unknown>): string {
   return ''
 }
 
+/** OpenCode writes streaming deltas until `data.time.end` is set. */
+export function partHasTimeEnd(data: Record<string, unknown>): boolean {
+  const time = isRecord(data.time) ? data.time : null
+  if (!time) return false
+  const end = time.end
+  if (typeof end === 'number') return Number.isFinite(end) && end > 0
+  if (typeof end === 'string') return end.length > 0
+  return false
+}
+
 /**
  * Cap stored text only when a disk pointer exists so memory_get_full can
  * recover the tail. Without a pointer, keep the full string.
@@ -246,16 +263,18 @@ export function openOpencodeDb(dbPath = opencodeDbPath()): SqliteDb | null {
 }
 
 export function emptyState(): CaptureState {
-  return { version: STATE_VERSION, partTimeCreated: 0, messageTimeUpdated: 0 }
+  return { version: STATE_VERSION, partTimeUpdated: 0, messageTimeUpdated: 0 }
 }
 
 export function loadState(file = captureStatePath()): CaptureState {
   try {
-    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<CaptureState>
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<CaptureState> & {
+      partTimeCreated?: unknown
+    }
     if (raw.version !== STATE_VERSION) return emptyState()
     return {
       version: STATE_VERSION,
-      partTimeCreated: asNumber(raw.partTimeCreated),
+      partTimeUpdated: asNumber(raw.partTimeUpdated) || asNumber(raw.partTimeCreated),
       messageTimeUpdated: asNumber(raw.messageTimeUpdated),
     }
   } catch {
@@ -269,36 +288,45 @@ export function saveState(state: CaptureState, file = captureStatePath()): void 
 }
 
 export function backfillCutoffMs(days = DEFAULT_BACKFILL_DAYS, now = Date.now()): number {
+  if (days === 0) return now
   const n = Number.isFinite(days) && days > 0 ? days : DEFAULT_BACKFILL_DAYS
   return now - n * 24 * 60 * 60 * 1000
 }
 
+function partCursorFloor(state: CaptureState): number {
+  const hw = Math.max(state.partTimeUpdated, 0)
+  if (hw <= 0) return 0
+  return Math.max(hw - CURSOR_OVERLAP_MS, 0)
+}
+
 /**
- * Parts newer than the high-water mark, or whose parent message was updated
- * after it (tool parts that complete in place keep time_created).
+ * Parts newer than the high-water mark (with overlap), or whose parent
+ * message was updated after it (in-flight text/tool parts complete in place).
+ * `cutoffMs === 0` drops the session-age filter (incremental ticks).
  */
 export function loadNewParts(
   db: SqliteDb,
   state: CaptureState,
   cutoffMs: number,
 ): PartRow[] {
-  const partHw = Math.max(state.partTimeCreated, 0)
+  const partFloor = partCursorFloor(state)
   const msgHw = Math.max(state.messageTimeUpdated, 0)
   const rows = db
     .prepare(
       `SELECT p.id AS id, p.message_id AS message_id, p.session_id AS session_id,
-              p.time_created AS time_created, p.data AS data,
+              p.time_created AS time_created, p.time_updated AS time_updated,
+              p.data AS data,
               m.data AS message_data, m.time_updated AS message_time_updated,
               s.title AS session_title, s.directory AS session_directory,
               s.time_updated AS session_time_updated
          FROM part p
          JOIN message m ON m.id = p.message_id
          JOIN session s ON s.id = p.session_id
-        WHERE s.time_updated >= ?
-          AND (p.time_created > ? OR m.time_updated > ?)
-        ORDER BY p.time_created ASC, p.id ASC`,
+        WHERE (? = 0 OR s.time_updated >= ?)
+          AND (p.time_updated > ? OR m.time_updated > ?)
+        ORDER BY p.time_updated ASC, p.id ASC`,
     )
-    .all(cutoffMs, partHw, msgHw)
+    .all(cutoffMs, cutoffMs, partFloor, msgHw)
 
   const out: PartRow[] = []
   for (const r of rows) {
@@ -311,6 +339,7 @@ export function loadNewParts(
       message_id: messageId,
       session_id: sessionId,
       time_created: asNumber(r.time_created),
+      time_updated: asNumber(r.time_updated) || asNumber(r.time_created),
       data: parseJson(r.data),
       message_data: parseJson(r.message_data),
       message_time_updated: asNumber(r.message_time_updated),
@@ -327,8 +356,9 @@ export function loadNewParts(
  * step-finish; keep user text, assistant text, reasoning, tools) but stay
  * per-part so dedup is `prt_…` and memory_get_full can re-read one row.
  *
- * Running/pending tool parts are skipped — the parent message.time_updated
- * bump re-queues them when they complete.
+ * Running/pending tool parts and assistant text/reasoning that still lack
+ * `data.time.end` are skipped — the parent message.time_updated bump
+ * re-queues them when they complete.
  */
 export function foldPart(
   part: PartRow,
@@ -372,6 +402,10 @@ export function foldPart(
   if (msg.cost != null) extraBase.cost = msg.cost
 
   if (type === 'reasoning' || type === 'thinking' || type === 'think') {
+    if (!partHasTimeEnd(part.data)) {
+      bump(skipped, 'reasoning:streaming')
+      return null
+    }
     const chunk = partText(part.data).trim()
     if (!chunk) {
       bump(skipped, 'reasoning:empty')
@@ -403,7 +437,11 @@ export function foldPart(
       (isRecord(part.data.tool) ? (part.data.tool.input ?? part.data.tool.args) : undefined) ??
       part.data.input ??
       part.data.args
-    const out = state && 'output' in state ? state.output : (part.data.output ?? part.data.result)
+    const out = isError
+      ? (state?.error ?? state?.output ?? state?.title ?? part.data.output ?? part.data.result)
+      : state && 'output' in state
+        ? state.output
+        : (part.data.output ?? part.data.result)
     const toolResult =
       typeof out === 'string' ? out : out != null ? safeJson(out) : null
     if (isRunning && !toolResult) {
@@ -426,12 +464,16 @@ export function foldPart(
   }
 
   if (type === 'text' || type === '' || type === 'content') {
+    const role = roleRaw === 'assistant' ? 'assistant' : 'user'
+    if (role === 'assistant' && !partHasTimeEnd(part.data)) {
+      bump(skipped, 'text:streaming')
+      return null
+    }
     const text = partText(part.data).trim()
     if (!text) {
       bump(skipped, 'text:empty')
       return null
     }
-    const role = roleRaw === 'assistant' ? 'assistant' : 'user'
     return {
       role,
       content: text,
@@ -466,13 +508,14 @@ export function foldParts(parts: PartRow[], dbPath: string): ParseResult {
 }
 
 export function advanceState(state: CaptureState, parts: PartRow[]): CaptureState {
-  let partTimeCreated = state.partTimeCreated
+  let partTimeUpdated = state.partTimeUpdated
   let messageTimeUpdated = state.messageTimeUpdated
   for (const p of parts) {
-    if (p.time_created > partTimeCreated) partTimeCreated = p.time_created
+    const stamp = p.time_updated || p.time_created
+    if (stamp > partTimeUpdated) partTimeUpdated = stamp
     if (p.message_time_updated > messageTimeUpdated) messageTimeUpdated = p.message_time_updated
   }
-  return { version: STATE_VERSION, partTimeCreated, messageTimeUpdated }
+  return { version: STATE_VERSION, partTimeUpdated, messageTimeUpdated }
 }
 
 // ---------------------------------------------------------------------------
@@ -709,10 +752,21 @@ export async function ingestMessages(
 export interface WatcherState {
   seen: Map<string, Set<string>>
   capture: CaptureState
+  /** Session-age cutoff is first pass after process start only. */
+  initialPassDone: boolean
 }
 
 export function createWatcherState(capture: CaptureState = emptyState()): WatcherState {
-  return { seen: new Map(), capture }
+  return { seen: new Map(), capture, initialPassDone: false }
+}
+
+function seedCursorIfEmpty(state: WatcherState, now = Date.now()): void {
+  if (state.capture.partTimeUpdated > 0) return
+  state.capture = {
+    version: STATE_VERSION,
+    partTimeUpdated: now,
+    messageTimeUpdated: Math.max(state.capture.messageTimeUpdated, now),
+  }
 }
 
 export async function scanOnce(
@@ -724,9 +778,21 @@ export async function scanOnce(
   const db = openOpencodeDb(dbPath)
   if (!db) return { parts: 0, inserted: 0, skipped: 0 }
   try {
-    const cutoff = backfillCutoffMs(opts.backfillDays ?? DEFAULT_BACKFILL_DAYS)
+    const days = opts.backfillDays ?? DEFAULT_BACKFILL_DAYS
+    const applyCutoff = !state.initialPassDone
+    const cutoff = applyCutoff ? backfillCutoffMs(days) : 0
     const parts = loadNewParts(db, state.capture, cutoff)
-    if (parts.length === 0) return { parts: 0, inserted: 0, skipped: 0 }
+    const stateFile = opts.stateFile ?? captureStatePath()
+    if (parts.length === 0) {
+      // Empty first pass must still advance the cursor so a later uncut
+      // tick cannot dump pre-start history (especially `--backfill 0`).
+      state.initialPassDone = true
+      if (applyCutoff) {
+        seedCursorIfEmpty(state)
+        saveState(state.capture, stateFile)
+      }
+      return { parts: 0, inserted: 0, skipped: 0 }
+    }
     const abs = path.resolve(dbPath)
     const parsed = foldParts(parts, abs)
     let inserted = 0
@@ -760,9 +826,11 @@ export async function scanOnce(
       )
     }
     // Advance the cursor past every loaded part (including skipped running
-    // tools). Completions re-queue via message.time_updated.
+    // tools / streaming text). Completions re-queue via message.time_updated.
     state.capture = advanceState(state.capture, parts)
-    saveState(state.capture, opts.stateFile ?? captureStatePath())
+    if (applyCutoff && days === 0) seedCursorIfEmpty(state)
+    saveState(state.capture, stateFile)
+    state.initialPassDone = true
     const foldSkipped = Object.values(parsed.skipped).reduce((a, b) => a + b, 0)
     return { parts: parts.length, inserted, skipped: skipped + foldSkipped }
   } finally {
@@ -801,6 +869,32 @@ export type WatchFn = (
   options: fs.WatchOptions,
   listener: (event: string, fname: string | Buffer | null) => void,
 ) => fs.FSWatcher
+
+/**
+ * WAL bursts call onWake many times. One in-flight scan + a dirty bit
+ * collapses the rest into a single queued rescan.
+ */
+export function createCoalescedRunner(run: () => Promise<void>): () => void {
+  let inFlight = false
+  let dirty = false
+  const kick = (): void => {
+    if (inFlight) {
+      dirty = true
+      return
+    }
+    inFlight = true
+    void run()
+      .catch(() => undefined)
+      .finally(() => {
+        inFlight = false
+        if (dirty) {
+          dirty = false
+          kick()
+        }
+      })
+  }
+  return kick
+}
 
 /**
  * Watch the SQLite file and its WAL sibling. Missing WAL is fine — we also
@@ -897,19 +991,18 @@ export async function runWatch(
 
   await tick()
 
+  const kick = createCoalescedRunner(tick)
   let handle: { close: () => void } | null = null
   const startWatch = (): void => {
     if (handle) return
-    handle = attachDbWatchers(dbPath, () => {
-      void tick()
-    })
+    handle = attachDbWatchers(dbPath, kick)
     log(`fs.watch attached to ${handle ? dbWatchPaths(dbPath).join(', ') : dbPath}`)
   }
   startWatch()
 
   setInterval(() => {
     if (!handle) startWatch()
-    void tick()
+    kick()
   }, WATCH_POLL_MS)
 }
 
@@ -928,7 +1021,7 @@ function loadEnvFile(): void {
   }
 }
 
-function parseBackfill(args: string[]): number {
+export function parseBackfill(args: string[]): number {
   const idx = args.indexOf('--backfill')
   if (idx < 0) return DEFAULT_BACKFILL_DAYS
   const n = Number(args[idx + 1])
@@ -948,7 +1041,7 @@ export const USAGE = `opencode-memory-capture — ingest OpenCode SQLite session
   --watch            poll + fs.watch $XDG_DATA_HOME/opencode/opencode.db
   --once             ingest then exit
   --db FILE          override the SQLite path
-  --backfill DAYS    sessions updated in the last N days (default ${String(DEFAULT_BACKFILL_DAYS)})
+  --backfill DAYS    first-pass session window (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = no backfill)
 `
 
 async function main(): Promise<void> {
