@@ -1,7 +1,7 @@
 /**
  * CLI argument parser for scripts/rivethub-opencode-theme.ts.
  *
- * Kept in src/ so vitest (include: src/**/*.test.ts) can cover the argv path
+ * Kept in src/ so vitest (the src test glob) can cover the argv path
  * that the ad-hoc filter previously dropped.
  */
 
