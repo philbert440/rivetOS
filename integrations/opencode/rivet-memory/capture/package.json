@@ -11,8 +11,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx test/smoke.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p ../plugin/tsconfig.json",
+    "test": "tsx test/smoke.test.ts && vitest run",
     "clean": "rm -rf dist",
     "lint": "eslint src/ package.json"
   },

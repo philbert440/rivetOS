@@ -240,6 +240,42 @@ describe('checkHarnesses', () => {
     expect(results[0].message).toMatch(/never captured yet/)
   })
 
+  it('codex row matches a shell-quoted hook command containing spaces', async () => {
+    const quoted =
+      "bash '/home/u/Rivet OS/integrations/codex/rivet-memory/bin/codex-memory-capture.sh' --hook"
+    mkdirSync(join(home, '.codex'), { recursive: true })
+    writeFileSync(
+      join(home, '.codex', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              matcher: '',
+              hooks: [{ type: 'command', command: quoted, timeout: 10 }],
+            },
+          ],
+        },
+      }),
+    )
+    const req = join(home, 'requirements.toml')
+    writeFileSync(req, `[[hooks.Stop]]\ncommand = "${quoted}"\n`)
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.1.0')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [codexHarness(home)],
+      exec,
+      now: new Date('2026-09-12T12:00:00.000Z'),
+      codexRequirementsPath: req,
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/hooks: managed/)
+  })
+
   function piHarness(h: string): DetectedHarness {
     return {
       id: 'pi',

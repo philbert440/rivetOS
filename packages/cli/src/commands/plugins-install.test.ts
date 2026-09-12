@@ -25,6 +25,7 @@ import {
   parseTomlTableKeys,
   planPluginsInstall,
   readEnvKey,
+  removeLegacyCaptureWatcher,
   runPluginsInstall,
   setupArtefactMissing,
   setupScriptEnv,
@@ -1250,6 +1251,165 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/removed legacy capture watcher/)
   })
 
+  it('codex: not-loaded systemctl is already stopped and the unit is unlinked', async () => {
+    const scriptRel = join(
+      'integrations',
+      'codex',
+      'rivet-memory',
+      'bin',
+      'setup-codex-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const unitPath = join(home, '.config', 'systemd', 'user', 'codex-memory-capture.service')
+    mkdirSync(dirname(unitPath), { recursive: true })
+    writeFileSync(unitPath, '[Unit]\nDescription=legacy\n')
+    const exec = async (file: string): Promise<ExecResult> => {
+      if (file === 'bash') {
+        writeCodexMcp(join(home, '.codex'))
+        writeCodexHooks(join(home, '.codex'))
+      }
+      if (file === 'systemctl') {
+        return {
+          stdout: '',
+          stderr: 'Failed to stop codex-memory-capture.service: Unit not loaded.\n',
+          code: 1,
+          timedOut: false,
+        }
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      { home, detect: async () => [codexHarness(home)], exec, platform: 'linux' },
+    )
+    expect(existsSync(unitPath)).toBe(false)
+    expect(logs()).toMatch(/removed legacy capture watcher/)
+    expect(logs()).toMatch(/✅/)
+  })
+
+  it('codex: a real systemctl failure keeps the unit and fails install', async () => {
+    const scriptRel = join(
+      'integrations',
+      'codex',
+      'rivet-memory',
+      'bin',
+      'setup-codex-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const unitPath = join(home, '.config', 'systemd', 'user', 'codex-memory-capture.service')
+    mkdirSync(dirname(unitPath), { recursive: true })
+    writeFileSync(unitPath, '[Unit]\nDescription=legacy\n')
+    const exec = async (file: string): Promise<ExecResult> => {
+      if (file === 'bash') {
+        writeCodexMcp(join(home, '.codex'))
+        writeCodexHooks(join(home, '.codex'))
+      }
+      if (file === 'systemctl') {
+        return {
+          stdout: '',
+          stderr: 'Failed to disable unit: Access denied\nmore\n',
+          code: 1,
+          timedOut: false,
+        }
+      }
+      return okResult()
+    }
+    await expect(
+      runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        { home, detect: async () => [codexHarness(home)], exec, platform: 'linux' },
+      ),
+    ).rejects.toThrow(/failed/)
+    expect(existsSync(unitPath)).toBe(true)
+    expect(logs()).toMatch(/❌/)
+    expect(logs()).toMatch(
+      /legacy capture watcher codex-memory-capture\.service could not be stopped \(exit 1\): Failed to disable unit: Access denied/,
+    )
+    expect(logs()).not.toMatch(/removed legacy capture watcher/)
+  })
+
+  it('removeLegacyCaptureWatcher: not-loaded unit is removed', async () => {
+    const unitPath = join(home, '.config', 'systemd', 'user', 'codex-memory-capture.service')
+    mkdirSync(dirname(unitPath), { recursive: true })
+    writeFileSync(unitPath, '[Unit]\nDescription=legacy\n')
+    const result = await removeLegacyCaptureWatcher({
+      id: 'codex',
+      home,
+      platform: 'linux',
+      exec: async () => ({
+        stdout: '',
+        stderr: 'Unit codex-memory-capture.service not loaded.\n',
+        code: 5,
+        timedOut: false,
+      }),
+    })
+    expect(result).toEqual({ ok: true, removed: true })
+    expect(existsSync(unitPath)).toBe(false)
+  })
+
+  it('removeLegacyCaptureWatcher: other non-zero stderr is a stop failure', async () => {
+    const unitPath = join(home, '.config', 'systemd', 'user', 'codex-memory-capture.service')
+    mkdirSync(dirname(unitPath), { recursive: true })
+    writeFileSync(unitPath, '[Unit]\nDescription=legacy\n')
+    const result = await removeLegacyCaptureWatcher({
+      id: 'codex',
+      home,
+      platform: 'linux',
+      exec: async () => ({
+        stdout: '',
+        stderr: 'Failed to disable unit: Access denied\n',
+        code: 1,
+        timedOut: false,
+      }),
+    })
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      detail:
+        'legacy capture watcher codex-memory-capture.service could not be stopped (exit 1): Failed to disable unit: Access denied',
+    })
+    expect(existsSync(unitPath)).toBe(true)
+  })
+
+  it('removeLegacyCaptureWatcher: unlink failure is not removed', async () => {
+    const unitPath = join(home, '.config', 'systemd', 'user', 'codex-memory-capture.service')
+    mkdirSync(unitPath, { recursive: true })
+    const result = await removeLegacyCaptureWatcher({
+      id: 'codex',
+      home,
+      platform: 'linux',
+      exec: async () => okResult(),
+    })
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      detail: 'legacy capture watcher codex-memory-capture.service could not be removed',
+    })
+    expect(existsSync(unitPath)).toBe(true)
+  })
+
+  it('removeLegacyCaptureWatcher: launchctl No such process is already stopped', async () => {
+    const plistPath = join(home, 'Library', 'LaunchAgents', 'dev.rivetos.pi-capture.plist')
+    mkdirSync(dirname(plistPath), { recursive: true })
+    writeFileSync(plistPath, '<plist></plist>\n')
+    const result = await removeLegacyCaptureWatcher({
+      id: 'pi',
+      home,
+      platform: 'darwin',
+      uid: 501,
+      exec: async () => ({
+        stdout: '',
+        stderr: 'Boot-out failed: 3: No such process\n',
+        code: 1,
+        timedOut: false,
+      }),
+    })
+    expect(result).toEqual({ ok: true, removed: true })
+    expect(existsSync(plistPath)).toBe(false)
+  })
+
   it('runSetupScript without --force does not forward --force', async () => {
     const scriptRel = join(
       'integrations',
@@ -1531,12 +1691,26 @@ describe('artefact validation + grok hook bake', () => {
     expect(setupArtefactMissing('codex', dir, dir)).toBeNull()
   })
 
-  it('nativeCaptureArtefactMissing requires a command ending with the hook suffix', () => {
+  it('nativeCaptureArtefactMissing requires codex-memory-capture.sh and --hook', () => {
     dir = mkdtempSync(join(tmpdir(), 'artefact-'))
     writeCodexHooks(dir, '/opt/rivetos/bin/codex-memory-capture.sh --watch')
     expect(nativeCaptureArtefactMissing('codex', dir, dir)).toMatch(/hooks\.json missing/)
     writeCodexHooks(dir)
     expect(nativeCaptureArtefactMissing('codex', dir, dir)).toBeNull()
+  })
+
+  it('nativeCaptureArtefactMissing matches a shell-quoted command with spaces', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const quoted =
+      "bash '/home/u/Rivet OS/integrations/codex/rivet-memory/bin/codex-memory-capture.sh' --hook"
+    writeCodexHooks(dir, quoted)
+    expect(nativeCaptureArtefactMissing('codex', dir, dir)).toBeNull()
+    writeFileSync(join(dir, 'hooks.json'), '{}\n')
+    const req = join(dir, 'requirements.toml')
+    writeFileSync(req, `[[hooks.Stop]]\ncommand = "${quoted}"\n`)
+    expect(
+      nativeCaptureArtefactMissing('codex', dir, dir, { codexRequirementsPath: req }),
+    ).toBeNull()
   })
 
   it('managed requirements.toml counts as the Codex native artefact', () => {

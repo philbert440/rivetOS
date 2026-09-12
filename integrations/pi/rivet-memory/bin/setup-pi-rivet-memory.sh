@@ -53,6 +53,21 @@ EXT_SRC="$PLUGIN_DIR/extension/rivet-memory.ts"
 EXT_DEST="$PI_HOME_DIR/extensions/rivet-memory.ts"
 EXT_MARKER="rivet-memory pi extension"
 
+if [ "$DO_REMOVE" -eq 1 ]; then
+  echo "=== Removing pi extension (--remove) ==="
+  if [ -f "$EXT_DEST" ]; then
+    if grep -q "$EXT_MARKER" "$EXT_DEST" 2>/dev/null || grep -q 'const PLUGIN_PATH' "$EXT_DEST" 2>/dev/null; then
+      rm -f "$EXT_DEST"
+      echo "✅ Deleted $EXT_DEST"
+    else
+      echo "Refusing to delete $EXT_DEST (not our extension)"
+    fi
+  else
+    echo "No extension at $EXT_DEST"
+  fi
+  exit 0
+fi
+
 echo "=== RivetOS + pi rivet-memory Setup ==="
 echo "Plugin directory: $PLUGIN_DIR"
 echo "RivetOS root:     $RIVETOS_ROOT"
@@ -113,8 +128,8 @@ echo
 echo "=== 4. Automatic Capture (pi extension) ==="
 echo "Copy extension/rivet-memory.ts → $PI_HOME_DIR/extensions/rivet-memory.ts"
 echo "with PLUGIN_PATH rewritten to $PLUGIN_PATH."
-echo "On turn_end / agent_end (debounced 1.5s) and session_shutdown /"
-echo "session_before_switch / session_info_changed (flush) the extension"
+echo "On turn_end (debounced 1.5s) and agent_end / session_shutdown /"
+echo "session_before_switch / session_info_changed (immediate) the extension"
 echo "spawns: bash $PLUGIN_PATH/bin/pi-memory-capture.sh --ingest-file <session.jsonl>"
 cat <<EOF
 
@@ -217,21 +232,6 @@ PY
     echo "⚠️  python3 not found; skipped hookInstalledAt stamp"
   fi
 }
-
-if [ "$DO_REMOVE" -eq 1 ]; then
-  echo
-  echo "=== Removing pi extension (--remove) ==="
-  if [ -f "$EXT_DEST" ]; then
-    if grep -q "$EXT_MARKER" "$EXT_DEST" 2>/dev/null || grep -q 'const PLUGIN_PATH' "$EXT_DEST" 2>/dev/null; then
-      rm -f "$EXT_DEST"
-      echo "✅ Deleted $EXT_DEST"
-    else
-      echo "Refusing to delete $EXT_DEST (not our extension)"
-    fi
-  else
-    echo "No extension at $EXT_DEST"
-  fi
-fi
 
 if [ "$DO_APPLY" -eq 1 ]; then
   echo

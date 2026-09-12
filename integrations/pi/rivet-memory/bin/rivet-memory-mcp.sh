@@ -14,7 +14,29 @@
 # All diagnostics and errors go to stderr.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# Resolve BASH_SOURCE through symlinks (readlink -f when available, else a loop).
+_resolve_script() {
+  local src="$1"
+  if command -v readlink >/dev/null 2>&1 && readlink -f "$src" >/dev/null 2>&1; then
+    readlink -f "$src"
+    return
+  fi
+  local dir=""
+  while [ -L "$src" ]; do
+    dir="$(cd "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in
+      /*) ;;
+      *) src="${dir}/${src}" ;;
+    esac
+  done
+  dir="$(cd "$(dirname "$src")" && pwd)"
+  echo "${dir}/$(basename "$src")"
+}
+
+_SELF="$(_resolve_script "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$_SELF")" && pwd)"
+unset _SELF
 # Shared install-root discovery + env loading (integrations/shared).
 # shellcheck source=../../../shared/rivet-paths.sh
 _rivet_paths=""

@@ -55,6 +55,9 @@ const STATEMENT_TIMEOUT_MS = 15000
  *  earlier stamp is not skipped. Part-id dedup absorbs the overlap. */
 export const CURSOR_OVERLAP_MS = 30_000
 export const STATE_VERSION = 1 as const
+const STATE_LOCK_STALE_MS = 120_000
+const STATE_LOCK_WAIT_MS = 30_000
+const STATE_LOCK_POLL_MS = 100
 
 // ---------------------------------------------------------------------------
 // Types
@@ -313,9 +316,160 @@ export function loadState(file = captureStatePath()): CaptureState {
   }
 }
 
+/** Merge `next` over what is on disk so a cursor never moves backwards when
+ *  independent ingest processes (one per native event) persist concurrently. */
+export function mergeState(onDisk: CaptureState | null, next: CaptureState): CaptureState {
+  if (!onDisk) return next
+  const sessions: Record<string, SessionCursor> = { ...(onDisk.sessions ?? {}) }
+  for (const [id, cur] of Object.entries(next.sessions ?? {})) {
+    const prev = sessions[id]
+    sessions[id] = prev
+      ? {
+          partTimeUpdated: Math.max(prev.partTimeUpdated, cur.partTimeUpdated),
+          messageTimeUpdated: Math.max(prev.messageTimeUpdated, cur.messageTimeUpdated),
+        }
+      : cur
+  }
+  return {
+    ...onDisk,
+    ...next,
+    partTimeUpdated: Math.max(onDisk.partTimeUpdated, next.partTimeUpdated),
+    messageTimeUpdated: Math.max(onDisk.messageTimeUpdated, next.messageTimeUpdated),
+    sessions,
+  }
+}
+
+function readStateIfPresent(file: string): CaptureState | null {
+  if (!fs.existsSync(file)) return null
+  try {
+    return loadState(file)
+  } catch {
+    return null
+  }
+}
+
+/** Atomic (temp + rename) write of the merged state. Ingests run under
+ *  `withStateLock`; the merge additionally protects an unlocked writer. */
 export function saveState(state: CaptureState, file = captureStatePath()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`)
+  const merged = mergeState(readStateIfPresent(file), state)
+  const tmp = `${file}.${String(process.pid)}.${String(Date.now())}.${String(process.hrtime.bigint())}.tmp`
+  fs.writeFileSync(tmp, `${JSON.stringify(merged, null, 2)}\n`)
+  try {
+    fs.renameSync(tmp, file)
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp)
+    } catch {
+      // ignore
+    }
+    throw err
+  }
+  state.partTimeUpdated = merged.partTimeUpdated
+  state.messageTimeUpdated = merged.messageTimeUpdated
+  state.sessions = merged.sessions
+}
+
+// ---------------------------------------------------------------------------
+// Cross-process state lock (mkdir + owner stamp, stale timeout, bounded wait)
+// ---------------------------------------------------------------------------
+
+function sleepSync(ms: number): void {
+  const buf = new Int32Array(new SharedArrayBuffer(4))
+  Atomics.wait(buf, 0, 0, ms)
+}
+
+function errCode(err: unknown): string | undefined {
+  return isRecord(err) && typeof err.code === 'string' ? err.code : undefined
+}
+
+function stateLockDir(stateFile: string): string {
+  return `${stateFile}.lock`
+}
+
+function readLockStamp(lockDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8')
+    const ts = Number(raw.split('\n')[1])
+    return Number.isFinite(ts) ? ts : null
+  } catch {
+    return null
+  }
+}
+
+function removeLockDir(lockDir: string): void {
+  try {
+    fs.unlinkSync(path.join(lockDir, 'owner'))
+  } catch {
+    // ignore
+  }
+  try {
+    fs.rmdirSync(lockDir)
+  } catch {
+    // ignore
+  }
+}
+
+function tryAcquireStateLock(lockDir: string): boolean {
+  const stamp = (): void => {
+    fs.writeFileSync(path.join(lockDir, 'owner'), `${String(process.pid)}\n${String(Date.now())}\n`)
+  }
+  try {
+    fs.mkdirSync(lockDir)
+    stamp()
+    return true
+  } catch (err) {
+    if (errCode(err) !== 'EEXIST') return false
+    const at = readLockStamp(lockDir)
+    if (at === null || Date.now() - at > STATE_LOCK_STALE_MS) {
+      removeLockDir(lockDir)
+      try {
+        fs.mkdirSync(lockDir)
+        stamp()
+        return true
+      } catch {
+        return false
+      }
+    }
+    return false
+  }
+}
+
+export interface StateLockHold {
+  dir: string
+  owned: boolean
+}
+
+export function acquireStateLock(stateFile = captureStatePath()): StateLockHold {
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+  } catch {
+    // ignore
+  }
+  const dir = stateLockDir(stateFile)
+  const start = Date.now()
+  while (Date.now() - start < STATE_LOCK_WAIT_MS) {
+    if (tryAcquireStateLock(dir)) return { dir, owned: true }
+    sleepSync(STATE_LOCK_POLL_MS)
+  }
+  log(`state lock timeout after ${String(STATE_LOCK_WAIT_MS)}ms; proceeding without lock (${dir})`)
+  return { dir, owned: false }
+}
+
+export function releaseStateLock(hold: StateLockHold): void {
+  if (hold.owned) removeLockDir(hold.dir)
+}
+
+export async function withStateLock<T>(
+  fn: () => Promise<T>,
+  stateFile = captureStatePath(),
+): Promise<T> {
+  const hold = acquireStateLock(stateFile)
+  try {
+    return await fn()
+  } finally {
+    releaseStateLock(hold)
+  }
 }
 
 export function backfillCutoffMs(days = DEFAULT_BACKFILL_DAYS, now = Date.now()): number {
@@ -1010,14 +1164,16 @@ export async function runOnce(
   try {
     const dbPath = opts.dbPath ?? opencodeDbPath()
     const stateFile = captureStatePath()
-    const state = createWatcherState(loadState(stateFile))
-    const summary = await withPool((client) =>
-      scanOnce(dbPath, client, state, {
-        backfillDays: opts.backfillDays,
-        stateFile,
-        source: 'backfill',
-      }),
-    )
+    const summary = await withStateLock(async () => {
+      const state = createWatcherState(loadState(stateFile))
+      return withPool((client) =>
+        scanOnce(dbPath, client, state, {
+          backfillDays: opts.backfillDays,
+          stateFile,
+          source: 'backfill',
+        }),
+      )
+    }, stateFile)
     log(
       `backfill ${dbPath}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
@@ -1031,15 +1187,23 @@ export async function runOnce(
 
 export async function runIngestSession(
   sessionId: string,
-  opts: { dbPath?: string } = {},
+  opts: { dbPath?: string; delayMs?: number } = {},
 ): Promise<void> {
   try {
+    // Several plugin events for one session may spawn several children within
+    // a moment; the delay lets them collapse into one read and the lock
+    // serializes the rest (each re-reads the latest cursor → later ones no-op).
+    if (opts.delayMs !== undefined && opts.delayMs > 0) {
+      await new Promise((r) => setTimeout(r, opts.delayMs))
+    }
     const dbPath = opts.dbPath ?? opencodeDbPath()
     const stateFile = captureStatePath()
-    const state = createWatcherState(loadState(stateFile))
-    const summary = await withPool((client) =>
-      ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' }),
-    )
+    const summary = await withStateLock(async () => {
+      const state = createWatcherState(loadState(stateFile))
+      return withPool((client) =>
+        ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' }),
+      )
+    }, stateFile)
     log(
       `ingest-session ${sessionId}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
@@ -1095,6 +1259,13 @@ export function parseBackfill(args: string[]): number {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_BACKFILL_DAYS
 }
 
+export function parseDelayMs(args: string[]): number {
+  const idx = args.indexOf('--delay-ms')
+  if (idx < 0) return 0
+  const n = Number(args[idx + 1])
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 60_000) : 0
+}
+
 export function parseIngestSession(args: string[]): string | null {
   const idx = args.indexOf('--ingest-session')
   if (idx < 0) return null
@@ -1109,11 +1280,12 @@ function parseDb(args: string[]): string | undefined {
 
 export const USAGE = `opencode-memory-capture — ingest OpenCode SQLite sessions into RivetOS memory
 
-  opencode-rivet-memory-capture --ingest-session <id> [--db FILE]
+  opencode-rivet-memory-capture --ingest-session <id> [--delay-ms N] [--db FILE]
   opencode-rivet-memory-capture --backfill [--days N] [--db FILE]
   opencode-rivet-memory-capture --status
 
   --ingest-session ID  ingest one session (plugin trigger; always exit 0)
+  --delay-ms N         sleep N ms first so several quick triggers collapse into one read
   --backfill [--days N] one-shot catch-up (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = none)
   --status             print last ingest time + counts from the state file
   --db FILE            override the SQLite path
@@ -1140,7 +1312,7 @@ async function main(): Promise<void> {
       log('ingest-session: missing session id')
       return
     }
-    await runIngestSession(sessionId, { dbPath })
+    await runIngestSession(sessionId, { dbPath, delayMs: parseDelayMs(args) })
     return
   }
   if (args[0] === '--backfill' || args[0] === '--once') {

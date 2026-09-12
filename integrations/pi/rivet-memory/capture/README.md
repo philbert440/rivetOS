@@ -71,12 +71,13 @@ ingest. Pool size is 1.
 ## CLI
 
 ```
-pi-rivet-memory-capture --ingest-file <session.jsonl>
+pi-rivet-memory-capture --ingest-file <session.jsonl> [--delay-ms N]
 pi-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
 pi-rivet-memory-capture --status
 ```
 
 `--ingest-file` tails from the persisted cursor and always exits 0.
+`--delay-ms N` sleeps before the read so overlapping children coalesce.
 `--backfill` / `--once` walk existing files and exit. `--days N` keeps
 files whose mtime is within N days.
 

@@ -78,11 +78,11 @@ import { loadRivetEnv } from '../lib/env-file.js'
 import { detectHarnesses, execFileAsync, type DetectedHarness } from '../lib/harness-detect.js'
 import { findRoot } from './plugins-sync.js'
 import {
-  CODEX_HOOK_COMMAND_SUFFIX,
   CODEX_REQUIREMENTS_TOML,
   kimiConfigHomes,
   mcpJsonHasRivetos,
   nativeCaptureArtefactMissing,
+  requirementsTomlHasCodexHook,
   tomlFileHasRivetosTable,
   uncommentedLineContains,
 } from './plugins-install.js'
@@ -1633,7 +1633,7 @@ function lastCaptureSuffix(home: string, id: 'codex' | 'pi' | 'opencode', nowMs:
   const path = join(home, '.rivetos', `${id}-capture-state.json`)
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { lastIngestAt?: unknown }
-    const raw = parsed?.lastIngestAt
+    const raw = parsed.lastIngestAt
     if (typeof raw === 'string' || typeof raw === 'number') {
       const rel = formatRelativeCapture(raw, nowMs)
       if (rel) return ` — last capture: ${rel}`
@@ -1645,15 +1645,7 @@ function lastCaptureSuffix(home: string, id: 'codex' | 'pi' | 'opencode', nowMs:
 }
 
 function codexHooksHint(requirementsPath: string): string {
-  try {
-    if (
-      uncommentedLineContains(readFileSync(requirementsPath, 'utf-8'), CODEX_HOOK_COMMAND_SUFFIX)
-    ) {
-      return ' — hooks: managed'
-    }
-  } catch {
-    // missing requirements.toml
-  }
+  if (requirementsTomlHasCodexHook(requirementsPath)) return ' — hooks: managed'
   return ' — hooks: user (trust once via /hooks)'
 }
 

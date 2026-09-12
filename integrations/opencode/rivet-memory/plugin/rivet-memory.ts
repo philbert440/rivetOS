@@ -5,10 +5,15 @@
  * Setup rewrites the PLUGIN_PATH const to the rivet-memory package root so
  * this file can spawn bin/opencode-memory-capture.sh after being copied.
  *
- * Trigger only — SQLite rows are the source of truth. Ignore message.*
- * events. Never throw into OpenCode.
+ * Trigger only — SQLite rows are the source of truth; message.* events are
+ * ignored. Terminal session events spawn the ingester IMMEDIATELY (detached,
+ * unref'd) so a short-lived `opencode run` cannot exit before a timer fires;
+ * the child owns the coalescing (`--delay-ms`) and a cross-process state lock,
+ * so several quick spawns for one session serialize and dedup to no-ops.
+ * Never throw into OpenCode.
  *
- * Runs under Bun. Imports: node:child_process, node:path only.
+ * Runs under Bun. Imports: node:child_process, node:path only. This module
+ * exports ONLY plugin functions — OpenCode's loader rejects other exports.
  */
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -16,7 +21,17 @@ import path from 'node:path'
 /** Rewritten by setup-opencode-rivet-memory.sh --apply */
 const PLUGIN_PATH = '/opt/rivetos/integrations/opencode/rivet-memory'
 
-export const DEBOUNCE_MS = 1500
+/** Child-side coalescing window (ms) passed as --delay-ms. */
+const CHILD_DELAY_MS = 1500
+/** Parent-side per-session rate limit (ms): identical events inside this window collapse. */
+const RATE_LIMIT_MS = 200
+
+const TERMINAL_EVENTS = new Set([
+  'session.idle',
+  'session.compacted',
+  'session.deleted',
+  'session.error',
+])
 
 type PluginEvent = {
   type?: string
@@ -27,13 +42,6 @@ type PluginEvent = {
   sessionID?: string
 }
 
-type ChildLike = {
-  exitCode?: number | null
-  killed?: boolean
-  unref?: () => void
-  on?: (event: string, listener: (...args: unknown[]) => void) => void
-}
-
 function sessionIdOf(event: PluginEvent | null | undefined): string | null {
   if (!event || typeof event !== 'object') return null
   const fromProps = event.properties?.sessionID ?? event.properties?.sessionId
@@ -41,75 +49,34 @@ function sessionIdOf(event: PluginEvent | null | undefined): string | null {
   return typeof raw === 'string' && raw.length > 0 ? raw : null
 }
 
-function spawnIngest(sessionId: string, inFlight: Map<string, ChildLike>): void {
-  const existing = inFlight.get(sessionId)
-  if (existing && existing.exitCode == null && existing.killed !== true) {
-    return
-  }
+function spawnIngest(sessionId: string): void {
   try {
     const script = path.join(PLUGIN_PATH, 'bin', 'opencode-memory-capture.sh')
-    const child: ChildLike = spawn('bash', [script, '--ingest-session', sessionId], {
-      stdio: 'ignore',
-      detached: true,
-      env: { ...process.env },
-    })
-    child.unref?.()
-    inFlight.set(sessionId, child)
-    const clear = (): void => {
-      if (inFlight.get(sessionId) === child) inFlight.delete(sessionId)
-    }
-    child.on?.('exit', clear)
-    child.on?.('error', clear)
+    const child = spawn(
+      'bash',
+      [script, '--ingest-session', sessionId, '--delay-ms', String(CHILD_DELAY_MS)],
+      { stdio: 'ignore', detached: true, env: { ...process.env } },
+    )
+    child.unref()
   } catch {
-    inFlight.delete(sessionId)
+    // never throw into opencode
   }
 }
 
 export const RivetMemory = async ({ directory: _directory }: { directory?: string }) => {
-  const timers = new Map<string, ReturnType<typeof setTimeout>>()
-  const inFlight = new Map<string, ChildLike>()
-
-  const cancelTimer = (sessionId: string): void => {
-    const t = timers.get(sessionId)
-    if (t) {
-      clearTimeout(t)
-      timers.delete(sessionId)
-    }
-  }
-
-  const ingestNow = (sessionId: string): void => {
-    cancelTimer(sessionId)
-    spawnIngest(sessionId, inFlight)
-  }
-
-  const scheduleIngest = (sessionId: string): void => {
-    cancelTimer(sessionId)
-    const t = setTimeout(() => {
-      timers.delete(sessionId)
-      spawnIngest(sessionId, inFlight)
-    }, DEBOUNCE_MS)
-    t.unref?.()
-    timers.set(sessionId, t)
-  }
-
+  const lastSpawn = new Map<string, number>()
   return {
     event: async ({ event }: { event: PluginEvent }) => {
       try {
         const type = typeof event?.type === 'string' ? event.type : ''
-        if (!type || type.startsWith('message.')) return
+        if (!TERMINAL_EVENTS.has(type)) return
         const sessionId = sessionIdOf(event)
         if (!sessionId) return
-        if (type === 'session.idle') {
-          scheduleIngest(sessionId)
-          return
-        }
-        if (
-          type === 'session.compacted' ||
-          type === 'session.deleted' ||
-          type === 'session.error'
-        ) {
-          ingestNow(sessionId)
-        }
+        const now = Date.now()
+        const prev = lastSpawn.get(sessionId)
+        if (prev !== undefined && now - prev < RATE_LIMIT_MS) return
+        lastSpawn.set(sessionId, now)
+        spawnIngest(sessionId)
       } catch {
         // never throw into opencode
       }

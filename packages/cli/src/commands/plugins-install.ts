@@ -100,7 +100,7 @@ const LEGACY_CAPTURE_WATCHER: Record<'codex' | 'pi' | 'opencode', { unit: string
     opencode: { unit: 'opencode-memory-capture.service', label: 'dev.rivetos.opencode-capture' },
   }
 
-/** Marker the Codex hook command must end with (user hooks.json or managed requirements.toml). */
+/** User-facing marker. Detection matches `codex-memory-capture.sh` and `--hook` anywhere. */
 export const CODEX_HOOK_COMMAND_SUFFIX = 'codex-memory-capture.sh --hook'
 export const CODEX_REQUIREMENTS_TOML = '/etc/codex/requirements.toml'
 
@@ -629,28 +629,34 @@ export function kimiConfigHomes(home: string, configHome: string): string[] {
   return artefactConfigHomes('kimi-code', home, configHome)
 }
 
-function commandEndsWithCodexHook(command: string): boolean {
-  const trimmed = command
-    .trim()
-    .replace(/^['"]|['"]$/g, '')
-    .trim()
-  return trimmed.endsWith(CODEX_HOOK_COMMAND_SUFFIX)
+/** True when a hook command contains both the capture script and `--hook` (quoted paths included). */
+function commandHasCodexCapture(command: string): boolean {
+  return command.includes('codex-memory-capture.sh') && command.includes('--hook')
 }
 
-function jsonCommandEndsWithCodexHook(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(jsonCommandEndsWithCodexHook)
+function jsonCommandHasCodexCapture(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(jsonCommandHasCodexCapture)
   if (value && typeof value === 'object') {
     const rec = value as Record<string, unknown>
-    if (typeof rec.command === 'string' && commandEndsWithCodexHook(rec.command)) return true
-    return Object.values(rec).some(jsonCommandEndsWithCodexHook)
+    if (typeof rec.command === 'string' && commandHasCodexCapture(rec.command)) return true
+    return Object.values(rec).some(jsonCommandHasCodexCapture)
   }
   return false
 }
 
-/** True when hooks.json has a command entry ending in `codex-memory-capture.sh --hook`. */
+function uncommentedLineHasCodexCapture(text: string): boolean {
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    if (commandHasCodexCapture(trimmed)) return true
+  }
+  return false
+}
+
+/** True when hooks.json has a command entry containing `codex-memory-capture.sh` and `--hook`. */
 export function hooksJsonHasCodexCapture(path: string): boolean {
   try {
-    return jsonCommandEndsWithCodexHook(JSON.parse(readFileSync(path, 'utf-8')))
+    return jsonCommandHasCodexCapture(JSON.parse(readFileSync(path, 'utf-8')))
   } catch {
     return false
   }
@@ -658,7 +664,7 @@ export function hooksJsonHasCodexCapture(path: string): boolean {
 
 export function requirementsTomlHasCodexHook(path: string): boolean {
   try {
-    return uncommentedLineContains(readFileSync(path, 'utf-8'), CODEX_HOOK_COMMAND_SUFFIX)
+    return uncommentedLineHasCodexCapture(readFileSync(path, 'utf-8'))
   } catch {
     return false
   }
@@ -839,11 +845,36 @@ function ensureSetupArtefact(id: HarnessId, h: DetectedHarness, root: string, ho
   }
 }
 
-function unlinkQuiet(path: string): void {
+function unlinkExisting(path: string): boolean {
   try {
     unlinkSync(path)
-  } catch {
-    // ENOENT or already gone
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
+function legacyStopAlreadyDone(kind: 'systemctl' | 'launchctl', result: ExecResult): boolean {
+  if (result.timedOut) return false
+  if (result.code === 0) return true
+  if (kind === 'systemctl') {
+    if (result.code === 5) return true
+    return /not loaded|could not be found|No such file/.test(result.stderr)
+  }
+  return /No such process|Could not find/.test(result.stderr)
+}
+
+export type LegacyWatcherRemoval =
+  | { ok: true; removed: boolean }
+  | { ok: false; removed: false; detail: string }
+
+function legacyStopFailed(name: string, result: ExecResult): LegacyWatcherRemoval {
+  const exit = result.code ?? 'n/a'
+  const first = result.stderr.split('\n')[0]
+  return {
+    ok: false,
+    removed: false,
+    detail: `legacy capture watcher ${name} could not be stopped (exit ${exit}): ${first}`,
   }
 }
 
@@ -854,7 +885,7 @@ export async function removeLegacyCaptureWatcher(opts: {
   exec: typeof execFileAsync
   platform: NodeJS.Platform
   uid?: number
-}): Promise<boolean> {
+}): Promise<LegacyWatcherRemoval> {
   const { unit, label } = LEGACY_CAPTURE_WATCHER[opts.id]
   const unitPath = join(opts.home, '.config', 'systemd', 'user', unit)
   const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${label}.plist`)
@@ -862,9 +893,18 @@ export async function removeLegacyCaptureWatcher(opts: {
 
   if (existsSync(unitPath)) {
     if (opts.platform === 'linux') {
-      await opts.exec('systemctl', ['--user', 'disable', '--now', unit], { timeoutMs: 15_000 })
+      const result = await opts.exec('systemctl', ['--user', 'disable', '--now', unit], {
+        timeoutMs: 15_000,
+      })
+      if (!legacyStopAlreadyDone('systemctl', result)) return legacyStopFailed(unit, result)
     }
-    unlinkQuiet(unitPath)
+    if (!unlinkExisting(unitPath)) {
+      return {
+        ok: false,
+        removed: false,
+        detail: `legacy capture watcher ${unit} could not be removed`,
+      }
+    }
     removed = true
   }
 
@@ -872,14 +912,23 @@ export async function removeLegacyCaptureWatcher(opts: {
     if (opts.platform === 'darwin') {
       const uid = opts.uid ?? process.getuid?.()
       if (uid !== undefined) {
-        await opts.exec('launchctl', ['bootout', `gui/${uid}/${label}`], { timeoutMs: 15_000 })
+        const result = await opts.exec('launchctl', ['bootout', `gui/${uid}/${label}`], {
+          timeoutMs: 15_000,
+        })
+        if (!legacyStopAlreadyDone('launchctl', result)) return legacyStopFailed(label, result)
       }
     }
-    unlinkQuiet(plistPath)
+    if (!unlinkExisting(plistPath)) {
+      return {
+        ok: false,
+        removed: false,
+        detail: `legacy capture watcher ${label} could not be removed`,
+      }
+    }
     removed = true
   }
 
-  return removed
+  return { ok: true, removed }
 }
 
 const SETUP_BIN_ENV: Partial<Record<HarnessId, string>> = {
@@ -943,14 +992,15 @@ async function runSetupScript(
   }
   const bits = [`${scriptRel} --apply`]
   if (id === 'codex' || id === 'pi' || id === 'opencode') {
-    const removed = await removeLegacyCaptureWatcher({
+    const migration = await removeLegacyCaptureWatcher({
       id,
       home,
       exec,
       platform: watcher.platform,
       uid: watcher.uid,
     })
-    if (removed) bits.push('removed legacy capture watcher')
+    if (!migration.ok) return { ok: false, detail: migration.detail }
+    if (migration.removed) bits.push('removed legacy capture watcher')
   }
   return { ok: true, detail: bits.join('; ') }
 }

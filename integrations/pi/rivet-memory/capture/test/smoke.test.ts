@@ -41,6 +41,7 @@ import {
   scanOnce,
   ingestFileFromCursor,
   loadCaptureState,
+  saveCaptureState,
   parseCli,
   formatStatus,
   encodePiCwd,
@@ -975,6 +976,43 @@ console.log('\n— parseCli —')
   eq('parseCli sessions-dir', backfill.sessionsDir, '/tmp/sessions')
   eq('parseCli status mode', parseCli(['--status']).mode, 'status')
   eq('parseCli rejects --watch as unknown', parseCli(['--watch']).mode, 'unknown')
+  const delayed = parseCli(['--ingest-file', '/tmp/demo.jsonl', '--delay-ms', '200'])
+  eq('parseCli delay-ms with ingest-file', delayed.mode, 'ingest-file')
+  eq('parseCli delay-ms value', delayed.delayMs, 200)
+}
+
+console.log('\n— saveCaptureState merge (stale maps, no cursor regression) —')
+{
+  const prevState = process.env.RIVETOS_PI_CAPTURE_STATE
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-state-merge-'))
+  const stateFile = path.join(dir, 'pi-capture-state.json')
+  process.env.RIVETOS_PI_CAPTURE_STATE = stateFile
+  try {
+    const fileA = path.join(dir, 'session-a.jsonl')
+    const fileB = path.join(dir, 'session-b.jsonl')
+    saveCaptureState({ cursors: { [fileA]: { offset: 100, pending: '' } } })
+    saveCaptureState({ cursors: { [fileB]: { offset: 200, pending: 'partial' } } })
+    const merged = loadCaptureState()
+    eq('stale second save keeps session A cursor', merged.cursors[fileA]?.offset, 100)
+    eq('stale second save writes session B cursor', merged.cursors[fileB]?.offset, 200)
+    eq('session B pending survives', merged.cursors[fileB]?.pending, 'partial')
+    check('both session cursors present', Object.keys(merged.cursors).length === 2)
+
+    saveCaptureState({
+      cursors: {
+        [fileA]: { offset: 40, pending: 'stale' },
+        [fileB]: { offset: 250, pending: '' },
+      },
+    })
+    const advanced = loadCaptureState()
+    eq('cursor A does not regress', advanced.cursors[fileA]?.offset, 100)
+    eq('cursor B advances', advanced.cursors[fileB]?.offset, 250)
+    eq('regressed A keeps previous pending', advanced.cursors[fileA]?.pending, '')
+  } finally {
+    if (prevState === undefined) delete process.env.RIVETOS_PI_CAPTURE_STATE
+    else process.env.RIVETOS_PI_CAPTURE_STATE = prevState
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 if (failed > 0) {

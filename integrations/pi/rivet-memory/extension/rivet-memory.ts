@@ -4,6 +4,11 @@
  * Copied to ~/.pi/agent/extensions/rivet-memory.ts by setup-pi-rivet-memory.sh.
  * The PLUGIN_PATH assignment below is rewritten to the plugin install path.
  * Dependency-free: node:child_process + node:path only. Never throws into pi.
+ *
+ * Terminal events (agent_end, session_shutdown, session_before_switch,
+ * session_info_changed) spawn immediately. turn_end may debounce 1.5s; a
+ * terminal event cancels that timer and spawns now. The parent never waits
+ * on the child: spawn(detached, stdio ignore) + unref() and return.
  */
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -25,14 +30,7 @@ type SessionCtx = {
 }
 
 type ChildHandle = {
-  on: (event: string, cb: (...args: unknown[]) => void) => unknown
   unref: () => void
-}
-
-type FileSlot = {
-  timer: ReturnType<typeof setTimeout> | null
-  child: ChildHandle | null
-  pending: boolean
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -70,28 +68,14 @@ export default function (pi: Pi): void {
   try {
     if (!pi || typeof pi.on !== 'function') return
 
-    const slots = new Map<string, FileSlot>()
+    const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
-    const slotFor = (file: string): FileSlot => {
-      let slot = slots.get(file)
-      if (!slot) {
-        slot = { timer: null, child: null, pending: false }
-        slots.set(file, slot)
+    const spawnNow = (file: string): void => {
+      const timer = timers.get(file)
+      if (timer) {
+        clearTimeout(timer)
+        timers.delete(file)
       }
-      return slot
-    }
-
-    const run = (file: string): void => {
-      const slot = slotFor(file)
-      if (slot.timer) {
-        clearTimeout(slot.timer)
-        slot.timer = null
-      }
-      if (slot.child) {
-        slot.pending = true
-        return
-      }
-      slot.pending = false
       let child: ChildHandle | null = null
       try {
         child = spawnIngest(file)
@@ -99,20 +83,6 @@ export default function (pi: Pi): void {
         child = null
       }
       if (!child) return
-      slot.child = child
-      const done = (): void => {
-        slot.child = null
-        if (slot.pending) {
-          slot.pending = false
-          run(file)
-        }
-      }
-      try {
-        child.on('exit', done)
-        child.on('error', done)
-      } catch {
-        slot.child = null
-      }
       try {
         child.unref()
       } catch {
@@ -121,24 +91,19 @@ export default function (pi: Pi): void {
     }
 
     const schedule = (file: string): void => {
-      const slot = slotFor(file)
-      if (slot.timer) clearTimeout(slot.timer)
-      slot.timer = setTimeout(() => {
-        slot.timer = null
-        try {
-          run(file)
-        } catch {
-          // never throw into pi
-        }
-      }, DEBOUNCE_MS)
-    }
-
-    const flush = (file: string): void => {
-      try {
-        run(file)
-      } catch {
-        // never throw into pi
-      }
+      const prev = timers.get(file)
+      if (prev) clearTimeout(prev)
+      timers.set(
+        file,
+        setTimeout(() => {
+          timers.delete(file)
+          try {
+            spawnNow(file)
+          } catch {
+            // never throw into pi
+          }
+        }, DEBOUNCE_MS),
+      )
     }
 
     const onDebounced = (...args: unknown[]): void => {
@@ -155,14 +120,14 @@ export default function (pi: Pi): void {
       try {
         const file = sessionFileFromCtx(...args)
         if (!file) return
-        flush(file)
+        spawnNow(file)
       } catch {
         // never throw into pi
       }
     }
 
     pi.on('turn_end', onDebounced)
-    pi.on('agent_end', onDebounced)
+    pi.on('agent_end', onFlush)
     pi.on('session_shutdown', onFlush)
     pi.on('session_before_switch', onFlush)
     pi.on('session_info_changed', onFlush)

@@ -12,9 +12,9 @@ prevent agents from repeatedly failing at "remembering" things they should know.
 but capture correctness beats everything else.
 
 Capture is triggered by a **pi extension** installed at
-`~/.pi/agent/extensions/rivet-memory.ts`. On `turn_end` / `agent_end`
-(debounced 1.5s, coalesced) and on `session_shutdown` /
-`session_before_switch` / `session_info_changed` (flush) it spawns
+`~/.pi/agent/extensions/rivet-memory.ts`. On `turn_end` (debounced 1.5s,
+coalesced) and on `agent_end` / `session_shutdown` /
+`session_before_switch` / `session_info_changed` (immediate spawn) it spawns
 
 ```
 bash $PLUGIN_PATH/bin/pi-memory-capture.sh --ingest-file <session.jsonl>

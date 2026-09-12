@@ -3,8 +3,8 @@
  *
  * Imports the extension with a fake `pi` that records on(event, handler)
  * registrations, fires turn_end / agent_end / session_shutdown, and asserts
- * a single debounced spawn per session file. node:child_process.spawn is
- * mocked — these tests must be able to fail.
+ * spawn behaviour. node:child_process.spawn is mocked — these tests must be
+ * able to fail.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { spawn } from 'node:child_process'
@@ -33,20 +33,10 @@ const EXPECTED_SCRIPT = path.join(
 function fakeChild(): {
   unref: ReturnType<typeof vi.fn>
   on: ReturnType<typeof vi.fn>
-  emit: (event: string, ...args: unknown[]) => void
 } {
-  const listeners = new Map<string, Array<(...args: unknown[]) => void>>()
   const child = {
     unref: vi.fn(),
-    on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-      const list = listeners.get(event) ?? []
-      list.push(cb)
-      listeners.set(event, list)
-      return child
-    }),
-    emit: (event: string, ...args: unknown[]) => {
-      for (const cb of listeners.get(event) ?? []) cb(...args)
-    },
+    on: vi.fn(() => child),
   }
   return child
 }
@@ -101,10 +91,10 @@ describe('rivet-memory pi extension', () => {
     }
   })
 
-  it('coalesces turn_end + agent_end into a single spawn after 1.5s', async () => {
+  it('coalesces successive turn_end events into a single spawn after 1.5s', async () => {
     const { fire } = install(SESSION_FILE)
     fire('turn_end', { turnIndex: 0 })
-    fire('agent_end', { messages: [] })
+    fire('turn_end', { turnIndex: 1 })
     expect(spawnMock).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1499)
     expect(spawnMock).not.toHaveBeenCalled()
@@ -119,10 +109,20 @@ describe('rivet-memory pi extension', () => {
     expect(opts.env).toBe(process.env)
   })
 
-  it('turn_end + agent_end + session_shutdown flush to a single spawn (no extra after debounce)', async () => {
+  it('agent_end spawns immediately and cancels a pending turn_end timer', async () => {
     const { fire } = install(SESSION_FILE)
     fire('turn_end', { turnIndex: 0 })
+    expect(spawnMock).not.toHaveBeenCalled()
     fire('agent_end', { messages: [] })
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([EXPECTED_SCRIPT, '--ingest-file', SESSION_FILE])
+  })
+
+  it('turn_end + session_shutdown cancels debounce and spawns once immediately', async () => {
+    const { fire } = install(SESSION_FILE)
+    fire('turn_end', { turnIndex: 0 })
     fire('session_shutdown', { reason: 'quit' })
     expect(spawnMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(2000)
@@ -141,17 +141,15 @@ describe('rivet-memory pi extension', () => {
     expect(spawnMock.mock.calls[0]?.[1]).toEqual([EXPECTED_SCRIPT, '--ingest-file', OTHER_FILE])
   })
 
-  it('keeps one child at a time per file and drains pending on exit', () => {
+  it('shutdown while a child is running still spawns a new child before the handler returns', () => {
     const first = fakeChild()
     spawnMock.mockImplementationOnce(() => first as unknown as ReturnType<typeof spawn>)
     const { fire } = install(SESSION_FILE)
     fire('session_shutdown', { reason: 'quit' })
     expect(spawnMock).toHaveBeenCalledTimes(1)
-    fire('session_shutdown', { reason: 'quit' })
-    expect(spawnMock).toHaveBeenCalledTimes(1)
     const second = fakeChild()
     spawnMock.mockImplementationOnce(() => second as unknown as ReturnType<typeof spawn>)
-    first.emit('exit', 0)
+    fire('session_shutdown', { reason: 'quit' })
     expect(spawnMock).toHaveBeenCalledTimes(2)
   })
 

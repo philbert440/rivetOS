@@ -55,6 +55,9 @@ const LOCK_TIMEOUT_MS = 5000
 const LOCK_RETRY_ATTEMPTS = 8
 const LOCK_RETRY_MS = 50
 const MS_PER_DAY = 86_400_000
+const STATE_LOCK_STALE_MS = 120_000
+const STATE_LOCK_WAIT_MS = 30_000
+const STATE_LOCK_POLL_MS = 100
 
 /** Override with RIVETOS_PI_CAPTURE_STATE (tests). */
 export function captureStatePath(): string {
@@ -1048,27 +1051,163 @@ export function loadCaptureState(): PersistedCaptureState {
   }
 }
 
-export function saveCaptureState(patch: Partial<PersistedCaptureState>): PersistedCaptureState {
-  const prev = loadCaptureState()
-  const cursors = patch.cursors ?? prev.cursors
-  const next: PersistedCaptureState = {
-    ...prev,
-    ...patch,
-    cursors,
-    version: 2,
-    updatedAt: new Date().toISOString(),
-    files: patch.files ?? Object.keys(cursors).length,
-    hookInstalledAt:
-      patch.hookInstalledAt !== undefined ? patch.hookInstalledAt : prev.hookInstalledAt,
-  }
+function sleepSync(ms: number): void {
+  const buf = new Int32Array(new SharedArrayBuffer(4))
+  Atomics.wait(buf, 0, 0, ms)
+}
+
+function errCode(err: unknown): string | undefined {
+  if (isRecord(err) && typeof err.code === 'string') return err.code
+  return undefined
+}
+
+function stateLockDir(stateFile = captureStatePath()): string {
+  return `${stateFile}.lock`
+}
+
+function readLockStamp(lockDir: string): number | null {
   try {
-    const dest = captureStatePath()
-    fs.mkdirSync(path.dirname(dest), { recursive: true })
-    fs.writeFileSync(dest, `${JSON.stringify(next)}\n`)
+    const raw = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8')
+    const ts = Number(raw.split('\n')[1])
+    return Number.isFinite(ts) ? ts : null
+  } catch {
+    return null
+  }
+}
+
+function removeLockDir(lockDir: string): void {
+  try {
+    fs.unlinkSync(path.join(lockDir, 'owner'))
   } catch {
     // ignore
   }
-  return next
+  try {
+    fs.rmdirSync(lockDir)
+  } catch {
+    // ignore
+  }
+}
+
+function tryAcquireStateLock(lockDir: string): boolean {
+  try {
+    fs.mkdirSync(lockDir)
+    fs.writeFileSync(path.join(lockDir, 'owner'), `${process.pid}\n${Date.now()}\n`)
+    return true
+  } catch (err) {
+    if (errCode(err) !== 'EEXIST') return false
+    const stamp = readLockStamp(lockDir)
+    if (stamp === null || Date.now() - stamp > STATE_LOCK_STALE_MS) {
+      removeLockDir(lockDir)
+      try {
+        fs.mkdirSync(lockDir)
+        fs.writeFileSync(path.join(lockDir, 'owner'), `${process.pid}\n${Date.now()}\n`)
+        return true
+      } catch {
+        return false
+      }
+    }
+    return false
+  }
+}
+
+type StateLockHold = { dir: string; owned: boolean }
+
+function acquireStateLock(): StateLockHold {
+  const dest = captureStatePath()
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+  } catch {
+    // ignore
+  }
+  const dir = stateLockDir(dest)
+  const start = Date.now()
+  while (Date.now() - start < STATE_LOCK_WAIT_MS) {
+    if (tryAcquireStateLock(dir)) return { dir, owned: true }
+    sleepSync(STATE_LOCK_POLL_MS)
+  }
+  log(`state lock timeout after ${STATE_LOCK_WAIT_MS}ms; proceeding without lock (${dir})`)
+  return { dir, owned: false }
+}
+
+function releaseStateLock(hold: StateLockHold): void {
+  if (!hold.owned) return
+  removeLockDir(hold.dir)
+}
+
+function withStateLock<T>(fn: () => T): T {
+  const hold = acquireStateLock()
+  try {
+    return fn()
+  } finally {
+    releaseStateLock(hold)
+  }
+}
+
+async function withStateLockAsync<T>(fn: () => Promise<T>): Promise<T> {
+  const hold = acquireStateLock()
+  try {
+    return await fn()
+  } finally {
+    releaseStateLock(hold)
+  }
+}
+
+/** Never let a persisted cursor offset move backwards. */
+export function mergeCursor(prev: FileCursor | undefined, next: FileCursor): FileCursor {
+  if (!prev) return { offset: next.offset, pending: next.pending }
+  if (next.offset < prev.offset) return prev
+  if (next.offset > prev.offset) return { offset: next.offset, pending: next.pending }
+  return { offset: prev.offset, pending: next.pending }
+}
+
+function writeStateAtomic(dest: string, next: PersistedCaptureState): void {
+  const tmp = `${dest}.${process.pid}.${Date.now()}.${process.hrtime.bigint()}.tmp`
+  fs.writeFileSync(tmp, `${JSON.stringify(next)}\n`)
+  try {
+    fs.renameSync(tmp, dest)
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp)
+    } catch {
+      // ignore
+    }
+    throw err
+  }
+}
+
+export function saveCaptureState(
+  patch: Partial<PersistedCaptureState>,
+  opts: { alreadyLocked?: boolean } = {},
+): PersistedCaptureState {
+  const run = (): PersistedCaptureState => {
+    const prev = loadCaptureState()
+    const cursors: Record<string, FileCursor> = { ...prev.cursors }
+    if (patch.cursors) {
+      for (const [key, cursor] of Object.entries(patch.cursors)) {
+        cursors[key] = mergeCursor(cursors[key], cursor)
+      }
+    }
+    const next: PersistedCaptureState = {
+      ...prev,
+      ...patch,
+      cursors,
+      version: 2,
+      updatedAt: new Date().toISOString(),
+      files: Object.keys(cursors).length,
+      hookInstalledAt:
+        patch.hookInstalledAt !== undefined ? patch.hookInstalledAt : prev.hookInstalledAt,
+    }
+    try {
+      const dest = captureStatePath()
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      writeStateAtomic(dest, next)
+    } catch {
+      // ignore
+    }
+    return next
+  }
+  if (opts.alreadyLocked) return run()
+  return withStateLock(run)
 }
 
 export function persistWatcherCursors(
@@ -1223,36 +1362,41 @@ export async function ingestFileFromCursor(
   client: Queryable,
 ): Promise<{ inserted: number; skipped: number }> {
   const abs = path.resolve(file)
-  const persisted = loadCaptureState()
-  const stored = persisted.cursors[abs]
-  const cursor: FileCursor = stored
-    ? { offset: stored.offset, pending: stored.pending }
-    : { offset: 0, pending: '' }
-  const before = { offset: cursor.offset, pending: cursor.pending }
-  try {
-    const r = await ingestNewLines(file, cursor, client, new Map(), 'extension')
-    const cursors = {
-      ...persisted.cursors,
-      [abs]: { offset: cursor.offset, pending: cursor.pending },
+  return withStateLockAsync(async () => {
+    const persisted = loadCaptureState()
+    const stored = persisted.cursors[abs]
+    const cursor: FileCursor = stored
+      ? { offset: stored.offset, pending: stored.pending }
+      : { offset: 0, pending: '' }
+    const before = { offset: cursor.offset, pending: cursor.pending }
+    try {
+      const r = await ingestNewLines(file, cursor, client, new Map(), 'extension')
+      saveCaptureState(
+        {
+          lastIngestAt: new Date().toISOString(),
+          lastIngestSource: 'extension',
+          cursors: { [abs]: { offset: cursor.offset, pending: cursor.pending } },
+          lastInserted: r?.inserted ?? 0,
+          lastSkipped: r?.skipped ?? 0,
+        },
+        { alreadyLocked: true },
+      )
+      return { inserted: r?.inserted ?? 0, skipped: r?.skipped ?? 0 }
+    } catch (err) {
+      Object.assign(cursor, before)
+      throw err
     }
-    saveCaptureState({
-      lastIngestAt: new Date().toISOString(),
-      lastIngestSource: 'extension',
-      cursors,
-      files: Object.keys(cursors).length,
-      lastInserted: r?.inserted ?? 0,
-      lastSkipped: r?.skipped ?? 0,
-    })
-    return { inserted: r?.inserted ?? 0, skipped: r?.skipped ?? 0 }
-  } catch (err) {
-    Object.assign(cursor, before)
-    throw err
-  }
+  })
 }
 
 /** `--ingest-file` CLI: never throws out of this function; caller exits 0. */
-export async function runIngestFile(file: string): Promise<void> {
+export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
   try {
+    if (delayMs > 0) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs)
+      })
+    }
     await withPool(async (client) => {
       const result = await ingestFileFromCursor(file, client)
       console.log(`${file}: inserted=${result.inserted} skipped=${result.skipped}`)
@@ -1279,11 +1423,12 @@ function loadEnvFile(): void {
 
 export const USAGE = `pi-memory-capture — ingest pi v3 session jsonl into RivetOS memory
 
-  pi-rivet-memory-capture --ingest-file <session.jsonl>
+  pi-rivet-memory-capture --ingest-file <session.jsonl> [--delay-ms N]
   pi-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
   pi-rivet-memory-capture --status
 
   --ingest-file FILE tail one session from the persisted cursor then exit (always 0)
+  --delay-ms N       sleep N ms before reading (coalesce overlapping children)
   --backfill         ingest existing session files then exit
   --days N           with --backfill, only files whose mtime is within N days
   --once             alias of --backfill
@@ -1296,6 +1441,7 @@ export interface CliArgs {
   file?: string
   sessionsDir?: string
   days?: number
+  delayMs?: number
 }
 
 export function parseCli(argv: string[]): CliArgs {
@@ -1319,6 +1465,10 @@ export function parseCli(argv: string[]): CliArgs {
       const n = Number(argv[i + 1])
       i++
       if (Number.isFinite(n) && n >= 0) out.days = n
+    } else if (arg === '--delay-ms') {
+      const n = Number(argv[i + 1])
+      i++
+      if (Number.isFinite(n) && n >= 0) out.delayMs = n
     } else if (arg === '--watch') {
       out.mode = 'unknown'
     }
@@ -1357,7 +1507,7 @@ async function main(): Promise<void> {
       console.error('Usage: pi-memory-capture --ingest-file <session.jsonl>')
       return
     }
-    await runIngestFile(cli.file)
+    await runIngestFile(cli.file, cli.delayMs ?? 0)
     return
   }
 

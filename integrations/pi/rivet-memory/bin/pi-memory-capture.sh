@@ -10,9 +10,44 @@
 #
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve BASH_SOURCE through symlinks (readlink -f when available, else a loop).
+_resolve_script() {
+  local src="$1"
+  if command -v readlink >/dev/null 2>&1 && readlink -f "$src" >/dev/null 2>&1; then
+    readlink -f "$src"
+    return
+  fi
+  local dir=""
+  while [ -L "$src" ]; do
+    dir="$(cd "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    case "$src" in
+      /*) ;;
+      *) src="${dir}/${src}" ;;
+    esac
+  done
+  dir="$(cd "$(dirname "$src")" && pwd)"
+  echo "${dir}/$(basename "$src")"
+}
+
+_SELF="$(_resolve_script "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$_SELF")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CAPTURE_DIR="$PLUGIN_DIR/capture"
+
+# When invoked via a /usr/local/bin symlink the resolved dir has no capture/.
+# Use a validated RIVETOS_ROOT (or /opt/rivetos) fallback in that case.
+if [ ! -d "$CAPTURE_DIR" ]; then
+  _root="${RIVETOS_ROOT:-/opt/rivetos}"
+  _fallback="$_root/integrations/pi/rivet-memory/capture"
+  if [ -d "$_fallback" ]; then
+    PLUGIN_DIR="$_root/integrations/pi/rivet-memory"
+    CAPTURE_DIR="$_fallback"
+  fi
+  unset _root _fallback
+fi
+unset _SELF
+
 CAPTURE_BUILT="$CAPTURE_DIR/dist/pi-memory-capture.js"
 CAPTURE_SRC="$CAPTURE_DIR/src/pi-memory-capture.ts"
 
