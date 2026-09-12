@@ -96,11 +96,20 @@ export const CODEX_WATCHER_UNIT = 'codex-memory-capture.service'
 export const CODEX_LAUNCHD_LABEL = 'dev.rivetos.codex-capture'
 export const PI_WATCHER_UNIT = 'pi-memory-capture.service'
 export const PI_LAUNCHD_LABEL = 'dev.rivetos.pi-capture'
+export const OPENCODE_WATCHER_UNIT = 'opencode-memory-capture.service'
+export const OPENCODE_LAUNCHD_LABEL = 'dev.rivetos.opencode-capture'
 
 const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
   'kimi-code': join('integrations', 'kimi', 'rivet-memory', 'bin', 'setup-kimi-rivet-memory.sh'),
   codex: join('integrations', 'codex', 'rivet-memory', 'bin', 'setup-codex-rivet-memory.sh'),
   pi: join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh'),
+  opencode: join(
+    'integrations',
+    'opencode',
+    'rivet-memory',
+    'bin',
+    'setup-opencode-rivet-memory.sh',
+  ),
 }
 
 export function parseInstallArgs(args: string[]): ParsedInstallArgs {
@@ -258,7 +267,10 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'ensure RIVETOS_PG_URL in ~/.hermes/.env (from ~/.rivetos/.env)',
       ]
     case 'opencode':
-      return ['no rivet-memory installer for opencode yet']
+      return [
+        `run ${SETUP_SCRIPTS.opencode} --apply`,
+        'install + enable capture watcher (systemd user unit / launchd)',
+      ]
     case 'pi':
       return [
         `run ${SETUP_SCRIPTS.pi} --apply`,
@@ -560,6 +572,25 @@ export function mcpJsonHasRivetos(path: string): boolean {
   }
 }
 
+/** OpenCode `opencode.json` / `opencode.jsonc` MCP block (`mcp.rivetos`). */
+export function opencodeJsonHasRivetos(cfgPath: string): boolean {
+  const candidates = new Set<string>([cfgPath])
+  if (cfgPath.endsWith('.jsonc')) candidates.add(cfgPath.slice(0, -1))
+  else if (cfgPath.endsWith('.json')) candidates.add(`${cfgPath}c`)
+  for (const p of candidates) {
+    try {
+      const parsed = JSON.parse(readFileSync(p, 'utf-8')) as { mcp?: unknown }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
+      const mcp = parsed.mcp
+      if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) continue
+      if ((mcp as Record<string, unknown>).rivetos) return true
+    } catch {
+      // missing or non-JSON (comments-only jsonc) — try the sibling
+    }
+  }
+  return false
+}
+
 export function tomlFileHasRivetosTable(path: string): boolean {
   try {
     return tomlHasUncommentedTable(readFileSync(path, 'utf-8'), 'mcp_servers.rivetos')
@@ -579,7 +610,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
         ? process.env.CODEX_HOME
         : id === 'pi'
           ? process.env.PI_AGENT_HOME
-          : undefined
+          : id === 'opencode'
+            ? process.env.OPENCODE_CONFIG_DIR
+            : undefined
     )?.trim(),
   )
   if (envHome) return [envHome]
@@ -590,7 +623,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
         ? [configHome, join(home, '.codex')]
         : id === 'pi'
           ? [configHome, join(home, '.pi', 'agent')]
-          : [configHome]
+          : id === 'opencode'
+            ? [configHome, join(home, '.config', 'opencode')]
+            : [configHome]
   return [...new Set(defaults.filter((d) => d.length > 0))]
 }
 
@@ -622,9 +657,35 @@ export function setupArtefactMissing(
       const mcp = homes.some((dir) => mcpJsonHasRivetos(join(dir, 'mcp.json')))
       return mcp ? null : 'mcp.json missing rivetos server'
     }
+    case 'opencode': {
+      const mcp = homes.some((dir) => opencodeJsonHasRivetos(join(dir, 'opencode.json')))
+      return mcp ? null : 'opencode.json / opencode.jsonc missing rivetos MCP block'
+    }
     default:
       return null
   }
+}
+
+function mergeOpencodeMcpJson(cfgPath: string, command: string): boolean {
+  if (!existsSync(cfgPath)) return false
+  let parsed: { mcp?: Record<string, unknown> }
+  try {
+    parsed = JSON.parse(readFileSync(cfgPath, 'utf-8')) as { mcp?: Record<string, unknown> }
+  } catch {
+    return false
+  }
+  if (!parsed || typeof parsed !== 'object') return false
+  if (!parsed.mcp || typeof parsed.mcp !== 'object' || Array.isArray(parsed.mcp)) {
+    parsed.mcp = {}
+  }
+  if (parsed.mcp.rivetos) return true
+  parsed.mcp.rivetos = {
+    type: 'local',
+    command: [BASH, command],
+    enabled: true,
+  }
+  writeFileSync(cfgPath, `${JSON.stringify(parsed, null, 2)}\n`)
+  return true
 }
 
 function mergeRivetosMcpJson(mcpPath: string, command: string): boolean {
@@ -694,6 +755,19 @@ function ensureSetupArtefact(id: HarnessId, h: DetectedHarness, root: string, ho
     }
     return
   }
+  if (id === 'opencode') {
+    const command = join(
+      root,
+      'integrations',
+      'opencode',
+      'rivet-memory',
+      'bin',
+      'rivet-memory-mcp.sh',
+    )
+    for (const dir of artefactConfigHomes(id, home, h.configHome)) {
+      mergeOpencodeMcpJson(join(dir, 'opencode.json'), command)
+    }
+  }
 }
 
 function xmlEscape(s: string): string {
@@ -754,6 +828,10 @@ function captureScriptPath(root: string, harness: 'codex' | 'pi' = 'codex'): str
     return join(root, 'integrations', 'pi', 'rivet-memory', 'bin', 'pi-memory-capture.sh')
   }
   return join(root, 'integrations', 'codex', 'rivet-memory', 'bin', 'codex-memory-capture.sh')
+}
+
+function opencodeCaptureScriptPath(root: string): string {
+  return join(root, 'integrations', 'opencode', 'rivet-memory', 'bin', 'opencode-memory-capture.sh')
 }
 
 /** systemd user unit for the Codex capture watcher. ExecStart is always
@@ -1136,13 +1214,216 @@ export async function installPiCaptureWatcher(opts: {
   return { ok: true, detail: `no service manager (run: ${manual})` }
 }
 
+/** systemd user unit for the OpenCode capture watcher. */
+export function opencodeSystemdUnit(opts: {
+  root: string
+  home: string
+  envFile?: string
+  pathEnv?: string
+  nodeBinDir?: string
+  pgUrl?: string
+  rivetosEnvFile?: string
+  opencodeDb?: string
+  xdgDataHome?: string
+}): string {
+  const captureSh = opencodeCaptureScriptPath(opts.root)
+  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
+  const lines = [
+    '[Unit]',
+    'Description=RivetOS OpenCode memory capture watcher',
+    'After=network.target rivetos.service',
+    'Wants=rivetos.service',
+    '',
+    '[Service]',
+    'Type=simple',
+    `ExecStart=${BASH} ${systemdQuote(captureSh)} --watch`,
+  ]
+  if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
+  lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
+  lines.push(systemdEnvironment('PATH', pathEnv))
+  if (opts.opencodeDb) lines.push(systemdEnvironment('OPENCODE_DB', opts.opencodeDb))
+  if (opts.xdgDataHome) lines.push(systemdEnvironment('XDG_DATA_HOME', opts.xdgDataHome))
+  if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
+  if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
+  lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
+  return lines.join('\n')
+}
+
+export function opencodeLaunchdPlist(opts: {
+  captureSh: string
+  root: string
+  home: string
+  logPath: string
+  pgUrl?: string
+  pathEnv?: string
+  nodeBinDir?: string
+  rivetosEnvFile?: string
+  opencodeDb?: string
+  xdgDataHome?: string
+}): string {
+  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
+  const envEntries = [
+    `    <key>RIVETOS_ROOT</key>\n    <string>${xmlEscape(opts.root)}</string>`,
+    `    <key>PATH</key>\n    <string>${xmlEscape(pathEnv)}</string>`,
+  ]
+  if (opts.opencodeDb) {
+    envEntries.push(
+      `    <key>OPENCODE_DB</key>\n    <string>${xmlEscape(opts.opencodeDb)}</string>`,
+    )
+  }
+  if (opts.xdgDataHome) {
+    envEntries.push(
+      `    <key>XDG_DATA_HOME</key>\n    <string>${xmlEscape(opts.xdgDataHome)}</string>`,
+    )
+  }
+  if (opts.rivetosEnvFile) {
+    envEntries.push(
+      `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
+    )
+  }
+  if (opts.pgUrl) {
+    envEntries.push(`    <key>RIVETOS_PG_URL</key>\n    <string>${xmlEscape(opts.pgUrl)}</string>`)
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${OPENCODE_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BASH}</string>
+    <string>${xmlEscape(opts.captureSh)}</string>
+    <string>--watch</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${envEntries.join('\n')}
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(opts.logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(opts.logPath)}</string>
+</dict>
+</plist>
+`
+}
+
+export async function installOpencodeCaptureWatcher(opts: {
+  home: string
+  root: string
+  exec: typeof execFileAsync
+  platform: NodeJS.Platform
+  uid?: number
+}): Promise<{ ok: boolean; detail: string }> {
+  const customEnvFile = nonemptyEnv(process.env.RIVETOS_ENV_FILE)
+  const defaultEnvFile = join(opts.home, '.rivetos', '.env')
+  const envFile = customEnvFile ?? defaultEnvFile
+  const envFileExists = existsSync(envFile)
+  const envText = envFileExists ? readFileSync(envFile, 'utf-8') : ''
+  const pgUrlFromFile = envFileExists
+    ? nonemptyEnv(readEnvKey(envText, 'RIVETOS_PG_URL'))
+    : undefined
+  const pgUrl = pgUrlFromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
+  const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
+  const captureSh = opencodeCaptureScriptPath(rivetRoot)
+  const manual = `${BASH} ${captureSh} --watch`
+  const opencodeDb = nonemptyEnv(process.env.OPENCODE_DB)
+  const xdgDataHome = nonemptyEnv(process.env.XDG_DATA_HOME)
+
+  if (opts.platform === 'linux') {
+    const probe = await opts.exec('systemctl', ['--user', '--version'], { timeoutMs: 5_000 })
+    if (isSpawnEnoent(probe)) {
+      console.log(`   no systemctl — run: ${manual}`)
+      return { ok: true, detail: `no systemctl (run: ${manual})` }
+    }
+    const unitPath = join(opts.home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT)
+    mkdirSync(dirname(unitPath), { recursive: true })
+    writeFileSync(
+      unitPath,
+      opencodeSystemdUnit({
+        root: rivetRoot,
+        home: opts.home,
+        envFile: envFileExists ? envFile : undefined,
+        rivetosEnvFile: customEnvFile,
+        pgUrl: pgUrlFromFile ? undefined : pgUrl,
+        opencodeDb,
+        xdgDataHome,
+      }),
+    )
+    const reload = await opts.exec('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 15_000 })
+    const enable = await opts.exec(
+      'systemctl',
+      ['--user', 'enable', '--now', OPENCODE_WATCHER_UNIT],
+      {
+        timeoutMs: 15_000,
+      },
+    )
+    if (reload.code !== 0 || enable.code !== 0) {
+      return {
+        ok: false,
+        detail: `capture watcher enable failed (daemon-reload exit ${reload.code ?? 'n/a'}, enable exit ${enable.code ?? 'n/a'})`,
+      }
+    }
+    return { ok: true, detail: `capture watcher enabled (${OPENCODE_WATCHER_UNIT})` }
+  }
+
+  if (opts.platform === 'darwin') {
+    const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)
+    mkdirSync(dirname(plistPath), { recursive: true })
+    const logPath = join(opts.home, '.rivetos', 'opencode-memory-capture.log')
+    mkdirSync(dirname(logPath), { recursive: true })
+    writeFileSync(
+      plistPath,
+      opencodeLaunchdPlist({
+        captureSh,
+        root: rivetRoot,
+        home: opts.home,
+        logPath,
+        pgUrl,
+        rivetosEnvFile: customEnvFile,
+        opencodeDb,
+        xdgDataHome,
+      }),
+    )
+    const uid = opts.uid ?? process.getuid?.()
+    if (uid === undefined) {
+      console.log(`   run: launchctl bootstrap gui/$UID ${plistPath}`)
+      return { ok: true, detail: `wrote ${plistPath}; run launchctl bootstrap gui/$UID` }
+    }
+    const boot = await opts.exec('launchctl', ['bootstrap', `gui/${uid}`, plistPath], {
+      timeoutMs: 15_000,
+    })
+    if (isSpawnEnoent(boot)) {
+      console.log(`   no launchctl — run: ${manual}`)
+      return { ok: true, detail: `wrote ${plistPath}; no launchctl (run: ${manual})` }
+    }
+    const out = `${boot.stderr}${boot.stdout}`
+    if (boot.code !== 0 && !/already bootstrapped|already loaded/i.test(out)) {
+      return {
+        ok: false,
+        detail: `capture watcher bootstrap failed (exit ${boot.code ?? 'n/a'})`,
+      }
+    }
+    return { ok: true, detail: `capture watcher enabled (${OPENCODE_LAUNCHD_LABEL})` }
+  }
+
+  console.log(`   no service manager — run: ${manual}`)
+  return { ok: true, detail: `no service manager (run: ${manual})` }
+}
+
 const SETUP_BIN_ENV: Partial<Record<HarnessId, string>> = {
   codex: 'CODEX_BIN',
   'kimi-code': 'KIMI_BIN',
   pi: 'PI_BIN',
+  opencode: 'OPENCODE_BIN',
 }
 
-/** PATH + `CODEX_BIN`/`KIMI_BIN` so a harness found only in a
+/** PATH + `CODEX_BIN`/`KIMI_BIN`/`PI_BIN`/`OPENCODE_BIN` so a harness found only in a
  *  mise shim / extra dir is visible to `command -v` inside setup scripts. */
 export function setupScriptEnv(h: DetectedHarness, root: string, home: string): NodeJS.ProcessEnv {
   const extra = DEFAULT_EXTRA_DIRS.map((d) => expandHome(d, home))
@@ -1208,6 +1489,17 @@ async function runSetupScript(
   }
   if (id === 'pi') {
     const w = await installPiCaptureWatcher({
+      home,
+      root,
+      exec,
+      platform: watcher.platform,
+      uid: watcher.uid,
+    })
+    bits.push(w.detail)
+    if (!w.ok) return { ok: false, detail: bits.join('; ') }
+  }
+  if (id === 'opencode') {
+    const w = await installOpencodeCaptureWatcher({
       home,
       root,
       exec,
@@ -1371,7 +1663,7 @@ export async function runPluginsInstall(
 
   if (selected.length === 0 && want.length === 0) {
     console.log('No coding harnesses detected on PATH.')
-    console.log('Install claude, grok, kimi, hermes, or codex and re-run.')
+    console.log('Install claude, grok, kimi, hermes, codex, or opencode and re-run.')
     writeDenTerm([], home, parsed.force, parsed.dryRun)
     return
   }
@@ -1405,8 +1697,6 @@ export async function runPluginsInstall(
           result = await installHermes(h, root, home, exec, false, parsed.force)
           break
         case 'opencode':
-          result = { ok: false, detail: 'no rivet-memory installer for opencode yet' }
-          break
         case 'kimi-code':
         case 'codex':
         case 'pi':

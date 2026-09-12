@@ -16,6 +16,8 @@ import {
   DEFAULT_ROSTER_COMMANDS,
   PI_LAUNCHD_LABEL,
   PI_WATCHER_UNIT,
+  OPENCODE_LAUNCHD_LABEL,
+  OPENCODE_WATCHER_UNIT,
   artefactConfigHomes,
   buildDenTermRoster,
   codexLaunchdPlist,
@@ -24,6 +26,9 @@ import {
   ensureGrokMcpBlock,
   marketplaceRootWarning,
   mcpJsonHasRivetos,
+  opencodeJsonHasRivetos,
+  opencodeLaunchdPlist,
+  opencodeSystemdUnit,
   parseInstallArgs,
   parseTomlTableKeys,
   piLaunchdPlist,
@@ -99,6 +104,16 @@ function piHarness(home: string, binary = '/tmp/bin/pi'): DetectedHarness {
     binary,
     providerKey: 'pi-cli',
     configHome: join(home, '.pi', 'agent'),
+  }
+}
+
+function opencodeHarness(home: string, binary = '/tmp/bin/opencode'): DetectedHarness {
+  return {
+    id: 'opencode',
+    command: 'opencode',
+    binary,
+    providerKey: 'opencode-cli',
+    configHome: join(home, '.config', 'opencode'),
   }
 }
 
@@ -464,6 +479,24 @@ describe('planPluginsInstall (dry-run plan)', () => {
     const plan = planPluginsInstall([piHarness('/home/u')], '/opt/rivetos')
     expect(plan).toHaveLength(1)
     expect(plan[0].steps.some((s) => s.includes('setup-pi-rivet-memory.sh'))).toBe(true)
+    expect(plan[0].steps.some((s) => s.includes('capture watcher'))).toBe(true)
+  })
+
+  it('names the opencode installer and capture watcher', () => {
+    const plan = planPluginsInstall(
+      [
+        {
+          id: 'opencode',
+          command: 'opencode',
+          binary: '/bin/opencode',
+          providerKey: 'opencode-cli',
+          configHome: '/home/u/.config/opencode',
+        },
+      ],
+      '/opt/rivetos',
+    )
+    expect(plan[0].id).toBe('opencode')
+    expect(plan[0].steps.some((s) => s.includes('setup-opencode-rivet-memory.sh'))).toBe(true)
     expect(plan[0].steps.some((s) => s.includes('capture watcher'))).toBe(true)
   })
 })
@@ -1646,6 +1679,168 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/✅/)
   })
 
+  it('opencode: writes systemd user unit and enable --now on linux', async () => {
+    const scriptRel = join(
+      'integrations',
+      'opencode',
+      'rivet-memory',
+      'bin',
+      'setup-opencode-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', '.env'),
+      'RIVETOS_ROOT=/opt/rivetos\nRIVETOS_PG_URL=postgres://192.0.2.1/rivetos\n',
+    )
+    const calls: Array<{ file: string; args: string[] }> = []
+    const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+      calls.push({ file, args })
+      if (file === 'bash') {
+        mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+        writeFileSync(
+          join(home, '.config', 'opencode', 'opencode.json'),
+          JSON.stringify({
+            mcp: { rivetos: { type: 'local', command: ['bash', 'x'], enabled: true } },
+          }),
+        )
+        return okResult()
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      {
+        home,
+        detect: async () => [opencodeHarness(home)],
+        exec,
+        platform: 'linux',
+      },
+    )
+    const unitPath = join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT)
+    expect(existsSync(unitPath)).toBe(true)
+    const unit = readFileSync(unitPath, 'utf-8')
+    expect(unit).toContain('ExecStart=/bin/bash ')
+    expect(unit).toContain('opencode-memory-capture.sh --watch')
+    expect(unit).toContain('Environment=RIVETOS_ROOT=/opt/rivetos')
+    expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
+    expect(
+      calls.some(
+        (c) =>
+          c.file === 'systemctl' &&
+          c.args.join(' ') === `--user enable --now ${OPENCODE_WATCHER_UNIT}`,
+      ),
+    ).toBe(true)
+    expect(logs()).toMatch(/✅/)
+  })
+
+  it('opencode: persists OPENCODE_DB and XDG_DATA_HOME into the systemd unit', async () => {
+    const prevDb = process.env.OPENCODE_DB
+    const prevXdg = process.env.XDG_DATA_HOME
+    process.env.OPENCODE_DB = '/data/user-store/opencode/opencode.db'
+    process.env.XDG_DATA_HOME = '/data/user-store'
+    try {
+      const scriptRel = join(
+        'integrations',
+        'opencode',
+        'rivet-memory',
+        'bin',
+        'setup-opencode-rivet-memory.sh',
+      )
+      mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+      writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+      mkdirSync(join(home, '.rivetos'), { recursive: true })
+      writeFileSync(
+        join(home, '.rivetos', '.env'),
+        'RIVETOS_ROOT=/opt/rivetos\nRIVETOS_PG_URL=postgres://192.0.2.1/rivetos\n',
+      )
+      const exec = async (file: string): Promise<ExecResult> => {
+        if (file === 'bash') {
+          mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+          writeFileSync(
+            join(home, '.config', 'opencode', 'opencode.json'),
+            JSON.stringify({
+              mcp: { rivetos: { type: 'local', command: ['bash', 'x'], enabled: true } },
+            }),
+          )
+          return okResult()
+        }
+        return okResult()
+      }
+      await runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [opencodeHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      )
+      const unit = readFileSync(
+        join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT),
+        'utf-8',
+      )
+      expect(unit).toContain('Environment=OPENCODE_DB=/data/user-store/opencode/opencode.db')
+      expect(unit).toContain('Environment=XDG_DATA_HOME=/data/user-store')
+      expect(logs()).toMatch(/✅/)
+    } finally {
+      if (prevDb === undefined) delete process.env.OPENCODE_DB
+      else process.env.OPENCODE_DB = prevDb
+      if (prevXdg === undefined) delete process.env.XDG_DATA_HOME
+      else process.env.XDG_DATA_HOME = prevXdg
+    }
+  })
+
+  it('opencode: writes launchd plist and bootstraps on darwin', async () => {
+    const scriptRel = join(
+      'integrations',
+      'opencode',
+      'rivet-memory',
+      'bin',
+      'setup-opencode-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const calls: Array<{ file: string; args: string[] }> = []
+    const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+      calls.push({ file, args })
+      if (file === 'bash') {
+        mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+        writeFileSync(
+          join(home, '.config', 'opencode', 'opencode.json'),
+          JSON.stringify({
+            mcp: { rivetos: { type: 'local', command: ['bash', 'x'], enabled: true } },
+          }),
+        )
+        return okResult()
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      {
+        home,
+        detect: async () => [opencodeHarness(home)],
+        exec,
+        platform: 'darwin',
+        uid: 501,
+      },
+    )
+    const plistPath = join(home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)
+    expect(existsSync(plistPath)).toBe(true)
+    const plist = readFileSync(plistPath, 'utf-8')
+    expect(plist).toContain(OPENCODE_LAUNCHD_LABEL)
+    expect(plist).toContain('opencode-memory-capture.sh')
+    expect(plist).toContain('--watch')
+    expect(
+      calls.some(
+        (c) => c.file === 'launchctl' && c.args[0] === 'bootstrap' && c.args[1] === 'gui/501',
+      ),
+    ).toBe(true)
+    expect(logs()).toMatch(/✅/)
+  })
+
   it('pi: systemctl enable failure is ❌', async () => {
     const scriptRel = join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh')
     mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
@@ -1704,6 +1899,45 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/no service manager/)
     expect(logs()).toMatch(/pi-memory-capture\.sh --watch/)
     expect(logs()).toMatch(/✅/)
+  })
+
+  it('opencode: systemctl enable failure is ❌', async () => {
+    const scriptRel = join(
+      'integrations',
+      'opencode',
+      'rivet-memory',
+      'bin',
+      'setup-opencode-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+      if (file === 'bash') {
+        mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+        writeFileSync(
+          join(home, '.config', 'opencode', 'opencode.json'),
+          JSON.stringify({
+            mcp: { rivetos: { type: 'local', command: ['bash', 'x'], enabled: true } },
+          }),
+        )
+        return okResult()
+      }
+      if (file === 'systemctl' && args.includes('enable')) return failResult('enable failed')
+      return okResult()
+    }
+    await expect(
+      runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [opencodeHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      ),
+    ).rejects.toThrow(/failed/)
+    expect(logs()).toMatch(/❌/)
+    expect(logs()).toMatch(/capture watcher enable failed/)
   })
 })
 
@@ -1828,6 +2062,79 @@ describe('pi watcher unit/plist builders', () => {
   })
 })
 
+describe('opencode watcher unit/plist builders', () => {
+  it('systemd unit uses the setup-script ExecStart and env from .env', () => {
+    const unit = opencodeSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+      envFile: '/home/u/.rivetos/.env',
+    })
+    expect(unit).toContain(
+      'ExecStart=/bin/bash /opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh --watch',
+    )
+    expect(unit).toContain('EnvironmentFile=-/home/u/.rivetos/.env')
+    expect(unit).toContain('Environment=RIVETOS_ROOT=/opt/rivetos')
+    expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
+    expect(unit).toContain(`Environment=PATH=${watcherPathEnv('/home/u')}`)
+    expect(unit).toContain('WantedBy=default.target')
+    expect(unit).toContain('Restart=always')
+  })
+
+  it('launchd plist labels the watcher and xml-escapes env values', () => {
+    const plist = opencodeLaunchdPlist({
+      captureSh: '/opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh',
+      root: '/opt/rivetos',
+      home: '/home/u',
+      logPath: '/home/u/.rivetos/opencode-memory-capture.log',
+      pgUrl: 'postgres://u:a&b@192.0.2.1/rivetos',
+    })
+    expect(plist).toContain(`<string>${OPENCODE_LAUNCHD_LABEL}</string>`)
+    expect(plist).toContain('<string>/bin/bash</string>')
+    expect(plist).toContain('<string>--watch</string>')
+    expect(plist).toContain('a&amp;b')
+  })
+
+  it('omits OPENCODE_DB and XDG_DATA_HOME when they were not set at install', () => {
+    const unit = opencodeSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+    })
+    expect(unit).not.toContain('OPENCODE_DB')
+    expect(unit).not.toContain('XDG_DATA_HOME')
+    const plist = opencodeLaunchdPlist({
+      captureSh: '/opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh',
+      root: '/opt/rivetos',
+      home: '/home/u',
+      logPath: '/home/u/.rivetos/opencode-memory-capture.log',
+    })
+    expect(plist).not.toContain('OPENCODE_DB')
+    expect(plist).not.toContain('XDG_DATA_HOME')
+  })
+
+  it('passes OPENCODE_DB and XDG_DATA_HOME through systemd and launchd', () => {
+    const unit = opencodeSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+      opencodeDb: '/data/user-store/opencode/opencode.db',
+      xdgDataHome: '/data/user-store',
+    })
+    expect(unit).toContain('Environment=OPENCODE_DB=/data/user-store/opencode/opencode.db')
+    expect(unit).toContain('Environment=XDG_DATA_HOME=/data/user-store')
+    const plist = opencodeLaunchdPlist({
+      captureSh: '/opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh',
+      root: '/opt/rivetos',
+      home: '/home/u',
+      logPath: '/home/u/.rivetos/opencode-memory-capture.log',
+      opencodeDb: '/data/user-store/opencode/opencode.db',
+      xdgDataHome: '/data/user-store',
+    })
+    expect(plist).toContain('<key>OPENCODE_DB</key>')
+    expect(plist).toContain('<string>/data/user-store/opencode/opencode.db</string>')
+    expect(plist).toContain('<key>XDG_DATA_HOME</key>')
+    expect(plist).toContain('<string>/data/user-store</string>')
+  })
+})
+
 describe('artefact validation + grok hook bake', () => {
   let dir: string | undefined
   afterEach(() => {
@@ -1839,8 +2146,20 @@ describe('artefact validation + grok hook bake', () => {
     const mcp = join(dir, 'mcp.json')
     writeFileSync(mcp, '{ rivetos: not-json, }\n')
     expect(mcpJsonHasRivetos(mcp)).toBe(false)
+    expect(opencodeJsonHasRivetos(mcp)).toBe(false)
     expect(setupArtefactMissing('codex', dir, dir)).toMatch(/missing rivetos/)
-    expect(setupArtefactMissing('pi', dir, dir)).toMatch(/missing rivetos/)
+  })
+
+  it('treats opencode.jsonc mcp.rivetos as the OpenCode artefact', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const cfgHome = join(dir, '.config', 'opencode')
+    mkdirSync(cfgHome, { recursive: true })
+    writeFileSync(
+      join(cfgHome, 'opencode.jsonc'),
+      JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
+    )
+    expect(opencodeJsonHasRivetos(join(cfgHome, 'opencode.json'))).toBe(true)
+    expect(setupArtefactMissing('opencode', dir, cfgHome)).toBeNull()
   })
 
   it('rejects a commented TOML table', () => {

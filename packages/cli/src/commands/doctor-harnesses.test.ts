@@ -380,4 +380,134 @@ describe('checkHarnesses', () => {
     expect(results[0].status).toBe('warn')
     expect(results[0].message).toMatch(/memory plugin not installed/)
   })
+
+  function opencodeHarness(h: string): DetectedHarness {
+    return {
+      id: 'opencode',
+      command: 'opencode',
+      binary: '/bin/opencode',
+      providerKey: 'opencode-cli',
+      configHome: join(h, '.config', 'opencode'),
+    }
+  }
+
+  it('opencode row warns when neither watcher unit nor state file is present', async () => {
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('1.18.30')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=inactive\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [opencodeHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/memory plugin not installed/)
+    expect(results[0].message).toMatch(/capture watcher: inactive/)
+  })
+
+  it('opencode row warns when the state file exists but MCP artefact is missing', async () => {
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'opencode-capture-state.json'),
+      JSON.stringify({ version: 1, partTimeUpdated: 1, messageTimeUpdated: 1 }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('1.18.30')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [opencodeHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/memory plugin not installed/)
+  })
+
+  it('opencode row passes when the capture state file exists and watcher is active', async () => {
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'opencode-capture-state.json'),
+      JSON.stringify({ version: 1, partTimeCreated: 1, messageTimeUpdated: 1 }),
+    )
+    writeFileSync(
+      join(home, '.config', 'opencode', 'opencode.json'),
+      JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('1.18.30')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [opencodeHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/capture watcher: active/)
+    expect(exec.mock.calls.some((c) => c[1]?.includes('NRestarts,ActiveState'))).toBe(true)
+  })
+
+  it('opencode row passes when MCP lives in opencode.jsonc', async () => {
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'opencode-capture-state.json'),
+      JSON.stringify({ version: 1, partTimeUpdated: 1, messageTimeUpdated: 1 }),
+    )
+    writeFileSync(
+      join(home, '.config', 'opencode', 'opencode.jsonc'),
+      JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('1.18.30')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [opencodeHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/memory plugin installed/)
+  })
+
+  it('opencode row passes when the systemd unit file exists even without a state file', async () => {
+    mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true })
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true })
+    writeFileSync(join(home, '.config', 'systemd', 'user', 'opencode-memory-capture.service'), '')
+    writeFileSync(
+      join(home, '.config', 'opencode', 'opencode.json'),
+      JSON.stringify({ mcp: { rivetos: { type: 'local', command: ['bash', 'x'] } } }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('1.18.30')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [opencodeHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/memory plugin installed/)
+  })
 })

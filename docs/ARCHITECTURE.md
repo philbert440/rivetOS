@@ -775,6 +775,7 @@ Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
 ## Memory and capture
 
 - Capture plugins (under `integrations/*/rivet-memory`) write under canonical `SessionId` where possible.
+- OpenCode capture is a read-only SQLite watcher (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a rollout jsonl watcher.
 - Mesh-shared DB: disambiguate by `agent` column; native id entropy is the collision defense.
 - Hermes rotation: alias + breadcrumb (not close+new). Predecessor stays open until true session end.
 - Compaction / embedding: graphile-worker jobs from SQL triggers and crons in the worker packages, not LISTEN/NOTIFY.

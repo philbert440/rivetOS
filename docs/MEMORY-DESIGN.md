@@ -151,7 +151,7 @@ When a message or summary is returned in a search result, increment its access c
 | `memory_search` | Unified search + auto-expand. Searches messages + summaries, auto-expands top summary hits to children/source messages. Supports FTS/trigram/regex modes, agent/date filters, optional LLM synthesis. |
 | `memory_browse` | Chronological message browsing. For reviewing sessions and catching up on activity. |
 | `memory_stats` | System health diagnostics. Embedding queue depth, unsummarized message counts, compaction status, summary tree depth, embedding coverage. |
-| `memory_get_full` | Recover the full payload of a capture-truncated row by id. Rows written by capture workers carry a disk pointer (`session_jsonl_path`/`line`); rows written through the sidecar write tools do not, and their elided tails are unrecoverable. |
+| `memory_get_full` | Recover the full payload of a capture-truncated row by id. Rows written by capture workers carry a disk pointer (`session_jsonl_path`/`line` for jsonl harnesses, `session_sqlite_path`/`session_sqlite_part_id` for OpenCode); rows written through the sidecar write tools do not, and their elided tails are unrecoverable. |
 
 Consolidated from the original 6-tool design (`memory_grep`, `memory_expand`, `memory_describe`, `memory_expand_query`) down to this surface, which needs less LLM orchestration.
 
