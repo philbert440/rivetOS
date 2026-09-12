@@ -16,6 +16,9 @@ import {
   releaseStateLock,
   saveState,
   parseDelayMs,
+  pendingQueuePath,
+  queuePending,
+  takePending,
   withStateLock,
 } from '../src/opencode-memory-capture.ts'
 
@@ -109,6 +112,20 @@ describe('withStateLock', () => {
     releaseStateLock(hold)
     expect(existsSync(`${file}.lock`)).toBe(true)
     rmSync(`${file}.lock`, { recursive: true, force: true })
+  })
+})
+
+describe('pending queue', () => {
+  it('queues, dedupes by key, and clears on take', () => {
+    const file = tmpState()
+    queuePending(file, { sessionId: 'ses_a' })
+    queuePending(file, { sessionId: 'ses_b' })
+    queuePending(file, { sessionId: 'ses_a' })
+    expect(existsSync(pendingQueuePath(file))).toBe(true)
+    const taken = takePending(file, 'sessionId')
+    expect(taken.map((e) => e.sessionId)).toEqual(['ses_a', 'ses_b'])
+    expect(existsSync(pendingQueuePath(file))).toBe(false)
+    expect(takePending(file, 'sessionId')).toEqual([])
   })
 })
 

@@ -250,7 +250,11 @@ remove_managed_toml() {
   local leftover
   leftover="$(sed '/^[[:space:]]*$/d;/^#/d' "$outf")"
   if [ -z "$leftover" ]; then
-    sudo rm -f "$dest"
+    if ! sudo rm -f "$dest" || [ -e "$dest" ]; then
+      echo "⚠️  could not delete $dest; rivet-memory managed hooks are still active." >&2
+      rm -f "$outf" "$errf"
+      return 1
+    fi
     echo "Removed $dest (was only rivet-memory hooks)"
   else
     if ! sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$" || ! sudo mv "${dest}.rivet.$$" "$dest"; then
@@ -342,7 +346,8 @@ if [ "$DO_REMOVE" -eq 1 ]; then
   fi
   if sudo_n; then
     if ! remove_managed_toml; then
-      echo "⚠️  Managed hooks unmerge failed; left $MANAGED_TOML untouched and continuing."
+      echo "❌ Managed hooks unmerge failed; rivet-memory hooks may still be active in $MANAGED_TOML." >&2
+      REGISTRATION_INCOMPLETE=1
     else
       echo "Managed hooks path: $MANAGED_TOML"
     fi

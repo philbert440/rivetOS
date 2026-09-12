@@ -922,6 +922,57 @@ export function loadCaptureState(file = captureStatePath()): CaptureState {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Durable pending queue: a terminal-event ingest that could not take the lock
+// (even after its one retry hop) is appended here; every later lock holder
+// drains it first, so a tail is deferred, never lost.
+// ---------------------------------------------------------------------------
+
+export function pendingQueuePath(stateFile: string): string {
+  return `${stateFile}.pending.jsonl`
+}
+
+export function queuePending(stateFile: string, entry: Record<string, unknown>): void {
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+    fs.appendFileSync(pendingQueuePath(stateFile), `${JSON.stringify(entry)}\n`)
+    log(`queued pending ingest (${JSON.stringify(entry)})`)
+  } catch {
+    // best effort
+  }
+}
+
+/** Read + clear the queue (call only while holding the state lock). Dedupes on `key`. */
+export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
+  const file = pendingQueuePath(stateFile)
+  let raw = ''
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch {
+    return []
+  }
+  try {
+    fs.unlinkSync(file)
+  } catch {
+    // ignore
+  }
+  const seen = new Set<string>()
+  const out: Record<string, unknown>[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      const k = typeof parsed[key] === 'string' ? (parsed[key] as string) : ''
+      if (!k || seen.has(k)) continue
+      seen.add(k)
+      out.push(parsed)
+    } catch {
+      // skip a bad line
+    }
+  }
+  return out
+}
+
 /** One-hop retry delay when an ingest was skipped on a busy lock. */
 export const RETRY_HOP_DELAY_MS = 15_000
 export const STATE_LOCK_STALE_MS = 120_000
@@ -1000,6 +1051,33 @@ function lockIsStale(dir: string, staleMs: number): boolean {
   return true
 }
 
+/** Reclaim a stale lock atomically: rename it to a private tombstone (exactly
+ *  one reclaimer wins the rename), then verify the tombstone still holds the
+ *  dead/expired owner we observed. If it holds a fresh live owner instead —
+ *  another process re-acquired between our check and the rename — put it back
+ *  and yield. Returns true when the stale lock is gone and we may mkdir. */
+function reclaimStaleLock(dir: string): boolean {
+  const observedOwner = lockOwnerPid(dir)
+  const tomb = `${dir}.reclaim.${String(process.pid)}.${String(Date.now())}`
+  try {
+    fs.renameSync(dir, tomb)
+  } catch {
+    return false // someone else reclaimed (or released) first
+  }
+  const tombOwner = lockOwnerPid(tomb)
+  const fresh = tombOwner !== null && tombOwner !== observedOwner && pidAlive(tombOwner)
+  if (fresh) {
+    try {
+      fs.renameSync(tomb, dir) // give it back
+    } catch {
+      removeLockDir(tomb) // the slot was re-taken meanwhile; nothing else to restore
+    }
+    return false
+  }
+  removeLockDir(tomb)
+  return true
+}
+
 function tryAcquireLock(dir: string): 'acquired' | 'exists' | 'error' {
   try {
     fs.mkdirSync(dir)
@@ -1042,8 +1120,7 @@ export async function acquireStateLock(
       return { dir, held: false }
     }
     if (lockIsStale(dir, staleMs) && Date.now() < deadline) {
-      log(`state lock stale (${dir}); removing`)
-      removeLockDir(dir)
+      if (reclaimStaleLock(dir)) log(`state lock stale (${dir}); reclaimed`)
       await sleep(pollMs)
       continue
     }
@@ -1356,6 +1433,7 @@ export async function runBackfill(
   const root = sessionsDir ?? codexSessionsDir()
   const source = typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
   await withStateLock(stateFile, async () => {
+    takePending(stateFile, 'file') // a full scan covers every queued file
     const persisted = loadCaptureState(stateFile)
     const state = stateToWatcher(persisted)
     const summary = await withPool((client) =>
@@ -1394,6 +1472,8 @@ export interface HookHandleOpts {
 }
 
 export interface IngestFileOpts {
+  /** Internal: run without taking the state lock (the caller holds it). */
+  alreadyLocked?: boolean
   client: Queryable
   stateFile?: string
   delayMs?: number
@@ -1444,70 +1524,76 @@ export async function ingestTranscriptFile(
   try {
     if (opts.delayMs && opts.delayMs > 0) await sleep(opts.delayMs)
     const finalize = Boolean(opts.closeSession)
-    const locked = await withStateLock(
-      stateFile,
-      async () => {
-        const cursor = cursorFromState(loadCaptureState(stateFile), abs)
-        const before = { offset: cursor.offset, pending: cursor.pending }
-        const seenByKey = new Map<string, Set<string>>()
-
-        let inserted = 0
-        let skipped = 0
-        try {
-          const r = await ingestNewLines(
-            abs,
-            cursor,
-            opts.client,
-            seenByKey,
-            triggerEvent,
-            finalize,
-          )
-          if (r) {
-            inserted = r.inserted
-            skipped = r.skipped
-          }
-        } catch (err) {
-          Object.assign(cursor, before)
-          log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
-          return { ...empty, file: abs }
+    const body = async (): Promise<HookHandleResult> => {
+      if (!opts.alreadyLocked) {
+        // drain files that earlier could not take the lock (we hold it now)
+        for (const p of takePending(stateFile, 'file')) {
+          const f = p.file as string
+          if (path.resolve(f) === abs) continue
+          await ingestTranscriptFile(f, {
+            ...opts,
+            alreadyLocked: true,
+            delayMs: 0,
+            closeSession: p.closeSession === true,
+            sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+            triggerEvent: typeof p.event === 'string' ? `${p.event}:pending` : 'pending',
+          })
         }
+      }
+      const cursor = cursorFromState(loadCaptureState(stateFile), abs)
+      const before = { offset: cursor.offset, pending: cursor.pending }
+      const seenByKey = new Map<string, Set<string>>()
 
-        const latest = loadCaptureState(stateFile)
-        const now = new Date().toISOString()
-        const sid = opts.sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null
-        const closedPatch: Record<string, ClosedSession> | undefined =
-          finalize && sid
-            ? {
-                [sid]: {
-                  closedAt: now,
-                  transcriptPath: abs,
-                  reason: opts.reason,
-                },
-              }
-            : undefined
-        const merged = mergeCaptureState(latest, {
-          cursors: {
-            [path.resolve(abs)]: { offset: cursor.offset, pending: cursor.pending },
-          },
-          closedSessions: closedPatch,
-          lastIngestAt: now,
-          lastIngestSource: triggerEvent,
-          hookInstalledAt: latest.hookInstalledAt ?? now,
-          inserted,
-          skipped,
-        })
-        saveCaptureState(merged, stateFile)
-        return {
-          inserted,
-          skipped,
-          file: abs,
-          event,
-          finalized: finalize,
-          sessionId: sid,
+      let inserted = 0
+      let skipped = 0
+      try {
+        const r = await ingestNewLines(abs, cursor, opts.client, seenByKey, triggerEvent, finalize)
+        if (r) {
+          inserted = r.inserted
+          skipped = r.skipped
         }
-      },
-      opts.lock,
-    )
+      } catch (err) {
+        Object.assign(cursor, before)
+        log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
+        return { ...empty, file: abs }
+      }
+
+      const latest = loadCaptureState(stateFile)
+      const now = new Date().toISOString()
+      const sid = opts.sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null
+      const closedPatch: Record<string, ClosedSession> | undefined =
+        finalize && sid
+          ? {
+              [sid]: {
+                closedAt: now,
+                transcriptPath: abs,
+                reason: opts.reason,
+              },
+            }
+          : undefined
+      const merged = mergeCaptureState(latest, {
+        cursors: {
+          [path.resolve(abs)]: { offset: cursor.offset, pending: cursor.pending },
+        },
+        closedSessions: closedPatch,
+        lastIngestAt: now,
+        lastIngestSource: triggerEvent,
+        hookInstalledAt: latest.hookInstalledAt ?? now,
+        inserted,
+        skipped,
+      })
+      saveCaptureState(merged, stateFile)
+      return {
+        inserted,
+        skipped,
+        file: abs,
+        event,
+        finalized: finalize,
+        sessionId: sid,
+      }
+    }
+    if (opts.alreadyLocked) return await body()
+    const locked = await withStateLock(stateFile, body, opts.lock)
     return locked ?? { ...empty, lockBusy: true }
   } catch (err) {
     log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -1900,7 +1986,14 @@ async function main(): Promise<void> {
       console.log(
         `${file}: event=${result.event} inserted=${result.inserted} skipped=${result.skipped}${result.finalized ? ' finalized' : ''}`,
       )
-      if (result.lockBusy && !flagPresent(args, '--retry-once')) {
+      if (result.lockBusy && flagPresent(args, '--retry-once')) {
+        queuePending(captureStatePath(), {
+          file: path.resolve(file),
+          closeSession: flagPresent(args, '--close-session'),
+          event: hookEvent ?? null,
+          sessionId: sessionId ?? null,
+        })
+      } else if (result.lockBusy && !flagPresent(args, '--retry-once')) {
         // one-hop deferral: a terminal event must not lose its tail to a busy lock
         const entry = captureEntryPath()
         const hop = [...entry.prefix, ...args.filter((a) => a !== '--delay-ms' && !/^\d+$/.test(a))]

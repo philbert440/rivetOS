@@ -437,6 +437,33 @@ function lockIsStale(lockDir: string): boolean {
   return true
 }
 
+/** Reclaim a stale lock atomically: rename it to a private tombstone (exactly
+ *  one reclaimer wins the rename), then verify the tombstone still holds the
+ *  dead/expired owner we observed. If it holds a fresh live owner instead —
+ *  another process re-acquired between our check and the rename — put it back
+ *  and yield. Returns true when the stale lock is gone and we may mkdir. */
+function reclaimStaleLock(lockDir: string): boolean {
+  const observedOwner = lockOwnerPid(lockDir)
+  const tomb = `${lockDir}.reclaim.${String(process.pid)}.${String(Date.now())}`
+  try {
+    fs.renameSync(lockDir, tomb)
+  } catch {
+    return false // someone else reclaimed (or released) first
+  }
+  const tombOwner = lockOwnerPid(tomb)
+  const fresh = tombOwner !== null && tombOwner !== observedOwner && pidAlive(tombOwner)
+  if (fresh) {
+    try {
+      fs.renameSync(tomb, lockDir) // give it back
+    } catch {
+      removeLockDir(tomb) // the slot was re-taken meanwhile; nothing else to restore
+    }
+    return false
+  }
+  removeLockDir(tomb)
+  return true
+}
+
 function tryAcquireStateLock(lockDir: string): boolean {
   const stamp = (): void => {
     fs.writeFileSync(path.join(lockDir, 'owner'), `${String(process.pid)}\n${String(Date.now())}\n`)
@@ -447,8 +474,7 @@ function tryAcquireStateLock(lockDir: string): boolean {
     return true
   } catch (err) {
     if (errCode(err) !== 'EEXIST') return false
-    if (lockIsStale(lockDir)) {
-      removeLockDir(lockDir)
+    if (lockIsStale(lockDir) && reclaimStaleLock(lockDir)) {
       try {
         fs.mkdirSync(lockDir)
         stamp()
@@ -1227,6 +1253,7 @@ export async function runOnce(
     const stateFile = captureStatePath()
     const summary = await withStateLock(async () => {
       const state = createWatcherState(loadState(stateFile))
+      takePending(stateFile, 'sessionId') // a full scan covers every queued session
       return withPool((client) =>
         scanOnce(dbPath, client, state, {
           backfillDays: opts.backfillDays,
@@ -1245,6 +1272,57 @@ export async function runOnce(
   } catch (err) {
     log(`backfill failed: ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Durable pending queue: a terminal-event ingest that could not take the lock
+// (even after its one retry hop) is appended here; every later lock holder
+// drains it first, so a tail is deferred, never lost.
+// ---------------------------------------------------------------------------
+
+export function pendingQueuePath(stateFile: string): string {
+  return `${stateFile}.pending.jsonl`
+}
+
+export function queuePending(stateFile: string, entry: Record<string, unknown>): void {
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+    fs.appendFileSync(pendingQueuePath(stateFile), `${JSON.stringify(entry)}\n`)
+    log(`queued pending ingest (${JSON.stringify(entry)})`)
+  } catch {
+    // best effort
+  }
+}
+
+/** Read + clear the queue (call only while holding the state lock). Dedupes on `key`. */
+export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
+  const file = pendingQueuePath(stateFile)
+  let raw = ''
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch {
+    return []
+  }
+  try {
+    fs.unlinkSync(file)
+  } catch {
+    // ignore
+  }
+  const seen = new Set<string>()
+  const out: Record<string, unknown>[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      const k = typeof parsed[key] === 'string' ? (parsed[key] as string) : ''
+      if (!k || seen.has(k)) continue
+      seen.add(k)
+      out.push(parsed)
+    } catch {
+      // skip a bad line
+    }
+  }
+  return out
 }
 
 /** One-hop deferral: a terminal event must not lose its tail to a busy lock. */
@@ -1296,12 +1374,19 @@ export async function runIngestSession(
     const stateFile = captureStatePath()
     const summary = await withStateLock(async () => {
       const state = createWatcherState(loadState(stateFile))
-      return withPool((client) =>
-        ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' }),
-      )
+      return withPool(async (client) => {
+        // drain sessions that earlier could not take the lock
+        for (const p of takePending(stateFile, 'sessionId')) {
+          const id = p.sessionId as string
+          if (id === sessionId) continue
+          await ingestSession(dbPath, id, client, state, { stateFile, source: 'plugin:pending' })
+        }
+        return ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' })
+      })
     }, stateFile)
     if (summary === null) {
-      if (opts.argv) retryHopOnce(opts.argv)
+      if (opts.argv?.includes('--retry-once')) queuePending(stateFile, { sessionId })
+      else if (opts.argv) retryHopOnce(opts.argv)
       return
     }
     log(

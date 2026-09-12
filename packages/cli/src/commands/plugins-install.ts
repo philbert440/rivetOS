@@ -854,12 +854,21 @@ function unlinkExisting(path: string): boolean {
   }
 }
 
-function legacyStopAlreadyDone(kind: 'systemctl' | 'launchctl', result: ExecResult): boolean {
+/** Did the stop verify the unit is gone? A service-manager connection error
+ *  (`Failed to connect to bus: No such file or directory`) is NOT absence — the
+ *  registration must be kept so a later install retries the stop. */
+export function legacyStopAlreadyDone(
+  kind: 'systemctl' | 'launchctl',
+  result: ExecResult,
+  unit = '',
+): boolean {
   if (result.timedOut) return false
   if (result.code === 0) return true
+  if (/Failed to connect|Connection refused/i.test(result.stderr)) return false
   if (kind === 'systemctl') {
     if (result.code === 5) return true
-    return /not loaded|could not be found|No such file/.test(result.stderr)
+    const absence = /not loaded|could not be found|does not exist/.test(result.stderr)
+    return absence && (unit === '' || result.stderr.includes(unit))
   }
   return /No such process|Could not find/.test(result.stderr)
 }
@@ -895,7 +904,7 @@ export async function removeLegacyCaptureWatcher(opts: {
       const result = await opts.exec('systemctl', ['--user', 'disable', '--now', unit], {
         timeoutMs: 15_000,
       })
-      if (!legacyStopAlreadyDone('systemctl', result)) return legacyStopFailed(unit, result)
+      if (!legacyStopAlreadyDone('systemctl', result, unit)) return legacyStopFailed(unit, result)
     }
     if (!unlinkExisting(unitPath)) {
       return {
@@ -914,7 +923,8 @@ export async function removeLegacyCaptureWatcher(opts: {
         const result = await opts.exec('launchctl', ['bootout', `gui/${uid}/${label}`], {
           timeoutMs: 15_000,
         })
-        if (!legacyStopAlreadyDone('launchctl', result)) return legacyStopFailed(label, result)
+        if (!legacyStopAlreadyDone('launchctl', result, label))
+          return legacyStopFailed(label, result)
       }
     }
     if (!unlinkExisting(plistPath)) {

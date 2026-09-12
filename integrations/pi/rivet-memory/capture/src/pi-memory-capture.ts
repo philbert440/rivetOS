@@ -1115,6 +1115,33 @@ function lockIsStale(lockDir: string): boolean {
   return true
 }
 
+/** Reclaim a stale lock atomically: rename it to a private tombstone (exactly
+ *  one reclaimer wins the rename), then verify the tombstone still holds the
+ *  dead/expired owner we observed. If it holds a fresh live owner instead —
+ *  another process re-acquired between our check and the rename — put it back
+ *  and yield. Returns true when the stale lock is gone and we may mkdir. */
+function reclaimStaleLock(lockDir: string): boolean {
+  const observedOwner = lockOwnerPid(lockDir)
+  const tomb = `${lockDir}.reclaim.${String(process.pid)}.${String(Date.now())}`
+  try {
+    fs.renameSync(lockDir, tomb)
+  } catch {
+    return false // someone else reclaimed (or released) first
+  }
+  const tombOwner = lockOwnerPid(tomb)
+  const fresh = tombOwner !== null && tombOwner !== observedOwner && pidAlive(tombOwner)
+  if (fresh) {
+    try {
+      fs.renameSync(tomb, lockDir) // give it back
+    } catch {
+      removeLockDir(tomb) // the slot was re-taken meanwhile; nothing else to restore
+    }
+    return false
+  }
+  removeLockDir(tomb)
+  return true
+}
+
 function tryAcquireStateLock(lockDir: string): boolean {
   try {
     fs.mkdirSync(lockDir)
@@ -1122,8 +1149,7 @@ function tryAcquireStateLock(lockDir: string): boolean {
     return true
   } catch (err) {
     if (errCode(err) !== 'EEXIST') return false
-    if (lockIsStale(lockDir)) {
-      removeLockDir(lockDir)
+    if (lockIsStale(lockDir) && reclaimStaleLock(lockDir)) {
       try {
         fs.mkdirSync(lockDir)
         fs.writeFileSync(path.join(lockDir, 'owner'), `${process.pid}\n${Date.now()}\n`)
@@ -1406,6 +1432,58 @@ export async function runOnce(sessionsDir?: string, days?: number): Promise<void
  * Tail one session file from the persisted per-file cursor, then upsert.
  * Dedup keys are unchanged (line id). Always updates lastIngestAt / source.
  */
+
+// ---------------------------------------------------------------------------
+// Durable pending queue: a terminal-event ingest that could not take the lock
+// (even after its one retry hop) is appended here; every later lock holder
+// drains it first, so a tail is deferred, never lost.
+// ---------------------------------------------------------------------------
+
+export function pendingQueuePath(stateFile: string): string {
+  return `${stateFile}.pending.jsonl`
+}
+
+export function queuePending(stateFile: string, entry: Record<string, unknown>): void {
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+    fs.appendFileSync(pendingQueuePath(stateFile), `${JSON.stringify(entry)}\n`)
+    log(`queued pending ingest (${JSON.stringify(entry)})`)
+  } catch {
+    // best effort
+  }
+}
+
+/** Read + clear the queue (call only while holding the state lock). Dedupes on `key`. */
+export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
+  const file = pendingQueuePath(stateFile)
+  let raw = ''
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch {
+    return []
+  }
+  try {
+    fs.unlinkSync(file)
+  } catch {
+    // ignore
+  }
+  const seen = new Set<string>()
+  const out: Record<string, unknown>[] = []
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      const k = typeof parsed[key] === 'string' ? (parsed[key] as string) : ''
+      if (!k || seen.has(k)) continue
+      seen.add(k)
+      out.push(parsed)
+    } catch {
+      // skip a bad line
+    }
+  }
+  return out
+}
+
 /** One-hop deferral: a terminal event must not lose its tail to a busy lock. */
 export const RETRY_HOP_DELAY_MS = 15_000
 
@@ -1443,9 +1521,18 @@ export function retryHopOnce(argv: string[]): void {
 export async function ingestFileFromCursor(
   file: string,
   client: Queryable,
+  opts: { alreadyLocked?: boolean } = {},
 ): Promise<{ inserted: number; skipped: number; lockBusy?: boolean }> {
   const abs = path.resolve(file)
-  const locked = await withStateLockAsync(async () => {
+  const body = async (): Promise<{ inserted: number; skipped: number }> => {
+    if (!opts.alreadyLocked) {
+      // drain files that earlier could not take the lock (we hold it now)
+      for (const p of takePending(captureStatePath(), 'file')) {
+        const f = p.file as string
+        if (path.resolve(f) === abs) continue
+        await ingestFileFromCursor(f, client, { alreadyLocked: true })
+      }
+    }
     const persisted = loadCaptureState()
     const stored = persisted.cursors[abs]
     const cursor: FileCursor = stored
@@ -1469,7 +1556,9 @@ export async function ingestFileFromCursor(
       Object.assign(cursor, before)
       throw err
     }
-  })
+  }
+  if (opts.alreadyLocked) return body()
+  const locked = await withStateLockAsync(body)
   return locked ?? { inserted: 0, skipped: 0, lockBusy: true }
 }
 
@@ -1484,7 +1573,12 @@ export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
     await withPool(async (client) => {
       const result = await ingestFileFromCursor(file, client)
       console.log(`${file}: inserted=${result.inserted} skipped=${result.skipped}`)
-      if (result.lockBusy) retryHopOnce(process.argv.slice(2))
+      if (result.lockBusy) {
+        const argv = process.argv.slice(2)
+        if (argv.includes('--retry-once'))
+          queuePending(captureStatePath(), { file: path.resolve(file) })
+        else retryHopOnce(argv)
+      }
     })
   } catch (err) {
     log(`ingest-file ${file} failed: ${err instanceof Error ? err.message : String(err)}`)
