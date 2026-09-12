@@ -1,6 +1,6 @@
 ---
 name: memory-recall
-description: 'Auto-load this when the user asks about anything from a past conversation, a specific time window, or current status — "what did we do this morning / yesterday / today / recently", "how\'s everything looking", "what\'s in flight", "check memory", "do you remember", "have we seen this before", "what is the IP of X". Encodes the rivet-memory recall discipline — workboard for status, browse-with-window FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions. Companion to the rivet_memory Hermes memory provider.'
+description: 'Auto-load this when the user asks about anything from a past conversation, a specific time window, or current status — "what did we do this morning / yesterday / today / recently", "how''s everything looking", "what''s in flight", "check memory", "do you remember", "have we seen this before", "what is the IP of X". Encodes the rivet-memory recall discipline — workboard for status, browse-with-window FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions. Companion to the rivet_memory Hermes memory provider.'
 tags: [rivetos, memory, recall, discipline, rivet-memory, status]
 version: 0.3.1
 ---
