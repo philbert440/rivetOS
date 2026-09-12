@@ -958,9 +958,19 @@ export async function withStateLock<T>(
 ): Promise<T | null> {
   const key = stateLockKey(stateFile)
   try {
+    // withPool caps every statement at the ingest statement_timeout, which would
+    // also cap this blocking wait; lift it for the acquisition only and put it
+    // back before the critical section (and on failure).
+    await client.query('SET statement_timeout = 0')
     await client.query(`SET lock_timeout = ${String(Math.max(1, Math.floor(waitMs)))}`)
     await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
+    await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
   } catch (err) {
+    try {
+      await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
+    } catch {
+      // ignore
+    }
     if (isLockTimeout(err)) {
       log(`state lock busy (${key}); skipping this run — the next hook retries`)
     } else {

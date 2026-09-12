@@ -305,7 +305,7 @@ console.log('\n— truncated tool args keep sqlite pointer —')
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
       if (
-        String(sql).startsWith('SET lock_timeout') ||
+        String(sql).startsWith('SET ') ||
         String(sql).startsWith('RESET lock_timeout') ||
         String(sql).startsWith('SELECT pg_advisory_lock(') ||
         String(sql).startsWith('SELECT pg_advisory_unlock(')
@@ -623,7 +623,7 @@ console.log('\n— stub pool ingest —')
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
       if (
-        String(sql).startsWith('SET lock_timeout') ||
+        String(sql).startsWith('SET ') ||
         String(sql).startsWith('RESET lock_timeout') ||
         String(sql).startsWith('SELECT pg_advisory_lock(') ||
         String(sql).startsWith('SELECT pg_advisory_unlock(')
@@ -810,7 +810,7 @@ function makeStub(): { client: Queryable; eventIds: () => string[] } {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
       if (
-        String(sql).startsWith('SET lock_timeout') ||
+        String(sql).startsWith('SET ') ||
         String(sql).startsWith('RESET lock_timeout') ||
         String(sql).startsWith('SELECT pg_advisory_lock(') ||
         String(sql).startsWith('SELECT pg_advisory_unlock(')
