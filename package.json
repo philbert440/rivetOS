@@ -69,6 +69,7 @@
     "integrations/kimi/rivet-memory/backfill",
     "integrations/codex/rivet-memory/capture",
     "integrations/codex/rivet-memory/backfill",
+    "integrations/pi/rivet-memory/capture",
     "integrations/opencode/rivet-memory/capture"
   ],
   "bin": {

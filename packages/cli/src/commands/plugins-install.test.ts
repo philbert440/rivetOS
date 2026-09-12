@@ -14,6 +14,8 @@ import {
   CODEX_LAUNCHD_LABEL,
   CODEX_WATCHER_UNIT,
   DEFAULT_ROSTER_COMMANDS,
+  PI_LAUNCHD_LABEL,
+  PI_WATCHER_UNIT,
   OPENCODE_LAUNCHD_LABEL,
   OPENCODE_WATCHER_UNIT,
   artefactConfigHomes,
@@ -29,6 +31,8 @@ import {
   opencodeSystemdUnit,
   parseInstallArgs,
   parseTomlTableKeys,
+  piLaunchdPlist,
+  piSystemdUnit,
   planPluginsInstall,
   readEnvKey,
   runPluginsInstall,
@@ -90,6 +94,16 @@ function codexHarness(home: string, binary = '/tmp/bin/codex'): DetectedHarness 
     binary,
     providerKey: 'codex-cli',
     configHome: join(home, '.codex'),
+  }
+}
+
+function piHarness(home: string, binary = '/tmp/bin/pi'): DetectedHarness {
+  return {
+    id: 'pi',
+    command: 'pi',
+    binary,
+    providerKey: 'pi-cli',
+    configHome: join(home, '.pi', 'agent'),
   }
 }
 
@@ -459,6 +473,13 @@ describe('planPluginsInstall (dry-run plan)', () => {
     expect(plan[1].steps.some((s) => s.includes('setup-kimi-rivet-memory.sh'))).toBe(true)
     expect(plan[2].steps.some((s) => s.includes('memory.provider'))).toBe(true)
     expect(plan[3].steps.some((s) => s.includes('capture watcher'))).toBe(true)
+  })
+
+  it('names the pi setup script and capture watcher', () => {
+    const plan = planPluginsInstall([piHarness('/home/u')], '/opt/rivetos')
+    expect(plan).toHaveLength(1)
+    expect(plan[0].steps.some((s) => s.includes('setup-pi-rivet-memory.sh'))).toBe(true)
+    expect(plan[0].steps.some((s) => s.includes('capture watcher'))).toBe(true)
   })
 
   it('names the opencode installer and capture watcher', () => {
@@ -1564,6 +1585,100 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     }
   })
 
+  it('pi: writes systemd user unit and enable --now on linux', async () => {
+    const scriptRel = join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh')
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', '.env'),
+      'RIVETOS_ROOT=/opt/rivetos\nRIVETOS_PG_URL=postgres://192.0.2.1/rivetos\n',
+    )
+    const calls: Array<{ file: string; args: string[] }> = []
+    const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+      calls.push({ file, args })
+      if (file === 'bash') {
+        mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+        writeFileSync(
+          join(home, '.pi', 'agent', 'mcp.json'),
+          JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+        )
+        return okResult()
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      {
+        home,
+        detect: async () => [piHarness(home)],
+        exec,
+        platform: 'linux',
+      },
+    )
+    const unitPath = join(home, '.config', 'systemd', 'user', PI_WATCHER_UNIT)
+    expect(existsSync(unitPath)).toBe(true)
+    const unit = readFileSync(unitPath, 'utf-8')
+    expect(unit).toContain('ExecStart=/bin/bash ')
+    expect(unit).toContain('pi-memory-capture.sh --watch')
+    expect(unit).toContain('Environment=RIVETOS_ROOT=/opt/rivetos')
+    expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
+    expect(unit).toContain(`Environment=PATH=${dirname(process.execPath)}:`)
+    expect(
+      calls.some((c) => c.file === 'systemctl' && c.args.join(' ') === '--user daemon-reload'),
+    ).toBe(true)
+    expect(
+      calls.some(
+        (c) =>
+          c.file === 'systemctl' &&
+          c.args.join(' ') === `--user enable --now ${PI_WATCHER_UNIT}`,
+      ),
+    ).toBe(true)
+    expect(logs()).toMatch(/✅/)
+  })
+
+  it('pi: writes launchd plist and bootstraps on darwin', async () => {
+    const scriptRel = join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh')
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const calls: Array<{ file: string; args: string[] }> = []
+    const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+      calls.push({ file, args })
+      if (file === 'bash') {
+        mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+        writeFileSync(
+          join(home, '.pi', 'agent', 'mcp.json'),
+          JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+        )
+        return okResult()
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      {
+        home,
+        detect: async () => [piHarness(home)],
+        exec,
+        platform: 'darwin',
+        uid: 501,
+      },
+    )
+    const plistPath = join(home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`)
+    expect(existsSync(plistPath)).toBe(true)
+    const plist = readFileSync(plistPath, 'utf-8')
+    expect(plist).toContain(PI_LAUNCHD_LABEL)
+    expect(plist).toContain('<string>/bin/bash</string>')
+    expect(plist).toContain('pi-memory-capture.sh')
+    expect(plist).toContain('--watch')
+    expect(
+      calls.some(
+        (c) => c.file === 'launchctl' && c.args[0] === 'bootstrap' && c.args[1] === 'gui/501',
+      ),
+    ).toBe(true)
+    expect(logs()).toMatch(/✅/)
+  })
+
   it('opencode: writes systemd user unit and enable --now on linux', async () => {
     const scriptRel = join(
       'integrations',
@@ -1726,6 +1841,66 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/✅/)
   })
 
+  it('pi: systemctl enable failure is ❌', async () => {
+    const scriptRel = join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh')
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const exec = async (file: string, args: string[]): Promise<ExecResult> => {
+      if (file === 'bash') {
+        mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+        writeFileSync(
+          join(home, '.pi', 'agent', 'mcp.json'),
+          JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+        )
+        return okResult()
+      }
+      if (file === 'systemctl' && args.includes('enable')) return failResult('enable failed')
+      return okResult()
+    }
+    await expect(
+      runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [piHarness(home)],
+          exec,
+          platform: 'linux',
+        },
+      ),
+    ).rejects.toThrow(/failed/)
+    expect(logs()).toMatch(/❌/)
+    expect(logs()).toMatch(/capture watcher enable failed/)
+  })
+
+  it('pi: no service manager prints the manual --watch command', async () => {
+    const scriptRel = join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh')
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const exec = async (file: string): Promise<ExecResult> => {
+      if (file === 'bash') {
+        mkdirSync(join(home, '.pi', 'agent'), { recursive: true })
+        writeFileSync(
+          join(home, '.pi', 'agent', 'mcp.json'),
+          JSON.stringify({ mcpServers: { rivetos: { command: 'x' } } }),
+        )
+        return okResult()
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      {
+        home,
+        detect: async () => [piHarness(home)],
+        exec,
+        platform: 'win32',
+      },
+    )
+    expect(logs()).toMatch(/no service manager/)
+    expect(logs()).toMatch(/pi-memory-capture\.sh --watch/)
+    expect(logs()).toMatch(/✅/)
+  })
+
   it('opencode: systemctl enable failure is ❌', async () => {
     const scriptRel = join(
       'integrations',
@@ -1846,6 +2021,44 @@ describe('codex watcher unit/plist builders', () => {
     )
     const parts = watcherPathEnv('/home/u', '/usr/bin').split(':')
     expect(parts.filter((p) => p === '/usr/bin')).toHaveLength(1)
+  })
+})
+
+describe('pi watcher unit/plist builders', () => {
+  it('systemd unit uses the setup-script ExecStart and env from .env', () => {
+    const unit = piSystemdUnit({
+      root: '/opt/rivetos',
+      home: '/home/u',
+      envFile: '/home/u/.rivetos/.env',
+    })
+    expect(unit).toContain(
+      'ExecStart=/bin/bash /opt/rivetos/integrations/pi/rivet-memory/bin/pi-memory-capture.sh --watch',
+    )
+    expect(unit).toContain('EnvironmentFile=-/home/u/.rivetos/.env')
+    expect(unit).toContain('Environment=RIVETOS_ROOT=/opt/rivetos')
+    expect(unit).not.toContain('Environment=RIVETOS_PG_URL=')
+    expect(unit).toContain(`Environment=PATH=${watcherPathEnv('/home/u')}`)
+    expect(unit).toContain('WantedBy=default.target')
+    expect(unit).toContain('After=network.target rivetos.service')
+    expect(unit).toContain('Wants=rivetos.service')
+    expect(unit).toContain('Restart=always')
+    expect(unit).not.toContain('Restart=on-failure')
+  })
+
+  it('launchd plist labels the watcher and xml-escapes env values', () => {
+    const plist = piLaunchdPlist({
+      captureSh: '/opt/rivetos/integrations/pi/rivet-memory/bin/pi-memory-capture.sh',
+      root: '/opt/rivetos',
+      home: '/home/u',
+      logPath: '/home/u/.rivetos/pi-memory-capture.log',
+      pgUrl: 'postgres://u:a&b@192.0.2.1/rivetos',
+    })
+    expect(plist).toContain(`<string>${PI_LAUNCHD_LABEL}</string>`)
+    expect(plist).toContain('<string>/bin/bash</string>')
+    expect(plist).toContain('<string>--watch</string>')
+    expect(plist).toContain('a&amp;b')
+    expect(plist).toContain('<key>PATH</key>')
+    expect(plist).toContain(dirname(process.execPath))
   })
 })
 

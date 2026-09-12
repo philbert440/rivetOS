@@ -322,6 +322,9 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'mm_processor_kwargs',
     'chat_template_kwargs',
     'extra_body',
+    'api_prefix',
+    'models_url',
+    'probe_models',
   ]),
   'llama-server': new Set([
     'model',

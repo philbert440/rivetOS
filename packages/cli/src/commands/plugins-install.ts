@@ -94,12 +94,15 @@ export interface PluginsInstallDeps {
 
 export const CODEX_WATCHER_UNIT = 'codex-memory-capture.service'
 export const CODEX_LAUNCHD_LABEL = 'dev.rivetos.codex-capture'
+export const PI_WATCHER_UNIT = 'pi-memory-capture.service'
+export const PI_LAUNCHD_LABEL = 'dev.rivetos.pi-capture'
 export const OPENCODE_WATCHER_UNIT = 'opencode-memory-capture.service'
 export const OPENCODE_LAUNCHD_LABEL = 'dev.rivetos.opencode-capture'
 
 const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
   'kimi-code': join('integrations', 'kimi', 'rivet-memory', 'bin', 'setup-kimi-rivet-memory.sh'),
   codex: join('integrations', 'codex', 'rivet-memory', 'bin', 'setup-codex-rivet-memory.sh'),
+  pi: join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh'),
   opencode: join(
     'integrations',
     'opencode',
@@ -269,7 +272,10 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'install + enable capture watcher (systemd user unit / launchd)',
       ]
     case 'pi':
-      return ['pi memory capture not wired yet']
+      return [
+        `run ${SETUP_SCRIPTS.pi} --apply`,
+        'install + enable capture watcher (systemd user unit / launchd)',
+      ]
   }
 }
 
@@ -602,6 +608,8 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
       ? process.env.KIMI_CODE_HOME
       : id === 'codex'
         ? process.env.CODEX_HOME
+        : id === 'pi'
+          ? process.env.PI_AGENT_HOME
         : id === 'opencode'
           ? process.env.OPENCODE_CONFIG_DIR
           : undefined
@@ -613,6 +621,8 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
       ? [configHome, join(home, '.kimi-code'), join(home, '.kimi')]
       : id === 'codex'
         ? [configHome, join(home, '.codex')]
+        : id === 'pi'
+          ? [configHome, join(home, '.pi', 'agent')]
         : id === 'opencode'
           ? [configHome, join(home, '.config', 'opencode')]
           : [configHome]
@@ -642,6 +652,10 @@ export function setupArtefactMissing(
           tomlFileHasRivetosTable(join(dir, 'config.toml')),
       )
       return mcp ? null : 'mcp.json / config.toml missing rivetos MCP block'
+    }
+    case 'pi': {
+      const mcp = homes.some((dir) => mcpJsonHasRivetos(join(dir, 'mcp.json')))
+      return mcp ? null : 'mcp.json missing rivetos server'
     }
     case 'opencode': {
       const mcp = homes.some((dir) => opencodeJsonHasRivetos(join(dir, 'opencode.json')))
@@ -733,6 +747,14 @@ function ensureSetupArtefact(id: HarnessId, h: DetectedHarness, root: string, ho
     }
     return
   }
+  if (id === 'pi') {
+    const command = join(root, 'integrations', 'pi', 'rivet-memory', 'bin', 'rivet-memory-mcp.sh')
+    for (const dir of artefactConfigHomes(id, home, h.configHome)) {
+      const mcp = join(dir, 'mcp.json')
+      if (existsSync(mcp)) mergeRivetosMcpJson(mcp, command)
+    }
+    return
+  }
   if (id === 'opencode') {
     const command = join(
       root,
@@ -801,7 +823,10 @@ export function systemdEnvironmentFile(path: string): string {
   return `EnvironmentFile=-${path.replace(/%/g, '%%')}`
 }
 
-function captureScriptPath(root: string): string {
+function captureScriptPath(root: string, harness: 'codex' | 'pi' = 'codex'): string {
+  if (harness === 'pi') {
+    return join(root, 'integrations', 'pi', 'rivet-memory', 'bin', 'pi-memory-capture.sh')
+  }
   return join(root, 'integrations', 'codex', 'rivet-memory', 'bin', 'codex-memory-capture.sh')
 }
 
@@ -994,6 +1019,195 @@ export async function installCodexCaptureWatcher(opts: {
       }
     }
     return { ok: true, detail: `capture watcher enabled (${CODEX_LAUNCHD_LABEL})` }
+  }
+
+  console.log(`   no service manager — run: ${manual}`)
+  return { ok: true, detail: `no service manager (run: ${manual})` }
+}
+
+/** systemd user unit for the pi capture watcher. ExecStart is always
+ *  `/bin/bash <script> --watch` so the unit does not depend on the
+ *  launcher's executable bit (mode bits do not survive every copy path). */
+export function piSystemdUnit(opts: {
+  root: string
+  home: string
+  envFile?: string
+  pathEnv?: string
+  nodeBinDir?: string
+  rivetosEnvFile?: string
+  pgUrl?: string
+  sessionsDir?: string
+}): string {
+  const captureSh = captureScriptPath(opts.root, 'pi')
+  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
+  const lines = [
+    '[Unit]',
+    'Description=RivetOS pi memory capture watcher',
+    'After=network.target rivetos.service',
+    'Wants=rivetos.service',
+    '',
+    '[Service]',
+    'Type=simple',
+    `ExecStart=${BASH} ${systemdQuote(captureSh)} --watch`,
+  ]
+  if (opts.envFile) lines.push(systemdEnvironmentFile(opts.envFile))
+  lines.push(systemdEnvironment('RIVETOS_ROOT', opts.root))
+  lines.push(systemdEnvironment('PATH', pathEnv))
+  if (opts.rivetosEnvFile) lines.push(systemdEnvironment('RIVETOS_ENV_FILE', opts.rivetosEnvFile))
+  if (opts.pgUrl) lines.push(systemdEnvironment('RIVETOS_PG_URL', opts.pgUrl))
+  if (opts.sessionsDir) lines.push(systemdEnvironment('PI_SESSIONS_DIR', opts.sessionsDir))
+  lines.push('Restart=always', 'RestartSec=5', '', '[Install]', 'WantedBy=default.target', '')
+  return lines.join('\n')
+}
+
+export function piLaunchdPlist(opts: {
+  captureSh: string
+  root: string
+  home: string
+  logPath: string
+  pgUrl?: string
+  pathEnv?: string
+  nodeBinDir?: string
+  rivetosEnvFile?: string
+  sessionsDir?: string
+}): string {
+  const pathEnv = opts.pathEnv ?? watcherPathEnv(opts.home, opts.nodeBinDir)
+  const envEntries = [
+    `    <key>RIVETOS_ROOT</key>\n    <string>${xmlEscape(opts.root)}</string>`,
+    `    <key>PATH</key>\n    <string>${xmlEscape(pathEnv)}</string>`,
+  ]
+  if (opts.rivetosEnvFile) {
+    envEntries.push(
+      `    <key>RIVETOS_ENV_FILE</key>\n    <string>${xmlEscape(opts.rivetosEnvFile)}</string>`,
+    )
+  }
+  if (opts.pgUrl) {
+    envEntries.push(`    <key>RIVETOS_PG_URL</key>\n    <string>${xmlEscape(opts.pgUrl)}</string>`)
+  }
+  if (opts.sessionsDir) {
+    envEntries.push(
+      `    <key>PI_SESSIONS_DIR</key>\n    <string>${xmlEscape(opts.sessionsDir)}</string>`,
+    )
+  }
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${PI_LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${BASH}</string>
+    <string>${xmlEscape(opts.captureSh)}</string>
+    <string>--watch</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+${envEntries.join('\n')}
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(opts.logPath)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(opts.logPath)}</string>
+</dict>
+</plist>
+`
+}
+
+export async function installPiCaptureWatcher(opts: {
+  home: string
+  root: string
+  exec: typeof execFileAsync
+  platform: NodeJS.Platform
+  uid?: number
+}): Promise<{ ok: boolean; detail: string }> {
+  const customEnvFile = nonemptyEnv(process.env.RIVETOS_ENV_FILE)
+  const defaultEnvFile = join(opts.home, '.rivetos', '.env')
+  const envFile = customEnvFile ?? defaultEnvFile
+  const envFileExists = existsSync(envFile)
+  const envText = envFileExists ? readFileSync(envFile, 'utf-8') : ''
+  const pgUrlFromFile = envFileExists
+    ? nonemptyEnv(readEnvKey(envText, 'RIVETOS_PG_URL'))
+    : undefined
+  const pgUrl = pgUrlFromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
+  const rivetRoot = nonemptyEnv(readEnvKey(envText, 'RIVETOS_ROOT')) ?? opts.root
+  const captureSh = captureScriptPath(rivetRoot, 'pi')
+  const sessionsDir = nonemptyEnv(process.env.PI_SESSIONS_DIR)
+  const manual = `${BASH} ${captureSh} --watch`
+
+  if (opts.platform === 'linux') {
+    const probe = await opts.exec('systemctl', ['--user', '--version'], { timeoutMs: 5_000 })
+    if (isSpawnEnoent(probe)) {
+      console.log(`   no systemctl — run: ${manual}`)
+      return { ok: true, detail: `no systemctl (run: ${manual})` }
+    }
+    const unitPath = join(opts.home, '.config', 'systemd', 'user', PI_WATCHER_UNIT)
+    mkdirSync(dirname(unitPath), { recursive: true })
+    writeFileSync(
+      unitPath,
+      piSystemdUnit({
+        root: rivetRoot,
+        home: opts.home,
+        envFile: envFileExists ? envFile : undefined,
+        rivetosEnvFile: customEnvFile,
+        pgUrl: pgUrlFromFile ? undefined : pgUrl,
+        sessionsDir,
+      }),
+    )
+    const reload = await opts.exec('systemctl', ['--user', 'daemon-reload'], { timeoutMs: 15_000 })
+    const enable = await opts.exec('systemctl', ['--user', 'enable', '--now', PI_WATCHER_UNIT], {
+      timeoutMs: 15_000,
+    })
+    if (reload.code !== 0 || enable.code !== 0) {
+      return {
+        ok: false,
+        detail: `capture watcher enable failed (daemon-reload exit ${reload.code ?? 'n/a'}, enable exit ${enable.code ?? 'n/a'})`,
+      }
+    }
+    return { ok: true, detail: `capture watcher enabled (${PI_WATCHER_UNIT})` }
+  }
+
+  if (opts.platform === 'darwin') {
+    const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`)
+    mkdirSync(dirname(plistPath), { recursive: true })
+    const logPath = join(opts.home, '.rivetos', 'pi-memory-capture.log')
+    mkdirSync(dirname(logPath), { recursive: true })
+    writeFileSync(
+      plistPath,
+      piLaunchdPlist({
+        captureSh,
+        root: rivetRoot,
+        home: opts.home,
+        logPath,
+        pgUrl,
+        rivetosEnvFile: customEnvFile,
+        sessionsDir,
+      }),
+    )
+    const uid = opts.uid ?? process.getuid?.()
+    if (uid === undefined) {
+      console.log(`   run: launchctl bootstrap gui/$UID ${plistPath}`)
+      return { ok: true, detail: `wrote ${plistPath}; run launchctl bootstrap gui/$UID` }
+    }
+    const boot = await opts.exec('launchctl', ['bootstrap', `gui/${uid}`, plistPath], {
+      timeoutMs: 15_000,
+    })
+    if (isSpawnEnoent(boot)) {
+      console.log(`   no launchctl — run: ${manual}`)
+      return { ok: true, detail: `wrote ${plistPath}; no launchctl (run: ${manual})` }
+    }
+    const out = `${boot.stderr}${boot.stdout}`
+    if (boot.code !== 0 && !/already bootstrapped|already loaded/i.test(out)) {
+      return {
+        ok: false,
+        detail: `capture watcher bootstrap failed (exit ${boot.code ?? 'n/a'})`,
+      }
+    }
+    return { ok: true, detail: `capture watcher enabled (${PI_LAUNCHD_LABEL})` }
   }
 
   console.log(`   no service manager — run: ${manual}`)
@@ -1205,10 +1419,11 @@ export async function installOpencodeCaptureWatcher(opts: {
 const SETUP_BIN_ENV: Partial<Record<HarnessId, string>> = {
   codex: 'CODEX_BIN',
   'kimi-code': 'KIMI_BIN',
+  pi: 'PI_BIN',
   opencode: 'OPENCODE_BIN',
 }
 
-/** PATH + `CODEX_BIN`/`KIMI_BIN`/`OPENCODE_BIN` so a harness found only in a
+/** PATH + `CODEX_BIN`/`KIMI_BIN`/`PI_BIN`/`OPENCODE_BIN` so a harness found only in a
  *  mise shim / extra dir is visible to `command -v` inside setup scripts. */
 export function setupScriptEnv(h: DetectedHarness, root: string, home: string): NodeJS.ProcessEnv {
   const extra = DEFAULT_EXTRA_DIRS.map((d) => expandHome(d, home))
@@ -1263,6 +1478,17 @@ async function runSetupScript(
   const bits = [`${scriptRel} --apply`]
   if (id === 'codex') {
     const w = await installCodexCaptureWatcher({
+      home,
+      root,
+      exec,
+      platform: watcher.platform,
+      uid: watcher.uid,
+    })
+    bits.push(w.detail)
+    if (!w.ok) return { ok: false, detail: bits.join('; ') }
+  }
+  if (id === 'pi') {
+    const w = await installPiCaptureWatcher({
       home,
       root,
       exec,
@@ -1473,6 +1699,7 @@ export async function runPluginsInstall(
         case 'opencode':
         case 'kimi-code':
         case 'codex':
+        case 'pi':
           result = await runSetupScript(
             h.id,
             h,
@@ -1486,9 +1713,6 @@ export async function runPluginsInstall(
               uid: deps.uid,
             },
           )
-          break
-        case 'pi':
-          result = { ok: true, detail: 'no capture installer yet' }
           break
       }
       oneLine(h.id, result.ok, result.detail, false)

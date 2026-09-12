@@ -22,6 +22,8 @@ _(per-node gotchas that must stay top of mind — keep this list short)_
 The agent-facing MCP server exposes all six read-only recall tools below. Discover
 qualified names from the connected `rivetos` server. For Codex setup, see
 [integrations/codex/rivet-memory/README.md](../integrations/codex/rivet-memory/README.md).
+For pi setup, see
+[integrations/pi/rivet-memory/README.md](../integrations/pi/rivet-memory/README.md).
 For OpenCode setup, see
 [integrations/opencode/rivet-memory/README.md](../integrations/opencode/rivet-memory/README.md).
 

@@ -3,8 +3,16 @@
  * context building, model state, and availability probing.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { VllmProvider, encodeVideoMarkers, spliceVideoUrls } from './index.js'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import {
+  VllmProvider,
+  encodeVideoMarkers,
+  spliceVideoUrls,
+  chatCompletionsUrl,
+  modelsProbeUrl,
+  normalizeApiPrefix,
+  openaiCompatBaseURL,
+} from './index.js'
 import type { VllmProviderConfig } from './index.js'
 import type { Message } from '@rivetos/types'
 
@@ -365,6 +373,179 @@ describe('VllmProvider', () => {
       const available = await provider.isAvailable()
 
       expect(available).toBe(true)
+    })
+  })
+
+  describe('api_prefix / models_url / probe_models', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
+    it('default prefix is /v1 and builds /v1/chat/completions and /v1/models', () => {
+      const base = 'http://localhost:8000'
+      const prefix = normalizeApiPrefix(undefined)
+      expect(prefix).toBe('/v1')
+      expect(openaiCompatBaseURL(base, prefix)).toBe('http://localhost:8000/v1')
+      expect(chatCompletionsUrl(base, prefix)).toBe('http://localhost:8000/v1/chat/completions')
+      expect(modelsProbeUrl(base, prefix)).toBe('http://localhost:8000/v1/models')
+    })
+
+    it('normalises api_prefix: leading slash, strip trailing slashes, empty is empty', () => {
+      expect(normalizeApiPrefix(undefined)).toBe('/v1')
+      expect(normalizeApiPrefix(null)).toBe('/v1')
+      expect(normalizeApiPrefix('')).toBe('')
+      expect(normalizeApiPrefix('  ')).toBe('')
+      expect(normalizeApiPrefix('v4')).toBe('/v4')
+      expect(normalizeApiPrefix('/v1/')).toBe('/v1')
+    })
+
+    it("api_prefix: '' builds <base>/chat/completions and <base>/models", async () => {
+      const base = 'https://api.z.ai/api/coding/paas/v4'
+      const prefix = normalizeApiPrefix('')
+      expect(prefix).toBe('')
+      expect(chatCompletionsUrl(base, prefix)).toBe(`${base}/chat/completions`)
+      expect(modelsProbeUrl(base, prefix)).toBe(`${base}/models`)
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValueOnce({ data: [{ id: 'glm-5.3-flash' }] }),
+        }),
+      )
+      const provider = new VllmProvider({
+        baseUrl: base,
+        apiPrefix: '',
+        model: 'glm-5.3-flash',
+      })
+      await provider.isAvailable()
+      expect(fetch).toHaveBeenCalledWith(`${base}/models`, { headers: {} })
+    })
+
+    it('models_url overrides the probe URL', async () => {
+      const modelsUrl = 'https://api.z.ai/api/paas/v4/models'
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValueOnce({ data: [{ id: 'glm-5.3-flash' }] }),
+        }),
+      )
+      const provider = new VllmProvider({
+        baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+        apiPrefix: '',
+        modelsUrl,
+        model: 'glm-5.3-flash',
+      })
+      await provider.isAvailable()
+      expect(fetch).toHaveBeenCalledWith(modelsUrl, { headers: {} })
+    })
+
+    it('probe_models: false skips the fetch and reports available', async () => {
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      const provider = new VllmProvider({
+        baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+        apiPrefix: '',
+        probeModels: false,
+        model: 'glm-5.3-flash',
+      })
+      expect(await provider.isAvailable()).toBe(true)
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('warns at construction when probe_models is false and model is unset/default', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: false,
+      })
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('literal "default"'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('will be sent as the model id'))
+
+      warn.mockClear()
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: false,
+        model: 'default',
+      })
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('literal "default"'))
+
+      warn.mockClear()
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: false,
+        model: 'glm-5.3-flash',
+      })
+      expect(warn).not.toHaveBeenCalled()
+
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: true,
+      })
+      expect(warn).not.toHaveBeenCalled()
+    })
+
+    it('error text includes the actual models URL (not a hardcoded /v1/models)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED')))
+      const base = 'https://api.z.ai/api/coding/paas/v4'
+      const provider = new VllmProvider({ baseUrl: base, apiPrefix: '' })
+      expect(await provider.isAvailable()).toBe(false)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${base}/models`))
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('/v1/models'))
+    })
+
+    it('HTTP error text includes the actual models URL', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({ ok: false, status: 404 }),
+      )
+      const modelsUrl = 'https://api.z.ai/api/paas/v4/models'
+      const provider = new VllmProvider({
+        baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+        apiPrefix: '',
+        modelsUrl,
+      })
+      expect(await provider.isAvailable()).toBe(false)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(modelsUrl))
+    })
+
+    it('model-mismatch warning includes the actual models URL', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValueOnce({ data: [{ id: 'other' }] }),
+        }),
+      )
+      const modelsUrl = 'https://api.z.ai/api/paas/v4/models'
+      const provider = new VllmProvider({
+        baseUrl: 'https://api.z.ai/api/coding/paas/v4',
+        apiPrefix: '',
+        modelsUrl,
+        model: 'glm-5.3-flash',
+        verifyModelOnInit: true,
+      })
+      expect(await provider.isAvailable()).toBe(false)
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(modelsUrl))
+    })
+
+    it('still strips a trailing /v1 from base_url when api_prefix is default', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValueOnce({
+          ok: true,
+          json: vi.fn().mockResolvedValueOnce({ data: [] }),
+        }),
+      )
+      const provider = new VllmProvider({ baseUrl: 'https://api.deepseek.com/v1' })
+      await provider.isAvailable()
+      expect(fetch).toHaveBeenCalledWith('https://api.deepseek.com/v1/models', { headers: {} })
     })
   })
 

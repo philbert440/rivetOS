@@ -246,6 +246,11 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
 
         if (!id) return json(res, 405, { error: 'method not allowed' })
 
+        // PGlite stores task IDs as UUIDs. Reject malformed links before touching
+        // the store so they cannot surface a database exception as HTTP 500.
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+          return json(res, 400, { error: 'Invalid task ID. Check the task link.' })
+
         const row = await store.get(id)
         if (!row) return json(res, 404, { error: `no task ${id}` })
 

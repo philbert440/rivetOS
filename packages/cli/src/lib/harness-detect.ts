@@ -41,12 +41,10 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   pi: 'pi-cli',
 }
 
-/** Config-home directory name under `$HOME`. Kimi's setup script also
- *  understands `~/.kimi-code`; detection reports `~/.kimi` as specified. */
 /** Harnesses whose rivet-memory capture is a long-running watcher (no hooks). */
-export const WATCHER_CAPTURE_HARNESSES: HarnessId[] = ['codex', 'opencode']
+export const WATCHER_CAPTURE_HARNESSES: HarnessId[] = ['codex', 'pi', 'opencode']
 
-export function isWatcherCaptureHarness(id: HarnessId): id is 'codex' | 'opencode' {
+export function isWatcherCaptureHarness(id: HarnessId): id is 'codex' | 'pi' | 'opencode' {
   return WATCHER_CAPTURE_HARNESSES.includes(id)
 }
 

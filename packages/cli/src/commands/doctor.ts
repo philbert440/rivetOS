@@ -84,6 +84,8 @@ import { findRoot } from './plugins-sync.js'
 import {
   CODEX_LAUNCHD_LABEL,
   CODEX_WATCHER_UNIT,
+  PI_LAUNCHD_LABEL,
+  PI_WATCHER_UNIT,
   OPENCODE_LAUNCHD_LABEL,
   OPENCODE_WATCHER_UNIT,
   artefactConfigHomes,
@@ -1592,8 +1594,17 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
     case 'opencode':
       return opencodeCaptureInstalled(home, h.configHome)
     case 'pi':
-      return false
+      return piPluginInstalled(home)
   }
+}
+
+/** Installed when the watcher has written its doctor marker, or the
+ *  systemd/launchd unit file is present (enabled by `plugins install`). */
+function piPluginInstalled(home: string): boolean {
+  if (existsSync(join(home, '.rivetos', 'pi-capture-state.json'))) return true
+  if (existsSync(join(home, '.config', 'systemd', 'user', PI_WATCHER_UNIT))) return true
+  if (existsSync(join(home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`))) return true
+  return false
 }
 
 async function claudePluginListed(
@@ -1606,7 +1617,7 @@ async function claudePluginListed(
 }
 
 export type CaptureWatcherHealth = 'active' | 'inactive' | 'crash-looping' | 'n/a'
-export type CaptureWatcherHarness = 'codex' | 'opencode'
+export type CaptureWatcherHarness = 'codex' | 'pi' | 'opencode'
 
 function parseSystemctlShow(text: string): { nRestarts: number; activeState: string } {
   let nRestarts = 0
@@ -1623,9 +1634,14 @@ function parseSystemctlShow(text: string): { nRestarts: number; activeState: str
 }
 
 function watcherUnit(harness: CaptureWatcherHarness): { unit: string; label: string } {
-  return harness === 'opencode'
-    ? { unit: OPENCODE_WATCHER_UNIT, label: OPENCODE_LAUNCHD_LABEL }
-    : { unit: CODEX_WATCHER_UNIT, label: CODEX_LAUNCHD_LABEL }
+  switch (harness) {
+    case 'opencode':
+      return { unit: OPENCODE_WATCHER_UNIT, label: OPENCODE_LAUNCHD_LABEL }
+    case 'pi':
+      return { unit: PI_WATCHER_UNIT, label: PI_LAUNCHD_LABEL }
+    default:
+      return { unit: CODEX_WATCHER_UNIT, label: CODEX_LAUNCHD_LABEL }
+  }
 }
 
 export async function captureWatcherStatus(
@@ -1794,6 +1810,19 @@ function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.Process
   return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
 }
 
+/** Models probe URL for the vllm provider — honors `models_url` and `api_prefix`. */
+function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): string {
+  if (typeof config.models_url === 'string' && config.models_url) return config.models_url
+  const raw = config.api_prefix
+  let prefix = '/v1'
+  if (raw !== undefined && raw !== null) {
+    const trimmed = (typeof raw === 'string' ? raw : '').trim()
+    if (trimmed === '') prefix = ''
+    else prefix = (trimmed.startsWith('/') ? trimmed : `/${trimmed}`).replace(/\/+$/, '')
+  }
+  return `${baseUrl}${prefix}/models`
+}
+
 async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
@@ -1868,17 +1897,32 @@ async function checkProviderConnectivity(
       return resp.ok
     }
 
-    case 'vllm':
     case 'llama-server': {
       const baseUrl = (config.base_url as string | undefined)
         ?.replace(/\/$/, '')
         .replace(/\/v1$/, '')
       if (!baseUrl) return false
-      const envKey = name === 'vllm' ? 'VLLM_API_KEY' : 'LLAMA_SERVER_API_KEY'
-      const apiKey = (config.api_key as string | undefined) ?? process.env[envKey]
+      const apiKey = (config.api_key as string | undefined) ?? process.env.LLAMA_SERVER_API_KEY
       const headers: Record<string, string> = {}
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`
       const resp = await fetch(`${baseUrl}/v1/models`, {
+        headers,
+        signal: AbortSignal.timeout(timeout),
+      })
+      return resp.ok
+    }
+
+    case 'vllm': {
+      const baseUrl = (config.base_url as string | undefined)
+        ?.replace(/\/$/, '')
+        .replace(/\/v1$/, '')
+      if (!baseUrl) return false
+      if (config.probe_models === false) return true
+      const apiKey = (config.api_key as string | undefined) ?? process.env.VLLM_API_KEY
+      const headers: Record<string, string> = {}
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+      const modelsUrl = vllmDoctorModelsUrl(config, baseUrl)
+      const resp = await fetch(modelsUrl, {
         headers,
         signal: AbortSignal.timeout(timeout),
       })

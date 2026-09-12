@@ -277,7 +277,12 @@ export function TaskDetailPage(): JSX.Element {
   const task = useQuery({
     queryKey: ['task', baseUrl, taskId],
     queryFn: ({ signal }) => useConnection.getState().gateway.getTask(taskId, signal),
-    refetchInterval: 10_000,
+    retry: (count, error) =>
+      !(error instanceof GatewayError && [400, 404].includes(error.status)) && count < 3,
+    refetchInterval: (query) =>
+      query.state.error instanceof GatewayError && [400, 404].includes(query.state.error.status)
+        ? false
+        : 10_000,
     enabled: connected,
   })
   if (!connected) return <NotConnected />
@@ -304,8 +309,13 @@ export function TaskDetailPage(): JSX.Element {
     }
   }
 
-  if (task.isError)
-    return <div className="p-8 font-mono text-sm text-red">{task.error.message}</div>
+  if (task.isError) {
+    const message =
+      task.error instanceof GatewayError && task.error.status === 404
+        ? 'Task not found. Check the task link.'
+        : task.error.message
+    return <div className="p-8 font-mono text-sm text-red">{message}</div>
+  }
   if (!t) return <div className="p-8 text-sm text-ink-dim">loading…</div>
 
   return (

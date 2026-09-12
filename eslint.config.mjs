@@ -85,6 +85,8 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/*.js',
       '**/*.mjs',
+      // Desktop E2E harness is plain ESM; keep it in the root prettier/eslint run.
+      '!apps/rivethub-electron/e2e/**/*.mjs',
       '**/*.cjs',
       '**/*.d.ts',
       '**/*.test.ts',
@@ -321,6 +323,32 @@ export default tseslint.config(
           ignoredDependencies: ['typescript', 'node-pty'],
         },
       ],
+    },
+  },
+
+  // Desktop E2E harness (plain ESM). Global ignores exclude *.mjs; the
+  // negated pattern above re-includes this tree so prettier/eslint see it.
+  {
+    files: ['apps/rivethub-electron/e2e/**/*.mjs'],
+    languageOptions: {
+      sourceType: 'module',
+      ecmaVersion: 2024,
+      globals: {
+        AbortSignal: 'readonly',
+        Buffer: 'readonly',
+        EvalError: 'readonly',
+        Function: 'readonly',
+        URL: 'readonly',
+        WebAssembly: 'readonly',
+        clearTimeout: 'readonly',
+        console: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        localStorage: 'readonly',
+        process: 'readonly',
+        setTimeout: 'readonly',
+        window: 'readonly',
+      },
     },
   },
 

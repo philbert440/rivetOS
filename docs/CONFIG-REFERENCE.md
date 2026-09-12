@@ -274,7 +274,7 @@ Dedicated provider for a vLLM server. Exposes the full vLLM surface.
 
 - Folds any post-first `system` message into a `user` message with a `[SYSTEM NOTICE]` prefix (vLLM/Qwen/Llama templates reject mid-conversation system messages)
 - Consumes vLLM's native `reasoning_content` field when a `--reasoning-parser` is configured server-side
-- `model: default` auto-discovers the served model (and its context window) from `/v1/models`
+- `model: default` auto-discovers the served model (and its context window) from the models listing (`<base><api_prefix>/models`)
 
 ```yaml
 providers:
@@ -286,30 +286,47 @@ providers:
     # api_key: ${VLLM_API_KEY}            # only if vLLM started with --api-key
 ```
 
-| Key                    | Type     | Default           | Description                                                     |
-| ---------------------- | -------- | ----------------- | --------------------------------------------------------------- |
-| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional).                               |
-| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                      |
-| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                         |
-| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                          |
-| `temperature`          | number   | `0.7`             | Sampling temperature.                                           |
-| `top_p`                | number   | `0.95`            | Nucleus sampling.                                               |
-| `top_k`                | number   | —                 | vLLM sampling extension.                                        |
-| `min_p`                | number   | —                 | vLLM sampling extension.                                        |
-| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                        |
-| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                        |
-| `repetition_penalty`   | number   | —                 | vLLM extension.                                                 |
-| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                          |
-| `stop`                 | string[] | —                 | Stop sequences.                                                 |
-| `seed`                 | number   | —                 | Reproducible sampling seed.                                     |
-| `context_window`       | number   | —                 | Context-window size reported to the runtime.                    |
-| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                      |
-| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                  |
-| `verify_model_on_init` | boolean  | `false`           | Probe `/v1/models` at boot to confirm the model is served.      |
-| `name`                 | string   | —                 | Display name for the provider.                                  |
-| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                 |
-| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                        |
-| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough). |
+z.ai / GLM (OpenAI-compatible coding endpoint has no `/v1` segment — `api_prefix: ""` is enough; models listing is at `<base>/models`):
+
+```yaml
+providers:
+  vllm:
+    name: GLM (Z.ai)
+    base_url: https://api.z.ai/api/coding/paas/v4
+    api_prefix: ""
+    api_key: ${ZAI_API_KEY}
+    model: glm-5.3-flash
+```
+
+Use `models_url` only if the models listing lives somewhere other than `<base><api_prefix>/models`.
+
+| Key                    | Type     | Default           | Description                                                                          |
+| ---------------------- | -------- | ----------------- | ------------------------------------------------------------------------------------ |
+| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).         |
+| `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).      |
+| `models_url`           | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
+| `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.   |
+| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                           |
+| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                              |
+| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                                               |
+| `temperature`          | number   | `0.7`             | Sampling temperature.                                                                |
+| `top_p`                | number   | `0.95`            | Nucleus sampling.                                                                    |
+| `top_k`                | number   | —                 | vLLM sampling extension.                                                             |
+| `min_p`                | number   | —                 | vLLM sampling extension.                                                             |
+| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                                             |
+| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                                             |
+| `repetition_penalty`   | number   | —                 | vLLM extension.                                                                      |
+| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                                               |
+| `stop`                 | string[] | —                 | Stop sequences.                                                                      |
+| `seed`                 | number   | —                 | Reproducible sampling seed.                                                          |
+| `context_window`       | number   | —                 | Context-window size reported to the runtime.                                         |
+| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                                           |
+| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                                       |
+| `verify_model_on_init` | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.        |
+| `name`                 | string   | —                 | Display name for the provider.                                                       |
+| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                      |
+| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                                             |
+| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                      |
 
 ### llama-server
 

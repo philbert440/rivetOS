@@ -273,6 +273,94 @@ describe('checkHarnesses', () => {
     expect(results2[0].message).toMatch(/capture watcher: active/)
   })
 
+  function piHarness(h: string): DetectedHarness {
+    return {
+      id: 'pi',
+      command: 'pi',
+      binary: '/bin/pi',
+      providerKey: 'pi-cli',
+      configHome: join(h, '.pi', 'agent'),
+    }
+  }
+
+  it('pi row warns when neither state file nor unit is present', async () => {
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.85.1')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [piHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/memory plugin not installed/)
+    expect(results[0].detail).toMatch(/rivetos plugins install/)
+  })
+
+  it('pi row passes when pi-capture-state.json is present and watcher is active', async () => {
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(join(home, '.rivetos', 'pi-capture-state.json'), '{"version":1}\n')
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.85.1')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [piHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/capture watcher: active/)
+    expect(exec.mock.calls.some((c) => c[1]?.includes('NRestarts,ActiveState'))).toBe(true)
+    expect(exec.mock.calls.some((c) => c[1]?.includes('pi-memory-capture.service'))).toBe(true)
+  })
+
+  it('pi row treats the systemd unit file as installed', async () => {
+    mkdirSync(join(home, '.config', 'systemd', 'user'), { recursive: true })
+    writeFileSync(join(home, '.config', 'systemd', 'user', 'pi-memory-capture.service'), '[Unit]\n')
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.85.1')
+      if (args.includes('show')) return ok('NRestarts=0\nActiveState=active\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [piHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/memory plugin installed/)
+  })
+
+  it('pi row reports capture watcher inactive when the unit is down', async () => {
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(join(home, '.rivetos', 'pi-capture-state.json'), '{"version":1}\n')
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.85.1')
+      if (args.includes('show')) return ok('NRestarts=1\nActiveState=inactive\n')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [piHarness(home)],
+      exec,
+      platform: 'linux',
+    })
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/capture watcher: inactive/)
+    expect(results[0].message).toMatch(/memory plugin installed/)
+  })
+
   it('warns for claude when neither plugin list nor hooks.js --status show installed', async () => {
     const hooksJs = join(root, 'plugins', 'providers', 'claude-cli', 'dist', 'hooks.js')
     mkdirSync(dirname(hooksJs), { recursive: true })

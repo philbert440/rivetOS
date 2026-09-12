@@ -317,6 +317,122 @@ export function extractCodexFromLine(
   }
 }
 
+export type ExtractedFull = {
+  content: string
+  toolResult: string | null
+  reasoning?: string | null
+}
+
+/**
+ * Pi v3 session jsonl `{type:'message', message:{role, content:[…]}}` →
+ * content + reasoning + toolResult.
+ * Returns null when the line is not a pi message record so callers can fall
+ * through to Codex / dsh / grok parsers.
+ *
+ * Keep in sync with integrations/pi/rivet-memory/capture (text / thinking /
+ * toolCall items; toolResult is a separate message joined by toolCallId).
+ */
+export function extractPiFromLine(j: unknown): ExtractedFull | null {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  const rec = j as Record<string, unknown>
+  if (rec.type !== 'message') return null
+  const message =
+    rec.message && typeof rec.message === 'object' && !Array.isArray(rec.message)
+      ? (rec.message as Record<string, unknown>)
+      : rec
+  const role = typeof message.role === 'string' ? message.role : ''
+  if (!role) return null
+
+  const rawContent = message.content
+  const items: Record<string, unknown>[] = Array.isArray(rawContent)
+    ? rawContent.filter(
+        (c): c is Record<string, unknown> =>
+          Boolean(c) && typeof c === 'object' && !Array.isArray(c),
+      )
+    : typeof rawContent === 'string' && rawContent
+      ? [{ type: 'text', text: rawContent }]
+      : []
+
+  const textFromItems = (list: Record<string, unknown>[]): string =>
+    list
+      .map((item) => {
+        if (item.type === 'text' && typeof item.text === 'string') return item.text
+        if (typeof item.text === 'string' && !item.type) return item.text
+        return ''
+      })
+      .filter((t) => t.trim().length > 0)
+      .join('\n')
+      .trim()
+
+  const thinkingFromItems = (list: Record<string, unknown>[]): string =>
+    list
+      .map((item) =>
+        item.type === 'thinking' && typeof item.thinking === 'string' ? item.thinking : '',
+      )
+      .filter(Boolean)
+      .join('')
+
+  if (role === 'toolResult' || role === 'tool_result') {
+    const name =
+      (typeof message.toolName === 'string' && message.toolName) ||
+      (typeof message.name === 'string' && message.name) ||
+      'unknown'
+    const nested = items.filter((it) => it.type === 'toolResult' || it.type === 'tool_result')
+    const bodyItems = nested.length > 0 ? nested : items
+    let toolResult: string | null = textFromItems(bodyItems)
+    if (!toolResult) {
+      const rawResult = message.result ?? message.content
+      if (typeof rawResult === 'string') toolResult = rawResult
+      else if (rawResult != null && !Array.isArray(rawResult)) {
+        try {
+          toolResult = JSON.stringify(rawResult)
+        } catch {
+          toolResult = typeof rawResult === 'string' ? rawResult : '[unserializable tool result]'
+        }
+      }
+    }
+    return { content: `[tool-result] ${name}`, toolResult, reasoning: null }
+  }
+
+  if (role === 'user') {
+    return { content: textFromItems(items), toolResult: null, reasoning: null }
+  }
+
+  if (role !== 'assistant') {
+    return { content: '', toolResult: null, reasoning: null }
+  }
+
+  const text = textFromItems(items)
+  const thinking = thinkingFromItems(items)
+  const calls = items.filter((item) => {
+    const t = item.type
+    return t === 'toolCall' || t === 'tool_call' || t === 'toolUse' || t === 'tool_use'
+  })
+  let toolResult: string | null = null
+  if (calls.length > 0) {
+    const first = calls[0] ?? {}
+    const name =
+      (typeof first.name === 'string' && first.name) ||
+      (typeof first.toolName === 'string' && first.toolName) ||
+      'unknown'
+    const args = first.arguments ?? first.input
+    const argsStr = typeof args === 'string' ? args : args != null ? JSON.stringify(args) : null
+    if (!text && !thinking) {
+      return { content: `[tool] ${name}`, toolResult: argsStr, reasoning: null }
+    }
+    toolResult = argsStr
+  }
+  return { content: text, toolResult, reasoning: thinking || null }
+}
+
+/** Capture rows stamp `source: 'pi-session'` and `sourceEvent: 'message:…'`. */
+function isPiCaptureMeta(meta?: Record<string, unknown> | null): boolean {
+  if (!meta) return false
+  if (meta.source === 'pi-session') return true
+  const event = meta.sourceEvent
+  return typeof event === 'string' && event.startsWith('message:')
+}
+
 function partTextFromData(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (part.text && typeof part.text === 'object' && !Array.isArray(part.text)) {
@@ -418,8 +534,12 @@ export function readOpencodePart(
 }
 
 /** Parse one updates.jsonl line and derive the full content + tool result.
- *  Exported for tests. */
-export function extractFullFromLine(raw: string): { content: string; toolResult: string | null } {
+ *  Exported for tests. Optional `meta` selects the pi extractor when the row
+ *  was stamped with pi capture keys (`source` / `sourceEvent`). */
+export function extractFullFromLine(
+  raw: string,
+  meta?: Record<string, unknown> | null,
+): ExtractedFull {
   let j: any
   try {
     j = JSON.parse(raw)
@@ -427,11 +547,19 @@ export function extractFullFromLine(raw: string): { content: string; toolResult:
     return { content: '', toolResult: null }
   }
 
+  if (isPiCaptureMeta(meta)) {
+    const pi = extractPiFromLine(j)
+    if (pi) return pi
+  }
+
   // Codex rollout jsonl (`response_item` / payload.type message|reasoning|
   // custom_tool_call|custom_tool_call_output). Detect before dsh: Codex types
   // have no slash, dsh types do (`user/message`).
   const codex = extractCodexFromLine(j)
   if (codex) return codex
+
+  const pi = extractPiFromLine(j)
+  if (pi) return pi
 
   // dsh SessionEvent (type is "user/message", "tool/call", …)
   const eventType: unknown = j?.type
@@ -574,7 +702,7 @@ export function createGetFullTool(pool: pg.Pool): Tool {
       // Non-transcript pointer is a corrupt/unexpected metadata shape — treat
       // as unrecoverable rather than a multi-host miss. dsh writes
       // session.jsonl.zstd (multi-frame zstd); grok writes updates.jsonl;
-      // Codex writes rollout-<ISO>-<uuid>.jsonl.
+      // Codex writes rollout-<ISO>-<uuid>.jsonl; pi writes <ts>_<id>.jsonl.
       if (!isCaptureTranscriptPath(file))
         return `Source JSONL is gone or invalid (${file}) — the elided tail is unrecoverable.`
       if (!existsSync(file)) return formatMissingJsonlMessage(file, { agent: row.agent })
@@ -596,11 +724,18 @@ export function createGetFullTool(pool: pg.Pool): Tool {
       if (raw === null)
         return `Line ${String(line)} not found in ${file} (file rotated/rewritten?).`
 
-      const { content, toolResult } = extractFullFromLine(raw)
+      const extracted = extractFullFromLine(raw, meta)
+      const { content, toolResult } = extracted
+      const reasoning = extracted.reasoning ?? null
       const sections: string[] = [`## Full payload for ${id} (from ${file}:${String(line)})`]
       if (typeof meta.full_content_length === 'number' && content) {
         sections.push(
           `### content (${String(content.length)} chars)\n${content.slice(0, PREVIEW_GUARD)}`,
+        )
+      }
+      if (typeof meta.full_reasoning_length === 'number' && reasoning) {
+        sections.push(
+          `### reasoning (${String(reasoning.length)} chars)\n${reasoning.slice(0, PREVIEW_GUARD)}`,
         )
       }
       if (typeof meta.full_tool_result_length === 'number' && toolResult) {
