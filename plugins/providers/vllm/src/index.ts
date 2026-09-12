@@ -13,7 +13,8 @@
  * `llama-server` for llama.cpp.
  *
  * Uses `@ai-sdk/openai-compatible` for the streaming path; this file owns
- * config, the `Provider` surface, and the `/v1/models` availability probe.
+ * config, the `Provider` surface, and the models availability probe
+ * (`<base><api_prefix>/models`, overridable via `models_url`).
  *
  * Behavioral notes (see `chat-stream-aisdk.ts` header):
  *   - Mid-conversation `system` messages are folded into `user [SYSTEM NOTICE]`
@@ -35,6 +36,14 @@ import type { LanguageModel } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 
 import { splitAndFoldSystem, type VllmAiSdkContext, type ToolChoice } from './chat-stream-aisdk.js'
+import { modelsProbeUrl, normalizeApiPrefix, openaiCompatBaseURL } from './urls.js'
+
+export {
+  chatCompletionsUrl,
+  modelsProbeUrl,
+  normalizeApiPrefix,
+  openaiCompatBaseURL,
+} from './urls.js'
 
 export type { ToolChoice } from './chat-stream-aisdk.js'
 
@@ -44,12 +53,28 @@ export type { ToolChoice } from './chat-stream-aisdk.js'
 
 export interface VllmProviderConfig {
   /** Base URL of the OpenAI-compatible server, e.g. 'http://localhost:8000'.
-   *  The trailing '/v1' is optional — it is normalized away and re-appended. */
+   *  A trailing '/v1' is optional — it is stripped and re-appended via
+   *  `apiPrefix` (default `'/v1'`). */
   baseUrl: string
+  /**
+   * Path segment appended to the normalised `baseUrl` for the OpenAI-compatible
+   * surface. Default `'/v1'`. `''` means none (chat at `<base>/chat/completions`).
+   */
+  apiPrefix?: string
+  /**
+   * Absolute URL for the models probe / discovery. When set, used instead of
+   * `<base><apiPrefix>/models`.
+   */
+  modelsUrl?: string
+  /**
+   * When `false`, `isAvailable()` skips the models probe (and discovery) and
+   * reports available. Default `true`.
+   */
+  probeModels?: boolean
   /** Bearer token. Send a placeholder like 'sk-no-key-required' for servers
    *  that do not enforce auth. If unset, no Authorization header is sent. */
   apiKey?: string
-  /** Model id as exposed by `/v1/models`. Default: 'default'. */
+  /** Model id as exposed by the models listing. Default: 'default'. */
   model?: string
   /** Max tokens to generate. Default: 4096 */
   maxTokens?: number
@@ -79,7 +104,7 @@ export interface VllmProviderConfig {
   contextWindow?: number
   /** Max output tokens (informational). */
   maxOutputTokens?: number
-  /** If true, probe /v1/models in isAvailable() and reject when the
+  /** If true, probe the models listing in isAvailable() and reject when the
    *  configured model id is not listed. Default: false — strict servers
    *  sometimes do not list all aliases. */
   verifyModelOnInit?: boolean
@@ -207,6 +232,9 @@ export class VllmProvider implements Provider {
   id: string
   name: string
   private baseUrl: string
+  private apiPrefix: string
+  private modelsUrlOverride: string | undefined
+  private probeModels: boolean
   private apiKey: string
   private model: string
   private maxTokens: number
@@ -247,10 +275,14 @@ export class VllmProvider implements Provider {
     this.name = config.name ?? 'vLLM'
 
     // Normalize baseUrl — accept either 'http://host:port' or
-    // 'http://host:port/v1'. The chat stream re-appends '/v1'.
+    // 'http://host:port/v1'. A trailing `/v1` is stripped and re-appended
+    // via apiPrefix (default `/v1`) so existing configs stay unchanged.
     let base = config.baseUrl.replace(/\/+$/, '')
     if (base.endsWith('/v1')) base = base.slice(0, -3)
     this.baseUrl = base
+    this.apiPrefix = normalizeApiPrefix(config.apiPrefix)
+    this.modelsUrlOverride = config.modelsUrl || undefined
+    this.probeModels = config.probeModels ?? true
 
     this.apiKey = config.apiKey ?? ''
     this.model = config.model ?? MODEL_DEFAULTS['vllm']
@@ -299,9 +331,18 @@ export class VllmProvider implements Provider {
     return headers
   }
 
+  private openaiBaseURL(): string {
+    return openaiCompatBaseURL(this.baseUrl, this.apiPrefix)
+  }
+
+  private modelsEndpoint(): string {
+    return modelsProbeUrl(this.baseUrl, this.apiPrefix, this.modelsUrlOverride)
+  }
+
   private buildAiSdkContext(): VllmAiSdkContext {
     return {
       baseUrl: this.baseUrl,
+      apiPrefix: this.apiPrefix,
       apiKey: this.apiKey,
       defaultModel: this.model,
       providerName: this.name,
@@ -389,7 +430,7 @@ export class VllmProvider implements Provider {
     return {
       getModel: ({ modelOverride }): LanguageModel => {
         const provider = createOpenAICompatible({
-          baseURL: `${this.baseUrl}/v1`,
+          baseURL: this.openaiBaseURL(),
           name: this.name,
           apiKey: this.apiKey || undefined,
           includeUsage: true,
@@ -423,14 +464,19 @@ export class VllmProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
+    // Coding-only OpenAI-compat endpoints (e.g. z.ai GLM) often have no
+    // `/models` listing. Skip the probe and discovery entirely.
+    if (!this.probeModels) return true
+
+    const modelsUrl = this.modelsEndpoint()
     let res: Response
     try {
-      res = await fetch(`${this.baseUrl}/v1/models`, { headers: this.authHeaders() })
+      res = await fetch(modelsUrl, { headers: this.authHeaders() })
     } catch (err: unknown) {
       // Connection-level failure — almost always "server not running" locally.
       const msg = err instanceof Error ? err.message : String(err)
       console.warn(
-        `[${this.id}] cannot reach ${this.baseUrl}/v1/models (${msg}). ` +
+        `[${this.id}] cannot reach ${modelsUrl} (${msg}). ` +
           `Is the server running? For local vLLM: vllm serve <model> --port <port>.`,
       )
       return false
@@ -441,9 +487,7 @@ export class VllmProvider implements Provider {
         res.status === 401 || res.status === 403
           ? ' — set api_key (vLLM: pass --api-key and match it here).'
           : ''
-      console.warn(
-        `[${this.id}] ${this.baseUrl}/v1/models returned HTTP ${String(res.status)}${hint}`,
-      )
+      console.warn(`[${this.id}] ${modelsUrl} returned HTTP ${String(res.status)}${hint}`)
       return false
     }
 
@@ -457,7 +501,7 @@ export class VllmProvider implements Provider {
       const ids = models.map((m) => m.id).filter((id): id is string => !!id)
       if (!ids.includes(this.model)) {
         console.warn(
-          `[${this.id}] configured model "${this.model}" not in /v1/models ` +
+          `[${this.id}] configured model "${this.model}" not in ${modelsUrl} ` +
             `(served: ${ids.join(', ') || 'none'}).`,
         )
         return false
@@ -467,7 +511,7 @@ export class VllmProvider implements Provider {
   }
 
   /**
-   * Fill in model id and context window from the server's /v1/models listing
+   * Fill in model id and context window from the server's models listing
    * when the caller didn't pin them. Lets a local config that only knows the
    * base URL "just work": no need to hardcode the exact served model name, and
    * runtime budgeting gets a real context window instead of 0/unknown.
@@ -539,6 +583,9 @@ export const manifest: PluginManifest = {
         chatTemplateKwargs: cfg.chat_template_kwargs as Record<string, unknown> | undefined,
         extraBody: cfg.extra_body as Record<string, unknown> | undefined,
         verifyModelOnInit: cfg.verify_model_on_init as boolean | undefined,
+        apiPrefix: cfg.api_prefix as string | undefined,
+        modelsUrl: cfg.models_url as string | undefined,
+        probeModels: cfg.probe_models as boolean | undefined,
         id: 'vllm',
         name: (cfg.name as string | undefined) ?? 'vllm',
         contextWindow: cfg.context_window as number | undefined,

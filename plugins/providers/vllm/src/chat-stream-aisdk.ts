@@ -17,9 +17,10 @@
  *   `--reasoning-parser` is configured server-side. The legacy inline
  *   `<think>...</think>` content fallback was dropped — operators should
  *   configure `--reasoning-parser` on the server instead.
- * - **Per-call URL routing** — the chat completions endpoint is normalized
- *   from a forgiving baseUrl that accepts either `http://host:port` or
- *   `http://host:port/v1`.
+ * - **Per-call URL routing** — the chat completions endpoint is
+ *   `${baseUrl}${apiPrefix}/chat/completions`. `apiPrefix` defaults to `/v1`;
+ *   `''` means none. `baseUrl` still accepts either `http://host:port` or
+ *   `http://host:port/v1` (the trailing `/v1` is stripped upstream).
  */
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
@@ -41,8 +42,10 @@ export type ToolChoice =
   'auto' | 'none' | 'required' | { type: 'function'; function: { name: string } }
 
 export interface VllmAiSdkContext {
-  /** Bare baseUrl (no /v1 suffix). */
+  /** Bare baseUrl (trailing `/v1` already stripped). */
   baseUrl: string
+  /** OpenAI-compat path prefix (default `'/v1'`; `''` means none). */
+  apiPrefix: string
   apiKey: string
   defaultModel: string
   providerName: string
@@ -137,7 +140,7 @@ export async function* chatStreamAiSdk(
   // Inject vLLM extensions via transformRequestBody. Standard sampling fields
   // are passed through streamText() options below.
   const provider = createOpenAICompatible({
-    baseURL: `${ctx.baseUrl}/v1`,
+    baseURL: `${ctx.baseUrl}${ctx.apiPrefix}`,
     name: ctx.providerName,
     apiKey: ctx.apiKey || undefined,
     includeUsage: true,

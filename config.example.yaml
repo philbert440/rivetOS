@@ -45,7 +45,19 @@ providers:
   #   context_window: 65536
   #   max_output_tokens: 8192
   #   # default_tool_choice: auto           # auto | none | required
-  #   # verify_model_on_init: true          # probe /v1/models at boot
+  #   # verify_model_on_init: true          # probe <base><api_prefix>/models at boot
+  #   # api_prefix: "/v1"                   # "" = no prefix (chat at <base>/chat/completions)
+  #   # models_url: http://host/v1/models   # optional absolute override for the models probe
+  #   # probe_models: true                  # false = skip /models and treat as available
+
+  # --- z.ai / GLM (OpenAI-compatible coding endpoint, no /v1 segment) ---
+  # vllm:
+  #   name: GLM (Z.ai)
+  #   base_url: https://api.z.ai/api/coding/paas/v4
+  #   api_prefix: ""
+  #   models_url: https://api.z.ai/api/paas/v4/models
+  #   api_key: ${ZAI_API_KEY}
+  #   model: glm-5.3-flash
 
 # ---------------------------------------------------------------------------
 # Channels — human UX is Hub (gateway + rivethub), not social bots.

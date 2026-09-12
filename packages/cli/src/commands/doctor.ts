@@ -1796,6 +1796,19 @@ function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.Process
   return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
 }
 
+/** Models probe URL for the vllm provider — honors `models_url` and `api_prefix`. */
+function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): string {
+  if (typeof config.models_url === 'string' && config.models_url) return config.models_url
+  const raw = config.api_prefix
+  let prefix = '/v1'
+  if (raw !== undefined && raw !== null) {
+    const trimmed = String(raw).trim()
+    if (trimmed === '') prefix = ''
+    else prefix = (trimmed.startsWith('/') ? trimmed : `/${trimmed}`).replace(/\/+$/, '')
+  }
+  return `${baseUrl}${prefix}/models`
+}
+
 async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
@@ -1870,17 +1883,32 @@ async function checkProviderConnectivity(
       return resp.ok
     }
 
-    case 'vllm':
     case 'llama-server': {
       const baseUrl = (config.base_url as string | undefined)
         ?.replace(/\/$/, '')
         .replace(/\/v1$/, '')
       if (!baseUrl) return false
-      const envKey = name === 'vllm' ? 'VLLM_API_KEY' : 'LLAMA_SERVER_API_KEY'
-      const apiKey = (config.api_key as string | undefined) ?? process.env[envKey]
+      const apiKey = (config.api_key as string | undefined) ?? process.env.LLAMA_SERVER_API_KEY
       const headers: Record<string, string> = {}
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`
       const resp = await fetch(`${baseUrl}/v1/models`, {
+        headers,
+        signal: AbortSignal.timeout(timeout),
+      })
+      return resp.ok
+    }
+
+    case 'vllm': {
+      const baseUrl = (config.base_url as string | undefined)
+        ?.replace(/\/$/, '')
+        .replace(/\/v1$/, '')
+      if (!baseUrl) return false
+      if (config.probe_models === false) return true
+      const apiKey = (config.api_key as string | undefined) ?? process.env.VLLM_API_KEY
+      const headers: Record<string, string> = {}
+      if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+      const modelsUrl = vllmDoctorModelsUrl(config, baseUrl)
+      const resp = await fetch(modelsUrl, {
         headers,
         signal: AbortSignal.timeout(timeout),
       })
