@@ -293,13 +293,22 @@ def apply_merge(doc: dict[str, Any], plugin_bin: str) -> tuple[dict[str, Any], s
     if isinstance(managed, str) and managed.strip() and not managed_dir_is_ours(managed, plugin_bin):
         return doc, "skip-foreign-managed_dir"
 
-    # "already" only when every event carries EXACTLY the current command;
-    # anything else (old unquoted form, moved install root) is rebuilt below.
+    # "already" only when every event carries a NESTED handler group with
+    # EXACTLY the current command; anything else (old flat shape, old unquoted
+    # form, moved install root) is rebuilt below.
     current = hook_command(plugin_bin)
+
+    def _nested_current(item: Any) -> bool:
+        inner = item.get("hooks") if isinstance(item, dict) else None
+        return isinstance(inner, list) and any(
+            isinstance(h, dict) and h.get("type") == "command" and h.get("command") == current
+            for h in inner
+        )
+
     already = True
     for event in HOOK_EVENTS:
         entries = _event_entries(hooks, event)
-        if not any(current in _group_commands(item) for item in entries):
+        if not any(_nested_current(item) for item in entries):
             already = False
             break
 

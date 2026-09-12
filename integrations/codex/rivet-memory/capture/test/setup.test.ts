@@ -318,6 +318,56 @@ try {
   }
 
   // ===========================================================================
+  // TOML: upgrade from the FLAT (pre-fix) managed shape — must be rebuilt nested
+  // ===========================================================================
+  console.log('\n— merge-requirements.py upgrade from flat managed shape —')
+  {
+    const existing = path.join(dir, 'flat.toml')
+    const quoted = `bash '${pluginBin}/codex-memory-capture.sh' --hook`
+    writeFileSync(
+      existing,
+      [
+        '[hooks]',
+        `managed_dir = ${JSON.stringify(pluginBin)}`,
+        '',
+        ...['UserPromptSubmit', 'Stop', 'SessionEnd'].flatMap((ev) => [
+          `[[hooks.${ev}]]`,
+          `command = ${JSON.stringify(quoted)}`,
+          'timeout = 20',
+          '',
+        ]),
+      ].join('\n'),
+    )
+    const r = run('python3', [
+      MERGE_TOML,
+      'apply',
+      '--plugin-bin',
+      pluginBin,
+      '--existing',
+      existing,
+      '--out',
+      existing,
+    ])
+    eq('flat-upgrade apply exit 0', r.status, 0)
+    check('flat-upgrade reported merged (not already)', /merged rivet-memory/.test(r.stderr))
+    const probe = run('python3', [
+      '-c',
+      [
+        'import tomllib,json,sys',
+        `d=tomllib.load(open(${JSON.stringify(existing)},'rb'))`,
+        'h=d["hooks"]',
+        'flat=sum(1 for ev in ("UserPromptSubmit","Stop","SessionEnd") for g in h[ev] if "command" in g)',
+        'nested=sum(1 for ev in ("UserPromptSubmit","Stop","SessionEnd") for g in h[ev] if any(x.get("type")=="command" and "codex-memory-capture.sh" in x.get("command","") for x in g.get("hooks",[])))',
+        'print(json.dumps({"flat":flat,"nested":nested,"groups":sum(len(h[ev]) for ev in ("UserPromptSubmit","Stop","SessionEnd"))}))',
+      ].join('\n'),
+    ])
+    const got = JSON.parse(probe.stdout.trim() || '{}') as Record<string, number>
+    eq('no flat Rivet groups remain', got.flat, 0)
+    eq('every event has one nested Rivet handler', got.nested, 3)
+    eq('exactly three groups total (no duplicates)', got.groups, 3)
+  }
+
+  // ===========================================================================
   // JSON merge: python + node, empty / mixed / invalid / spaces
   // ===========================================================================
   const jsonTools: Array<{ name: string; cmd: string; args: string[] }> = [

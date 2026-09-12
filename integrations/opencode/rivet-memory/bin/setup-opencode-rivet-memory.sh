@@ -63,7 +63,7 @@ remove_old_watcher() {
   if [ -f "$unit_file" ] && command -v systemctl >/dev/null 2>&1; then
     local out
     if out="$(systemctl --user disable --now "$unit" 2>&1)" \
-      || case "$out" in *"not loaded"*|*"could not be found"*|*"No such file"*|*"not found"*) true ;; *) false ;; esac; then
+      || case "$out" in *"Failed to connect to bus"*|*"Connection refused"*) false ;; *"not loaded"*|*"could not be found"*|*"does not exist"*|*"Unit $unit not found"*) true ;; *) false ;; esac; then
       rm -f "$unit_file"
       systemctl --user daemon-reload 2>/dev/null || true
       echo "Stopped/disabled/removed $unit"
@@ -287,4 +287,8 @@ echo "4. Confirm $PLUGIN_DEST is present (or re-run with --apply)"
 echo "5. Optional one-shot: opencode-memory-capture.sh --backfill --days 14"
 echo "6. Test with a memory-stats or time-bounded recall question"
 echo
+if [ "${MIGRATION_INCOMPLETE:-0}" -eq 1 ]; then
+  echo "⚠️  Setup finished with an INCOMPLETE migration step (see ⚠️ above); the legacy unit was kept for a retry."
+  exit 3
+fi
 echo "Done. Memory should now feel dramatically better in OpenCode sessions."

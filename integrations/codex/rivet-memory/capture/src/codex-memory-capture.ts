@@ -969,10 +969,33 @@ function readLockStamp(dir: string): number | null {
   }
 }
 
+function lockOwnerPid(dir: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')
+    const parsed = JSON.parse(raw) as { pid?: unknown }
+    return typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) ? parsed.pid : null
+  } catch {
+    return null
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+/** Stale = older than the threshold AND the recorded owner is not a live
+ *  process (a slow live backfill keeps its lock however long it runs). */
 function lockIsStale(dir: string, staleMs: number): boolean {
   const ts = readLockStamp(dir)
-  if (ts == null) return true
-  return Date.now() - ts > staleMs
+  if (ts !== null && Date.now() - ts <= staleMs) return false
+  const owner = lockOwnerPid(dir)
+  if (owner !== null && pidAlive(owner)) return false
+  return true
 }
 
 function tryAcquireLock(dir: string): 'acquired' | 'exists' | 'error' {
@@ -1025,9 +1048,10 @@ export async function acquireStateLock(
   }
 }
 
+/** Release only when the recorded owner is us; a missing stamp is NOT permission. */
 export function releaseStateLock(handle: StateLockHandle): void {
   if (!handle.held) return
-  removeLockDir(handle.dir)
+  if (lockOwnerPid(handle.dir) === process.pid) removeLockDir(handle.dir)
 }
 
 /** Run `fn` under the state lock; when the bounded wait expires the work is

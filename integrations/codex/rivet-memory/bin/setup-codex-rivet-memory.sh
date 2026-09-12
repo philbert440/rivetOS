@@ -40,7 +40,8 @@ stop_user_unit() {
   command -v systemctl >/dev/null 2>&1 || return 0
   out="$(systemctl --user disable --now "$unit" 2>&1)" && return 0
   case "$out" in
-    *"not loaded"*|*"could not be found"*|*"No such file"*|*"not found"*|*"does not exist"*) return 0 ;;
+    *"Failed to connect to bus"*|*"Connection refused"*) echo "$out" >&2; return 1 ;;  # indeterminate: keep the file
+    *"not loaded"*|*"could not be found"*|*"does not exist"*|*"Unit $unit not found"*) return 0 ;;
   esac
   echo "$out" >&2
   return 1
@@ -191,10 +192,30 @@ write_managed_toml() {
     rm -f "$outf" "$errf"
     return 1
   fi
-  sudo mkdir -p /etc/codex
+  # Called from an `if` condition (set -e is suspended there) → check every
+  # privileged step explicitly and verify the artefact before claiming success.
+  if ! sudo mkdir -p /etc/codex; then
+    echo "⚠️  sudo mkdir /etc/codex failed; managed hooks not written." >&2
+    rm -f "$outf" "$errf"
+    return 1
+  fi
   # world-readable: codex runs as the user and must be able to read the managed file
-  sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$"
-  sudo mv "${dest}.rivet.$$" "$dest"
+  if ! sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$"; then
+    echo "⚠️  sudo install of $dest failed; managed hooks not written." >&2
+    rm -f "$outf" "$errf"
+    return 1
+  fi
+  if ! sudo mv "${dest}.rivet.$$" "$dest"; then
+    echo "⚠️  sudo mv into $dest failed; managed hooks not written." >&2
+    sudo rm -f "${dest}.rivet.$$" 2>/dev/null || true
+    rm -f "$outf" "$errf"
+    return 1
+  fi
+  if ! [ -r "$dest" ] || ! grep -q 'codex-memory-capture.sh' "$dest"; then
+    echo "⚠️  $dest is not readable or lacks the rivet-memory hooks after install; treating as failed." >&2
+    rm -f "$outf" "$errf"
+    return 1
+  fi
   cat "$errf" || true
   echo "Wrote managed hooks to $dest (0644 root:root)"
   rm -f "$outf" "$errf"
@@ -232,8 +253,12 @@ remove_managed_toml() {
     sudo rm -f "$dest"
     echo "Removed $dest (was only rivet-memory hooks)"
   else
-    sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$"
-    sudo mv "${dest}.rivet.$$" "$dest"
+    if ! sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$" || ! sudo mv "${dest}.rivet.$$" "$dest"; then
+      echo "⚠️  could not rewrite $dest; leaving it untouched." >&2
+      sudo rm -f "${dest}.rivet.$$" 2>/dev/null || true
+      rm -f "$outf" "$errf"
+      return 1
+    fi
     cat "$errf" || true
     echo "Removed rivet-memory hook tables from $dest"
   fi
@@ -261,9 +286,13 @@ print_migration() {
     echo "  systemctl --user daemon-reload"
     if [ "$1" = apply ]; then
       if stop_user_unit codex-memory-capture.service; then
-        rm -f "$WATCHER_UNIT" || true
-        systemctl --user daemon-reload >/dev/null 2>&1 || true
-        echo "Disabled and removed $WATCHER_UNIT"
+        if rm -f "$WATCHER_UNIT"; then
+          systemctl --user daemon-reload >/dev/null 2>&1 || true
+          echo "Disabled and removed $WATCHER_UNIT"
+        else
+          echo "⚠️  Could not remove $WATCHER_UNIT (stopped, file kept)." >&2
+          MIGRATION_INCOMPLETE=1
+        fi
       else
         echo "⚠️  Could not stop codex-memory-capture.service; keeping $WATCHER_UNIT so the next install retries." >&2
         MIGRATION_INCOMPLETE=1
@@ -280,8 +309,12 @@ print_migration() {
       local uid
       uid="$(id -u)"
       if bootout_plist "gui/${uid}" "$WATCHER_PLIST"; then
-        rm -f "$WATCHER_PLIST" || true
-        echo "Booted out and removed $WATCHER_PLIST"
+        if rm -f "$WATCHER_PLIST"; then
+          echo "Booted out and removed $WATCHER_PLIST"
+        else
+          echo "⚠️  Could not remove $WATCHER_PLIST (booted out, file kept)." >&2
+          MIGRATION_INCOMPLETE=1
+        fi
       else
         echo "⚠️  Could not boot out $WATCHER_PLIST; keeping it so the next install retries." >&2
         MIGRATION_INCOMPLETE=1

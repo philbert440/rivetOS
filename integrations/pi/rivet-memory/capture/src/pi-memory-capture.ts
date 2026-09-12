@@ -1095,6 +1095,25 @@ function removeLockDir(lockDir: string): void {
   }
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return errCode(err) === 'EPERM'
+  }
+}
+
+/** Stale = older than the threshold AND the recorded owner is not a live
+ *  process (a slow live backfill keeps its lock however long it runs). */
+function lockIsStale(lockDir: string): boolean {
+  const at = readLockStamp(lockDir)
+  if (at !== null && Date.now() - at <= STATE_LOCK_STALE_MS) return false
+  const owner = lockOwnerPid(lockDir)
+  if (owner !== null && pidAlive(owner)) return false
+  return true
+}
+
 function tryAcquireStateLock(lockDir: string): boolean {
   try {
     fs.mkdirSync(lockDir)
@@ -1102,8 +1121,7 @@ function tryAcquireStateLock(lockDir: string): boolean {
     return true
   } catch (err) {
     if (errCode(err) !== 'EEXIST') return false
-    const stamp = readLockStamp(lockDir)
-    if (stamp === null || Date.now() - stamp > STATE_LOCK_STALE_MS) {
+    if (lockIsStale(lockDir)) {
       removeLockDir(lockDir)
       try {
         fs.mkdirSync(lockDir)
@@ -1147,10 +1165,10 @@ function lockOwnerPid(lockDir: string): number | null {
 }
 
 /** Release only a lock we own (never remove another process's reclaimed lock). */
+/** Release only when the recorded owner is us; a missing stamp is NOT permission. */
 function releaseStateLock(hold: StateLockHold): void {
   if (!hold.owned) return
-  const owner = lockOwnerPid(hold.dir)
-  if (owner === null || owner === process.pid) removeLockDir(hold.dir)
+  if (lockOwnerPid(hold.dir) === process.pid) removeLockDir(hold.dir)
 }
 
 /** Run `fn` under the state lock; when the bounded wait expires the work is
