@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "<PLUGIN_PATH>/bin/codex-memory-capture.sh --hook",
+            "command": "bash '<PLUGIN_PATH>/bin/codex-memory-capture.sh' --hook",
             "timeout": 20
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "<PLUGIN_PATH>/bin/codex-memory-capture.sh --hook",
+            "command": "bash '<PLUGIN_PATH>/bin/codex-memory-capture.sh' --hook",
             "timeout": 20
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "<PLUGIN_PATH>/bin/codex-memory-capture.sh --hook",
+            "command": "bash '<PLUGIN_PATH>/bin/codex-memory-capture.sh' --hook",
             "timeout": 20
           }
         ]

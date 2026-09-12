@@ -9,10 +9,15 @@
  *
  *   $CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl
  *
- * Each fire tails that file from a persisted per-file cursor, folds with the
- * same rules as den-server's `codexTurnsFromLines` (drop developer / injection
- * wrappers; keep user + assistant + tool), and upserts ros_conversations /
- * ros_messages. `--backfill` is the one-shot walk of existing rollouts.
+ * `--hook` validates stdin, then hands off to a detached child
+ * (`--ingest-file <transcript> --delay-ms 400`, plus `--close-session` on
+ * SessionEnd) so the parent exits in milliseconds. Codex clamps SessionEnd
+ * hooks to 3s; inline ingest would get killed on any non-trivial rollout.
+ * The child tails the file from a persisted per-file cursor under the
+ * cross-process state lock, folds with the same rules as den-server's
+ * `codexTurnsFromLines` (drop developer / injection wrappers; keep user +
+ * assistant + tool), and upserts ros_conversations / ros_messages.
+ * `--backfill` is the one-shot walk of existing rollouts.
  *
  * Identity: agent='rivet-gpt', channel='codex', session_key='codex:<uuid>'.
  * Dedup: rollout item id (`rs_…` / `ctc_…` / `ctco_…`); messages without an
@@ -22,10 +27,11 @@
  * line offset so memory_get_full can re-read from disk.
  *
  * `--hook` never throws (log + exit 0) so the CLI is never blocked. Log:
- * ~/.rivetos/codex-memory-capture.log. State:
+ * ~/.rivetos/logs/codex-capture.log. State:
  * ~/.rivetos/codex-capture-state.json.
  */
 
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -39,10 +45,11 @@ export const CAPTURE_AGENT = 'rivet-gpt'
 export const CAPTURE_CHANNEL = 'codex'
 export const CAPTURE_SOURCE = 'codex-rollout'
 
-const LOG_FILE = path.join(os.homedir(), '.rivetos', 'codex-memory-capture.log')
+const LOG_FILE = path.join(os.homedir(), '.rivetos', 'logs', 'codex-capture.log')
 export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
 const DEFAULT_STATE_FILE = path.join(os.homedir(), '.rivetos', 'codex-capture-state.json')
+export const HOOK_HANDOFF_DELAY_MS = 400
 
 const CODEX_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -915,13 +922,189 @@ export function loadCaptureState(file = captureStatePath()): CaptureState {
   }
 }
 
+export const STATE_LOCK_STALE_MS = 120_000
+export const STATE_LOCK_WAIT_MS = 30_000
+export const STATE_LOCK_POLL_MS = 100
+
+export interface StateLockOpts {
+  staleMs?: number
+  waitMs?: number
+  pollMs?: number
+}
+
+export interface StateLockHandle {
+  dir: string
+  held: boolean
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function lockDirFor(stateFile: string): string {
+  return `${stateFile}.lock`
+}
+
+function writeLockOwner(dir: string): void {
+  fs.writeFileSync(
+    path.join(dir, 'owner.json'),
+    `${JSON.stringify({ pid: process.pid, ts: Date.now() })}\n`,
+  )
+}
+
+function readLockStamp(dir: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')
+    const parsed = JSON.parse(raw) as { ts?: unknown }
+    if (typeof parsed.ts === 'number' && Number.isFinite(parsed.ts)) return parsed.ts
+  } catch {
+    // fall through to directory mtime
+  }
+  try {
+    return fs.statSync(dir).mtimeMs
+  } catch {
+    return null
+  }
+}
+
+function lockIsStale(dir: string, staleMs: number): boolean {
+  const ts = readLockStamp(dir)
+  if (ts == null) return true
+  return Date.now() - ts > staleMs
+}
+
+function tryAcquireLock(dir: string): 'acquired' | 'exists' | 'error' {
+  try {
+    fs.mkdirSync(dir)
+    writeLockOwner(dir)
+    return 'acquired'
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'exists'
+    log(`state lock mkdir failed: ${err instanceof Error ? err.message : String(err)}`)
+    return 'error'
+  }
+}
+
+function removeLockDir(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // ignore
+  }
+}
+
+export async function acquireStateLock(
+  stateFile: string,
+  opts: StateLockOpts = {},
+): Promise<StateLockHandle> {
+  const dir = lockDirFor(stateFile)
+  const staleMs = opts.staleMs ?? STATE_LOCK_STALE_MS
+  const waitMs = opts.waitMs ?? STATE_LOCK_WAIT_MS
+  const pollMs = opts.pollMs ?? STATE_LOCK_POLL_MS
+  const deadline = Date.now() + waitMs
+  while (true) {
+    const result = tryAcquireLock(dir)
+    if (result === 'acquired') return { dir, held: true }
+    if (result === 'error') {
+      log(`state lock: proceeding without lock for ${dir}`)
+      return { dir, held: false }
+    }
+    if (lockIsStale(dir, staleMs)) {
+      log(`state lock stale (${dir}); removing`)
+      removeLockDir(dir)
+      continue
+    }
+    if (Date.now() >= deadline) {
+      log(`state lock timeout for ${dir}; proceeding without lock`)
+      return { dir, held: false }
+    }
+    await sleep(pollMs)
+  }
+}
+
+export function releaseStateLock(handle: StateLockHandle): void {
+  if (!handle.held) return
+  removeLockDir(handle.dir)
+}
+
+export async function withStateLock<T>(
+  stateFile: string,
+  fn: () => Promise<T>,
+  opts: StateLockOpts = {},
+): Promise<T> {
+  const handle = await acquireStateLock(stateFile, opts)
+  try {
+    return await fn()
+  } finally {
+    releaseStateLock(handle)
+  }
+}
+
+/** Apply this run's cursor/session fields on top of `base`. Cursors never regress. */
+export function mergeCaptureState(
+  base: CaptureState,
+  patch: {
+    cursors?: Record<string, PersistedCursor>
+    closedSessions?: Record<string, ClosedSession>
+    lastIngestAt?: string
+    lastIngestSource?: string
+    hookInstalledAt?: string
+    files?: number
+    inserted?: number
+    skipped?: number
+  },
+): CaptureState {
+  const cursors: Record<string, PersistedCursor> = { ...base.cursors }
+  if (patch.cursors) {
+    for (const [key, next] of Object.entries(patch.cursors)) {
+      const prev = cursors[key]
+      if (!prev || next.offset > prev.offset) {
+        cursors[key] = { offset: next.offset, pending: next.pending }
+      } else if (next.offset === prev.offset && next.pending.length > prev.pending.length) {
+        cursors[key] = { offset: next.offset, pending: next.pending }
+      }
+    }
+  }
+  const closed: Record<string, ClosedSession> = {
+    ...(base.closedSessions ?? {}),
+    ...(patch.closedSessions ?? {}),
+  }
+  const patchIsNewer =
+    typeof patch.lastIngestAt === 'string' &&
+    (!base.lastIngestAt || patch.lastIngestAt >= base.lastIngestAt)
+  return {
+    version: 1,
+    lastIngestAt: patchIsNewer ? patch.lastIngestAt : base.lastIngestAt,
+    lastIngestSource: patchIsNewer
+      ? (patch.lastIngestSource ?? base.lastIngestSource)
+      : base.lastIngestSource,
+    hookInstalledAt: base.hookInstalledAt ?? patch.hookInstalledAt,
+    files: patchIsNewer ? (patch.files ?? base.files) : base.files,
+    inserted: patchIsNewer ? (patch.inserted ?? base.inserted) : base.inserted,
+    skipped: patchIsNewer ? (patch.skipped ?? base.skipped) : base.skipped,
+    cursors,
+    closedSessions: Object.keys(closed).length > 0 ? closed : undefined,
+  }
+}
+
 export function saveCaptureState(state: CaptureState, file = captureStatePath()): void {
+  let tmp = ''
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
-    const tmp = `${file}.tmp`
+    const unique = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 10)}`
+    tmp = `${file}.${unique}.tmp`
     fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`)
     fs.renameSync(tmp, file)
   } catch (err) {
+    if (tmp) {
+      try {
+        fs.unlinkSync(tmp)
+      } catch {
+        // ignore
+      }
+    }
     log(`state save failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
@@ -931,10 +1114,6 @@ function cursorFromState(state: CaptureState, file: string): FileCursor {
   const saved = state.cursors[abs] ?? state.cursors[file]
   if (saved) return { offset: saved.offset, pending: saved.pending }
   return { offset: 0, pending: '' }
-}
-
-function writeCursor(state: CaptureState, file: string, cursor: FileCursor): void {
-  state.cursors[path.resolve(file)] = { offset: cursor.offset, pending: cursor.pending }
 }
 
 function stateToWatcher(state: CaptureState): WatcherState {
@@ -1120,30 +1299,34 @@ export async function runBackfill(
   sessionsDir?: string,
   days?: number,
   stateFile = captureStatePath(),
+  delayMs = 0,
 ): Promise<void> {
+  if (delayMs > 0) await sleep(delayMs)
   const root = sessionsDir ?? codexSessionsDir()
-  const persisted = loadCaptureState(stateFile)
-  const state = stateToWatcher(persisted)
   const source = typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
-  const summary = await withPool((client) =>
-    scanOnce(root, client, state, true, { days, triggerEvent: source }),
-  )
-  const next: CaptureState = {
-    ...persisted,
-    lastIngestAt: new Date().toISOString(),
-    lastIngestSource: source,
-    files: summary.files,
-    inserted: summary.inserted,
-    skipped: summary.skipped,
-    cursors: { ...persisted.cursors, ...watcherToCursors(state) },
-  }
-  saveCaptureState(next, stateFile)
-  log(
-    `backfill ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
-  )
-  console.log(
-    `codex-memory-capture --backfill: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
-  )
+  await withStateLock(stateFile, async () => {
+    const persisted = loadCaptureState(stateFile)
+    const state = stateToWatcher(persisted)
+    const summary = await withPool((client) =>
+      scanOnce(root, client, state, true, { days, triggerEvent: source }),
+    )
+    const latest = loadCaptureState(stateFile)
+    const next = mergeCaptureState(latest, {
+      lastIngestAt: new Date().toISOString(),
+      lastIngestSource: source,
+      files: summary.files,
+      inserted: summary.inserted,
+      skipped: summary.skipped,
+      cursors: watcherToCursors(state),
+    })
+    saveCaptureState(next, stateFile)
+    log(
+      `backfill ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    )
+    console.log(
+      `codex-memory-capture --backfill: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
+    )
+  })
 }
 
 /** @deprecated alias of runBackfill */
@@ -1155,6 +1338,19 @@ export interface HookHandleOpts {
   client: Queryable
   stateFile?: string
   sessionsDir?: string
+  delayMs?: number
+  lock?: StateLockOpts
+}
+
+export interface IngestFileOpts {
+  client: Queryable
+  stateFile?: string
+  delayMs?: number
+  lock?: StateLockOpts
+  closeSession?: boolean
+  sessionId?: string | null
+  triggerEvent?: string
+  reason?: string
 }
 
 export interface HookHandleResult {
@@ -1166,9 +1362,108 @@ export interface HookHandleResult {
   sessionId: string | null
 }
 
+function eventNameFromTrigger(triggerEvent: string): string {
+  return triggerEvent.startsWith('hook:') ? triggerEvent.slice(5) : triggerEvent
+}
+
 /**
- * Ingest one Codex hook payload. Never throws — callers still wrap for
- * belt-and-suspenders, but failures here are logged and return zeros.
+ * Cursor-tail one rollout under the round-1 state lock. Used by `--ingest-file`
+ * (including the detached `--hook` child) and by `handleHookPayload`.
+ * Never throws — failures are logged and return zeros.
+ */
+export async function ingestTranscriptFile(
+  file: string,
+  opts: IngestFileOpts,
+): Promise<HookHandleResult> {
+  const abs = path.resolve(file)
+  const stateFile = opts.stateFile ?? captureStatePath()
+  const triggerEvent = opts.triggerEvent ?? 'ingest-file'
+  const event = eventNameFromTrigger(triggerEvent)
+  const empty: HookHandleResult = {
+    inserted: 0,
+    skipped: 0,
+    file: abs,
+    event,
+    finalized: false,
+    sessionId: opts.sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null,
+  }
+
+  try {
+    if (opts.delayMs && opts.delayMs > 0) await sleep(opts.delayMs)
+    const finalize = Boolean(opts.closeSession)
+    return await withStateLock(
+      stateFile,
+      async () => {
+        const cursor = cursorFromState(loadCaptureState(stateFile), abs)
+        const before = { offset: cursor.offset, pending: cursor.pending }
+        const seenByKey = new Map<string, Set<string>>()
+
+        let inserted = 0
+        let skipped = 0
+        try {
+          const r = await ingestNewLines(
+            abs,
+            cursor,
+            opts.client,
+            seenByKey,
+            triggerEvent,
+            finalize,
+          )
+          if (r) {
+            inserted = r.inserted
+            skipped = r.skipped
+          }
+        } catch (err) {
+          Object.assign(cursor, before)
+          log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
+          return { ...empty, file: abs }
+        }
+
+        const latest = loadCaptureState(stateFile)
+        const now = new Date().toISOString()
+        const sid = opts.sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null
+        const closedPatch: Record<string, ClosedSession> | undefined =
+          finalize && sid
+            ? {
+                [sid]: {
+                  closedAt: now,
+                  transcriptPath: abs,
+                  reason: opts.reason,
+                },
+              }
+            : undefined
+        const merged = mergeCaptureState(latest, {
+          cursors: {
+            [path.resolve(abs)]: { offset: cursor.offset, pending: cursor.pending },
+          },
+          closedSessions: closedPatch,
+          lastIngestAt: now,
+          lastIngestSource: triggerEvent,
+          hookInstalledAt: latest.hookInstalledAt ?? now,
+          inserted,
+          skipped,
+        })
+        saveCaptureState(merged, stateFile)
+        return {
+          inserted,
+          skipped,
+          file: abs,
+          event,
+          finalized: finalize,
+          sessionId: sid,
+        }
+      },
+      opts.lock,
+    )
+  } catch (err) {
+    log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
+    return empty
+  }
+}
+
+/**
+ * Resolve transcript + ingest one Codex hook payload. Used by tests and as
+ * the child's ingest implementation via `ingestTranscriptFile`. Never throws.
  */
 export async function handleHookPayload(
   payload: Record<string, unknown>,
@@ -1178,7 +1473,6 @@ export async function handleHookPayload(
   const source = `hook:${event}`
   const finalize = /^sessionend$/i.test(event)
   const sessionsDir = opts.sessionsDir ?? codexSessionsDir()
-  const stateFile = opts.stateFile ?? captureStatePath()
   const empty: HookHandleResult = {
     inserted: 0,
     skipped: 0,
@@ -1200,55 +1494,180 @@ export async function handleHookPayload(
       return empty
     }
 
-    const abs = path.resolve(transcript)
-    const state = loadCaptureState(stateFile)
-    if (!state.hookInstalledAt) state.hookInstalledAt = new Date().toISOString()
-    const cursor = cursorFromState(state, abs)
-    const before = { offset: cursor.offset, pending: cursor.pending }
-    const seenByKey = new Map<string, Set<string>>()
-
-    let inserted = 0
-    let skipped = 0
-    try {
-      const r = await ingestNewLines(abs, cursor, opts.client, seenByKey, source, finalize)
-      if (r) {
-        inserted = r.inserted
-        skipped = r.skipped
-      }
-    } catch (err) {
-      Object.assign(cursor, before)
-      log(`hook ${event} ingest failed: ${err instanceof Error ? err.message : String(err)}`)
-      return { ...empty, file: abs, sessionId: sessionId ?? empty.sessionId }
-    }
-
-    writeCursor(state, abs, cursor)
-    state.lastIngestAt = new Date().toISOString()
-    state.lastIngestSource = source
-    state.inserted = inserted
-    state.skipped = skipped
-    state.files = 1
-    const sid = sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null
-    if (finalize && sid) {
-      const closed = state.closedSessions ?? {}
-      closed[sid] = {
-        closedAt: state.lastIngestAt,
-        transcriptPath: abs,
-        reason: pickPayloadString(payload, 'reason') ?? undefined,
-      }
-      state.closedSessions = closed
-    }
-    saveCaptureState(state, stateFile)
-    return {
-      inserted,
-      skipped,
-      file: abs,
-      event,
-      finalized: finalize,
-      sessionId: sid,
-    }
+    return await ingestTranscriptFile(transcript, {
+      client: opts.client,
+      stateFile: opts.stateFile,
+      delayMs: opts.delayMs,
+      lock: opts.lock,
+      closeSession: finalize,
+      sessionId,
+      triggerEvent: source,
+      reason: pickPayloadString(payload, 'reason') ?? undefined,
+    })
   } catch (err) {
     log(`hook ${event} failed: ${err instanceof Error ? err.message : String(err)}`)
     return empty
+  }
+}
+
+export interface SpawnHandle {
+  unref: () => void
+}
+
+export interface SpawnOpts {
+  detached?: boolean
+  stdio?: 'ignore' | 'inherit' | 'pipe'
+  env?: NodeJS.ProcessEnv
+}
+
+export type SpawnFn = (command: string, args: string[], options: SpawnOpts) => SpawnHandle
+
+export interface HookHandoffOpts {
+  spawn?: SpawnFn
+  sessionsDir?: string
+  argv?: string[]
+  execPath?: string
+  delayMs?: number
+  env?: NodeJS.ProcessEnv
+}
+
+export interface HookHandoffResult {
+  event: string
+  sessionId: string | null
+  file: string | null
+  closeSession: boolean
+  spawned: boolean
+  command: string
+  args: string[]
+}
+
+export function resolveHookTranscript(
+  payload: Record<string, unknown>,
+  sessionsDir?: string,
+): { event: string; sessionId: string | null; file: string | null; closeSession: boolean } {
+  const event = pickPayloadString(payload, 'hook_event_name', 'hookEventName') ?? 'unknown'
+  const sessionId = pickPayloadString(payload, 'session_id', 'sessionId')
+  let transcript = pickPayloadString(payload, 'transcript_path', 'transcriptPath') ?? null
+  if (!transcript && sessionId) {
+    transcript = newestRolloutForSession(sessionId, sessionsDir ?? codexSessionsDir())
+    if (transcript) log(`hook ${event}: transcript_path missing, fallback ${transcript}`)
+  }
+  return {
+    event,
+    sessionId,
+    file: transcript ? path.resolve(transcript) : null,
+    closeSession: /^sessionend$/i.test(event),
+  }
+}
+
+function captureEntryPath(
+  argv = process.argv,
+  execPath = process.execPath,
+): { command: string; prefix: string[] } {
+  const self = argv[1] ?? fileURLToPath(import.meta.url)
+  if (self.endsWith('.ts')) {
+    const builtJs = path.join(
+      path.dirname(self),
+      '..',
+      'dist',
+      path.basename(self).replace(/\.ts$/, '.js'),
+    )
+    if (fs.existsSync(builtJs)) {
+      return { command: execPath, prefix: [builtJs] }
+    }
+    return { command: 'npx', prefix: ['--yes', 'tsx', self] }
+  }
+  return { command: execPath, prefix: [self] }
+}
+
+export function hookChildArgs(
+  file: string,
+  opts: {
+    delayMs?: number
+    closeSession?: boolean
+    event?: string
+    sessionId?: string | null
+  } = {},
+): string[] {
+  const args = ['--ingest-file', file, '--delay-ms', String(opts.delayMs ?? HOOK_HANDOFF_DELAY_MS)]
+  if (opts.closeSession) args.push('--close-session')
+  if (opts.event) {
+    args.push('--hook-event', opts.event)
+  }
+  if (opts.sessionId) {
+    args.push('--session-id', opts.sessionId)
+  }
+  return args
+}
+
+function defaultSpawn(command: string, args: string[], options: SpawnOpts): SpawnHandle {
+  return spawn(command, args, {
+    detached: options.detached ?? true,
+    stdio: 'ignore',
+    env: options.env,
+  })
+}
+
+/**
+ * `--hook` parent: validate stdin JSON, spawn a detached child that does the
+ * ingest, log one line, return. The parent never waits on the child.
+ */
+export function handOffHook(
+  payload: Record<string, unknown>,
+  opts: HookHandoffOpts = {},
+): HookHandoffResult {
+  const resolved = resolveHookTranscript(payload, opts.sessionsDir)
+  const empty: HookHandoffResult = {
+    event: resolved.event,
+    sessionId: resolved.sessionId,
+    file: resolved.file,
+    closeSession: resolved.closeSession,
+    spawned: false,
+    command: '',
+    args: [],
+  }
+  if (!resolved.file) {
+    log(
+      `hook ${resolved.event}: no transcript_path and no rollout for session ${resolved.sessionId ?? '?'}`,
+    )
+    return empty
+  }
+
+  const entry = captureEntryPath(opts.argv, opts.execPath)
+  const childArgs = [
+    ...entry.prefix,
+    ...hookChildArgs(resolved.file, {
+      delayMs: opts.delayMs ?? HOOK_HANDOFF_DELAY_MS,
+      closeSession: resolved.closeSession,
+      event: resolved.event,
+      sessionId: resolved.sessionId,
+    }),
+  ]
+  const spawnFn = opts.spawn ?? defaultSpawn
+  try {
+    const child = spawnFn(entry.command, childArgs, {
+      detached: true,
+      stdio: 'ignore',
+      env: opts.env ?? process.env,
+    })
+    child.unref()
+    const delay = opts.delayMs ?? HOOK_HANDOFF_DELAY_MS
+    const closeNote = resolved.closeSession ? ' close-session' : ''
+    log(
+      `hook ${resolved.event}: handed off file=${resolved.file} delayMs=${String(delay)}${closeNote}`,
+    )
+    return {
+      event: resolved.event,
+      sessionId: resolved.sessionId,
+      file: resolved.file,
+      closeSession: resolved.closeSession,
+      spawned: true,
+      command: entry.command,
+      args: childArgs,
+    }
+  } catch (err) {
+    log(`hook ${resolved.event} spawn failed: ${err instanceof Error ? err.message : String(err)}`)
+    return { ...empty, file: resolved.file, command: entry.command, args: childArgs }
   }
 }
 
@@ -1270,17 +1689,46 @@ export async function readStdinObject(): Promise<Record<string, unknown>> {
   return isRecord(parsed) ? parsed : {}
 }
 
+function flagValue(args: string[], name: string): string | undefined {
+  const idx = args.indexOf(name)
+  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1]
+  return undefined
+}
+
+function flagPresent(args: string[], name: string): boolean {
+  return args.includes(name)
+}
+
+export function parseDelayMs(args: string[]): number {
+  const raw = flagValue(args, '--delay-ms')
+  if (raw === undefined) return 0
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
 async function runHook(): Promise<void> {
   try {
     const payload = await readStdinObject()
-    await withPool(async (client) => {
-      const result = await handleHookPayload(payload, { client })
-      log(
-        `hook ${result.event}: file=${result.file ?? 'none'} inserted=${result.inserted} skipped=${result.skipped}${result.finalized ? ' finalized' : ''}`,
-      )
-    })
+    handOffHook(payload)
   } catch (err) {
     log(`hook failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+export function statusPayload(
+  state: CaptureState,
+  file = captureStatePath(),
+): Record<string, unknown> {
+  const closed = state.closedSessions ? Object.keys(state.closedSessions).length : 0
+  return {
+    lastIngestAt: state.lastIngestAt ?? null,
+    lastIngestSource: state.lastIngestSource ?? null,
+    hookInstalledAt: state.hookInstalledAt ?? null,
+    files: Object.keys(state.cursors).length,
+    inserted: state.inserted ?? 0,
+    skipped: state.skipped ?? 0,
+    closed,
+    stateFile: file,
   }
 }
 
@@ -1288,18 +1736,19 @@ export function formatStatus(state: CaptureState, file = captureStatePath()): st
   if (!state.lastIngestAt && Object.keys(state.cursors).length === 0) {
     return `codex-memory-capture --status: no ingest yet (${file})`
   }
-  const closed = state.closedSessions ? Object.keys(state.closedSessions).length : 0
+  const payload = statusPayload(state, file)
   return (
     `codex-memory-capture --status: lastIngestAt=${state.lastIngestAt ?? 'n/a'} ` +
     `lastIngestSource=${state.lastIngestSource ?? 'n/a'} ` +
-    `files=${String(state.files ?? Object.keys(state.cursors).length)} ` +
-    `inserted=${String(state.inserted ?? 0)} skipped=${String(state.skipped ?? 0)} ` +
-    `closed=${String(closed)}`
+    `files=${String(payload.files)} ` +
+    `inserted=${String(payload.inserted)} skipped=${String(payload.skipped)} ` +
+    `closed=${String(payload.closed)}`
   )
 }
 
 export function runStatus(stateFile = captureStatePath()): void {
   const state = loadCaptureState(stateFile)
+  console.log(JSON.stringify(statusPayload(state, stateFile)))
   console.log(formatStatus(state, stateFile))
 }
 
@@ -1321,23 +1770,19 @@ function loadEnvFile(): void {
 export const USAGE = `codex-memory-capture — ingest Codex rollout jsonl into RivetOS memory
 
   codex-rivet-memory-capture --hook
-  codex-rivet-memory-capture --ingest-file <rollout.jsonl>
+  codex-rivet-memory-capture --ingest-file <rollout.jsonl> [--delay-ms N] [--close-session]
   codex-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
   codex-rivet-memory-capture --status
 
-  --hook             read one Codex hook JSON object from stdin and ingest
-  --ingest-file FILE ingest one rollout file then exit
+  --hook             read one Codex hook JSON object from stdin and hand off
+  --ingest-file FILE ingest one rollout file then exit (used by --hook child)
+  --close-session    with --ingest-file, mark the session closed in state
   --backfill         one-shot walk of existing rollout files
   --days N           with --backfill, only rollouts from the last N days
-  --status           print last ingest time + counts from the state file
+  --delay-ms N       sleep N ms before reading state (coalesce quick fires)
+  --status           one JSON line + one human line from the state file
   --sessions-dir DIR override the sessions root
 `
-
-function flagValue(args: string[], name: string): string | undefined {
-  const idx = args.indexOf(name)
-  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1]
-  return undefined
-}
 
 async function main(): Promise<void> {
   loadEnvFile()
@@ -1369,7 +1814,7 @@ async function main(): Promise<void> {
       }
       days = n
     }
-    await runBackfill(sessionsDir, days)
+    await runBackfill(sessionsDir, days, captureStatePath(), parseDelayMs(args))
     return
   }
   if (mode === '--ingest-file' || mode === '--ingest') {
@@ -1378,12 +1823,19 @@ async function main(): Promise<void> {
       console.error('Usage: codex-memory-capture --ingest-file <rollout.jsonl>')
       return
     }
+    const hookEvent = flagValue(args, '--hook-event')
+    const sessionId = flagValue(args, '--session-id')
+    const triggerEvent = hookEvent ? `hook:${hookEvent}` : 'ingest-file'
     await withPool(async (client) => {
-      const { parsed, result } = await ingestRolloutFile(file, client, {
-        triggerEvent: 'ingest-file',
+      const result = await ingestTranscriptFile(file, {
+        client,
+        delayMs: parseDelayMs(args),
+        closeSession: flagPresent(args, '--close-session'),
+        sessionId: sessionId ?? null,
+        triggerEvent,
       })
       console.log(
-        `${file}: session=${parsed.sessionId} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
+        `${file}: event=${result.event} inserted=${result.inserted} skipped=${result.skipped}${result.finalized ? ' finalized' : ''}`,
       )
     })
     return

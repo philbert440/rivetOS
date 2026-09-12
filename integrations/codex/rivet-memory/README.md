@@ -72,12 +72,26 @@ Root `package.json` `workspaces` must include
 $RIVETOS_ROOT/integrations/codex/rivet-memory/bin/setup-codex-rivet-memory.sh --apply
 ```
 
-`--apply` merges the three capture hooks into `~/.codex/hooks.json` (creates
-the file if needed; never clobbers other hooks). When `sudo -n` works it also
-writes managed hooks to `/etc/codex/requirements.toml`. `--remove` undoes both.
+`--apply` registers the three capture hooks in **exactly one** place:
 
-Non-managed hooks need a one-time `/hooks` → trust in the Codex TUI. Managed
-(`requirements.toml`) hooks are trusted by policy.
+- **Managed** `/etc/codex/requirements.toml` when `sudo -n` works and the
+  structural merge validates (foreign `[[hooks.*]]` and `managed_dir` are
+  preserved; a foreign `managed_dir` skips managed registration). Trusted by
+  policy — no TUI prompt. Any earlier user-level `codex-memory-capture.sh
+--hook` entries are stripped from `~/.codex/hooks.json` (foreign groups stay).
+- **User** `~/.codex/hooks.json` otherwise (creates the file if needed; never
+  clobbers other hooks; malformed JSON is left untouched). Commands are
+  `bash '<absolute-launcher>' --hook` so install paths with spaces work.
+  Needs a one-time `/hooks` → trust in the Codex TUI.
+
+Never both. `--remove` unregisters our inner commands from both files.
+
+`--hook` is a hand-off, not inline work: it reads stdin JSON, then spawns a
+detached child (`--ingest-file <transcript_path> --delay-ms 400`; SessionEnd
+adds `--close-session`) and exits. Codex clamps SessionEnd hooks to 3s, so
+the parent must return in milliseconds. Hook stdout/stderr go to
+`~/.rivetos/logs/codex-capture.log` — never to Codex (it echoes hook stdout
+and parses JSON on it as `hookSpecificOutput`).
 
 ### 3. Optional history catch-up
 
@@ -87,7 +101,7 @@ $RIVETOS_ROOT/integrations/codex/rivet-memory/bin/codex-memory-capture.sh --back
 $RIVETOS_ROOT/integrations/codex/rivet-memory/bin/codex-memory-capture.sh --status
 ```
 
-Logs: `~/.rivetos/codex-memory-capture.log`.
+Logs: `~/.rivetos/logs/codex-capture.log`.
 State: `~/.rivetos/codex-capture-state.json`.
 
 ## Recall of truncated rows

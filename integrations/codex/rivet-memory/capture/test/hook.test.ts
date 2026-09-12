@@ -4,10 +4,12 @@
  *   1. --hook Stop against the fixture rollout inserts rows.
  *   2. Second identical Stop inserts 0 (dedup / cursor).
  *   3. UserPromptSubmit then Stop on a growing file: user first, assistant after.
- *   4. hooks/hooks.json parses with exactly 3 events, each `--hook` timeout 20.
- *
- * Setup's JSON/TOML merge lives in bash (python3/node). A fixture-driven test
- * of that snippet is skipped — see cap-codex-notes.md.
+ *   4. SessionEnd closes state; missing transcript_path falls back.
+ *   5. --hook parent hands off (mock spawn): returns before ingest, asserts
+ *      --ingest-file / --delay-ms 400 / detached+unref; fallback resolution;
+ *      SessionEnd → --close-session.
+ *   6. hooks/hooks.json parses with exactly 3 events, each `--hook` timeout 20.
+ *      Command is a bash-quoted launcher; marker is codex-memory-capture.sh + --hook.
  */
 import {
   mkdtempSync,
@@ -23,9 +25,13 @@ import { fileURLToPath } from 'node:url'
 
 import {
   handleHookPayload,
+  handOffHook,
+  ingestTranscriptFile,
   parseRolloutFile,
   loadCaptureState,
+  HOOK_HANDOFF_DELAY_MS,
   type Queryable,
+  type SpawnOpts,
 } from '../src/codex-memory-capture.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -335,6 +341,179 @@ console.log('\n— transcript_path fallback via discoverRolloutFiles —')
 }
 
 // =============================================================================
+// --hook is a hand-off: spawn detached child, return before ingest
+// =============================================================================
+console.log('\n— --hook hand-off (mock spawn) —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-hook-handoff-'))
+  const rollout = path.join(dir, path.basename(FIXTURE))
+  writeFileSync(rollout, readFileSync(FIXTURE))
+  type SpawnCall = { cmd: string; args: string[]; opts: SpawnOpts; unrefed: boolean }
+  const calls: SpawnCall[] = []
+  let ingestStarted = false
+  const spawnFn = (cmd: string, args: string[], opts: SpawnOpts) => {
+    const call: SpawnCall = { cmd, args, opts, unrefed: false }
+    calls.push(call)
+    return {
+      unref(): void {
+        call.unrefed = true
+      },
+    }
+  }
+  const result = handOffHook(
+    {
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      transcript_path: rollout,
+    },
+    {
+      spawn: spawnFn,
+      sessionsDir: dir,
+      argv: ['node', '/tmp/codex-memory-capture.js'],
+      execPath: '/usr/bin/node',
+    },
+  )
+  eq('hand-off spawned', result.spawned, true)
+  eq('hand-off returns the transcript', result.file, path.resolve(rollout))
+  eq('one spawn call', calls.length, 1)
+  eq('spawn command is the node execPath', calls[0]?.cmd, '/usr/bin/node')
+  check('spawn args include --ingest-file', Boolean(calls[0]?.args.includes('--ingest-file')))
+  check(
+    'spawn args include the transcript path',
+    Boolean(calls[0]?.args.includes(path.resolve(rollout))),
+  )
+  check('spawn args include --delay-ms', Boolean(calls[0]?.args.includes('--delay-ms')))
+  check('spawn args include 400', Boolean(calls[0]?.args.includes(String(HOOK_HANDOFF_DELAY_MS))))
+  eq('Stop does not pass --close-session', calls[0]?.args.includes('--close-session'), false)
+  eq('spawn is detached', calls[0]?.opts.detached, true)
+  eq('spawn stdio is ignore', calls[0]?.opts.stdio, 'ignore')
+  eq('child is unref()d', calls[0]?.unrefed, true)
+  eq('ingest did not run in the parent', ingestStarted, false)
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('\n— --hook hand-off fallback transcript_path —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-hook-handoff-fb-'))
+  const day = path.join(dir, '2026', '09', '07')
+  mkdirSync(day, { recursive: true })
+  const rollout = path.join(day, path.basename(FIXTURE))
+  writeFileSync(rollout, readFileSync(FIXTURE))
+  const calls: Array<{ args: string[] }> = []
+  const result = handOffHook(
+    {
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      transcript_path: null,
+    },
+    {
+      spawn: (_cmd, args) => {
+        calls.push({ args })
+        return { unref(): void {} }
+      },
+      sessionsDir: dir,
+      argv: ['node', '/tmp/codex-memory-capture.js'],
+      execPath: '/usr/bin/node',
+    },
+  )
+  eq('fallback hand-off spawned', result.spawned, true)
+  check(
+    'fallback resolved the newest rollout',
+    typeof result.file === 'string' && result.file.endsWith(path.basename(FIXTURE)),
+  )
+  check(
+    'fallback spawn args include the resolved path',
+    Boolean(calls[0]?.args.some((a) => a.endsWith(path.basename(FIXTURE)))),
+  )
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('\n— --hook SessionEnd passes --close-session —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-hook-handoff-end-'))
+  const rollout = path.join(dir, path.basename(FIXTURE))
+  writeFileSync(rollout, readFileSync(FIXTURE))
+  const calls: Array<{ args: string[] }> = []
+  const result = handOffHook(
+    {
+      hook_event_name: 'SessionEnd',
+      session_id: SESSION,
+      transcript_path: rollout,
+      reason: 'quit',
+    },
+    {
+      spawn: (_cmd, args) => {
+        calls.push({ args })
+        return { unref(): void {} }
+      },
+      sessionsDir: dir,
+      argv: ['node', '/tmp/codex-memory-capture.js'],
+      execPath: '/usr/bin/node',
+    },
+  )
+  eq('SessionEnd hand-off spawned', result.spawned, true)
+  eq('SessionEnd closeSession flag', result.closeSession, true)
+  check(
+    'SessionEnd spawn args include --close-session',
+    Boolean(calls[0]?.args.includes('--close-session')),
+  )
+  check(
+    'SessionEnd still includes --ingest-file',
+    Boolean(calls[0]?.args.includes('--ingest-file')),
+  )
+  rmSync(dir, { recursive: true, force: true })
+}
+
+console.log('\n— --hook missing transcript does not spawn —')
+{
+  const calls: unknown[] = []
+  const result = handOffHook(
+    { hook_event_name: 'Stop', session_id: SESSION },
+    {
+      spawn: () => {
+        calls.push(1)
+        return { unref(): void {} }
+      },
+      sessionsDir: path.join(tmpdir(), 'codex-hook-handoff-missing-none'),
+      argv: ['node', '/tmp/codex-memory-capture.js'],
+      execPath: '/usr/bin/node',
+    },
+  )
+  eq('missing transcript does not spawn', result.spawned, false)
+  eq('spawn not called', calls.length, 0)
+}
+
+console.log('\n— ingestTranscriptFile --close-session marks closed —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'codex-ingest-close-'))
+  const stateFile = path.join(dir, 'codex-capture-state.json')
+  const rollout = path.join(dir, path.basename(FIXTURE))
+  writeFileSync(rollout, readFileSync(FIXTURE))
+  const stub = createStub()
+  const result = await ingestTranscriptFile(rollout, {
+    client: stub.client,
+    stateFile,
+    closeSession: true,
+    sessionId: SESSION,
+    triggerEvent: 'hook:SessionEnd',
+  })
+  eq('child ingest finalized', result.finalized, true)
+  eq('child ingest event is SessionEnd', result.event, 'SessionEnd')
+  eq(
+    'child ingest closedSessions records the uuid',
+    loadCaptureState(stateFile).closedSessions?.[SESSION]?.reason,
+    undefined,
+  )
+  check(
+    'child ingest closedSessions has the uuid',
+    loadCaptureState(stateFile).closedSessions?.[SESSION] != null,
+  )
+  eq('conversation marked inactive via --close-session', stub.convs[0]?.active, false)
+  check('hook ingest did not stamp files=1', loadCaptureState(stateFile).files === undefined)
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// =============================================================================
 // hooks/hooks.json shape
 // =============================================================================
 console.log('\n— hooks/hooks.json —')
@@ -362,8 +541,10 @@ console.log('\n— hooks/hooks.json —')
     const cmd = groups[0]?.hooks?.[0]
     eq(`${event} type is command`, cmd?.type, 'command')
     check(
-      `${event} command ends with --hook`,
-      typeof cmd?.command === 'string' && cmd.command.includes('codex-memory-capture.sh --hook'),
+      `${event} command contains codex-memory-capture.sh and --hook`,
+      typeof cmd?.command === 'string' &&
+        cmd.command.includes('codex-memory-capture.sh') &&
+        cmd.command.includes('--hook'),
     )
     eq(`${event} timeout is 20`, cmd?.timeout, 20)
   }

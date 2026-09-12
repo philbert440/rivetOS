@@ -73,6 +73,9 @@ The continuity comes from memory + files.
 
 User, assistant, and tool turns are ingested from the Codex rollout jsonl by
 native hooks (`UserPromptSubmit`, `Stop`, `SessionEnd` →
-`codex-memory-capture.sh --hook`). Non-managed hooks need a one-time `/hooks`
-trust in the Codex TUI; managed `/etc/codex/requirements.toml` hooks are trusted
-by policy. Catch up history with `codex-memory-capture.sh --backfill [--days N]`.
+`codex-memory-capture.sh --hook`). Setup registers those hooks in exactly one
+place: managed `/etc/codex/requirements.toml` (trusted by policy) when sudo
+works, otherwise user `~/.codex/hooks.json` (one-time `/hooks` trust in the
+TUI). `--hook` hands off ingest to a detached child because Codex clamps
+SessionEnd to 3s. Logs: `~/.rivetos/logs/codex-capture.log`. Catch up history
+with `codex-memory-capture.sh --backfill [--days N]`.
