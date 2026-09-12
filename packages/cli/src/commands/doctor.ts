@@ -1187,6 +1187,712 @@ export function redactResolvedSecrets(
   return out
 }
 
+// ---------------------------------------------------------------------------
+// Check: Peer Reachability
+// ---------------------------------------------------------------------------
+
+async function checkPeers(sshUser = 'rivet'): Promise<CheckResult[]> {
+  const results: CheckResult[] = []
+
+  // Check for mesh.json (canonical NFS path, then cwd)
+  const meshFile = await loadMeshFile(process.cwd())
+  if (!meshFile) return results
+
+  try {
+    const peers = Object.values(meshFile.nodes)
+
+    for (const peer of peers) {
+      const isAgent = !peer.role || peer.role === 'agent'
+
+      if (!isAgent) {
+        // Non-agent nodes: SSH reachability check (no HTTP service)
+        // Try requestedUser first, fall back to root@
+        let sshReachable = false
+        let successUser = 'unknown'
+        const usersToTry = sshUser !== 'root' ? [sshUser, 'root'] : ['root']
+        for (const user of usersToTry) {
+          try {
+            execSync(
+              `ssh -o ConnectTimeout=3 -o StrictHostKeyChecking=no -o PasswordAuthentication=no ${user}@${peer.host} "echo ok"`,
+              { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] },
+            )
+            sshReachable = true
+            successUser = user
+            break
+          } catch {
+            // try next user
+          }
+        }
+        if (sshReachable) {
+          const userNote =
+            successUser !== sshUser
+              ? ` (not yet migrated — fell back to root)`
+              : ` (SSH as ${successUser})`
+          results.push(
+            check(
+              'peers',
+              peer.name,
+              successUser !== sshUser ? 'warn' : 'pass',
+              `Peer ${peer.name} [${peer.role}]: reachable${userNote}`,
+            ),
+          )
+        } else {
+          results.push(
+            check(
+              'peers',
+              peer.name,
+              'fail',
+              `Peer ${peer.name} [${peer.role}]: unreachable (SSH)`,
+            ),
+          )
+        }
+        continue
+      }
+
+      try {
+        // mesh.json `port` is the mTLS agent channel (3000) — a plain-HTTP GET
+        // there never completes the handshake, so every peer read as
+        // unreachable while the fleet was healthy. The liveness endpoint is
+        // the separate plain-HTTP health server (RIVETOS_HEALTH_PORT, 3100).
+        const healthPort = Number(process.env.RIVETOS_HEALTH_PORT ?? 3100)
+        const resp = await fetch(`http://${peer.host}:${String(healthPort)}/health/live`, {
+          signal: AbortSignal.timeout(3000),
+        })
+        if (resp.ok) {
+          results.push(check('peers', peer.name, 'pass', `Peer ${peer.name}: reachable`))
+        } else {
+          results.push(
+            check(
+              'peers',
+              peer.name,
+              'warn',
+              `Peer ${peer.name}: responded ${String(resp.status)}`,
+            ),
+          )
+        }
+      } catch {
+        results.push(check('peers', peer.name, 'fail', `Peer ${peer.name}: unreachable`))
+      }
+    }
+  } catch {
+    // Malformed mesh.json — skip
+  }
+
+  return results
+}
+
+/** Den's per-process tmux socket (`rivet-<sha1(stateDir:port)[0:8]>`), matching
+ *  den-server `tmuxSocketName`. Duplicated here so the CLI does not import
+ *  den-server. Port comes from `den.port` in the config doctor already
+ *  loaded, then `RIVETOS_DEN_PORT`, then 5174 — env-only missed a
+ *  non-default yaml port and the untagged-session check became a no-op. */
+function denTmuxSocketName(rawConfig: string | null): string {
+  const stateDir = process.env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den')
+  let port: number | undefined
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as { den?: { port?: unknown } }
+      const p = parsed.den?.port
+      if (typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 65535) port = p
+    } catch {
+      /* expected */
+    }
+  }
+  if (port === undefined) {
+    const portRaw = process.env.RIVETOS_DEN_PORT
+    port = portRaw && /^\d+$/.test(portRaw) ? Number(portRaw) : 5174
+  }
+  const hash = createHash('sha1').update(`${stateDir}:${port}`).digest('hex').slice(0, 8)
+  return `rivet-${hash}`
+}
+
+function tmuxSocketPath(socket: string): string {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+  const base = process.env.TMUX_TMPDIR || `/tmp/tmux-${uid}`
+  return join(base, socket)
+}
+
+/** Cheap (one `tmux list-sessions`): WARN when den's socket has sessions with
+ *  empty `@rivet_command`. Skips when the socket file is absent so we never
+ *  start a tmux server as a side effect of doctor. */
+function checkUntaggedDenTmuxSessions(rawConfig: string | null): CheckResult | undefined {
+  const socket = denTmuxSocketName(rawConfig)
+  if (!existsSync(tmuxSocketPath(socket))) return undefined
+  try {
+    const out = execFileSync('tmux', ['-L', socket, 'list-sessions', '-F', '#{@rivet_command}'], {
+      timeout: 2000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const lines = out.split('\n')
+    if (lines.at(-1) === '') lines.pop()
+    const n = lines.filter((l) => l.length === 0).length
+    if (n === 0) return undefined
+    return check(
+      'terminal',
+      'tmux-tags',
+      'warn',
+      'untagged den tmux sessions — pre-#6xx create; they will be adopted on next open',
+      `${n} session(s) on ${socket} have empty @rivet_command`,
+    )
+  } catch {
+    return undefined
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Check: Terminal mux (T1) — WARN when terminals are on and mux would be
+// tmux but the binary is missing (sessions won't survive den restarts)
+// ---------------------------------------------------------------------------
+
+function checkTerminalMux(rawConfig: string | null): CheckResult[] {
+  const results: CheckResult[] = []
+
+  // Read the SAME keys the den-server runtime parses: enablement is
+  // RIVETOS_DEN_TERM (or YAML den.terminal.enabled, which the gateway
+  // registrar translates into it); the mux choice is RIVETOS_DEN_TERM_MUX
+  // (den-server's loadConfig reads only the env; resolveHerdrMux additionally
+  // accepts a forward-compatible YAML den.terminal.mux for doctor/update).
+  let termEnabled = false
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as {
+        den?: { terminal?: { enabled?: unknown } }
+      }
+      termEnabled = parsed.den?.terminal?.enabled === true
+    } catch {
+      /* expected */
+    }
+  }
+  const envTerm = (process.env.RIVETOS_DEN_TERM ?? '').trim().toLowerCase()
+  if (envTerm === '1' || envTerm === 'on') termEnabled = true
+  // env → the unit's EnvironmentFile (~/.rivetos/.env) → YAML, same lookup as
+  // checkHerdr: a shell-launched doctor does not inherit the EnvironmentFile, and
+  // the rollback recipe is exactly a `RIVETOS_DEN_TERM_MUX=tmux` line in it.
+  const mux = resolveHerdrMux(process.env, readRivetosDotEnv(), rawConfig)
+
+  if (!termEnabled) return results
+
+  // Unset resolves to herdr when the pinned binary is present (fleet default
+  // since 2026-09-06) — mirror den-server loadConfig so the row says what the
+  // runtime will actually do.
+  const muxRaw = mux?.trim().toLowerCase() || (herdrAutoDefault() ? 'herdr' : undefined)
+  if (muxRaw === 'none') {
+    results.push(check('terminal', 'mux', 'pass', 'Terminal mux: none (tmux disabled by config)'))
+    return results
+  }
+  if (muxRaw === 'herdr') {
+    // Probe the binary den will actually resolve (PATH, then ~/.local/bin) —
+    // a bare `herdr` would ENOENT on a healthy node whose shell PATH lacks
+    // ~/.local/bin and warn "not installed" for nothing.
+    const bin = findHerdrBin()
+    const version = bin ? readHerdrVersion(bin) : null
+    if (bin && version === HERDR_VERSION) {
+      results.push(check('terminal', 'mux', 'pass', `Terminal mux: herdr ${version} (${bin})`))
+    } else if (bin) {
+      results.push(
+        check(
+          'terminal',
+          'mux',
+          'warn',
+          `herdr at ${bin} is ${version ?? 'an unrecognised version'} — den pins ${HERDR_VERSION}`,
+          'Run: rivetos install --herdr',
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'terminal',
+          'mux',
+          'warn',
+          `herdr not installed — term.mux is herdr (install herdr ${HERDR_VERSION})`,
+          'Run: rivetos install --herdr',
+        ),
+      )
+    }
+    return results
+  }
+  // Match den-server config: a garbage value fails safe to 'none' (never
+  // silent "auto"). Report the effective mode, not "tmux found".
+  if (muxRaw && muxRaw !== 'tmux') {
+    results.push(
+      check('terminal', 'mux', 'warn', 'Terminal mux: none (invalid RIVETOS_DEN_TERM_MUX value)'),
+    )
+    return results
+  }
+
+  // mux is 'tmux' or unset (unset defaults to tmux when the binary exists).
+  // Probe with execFileSync (no shell) and gate on the version: the den
+  // create form needs new-session -e, which requires tmux ≥ 3.2.
+  try {
+    const out = execFileSync('tmux', ['-V'], {
+      timeout: 5000,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const m = /(\d+)\.(\d+)/.exec(out)
+    const ok = m !== null && (Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 2))
+    if (!ok) {
+      results.push(
+        check(
+          'terminal',
+          'mux',
+          'warn',
+          `tmux found but too old (${out || 'unparseable version'}) — den terminal persistence needs tmux ≥ 3.2`,
+        ),
+      )
+    } else {
+      results.push(check('terminal', 'mux', 'pass', `Terminal mux: tmux found (${out})`))
+      const untagged = checkUntaggedDenTmuxSessions(rawConfig)
+      if (untagged) results.push(untagged)
+    }
+  } catch {
+    results.push(
+      check(
+        'terminal',
+        'mux',
+        'warn',
+        'tmux not installed — den terminal sessions will not survive restarts (sudo apt install tmux)',
+      ),
+    )
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// Check: herdr (optional terminal mux backend) — pinned binary, manifest
+// overrides, and the term.mux value. Never fails: herdr is opt-in, so every
+// row here is pass/warn. See integrations/herdr/README.md.
+// ---------------------------------------------------------------------------
+
+export interface HerdrDoctorProbe {
+  home?: string
+  repoManifestsDir?: string
+  /** `herdr --version` probe — tests stub this; default reads the real binary. */
+  versionOf?: (binPath: string) => string | null
+  env?: NodeJS.ProcessEnv
+  /** Contents of the unit's EnvironmentFile (~/.rivetos/.env); default reads
+   *  it from `home`. A shell-launched doctor does not inherit it. */
+  dotEnv?: string | null
+}
+
+export function checkHerdr(rawConfig: string | null, probe: HerdrDoctorProbe = {}): CheckResult[] {
+  const results: CheckResult[] = []
+  const home = probe.home ?? homedir()
+  const env = probe.env ?? process.env
+  const versionOf = probe.versionOf ?? readHerdrVersion
+  const binPath = herdrBinPath(home)
+
+  // term.mux — the runtime reads RIVETOS_DEN_TERM_MUX, which systemd loads
+  // from ~/.rivetos/.env; a shell-launched doctor must read that file itself
+  // (env → EnvironmentFile → forward-compatible YAML den.terminal.mux).
+  const dotEnv = probe.dotEnv === undefined ? readRivetosDotEnv(home) : probe.dotEnv
+  const mux = resolveHerdrMux(env, dotEnv, rawConfig)
+
+  const version = existsSync(binPath) ? versionOf(binPath) : null
+  const relevant = version !== null || mux === 'herdr'
+  // What an UNSET term.mux resolves to: the ~/.local/bin binary (via the
+  // injectable versionOf) or a pinned herdr on PATH — same rule as the mux row.
+  const autoHerdr =
+    version === HERDR_VERSION ||
+    (env.PATH !== undefined && herdrAutoDefault({ PATH: env.PATH }, join(home, 'no-such-dir')))
+
+  // Binary row — present at the pin, present at the wrong version, missing
+  // while opted in (warn per the herdr lane contract), or simply absent.
+  if (version === HERDR_VERSION) {
+    results.push(check('terminal', 'herdr', 'pass', `herdr: ${HERDR_VERSION} (${binPath})`))
+  } else if (version !== null) {
+    results.push(
+      check(
+        'terminal',
+        'herdr',
+        'warn',
+        `herdr: ${version} at ${binPath}, expected ${HERDR_VERSION}`,
+        'Run: rivetos install --herdr',
+      ),
+    )
+  } else if (mux === 'herdr') {
+    results.push(
+      check(
+        'terminal',
+        'herdr',
+        'warn',
+        'term.mux=herdr but the herdr binary is missing',
+        'Run: rivetos install --herdr',
+      ),
+    )
+  } else {
+    results.push(
+      check(
+        'terminal',
+        'herdr',
+        'pass',
+        'herdr: not installed (optional — only term.mux=herdr needs it)',
+      ),
+    )
+  }
+
+  results.push(
+    check(
+      'terminal',
+      'herdr-mux',
+      'pass',
+      `term.mux: ${mux ?? (autoHerdr ? 'unset (auto → herdr, the fleet default; RIVETOS_DEN_TERM_MUX=tmux opts out)' : 'unset (auto → tmux; install herdr 0.8.2 for the fleet default)')}`,
+    ),
+  )
+
+  if (!relevant) return results
+
+  // Manifest override row — the remote-cache copies must match the repo's
+  // integrations/herdr/manifests/*.toml byte for byte.
+  const manifestsDir = probe.repoManifestsDir ?? herdrRepoManifestsDir()
+  if (existsSync(manifestsDir)) {
+    const cacheDir = herdrManifestCacheDir(home)
+    const files = readdirSync(manifestsDir).filter((f) => f.endsWith('.toml'))
+    const stale: string[] = []
+    for (const file of files) {
+      const desired = readFileSync(join(manifestsDir, file), 'utf-8')
+      let installed: string | null = null
+      try {
+        installed = readFileSync(join(cacheDir, file), 'utf-8')
+      } catch {
+        /* missing */
+      }
+      if (installed !== desired) stale.push(file)
+    }
+    if (stale.length === 0) {
+      results.push(
+        check(
+          'terminal',
+          'herdr-manifests',
+          'pass',
+          `herdr manifests: ${files.length} override(s) current`,
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'terminal',
+          'herdr-manifests',
+          'warn',
+          `herdr manifests: ${stale.join(', ')} missing or stale in ${cacheDir}`,
+          'Run: rivetos install --herdr',
+        ),
+      )
+    }
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// Check: Harnesses — detected binaries + memory-plugin install state
+// ---------------------------------------------------------------------------
+
+export interface HarnessDoctorProbe {
+  home?: string
+  pathEnv?: string
+  detect?: typeof detectHarnesses
+  exec?: typeof execFileAsync
+  /** RivetOS tree used to locate `hooks.js --status` for the claude fallback. */
+  root?: string
+  platform?: NodeJS.Platform
+  uid?: number
+}
+
+function hermesPluginInstalled(configHome: string): boolean {
+  const pluginDir = join(configHome, 'plugins', 'rivet_memory')
+  if (!existsSync(pluginDir)) return false
+  try {
+    const cfg = parseYaml(readFileSync(join(configHome, 'config.yaml'), 'utf-8')) as {
+      memory?: { provider?: unknown }
+    }
+    return cfg?.memory?.provider === 'rivet_memory'
+  } catch {
+    return false
+  }
+}
+
+/** Watcher unit/state file plus the OpenCode MCP artefact (like Codex). */
+function opencodeCaptureInstalled(home: string, configHome: string): boolean {
+  const mcp = artefactConfigHomes('opencode', home, configHome).some((dir) =>
+    opencodeJsonHasRivetos(join(dir, 'opencode.json')),
+  )
+  if (!mcp) return false
+  if (existsSync(join(home, '.rivetos', 'opencode-capture-state.json'))) return true
+  if (existsSync(join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT))) return true
+  if (existsSync(join(home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)))
+    return true
+  return false
+}
+
+function kimiPluginInstalled(home: string, configHome: string): boolean {
+  for (const dir of kimiConfigHomes(home, configHome)) {
+    if (mcpJsonHasRivetos(join(dir, 'mcp.json'))) return true
+    try {
+      if (
+        uncommentedLineContains(
+          readFileSync(join(dir, 'config.toml'), 'utf-8'),
+          'kimi-memory-hook.sh',
+        )
+      )
+        return true
+    } catch {
+      // missing toml is fine
+    }
+  }
+  return false
+}
+
+function pluginMarker(h: DetectedHarness, home: string): boolean {
+  switch (h.id) {
+    case 'grok-build':
+      return tomlFileHasRivetosTable(join(h.configHome, 'config.toml'))
+    case 'kimi-code':
+      return kimiPluginInstalled(home, h.configHome)
+    case 'codex':
+      return artefactConfigHomes(h.id, home, h.configHome).some(
+        (dir) =>
+          mcpJsonHasRivetos(join(dir, 'mcp.json')) ||
+          tomlFileHasRivetosTable(join(dir, 'config.toml')),
+      )
+    case 'hermes':
+      return hermesPluginInstalled(h.configHome)
+    case 'claude-code':
+      return false // decided by `claude plugin list` below
+    case 'opencode':
+      return opencodeCaptureInstalled(home, h.configHome)
+    case 'pi':
+      return piPluginInstalled(home)
+  }
+}
+
+/** Installed when the watcher has written its doctor marker, or the
+ *  systemd/launchd unit file is present (enabled by `plugins install`). */
+function piPluginInstalled(home: string): boolean {
+  if (existsSync(join(home, '.rivetos', 'pi-capture-state.json'))) return true
+  if (existsSync(join(home, '.config', 'systemd', 'user', PI_WATCHER_UNIT))) return true
+  if (existsSync(join(home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`))) return true
+  return false
+}
+
+async function claudePluginListed(
+  binary: string,
+  exec: typeof execFileAsync,
+): Promise<boolean | null> {
+  const result = await exec(binary, ['plugin', 'list'], { timeoutMs: 8_000 })
+  if (result.code !== 0) return null
+  return /rivet-memory/i.test(result.stdout + result.stderr)
+}
+
+export type CaptureWatcherHealth = 'active' | 'inactive' | 'crash-looping' | 'n/a'
+export type CaptureWatcherHarness = 'codex' | 'pi' | 'opencode'
+
+function parseSystemctlShow(text: string): { nRestarts: number; activeState: string } {
+  let nRestarts = 0
+  let activeState = ''
+  for (const line of text.split('\n')) {
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const k = line.slice(0, eq)
+    const v = line.slice(eq + 1).trim()
+    if (k === 'NRestarts') nRestarts = Number.parseInt(v, 10) || 0
+    if (k === 'ActiveState') activeState = v
+  }
+  return { nRestarts, activeState }
+}
+
+function watcherUnit(harness: CaptureWatcherHarness): { unit: string; label: string } {
+  switch (harness) {
+    case 'opencode':
+      return { unit: OPENCODE_WATCHER_UNIT, label: OPENCODE_LAUNCHD_LABEL }
+    case 'pi':
+      return { unit: PI_WATCHER_UNIT, label: PI_LAUNCHD_LABEL }
+    default:
+      return { unit: CODEX_WATCHER_UNIT, label: CODEX_LAUNCHD_LABEL }
+  }
+}
+
+export async function captureWatcherStatus(
+  exec: typeof execFileAsync,
+  platform: NodeJS.Platform,
+  uid?: number,
+  harness: CaptureWatcherHarness = 'codex',
+): Promise<CaptureWatcherHealth> {
+  const { unit, label } = watcherUnit(harness)
+  if (platform === 'darwin') {
+    const id = uid ?? process.getuid?.() ?? 0
+    const r = await exec('launchctl', ['print', `gui/${id}/${label}`], {
+      timeoutMs: 5_000,
+    })
+    if (r.code !== 0) return 'inactive'
+    const blob = `${r.stdout}\n${r.stderr}`
+    return /\bstate\s*=\s*running\b/i.test(blob) ? 'active' : 'inactive'
+  }
+  if (platform === 'linux') {
+    const r = await exec('systemctl', ['--user', 'show', '-p', 'NRestarts,ActiveState', unit], {
+      timeoutMs: 5_000,
+    })
+    const { nRestarts, activeState } = parseSystemctlShow(`${r.stdout}\n${r.stderr}`)
+    if (nRestarts > 3) return 'crash-looping'
+    return activeState === 'active' ? 'active' : 'inactive'
+  }
+  return 'n/a'
+}
+
+async function claudeHooksStatus(
+  exec: typeof execFileAsync,
+  root: string | null,
+): Promise<boolean> {
+  if (!root) return false
+  const hooksJs = join(root, 'plugins', 'providers', 'claude-cli', 'dist', 'hooks.js')
+  if (!existsSync(hooksJs)) return false
+  const result = await exec(process.execPath, [hooksJs, '--status'], { timeoutMs: 8_000 })
+  return /Capture hooks active/i.test(result.stdout + result.stderr)
+}
+
+/**
+ * One row per detected harness: binary, version, memory plugin installed?
+ * Missing harnesses are silent (local mode writes den-term.json so the
+ * picker does not list them). Nothing detected → no row (no behaviour
+ * change on existing nodes that have no coding harnesses).
+ */
+export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<CheckResult[]> {
+  const results: CheckResult[] = []
+  const home = probe.home ?? homedir()
+  const detect = probe.detect ?? detectHarnesses
+  const exec = probe.exec ?? execFileAsync
+  const found = await detect({
+    home,
+    pathEnv: probe.pathEnv,
+    extraDirs: probe.pathEnv !== undefined ? [] : undefined,
+    skipVersion: true,
+    exec,
+  })
+
+  if (found.length === 0) return results
+
+  const pending: Array<Promise<void>> = []
+  for (const h of found) {
+    if (h.version) continue
+    pending.push(
+      exec(h.binary, ['--version'], { timeoutMs: 3_000 }).then((result) => {
+        if (result.timedOut || result.code !== 0) return
+        const line = result.stdout.trim().split('\n')[0]?.trim()
+        if (line) h.version = line
+      }),
+    )
+  }
+  if (pending.length > 0) await Promise.all(pending)
+
+  const root = probe.root ?? findRoot()
+
+  for (const h of found) {
+    const ver = h.version ? ` ${h.version}` : ''
+    let installed = pluginMarker(h, home)
+    if (h.id === 'claude-code') {
+      const listed = await claudePluginListed(h.binary, exec)
+      installed = listed === true || (await claudeHooksStatus(exec, root))
+    }
+    let extra = ''
+    let watcher: CaptureWatcherHealth | undefined
+    if (isWatcherCaptureHarness(h.id)) {
+      watcher = await captureWatcherStatus(
+        exec,
+        probe.platform ?? process.platform,
+        probe.uid,
+        h.id,
+      )
+      extra = ` — capture watcher: ${watcher}`
+    }
+    const watcherBroken = watcher === 'inactive' || watcher === 'crash-looping'
+    if (installed && !watcherBroken) {
+      results.push(
+        check(
+          'harnesses',
+          h.id,
+          'pass',
+          `Harness ${h.id}: ${h.binary}${ver} — memory plugin installed${extra}`,
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'harnesses',
+          h.id,
+          'warn',
+          `Harness ${h.id}: ${h.binary}${ver} — memory plugin ${installed ? 'installed' : 'not installed'}${extra}`,
+          'Run: rivetos plugins install',
+        ),
+      )
+    }
+  }
+
+  return results
+}
+
+// ---------------------------------------------------------------------------
+// Check: leaf cert expiry (90-day leaves; warn within 30 days)
+// ---------------------------------------------------------------------------
+
+export async function checkLeafCert(rawConfig: string | null, now?: Date): Promise<CheckResult[]> {
+  const nodeName = resolveLocalNodeName()
+  if (!nodeName) return []
+
+  const certPath = sharedPath('rivet-ca', 'issued', `${nodeName}.crt`)
+  let pem: string
+  try {
+    pem = await readFile(certPath, 'utf-8')
+  } catch {
+    // Not enrolled — skip. Missing cert is not a doctor failure on a lone node.
+    return []
+  }
+
+  let seed: string | undefined
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as {
+        mesh?: { discovery?: { seed_host?: string; seedHost?: string } }
+      }
+      seed = parsed.mesh?.discovery?.seed_host ?? parsed.mesh?.discovery?.seedHost
+    } catch {
+      seed = undefined
+    }
+  }
+
+  const result = leafCertExpiryCheck({
+    certPem: pem,
+    nodeName,
+    hubTarget: renewHubTargetFromSeed(seed),
+    now,
+  })
+  // `check()` is 5 args: category, name, status, message, detail — printCheck renders detail.
+  return [check('mesh', 'leaf-cert', result.status, result.message, result.detail)]
+}
+
+// ---------------------------------------------------------------------------
+// Provider Connectivity (kept from original)
+// ---------------------------------------------------------------------------
+
+/** Match the provider: a stray OPENAI_API_KEY must not make `codex login status` succeed. */
+function envWithoutOpenAI(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith('OPENAI_')))
+}
+
+/** Models probe URL for the vllm provider — honors `models_url` and `api_prefix`. */
+function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): string {
+  if (typeof config.models_url === 'string' && config.models_url) return config.models_url
+  const raw = config.api_prefix
+  let prefix = '/v1'
+  if (raw !== undefined && raw !== null) {
+    const trimmed = (typeof raw === 'string' ? raw : '').trim()
+    if (trimmed === '') prefix = ''
+    else prefix = (trimmed.startsWith('/') ? trimmed : `/${trimmed}`).replace(/\/+$/, '')
+  }
+  return `${baseUrl}${prefix}/models`
+}
+
 export async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
