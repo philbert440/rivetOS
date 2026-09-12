@@ -51,6 +51,7 @@ import {
   embeddedPgLockAlive,
   embeddedPgUrl,
   readEmbeddedPgLock,
+  resolveEnvVars,
   validateConfig,
 } from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
@@ -1086,7 +1087,7 @@ async function checkDNS(rawConfig: string | null): Promise<CheckResult[]> {
 // Check: Provider Connectivity
 // ---------------------------------------------------------------------------
 
-async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> {
+export async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> {
   const results: CheckResult[] = []
   if (!rawConfig) return results
 
@@ -1095,8 +1096,14 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
     const parsed = parseYaml(rawConfig) as { providers?: Section }
     const providers: Section = parsed.providers ?? {}
 
-    for (const [name, providerCfg] of Object.entries(providers)) {
-      if (!providerCfg) continue
+    // Resolve `${VAR}` placeholders (api_key, base_url, …) exactly like the
+    // runtime's config loader — from process.env, which loadRivetEnv() has
+    // already populated from the selected env file. Probing with the raw block
+    // sent the literal placeholder as the bearer token and reported every keyed
+    // provider as unreachable.
+    for (const [name, rawProviderCfg] of Object.entries(providers)) {
+      if (!rawProviderCfg) continue
+      const providerCfg = resolveEnvVars(rawProviderCfg)
       try {
         const ok = await checkProviderConnectivity(name, providerCfg)
         if (ok) {
@@ -1106,7 +1113,7 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
         }
       } catch (err) {
         results.push(
-          check('providers', name, 'fail', `Provider ${name}: error`, (err as Error).message),
+          check('providers', name, 'fail', `Provider ${name}: error`, probeErrorDetail(err)),
         )
       }
     }
@@ -1115,6 +1122,26 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
   }
 
   return results
+}
+
+/** Detail line for a failed probe. Native fetch echoes request data in its
+ *  messages — header values (`Headers.append: "Bearer …" is an invalid header
+ *  value`) and URLs (`Failed to parse URL from …`) — and the probes resolve
+ *  `${VAR}` secrets into both, so the message itself must never reach the
+ *  terminal or JSON output. Report only the error class and its code. */
+export function probeErrorDetail(err: unknown): string {
+  if (!(err instanceof Error)) return 'unknown error'
+  const cause = err.cause as { code?: unknown } | undefined
+  const own = (err as unknown as { code?: unknown }).code
+  const code =
+    typeof cause?.code === 'string'
+      ? cause.code
+      : typeof own === 'string'
+        ? own
+        : err.name === 'TimeoutError' || err.name === 'AbortError'
+          ? 'timeout'
+          : undefined
+  return code ? `${err.name} (${code})` : err.name
 }
 
 // ---------------------------------------------------------------------------
@@ -1823,7 +1850,7 @@ function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): 
   return `${baseUrl}${prefix}/models`
 }
 
-async function checkProviderConnectivity(
+export async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
 ): Promise<boolean> {
