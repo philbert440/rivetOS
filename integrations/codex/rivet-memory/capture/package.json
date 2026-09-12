@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Capture worker for the Codex CLI rivet-memory integration. Watches ~/.codex/sessions rollout jsonl and writes them into the shared RivetOS memory store under agent='rivet-gpt'.",
+  "description": "Capture worker for the Codex CLI rivet-memory integration. Ingests ~/.codex/sessions rollout jsonl from native Codex hooks into the shared RivetOS memory store under agent='rivet-gpt'.",
   "license": "Apache-2.0",
   "main": "dist/codex-memory-capture.js",
   "bin": {
@@ -11,8 +11,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx test/smoke.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "tsx test/smoke.test.ts && tsx test/hook.test.ts && tsx test/setup.test.ts && tsx test/state.test.ts",
     "clean": "rm -rf dist",
     "lint": "eslint src/ package.json"
   },

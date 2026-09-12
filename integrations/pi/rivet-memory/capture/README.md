@@ -4,6 +4,11 @@ This directory is a workspace package (`@rivetos/pi-rivet-memory-capture`) that
 writes pi CLI v3 session jsonl into the shared RivetOS memory store under
 `agent = 'rivet-deepseek'`, `channel = 'pi'`.
 
+The trigger is the pi extension at `../extension/rivet-memory.ts` (installed
+to `~/.pi/agent/extensions/rivet-memory.ts`). This package is the ingest
+core: `--ingest-file` tails a session from a persisted cursor; `--backfill`
+walks existing files once.
+
 ## Layout
 
 ```
@@ -32,47 +37,49 @@ back to `npx --yes tsx` against the .ts source if the build is missing.
 
 ## Design
 
-Pi has no Claude/kimi-style hooks. Capture is a file watcher over
+Session files live at:
 
 ```
 ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<uuid-v7>.jsonl
 ```
 
 encoded cwd: `/home/rivet` → `--home-rivet--`. A custom `--session-dir` is
-flat (no cwd bucket). New lines are tailed, folded with the same filter rules
-as den-server `piTurnsFromLines` (copied, not imported), and upserted with:
+flat (no cwd bucket). New lines are tailed from the persisted per-file
+cursor, folded with the same filter rules as den-server `piTurnsFromLines`
+(copied, not imported), and upserted with:
 
-| field | value |
-|-------|--------|
-| agent | `rivet-deepseek` (override `RIVETOS_CAPTURE_AGENT`) |
-| channel | `pi` |
-| session_key | `pi:<uuid>` |
-| dedup | `pi:<uuid>:<lineId>` (8-hex line `id`); else `pi:<uuid>:line:<n>` |
-| title | session `-n` name if present, else first user text |
-| thinking | `metadata.reasoning` on the assistant row |
-| usage | assistant `message.usage` (`input`/`output`/`cacheRead`/`cacheWrite`/…) |
-| model | last `model_change` (`provider` + `modelId`) |
+| field       | value                                                                   |
+| ----------- | ----------------------------------------------------------------------- |
+| agent       | `rivet-deepseek` (override `RIVETOS_CAPTURE_AGENT`)                     |
+| channel     | `pi`                                                                    |
+| session_key | `pi:<uuid>`                                                             |
+| dedup       | `pi:<uuid>:<lineId>` (8-hex line `id`); else `pi:<uuid>:line:<n>`       |
+| title       | session `-n` name if present, else first user text                      |
+| thinking    | `metadata.reasoning` on the assistant row                               |
+| usage       | assistant `message.usage` (`input`/`output`/`cacheRead`/`cacheWrite`/…) |
+| model       | last `model_change` (`provider` + `modelId`)                            |
 
 Truncation is 16K and only when the row carries `session_jsonl_path` +
 `session_jsonl_line` so `memory_get_full` can re-read the session line.
 
-A per-session `pg_advisory_xact_lock(hashtext(session_key))` serialises the
-watcher. Pool size is 1.
+A per-session `pg_advisory_xact_lock(hashtext(session_key))` serialises
+ingest. Pool size is 1.
 
-`--watch` writes `~/.rivetos/pi-capture-state.json` (doctor marker). systemd
-user unit: `pi-memory-capture.service`. launchd label: `dev.rivetos.pi-capture`.
+`--ingest-file` / `--backfill` write `~/.rivetos/pi-capture-state.json`
+(`lastIngestAt`, `lastIngestSource`, per-file cursors).
 
 ## CLI
 
 ```
-pi-rivet-memory-capture --watch [--sessions-dir DIR]
-pi-rivet-memory-capture --backfill [--sessions-dir DIR]
-pi-rivet-memory-capture --once  [--sessions-dir DIR]
-pi-rivet-memory-capture --ingest <session.jsonl>
+pi-rivet-memory-capture --ingest-file <session.jsonl> [--delay-ms N]
+pi-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
+pi-rivet-memory-capture --status
 ```
 
-`--watch` ingests existing files then tails. `--backfill` / `--once` walk
-existing files and exit.
+`--ingest-file` tails from the persisted cursor and always exits 0.
+`--delay-ms N` sleeps before the read so overlapping children coalesce.
+`--backfill` / `--once` walk existing files and exit. `--days N` keeps
+files whose mtime is within N days.
 
 ## Tests
 

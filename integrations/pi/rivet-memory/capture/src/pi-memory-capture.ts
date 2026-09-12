@@ -3,8 +3,11 @@
  * Pi Memory Capture — ingest pi CLI v3 session jsonl into the shared
  * RivetOS memory DB as `rivet-deepseek` conversations.
  *
- * Pi has no Claude/kimi-style lifecycle hooks. The capture source is the
- * append-only session file the CLI writes:
+ * Trigger is the pi extension (`~/.pi/agent/extensions/rivet-memory.ts`)
+ * which spawns `--ingest-file` on turn_end / agent_end / session_shutdown.
+ * `--backfill` walks existing session files once. There is no file watcher.
+ *
+ * Capture source is the append-only session file the CLI writes:
  *
  *   ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<id>.jsonl
  *
@@ -12,9 +15,9 @@
  * flat (`<dir>/<ts>_<id>.jsonl`, no cwd bucket). `--session-id` may be any
  * non-empty token, not only a UUID.
  *
- * A file watcher over that tree tails new lines, folds with the same rules as
- * den-server's `piTurnsFromLines` (copy, not import), and upserts
- * ros_conversations / ros_messages.
+ * New lines are tailed from a persisted per-file cursor, folded with the
+ * same rules as den-server's `piTurnsFromLines` (copy, not import), and
+ * upserted into ros_conversations / ros_messages.
  *
  * Identity: agent='rivet-deepseek' (env `RIVETOS_CAPTURE_AGENT`),
  * channel='pi', session_key='pi:<id>'.
@@ -26,12 +29,12 @@
  * Truncation: 16K cap only when the row carries an absolute session path +
  * line offset so memory_get_full can re-read from disk.
  *
- * Best-effort ticks: ingest/connect failures are logged and retried. Uncaught
- * fatals exit 1 so systemd/launchd can restart the watcher. Log:
- * ~/.rivetos/pi-memory-capture.log. Doctor marker:
- * ~/.rivetos/pi-capture-state.json (written by --watch).
+ * Best-effort: `--ingest-file` always exits 0 so the pi extension never
+ * breaks the harness. Log: ~/.rivetos/logs/pi-capture.log. Doctor marker:
+ * ~/.rivetos/pi-capture-state.json (cursors + lastIngestAt).
  */
 
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -45,14 +48,23 @@ export const CAPTURE_AGENT = 'rivet-deepseek'
 export const CAPTURE_CHANNEL = 'pi'
 export const CAPTURE_SOURCE = 'pi-session'
 
-const LOG_FILE = path.join(os.homedir(), '.rivetos', 'pi-memory-capture.log')
+const LOG_FILE = path.join(os.homedir(), '.rivetos', 'logs', 'pi-capture.log')
 export const STATE_FILE = path.join(os.homedir(), '.rivetos', 'pi-capture-state.json')
 export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
 const LOCK_TIMEOUT_MS = 5000
 const LOCK_RETRY_ATTEMPTS = 8
 const LOCK_RETRY_MS = 50
-const WATCH_POLL_MS = 2000
+const MS_PER_DAY = 86_400_000
+/** Bounded wait for the per-harness state lock (a Postgres advisory lock). */
+export const STATE_LOCK_WAIT_MS = 120_000
+
+/** Override with RIVETOS_PI_CAPTURE_STATE (tests). */
+export function captureStatePath(): string {
+  const env = process.env.RIVETOS_PI_CAPTURE_STATE?.trim()
+  if (env && env.length > 0) return env
+  return STATE_FILE
+}
 
 /** Native session id — UUID, any version (pi mints v7). `--session-id` may be any token. */
 export const PI_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -97,6 +109,19 @@ export interface ParseResult {
 export interface FileCursor {
   offset: number
   pending: string
+}
+
+export interface PersistedCaptureState {
+  version: number
+  updatedAt: string
+  lastIngestAt?: string | null
+  lastIngestSource?: string | null
+  hookInstalledAt?: string | null
+  sessionsDir?: string | null
+  files: number
+  lastInserted?: number
+  lastSkipped?: number
+  cursors: Record<string, FileCursor>
 }
 
 export interface Queryable {
@@ -865,7 +890,7 @@ export async function ingestMessages(
     model?: string | null
     provider?: string | null
     thinkingLevel?: string | null
-    /** Per-conversation in-memory dedup set (watcher). Primed from the DB once. */
+    /** Per-conversation in-memory dedup set. Primed from the DB once. */
     seen?: Set<string>
   } = {},
 ): Promise<{ inserted: number; skipped: number; conversationId: string; sessionKey: string }> {
@@ -960,7 +985,7 @@ export async function ingestSessionFile(
 }
 
 // ---------------------------------------------------------------------------
-// Watcher
+// Cursors / backfill scan
 // ---------------------------------------------------------------------------
 
 export interface WatcherState {
@@ -984,18 +1009,209 @@ export function primeCursor(file: string, fromStart: boolean): FileCursor {
   }
 }
 
-export function writeCaptureState(root: string, state: WatcherState): void {
-  const payload = {
-    version: 1,
+function emptyCaptureState(): PersistedCaptureState {
+  return {
+    version: 2,
     updatedAt: new Date().toISOString(),
-    sessionsDir: root,
-    files: state.known.size,
+    files: 0,
+    cursors: {},
+  }
+}
+
+export function loadCaptureState(): PersistedCaptureState {
+  try {
+    const raw = fs.readFileSync(captureStatePath(), 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    if (!isRecord(parsed)) return emptyCaptureState()
+    const cursors: Record<string, FileCursor> = {}
+    if (isRecord(parsed.cursors)) {
+      for (const [key, value] of Object.entries(parsed.cursors)) {
+        if (isRecord(value) && typeof value.offset === 'number') {
+          cursors[key] = {
+            offset: value.offset,
+            pending: typeof value.pending === 'string' ? value.pending : '',
+          }
+        }
+      }
+    }
+    return {
+      version: typeof parsed.version === 'number' ? parsed.version : 2,
+      updatedAt: asString(parsed.updatedAt) ?? new Date().toISOString(),
+      lastIngestAt: asString(parsed.lastIngestAt),
+      lastIngestSource: asString(parsed.lastIngestSource),
+      hookInstalledAt: asString(parsed.hookInstalledAt),
+      sessionsDir: asString(parsed.sessionsDir),
+      files: typeof parsed.files === 'number' ? parsed.files : Object.keys(cursors).length,
+      lastInserted: typeof parsed.lastInserted === 'number' ? parsed.lastInserted : undefined,
+      lastSkipped: typeof parsed.lastSkipped === 'number' ? parsed.lastSkipped : undefined,
+      cursors,
+    }
+  } catch {
+    return emptyCaptureState()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-harness state lock = Postgres session-level advisory lock on the client
+// that does the ingest. True mutual exclusion across processes, no stale-lock
+// reclamation (the server releases it when a holder's connection drops),
+// bounded wait via lock_timeout. A run that cannot take it is SKIPPED (null).
+// ---------------------------------------------------------------------------
+
+export function stateLockKey(stateFile = captureStatePath()): string {
+  return `rivetos-capture-state:${os.hostname()}:${path.resolve(stateFile)}`
+}
+
+function isLockTimeout(err: unknown): boolean {
+  const code = isRecord(err) && typeof err.code === 'string' ? err.code : ''
+  const msg = err instanceof Error ? err.message : String(err)
+  return code === '55P03' || /lock timeout|lock_not_available/i.test(msg)
+}
+
+export async function withStateLock<T>(
+  client: Queryable,
+  fn: () => Promise<T>,
+  stateFile = captureStatePath(),
+  waitMs = STATE_LOCK_WAIT_MS,
+): Promise<T | null> {
+  const key = stateLockKey(stateFile)
+  try {
+    // withPool caps every statement at the ingest statement_timeout, which would
+    // also cap this blocking wait; lift it for the acquisition only and put it
+    // back before the critical section (and on failure).
+    await client.query('SET statement_timeout = 0')
+    await client.query(`SET lock_timeout = ${String(Math.max(1, Math.floor(waitMs)))}`)
+    await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
+    await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
+  } catch (err) {
+    try {
+      await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
+    } catch {
+      // ignore
+    }
+    if (isLockTimeout(err)) {
+      log(`state lock busy (${key}); skipping this run — the next event retries`)
+    } else {
+      log(`state lock unavailable (${err instanceof Error ? err.message : String(err)}); skipping`)
+    }
+    return null
   }
   try {
-    fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true })
-    fs.writeFileSync(STATE_FILE, `${JSON.stringify(payload)}\n`)
+    return await fn()
+  } finally {
+    try {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key])
+    } catch {
+      // connection gone → the server already released it
+    }
+    try {
+      await client.query('RESET lock_timeout')
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/** Never let a persisted cursor offset move backwards. */
+export function mergeCursor(prev: FileCursor | undefined, next: FileCursor): FileCursor {
+  if (!prev) return { offset: next.offset, pending: next.pending }
+  if (next.offset < prev.offset) return prev
+  if (next.offset > prev.offset) return { offset: next.offset, pending: next.pending }
+  return { offset: prev.offset, pending: next.pending }
+}
+
+function writeStateAtomic(dest: string, next: PersistedCaptureState): void {
+  const tmp = `${dest}.${process.pid}.${Date.now()}.${process.hrtime.bigint()}.tmp`
+  fs.writeFileSync(tmp, `${JSON.stringify(next)}\n`)
+  try {
+    fs.renameSync(tmp, dest)
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp)
+    } catch {
+      // ignore
+    }
+    throw err
+  }
+}
+
+export function saveCaptureState(
+  patch: Partial<PersistedCaptureState>,
+  opts: { alreadyLocked?: boolean } = {},
+): PersistedCaptureState {
+  const run = (): PersistedCaptureState => {
+    const prev = loadCaptureState()
+    const cursors: Record<string, FileCursor> = { ...prev.cursors }
+    if (patch.cursors) {
+      for (const [key, cursor] of Object.entries(patch.cursors)) {
+        cursors[key] = mergeCursor(cursors[key], cursor)
+      }
+    }
+    const next: PersistedCaptureState = {
+      ...prev,
+      ...patch,
+      cursors,
+      version: 2,
+      updatedAt: new Date().toISOString(),
+      files: Object.keys(cursors).length,
+      hookInstalledAt:
+        patch.hookInstalledAt !== undefined
+          ? patch.hookInstalledAt
+          : (prev.hookInstalledAt ?? new Date().toISOString()),
+    }
+    try {
+      const dest = captureStatePath()
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      writeStateAtomic(dest, next)
+    } catch {
+      // ignore
+    }
+    return next
+  }
+  // Ingest paths hold the Postgres state lock; the write itself is a merged
+  // atomic replace (cursors never regress) so a metadata-only write is safe too.
+  void opts
+  return run()
+}
+
+export function persistWatcherCursors(
+  root: string,
+  state: WatcherState,
+  summary: { inserted: number; skipped: number },
+  source: string,
+): void {
+  const cursors: Record<string, FileCursor> = {}
+  for (const [file, cursor] of state.cursors) {
+    cursors[file] = { offset: cursor.offset, pending: cursor.pending }
+  }
+  saveCaptureState({
+    sessionsDir: root,
+    cursors,
+    files: state.known.size,
+    lastIngestAt: new Date().toISOString(),
+    lastIngestSource: source,
+    lastInserted: summary.inserted,
+    lastSkipped: summary.skipped,
+  })
+}
+
+export function formatStatus(state: PersistedCaptureState = loadCaptureState()): string {
+  return [
+    `lastIngestAt: ${state.lastIngestAt ?? 'never'}`,
+    `lastIngestSource: ${state.lastIngestSource ?? 'unknown'}`,
+    `files: ${String(state.files)}`,
+    `lastInserted: ${String(state.lastInserted ?? 0)}`,
+    `lastSkipped: ${String(state.lastSkipped ?? 0)}`,
+    `hookInstalledAt: ${state.hookInstalledAt ?? 'unknown'}`,
+  ].join('\n')
+}
+
+export function isNewerThanDays(file: string, days: number): boolean {
+  try {
+    const st = fs.statSync(file)
+    return st.mtimeMs >= Date.now() - days * MS_PER_DAY
   } catch {
-    // ignore
+    return false
   }
 }
 
@@ -1004,11 +1220,12 @@ async function ingestNewLines(
   cursor: FileCursor,
   client: Queryable,
   seenByKey?: Map<string, Set<string>>,
+  triggerEvent = 'ingest',
 ): Promise<{ inserted: number; skipped: number } | null> {
   const newLines = consumeNewLines(file, cursor)
   if (newLines.length === 0) return null
   // Re-parse the whole file so tool call/result pairing still works when the
-  // pair straddles two watch ticks. The in-memory seen-set keeps re-ticks O(new).
+  // pair straddles two ingest ticks. The in-memory seen-set keeps re-ticks O(new).
   const parsed = parseSessionFile(file)
   if (parsed.messages.length === 0) return { inserted: 0, skipped: 0 }
   const abs = path.resolve(file)
@@ -1025,14 +1242,14 @@ async function ingestNewLines(
     title: parsed.title,
     cwd: parsed.cwd,
     transcriptPath: abs,
-    triggerEvent: 'watch',
+    triggerEvent,
     model: parsed.model,
     provider: parsed.provider,
     thinkingLevel: parsed.thinkingLevel,
     seen,
   })
   log(
-    `watch ${result.sessionKey}: file=${abs} newLines=${newLines.length} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
+    `ingest ${result.sessionKey}: file=${abs} newLines=${newLines.length} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
   )
   return { inserted: result.inserted, skipped: result.skipped }
 }
@@ -1042,10 +1259,15 @@ export async function scanOnce(
   client: Queryable,
   state: WatcherState,
   fromStart: boolean,
+  opts: { days?: number; triggerEvent?: string } = {},
 ): Promise<{ files: number; inserted: number; skipped: number }> {
-  const files = discoverSessionFiles(root)
+  let files = discoverSessionFiles(root)
+  if (typeof opts.days === 'number') {
+    files = files.filter((file) => isNewerThanDays(file, opts.days as number))
+  }
   let inserted = 0
   let skipped = 0
+  const triggerEvent = opts.triggerEvent ?? 'backfill'
   for (const file of files) {
     if (!state.cursors.has(file)) {
       state.cursors.set(file, primeCursor(file, fromStart || !state.known.has(file)))
@@ -1054,7 +1276,7 @@ export async function scanOnce(
     const cursor = state.cursors.get(file)!
     const before = { ...cursor }
     try {
-      const r = await ingestNewLines(file, cursor, client, state.seen)
+      const r = await ingestNewLines(file, cursor, client, state.seen, triggerEvent)
       if (r) {
         inserted += r.inserted
         skipped += r.skipped
@@ -1080,10 +1302,22 @@ async function withPool<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   }
 }
 
-export async function runOnce(sessionsDir?: string): Promise<void> {
+export async function runOnce(sessionsDir?: string, days?: number): Promise<void> {
   const root = sessionsDir ?? piSessionsDir()
   const state = createWatcherState()
-  const summary = await withPool((client) => scanOnce(root, client, state, true))
+  const summary = await withPool((client) =>
+    withStateLock(client, async () => {
+      const scanned = await scanOnce(root, client, state, true, { days, triggerEvent: 'backfill' })
+      // persist under the same lock as the ingests
+      persistWatcherCursors(root, state, scanned, 'backfill')
+      return scanned
+    }),
+  )
+
+  if (summary === null) {
+    log('backfill skipped: state lock busy')
+    return
+  }
   log(
     `once ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
   )
@@ -1092,74 +1326,105 @@ export async function runOnce(sessionsDir?: string): Promise<void> {
   )
 }
 
-export type WatchClient = Queryable & { release: () => void }
-export type WatchPool = { connect: () => Promise<WatchClient> }
+/**
+ * Tail one session file from the persisted per-file cursor, then upsert.
+ * Dedup keys are unchanged (line id). Always updates lastIngestAt / source.
+ */
 
-/** One watch poll. Connect failures (PGlite not up yet) are logged, not thrown. */
-export async function watchTick(
-  pool: WatchPool,
-  root: string,
-  state: WatcherState,
-  fromStart: boolean,
-): Promise<void> {
-  let client: WatchClient | undefined
+/** One-hop deferral: a terminal event must not lose its tail to a busy lock. */
+export const RETRY_HOP_DELAY_MS = 15_000
+
+export function retryHopOnce(argv: string[]): void {
+  if (argv.includes('--retry-once')) return
   try {
-    // pool.connect() must sit inside the try: a boot race against PGlite
-    // (ECONNREFUSED :5433) used to reject runWatch, and main() then exited 0
-    // so systemd Restart=on-failure never came back.
-    client = await pool.connect()
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
-    await scanOnce(root, client, state, fromStart)
-  } catch (err) {
-    log(`watch tick failed: ${err instanceof Error ? err.message : String(err)}`)
-  } finally {
-    client?.release()
+    const launcher = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'bin',
+      'pi-memory-capture.sh',
+    )
+    const kept: string[] = []
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === '--delay-ms') {
+        i++
+        continue
+      }
+      kept.push(argv[i])
+    }
+    const child = spawn(
+      'bash',
+      [launcher, ...kept, '--retry-once', '--delay-ms', String(RETRY_HOP_DELAY_MS)],
+      { detached: true, stdio: 'ignore', env: process.env },
+    )
+    child.on('error', () => {})
+    child.unref()
+    log(`lock busy; re-queued once with --delay-ms ${String(RETRY_HOP_DELAY_MS)}`)
+  } catch {
+    // best effort
   }
 }
 
-export async function runWatch(sessionsDir?: string): Promise<void> {
-  const root = sessionsDir ?? piSessionsDir()
-  try {
-    fs.mkdirSync(root, { recursive: true })
-  } catch (err) {
-    log(`watch: cannot create ${root}: ${err instanceof Error ? err.message : String(err)}`)
-  }
-
-  const pool = new Pool({ connectionString: resolvePgUrl(), max: 1 })
-  const state = createWatcherState()
-  log(`watch starting on ${root}`)
-  writeCaptureState(root, state)
-
-  const tick = async (fromStart: boolean): Promise<void> => {
-    await watchTick(pool, root, state, fromStart)
-    writeCaptureState(root, state)
-  }
-
-  await tick(true)
-
-  let watching = false
-  const startWatch = (): void => {
-    if (watching) return
+export async function ingestFileFromCursor(
+  file: string,
+  client: Queryable,
+  opts: { alreadyLocked?: boolean } = {},
+): Promise<{ inserted: number; skipped: number; lockBusy?: boolean }> {
+  const abs = path.resolve(file)
+  const body = async (): Promise<{ inserted: number; skipped: number }> => {
+    const persisted = loadCaptureState()
+    const stored = persisted.cursors[abs]
+    const cursor: FileCursor = stored
+      ? { offset: stored.offset, pending: stored.pending }
+      : { offset: 0, pending: '' }
+    const before = { offset: cursor.offset, pending: cursor.pending }
     try {
-      const watcher = fs.watch(root, { recursive: true }, () => {
-        void tick(false)
-      })
-      watcher.on('error', (err) => {
-        log(`fs.watch error: ${err.message}`)
-        watching = false
-      })
-      watching = true
-      log(`fs.watch attached to ${root}`)
+      const r = await ingestNewLines(file, cursor, client, new Map(), 'extension')
+      saveCaptureState(
+        {
+          lastIngestAt: new Date().toISOString(),
+          lastIngestSource: 'extension',
+          cursors: { [abs]: { offset: cursor.offset, pending: cursor.pending } },
+          lastInserted: r?.inserted ?? 0,
+          lastSkipped: r?.skipped ?? 0,
+        },
+        { alreadyLocked: true },
+      )
+      const mine = { inserted: r?.inserted ?? 0, skipped: r?.skipped ?? 0 }
+      return mine
     } catch (err) {
-      log(`fs.watch unavailable: ${err instanceof Error ? err.message : String(err)}`)
+      Object.assign(cursor, before)
+      throw err
     }
   }
-  startWatch()
+  if (opts.alreadyLocked) return body()
+  const locked = await withStateLock(client, body)
+  return locked ?? { inserted: 0, skipped: 0, lockBusy: true }
+}
 
-  setInterval(() => {
-    if (!watching) startWatch()
-    void tick(false)
-  }, WATCH_POLL_MS)
+/** `--ingest-file` CLI: never throws out of this function; caller exits 0. */
+export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
+  try {
+    if (delayMs > 0) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, delayMs)
+      })
+    }
+    await withPool(async (client) => {
+      const result = await ingestFileFromCursor(file, client)
+      console.log(`${file}: inserted=${result.inserted} skipped=${result.skipped}`)
+      if (result.lockBusy) {
+        const argv = process.argv.slice(2)
+        if (argv.includes('--retry-once')) {
+          log(`ingest-file ${file} skipped twice on a busy state lock; run --backfill to catch up`)
+        } else {
+          retryHopOnce(argv)
+        }
+      }
+    })
+  } catch (err) {
+    log(`ingest-file ${file} failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 function loadEnvFile(): void {
@@ -1179,52 +1444,111 @@ function loadEnvFile(): void {
 
 export const USAGE = `pi-memory-capture — ingest pi v3 session jsonl into RivetOS memory
 
-  pi-rivet-memory-capture --watch [--sessions-dir DIR]
-  pi-rivet-memory-capture --backfill [--sessions-dir DIR]
-  pi-rivet-memory-capture --once [--sessions-dir DIR]
-  pi-rivet-memory-capture --ingest <session.jsonl>
+  pi-rivet-memory-capture --ingest-file <session.jsonl> [--delay-ms N]
+  pi-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
+  pi-rivet-memory-capture --status
 
-  --watch            tail ~/.pi/agent/sessions (cwd buckets) or a flat --session-dir
+  --ingest-file FILE tail one session from the persisted cursor then exit (always 0)
+  --delay-ms N       sleep N ms before reading (coalesce overlapping children)
   --backfill         ingest existing session files then exit
+  --days N           with --backfill, only files whose mtime is within N days
   --once             alias of --backfill
-  --ingest FILE      ingest one session file then exit
+  --status           print last ingest time + counts from the state file
   --sessions-dir DIR override the sessions root
 `
+
+export interface CliArgs {
+  mode: 'help' | 'backfill' | 'ingest-file' | 'status' | 'stamp-installed' | 'unknown'
+  file?: string
+  sessionsDir?: string
+  days?: number
+  delayMs?: number
+}
+
+export function parseCli(argv: string[]): CliArgs {
+  const out: CliArgs = { mode: 'unknown' }
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === '-h' || arg === '--help') {
+      out.mode = 'help'
+    } else if (arg === '--backfill' || arg === '--once') {
+      out.mode = 'backfill'
+    } else if (arg === '--ingest-file' || arg === '--ingest') {
+      out.mode = 'ingest-file'
+      out.file = argv[i + 1]
+      i++
+    } else if (arg === '--stamp-installed') {
+      out.mode = 'stamp-installed'
+    } else if (arg === '--status') {
+      out.mode = 'status'
+    } else if (arg === '--sessions-dir') {
+      out.sessionsDir = argv[i + 1]
+      i++
+    } else if (arg === '--days') {
+      const n = Number(argv[i + 1])
+      i++
+      if (Number.isFinite(n) && n >= 0) out.days = n
+    } else if (arg === '--delay-ms') {
+      const n = Number(argv[i + 1])
+      i++
+      if (Number.isFinite(n) && n >= 0) out.delayMs = n
+    } else if (arg === '--watch') {
+      out.mode = 'unknown'
+    }
+  }
+  return out
+}
 
 async function main(): Promise<void> {
   loadEnvFile()
   const args = process.argv.slice(2)
-  if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
+  const cli = parseCli(args)
+  if (args.length === 0 || cli.mode === 'help') {
     console.log(USAGE)
     return
   }
 
-  const sessionsIdx = args.indexOf('--sessions-dir')
-  const sessionsDir = sessionsIdx >= 0 ? args[sessionsIdx + 1] : undefined
+  if (args.includes('--watch')) {
+    console.error(
+      'pi-memory-capture: --watch has been removed; capture is triggered by the pi extension (~/.pi/agent/extensions/rivet-memory.ts). Use --backfill for a one-shot walk or --ingest-file for a single session.',
+    )
+    return
+  }
 
-  if (args[0] === '--watch') {
-    await runWatch(sessionsDir)
+  if (cli.mode === 'status') {
+    console.log(formatStatus())
     return
   }
-  if (args[0] === '--once' || args[0] === '--backfill') {
-    await runOnce(sessionsDir)
+
+  if (cli.mode === 'stamp-installed') {
+    try {
+      const r = await withPool((client) =>
+        withStateLock(client, () => {
+          const now = new Date().toISOString()
+          const st = saveCaptureState({ hookInstalledAt: now })
+          console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${captureStatePath()}`)
+          return Promise.resolve(true)
+        }),
+      )
+      if (r === null) log('stamp-installed deferred: state lock busy — the next ingest records it')
+    } catch (err) {
+      // never write shared state unlocked; the next ingest stamps hookInstalledAt
+      log(`stamp-installed deferred (${err instanceof Error ? err.message : String(err)})`)
+    }
     return
   }
-  if (args[0] === '--ingest') {
-    const file = args[1]
-    if (!file) {
-      console.error('Usage: pi-memory-capture --ingest <session.jsonl>')
-      process.exitCode = 1
+
+  if (cli.mode === 'backfill') {
+    await runOnce(cli.sessionsDir, cli.days)
+    return
+  }
+
+  if (cli.mode === 'ingest-file') {
+    if (!cli.file || cli.file.startsWith('--')) {
+      console.error('Usage: pi-memory-capture --ingest-file <session.jsonl>')
       return
     }
-    await withPool(async (client) => {
-      const { parsed, result } = await ingestSessionFile(file, client, {
-        triggerEvent: 'ingest',
-      })
-      console.log(
-        `${file}: session=${parsed.sessionId} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
-      )
-    })
+    await runIngestFile(cli.file, cli.delayMs ?? 0)
     return
   }
 

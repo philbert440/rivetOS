@@ -9,9 +9,11 @@
  *      with truncation pointers. Stands in for sqlite/pg-lite; this package
  *      does not add deps beyond kimi's (pg).
  *   4. File-cursor tailing (incomplete last line stays pending).
- *   5. Watch tick over a temp cwd-bucket tree + a flat --session-dir.
+ *   5. Backfill scan over a temp cwd-bucket tree + a flat --session-dir.
  *   6. Fold-parity against den-server `piTurnsFromLines`. Import failure
  *      (missing @rivetos/types or the den adapter) is a test failure.
+ *   7. --ingest-file tails the persisted per-file cursor (fixture → rows;
+ *      again → 0 new; append → only new rows).
  */
 import {
   mkdtempSync,
@@ -37,7 +39,11 @@ import {
   ingestMessages,
   createWatcherState,
   scanOnce,
-  watchTick,
+  ingestFileFromCursor,
+  loadCaptureState,
+  saveCaptureState,
+  parseCli,
+  formatStatus,
   encodePiCwd,
   captureAgent,
   CAPTURE_AGENT,
@@ -278,9 +284,7 @@ console.log('\n— parseSessionText (fixture) —')
         id: 'deadbeef',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'toolCall', id: 'c1', name: 'bash', arguments: { command: 'pwd' } },
-          ],
+          content: [{ type: 'toolCall', id: 'c1', name: 'bash', arguments: { command: 'pwd' } }],
           usage: { input: 42, output: 7, totalTokens: 49 },
           stopReason: 'toolUse',
         },
@@ -406,6 +410,14 @@ function stubClient(): {
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
+      if (
+        String(sql).startsWith('SET ') ||
+        String(sql).startsWith('RESET lock_timeout') ||
+        String(sql).startsWith('SELECT pg_advisory_lock(') ||
+        String(sql).startsWith('SELECT pg_advisory_unlock(')
+      ) {
+        return { rows: [], rowCount: 0 }
+      }
       if (s === 'ROLLBACK') {
         if (snapshot) {
           convs.length = 0
@@ -487,7 +499,8 @@ function stubClient(): {
           const meta =
             typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
           if (meta.event_id === failEvent) throw new Error('injected transient database failure')
-          if (params[6] !== null) storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
+          if (params[6] !== null)
+            storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
           msgs.push({
             id: `msg-${String(++ids)}`,
             conversation_id: String(params[0]),
@@ -642,9 +655,7 @@ console.log('\n— stub pool ingest —')
         id: 'feedface',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'toolCall', id: 'c2', name: 'bash', arguments: { command: 'pwd' } },
-          ],
+          content: [{ type: 'toolCall', id: 'c2', name: 'bash', arguments: { command: 'pwd' } }],
           usage: { input: 42, output: 7, totalTokens: 49 },
           stopReason: 'toolUse',
         },
@@ -665,11 +676,7 @@ console.log('\n— stub pool ingest —')
       (storedToolOnly?.metadata.usage as { input?: number }).input === 42,
     `usage=${JSON.stringify(storedToolOnly?.metadata.usage)}`,
   )
-  eq(
-    'stored tool-only stopReason survives ingest',
-    storedToolOnly?.metadata.stopReason,
-    'toolUse',
-  )
+  eq('stored tool-only stopReason survives ingest', storedToolOnly?.metadata.stopReason, 'toolUse')
 }
 
 console.log('\n— lock error recovers the pooled client —')
@@ -717,11 +724,7 @@ console.log('\n— consumeNewLines cursor —')
   eq('incomplete line yields nothing yet', mid.length, 0)
   check('pending holds the partial line', cursor.pending.startsWith('{"type":"message"'))
 
-  appendFileSync(
-    file,
-    ',"content":[{"type":"text","text":"hi"}]}}\n',
-    'utf8',
-  )
+  appendFileSync(file, ',"content":[{"type":"text","text":"hi"}]}}\n', 'utf8')
   const rest = consumeNewLines(file, cursor)
   eq('newline completes the pending line', rest.length, 1)
   check('completed line parses as json', rest[0]!.includes('aabbcc00'))
@@ -906,40 +909,118 @@ console.log('\n— fold-parity with piTurnsFromLines —')
 }
 
 // =============================================================================
-// watchTick — boot race against PGlite must not kill the watcher
+// --ingest-file tails the persisted per-file cursor
 // =============================================================================
-console.log('\n— watchTick boot race —')
+console.log('\n— ingest-file cursor (fixture → rows; again → 0; append → new) —')
 {
-  const dir = mkdtempSync(path.join(tmpdir(), 'pi-watch-boot-'))
-  const state = createWatcherState()
-  let released = 0
-  const refused = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:5433'), {
-    code: 'ECONNREFUSED',
-  })
+  const prevState = process.env.RIVETOS_PI_CAPTURE_STATE
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-ingest-file-'))
+  const stateFile = path.join(dir, 'pi-capture-state.json')
+  process.env.RIVETOS_PI_CAPTURE_STATE = stateFile
+  try {
+    const stub = stubClient()
+    const file = path.join(dir, path.basename(FIXTURE))
+    writeFileSync(file, readFileSync(FIXTURE, 'utf8'))
 
-  await watchTick({ connect: async () => { throw refused } }, dir, state, true)
-  eq('ECONNREFUSED first tick does not throw', released, 0)
+    const first = await ingestFileFromCursor(file, stub.client)
+    eq('ingest-file first pass inserts parsed rows', first.inserted, 4)
+    eq('ingest-file first pass skips none', first.skipped, 0)
+    eq('ingest-file stored session_key', stub.convs[0]?.session_key, `pi:${SESSION}`)
+    eq('ingest-file stored agent', stub.convs[0]?.agent, 'rivet-deepseek')
+    eq('ingest-file stored channel', stub.convs[0]?.channel, 'pi')
 
-  let connects = 0
-  const recovering = {
-    connect: async () => {
-      connects++
-      if (connects === 1) throw refused
-      return {
-        query: async () => ({ rows: [], rowCount: 0 }),
-        release: () => {
-          released++
-        },
-      }
-    },
+    const persisted = loadCaptureState()
+    eq('ingest-file lastIngestSource is extension', persisted.lastIngestSource, 'extension')
+    check(
+      'ingest-file lastIngestAt is set',
+      typeof persisted.lastIngestAt === 'string' && persisted.lastIngestAt.length > 0,
+    )
+    check(
+      'ingest-file persisted a cursor offset',
+      (persisted.cursors[path.resolve(file)]?.offset ?? 0) > 0,
+    )
+
+    const second = await ingestFileFromCursor(file, stub.client)
+    eq('ingest-file second pass inserts nothing', second.inserted, 0)
+    eq('ingest-file second pass skips none (cursor at EOF, no full re-ingest)', second.skipped, 0)
+    eq('message count unchanged on re-ingest', stub.msgs.length, 4)
+
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: 'message',
+        id: 'ff00aa11',
+        message: { role: 'user', content: [{ type: 'text', text: 'and again' }] },
+      }) + '\n',
+      'utf8',
+    )
+    const tailed = await ingestFileFromCursor(file, stub.client)
+    eq('ingest-file append inserts one new user row', tailed.inserted, 1)
+    const users = stub.msgs.filter((m) => m.role === 'user')
+    check(
+      'ingest-file tailed user content present',
+      users.some((m) => m.content === 'and again'),
+    )
+    eq('ingest-file after append has five rows', stub.msgs.length, 5)
+
+    const status = formatStatus()
+    check('status mentions lastIngestSource', status.includes('lastIngestSource: extension'))
+    check('status mentions lastIngestAt', status.includes('lastIngestAt:'))
+  } finally {
+    if (prevState === undefined) delete process.env.RIVETOS_PI_CAPTURE_STATE
+    else process.env.RIVETOS_PI_CAPTURE_STATE = prevState
+    rmSync(dir, { recursive: true, force: true })
   }
-  await watchTick(recovering, dir, state, true)
-  eq('first recovering tick still refuses without release', released, 0)
-  await watchTick(recovering, dir, state, false)
-  eq('second tick acquires a client', connects, 2)
-  eq('release runs only after successful connect', released, 1)
+}
 
-  rmSync(dir, { recursive: true, force: true })
+console.log('\n— parseCli —')
+{
+  const ingest = parseCli(['--ingest-file', '/tmp/demo.jsonl'])
+  eq('parseCli ingest-file mode', ingest.mode, 'ingest-file')
+  eq('parseCli ingest-file path', ingest.file, '/tmp/demo.jsonl')
+  const backfill = parseCli(['--backfill', '--days', '7', '--sessions-dir', '/tmp/sessions'])
+  eq('parseCli backfill mode', backfill.mode, 'backfill')
+  eq('parseCli backfill days', backfill.days, 7)
+  eq('parseCli sessions-dir', backfill.sessionsDir, '/tmp/sessions')
+  eq('parseCli status mode', parseCli(['--status']).mode, 'status')
+  eq('parseCli rejects --watch as unknown', parseCli(['--watch']).mode, 'unknown')
+  const delayed = parseCli(['--ingest-file', '/tmp/demo.jsonl', '--delay-ms', '200'])
+  eq('parseCli delay-ms with ingest-file', delayed.mode, 'ingest-file')
+  eq('parseCli delay-ms value', delayed.delayMs, 200)
+}
+
+console.log('\n— saveCaptureState merge (stale maps, no cursor regression) —')
+{
+  const prevState = process.env.RIVETOS_PI_CAPTURE_STATE
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-state-merge-'))
+  const stateFile = path.join(dir, 'pi-capture-state.json')
+  process.env.RIVETOS_PI_CAPTURE_STATE = stateFile
+  try {
+    const fileA = path.join(dir, 'session-a.jsonl')
+    const fileB = path.join(dir, 'session-b.jsonl')
+    saveCaptureState({ cursors: { [fileA]: { offset: 100, pending: '' } } })
+    saveCaptureState({ cursors: { [fileB]: { offset: 200, pending: 'partial' } } })
+    const merged = loadCaptureState()
+    eq('stale second save keeps session A cursor', merged.cursors[fileA]?.offset, 100)
+    eq('stale second save writes session B cursor', merged.cursors[fileB]?.offset, 200)
+    eq('session B pending survives', merged.cursors[fileB]?.pending, 'partial')
+    check('both session cursors present', Object.keys(merged.cursors).length === 2)
+
+    saveCaptureState({
+      cursors: {
+        [fileA]: { offset: 40, pending: 'stale' },
+        [fileB]: { offset: 250, pending: '' },
+      },
+    })
+    const advanced = loadCaptureState()
+    eq('cursor A does not regress', advanced.cursors[fileA]?.offset, 100)
+    eq('cursor B advances', advanced.cursors[fileB]?.offset, 250)
+    eq('regressed A keeps previous pending', advanced.cursors[fileA]?.pending, '')
+  } finally {
+    if (prevState === undefined) delete process.env.RIVETOS_PI_CAPTURE_STATE
+    else process.env.RIVETOS_PI_CAPTURE_STATE = prevState
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 if (failed > 0) {

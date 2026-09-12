@@ -47,7 +47,7 @@ Boot scans every `plugins/*/*/package.json` (and any `plugin_dirs` from config).
 import type { PluginManifest, RegistrationContext } from '@rivetos/types'
 
 export const manifest: PluginManifest = {
-  type: 'provider',           // 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
+  type: 'provider', // 'provider' | 'channel' | 'tool' | 'memory' | 'transport'
   name: 'mistral',
   async register(ctx: RegistrationContext) {
     // 1. Read your config slice
@@ -68,24 +68,24 @@ export const manifest: PluginManifest = {
 
 `RegistrationContext` exposes:
 
-| Member | Purpose |
-|---|---|
-| `config` | Full validated `RivetConfig` (cast in your plugin if you need it) |
-| `pluginConfig` | The slice for this plugin — `config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`. `undefined` for tool plugins (tools read from `config` directly when needed). |
-| `env` | `process.env` snapshot |
-| `workspaceDir` | Resolved workspace path |
-| `logger` | Scoped logger (`debug` / `info` / `warn` / `error`) |
-| `registerProvider` / `registerChannel` / `registerTool` / `registerMemory` | Hand instances to the runtime |
-| `registerHook(hook)` | Subscribe to lifecycle events |
-| `registerShutdown(fn)` | Called during graceful shutdown |
-| `lateBindTool(name)` | Returns a closure that resolves a tool at execution time — used by composite tools when registration order isn't guaranteed |
-| `onRegistrationComplete(fn)` | Fires once after every plugin has registered. Receives `{ tools }`. Used by transports to enumerate the finalized tool set before opening their listening socket. |
+| Member                                                                     | Purpose                                                                                                                                                                                                        |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`                                                                   | Full validated `RivetConfig` (cast in your plugin if you need it)                                                                                                                                              |
+| `pluginConfig`                                                             | The slice for this plugin — `config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`. `undefined` for tool plugins (tools read from `config` directly when needed). |
+| `env`                                                                      | `process.env` snapshot                                                                                                                                                                                         |
+| `workspaceDir`                                                             | Resolved workspace path                                                                                                                                                                                        |
+| `logger`                                                                   | Scoped logger (`debug` / `info` / `warn` / `error`)                                                                                                                                                            |
+| `registerProvider` / `registerChannel` / `registerTool` / `registerMemory` | Hand instances to the runtime                                                                                                                                                                                  |
+| `registerHook(hook)`                                                       | Subscribe to lifecycle events                                                                                                                                                                                  |
+| `registerShutdown(fn)`                                                     | Called during graceful shutdown                                                                                                                                                                                |
+| `lateBindTool(name)`                                                       | Returns a closure that resolves a tool at execution time — used by composite tools when registration order isn't guaranteed                                                                                    |
+| `onRegistrationComplete(fn)`                                               | Fires once after every plugin has registered. Receives `{ tools }`. Used by transports to enumerate the finalized tool set before opening their listening socket.                                              |
 
 Boot has **no per-plugin knowledge.** Every kind of plugin goes through the same loader (`packages/boot/src/registrars/plugins.ts`).
 
 ### Activation
 
-A plugin is *discovered* by `package.json#rivetos`, but only *activated* when:
+A plugin is _discovered_ by `package.json#rivetos`, but only _activated_ when:
 
 - **Provider / channel / memory / transport**: its name appears in the matching config section (`config.providers[name]`, `config.channels[name]`, `config.memory[name]`, `config.transports[name]`). Social channel plugins (telegram/discord/voice-discord) were **removed** in Phase 5; only `agent` (mesh) remains first-party.
 - **Tool**: always activated (tools decide internally whether their config is sufficient, e.g. `mcp-client` skips itself when no servers are configured).
@@ -122,21 +122,21 @@ interface LLMChunk {
 
 ### Reference implementations
 
-| Provider | Path | Notable |
-|---|---|---|
-| Anthropic | `plugins/providers/anthropic/` | Adaptive thinking, prompt caching |
-| xAI | `plugins/providers/xai/` | Live search, conversation caching |
-| Google | `plugins/providers/google/` | Thought signatures for function calling |
-| Ollama | `plugins/providers/ollama/` | Native API |
-| vllm | `plugins/providers/vllm/` | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`); folds mid-conversation system messages |
-| llama-server | `plugins/providers/llama-server/` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body`); folds mid-conversation system messages |
-| claude-cli | `plugins/providers/claude-cli/` | Drives the `claude` binary via stream-json; embedded MCP bridge for hybrid tools |
-| codex-cli | `plugins/providers/codex-cli/` | Drives `codex exec --json`; ChatGPT subscription login and per-conversation thread resume; no RivetOS tool bridge |
-| grok-cli | `plugins/providers/grok-cli/` | Drives the Grok Build `grok` binary headlessly (`grok -p --output-format json`); one call per turn, subscription login, no API key |
-| hermes-cli | `plugins/providers/hermes-cli/` | Drives the local Hermes Agent CLI (`hermes chat -q`), Hermes's own tools/memory/model config; session map for continuity |
-| kimi-code | `plugins/providers/kimi-code/` | Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`); session map for continuity |
-| opencode-cli | `plugins/providers/opencode-cli/` | Drives the local OpenCode CLI (`opencode run`); harness id `opencode`; default backend z.ai GLM (Anthropic-compatible). Memory capture: `integrations/opencode/rivet-memory` (SQLite watcher, no hooks; same shape as the Codex jsonl watcher) |
-| pi-cli | `plugins/providers/pi-cli/` | Drives the local pi CLI (`pi`, `@earendil-works/pi-coding-agent`) via print/JSON or RPC; recommended default backend z.ai GLM |
+| Provider     | Path                              | Notable                                                                                                                                                                                                        |
+| ------------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Anthropic    | `plugins/providers/anthropic/`    | Adaptive thinking, prompt caching                                                                                                                                                                              |
+| xAI          | `plugins/providers/xai/`          | Live search, conversation caching                                                                                                                                                                              |
+| Google       | `plugins/providers/google/`       | Thought signatures for function calling                                                                                                                                                                        |
+| Ollama       | `plugins/providers/ollama/`       | Native API                                                                                                                                                                                                     |
+| vllm         | `plugins/providers/vllm/`         | vLLM server — full vLLM surface (sampling extensions, mm/chat_template kwargs, video, `reasoning_content`); folds mid-conversation system messages                                                             |
+| llama-server | `plugins/providers/llama-server/` | llama.cpp llama-server — lean (`top_k`/`min_p` + `extra_body`); folds mid-conversation system messages                                                                                                         |
+| claude-cli   | `plugins/providers/claude-cli/`   | Drives the `claude` binary via stream-json; embedded MCP bridge for hybrid tools                                                                                                                               |
+| codex-cli    | `plugins/providers/codex-cli/`    | Drives `codex exec --json`; ChatGPT subscription login and per-conversation thread resume; no RivetOS tool bridge                                                                                              |
+| grok-cli     | `plugins/providers/grok-cli/`     | Drives the Grok Build `grok` binary headlessly (`grok -p --output-format json`); one call per turn, subscription login, no API key                                                                             |
+| hermes-cli   | `plugins/providers/hermes-cli/`   | Drives the local Hermes Agent CLI (`hermes chat -q`), Hermes's own tools/memory/model config; session map for continuity                                                                                       |
+| kimi-code    | `plugins/providers/kimi-code/`    | Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`); session map for continuity                                                                                                             |
+| opencode-cli | `plugins/providers/opencode-cli/` | Drives the local OpenCode CLI (`opencode run`); harness id `opencode`; default backend z.ai GLM (Anthropic-compatible). Memory capture: `integrations/opencode/rivet-memory` (native plugin on `session.idle`) |
+| pi-cli       | `plugins/providers/pi-cli/`       | Drives the local pi CLI (`pi`, `@earendil-works/pi-coding-agent`) via print/JSON or RPC; recommended default backend z.ai GLM                                                                                  |
 
 ---
 
@@ -167,9 +167,9 @@ The runtime calls `edit()` repeatedly while streaming. Channels handle:
 
 ### Reference implementations
 
-| Channel | Path | Notable |
-|---|---|---|
-| Agent | `plugins/channels/agent/` | HTTPS/mTLS inter-agent + mesh endpoints |
+| Channel | Path                      | Notable                                 |
+| ------- | ------------------------- | --------------------------------------- |
+| Agent   | `plugins/channels/agent/` | HTTPS/mTLS inter-agent + mesh endpoints |
 
 ---
 
@@ -183,7 +183,7 @@ interface Tool extends ToolDefinition {
 interface ToolDefinition {
   name: string
   description: string
-  parameters: object  // JSON Schema
+  parameters: object // JSON Schema
 }
 ```
 
@@ -193,14 +193,14 @@ interface ToolDefinition {
 
 ### Reference implementations
 
-| Tool plugin | Tools registered | Notable |
-|---|---|---|
-| `tool-shell` | `shell` | Safety categorization, cwd tracking, timeout |
-| `tool-file` | `file_read`, `file_write`, `file_edit` | Surgical edits, line numbers, optional backups |
-| `tool-search` | `search_glob`, `search_grep` | Glob and grep with file pattern filtering |
-| `tool-web-search` | `internet_search`, `web_fetch` | Google CSE + DuckDuckGo fallback, HTML → markdown |
-| `tool-interaction` | `ask_user`, `todo` | Structured questions, session-scoped task list |
-| `tool-mcp-client` | dynamic | Connects to MCP servers (stdio + HTTP), exposes their tools |
+| Tool plugin        | Tools registered                       | Notable                                                     |
+| ------------------ | -------------------------------------- | ----------------------------------------------------------- |
+| `tool-shell`       | `shell`                                | Safety categorization, cwd tracking, timeout                |
+| `tool-file`        | `file_read`, `file_write`, `file_edit` | Surgical edits, line numbers, optional backups              |
+| `tool-search`      | `search_glob`, `search_grep`           | Glob and grep with file pattern filtering                   |
+| `tool-web-search`  | `internet_search`, `web_fetch`         | Google CSE + DuckDuckGo fallback, HTML → markdown           |
+| `tool-interaction` | `ask_user`, `todo`                     | Structured questions, session-scoped task list              |
+| `tool-mcp-client`  | dynamic                                | Connects to MCP servers (stdio + HTTP), exposes their tools |
 
 The memory plugin (`@rivetos/memory-postgres`) additionally registers `memory_search`, `memory_browse`, `memory_stats`. Delegation, sub-agents, and skill management add `delegate_task`, `subagent_*`, and `skill_*` tools at runtime.
 

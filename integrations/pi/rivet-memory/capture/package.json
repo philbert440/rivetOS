@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Capture worker for the pi CLI rivet-memory integration. Watches ~/.pi/agent/sessions v3 jsonl and writes them into the shared RivetOS memory store under agent='rivet-deepseek'.",
+  "description": "Capture worker for the pi CLI rivet-memory integration. Ingests ~/.pi/agent/sessions v3 jsonl (triggered by the pi extension) into the shared RivetOS memory store under agent='rivet-deepseek'.",
   "license": "Apache-2.0",
   "main": "dist/pi-memory-capture.js",
   "bin": {
@@ -11,8 +11,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "tsx test/smoke.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p ../extension/tsconfig.json",
+    "test": "tsx test/smoke.test.ts && vitest run",
     "clean": "rm -rf dist",
     "lint": "eslint src/ package.json"
   },

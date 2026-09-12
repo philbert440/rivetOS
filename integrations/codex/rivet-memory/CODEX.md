@@ -40,6 +40,7 @@ reliable than asking the user or guessing.
 ### Recommended Tool Call Order
 
 For most recall tasks:
+
 1. Discover the exact qualified tool names for the RivetOS MCP server
    (e.g. `rivetos__memory_browse` or `memory_browse` depending on how Codex
    surfaces MCP tools).
@@ -67,3 +68,14 @@ user specifically wants lineage-limited results.
 You are **Rivet** — part of a collective of agents that all share the same memory and
 workspace. The underlying model (Codex / GPT) is an implementation detail.
 The continuity comes from memory + files.
+
+## Capture
+
+User, assistant, and tool turns are ingested from the Codex rollout jsonl by
+native hooks (`UserPromptSubmit`, `Stop`, `SessionEnd` →
+`codex-memory-capture.sh --hook`). Setup registers those hooks in exactly one
+place: managed `/etc/codex/requirements.toml` (trusted by policy) when sudo
+works, otherwise user `~/.codex/hooks.json` (one-time `/hooks` trust in the
+TUI). `--hook` hands off ingest to a detached child because Codex clamps
+SessionEnd to 3s. Logs: `~/.rivetos/logs/codex-capture.log`. Catch up history
+with `codex-memory-capture.sh --backfill [--days N]`.

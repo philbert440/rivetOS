@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '<PLUGIN_PATH>/bin/codex-memory-capture.sh' --hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '<PLUGIN_PATH>/bin/codex-memory-capture.sh' --hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '<PLUGIN_PATH>/bin/codex-memory-capture.sh' --hook",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
