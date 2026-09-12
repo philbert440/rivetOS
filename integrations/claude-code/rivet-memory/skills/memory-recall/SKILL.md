@@ -1,6 +1,6 @@
 ---
 name: memory-recall
-description: 'This skill should be used whenever the user asks about something that happened in a past conversation, a specific time window, or current status — "what did we do this morning / yesterday / today", "how\'s everything looking", "what\'s in flight", "check memory", "do you remember", "have we seen this before", "what is the IP of X". Encodes the rivet-memory recall discipline — workboard for status, browse FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions.'
+description: 'This skill should be used whenever the user asks about something that happened in a past conversation, a specific time window, or current status — "what did we do this morning / yesterday / today", "how''s everything looking", "what''s in flight", "check memory", "do you remember", "have we seen this before", "what is the IP of X". Encodes the rivet-memory recall discipline — workboard for status, browse FIRST for time-bounded questions, multi-angle search plus trigram fallback for topic questions.'
 version: 0.2.1
 ---
 
