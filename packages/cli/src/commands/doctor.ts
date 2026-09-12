@@ -63,6 +63,7 @@ import {
   herdrBinPath,
   herdrManifestCacheDir,
   herdrRepoManifestsDir,
+  readDotEnvValue,
   readHerdrVersion,
   readRivetosDotEnv,
   resolveHerdrMux,
@@ -1095,8 +1096,14 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
     const parsed = parseYaml(rawConfig) as { providers?: Section }
     const providers: Section = parsed.providers ?? {}
 
-    for (const [name, providerCfg] of Object.entries(providers)) {
-      if (!providerCfg) continue
+    // The runtime resolves `${VAR}` placeholders (api_key, base_url, …) from the
+    // environment, which systemd loads from ~/.rivetos/.env; a shell-launched
+    // doctor must do the same or it sends the literal placeholder as the bearer
+    // token and reports every keyed provider as unreachable.
+    const dotEnv = readRivetosDotEnv()
+    for (const [name, rawProviderCfg] of Object.entries(providers)) {
+      if (!rawProviderCfg) continue
+      const providerCfg = resolveProviderEnv(rawProviderCfg, process.env, dotEnv)
       try {
         const ok = await checkProviderConnectivity(name, providerCfg)
         if (ok) {
@@ -1823,7 +1830,35 @@ function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): 
   return `${baseUrl}${prefix}/models`
 }
 
-async function checkProviderConnectivity(
+/** Resolve `${VAR}` references in a provider block the way the runtime's config
+ *  loader does — process env first, then the unit's EnvironmentFile
+ *  (~/.rivetos/.env) — so the connectivity probe below uses the real key and
+ *  URL. Unknown names resolve to '' (same as the runtime). Pure: returns a copy. */
+export function resolveProviderEnv(
+  config: Record<string, unknown>,
+  env: NodeJS.ProcessEnv = process.env,
+  dotEnv: string | null = null,
+): Record<string, unknown> {
+  const resolveValue = (value: unknown): unknown => {
+    if (typeof value === 'string') {
+      return value.replace(/\$\{(\w+)\}/g, (_, name: string) => {
+        const fromEnv = env[name]
+        if (fromEnv !== undefined) return fromEnv
+        return readDotEnvValue(name, dotEnv) ?? ''
+      })
+    }
+    if (Array.isArray(value)) return value.map(resolveValue)
+    if (value && typeof value === 'object') {
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = resolveValue(v)
+      return out
+    }
+    return value
+  }
+  return resolveValue(config) as Record<string, unknown>
+}
+
+export async function checkProviderConnectivity(
   name: string,
   config: Record<string, unknown>,
 ): Promise<boolean> {
