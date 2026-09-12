@@ -18,6 +18,20 @@ export interface WikiEndpoint {
   gateway: RivetGateway
 }
 
+/** Settings override, else mesh datahub, else a successful local memory probe. */
+export function pickWikiSource(input: {
+  settingsBase: string
+  chatReady: boolean
+  chatBase: string
+  fromMesh: string | null
+  localOk: boolean
+}): { baseUrl: string; source: WikiEndpoint['source'] } | null {
+  if (input.settingsBase) return { baseUrl: input.settingsBase, source: 'settings' }
+  if (!input.chatReady) return null
+  if (input.fromMesh) return { baseUrl: input.fromMesh, source: 'mesh' }
+  return input.localOk ? { baseUrl: input.chatBase, source: 'local' } : null
+}
+
 /**
  * Resolve datahub origin: explicit Settings override, else mesh roster
  * entry named datahub, else a successful memory probe on the active node.
@@ -38,6 +52,7 @@ export function useWikiEndpoint(): {
     queryKey: ['mesh-for-wiki', chatBase],
     queryFn: ({ signal }) => chatGateway.meshOverview(signal),
     enabled: !settingsBase && chatReady,
+    retry: false,
     staleTime: 60_000,
   })
 
@@ -53,12 +68,17 @@ export function useWikiEndpoint(): {
   })
 
   // The wiki base's IDENTITY (what the UI shows / keys on), before transport.
-  const picked = useMemo((): { baseUrl: string; source: WikiEndpoint['source'] } | null => {
-    if (settingsBase) return { baseUrl: settingsBase, source: 'settings' }
-    if (!chatReady) return null
-    if (fromMesh) return { baseUrl: fromMesh, source: 'mesh' }
-    return local.isSuccess ? { baseUrl: chatBase, source: 'local' } : null
-  }, [settingsBase, chatReady, chatBase, fromMesh, local.isSuccess])
+  const picked = useMemo(
+    () =>
+      pickWikiSource({
+        settingsBase,
+        chatReady,
+        chatBase,
+        fromMesh,
+        localOk: local.isSuccess,
+      }),
+    [settingsBase, chatReady, chatBase, fromMesh, local.isSuccess],
+  )
 
   // Desktop mTLS (#491): an https datahub must ride the shell's loopback
   // identity pipe like every other gateway — a fourth RivetGateway

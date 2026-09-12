@@ -3,10 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 
 const browser = await chromium.connectOverCDP(process.env.E2E_CDP ?? 'http://127.0.0.1:19222')
 try {
-  const page = browser
-    .contexts()[0]
-    .pages()
-    .find((p) => p.url().startsWith('app://bundle'))
+  const page = browser.contexts()[0].pages().find((p) => p.url().startsWith('app://bundle'))
   if (!page) throw new Error('No RivetHub window found')
   const settings = await page.evaluate(() => window.rivetShell.settingsGetAll())
   if (settings['rivethub.e2eProfile'] !== true)
@@ -35,16 +32,14 @@ try {
     await page.waitForTimeout(1500)
     console.log(await page.locator('body').innerText())
     console.log(
-      await page
-        .locator('input,textarea,button')
-        .evaluateAll((els) =>
-          els.map((e) => ({
-            text: e.innerText,
-            placeholder: e.getAttribute('placeholder'),
-            label: e.getAttribute('aria-label'),
-            title: e.getAttribute('title'),
-          })),
-        ),
+      await page.locator('input,textarea,button').evaluateAll((els) =>
+        els.map((e) => ({
+          text: e.innerText,
+          placeholder: e.getAttribute('placeholder'),
+          label: e.getAttribute('aria-label'),
+          title: e.getAttribute('title'),
+        })),
+      ),
     )
   }
   for (const route of process.argv.slice(2).filter((x) => x.startsWith('/'))) {
@@ -54,18 +49,16 @@ try {
       route,
       url: page.url(),
       text: await page.locator('body').innerText(),
-      controls: await page
-        .locator('input,select,textarea,button')
-        .evaluateAll((els) =>
-          els.map((e) => ({
-            tag: e.tagName,
-            text: e.innerText,
-            placeholder: e.getAttribute('placeholder'),
-            label: e.getAttribute('aria-label'),
-            role: e.getAttribute('role'),
-            type: e.getAttribute('type'),
-          })),
-        ),
+      controls: await page.locator('input,select,textarea,button').evaluateAll((els) =>
+        els.map((e) => ({
+          tag: e.tagName,
+          text: e.innerText,
+          placeholder: e.getAttribute('placeholder'),
+          label: e.getAttribute('aria-label'),
+          role: e.getAttribute('role'),
+          type: e.getAttribute('type'),
+        })),
+      ),
       errors: errors.splice(0),
     }
     const name = route.replace(/[^a-z0-9]/gi, '_') || 'home'

@@ -6,7 +6,10 @@ import { chromium } from '@playwright/test'
 
 // This runner owns only its temporary profile/process. It does not install,
 // update, or stop the user's regular RivetHub or gateway service.
-const host = process.env.E2E_SSH ?? 'rivet@ct111'
+const host = process.env.E2E_SSH
+if (!host) {
+  throw new Error('E2E_SSH is required (example: user@host). No default SSH target is configured.')
+}
 if (!/^[a-zA-Z0-9_.@-]+$/.test(host) || host.startsWith('-')) throw new Error('Invalid E2E_SSH')
 const binary = process.env.E2E_BINARY ?? '/home/rivet/.local/bin/RivetHub'
 const gateway = process.env.E2E_GATEWAY ?? 'https://localhost:5174'

@@ -1,26 +1,33 @@
 # RivetHub desktop end-to-end tests
 
-Initial ct111 audit: [findings and build details](FINDINGS.md).
-Subsequent fixes: [candidate build and verification](FIXES.md).
+These tests control the **real installed Electron app** on a remote desktop
+through an SSH tunnel. Requests use the app's native mTLS bridge and its real
+gateway. Nothing is mocked. Each run launches a separate temporary profile,
+copies the existing desktop identity on the remote host, and removes that
+profile on completion. The normal desktop profile is never used for test
+mutations.
 
-These tests control the **real installed Electron app** on ct111 through an SSH
-tunnel. Requests use the app's native mTLS bridge and its real gateway. Nothing
-is mocked. Each run launches a separate temporary profile, copies the existing
-desktop identity on the remote host, and removes that profile on completion.
-The normal desktop profile is never used for test mutations.
+On 2026-09-11 the suite found three application defects: terminal image decoding
+blocked by packaged CSP, Memory not discovering a working standalone local
+backend, and malformed task IDs surfacing as raw store errors. Those are fixed
+here: CSP allows `wasm-unsafe-eval` only, Memory probes the active gateway after
+mesh discovery, and task IDs are validated before the store. Two live-provider
+checks (assistant reply, task completion) still fail when the desktop agent is
+not signed in; they remain ordinary failing tests, not skips.
 
-## Run against ct111
+## Run against a remote desktop
 
 ```bash
 cd apps/rivethub-electron/e2e
 npm ci
-E2E_EXPECT_SHA=ccebc1c0 E2E_EXPECT_VERSION=0.5.22 npm run test:remote
+E2E_SSH=user@host E2E_EXPECT_SHA=<web-commit> E2E_EXPECT_VERSION=0.5.22 npm run test:remote
 ```
 
-Set `E2E_EXPECT_SHA` to the commit actually built from main. The launcher checks
-the UI build stamp before running any tests; a stale installed build fails the
-run. It **does not update the app or gateway**. Building/installing them is a
-separate operation. Both were updated to `abd8572f` for the initial audit.
+`E2E_SSH` is required (`user@host` or an SSH config alias). There is no default
+host. Set `E2E_EXPECT_SHA` to the commit actually built into the installed UI.
+The launcher checks the UI build stamp before running any tests; a stale
+installed build fails the run. It **does not update the app or gateway**.
+Building/installing them is a separate operation.
 
 Prerequisites: Node 22+, SSH key access, Python 3 on the remote machine, a working
 desktop display, installed RivetHub, a running gateway, and an enrolled device
@@ -28,22 +35,22 @@ identity. Playwright does not need to download Chromium: it drives Electron's
 existing Chromium. Xvfb is needed for the separate `npm run check:sni` tray test,
 not for this suite on the existing desktop display.
 
-| Environment variable | Default / purpose                                    |
-| -------------------- | ---------------------------------------------------- |
-| `E2E_SSH`            | `rivet@ct111` (SSH alias; override for another host) |
-| `E2E_BINARY`         | `/home/rivet/.local/bin/RivetHub`                    |
-| `E2E_IDENTITY`       | `/home/rivet/.config/RivetHub/mtls`                  |
-| `E2E_GATEWAY`        | `https://localhost:5174`, as reached **from ct111**  |
-| `E2E_MEMORY_GATEWAY` | Same as gateway; explicit-memory tests only          |
-| `E2E_DISPLAY`        | `:0`                                                 |
-| `E2E_EXPECT_SHA`     | Required; web build commit                           |
-| `E2E_EXPECT_VERSION` | Optional desktop version assertion                   |
+| Environment variable | Default / purpose                                              |
+| -------------------- | -------------------------------------------------------------- |
+| `E2E_SSH`            | **Required.** SSH target (`user@host`); no default             |
+| `E2E_BINARY`         | Remote RivetHub binary (optional; user-local install default)  |
+| `E2E_IDENTITY`       | Remote mTLS identity dir (optional; user config default)       |
+| `E2E_GATEWAY`        | `https://localhost:5174`, as reached **from the remote host**  |
+| `E2E_MEMORY_GATEWAY` | Same as gateway; explicit-memory tests only                    |
+| `E2E_DISPLAY`        | `:0`                                                           |
+| `E2E_EXPECT_SHA`     | Required; web build commit                                     |
+| `E2E_EXPECT_VERSION` | Optional desktop version assertion                             |
 
 Run a subset by passing normal Playwright arguments:
 
 ```bash
-E2E_EXPECT_SHA=ccebc1c0 npm run test:remote -- --grep 'files:'
-E2E_EXPECT_SHA=ccebc1c0 npm run test:remote -- specs/memory.spec.mjs
+E2E_SSH=user@host E2E_EXPECT_SHA=<web-commit> npm run test:remote -- --grep 'files:'
+E2E_SSH=user@host E2E_EXPECT_SHA=<web-commit> npm run test:remote -- specs/memory.spec.mjs
 npm run test:list
 npm run report
 ```
