@@ -283,9 +283,7 @@ console.log('\n— parseSessionText (fixture) —')
         id: 'deadbeef',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'toolCall', id: 'c1', name: 'bash', arguments: { command: 'pwd' } },
-          ],
+          content: [{ type: 'toolCall', id: 'c1', name: 'bash', arguments: { command: 'pwd' } }],
           usage: { input: 42, output: 7, totalTokens: 49 },
           stopReason: 'toolUse',
         },
@@ -492,7 +490,8 @@ function stubClient(): {
           const meta =
             typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
           if (meta.event_id === failEvent) throw new Error('injected transient database failure')
-          if (params[6] !== null) storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
+          if (params[6] !== null)
+            storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
           msgs.push({
             id: `msg-${String(++ids)}`,
             conversation_id: String(params[0]),
@@ -647,9 +646,7 @@ console.log('\n— stub pool ingest —')
         id: 'feedface',
         message: {
           role: 'assistant',
-          content: [
-            { type: 'toolCall', id: 'c2', name: 'bash', arguments: { command: 'pwd' } },
-          ],
+          content: [{ type: 'toolCall', id: 'c2', name: 'bash', arguments: { command: 'pwd' } }],
           usage: { input: 42, output: 7, totalTokens: 49 },
           stopReason: 'toolUse',
         },
@@ -670,11 +667,7 @@ console.log('\n— stub pool ingest —')
       (storedToolOnly?.metadata.usage as { input?: number }).input === 42,
     `usage=${JSON.stringify(storedToolOnly?.metadata.usage)}`,
   )
-  eq(
-    'stored tool-only stopReason survives ingest',
-    storedToolOnly?.metadata.stopReason,
-    'toolUse',
-  )
+  eq('stored tool-only stopReason survives ingest', storedToolOnly?.metadata.stopReason, 'toolUse')
 }
 
 console.log('\n— lock error recovers the pooled client —')
@@ -722,11 +715,7 @@ console.log('\n— consumeNewLines cursor —')
   eq('incomplete line yields nothing yet', mid.length, 0)
   check('pending holds the partial line', cursor.pending.startsWith('{"type":"message"'))
 
-  appendFileSync(
-    file,
-    ',"content":[{"type":"text","text":"hi"}]}}\n',
-    'utf8',
-  )
+  appendFileSync(file, ',"content":[{"type":"text","text":"hi"}]}}\n', 'utf8')
   const rest = consumeNewLines(file, cursor)
   eq('newline completes the pending line', rest.length, 1)
   check('completed line parses as json', rest[0]!.includes('aabbcc00'))
@@ -933,16 +922,18 @@ console.log('\n— ingest-file cursor (fixture → rows; again → 0; append →
 
     const persisted = loadCaptureState()
     eq('ingest-file lastIngestSource is extension', persisted.lastIngestSource, 'extension')
-    check('ingest-file lastIngestAt is set', typeof persisted.lastIngestAt === 'string' && persisted.lastIngestAt.length > 0)
-    check('ingest-file persisted a cursor offset', (persisted.cursors[path.resolve(file)]?.offset ?? 0) > 0)
+    check(
+      'ingest-file lastIngestAt is set',
+      typeof persisted.lastIngestAt === 'string' && persisted.lastIngestAt.length > 0,
+    )
+    check(
+      'ingest-file persisted a cursor offset',
+      (persisted.cursors[path.resolve(file)]?.offset ?? 0) > 0,
+    )
 
     const second = await ingestFileFromCursor(file, stub.client)
     eq('ingest-file second pass inserts nothing', second.inserted, 0)
-    eq(
-      'ingest-file second pass skips none (cursor at EOF, no full re-ingest)',
-      second.skipped,
-      0,
-    )
+    eq('ingest-file second pass skips none (cursor at EOF, no full re-ingest)', second.skipped, 0)
     eq('message count unchanged on re-ingest', stub.msgs.length, 4)
 
     appendFileSync(

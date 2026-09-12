@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 
 /** Rewritten by setup-opencode-rivet-memory.sh --apply */
-const PLUGIN_PATH = "/opt/rivetos/integrations/opencode/rivet-memory"
+const PLUGIN_PATH = '/opt/rivetos/integrations/opencode/rivet-memory'
 
 export const DEBOUNCE_MS = 1500
 
@@ -41,10 +41,7 @@ function sessionIdOf(event: PluginEvent | null | undefined): string | null {
   return typeof raw === 'string' && raw.length > 0 ? raw : null
 }
 
-function spawnIngest(
-  sessionId: string,
-  inFlight: Map<string, ChildLike>,
-): void {
+function spawnIngest(sessionId: string, inFlight: Map<string, ChildLike>): void {
   const existing = inFlight.get(sessionId)
   if (existing && existing.exitCode == null && existing.killed !== true) {
     return

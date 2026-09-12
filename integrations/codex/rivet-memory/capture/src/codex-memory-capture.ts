@@ -969,19 +969,16 @@ export function newestRolloutForSession(sessionId: string, root?: string): strin
     (f) => uuidFromRolloutName(path.basename(f)) === sessionId,
   )
   if (files.length === 0) return null
+  const mtimeOf = (f: string): number => {
+    try {
+      return fs.statSync(f).mtimeMs
+    } catch {
+      return 0
+    }
+  }
   files.sort((a, b) => {
-    let am = 0
-    let bm = 0
-    try {
-      am = fs.statSync(a).mtimeMs
-    } catch {
-      am = 0
-    }
-    try {
-      bm = fs.statSync(b).mtimeMs
-    } catch {
-      bm = 0
-    }
+    const am = mtimeOf(a)
+    const bm = mtimeOf(b)
     if (am !== bm) return bm - am
     return a < b ? 1 : -1
   })
@@ -1087,10 +1084,7 @@ export async function scanOnce(
     const abs = path.resolve(file)
     if (!state.cursors.has(abs)) {
       const prior = state.cursors.get(file)
-      state.cursors.set(
-        abs,
-        prior ?? primeCursor(abs, fromStart || !state.known.has(abs)),
-      )
+      state.cursors.set(abs, prior ?? primeCursor(abs, fromStart || !state.known.has(abs)))
     }
     state.known.add(abs)
     const cursor = state.cursors.get(abs)!
@@ -1130,8 +1124,7 @@ export async function runBackfill(
   const root = sessionsDir ?? codexSessionsDir()
   const persisted = loadCaptureState(stateFile)
   const state = stateToWatcher(persisted)
-  const source =
-    typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
+  const source = typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
   const summary = await withPool((client) =>
     scanOnce(root, client, state, true, { days, triggerEvent: source }),
   )
@@ -1181,8 +1174,7 @@ export async function handleHookPayload(
   payload: Record<string, unknown>,
   opts: HookHandleOpts,
 ): Promise<HookHandleResult> {
-  const event =
-    pickPayloadString(payload, 'hook_event_name', 'hookEventName') ?? 'unknown'
+  const event = pickPayloadString(payload, 'hook_event_name', 'hookEventName') ?? 'unknown'
   const source = `hook:${event}`
   const finalize = /^sessionend$/i.test(event)
   const sessionsDir = opts.sessionsDir ?? codexSessionsDir()
@@ -1198,8 +1190,7 @@ export async function handleHookPayload(
 
   try {
     const sessionId = empty.sessionId
-    let transcript =
-      pickPayloadString(payload, 'transcript_path', 'transcriptPath') ?? null
+    let transcript = pickPayloadString(payload, 'transcript_path', 'transcriptPath') ?? null
     if (!transcript && sessionId) {
       transcript = newestRolloutForSession(sessionId, sessionsDir)
       if (transcript) log(`hook ${event}: transcript_path missing, fallback ${transcript}`)

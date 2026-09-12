@@ -184,9 +184,18 @@ console.log('— --hook Stop (fixture) —')
   eq('Stop inserts every parsed row', first.inserted, parsedFixture.messages.length)
   eq('Stop skips none on first fire', first.skipped, 0)
   eq('Stop event name', first.event, 'Stop')
-  check('stored a user row', stub.msgs.some((m) => m.role === 'user'))
-  check('stored an assistant row', stub.msgs.some((m) => m.role === 'assistant'))
-  check('stored a tool row', stub.msgs.some((m) => m.role === 'tool'))
+  check(
+    'stored a user row',
+    stub.msgs.some((m) => m.role === 'user'),
+  )
+  check(
+    'stored an assistant row',
+    stub.msgs.some((m) => m.role === 'assistant'),
+  )
+  check(
+    'stored a tool row',
+    stub.msgs.some((m) => m.role === 'tool'),
+  )
   eq('one conversation', stub.convs.length, 1)
   eq('session_key', stub.convs[0]?.session_key, `codex:${SESSION}`)
 
@@ -214,7 +223,9 @@ console.log('\n— UserPromptSubmit then Stop (growing file) —')
   const dir = mkdtempSync(path.join(tmpdir(), 'codex-hook-grow-'))
   const stateFile = path.join(dir, 'codex-capture-state.json')
   const rollout = path.join(dir, path.basename(FIXTURE))
-  const lines = readFileSync(FIXTURE, 'utf8').split('\n').filter((l) => l.trim().length > 0)
+  const lines = readFileSync(FIXTURE, 'utf8')
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
   // session_meta + 3 wrappers + user
   writeFileSync(rollout, `${lines.slice(0, 5).join('\n')}\n`)
   const stub = createStub()
@@ -234,7 +245,11 @@ console.log('\n— UserPromptSubmit then Stop (growing file) —')
   eq('only user rows so far', stub.msgs.length, 1)
   eq('first row is user', stub.msgs[0]?.role, 'user')
   eq('user content', stub.msgs[0]?.content, 'list the files')
-  eq('lastIngestSource is hook:UserPromptSubmit', loadCaptureState(stateFile).lastIngestSource, 'hook:UserPromptSubmit')
+  eq(
+    'lastIngestSource is hook:UserPromptSubmit',
+    loadCaptureState(stateFile).lastIngestSource,
+    'hook:UserPromptSubmit',
+  )
 
   appendFileSync(rollout, `${lines.slice(5).join('\n')}\n`)
   const stop = await handleHookPayload(
@@ -312,7 +327,10 @@ console.log('\n— transcript_path fallback via discoverRolloutFiles —')
     { client: stub.client, stateFile, sessionsDir: dir },
   )
   eq('fallback Stop inserts parsed rows', result.inserted, parsedFixture.messages.length)
-  check('resolved a file', typeof result.file === 'string' && result.file.endsWith(path.basename(FIXTURE)))
+  check(
+    'resolved a file',
+    typeof result.file === 'string' && result.file.endsWith(path.basename(FIXTURE)),
+  )
   rmSync(dir, { recursive: true, force: true })
 }
 
@@ -323,7 +341,13 @@ console.log('\n— hooks/hooks.json —')
 {
   const raw = readFileSync(HOOKS_JSON, 'utf8')
   const doc = JSON.parse(raw) as {
-    hooks?: Record<string, Array<{ matcher?: unknown; hooks?: Array<{ type?: string; command?: string; timeout?: number }> }>>
+    hooks?: Record<
+      string,
+      Array<{
+        matcher?: unknown
+        hooks?: Array<{ type?: string; command?: string; timeout?: number }>
+      }>
+    >
   }
   const hooks = doc.hooks ?? {}
   const events = Object.keys(hooks)

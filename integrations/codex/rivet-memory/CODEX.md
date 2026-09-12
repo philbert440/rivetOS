@@ -40,6 +40,7 @@ reliable than asking the user or guessing.
 ### Recommended Tool Call Order
 
 For most recall tasks:
+
 1. Discover the exact qualified tool names for the RivetOS MCP server
    (e.g. `rivetos__memory_browse` or `memory_browse` depending on how Codex
    surfaces MCP tools).

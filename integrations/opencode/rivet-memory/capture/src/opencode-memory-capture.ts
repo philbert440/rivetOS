@@ -1044,9 +1044,7 @@ export async function runIngestSession(
       `ingest-session ${sessionId}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
   } catch (err) {
-    log(
-      `ingest-session ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`,
-    )
+    log(`ingest-session ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
 

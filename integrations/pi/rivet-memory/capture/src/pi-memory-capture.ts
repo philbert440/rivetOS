@@ -1058,7 +1058,8 @@ export function saveCaptureState(patch: Partial<PersistedCaptureState>): Persist
     version: 2,
     updatedAt: new Date().toISOString(),
     files: patch.files ?? Object.keys(cursors).length,
-    hookInstalledAt: patch.hookInstalledAt !== undefined ? patch.hookInstalledAt : prev.hookInstalledAt,
+    hookInstalledAt:
+      patch.hookInstalledAt !== undefined ? patch.hookInstalledAt : prev.hookInstalledAt,
   }
   try {
     const dest = captureStatePath()

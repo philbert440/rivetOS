@@ -42,12 +42,12 @@ persisted per-file cursor.
 Folding uses the same filter rules as den-server `codexTurnsFromLines` (drop
 developer / injection wrappers), and upserts with:
 
-| field | value |
-|-------|--------|
-| agent | `rivet-gpt` |
-| channel | `codex` |
-| session_key | `codex:<uuid>` |
-| dedup | rollout item id (`rs_…` / `ctc_…` / `ctco_…`); else `codex:<uuid>:line:<n>` |
+| field       | value                                                                       |
+| ----------- | --------------------------------------------------------------------------- |
+| agent       | `rivet-gpt`                                                                 |
+| channel     | `codex`                                                                     |
+| session_key | `codex:<uuid>`                                                              |
+| dedup       | rollout item id (`rs_…` / `ctc_…` / `ctco_…`); else `codex:<uuid>:line:<n>` |
 
 Truncation is 16K and only when the row carries `session_jsonl_path` +
 `session_jsonl_line` so `memory_get_full` can re-read the rollout line.

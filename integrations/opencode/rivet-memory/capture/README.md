@@ -35,15 +35,15 @@ falls back to `npx --yes tsx` against the .ts source if the build is missing.
 
 ## Design
 
-| field | value |
-|-------|--------|
-| agent | `rivet-glm` (override `RIVETOS_CAPTURE_AGENT`) |
-| channel | `opencode` |
-| session_key | `opencode:<ses_id>` |
-| title | `session.title` |
-| cwd | `session.directory` |
-| dedup | `part.id` (`prt_…`) — never a content hash |
-| cursor | per-session `part.time_updated` (30s overlap) / `message.time_updated` in `~/.rivetos/opencode-capture-state.json` |
+| field       | value                                                                                                              |
+| ----------- | ------------------------------------------------------------------------------------------------------------------ |
+| agent       | `rivet-glm` (override `RIVETOS_CAPTURE_AGENT`)                                                                     |
+| channel     | `opencode`                                                                                                         |
+| session_key | `opencode:<ses_id>`                                                                                                |
+| title       | `session.title`                                                                                                    |
+| cwd         | `session.directory`                                                                                                |
+| dedup       | `part.id` (`prt_…`) — never a content hash                                                                         |
+| cursor      | per-session `part.time_updated` (30s overlap) / `message.time_updated` in `~/.rivetos/opencode-capture-state.json` |
 
 Folding rules match den-server `opencodeTurnsFromMessages` (skip system /
 step-start / step-finish; keep user text, assistant text, reasoning, tools)

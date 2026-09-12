@@ -26,7 +26,7 @@ detached. The ingest core tails the v3 session file
 `--session-dir` is flat.
 
 On-disk lines are v3 session jsonl (`session`, `model_change`,
-`thinking_level_change`, `message`). Print-mode stdout is a *runtime event*
+`thinking_level_change`, `message`). Print-mode stdout is a _runtime event_
 stream (`message_start` / `message_update` / …) and is **not** the capture
 source.
 
@@ -39,26 +39,26 @@ source.
 
 ## What It Ships
 
-| Component                    | Location                                              | Purpose |
-|-----------------------------|-------------------------------------------------------|---------|
-| Core discipline skill       | `skills/memory-recall/SKILL.md`                       | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands              | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/` | High-frequency shortcuts. |
-| Memory researcher subagent  | `agents/memory-researcher.md`                         | Delegate heavy or multi-step recall work. |
-| Capture system              | `capture/` (`@rivetos/pi-rivet-memory-capture`) + `bin/pi-memory-capture.sh` | Ingest under `agent = "rivet-deepseek"`. |
-| Pi extension                | `extension/rivet-memory.ts`                           | Native trigger (copied into `~/.pi/agent/extensions/`). |
-| MCP launcher                | `bin/rivet-memory-mcp.sh`                             | Expose RivetOS memory tools to pi. |
-| Project reflex              | `PI.md`                                               | Always-on memory discipline rules. |
-| Plugin metadata             | `plugin.json`                                         | For future plugin install support. |
+| Component                  | Location                                                                     | Purpose                                                                |
+| -------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Core discipline skill      | `skills/memory-recall/SKILL.md`                                              | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
+| Quick commands             | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/`   | High-frequency shortcuts.                                              |
+| Memory researcher subagent | `agents/memory-researcher.md`                                                | Delegate heavy or multi-step recall work.                              |
+| Capture system             | `capture/` (`@rivetos/pi-rivet-memory-capture`) + `bin/pi-memory-capture.sh` | Ingest under `agent = "rivet-deepseek"`.                               |
+| Pi extension               | `extension/rivet-memory.ts`                                                  | Native trigger (copied into `~/.pi/agent/extensions/`).                |
+| MCP launcher               | `bin/rivet-memory-mcp.sh`                                                    | Expose RivetOS memory tools to pi.                                     |
+| Project reflex             | `PI.md`                                                                      | Always-on memory discipline rules.                                     |
+| Plugin metadata            | `plugin.json`                                                                | For future plugin install support.                                     |
 
 ## Identity
 
-| field | value |
-|-------|--------|
-| agent | `rivet-deepseek` (override `RIVETOS_CAPTURE_AGENT`) |
-| channel | `pi` |
-| session_key | `pi:<uuid>` |
-| native id | UUID from the `session` line / filename (pi mints v7) |
-| title | session `-n` name if present, else first user text |
+| field       | value                                                 |
+| ----------- | ----------------------------------------------------- |
+| agent       | `rivet-deepseek` (override `RIVETOS_CAPTURE_AGENT`)   |
+| channel     | `pi`                                                  |
+| session_key | `pi:<uuid>`                                           |
+| native id   | UUID from the `session` line / filename (pi mints v7) |
+| title       | session `-n` name if present, else first user text    |
 
 ## Installation
 
@@ -73,6 +73,7 @@ npm run build
 ```
 
 This produces:
+
 - `$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js`
 - `$RIVETOS_ROOT/integrations/pi/rivet-memory/capture/dist/pi-memory-capture.js`
 

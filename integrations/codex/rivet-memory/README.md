@@ -24,26 +24,26 @@ from a persisted cursor.
 
 ## What It Ships
 
-| Component                    | Location                                              | Purpose |
-|-----------------------------|-------------------------------------------------------|---------|
-| Core discipline skill       | `skills/memory-recall/SKILL.md`                       | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands              | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/` | High-frequency shortcuts. |
-| Memory researcher subagent  | `agents/memory-researcher.md`                         | Delegate heavy or multi-step recall work. |
-| Capture system              | `capture/` (`@rivetos/codex-rivet-memory-capture`) + `bin/codex-memory-capture.sh` | Hook ingest under `agent = "rivet-gpt"`. |
-| Hook fragment               | `hooks/hooks.json`                                    | UserPromptSubmit / Stop / SessionEnd → `--hook`. |
-| Backfill                    | `backfill/` (`@rivetos/codex-rivet-memory-backfill`) + `codex-memory-capture.sh --backfill` | One-shot replay of existing rollouts. |
-| MCP launcher                | `bin/rivet-memory-mcp.sh`                             | Expose RivetOS memory tools to Codex. |
-| Project reflex              | `CODEX.md`                                            | Always-on memory discipline rules. |
-| Plugin metadata             | `plugin.json`                                         | For future plugin install support. |
+| Component                  | Location                                                                                    | Purpose                                                                |
+| -------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Core discipline skill      | `skills/memory-recall/SKILL.md`                                                             | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
+| Quick commands             | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/`                  | High-frequency shortcuts.                                              |
+| Memory researcher subagent | `agents/memory-researcher.md`                                                               | Delegate heavy or multi-step recall work.                              |
+| Capture system             | `capture/` (`@rivetos/codex-rivet-memory-capture`) + `bin/codex-memory-capture.sh`          | Hook ingest under `agent = "rivet-gpt"`.                               |
+| Hook fragment              | `hooks/hooks.json`                                                                          | UserPromptSubmit / Stop / SessionEnd → `--hook`.                       |
+| Backfill                   | `backfill/` (`@rivetos/codex-rivet-memory-backfill`) + `codex-memory-capture.sh --backfill` | One-shot replay of existing rollouts.                                  |
+| MCP launcher               | `bin/rivet-memory-mcp.sh`                                                                   | Expose RivetOS memory tools to Codex.                                  |
+| Project reflex             | `CODEX.md`                                                                                  | Always-on memory discipline rules.                                     |
+| Plugin metadata            | `plugin.json`                                                                               | For future plugin install support.                                     |
 
 ## Identity
 
-| field | value |
-|-------|--------|
-| agent | `rivet-gpt` |
-| channel | `codex` |
-| session_key | `codex:<uuid>` |
-| native id | bare rollout UUID (no `session_` prefix) |
+| field       | value                                    |
+| ----------- | ---------------------------------------- |
+| agent       | `rivet-gpt`                              |
+| channel     | `codex`                                  |
+| session_key | `codex:<uuid>`                           |
+| native id   | bare rollout UUID (no `session_` prefix) |
 
 ## Installation
 
@@ -58,6 +58,7 @@ npm run build
 ```
 
 This produces:
+
 - `$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js`
 - `$RIVETOS_ROOT/integrations/codex/rivet-memory/capture/dist/codex-memory-capture.js`
 

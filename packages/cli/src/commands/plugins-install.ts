@@ -93,14 +93,12 @@ export interface PluginsInstallDeps {
 }
 
 /** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
-const LEGACY_CAPTURE_WATCHER: Record<
-  'codex' | 'pi' | 'opencode',
-  { unit: string; label: string }
-> = {
-  codex: { unit: 'codex-memory-capture.service', label: 'dev.rivetos.codex-capture' },
-  pi: { unit: 'pi-memory-capture.service', label: 'dev.rivetos.pi-capture' },
-  opencode: { unit: 'opencode-memory-capture.service', label: 'dev.rivetos.opencode-capture' },
-}
+const LEGACY_CAPTURE_WATCHER: Record<'codex' | 'pi' | 'opencode', { unit: string; label: string }> =
+  {
+    codex: { unit: 'codex-memory-capture.service', label: 'dev.rivetos.codex-capture' },
+    pi: { unit: 'pi-memory-capture.service', label: 'dev.rivetos.pi-capture' },
+    opencode: { unit: 'opencode-memory-capture.service', label: 'dev.rivetos.opencode-capture' },
+  }
 
 /** Marker the Codex hook command must end with (user hooks.json or managed requirements.toml). */
 export const CODEX_HOOK_COMMAND_SUFFIX = 'codex-memory-capture.sh --hook'
@@ -632,7 +630,10 @@ export function kimiConfigHomes(home: string, configHome: string): string[] {
 }
 
 function commandEndsWithCodexHook(command: string): boolean {
-  const trimmed = command.trim().replace(/^['"]|['"]$/g, '').trim()
+  const trimmed = command
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .trim()
   return trimmed.endsWith(CODEX_HOOK_COMMAND_SUFFIX)
 }
 

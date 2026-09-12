@@ -139,15 +139,15 @@ Codex also has `CodexProtocolDriver` (app-server RPC).
 
 opencode and pi landed 2026-09-11 (#757/#758); deepseek-harness was removed (#764).
 
-| HarnessId          | Driver                                                 | Transcript store                                      | startSession                  | Approvals                                                         | liveStream                         | Models / efforts                                         |
-| ------------------ | ------------------------------------------------------ | ----------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------- | ---------------------------------- | -------------------------------------------------------- |
-| `claude-code`      | `ClaudeCodeDriver` (PTY)                               | `~/.claude/projects/<slug>/<uuid>.jsonl`              | yes (pins via `--session-id`) | yes when PTY + herdr + adapter                                    | yes                                | static 7 / low..max                                      |
-| `grok-build`       | `GrokBuildDriver` (PTY)                                | `~/.grok/sessions/.../chat_history.jsonl`             | yes                           | yes                                                               | yes                                | `~/.grok/models_cache.json` / cache, fallback low..xhigh |
-| `kimi-code`        | `KimiCodeDriver` (adopting)                            | `agents/main/wire.jsonl`                              | **unsupported** (no pin flag) | yes (key map **unverified**)                                      | yes (deltas diffed from wire.jsonl) | kimi `config.toml` / none                                |
-| `hermes`           | `HermesDriver` (adopting)                              | `~/.hermes/state.db`                                  | **unsupported** (no pin flag) | **false** by design (`--yolo`)                                    | yes                                | none / low/med/high (`--reasoning`)                      |
-| `codex`            | `CodexDriver` (adopting PTY) / `CodexProtocolDriver` (RPC) | rollout jsonl (`~/.codex/sessions`)                | refused / n/a                 | PTY: **false** (no key map) / RPC: **true**                        | yes / yes                          | static default / RPC `model/list`; efforts low..xhigh    |
-| `opencode`         | `OpencodeDriver` (adopting)                            | `~/.local/share/opencode/opencode.db` (SQLite, WAL-watched) | **unsupported** (no pin flag) | false (opencode's own TUI prompts)                                | yes                                | `~/.config/opencode/opencode.json` / `--variant` low,med,high,max |
-| `pi`               | `PiDriver` (PTY)                                       | `~/.pi/agent/sessions/<cwd>/<ts>_<uuid>.jsonl`        | yes (pins via `--session-id`) | false (pi's own TUI prompts)                                      | yes                                | `~/.pi/agent/settings.json` / `--thinking` low..max      |
+| HarnessId     | Driver                                                     | Transcript store                                            | startSession                  | Approvals                                   | liveStream                          | Models / efforts                                                  |
+| ------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------- | ------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------- |
+| `claude-code` | `ClaudeCodeDriver` (PTY)                                   | `~/.claude/projects/<slug>/<uuid>.jsonl`                    | yes (pins via `--session-id`) | yes when PTY + herdr + adapter              | yes                                 | static 7 / low..max                                               |
+| `grok-build`  | `GrokBuildDriver` (PTY)                                    | `~/.grok/sessions/.../chat_history.jsonl`                   | yes                           | yes                                         | yes                                 | `~/.grok/models_cache.json` / cache, fallback low..xhigh          |
+| `kimi-code`   | `KimiCodeDriver` (adopting)                                | `agents/main/wire.jsonl`                                    | **unsupported** (no pin flag) | yes (key map **unverified**)                | yes (deltas diffed from wire.jsonl) | kimi `config.toml` / none                                         |
+| `hermes`      | `HermesDriver` (adopting)                                  | `~/.hermes/state.db`                                        | **unsupported** (no pin flag) | **false** by design (`--yolo`)              | yes                                 | none / low/med/high (`--reasoning`)                               |
+| `codex`       | `CodexDriver` (adopting PTY) / `CodexProtocolDriver` (RPC) | rollout jsonl (`~/.codex/sessions`)                         | refused / n/a                 | PTY: **false** (no key map) / RPC: **true** | yes / yes                           | static default / RPC `model/list`; efforts low..xhigh             |
+| `opencode`    | `OpencodeDriver` (adopting)                                | `~/.local/share/opencode/opencode.db` (SQLite, WAL-watched) | **unsupported** (no pin flag) | false (opencode's own TUI prompts)          | yes                                 | `~/.config/opencode/opencode.json` / `--variant` low,med,high,max |
+| `pi`          | `PiDriver` (PTY)                                           | `~/.pi/agent/sessions/<cwd>/<ts>_<uuid>.jsonl`              | yes (pins via `--session-id`) | false (pi's own TUI prompts)                | yes                                 | `~/.pi/agent/settings.json` / `--thinking` low..max               |
 
 ### Capability flags (as wired)
 
@@ -155,13 +155,13 @@ Flags reflect what is actually available on the node, not aspirations. PTY
 drivers compute `interrupt` / `resume` / `approvals` at read time from the live
 PTY + herdr + adapter sheet (`PtyHarnessDriver.capabilities`).
 
-| Flag           | PTY drivers                                      | Notes                                                              |
-| -------------- | ------------------------------------------------ | ------------------------------------------------------------------ |
-| `interrupt`    | true if terminals enabled and PTY is available   | Esc via term manager inject; Codex RPC: true                       |
-| `resume`       | true if terminals enabled and PTY is available   | `--resume` / `--session` through spawn-or-get                      |
-| `approvals`    | PTY + herdr + adapter; not a constant false      | hermes/opencode/pi false; `claude-code` true when those gates pass    |
-| `liveStream`   | true if den event tap present                    | kimi stream is thinner (see above); pi tap-only              |
-| `listSessions` | true                                             | store scan                                                         |
+| Flag           | PTY drivers                                    | Notes                                                              |
+| -------------- | ---------------------------------------------- | ------------------------------------------------------------------ |
+| `interrupt`    | true if terminals enabled and PTY is available | Esc via term manager inject; Codex RPC: true                       |
+| `resume`       | true if terminals enabled and PTY is available | `--resume` / `--session` through spawn-or-get                      |
+| `approvals`    | PTY + herdr + adapter; not a constant false    | hermes/opencode/pi false; `claude-code` true when those gates pass |
+| `liveStream`   | true if den event tap present                  | kimi stream is thinner (see above); pi tap-only                    |
+| `listSessions` | true                                           | store scan                                                         |
 
 PTY drivers reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
 `sendUserTurn` with `capability_unsupported`. A PTY paste cannot hand a file to

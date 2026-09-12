@@ -269,7 +269,10 @@ describe('checkHarnesses', () => {
 
   it('pi row passes when the extension exists, even without a state file', async () => {
     mkdirSync(join(home, '.pi', 'agent', 'extensions'), { recursive: true })
-    writeFileSync(join(home, '.pi', 'agent', 'extensions', 'rivet-memory.ts'), 'export default {}\n')
+    writeFileSync(
+      join(home, '.pi', 'agent', 'extensions', 'rivet-memory.ts'),
+      'export default {}\n',
+    )
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.85.1')
       return ok()
@@ -288,7 +291,10 @@ describe('checkHarnesses', () => {
 
   it('pi row appends last capture from the state file without failing', async () => {
     mkdirSync(join(home, '.pi', 'agent', 'extensions'), { recursive: true })
-    writeFileSync(join(home, '.pi', 'agent', 'extensions', 'rivet-memory.ts'), 'export default {}\n')
+    writeFileSync(
+      join(home, '.pi', 'agent', 'extensions', 'rivet-memory.ts'),
+      'export default {}\n',
+    )
     mkdirSync(join(home, '.rivetos'), { recursive: true })
     writeFileSync(
       join(home, '.rivetos', 'pi-capture-state.json'),

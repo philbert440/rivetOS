@@ -127,11 +127,7 @@ describe('rivet-memory pi extension', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(2000)
     expect(spawnMock).toHaveBeenCalledTimes(1)
-    expect(spawnMock.mock.calls[0]?.[1]).toEqual([
-      EXPECTED_SCRIPT,
-      '--ingest-file',
-      SESSION_FILE,
-    ])
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([EXPECTED_SCRIPT, '--ingest-file', SESSION_FILE])
   })
 
   it('session_info_changed and session_before_switch flush immediately', () => {
@@ -142,11 +138,7 @@ describe('rivet-memory pi extension', () => {
     const { fire: fire2 } = install(OTHER_FILE)
     fire2('session_before_switch', {})
     expect(spawnMock).toHaveBeenCalledTimes(1)
-    expect(spawnMock.mock.calls[0]?.[1]).toEqual([
-      EXPECTED_SCRIPT,
-      '--ingest-file',
-      OTHER_FILE,
-    ])
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([EXPECTED_SCRIPT, '--ingest-file', OTHER_FILE])
   })
 
   it('keeps one child at a time per file and drains pending on exit', () => {

@@ -73,17 +73,18 @@ console.log('— identity constants —')
   eq('deriveSessionKey prefixes opencode:', deriveSessionKey(SESSION), `opencode:${SESSION}`)
   eq('default backfill is 14 days', DEFAULT_BACKFILL_DAYS, 14)
   check('backfill cutoff is in the past', backfillCutoffMs(14) < Date.now())
-  eq('backfill 0 cutoff is now (no backfill)', backfillCutoffMs(0, 1_700_000_000_000), 1_700_000_000_000)
+  eq(
+    'backfill 0 cutoff is now (no backfill)',
+    backfillCutoffMs(0, 1_700_000_000_000),
+    1_700_000_000_000,
+  )
   eq('parse --backfill 0 stays 0', parseBackfill(['--backfill', '0']), 0)
   eq('parse missing --backfill is default', parseBackfill([]), DEFAULT_BACKFILL_DAYS)
   eq('parse --backfill --days 7', parseBackfill(['--backfill', '--days', '7']), 7)
   eq('parse ingest-session id', parseIngestSession(['--ingest-session', SESSION]), SESSION)
   eq('parse ingest-session missing', parseIngestSession(['--ingest-session']), null)
   eq('cursor overlap is 30s', CURSOR_OVERLAP_MS, 30_000)
-  check(
-    'status empty says never',
-    formatStatus(emptyState()).includes('lastIngestAt: never'),
-  )
+  check('status empty says never', formatStatus(emptyState()).includes('lastIngestAt: never'))
 }
 
 // =============================================================================
@@ -144,10 +145,7 @@ console.log('\n— foldPart —')
     user?.extra?.session_sqlite_path === '/tmp/opencode.db',
     `path=${String(user?.extra?.session_sqlite_path)}`,
   )
-  check(
-    'user row carries part id',
-    user?.extra?.session_sqlite_part_id === 'prt_user1',
-  )
+  check('user row carries part id', user?.extra?.session_sqlite_part_id === 'prt_user1')
 
   const think = foldPart(
     base({
@@ -263,11 +261,7 @@ console.log('\n— foldPart —')
     '/tmp/opencode.db',
     skipped,
   )
-  eq(
-    'reasoning with time.end is inserted',
-    finishedThink?.content,
-    '[thinking] hmm done',
-  )
+  eq('reasoning with time.end is inserted', finishedThink?.content, '[thinking] hmm done')
 
   const errored = foldPart(
     base({
@@ -561,16 +555,8 @@ await withFixture(async (dbFile) => {
   }))
   const parsed = foldParts(parts, dbFile)
   eq('session id', [...parsed.sessions.keys()][0], SESSION)
-  eq(
-    'cwd from session.directory',
-    [...parsed.sessions.values()][0]?.directory,
-    '/tmp/demo',
-  )
-  eq(
-    'title from session.title',
-    [...parsed.sessions.values()][0]?.title,
-    'list the files',
-  )
+  eq('cwd from session.directory', [...parsed.sessions.values()][0]?.directory, '/tmp/demo')
+  eq('title from session.title', [...parsed.sessions.values()][0]?.title, 'list the files')
 
   const byRole: Record<string, number> = {}
   for (const m of parsed.messages) byRole[m.role] = (byRole[m.role] ?? 0) + 1
@@ -582,11 +568,7 @@ await withFixture(async (dbFile) => {
   )
   check('tool rows include call/result', (byRole.tool ?? 0) >= 1, `got ${byRole.tool}`)
   eq('step markers skipped', parsed.skipped['step-marker'], 2)
-  eq(
-    'user content',
-    parsed.messages.find((m) => m.role === 'user')?.content,
-    'list the files',
-  )
+  eq('user content', parsed.messages.find((m) => m.role === 'user')?.content, 'list the files')
   eq(
     'assistant text',
     parsed.messages.find((m) => m.eventId === 'prt_text1')?.content,
@@ -903,24 +885,11 @@ await withBlankDb(async (dbFile) => {
   ).run(SESSION, 'stream', '/tmp', now, now)
   db.prepare(
     `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
-  ).run(
-    'msg_a',
-    SESSION,
-    now,
-    now,
-    JSON.stringify({ role: 'assistant', time: { created: now } }),
-  )
+  ).run('msg_a', SESSION, now, now, JSON.stringify({ role: 'assistant', time: { created: now } }))
   db.prepare(
     `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    'prt_stream',
-    'msg_a',
-    SESSION,
-    now,
-    now,
-    JSON.stringify({ type: 'text', text: 'hel' }),
-  )
+  ).run('prt_stream', 'msg_a', SESSION, now, now, JSON.stringify({ type: 'text', text: 'hel' }))
   db.close()
 
   const stub = makeStub()
@@ -931,11 +900,13 @@ await withBlankDb(async (dbFile) => {
   check('streaming part id is not stored', !stub.eventIds().includes('prt_stream'))
 
   const db2 = new DatabaseSync(dbFile)
-  db2.prepare(`UPDATE part SET data = ?, time_updated = ? WHERE id = ?`).run(
-    JSON.stringify({ type: 'text', text: 'hello world', time: { start: now, end: now + 1 } }),
-    now + 1,
-    'prt_stream',
-  )
+  db2
+    .prepare(`UPDATE part SET data = ?, time_updated = ? WHERE id = ?`)
+    .run(
+      JSON.stringify({ type: 'text', text: 'hello world', time: { start: now, end: now + 1 } }),
+      now + 1,
+      'prt_stream',
+    )
   db2.prepare(`UPDATE message SET time_updated = ? WHERE id = ?`).run(now + 1, 'msg_a')
   db2.prepare(`UPDATE session SET time_updated = ? WHERE id = ?`).run(now + 1, SESSION)
   db2.close()
@@ -963,14 +934,7 @@ await withBlankDb(async (dbFile) => {
   db.prepare(
     `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    'prt_first',
-    'msg_u',
-    SESSION,
-    t,
-    t,
-    JSON.stringify({ type: 'text', text: 'first' }),
-  )
+  ).run('prt_first', 'msg_u', SESSION, t, t, JSON.stringify({ type: 'text', text: 'first' }))
   db.close()
 
   const stub = makeStub()
@@ -1120,7 +1084,11 @@ await withFixture(async (dbFile) => {
     stateFile,
     source: 'plugin',
   })
-  check('first ingest-session inserts rows', first.inserted >= 4, `inserted=${String(first.inserted)}`)
+  check(
+    'first ingest-session inserts rows',
+    first.inserted >= 4,
+    `inserted=${String(first.inserted)}`,
+  )
   const firstIds = stub.eventIds()
   check('first ingest-session stored user part', firstIds.includes('prt_user1'))
   check('first ingest-session stored tool part', firstIds.includes('prt_tool1'))

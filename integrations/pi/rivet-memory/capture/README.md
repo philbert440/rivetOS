@@ -48,16 +48,16 @@ flat (no cwd bucket). New lines are tailed from the persisted per-file
 cursor, folded with the same filter rules as den-server `piTurnsFromLines`
 (copied, not imported), and upserted with:
 
-| field | value |
-|-------|--------|
-| agent | `rivet-deepseek` (override `RIVETOS_CAPTURE_AGENT`) |
-| channel | `pi` |
-| session_key | `pi:<uuid>` |
-| dedup | `pi:<uuid>:<lineId>` (8-hex line `id`); else `pi:<uuid>:line:<n>` |
-| title | session `-n` name if present, else first user text |
-| thinking | `metadata.reasoning` on the assistant row |
-| usage | assistant `message.usage` (`input`/`output`/`cacheRead`/`cacheWrite`/…) |
-| model | last `model_change` (`provider` + `modelId`) |
+| field       | value                                                                   |
+| ----------- | ----------------------------------------------------------------------- |
+| agent       | `rivet-deepseek` (override `RIVETOS_CAPTURE_AGENT`)                     |
+| channel     | `pi`                                                                    |
+| session_key | `pi:<uuid>`                                                             |
+| dedup       | `pi:<uuid>:<lineId>` (8-hex line `id`); else `pi:<uuid>:line:<n>`       |
+| title       | session `-n` name if present, else first user text                      |
+| thinking    | `metadata.reasoning` on the assistant row                               |
+| usage       | assistant `message.usage` (`input`/`output`/`cacheRead`/`cacheWrite`/…) |
+| model       | last `model_change` (`provider` + `modelId`)                            |
 
 Truncation is 16K and only when the row carries `session_jsonl_path` +
 `session_jsonl_line` so `memory_get_full` can re-read the session line.

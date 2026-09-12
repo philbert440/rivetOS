@@ -75,11 +75,7 @@ import {
   readEmbeddedConfig,
 } from '../lib/embedded.js'
 import { loadRivetEnv } from '../lib/env-file.js'
-import {
-  detectHarnesses,
-  execFileAsync,
-  type DetectedHarness,
-} from '../lib/harness-detect.js'
+import { detectHarnesses, execFileAsync, type DetectedHarness } from '../lib/harness-detect.js'
 import { findRoot } from './plugins-sync.js'
 import {
   CODEX_HOOK_COMMAND_SUFFIX,
@@ -1633,11 +1629,7 @@ export function formatRelativeCapture(value: string | number, nowMs = Date.now()
   return `${Math.round(hr / 24)}d ago`
 }
 
-function lastCaptureSuffix(
-  home: string,
-  id: 'codex' | 'pi' | 'opencode',
-  nowMs: number,
-): string {
+function lastCaptureSuffix(home: string, id: 'codex' | 'pi' | 'opencode', nowMs: number): string {
   const path = join(home, '.rivetos', `${id}-capture-state.json`)
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { lastIngestAt?: unknown }
@@ -1654,7 +1646,9 @@ function lastCaptureSuffix(
 
 function codexHooksHint(requirementsPath: string): string {
   try {
-    if (uncommentedLineContains(readFileSync(requirementsPath, 'utf-8'), CODEX_HOOK_COMMAND_SUFFIX)) {
+    if (
+      uncommentedLineContains(readFileSync(requirementsPath, 'utf-8'), CODEX_HOOK_COMMAND_SUFFIX)
+    ) {
       return ' — hooks: managed'
     }
   } catch {

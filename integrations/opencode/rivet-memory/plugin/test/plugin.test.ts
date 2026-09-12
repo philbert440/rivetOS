@@ -116,9 +116,7 @@ describe('RivetMemory plugin', () => {
   it('does not throw on malformed events', async () => {
     const plugin = await RivetMemory({ directory: '/tmp' })
     await expect(plugin.event({ event: {} })).resolves.toBeUndefined()
-    await expect(
-      plugin.event({ event: { type: 'session.idle' } }),
-    ).resolves.toBeUndefined()
+    await expect(plugin.event({ event: { type: 'session.idle' } })).resolves.toBeUndefined()
     expect(spawn).toHaveBeenCalledTimes(0)
   })
 

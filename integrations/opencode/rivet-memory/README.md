@@ -27,26 +27,26 @@ read-only. Message events are ignored — SQLite rows are the source of truth.
 
 ## What It Ships
 
-| Component                    | Location                                              | Purpose |
-|-----------------------------|-------------------------------------------------------|---------|
-| Core discipline skill       | `skills/memory-recall/SKILL.md`                       | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
-| Quick commands              | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/` | High-frequency shortcuts. |
-| Memory researcher subagent  | `agents/memory-researcher.md`                         | Delegate heavy or multi-step recall work. |
-| Capture plugin              | `plugin/rivet-memory.ts` (copied to `~/.config/opencode/plugins/`) | Native event trigger. |
-| Capture ingest              | `capture/` (`@rivetos/opencode-rivet-memory-capture`) + `bin/opencode-memory-capture.sh` | `--ingest-session` / `--backfill` under `agent = "rivet-glm"`. |
-| MCP launcher                | `bin/rivet-memory-mcp.sh`                             | Expose RivetOS memory tools to OpenCode. |
-| Project reflex              | `OPENCODE.md`                                         | Always-on memory discipline rules. |
-| Plugin metadata             | `plugin.json`                                         | For future plugin install support. |
+| Component                  | Location                                                                                 | Purpose                                                                |
+| -------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Core discipline skill      | `skills/memory-recall/SKILL.md`                                                          | Optimal `memory_browse` first + multi-angle search + trigram fallback. |
+| Quick commands             | `skills/memory-today/`, `memory-yesterday/`, `memory-stats/` + `commands/`               | High-frequency shortcuts.                                              |
+| Memory researcher subagent | `agents/memory-researcher.md`                                                            | Delegate heavy or multi-step recall work.                              |
+| Capture plugin             | `plugin/rivet-memory.ts` (copied to `~/.config/opencode/plugins/`)                       | Native event trigger.                                                  |
+| Capture ingest             | `capture/` (`@rivetos/opencode-rivet-memory-capture`) + `bin/opencode-memory-capture.sh` | `--ingest-session` / `--backfill` under `agent = "rivet-glm"`.         |
+| MCP launcher               | `bin/rivet-memory-mcp.sh`                                                                | Expose RivetOS memory tools to OpenCode.                               |
+| Project reflex             | `OPENCODE.md`                                                                            | Always-on memory discipline rules.                                     |
+| Plugin metadata            | `plugin.json`                                                                            | For future plugin install support.                                     |
 
 ## Identity
 
-| field | value |
-|-------|--------|
-| agent | `rivet-glm` (override `RIVETOS_CAPTURE_AGENT`) |
-| channel | `opencode` |
-| session_key | `opencode:<ses_id>` |
-| native id | `ses_<26 alnum>` |
-| dedup | `part.id` (`prt_…`) |
+| field       | value                                          |
+| ----------- | ---------------------------------------------- |
+| agent       | `rivet-glm` (override `RIVETOS_CAPTURE_AGENT`) |
+| channel     | `opencode`                                     |
+| session_key | `opencode:<ses_id>`                            |
+| native id   | `ses_<26 alnum>`                               |
+| dedup       | `part.id` (`prt_…`)                            |
 
 ## Installation
 
@@ -61,6 +61,7 @@ npm run build
 ```
 
 This produces:
+
 - `$RIVETOS_ROOT/services/mcp-sidecar/dist/cli.js`
 - `$RIVETOS_ROOT/integrations/opencode/rivet-memory/capture/dist/opencode-memory-capture.js`
 

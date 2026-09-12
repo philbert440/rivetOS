@@ -1488,7 +1488,6 @@ describe('runPluginsInstall install paths (injected exec)', () => {
       else process.env.RIVETOS_ENV_FILE = prevEnvFile
     }
   })
-
 })
 
 describe('artefact validation + grok hook bake', () => {
@@ -1548,9 +1547,9 @@ describe('artefact validation + grok hook bake', () => {
       nativeCaptureArtefactMissing('codex', dir, dir, { codexRequirementsPath: req }),
     ).toBeNull()
     writeFileSync(req, '# command = "codex-memory-capture.sh --hook"\n')
-    expect(
-      nativeCaptureArtefactMissing('codex', dir, dir, { codexRequirementsPath: req }),
-    ).toMatch(/hooks\.json missing/)
+    expect(nativeCaptureArtefactMissing('codex', dir, dir, { codexRequirementsPath: req })).toMatch(
+      /hooks\.json missing/,
+    )
   })
 
   it('bakes the selected root into copied Grok hook commands', () => {

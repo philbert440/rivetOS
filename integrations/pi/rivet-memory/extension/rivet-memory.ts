@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 
 // setup-pi-rivet-memory.sh --apply rewrites this line.
-const PLUGIN_PATH = "/opt/rivetos/integrations/pi/rivet-memory"
+const PLUGIN_PATH = '/opt/rivetos/integrations/pi/rivet-memory'
 
 const DEBOUNCE_MS = 1500
 
