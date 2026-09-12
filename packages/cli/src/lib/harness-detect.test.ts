@@ -4,14 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HARNESS_IDS } from '@rivetos/types'
-import {
-  HARNESS_BINARIES,
-  WATCHER_CAPTURE_HARNESSES,
-  detectHarnesses,
-  execFileAsync,
-  findOnPath,
-  isWatcherCaptureHarness,
-} from './harness-detect.js'
+import { HARNESS_BINARIES, detectHarnesses, execFileAsync, findOnPath } from './harness-detect.js'
 
 const ADAPTERS_SRC = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -35,16 +28,6 @@ describe('HARNESS_BINARIES', () => {
 
   it('matches den-server BY_COMMAND binary names (read from source)', () => {
     expect(Object.values(HARNESS_BINARIES).sort()).toEqual(byCommandKeysFromSource().sort())
-  })
-})
-
-describe('WATCHER_CAPTURE_HARNESSES', () => {
-  it('covers codex, pi and opencode', () => {
-    expect(WATCHER_CAPTURE_HARNESSES).toEqual(['codex', 'pi', 'opencode'])
-    expect(isWatcherCaptureHarness('codex')).toBe(true)
-    expect(isWatcherCaptureHarness('pi')).toBe(true)
-    expect(isWatcherCaptureHarness('opencode')).toBe(true)
-    expect(isWatcherCaptureHarness('claude-code')).toBe(false)
   })
 })
 

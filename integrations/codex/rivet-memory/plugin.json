@@ -1,7 +1,7 @@
 {
   "name": "rivet-memory",
   "version": "0.1.0",
-  "description": "RivetOS persistent cross-agent memory for Codex CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via a rollout jsonl watcher.",
+  "description": "RivetOS persistent cross-agent memory for Codex CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via native Codex hooks.",
   "keywords": [
     "memory",
     "recall",
@@ -20,11 +20,12 @@
   },
   "codex": {
     "minVersion": "0.1.0",
-    "provides": ["skills", "commands", "mcp", "agents"],
+    "provides": ["skills", "commands", "mcp", "agents", "hooks"],
     "install": {
       "skills": "skills/",
       "commands": "commands/",
-      "mcp": "mcp.json"
+      "mcp": "mcp.json",
+      "hooks": "hooks/"
     }
   }
 }

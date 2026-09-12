@@ -6,11 +6,10 @@
  *   2. Fold against a temp SQLite db with the real OpenCode schema.
  *   3. In-memory stub pool — a session lands as user+assistant+tool with
  *      sqlite pointers. Dedup on a second tick.
- *   4. WAL wake-up path (fs.watch targets + injected watcher).
- *   5. watchTick boot race against PGlite must not kill the watcher.
- *   6. Streaming text/reasoning wait for time.end; errored tools keep
- *      error text; part.time_updated overlap; --backfill 0; coalesced ticks.
- *   7. Truncated tool args keep sqlite pointers; widening --backfill
+ *   4. --ingest-session on the fixture: rows; again → 0; new part → 1.
+ *   5. Streaming text/reasoning wait for time.end; errored tools keep
+ *      error text; part.time_updated overlap; --backfill 0.
+ *   6. Truncated tool args keep sqlite pointers; widening --backfill
  *      catches history already behind the saved cursor.
  */
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs'
@@ -23,16 +22,15 @@ import {
   foldPart,
   createWatcherState,
   scanOnce,
-  watchTick,
-  attachDbWatchers,
-  dbWatchPaths,
+  ingestSession,
   loadState,
   saveState,
   emptyState,
   advanceState,
   backfillCutoffMs,
   parseBackfill,
-  createCoalescedRunner,
+  parseIngestSession,
+  formatStatus,
   insertMessage,
   CURSOR_OVERLAP_MS,
   CAPTURE_AGENT,
@@ -42,7 +40,6 @@ import {
   DEFAULT_BACKFILL_DAYS,
   type Queryable,
   type PartRow,
-  type WatchFn,
 } from '../src/opencode-memory-capture.ts'
 
 const SESSION = 'ses_abcdefghijklmnopqrstuvwxyz'
@@ -76,10 +73,18 @@ console.log('— identity constants —')
   eq('deriveSessionKey prefixes opencode:', deriveSessionKey(SESSION), `opencode:${SESSION}`)
   eq('default backfill is 14 days', DEFAULT_BACKFILL_DAYS, 14)
   check('backfill cutoff is in the past', backfillCutoffMs(14) < Date.now())
-  eq('backfill 0 cutoff is now (no backfill)', backfillCutoffMs(0, 1_700_000_000_000), 1_700_000_000_000)
+  eq(
+    'backfill 0 cutoff is now (no backfill)',
+    backfillCutoffMs(0, 1_700_000_000_000),
+    1_700_000_000_000,
+  )
   eq('parse --backfill 0 stays 0', parseBackfill(['--backfill', '0']), 0)
   eq('parse missing --backfill is default', parseBackfill([]), DEFAULT_BACKFILL_DAYS)
+  eq('parse --backfill --days 7', parseBackfill(['--backfill', '--days', '7']), 7)
+  eq('parse ingest-session id', parseIngestSession(['--ingest-session', SESSION]), SESSION)
+  eq('parse ingest-session missing', parseIngestSession(['--ingest-session']), null)
   eq('cursor overlap is 30s', CURSOR_OVERLAP_MS, 30_000)
+  check('status empty says never', formatStatus(emptyState()).includes('lastIngestAt: never'))
 }
 
 // =============================================================================
@@ -140,10 +145,7 @@ console.log('\n— foldPart —')
     user?.extra?.session_sqlite_path === '/tmp/opencode.db',
     `path=${String(user?.extra?.session_sqlite_path)}`,
   )
-  check(
-    'user row carries part id',
-    user?.extra?.session_sqlite_part_id === 'prt_user1',
-  )
+  check('user row carries part id', user?.extra?.session_sqlite_part_id === 'prt_user1')
 
   const think = foldPart(
     base({
@@ -259,11 +261,7 @@ console.log('\n— foldPart —')
     '/tmp/opencode.db',
     skipped,
   )
-  eq(
-    'reasoning with time.end is inserted',
-    finishedThink?.content,
-    '[thinking] hmm done',
-  )
+  eq('reasoning with time.end is inserted', finishedThink?.content, '[thinking] hmm done')
 
   const errored = foldPart(
     base({
@@ -306,6 +304,14 @@ console.log('\n— truncated tool args keep sqlite pointer —')
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
+      if (
+        String(sql).startsWith('SET ') ||
+        String(sql).startsWith('RESET lock_timeout') ||
+        String(sql).startsWith('SELECT pg_advisory_lock(') ||
+        String(sql).startsWith('SELECT pg_advisory_unlock(')
+      ) {
+        return { rows: [], rowCount: 0 }
+      }
       if (s.startsWith('SELECT 1 FROM ros_messages')) {
         return { rows: [], rowCount: 0 }
       }
@@ -557,16 +563,8 @@ await withFixture(async (dbFile) => {
   }))
   const parsed = foldParts(parts, dbFile)
   eq('session id', [...parsed.sessions.keys()][0], SESSION)
-  eq(
-    'cwd from session.directory',
-    [...parsed.sessions.values()][0]?.directory,
-    '/tmp/demo',
-  )
-  eq(
-    'title from session.title',
-    [...parsed.sessions.values()][0]?.title,
-    'list the files',
-  )
+  eq('cwd from session.directory', [...parsed.sessions.values()][0]?.directory, '/tmp/demo')
+  eq('title from session.title', [...parsed.sessions.values()][0]?.title, 'list the files')
 
   const byRole: Record<string, number> = {}
   for (const m of parsed.messages) byRole[m.role] = (byRole[m.role] ?? 0) + 1
@@ -578,11 +576,7 @@ await withFixture(async (dbFile) => {
   )
   check('tool rows include call/result', (byRole.tool ?? 0) >= 1, `got ${byRole.tool}`)
   eq('step markers skipped', parsed.skipped['step-marker'], 2)
-  eq(
-    'user content',
-    parsed.messages.find((m) => m.role === 'user')?.content,
-    'list the files',
-  )
+  eq('user content', parsed.messages.find((m) => m.role === 'user')?.content, 'list the files')
   eq(
     'assistant text',
     parsed.messages.find((m) => m.eventId === 'prt_text1')?.content,
@@ -628,6 +622,14 @@ console.log('\n— stub pool ingest —')
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
+      if (
+        String(sql).startsWith('SET ') ||
+        String(sql).startsWith('RESET lock_timeout') ||
+        String(sql).startsWith('SELECT pg_advisory_lock(') ||
+        String(sql).startsWith('SELECT pg_advisory_unlock(')
+      ) {
+        return { rows: [], rowCount: 0 }
+      }
       if (s === 'BEGIN') {
         snapshot = { convs: convs.length, msgs: msgs.length }
         return { rows: [], rowCount: 0 }
@@ -731,6 +733,12 @@ console.log('\n— stub pool ingest —')
     check('state file written', existsSync(stateFile))
     const persisted = loadState(stateFile)
     check('state high-water advanced', persisted.partTimeUpdated > 0)
+    eq('backfill stamps lastIngestSource', persisted.lastIngestSource, 'backfill')
+    check('backfill stamps lastIngestAt', typeof persisted.lastIngestAt === 'string')
+    check(
+      'backfill writes per-session cursor',
+      (persisted.sessions?.[SESSION]?.partTimeUpdated ?? 0) > 0,
+    )
 
     const before = msgs.length
     const second = await scanOnce(dbFile, client, state, { backfillDays: 14, stateFile })
@@ -753,6 +761,21 @@ console.log('\n— capture state —')
     const loaded = loadState(file)
     eq('round-trip partTimeUpdated', loaded.partTimeUpdated, 42)
     eq('round-trip messageTimeUpdated', loaded.messageTimeUpdated, 99)
+    saveState(
+      {
+        version: 1,
+        partTimeUpdated: 42,
+        messageTimeUpdated: 99,
+        lastIngestAt: '2026-09-12T00:00:00.000Z',
+        lastIngestSource: 'plugin',
+        sessions: { [SESSION]: { partTimeUpdated: 41, messageTimeUpdated: 98 } },
+      },
+      file,
+    )
+    const stamped = loadState(file)
+    eq('round-trip lastIngestSource', stamped.lastIngestSource, 'plugin')
+    eq('round-trip lastIngestAt', stamped.lastIngestAt, '2026-09-12T00:00:00.000Z')
+    eq('round-trip session cursor', stamped.sessions?.[SESSION]?.partTimeUpdated, 41)
     writeFileSync(
       file,
       `${JSON.stringify({ version: 1, partTimeCreated: 7, messageTimeUpdated: 8 })}\n`,
@@ -779,98 +802,6 @@ console.log('\n— capture state —')
   }
 }
 
-// =============================================================================
-// WAL wake-up path
-// =============================================================================
-console.log('\n— WAL wake-up path —')
-{
-  const dir = mkdtempSync(path.join(tmpdir(), 'oc-wal-'))
-  const dbFile = path.join(dir, 'opencode.db')
-  const walFile = `${dbFile}-wal`
-  writeFileSync(dbFile, '')
-  writeFileSync(walFile, '')
-  try {
-    const paths = dbWatchPaths(dbFile)
-    check('watch paths include the db', paths.includes(dbFile))
-    check('watch paths include the wal', paths.includes(walFile))
-
-    let wakes = 0
-    const listeners: Array<() => void> = []
-    const watched: string[] = []
-    const fakeWatch: WatchFn = (filename, _opts, listener) => {
-      watched.push(String(filename))
-      listeners.push(() => listener('change', path.basename(String(filename))))
-      return {
-        close: () => undefined,
-        on: () => undefined,
-      } as unknown as ReturnType<WatchFn>
-    }
-    const handle = attachDbWatchers(
-      dbFile,
-      () => {
-        wakes++
-      },
-      fakeWatch,
-    )
-    check(
-      'wal path is watched',
-      handle.watching.includes(walFile) || watched.includes(walFile),
-    )
-    check('db path is watched', handle.watching.includes(dbFile) || watched.includes(dbFile))
-    for (const fire of listeners) fire()
-    check('wal/db change wakes the watcher', wakes >= 1, `wakes=${String(wakes)}`)
-    handle.close()
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
-
-// =============================================================================
-// watchTick boot race
-// =============================================================================
-console.log('\n— watchTick boot race —')
-{
-  const dir = mkdtempSync(path.join(tmpdir(), 'oc-watch-'))
-  const dbFile = path.join(dir, 'opencode.db')
-  const state = createWatcherState()
-  let released = 0
-  const refused = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:5433'), {
-    code: 'ECONNREFUSED',
-  })
-
-  await watchTick(
-    {
-      connect: async () => {
-        throw refused
-      },
-    },
-    dbFile,
-    state,
-  )
-  eq('ECONNREFUSED first tick does not throw', released, 0)
-
-  let connects = 0
-  const recovering = {
-    connect: async () => {
-      connects++
-      if (connects === 1) throw refused
-      return {
-        query: async () => ({ rows: [], rowCount: 0 }),
-        release: () => {
-          released++
-        },
-      }
-    },
-  }
-  await watchTick(recovering, dbFile, state)
-  eq('first recovering tick still refuses without release', released, 0)
-  await watchTick(recovering, dbFile, state)
-  eq('second tick acquires a client', connects, 2)
-  eq('release runs only after successful connect', released, 1)
-
-  rmSync(dir, { recursive: true, force: true })
-}
-
 function makeStub(): { client: Queryable; eventIds: () => string[] } {
   const convs: Array<{ id: string; session_key: string; agent: string }> = []
   const msgs: Array<{ conversation_id: string; metadata: Record<string, unknown> }> = []
@@ -878,6 +809,14 @@ function makeStub(): { client: Queryable; eventIds: () => string[] } {
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
+      if (
+        String(sql).startsWith('SET ') ||
+        String(sql).startsWith('RESET lock_timeout') ||
+        String(sql).startsWith('SELECT pg_advisory_lock(') ||
+        String(sql).startsWith('SELECT pg_advisory_unlock(')
+      ) {
+        return { rows: [], rowCount: 0 }
+      }
       if (
         s === 'BEGIN' ||
         s === 'COMMIT' ||
@@ -970,24 +909,11 @@ await withBlankDb(async (dbFile) => {
   ).run(SESSION, 'stream', '/tmp', now, now)
   db.prepare(
     `INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)`,
-  ).run(
-    'msg_a',
-    SESSION,
-    now,
-    now,
-    JSON.stringify({ role: 'assistant', time: { created: now } }),
-  )
+  ).run('msg_a', SESSION, now, now, JSON.stringify({ role: 'assistant', time: { created: now } }))
   db.prepare(
     `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    'prt_stream',
-    'msg_a',
-    SESSION,
-    now,
-    now,
-    JSON.stringify({ type: 'text', text: 'hel' }),
-  )
+  ).run('prt_stream', 'msg_a', SESSION, now, now, JSON.stringify({ type: 'text', text: 'hel' }))
   db.close()
 
   const stub = makeStub()
@@ -998,11 +924,13 @@ await withBlankDb(async (dbFile) => {
   check('streaming part id is not stored', !stub.eventIds().includes('prt_stream'))
 
   const db2 = new DatabaseSync(dbFile)
-  db2.prepare(`UPDATE part SET data = ?, time_updated = ? WHERE id = ?`).run(
-    JSON.stringify({ type: 'text', text: 'hello world', time: { start: now, end: now + 1 } }),
-    now + 1,
-    'prt_stream',
-  )
+  db2
+    .prepare(`UPDATE part SET data = ?, time_updated = ? WHERE id = ?`)
+    .run(
+      JSON.stringify({ type: 'text', text: 'hello world', time: { start: now, end: now + 1 } }),
+      now + 1,
+      'prt_stream',
+    )
   db2.prepare(`UPDATE message SET time_updated = ? WHERE id = ?`).run(now + 1, 'msg_a')
   db2.prepare(`UPDATE session SET time_updated = ? WHERE id = ?`).run(now + 1, SESSION)
   db2.close()
@@ -1030,14 +958,7 @@ await withBlankDb(async (dbFile) => {
   db.prepare(
     `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    'prt_first',
-    'msg_u',
-    SESSION,
-    t,
-    t,
-    JSON.stringify({ type: 'text', text: 'first' }),
-  )
+  ).run('prt_first', 'msg_u', SESSION, t, t, JSON.stringify({ type: 'text', text: 'first' }))
   db.close()
 
   const stub = makeStub()
@@ -1176,34 +1097,64 @@ await withBlankDb(async (dbFile) => {
 })
 
 // =============================================================================
-// Coalesced ticks
+// --ingest-session: rows, then 0, then only the new part
 // =============================================================================
-console.log('\n— coalesced ticks —')
-{
-  const releases: Array<() => void> = []
-  let runs = 0
-  const kick = createCoalescedRunner(
-    () =>
-      new Promise<void>((resolve) => {
-        runs++
-        releases.push(resolve)
-      }),
+console.log('\n— ingest-session —')
+await withFixture(async (dbFile) => {
+  const stub = makeStub()
+  const stateFile = path.join(path.dirname(dbFile), 'opencode-capture-state.json')
+  const state = createWatcherState(emptyState())
+  const first = await ingestSession(dbFile, SESSION, stub.client, state, {
+    stateFile,
+    source: 'plugin',
+  })
+  check(
+    'first ingest-session inserts rows',
+    first.inserted >= 4,
+    `inserted=${String(first.inserted)}`,
   )
-  kick()
-  kick()
-  kick()
-  eq('burst starts one in-flight run', runs, 1)
-  releases[0]?.()
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
-  eq('dirty bit queues exactly one rescan', runs, 2)
-  releases[1]?.()
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
-  eq('drain does not start a third run', runs, 2)
-}
+  const firstIds = stub.eventIds()
+  check('first ingest-session stored user part', firstIds.includes('prt_user1'))
+  check('first ingest-session stored tool part', firstIds.includes('prt_tool1'))
+  eq('first ingest-session source is plugin', loadState(stateFile).lastIngestSource, 'plugin')
+  check(
+    'first ingest-session wrote per-session cursor',
+    (loadState(stateFile).sessions?.[SESSION]?.partTimeUpdated ?? 0) > 0,
+  )
+
+  const second = await ingestSession(dbFile, SESSION, stub.client, state, {
+    stateFile,
+    source: 'plugin',
+  })
+  eq('second ingest-session inserts nothing (dedup)', second.inserted, 0)
+  eq('second ingest-session message count unchanged', stub.eventIds().length, firstIds.length)
+
+  const { DatabaseSync } = await import('node:sqlite')
+  const now = Date.now() + 5_000
+  const db = new DatabaseSync(dbFile)
+  db.prepare(
+    `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    'prt_new1',
+    'msg_user1',
+    SESSION,
+    now,
+    now,
+    JSON.stringify({ type: 'text', text: 'one more thing' }),
+  )
+  db.prepare(`UPDATE message SET time_updated = ? WHERE id = ?`).run(now, 'msg_user1')
+  db.prepare(`UPDATE session SET time_updated = ? WHERE id = ?`).run(now, SESSION)
+  db.close()
+
+  const third = await ingestSession(dbFile, SESSION, stub.client, state, {
+    stateFile,
+    source: 'plugin',
+  })
+  eq('new part inserts only the new row', third.inserted, 1)
+  check('new part id stored', stub.eventIds().includes('prt_new1'))
+  eq('old parts not duplicated', stub.eventIds().filter((id) => id === 'prt_user1').length, 1)
+})
 
 if (failed > 0) {
   console.error(`\n${String(failed)} test(s) failed`)
