@@ -7,6 +7,7 @@ import {
   createGetFullTool,
   extractCodexFromLine,
   extractFullFromLine,
+  extractPiFromLine,
   formatMissingJsonlMessage,
   isCaptureTranscriptPath,
   readJsonlLine,
@@ -202,6 +203,53 @@ describe('extractFullFromLine', () => {
     ).toEqual(extractFullFromLine(result))
     expect(extractCodexFromLine({ type: 'session_meta' })).toBeNull()
   })
+
+  it('extracts pi v3 user/assistant/toolResult message lines', () => {
+    const user = JSON.stringify({
+      type: 'message',
+      id: 'aa11bb22',
+      message: { role: 'user', content: [{ type: 'text', text: 'list the files' }] },
+    })
+    expect(extractFullFromLine(user).content).toBe('list the files')
+    expect(extractFullFromLine(user).toolResult).toBeNull()
+    expect(extractPiFromLine(JSON.parse(user))?.content).toBe('list the files')
+
+    const assistant = JSON.stringify({
+      type: 'message',
+      id: 'cc33dd44',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'I should list' },
+          { type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'ls' } },
+          { type: 'text', text: 'here they are' },
+        ],
+      },
+    })
+    const asst = extractFullFromLine(assistant)
+    expect(asst.content).toBe('here they are')
+    expect(asst.reasoning).toBe('I should list')
+    expect(asst.toolResult).toBe(JSON.stringify({ command: 'ls' }))
+
+    const result = JSON.stringify({
+      type: 'message',
+      id: 'ee55ff66',
+      message: {
+        role: 'toolResult',
+        toolCallId: 't1',
+        toolName: 'bash',
+        content: [{ type: 'text', text: 'a.txt\n' }],
+      },
+    })
+    expect(extractFullFromLine(result).content).toBe('[tool-result] bash')
+    expect(extractFullFromLine(result).toolResult).toBe('a.txt')
+
+    expect(extractPiFromLine({ type: 'session' })).toBeNull()
+    expect(extractPiFromLine({ type: 'response_item' })).toBeNull()
+    expect(
+      extractFullFromLine(user, { source: 'pi-session', sourceEvent: 'message:user' }).content,
+    ).toBe('list the files')
+  })
 })
 
 describe('isCaptureTranscriptPath', () => {
@@ -367,5 +415,110 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
     const out = await createGetFullTool(pool).execute({ id: 'row-codex' })
     expect(out).toContain('## Full payload for row-codex')
     expect(out).toContain(big)
+  })
+
+  it('recovers truncated pi v3 content, reasoning, and tool result from disk', async () => {
+    const bigUser = 'u'.repeat(30_000)
+    const bigThink = 'r'.repeat(20_000)
+    const bigResult = 't'.repeat(25_000)
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-pi-'))
+    const file = join(dir, '2026-09-11T14-25-16-803Z_01a091f5-6deb-723d-8737-eb83070c9154.jsonl')
+    const lines = [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: '01a091f5-6deb-723d-8737-eb83070c9154',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'aa11bb22',
+        message: { role: 'user', content: [{ type: 'text', text: bigUser }] },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'cc33dd44',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: bigThink },
+            { type: 'text', text: 'ok' },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'ee55ff66',
+        message: {
+          role: 'toolResult',
+          toolCallId: 't1',
+          toolName: 'bash',
+          content: [{ type: 'text', text: bigResult }],
+        },
+      }),
+    ]
+    writeFileSync(file, lines.join('\n') + '\n', 'utf8')
+
+    const piMeta = (line: number, extra: Record<string, unknown>) => ({
+      truncated: true,
+      source: 'pi-session',
+      session_jsonl_path: file,
+      session_jsonl_line: line,
+      ...extra,
+    })
+
+    const userRow = {
+      id: 'row-pi-user',
+      content: 'preview…',
+      tool_name: null,
+      tool_result: null,
+      agent: 'rivet-deepseek',
+      metadata: piMeta(1, { full_content_length: bigUser.length, sourceEvent: 'message:user' }),
+    }
+    const thinkRow = {
+      id: 'row-pi-think',
+      content: 'ok',
+      tool_name: null,
+      tool_result: null,
+      agent: 'rivet-deepseek',
+      metadata: piMeta(2, {
+        full_reasoning_length: bigThink.length,
+        sourceEvent: 'message:assistant',
+      }),
+    }
+    const resultRow = {
+      id: 'row-pi-result',
+      content: '[tool-result] bash',
+      tool_name: 'bash',
+      tool_result: 'preview…',
+      agent: 'rivet-deepseek',
+      metadata: piMeta(3, {
+        full_tool_result_length: bigResult.length,
+        sourceEvent: 'message:toolResult',
+      }),
+    }
+    const rows = {
+      'row-pi-user': userRow,
+      'row-pi-think': thinkRow,
+      'row-pi-result': resultRow,
+    }
+    const pool = {
+      query: async (_sql: string, params: unknown[]) => {
+        const id = String(params[0] ?? '')
+        return { rows: [rows[id as keyof typeof rows]] }
+      },
+    } as unknown as pg.Pool
+    const tool = createGetFullTool(pool)
+
+    const userOut = await tool.execute({ id: 'row-pi-user' })
+    expect(userOut).toContain('## Full payload for row-pi-user')
+    expect(userOut).toContain(bigUser)
+
+    const thinkOut = await tool.execute({ id: 'row-pi-think' })
+    expect(thinkOut).toContain('### reasoning')
+    expect(thinkOut).toContain(bigThink)
+
+    const resultOut = await tool.execute({ id: 'row-pi-result' })
+    expect(resultOut).toContain('### tool_result')
+    expect(resultOut).toContain(bigResult)
   })
 })
