@@ -16,8 +16,9 @@
  *                  the app's `rivethub.omarchy-theme` localStorage snapshot
  *                  ({ name?: string, colors: OmarchyColors }).
  *   --out FILE     Destination theme file
- *                  (default: ~/.config/opencode/themes/rivethub-omarchy.json)
- *   --no-set       Do not point ~/.config/opencode/tui.json at the new theme
+ *                  (default: $XDG_CONFIG_HOME/opencode/themes/rivethub-omarchy.json
+ *                  or ~/.config/opencode/themes/rivethub-omarchy.json)
+ *   --no-set       Do not point opencode tui.json at the new theme
  *   --transparent  Emit "none" for canvas/panel surfaces so the terminal's own
  *                  background shows through
  *
@@ -26,29 +27,28 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, resolve } from 'node:path'
+import { dirname, relative, resolve, sep } from 'node:path'
 import { parseOmarchyColors, isOmarchyColors } from '../src/lib/omarchy-theme.js'
 import { omarchyOpencodeThemeDoc } from '../src/lib/opencode-theme.js'
+import { parseArgs, USAGE } from '../src/lib/opencode-theme-cli.js'
 
-const argv = process.argv.slice(2)
-const flags = new Set(argv.filter((a) => a.startsWith('--')))
-const transparent = flags.has('--transparent')
-const noSet = flags.has('--no-set')
-const outIdx = argv.indexOf('--out')
-const outArg = outIdx !== -1 ? argv[outIdx + 1] : undefined
-const home = process.env.HOME ?? homedir()
-const outPath = outArg ? resolve(outArg) : resolve(home, '.config/opencode/themes/rivethub-omarchy.json')
-const tuiPath = resolve(home, '.config/opencode/tui.json')
+const TUI_SCHEMA = 'https://opencode.ai/tui.json'
 
-const positional = argv.filter((a, i) => !a.startsWith('--') && i !== outIdx && i !== outIdx + 1)
-if (positional.length !== 1 || (outIdx !== -1 && !outArg)) {
-  console.error(
-    'usage: rivethub-opencode-theme <colors.toml | snapshot.json> [--out FILE] [--no-set] [--transparent]',
-  )
+const parsed = parseArgs(process.argv.slice(2))
+if (!parsed.ok) {
+  console.error(USAGE)
   process.exit(1)
 }
 
-const inputPath = resolve(positional[0])
+const { input, out: outArg, noSet, transparent } = parsed
+
+const home = process.env.HOME ?? homedir()
+const configHome = process.env.XDG_CONFIG_HOME || resolve(home, '.config')
+const themeDir = resolve(configHome, 'opencode/themes')
+const tuiPath = resolve(configHome, 'opencode/tui.json')
+const outPath = outArg ? resolve(outArg) : resolve(themeDir, 'rivethub-omarchy.json')
+
+const inputPath = resolve(input)
 if (!existsSync(inputPath)) {
   console.error(`no such file: ${inputPath}`)
   process.exit(1)
@@ -68,15 +68,15 @@ if (inputPath.endsWith('.toml')) {
   mode = colors.mode
   doc = omarchyOpencodeThemeDoc(colors, { transparent })
 } else {
-  let parsed: unknown
+  let parsedJson: unknown
   try {
-    parsed = JSON.parse(raw) as unknown
+    parsedJson = JSON.parse(raw) as unknown
   } catch {
     console.error(`not valid JSON: ${inputPath}`)
     process.exit(1)
   }
-  const obj = parsed as { name?: unknown; colors?: unknown }
-  const colors = obj.colors ?? parsed
+  const obj = parsedJson as { name?: unknown; colors?: unknown }
+  const colors = obj.colors ?? parsedJson
   if (!isOmarchyColors(colors)) {
     console.error(`JSON does not match the app's OmarchyColors shape: ${inputPath}`)
     process.exit(1)
@@ -90,23 +90,36 @@ mkdirSync(dirname(outPath), { recursive: true })
 writeFileSync(outPath, JSON.stringify(doc, null, 2) + '\n')
 console.log(`wrote ${outPath} (mode: ${mode}${themeName ? `, omarchy theme: ${themeName}` : ''})`)
 
+function isInsideThemeDir(file: string, dir: string): boolean {
+  const rel = relative(dir, file)
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`)
+}
+
 if (!noSet) {
-  if (!existsSync(tuiPath)) {
-    console.error(`no tui config at ${tuiPath} — set "theme" manually to the basename of --out`)
-    process.exit(1)
-  }
-  let tui: Record<string, unknown>
-  try {
-    tui = JSON.parse(readFileSync(tuiPath, 'utf8')) as Record<string, unknown>
-  } catch {
-    console.error(`not valid JSON: ${tuiPath}`)
-    process.exit(1)
-  }
-  tui.$schema = tui.$schema ?? 'https://opencode.ai/tui.json'
   const themeKey = outPath.replace(/\.json$/, '').split('/').pop() ?? 'rivethub-omarchy'
-  tui.theme = themeKey
-  writeFileSync(tuiPath, JSON.stringify(tui, null, 2) + '\n')
-  console.log(`set "${themeKey}" as the active theme in ${tuiPath}`)
+  if (!isInsideThemeDir(outPath, themeDir)) {
+    console.warn(
+      `skipping tui.theme: ${outPath} is outside ${themeDir}; ` +
+        'opencode cannot resolve a basename from a file outside the theme dir',
+    )
+  } else if (!existsSync(tuiPath)) {
+    mkdirSync(dirname(tuiPath), { recursive: true })
+    const tui = { $schema: TUI_SCHEMA, theme: themeKey }
+    writeFileSync(tuiPath, JSON.stringify(tui, null, 2) + '\n')
+    console.log(`created ${tuiPath} with theme "${themeKey}"`)
+  } else {
+    let tui: Record<string, unknown>
+    try {
+      tui = JSON.parse(readFileSync(tuiPath, 'utf8')) as Record<string, unknown>
+    } catch {
+      console.error(`not valid JSON: ${tuiPath}`)
+      process.exit(1)
+    }
+    tui.$schema = tui.$schema ?? TUI_SCHEMA
+    tui.theme = themeKey
+    writeFileSync(tuiPath, JSON.stringify(tui, null, 2) + '\n')
+    console.log(`set "${themeKey}" as the active theme in ${tuiPath}`)
+  }
 }
 
 console.log('restart opencode to pick up the new theme')
