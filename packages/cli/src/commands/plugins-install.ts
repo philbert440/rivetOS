@@ -865,8 +865,7 @@ function legacyStopAlreadyDone(kind: 'systemctl' | 'launchctl', result: ExecResu
 }
 
 export type LegacyWatcherRemoval =
-  | { ok: true; removed: boolean }
-  | { ok: false; removed: false; detail: string }
+  { ok: true; removed: boolean } | { ok: false; removed: false; detail: string }
 
 function legacyStopFailed(name: string, result: ExecResult): LegacyWatcherRemoval {
   const exit = result.code ?? 'n/a'

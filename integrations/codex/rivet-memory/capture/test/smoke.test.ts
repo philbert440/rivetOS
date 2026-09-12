@@ -496,13 +496,14 @@ console.log('\n— fold-parity with codexTurnsFromLines —')
     __dirname,
     '../../../../../services/den-server/src/harness/adapters/codex.ts',
   )
-  let loaded: {
+  type DenParser = {
     codexTurnsFromLines?: (
       lines: Record<string, unknown>[],
     ) => Array<{ role: string; text?: string }>
-  } | null = null
+  }
+  let loaded: DenParser | null = null
   try {
-    loaded = (await import(denPath)) as typeof loaded
+    loaded = (await import(denPath)) as DenParser
   } catch (err) {
     console.log(
       `↷ skip fold-parity (den-server parser not importable: ${err instanceof Error ? err.message : String(err)})`,
