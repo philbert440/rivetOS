@@ -67,9 +67,10 @@ export function allowMediaCheck(
  *  it an embedded http/https page (frame-src allows content INSIDE the hub)
  *  could nest app://bundle and clickjack the privileged UI (review finding,
  *  PR #555). The hub itself never frames app:// content, so 'none' costs
- *  nothing. */
+ *  nothing. `wasm-unsafe-eval` permits the bundled terminal's sixel decoder
+ *  to compile WebAssembly; JavaScript eval and Function remain forbidden. */
 export const CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; " +
   "img-src 'self' data: http: https:; font-src 'self' data:; " +
   "connect-src 'self' http: https: ws: wss:; frame-src http: https:; " +
   "object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
