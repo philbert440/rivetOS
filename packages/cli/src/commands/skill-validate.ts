@@ -22,7 +22,7 @@ const ROOT = resolve(__dirname, '..', '..', '..', '..')
 // Types
 // ---------------------------------------------------------------------------
 
-interface ValidationResult {
+export interface ValidationResult {
   name: string
   path: string
   valid: boolean
@@ -114,7 +114,7 @@ export default async function skillValidate(args: string[]): Promise<void> {
 // Validation
 // ---------------------------------------------------------------------------
 
-async function validateSkill(skillPath: string): Promise<ValidationResult> {
+export async function validateSkill(skillPath: string): Promise<ValidationResult> {
   const name = basename(skillPath)
   const result: ValidationResult = { name, path: skillPath, valid: true, errors: [], warnings: [] }
 
@@ -150,6 +150,20 @@ async function validateSkill(skillPath: string): Promise<ValidationResult> {
     }
 
     const frontmatter = content.slice(3, endIdx).trim()
+
+    // Strict YAML parse. Harnesses that follow the Agent Skills spec (pi, Claude
+    // Code, ...) parse frontmatter with a real YAML parser, so a value that only
+    // survives the lenient line-by-line pass below can silently drop the skill.
+    // A single-quoted scalar must escape `'` by doubling it (`''`); `\'` is a
+    // parse error that terminates the scalar. Flag it so it cannot ship again.
+    try {
+      parseYaml(frontmatter)
+    } catch (err) {
+      const detail = (err as Error).message.split('\n')[0]
+      result.errors.push(`Frontmatter is not valid YAML: ${detail}`)
+      result.valid = false
+    }
+
     const parsed: Record<string, string> = {}
     for (const line of frontmatter.split('\n')) {
       const colonIdx = line.indexOf(':')

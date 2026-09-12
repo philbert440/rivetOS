@@ -1,6 +1,6 @@
 ---
 name: memory-recall
-description: 'Auto-activate on any question about past work, decisions, commands, facts, or current status ("what did we do this morning/yesterday/today", "how\'s everything looking", "what\'s in flight", "remember when", "have we seen this error before", "what is the IP of X"). Encodes RivetOS recall discipline across all agents (rivet-claude, rivet-hermes, rivet-grok, rivet-kimi): status/workboard protocol, time-bounded browse first, multi-angle search + trigram fallback.'
+description: 'Auto-activate on any question about past work, decisions, commands, facts, or current status ("what did we do this morning/yesterday/today", "how''s everything looking", "what''s in flight", "remember when", "have we seen this error before", "what is the IP of X"). Encodes RivetOS recall discipline across all agents (rivet-claude, rivet-hermes, rivet-grok, rivet-kimi): status/workboard protocol, time-bounded browse first, multi-angle search + trigram fallback.'
 tags: [rivetos, memory, recall, discipline, rivet-memory, status]
 version: 0.2.1
 ---

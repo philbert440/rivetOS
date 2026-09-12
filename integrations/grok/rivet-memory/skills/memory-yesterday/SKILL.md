@@ -1,6 +1,6 @@
 ---
 name: memory-yesterday
-description: 'Quick recall of everything from yesterday (local time). Use on "what did we do yesterday", "yesterday\'s changes", "check yesterday for X", etc.'
+description: 'Quick recall of everything from yesterday (local time). Use on "what did we do yesterday", "yesterday''s changes", "check yesterday for X", etc.'
 tags: [rivetos, memory, recall]
 version: 0.2.0
 ---
