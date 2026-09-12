@@ -265,6 +265,53 @@ console.log('\n— parseSessionText (fixture) —')
   eq('latest session_info.name wins', renamed.title, 'latest name')
   eq('latest session_info fills name field', renamed.name, 'latest name')
 
+  const toolOnly = parseSessionText(
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: SESSION,
+        cwd: '/tmp/demo',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'deadbeef',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'toolCall', id: 'c1', name: 'bash', arguments: { command: 'pwd' } },
+          ],
+          usage: { input: 42, output: 7, totalTokens: 49 },
+          stopReason: 'toolUse',
+        },
+      }),
+    ].join('\n'),
+    SESSION,
+    null,
+  )
+  eq(
+    'tool-only assistant has no text row',
+    toolOnly.messages.filter((m) => m.role === 'assistant').length,
+    0,
+  )
+  eq(
+    'tool-only emits a tool-call row',
+    toolOnly.messages.filter((m) => m.role === 'tool').length,
+    1,
+  )
+  const toolOnlyCall = toolOnly.messages.find((m) => m.role === 'tool')
+  check(
+    'tool-only usage attaches to the tool-call row',
+    isRecord(toolOnlyCall?.extra?.usage) &&
+      (toolOnlyCall?.extra?.usage as { input?: number }).input === 42,
+    `usage=${JSON.stringify(toolOnlyCall?.extra?.usage)}`,
+  )
+  eq(
+    'tool-only stopReason attaches to the tool-call row',
+    toolOnlyCall?.extra?.stopReason,
+    'toolUse',
+  )
+
   const reparsed = parseSessionFile(FIXTURE)
   check(
     'parser is deterministic',
@@ -290,6 +337,16 @@ console.log('\n— capForStorage —')
   )
 }
 
+function parseSettings(v: unknown): Record<string, unknown> {
+  if (typeof v !== 'string') return {}
+  try {
+    const parsed = JSON.parse(v) as unknown
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
 function stubClient(): {
   client: Queryable
   convs: Array<{
@@ -299,6 +356,7 @@ function stubClient(): {
     channel: string
     title: string
     active: boolean
+    settings: Record<string, unknown>
   }>
   msgs: Array<{
     id: string
@@ -313,6 +371,7 @@ function stubClient(): {
   }>
   storedArgs: Map<string, unknown>
   setFailEvent: (id: string | undefined) => void
+  setFailLock: (fail: boolean) => void
 } {
   type Conv = {
     id: string
@@ -321,6 +380,7 @@ function stubClient(): {
     channel: string
     title: string
     active: boolean
+    settings: Record<string, unknown>
   }
   type Msg = {
     id: string
@@ -337,84 +397,118 @@ function stubClient(): {
   const convs: Conv[] = []
   const msgs: Msg[] = []
   let ids = 0
-  let snapshot: { convs: number; msgs: number } | undefined
+  let snapshot: { convs: Conv[]; msgs: Msg[] } | undefined
   let failEvent: string | undefined
+  let failLock = false
+  let txState: 'idle' | 'open' | 'aborted' = 'idle'
   const storedArgs = new Map<string, unknown>()
 
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
-      if (s === 'BEGIN') {
-        snapshot = { convs: convs.length, msgs: msgs.length }
+      if (s === 'ROLLBACK') {
+        if (snapshot) {
+          convs.length = 0
+          convs.push(...snapshot.convs)
+          msgs.length = 0
+          msgs.push(...snapshot.msgs)
+          snapshot = undefined
+        }
+        txState = 'idle'
         return { rows: [], rowCount: 0 }
       }
-      if (s === 'ROLLBACK' && snapshot) {
-        convs.length = snapshot.convs
-        msgs.length = snapshot.msgs
-        snapshot = undefined
+      if (txState === 'aborted') {
+        throw new Error(
+          'current transaction is aborted, commands ignored until end of transaction block',
+        )
+      }
+      if (s === 'BEGIN') {
+        snapshot = {
+          convs: convs.map((c) => ({ ...c, settings: { ...c.settings } })),
+          msgs: msgs.map((m) => ({ ...m, metadata: { ...m.metadata } })),
+        }
+        txState = 'open'
         return { rows: [], rowCount: 0 }
       }
       if (s === 'COMMIT') {
         snapshot = undefined
+        txState = 'idle'
         return { rows: [], rowCount: 0 }
       }
-      if (s.startsWith('SELECT pg_advisory_xact_lock')) {
-        return { rows: [], rowCount: 0 }
-      }
-      if (s.startsWith('SELECT id FROM ros_conversations')) {
-        const row = convs.find((c) => c.session_key === params[0] && c.agent === params[1])
-        return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 }
-      }
-      if (s.startsWith('INSERT INTO ros_conversations')) {
-        const found = convs.find(
-          (c) => c.session_key === String(params[0]) && c.agent === String(params[1]),
-        )
-        if (found) return { rows: [{ id: found.id, created: false }], rowCount: 1 }
-        const row: Conv = {
-          id: `conv-${String(++ids)}`,
-          session_key: String(params[0]),
-          agent: String(params[1]),
-          channel: String(params[2]),
-          title: String(params[3]),
-          active: Boolean(params[5]),
+      try {
+        if (s.startsWith('SET LOCAL')) {
+          return { rows: [], rowCount: 0 }
         }
-        convs.push(row)
-        return { rows: [{ id: row.id, created: true }], rowCount: 1 }
+        if (
+          s.startsWith('SELECT pg_try_advisory_xact_lock') ||
+          s.startsWith('SELECT pg_advisory_xact_lock')
+        ) {
+          if (failLock) throw new Error('injected lock timeout')
+          return { rows: [{ locked: true }], rowCount: 1 }
+        }
+        if (s.startsWith('SELECT id FROM ros_conversations')) {
+          const row = convs.find((c) => c.session_key === params[0] && c.agent === params[1])
+          return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 }
+        }
+        if (s.startsWith('INSERT INTO ros_conversations')) {
+          const found = convs.find(
+            (c) => c.session_key === String(params[0]) && c.agent === String(params[1]),
+          )
+          if (found) {
+            found.title = String(params[3])
+            found.settings = parseSettings(params[4])
+            return { rows: [{ id: found.id, created: false }], rowCount: 1 }
+          }
+          const row: Conv = {
+            id: `conv-${String(++ids)}`,
+            session_key: String(params[0]),
+            agent: String(params[1]),
+            channel: String(params[2]),
+            title: String(params[3]),
+            active: Boolean(params[5]),
+            settings: parseSettings(params[4]),
+          }
+          convs.push(row)
+          return { rows: [{ id: row.id, created: true }], rowCount: 1 }
+        }
+        if (s.startsWith("SELECT metadata->>'event_id'")) {
+          const rows = msgs
+            .filter((m) => m.conversation_id === params[0] && m.metadata.event_id)
+            .map((m) => ({ e: String(m.metadata.event_id) }))
+          return { rows, rowCount: rows.length }
+        }
+        if (s.startsWith('SELECT 1 FROM ros_messages')) {
+          const hit = msgs.some(
+            (m) => m.conversation_id === params[0] && m.metadata.event_id === params[1],
+          )
+          return { rows: hit ? [{ '?column?': 1 }] : [], rowCount: hit ? 1 : 0 }
+        }
+        if (s.startsWith('INSERT INTO ros_messages')) {
+          const meta =
+            typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
+          if (meta.event_id === failEvent) throw new Error('injected transient database failure')
+          if (params[6] !== null) storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
+          msgs.push({
+            id: `msg-${String(++ids)}`,
+            conversation_id: String(params[0]),
+            agent: String(params[1]),
+            channel: String(params[2]),
+            role: String(params[3]),
+            content: String(params[4]),
+            tool_name: (params[5] as string | null) ?? null,
+            tool_result: (params[7] as string | null) ?? null,
+            metadata: meta,
+          })
+          return { rows: [], rowCount: 1 }
+        }
+        if (s.startsWith('UPDATE ros_conversations')) {
+          return { rows: [], rowCount: 1 }
+        }
+        throw new Error(`unexpected sql: ${s}`)
+      } catch (err) {
+        if (txState === 'open') txState = 'aborted'
+        throw err
       }
-      if (s.startsWith("SELECT metadata->>'event_id'")) {
-        const rows = msgs
-          .filter((m) => m.conversation_id === params[0] && m.metadata.event_id)
-          .map((m) => ({ e: String(m.metadata.event_id) }))
-        return { rows, rowCount: rows.length }
-      }
-      if (s.startsWith('SELECT 1 FROM ros_messages')) {
-        const hit = msgs.some(
-          (m) => m.conversation_id === params[0] && m.metadata.event_id === params[1],
-        )
-        return { rows: hit ? [{ '?column?': 1 }] : [], rowCount: hit ? 1 : 0 }
-      }
-      if (s.startsWith('INSERT INTO ros_messages')) {
-        const meta =
-          typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
-        if (meta.event_id === failEvent) throw new Error('injected transient database failure')
-        if (params[6] !== null) storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
-        msgs.push({
-          id: `msg-${String(++ids)}`,
-          conversation_id: String(params[0]),
-          agent: String(params[1]),
-          channel: String(params[2]),
-          role: String(params[3]),
-          content: String(params[4]),
-          tool_name: (params[5] as string | null) ?? null,
-          tool_result: (params[7] as string | null) ?? null,
-          metadata: meta,
-        })
-        return { rows: [], rowCount: 1 }
-      }
-      if (s.startsWith('UPDATE ros_conversations')) {
-        return { rows: [], rowCount: 1 }
-      }
-      throw new Error(`unexpected sql: ${s}`)
     },
   }
 
@@ -425,6 +519,9 @@ function stubClient(): {
     storedArgs,
     setFailEvent: (id) => {
       failEvent = id
+    },
+    setFailLock: (fail) => {
+      failLock = fail
     },
   }
 }
@@ -531,6 +628,70 @@ console.log('\n— stub pool ingest —')
   const replay = await ingestMessages(client, SESSION, retryRows, { seen })
   eq('retry recovers both rolled-back rows', replay.inserted, 2)
   eq('committed batch publishes dedup progress', seen.size, 3)
+
+  const toolOnlyStored = parseSessionText(
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: SESSION,
+        cwd: '/tmp/demo',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'feedface',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'toolCall', id: 'c2', name: 'bash', arguments: { command: 'pwd' } },
+          ],
+          usage: { input: 42, output: 7, totalTokens: 49 },
+          stopReason: 'toolUse',
+        },
+      }),
+    ].join('\n'),
+    SESSION,
+    FIXTURE,
+  )
+  const toolOnlyIngest = await ingestMessages(client, SESSION, toolOnlyStored.messages, {
+    title: 'tool-only',
+    transcriptPath: FIXTURE,
+  })
+  eq('tool-only ingest inserts the tool-call row', toolOnlyIngest.inserted, 1)
+  const storedToolOnly = msgs.find((m) => m.metadata.event_id === `pi:${SESSION}:feedface:tool:c2`)
+  check(
+    'stored tool-only usage survives ingest',
+    isRecord(storedToolOnly?.metadata.usage) &&
+      (storedToolOnly?.metadata.usage as { input?: number }).input === 42,
+    `usage=${JSON.stringify(storedToolOnly?.metadata.usage)}`,
+  )
+  eq(
+    'stored tool-only stopReason survives ingest',
+    storedToolOnly?.metadata.stopReason,
+    'toolUse',
+  )
+}
+
+console.log('\n— lock error recovers the pooled client —')
+{
+  const stub = stubClient()
+  stub.setFailLock(true)
+  let lockRejected = false
+  try {
+    await ingestMessages(stub.client, SESSION, [
+      { role: 'user', content: 'lock-fail', eventId: 'lock-fail-user' },
+    ])
+  } catch {
+    lockRejected = true
+  }
+  check('lock acquisition error is reported', lockRejected)
+  eq('lock failure inserts nothing', stub.msgs.length, 0)
+  stub.setFailLock(false)
+  const recovered = await ingestMessages(stub.client, SESSION, [
+    { role: 'user', content: 'after-lock', eventId: 'after-lock-user' },
+  ])
+  eq('next ingest on the same client succeeds after lock error', recovered.inserted, 1)
+  eq('recovered ingest stored the user row', stub.msgs.length, 1)
 }
 
 // =============================================================================
@@ -645,6 +806,48 @@ console.log('\n— scanOnce retries a failed file without another append —')
     stub.setFailEvent(undefined)
     const retried = await scanOnce(dir, stub.client, state, false)
     check('watch retries without requiring another file append', retried.inserted >= 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+console.log('\n— second scan updates title and model settings —')
+{
+  const stub = stubClient()
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-rename-'))
+  try {
+    const file = path.join(dir, `2026-09-11T14-25-16-803Z_${SESSION}.jsonl`)
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({ type: 'session', version: 3, id: SESSION, cwd: '/tmp/demo' }),
+        JSON.stringify({ type: 'session_info', id: SESSION, name: 'first title' }),
+        JSON.stringify({ type: 'model_change', provider: 'deepseek', modelId: 'old-model' }),
+        JSON.stringify({
+          type: 'message',
+          id: 'aabbcc01',
+          message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        }),
+      ].join('\n') + '\n',
+    )
+    const state = createWatcherState()
+    await scanOnce(dir, stub.client, state, true)
+    eq('first scan title from session_info', stub.convs[0]?.title, 'first title')
+    eq('first scan model in settings', stub.convs[0]?.settings.model, 'old-model')
+    eq('first scan provider in settings', stub.convs[0]?.settings.provider, 'deepseek')
+
+    appendFileSync(
+      file,
+      JSON.stringify({ type: 'session_info', id: SESSION, name: 'renamed title' }) +
+        '\n' +
+        JSON.stringify({ type: 'model_change', provider: 'openai', modelId: 'new-model' }) +
+        '\n',
+    )
+    await scanOnce(dir, stub.client, state, false)
+    eq('second scan updates title', stub.convs[0]?.title, 'renamed title')
+    eq('second scan updates model', stub.convs[0]?.settings.model, 'new-model')
+    eq('second scan updates provider', stub.convs[0]?.settings.provider, 'openai')
+    eq('still one conversation after rename', stub.convs.length, 1)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

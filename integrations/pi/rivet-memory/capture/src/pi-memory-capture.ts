@@ -49,6 +49,9 @@ const LOG_FILE = path.join(os.homedir(), '.rivetos', 'pi-memory-capture.log')
 export const STATE_FILE = path.join(os.homedir(), '.rivetos', 'pi-capture-state.json')
 export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
+const LOCK_TIMEOUT_MS = 5000
+const LOCK_RETRY_ATTEMPTS = 8
+const LOCK_RETRY_MS = 50
 const WATCH_POLL_MS = 2000
 
 /** Native session id — UUID, any version (pi mints v7). `--session-id` may be any token. */
@@ -490,12 +493,25 @@ export function parseSessionText(
       })
     }
 
+    // Tool-only assistant turns have no text row; keep one copy of usage
+    // on the first tool-call so accounting matches the den adapter.
+    let accountingAttached = Boolean(textBody || thinking)
     for (const item of calls) {
       const name = pickStr(item, 'name', 'toolName') || 'unknown'
       const callId = pickStr(item, 'id', 'toolCallId')
       if (callId) toolNameById.set(callId, name)
       const args = parseToolInput(item.arguments ?? item.input)
       const toolEventId = callId ? `${eventId}:tool:${callId}` : `${eventId}:tool`
+      const extra: Record<string, unknown> = {
+        sourceEvent: 'message:toolCall',
+        source: CAPTURE_SOURCE,
+        callId,
+      }
+      if (!accountingAttached) {
+        if (usage) extra.usage = usage
+        if (stopReason) extra.stopReason = stopReason
+        accountingAttached = true
+      }
       push({
         role: 'tool',
         content: `[tool] ${name}`,
@@ -504,11 +520,7 @@ export function parseSessionText(
         eventId: toolEventId,
         eventTs: msgTs,
         lineIndex: i,
-        extra: {
-          sourceEvent: 'message:toolCall',
-          source: CAPTURE_SOURCE,
-          callId,
-        },
+        extra,
       })
     }
   }
@@ -649,6 +661,35 @@ export function resolvePgUrl(explicit?: string): string {
   throw new Error('RIVETOS_PG_URL not set and not found in ~/.rivetos/.env')
 }
 
+function isPgTrue(v: unknown): boolean {
+  return v === true || v === 't' || v === 'true'
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+/**
+ * Take the per-session xact lock without a blocking wait that can hit
+ * statement_timeout and abort the transaction. BEGIN must already be open.
+ */
+async function acquireSessionLock(client: Queryable, sessionKey: string): Promise<void> {
+  await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`)
+  for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+    const r = await client.query(
+      'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS locked',
+      [sessionKey],
+    )
+    if (isPgTrue(r.rows[0]?.locked)) return
+    if (attempt === LOCK_RETRY_ATTEMPTS) {
+      throw new Error(`session lock not acquired for ${sessionKey}`)
+    }
+    await delay(LOCK_RETRY_MS)
+  }
+}
+
 async function findOrCreateConversation(
   client: Queryable,
   sessionKey: string,
@@ -656,10 +697,15 @@ async function findOrCreateConversation(
 ): Promise<{ id: string; created: boolean }> {
   // Upsert on the (session_key, agent) unique index (migration 0009): concurrency-safe,
   // no SELECT-then-INSERT race. xmax = 0 on the returned row means this INSERT created it.
+  // Codex only bumps updated_at; pi refreshes title + settings so a later
+  // session_info rename or model_change is not stuck on the first scan.
   const conv = await client.query(
     `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, active, created_at, updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, now(), now())
-     ON CONFLICT (session_key, agent) DO UPDATE SET updated_at = now()
+     ON CONFLICT (session_key, agent) DO UPDATE SET
+       title = EXCLUDED.title,
+       settings = EXCLUDED.settings,
+       updated_at = now()
      RETURNING id, (xmax = 0) AS created`,
     [
       sessionKey,
@@ -827,11 +873,15 @@ export async function ingestMessages(
   const sessionKey = deriveSessionKey(sessionId)
   // Publish dedup progress only after commit so rolled-back INSERTs replay.
   const seen = opts.seen ? new Set(opts.seen) : undefined
-  if (opts.lock !== false) {
-    await client.query('BEGIN')
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
-  }
+  // BEGIN/lock live inside try so a lock timeout ROLLBACKs before the
+  // pooled client is reused. `began` avoids ROLLBACK when BEGIN itself fails.
+  let began = false
   try {
+    if (opts.lock !== false) {
+      await client.query('BEGIN')
+      began = true
+      await acquireSessionLock(client, sessionKey)
+    }
     const conv = await findOrCreateConversation(client, sessionKey, {
       title: (opts.title || 'Pi session').slice(0, 120),
       settings: {
@@ -879,11 +929,14 @@ export async function ingestMessages(
       await client.query(`UPDATE ros_conversations SET updated_at = now() WHERE id = $1`, [conv.id])
     }
 
-    if (opts.lock !== false) await client.query('COMMIT')
+    if (opts.lock !== false) {
+      await client.query('COMMIT')
+      began = false
+    }
     if (opts.seen && seen) for (const id of seen) opts.seen.add(id)
     return { inserted, skipped, conversationId: conv.id, sessionKey }
   } catch (err) {
-    if (opts.lock !== false) await client.query('ROLLBACK').catch(() => undefined)
+    if (began) await client.query('ROLLBACK').catch(() => undefined)
     throw err
   }
 }
