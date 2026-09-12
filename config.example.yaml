@@ -51,11 +51,12 @@ providers:
   #   # probe_models: true                  # false = skip /models and treat as available
 
   # --- z.ai / GLM (OpenAI-compatible coding endpoint, no /v1 segment) ---
+  # api_prefix: "" is enough; models listing is at <base>/models.
+  # models_url is only needed when that listing lives elsewhere.
   # vllm:
   #   name: GLM (Z.ai)
   #   base_url: https://api.z.ai/api/coding/paas/v4
   #   api_prefix: ""
-  #   models_url: https://api.z.ai/api/paas/v4/models
   #   api_key: ${ZAI_API_KEY}
   #   model: glm-5.3-flash
 

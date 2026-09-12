@@ -286,7 +286,7 @@ providers:
     # api_key: ${VLLM_API_KEY}            # only if vLLM started with --api-key
 ```
 
-z.ai / GLM (OpenAI-compatible, no `/v1` segment on the coding endpoint):
+z.ai / GLM (OpenAI-compatible coding endpoint has no `/v1` segment — `api_prefix: ""` is enough; models listing is at `<base>/models`):
 
 ```yaml
 providers:
@@ -294,16 +294,17 @@ providers:
     name: GLM (Z.ai)
     base_url: https://api.z.ai/api/coding/paas/v4
     api_prefix: ""
-    models_url: https://api.z.ai/api/paas/v4/models
     api_key: ${ZAI_API_KEY}
     model: glm-5.3-flash
 ```
+
+Use `models_url` only if the models listing lives somewhere other than `<base><api_prefix>/models`.
 
 | Key                    | Type     | Default           | Description                                                                          |
 | ---------------------- | -------- | ----------------- | ------------------------------------------------------------------------------------ |
 | `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).         |
 | `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).      |
-| `models_url`           | string   | —                 | Absolute URL for the models probe; overrides `<base><api_prefix>/models`.            |
+| `models_url`           | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
 | `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.   |
 | `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                           |
 | `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                              |

@@ -68,7 +68,8 @@ export interface VllmProviderConfig {
   modelsUrl?: string
   /**
    * When `false`, `isAvailable()` skips the models probe (and discovery) and
-   * reports available. Default `true`.
+   * reports available. Default `true`. If also `model` is unset/`default`,
+   * construction warns that the literal `default` will be sent as the model id.
    */
   probeModels?: boolean
   /** Bearer token. Send a placeholder like 'sk-no-key-required' for servers
@@ -307,6 +308,13 @@ export class VllmProvider implements Provider {
     this.contextPinned = (config.contextWindow ?? 0) > 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
     this.verifyModelOnInit = config.verifyModelOnInit ?? false
+
+    if (!this.probeModels && !this.modelPinned) {
+      console.warn(
+        `[${this.id}] probe_models is false and model is unset/default; ` +
+          `the literal "default" will be sent as the model id. Set "model" in config.`,
+      )
+    }
   }
 
   getModel(): string {
@@ -464,8 +472,9 @@ export class VllmProvider implements Provider {
   }
 
   async isAvailable(): Promise<boolean> {
-    // Coding-only OpenAI-compat endpoints (e.g. z.ai GLM) often have no
-    // `/models` listing. Skip the probe and discovery entirely.
+    // Skip the models probe and discovery. Chat still uses <base><api_prefix>
+    // (e.g. z.ai coding: api_prefix "" → <base>/chat/completions and <base>/models).
+    // Pair with an explicit model id — otherwise the literal "default" is sent.
     if (!this.probeModels) return true
 
     const modelsUrl = this.modelsEndpoint()

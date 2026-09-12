@@ -455,6 +455,39 @@ describe('VllmProvider', () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
+    it('warns at construction when probe_models is false and model is unset/default', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: false,
+      })
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('literal "default"'))
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('will be sent as the model id'))
+
+      warn.mockClear()
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: false,
+        model: 'default',
+      })
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('literal "default"'))
+
+      warn.mockClear()
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: false,
+        model: 'glm-5.3-flash',
+      })
+      expect(warn).not.toHaveBeenCalled()
+
+      new VllmProvider({
+        baseUrl: 'http://localhost:8000',
+        probeModels: true,
+      })
+      expect(warn).not.toHaveBeenCalled()
+    })
+
     it('error text includes the actual models URL (not a hardcoded /v1/models)', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED')))
