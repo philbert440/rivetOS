@@ -678,10 +678,9 @@ function delay(ms: number): Promise<void> {
 async function acquireSessionLock(client: Queryable, sessionKey: string): Promise<void> {
   await client.query(`SET LOCAL lock_timeout = ${LOCK_TIMEOUT_MS}`)
   for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-    const r = await client.query(
-      'SELECT pg_try_advisory_xact_lock(hashtext($1)) AS locked',
-      [sessionKey],
-    )
+    const r = await client.query('SELECT pg_try_advisory_xact_lock(hashtext($1)) AS locked', [
+      sessionKey,
+    ])
     if (isPgTrue(r.rows[0]?.locked)) return
     if (attempt === LOCK_RETRY_ATTEMPTS) {
       throw new Error(`session lock not acquired for ${sessionKey}`)
