@@ -79,6 +79,8 @@ import { findRoot } from './plugins-sync.js'
 import {
   CODEX_LAUNCHD_LABEL,
   CODEX_WATCHER_UNIT,
+  OPENCODE_LAUNCHD_LABEL,
+  OPENCODE_WATCHER_UNIT,
   artefactConfigHomes,
   kimiConfigHomes,
   mcpJsonHasRivetos,
@@ -1534,38 +1536,12 @@ function hermesPluginInstalled(configHome: string): boolean {
   }
 }
 
-/** Best-effort: a `rivetos` entry in opencode.json `plugin` array. JSONC
- *  comments make parse fail → treated as not installed. */
-function opencodePluginInstalled(configHome: string): boolean {
-  for (const name of ['opencode.json', 'opencode.jsonc']) {
-    let raw: string
-    try {
-      raw = readFileSync(join(configHome, name), 'utf-8')
-    } catch {
-      continue
-    }
-    try {
-      const cfg = JSON.parse(raw) as { plugin?: unknown }
-      const plugin = cfg.plugin
-      if (!Array.isArray(plugin)) continue
-      if (
-        plugin.some((p) => {
-          if (typeof p === 'string') return /rivetos/i.test(p)
-          if (p && typeof p === 'object' && 'name' in p) {
-            return (
-              typeof (p as { name?: unknown }).name === 'string' &&
-              /rivetos/i.test((p as { name: string }).name)
-            )
-          }
-          return false
-        })
-      ) {
-        return true
-      }
-    } catch {
-      // invalid JSON / JSONC — not installed
-    }
-  }
+/** Watcher unit enabled (unit/plist on disk) or the capture cursor file. */
+function opencodeCaptureInstalled(home: string): boolean {
+  if (existsSync(join(home, '.rivetos', 'opencode-capture-state.json'))) return true
+  if (existsSync(join(home, '.config', 'systemd', 'user', OPENCODE_WATCHER_UNIT))) return true
+  if (existsSync(join(home, 'Library', 'LaunchAgents', `${OPENCODE_LAUNCHD_LABEL}.plist`)))
+    return true
   return false
 }
 
@@ -1604,7 +1580,7 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
     case 'claude-code':
       return false // decided by `claude plugin list` below
     case 'opencode':
-      return opencodePluginInstalled(h.configHome)
+      return opencodeCaptureInstalled(home)
     case 'pi':
       return false
   }
@@ -1620,6 +1596,7 @@ async function claudePluginListed(
 }
 
 export type CaptureWatcherHealth = 'active' | 'inactive' | 'crash-looping' | 'n/a'
+export type CaptureWatcherHarness = 'codex' | 'opencode'
 
 function parseSystemctlShow(text: string): { nRestarts: number; activeState: string } {
   let nRestarts = 0
@@ -1635,14 +1612,22 @@ function parseSystemctlShow(text: string): { nRestarts: number; activeState: str
   return { nRestarts, activeState }
 }
 
+function watcherUnit(harness: CaptureWatcherHarness): { unit: string; label: string } {
+  return harness === 'opencode'
+    ? { unit: OPENCODE_WATCHER_UNIT, label: OPENCODE_LAUNCHD_LABEL }
+    : { unit: CODEX_WATCHER_UNIT, label: CODEX_LAUNCHD_LABEL }
+}
+
 export async function captureWatcherStatus(
   exec: typeof execFileAsync,
   platform: NodeJS.Platform,
   uid?: number,
+  harness: CaptureWatcherHarness = 'codex',
 ): Promise<CaptureWatcherHealth> {
+  const { unit, label } = watcherUnit(harness)
   if (platform === 'darwin') {
     const id = uid ?? process.getuid?.() ?? 0
-    const r = await exec('launchctl', ['print', `gui/${id}/${CODEX_LAUNCHD_LABEL}`], {
+    const r = await exec('launchctl', ['print', `gui/${id}/${label}`], {
       timeoutMs: 5_000,
     })
     if (r.code !== 0) return 'inactive'
@@ -1650,11 +1635,9 @@ export async function captureWatcherStatus(
     return /\bstate\s*=\s*running\b/i.test(blob) ? 'active' : 'inactive'
   }
   if (platform === 'linux') {
-    const r = await exec(
-      'systemctl',
-      ['--user', 'show', '-p', 'NRestarts,ActiveState', CODEX_WATCHER_UNIT],
-      { timeoutMs: 5_000 },
-    )
+    const r = await exec('systemctl', ['--user', 'show', '-p', 'NRestarts,ActiveState', unit], {
+      timeoutMs: 5_000,
+    })
     const { nRestarts, activeState } = parseSystemctlShow(`${r.stdout}\n${r.stderr}`)
     if (nRestarts > 3) return 'crash-looping'
     return activeState === 'active' ? 'active' : 'inactive'
@@ -1718,8 +1701,13 @@ export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<Ch
     }
     let extra = ''
     let watcher: CaptureWatcherHealth | undefined
-    if (h.id === 'codex') {
-      watcher = await captureWatcherStatus(exec, probe.platform ?? process.platform, probe.uid)
+    if (h.id === 'codex' || h.id === 'opencode') {
+      watcher = await captureWatcherStatus(
+        exec,
+        probe.platform ?? process.platform,
+        probe.uid,
+        h.id,
+      )
       extra = ` — capture watcher: ${watcher}`
     }
     const watcherBroken = watcher === 'inactive' || watcher === 'crash-looping'

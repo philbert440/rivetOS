@@ -18,8 +18,11 @@
 
 import { createInterface } from 'node:readline'
 import { createReadStream, existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
+
+const require_ = createRequire(import.meta.url)
 
 const PREVIEW_GUARD = 512 * 1024 // sanity cap on what we return in one call
 
@@ -144,6 +147,7 @@ export function formatMissingJsonlMessage(file: string, opts?: { agent?: string 
     file.includes('/.grok/sessions/') ||
     file.includes('/.claude/') ||
     file.includes('/.codex/sessions/') ||
+    file.includes('/opencode.db') ||
     file.includes('/sessions/')
   ) {
     layoutHint =
@@ -170,6 +174,11 @@ export function formatMissingJsonlMessage(file: string, opts?: { agent?: string 
 /** True for capture transcripts memory_get_full knows how to re-read. */
 export function isCaptureTranscriptPath(file: string): boolean {
   return file.endsWith('.jsonl') || file.endsWith('.jsonl.zstd') || file.endsWith('.jsonl.zst')
+}
+
+/** True for OpenCode SQLite capture pointers. */
+export function isCaptureSqlitePath(file: string): boolean {
+  return file.endsWith('.db') || file.endsWith('opencode.db')
 }
 
 async function decompressZstd(buf: Buffer): Promise<string> {
@@ -306,6 +315,90 @@ export function extractCodexFromLine(
   }
 }
 
+function partTextFromData(part: Record<string, unknown>): string {
+  if (typeof part.text === 'string') return part.text
+  if (part.text && typeof part.text === 'object' && !Array.isArray(part.text)) {
+    const v = (part.text as Record<string, unknown>).value
+    if (typeof v === 'string') return v
+  }
+  if (typeof part.content === 'string') return part.content
+  return ''
+}
+
+/**
+ * OpenCode `part.data` JSON → content + toolResult. Exported for tests.
+ */
+export function extractOpencodeFromPart(
+  data: unknown,
+): { content: string; toolResult: string | null } {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { content: '', toolResult: null }
+  }
+  const part = data as Record<string, unknown>
+  const type = typeof part.type === 'string' ? part.type : ''
+  if (type === 'reasoning' || type === 'thinking' || type === 'think') {
+    const chunk = partTextFromData(part).trim()
+    return { content: chunk ? `[thinking] ${chunk}` : '', toolResult: null }
+  }
+  if (type === 'tool' || type === 'tool_use' || type === 'tool-call') {
+    const name =
+      typeof part.tool === 'string'
+        ? part.tool
+        : typeof part.name === 'string'
+          ? part.name
+          : 'tool'
+    const state =
+      part.state && typeof part.state === 'object' && !Array.isArray(part.state)
+        ? (part.state as Record<string, unknown>)
+        : undefined
+    const out = state && 'output' in state ? state.output : (part.output ?? part.result)
+    const toolResult =
+      typeof out === 'string' ? out : out != null ? JSON.stringify(out) : null
+    const isError = part.isError === true || state?.status === 'error'
+    return {
+      content: isError ? `[tool-failure] ${name}` : `[tool-result] ${name}`,
+      toolResult,
+    }
+  }
+  return { content: partTextFromData(part), toolResult: null }
+}
+
+/** Re-read one OpenCode part by id from a read-only SQLite db. */
+export function readOpencodePart(
+  dbPath: string,
+  partId: string,
+): { content: string; toolResult: string | null } | null {
+  try {
+    const { DatabaseSync } = require_('node:sqlite') as {
+      DatabaseSync: new (
+        p: string,
+        o?: { readOnly?: boolean },
+      ) => {
+        prepare: (sql: string) => { get: (...params: unknown[]) => { data?: unknown } | undefined }
+        close: () => void
+      }
+    }
+    const db = new DatabaseSync(dbPath, { readOnly: true })
+    try {
+      const row = db.prepare('SELECT data FROM part WHERE id = ?').get(partId)
+      if (!row) return null
+      let data: unknown = row.data
+      if (typeof data === 'string') {
+        try {
+          data = JSON.parse(data)
+        } catch {
+          return { content: data, toolResult: null }
+        }
+      }
+      return extractOpencodeFromPart(data)
+    } finally {
+      db.close()
+    }
+  } catch {
+    return null
+  }
+}
+
 /** Parse one updates.jsonl line and derive the full content + tool result.
  *  Exported for tests. */
 export function extractFullFromLine(raw: string): { content: string; toolResult: string | null } {
@@ -384,8 +477,8 @@ export function createGetFullTool(pool: pg.Pool): Tool {
     description:
       'Fetch the complete, untruncated payload for a memory row whose content or tool_result ' +
       'was elided at capture time (rows marked "…[truncated]" by memory_search/memory_browse). ' +
-      'Reads the original line back from the capture JSONL on disk. ' +
-      'JSONL paths are host-local — if the file is not on this machine, the tool explains multi-host recovery instead of claiming the data is gone.',
+      'Reads the original line back from the capture JSONL (or OpenCode SQLite part) on disk. ' +
+      'Capture paths are host-local — if the file is not on this machine, the tool explains multi-host recovery instead of claiming the data is gone.',
     parameters: {
       type: 'object',
       properties: {
@@ -419,6 +512,36 @@ export function createGetFullTool(pool: pg.Pool): Tool {
         // nothing was elided — the stored row already IS the full payload
         const tool = row.tool_name ? `\n\n[tool: ${row.tool_name}]\n${row.tool_result ?? ''}` : ''
         return `(row was not truncated — stored payload is complete)\n\n${row.content}${tool}`
+      }
+
+      const sqlitePath =
+        typeof meta.session_sqlite_path === 'string' ? meta.session_sqlite_path : null
+      const partId =
+        typeof meta.session_sqlite_part_id === 'string' ? meta.session_sqlite_part_id : null
+      if (sqlitePath && partId) {
+        if (!isCaptureSqlitePath(sqlitePath))
+          return `Source SQLite is gone or invalid (${sqlitePath}) — the elided tail is unrecoverable.`
+        if (!existsSync(sqlitePath))
+          return formatMissingJsonlMessage(sqlitePath, { agent: row.agent })
+        const extracted = readOpencodePart(sqlitePath, partId)
+        if (!extracted)
+          return `Part ${partId} not found in ${sqlitePath} (db rotated/rewritten?).`
+        const sections: string[] = [
+          `## Full payload for ${id} (from ${sqlitePath} part ${partId})`,
+        ]
+        if (typeof meta.full_content_length === 'number' && extracted.content) {
+          sections.push(
+            `### content (${String(extracted.content.length)} chars)\n${extracted.content.slice(0, PREVIEW_GUARD)}`,
+          )
+        }
+        if (typeof meta.full_tool_result_length === 'number' && extracted.toolResult) {
+          sections.push(
+            `### tool_result${row.tool_name ? ` (${row.tool_name})` : ''} (${String(extracted.toolResult.length)} chars)\n${extracted.toolResult.slice(0, PREVIEW_GUARD)}`,
+          )
+        }
+        if (sections.length === 1)
+          return `Re-read ${sqlitePath} part ${partId} but could not re-derive the elided field — the part shape may have changed.`
+        return sections.join('\n\n')
       }
 
       const file = typeof meta.session_jsonl_path === 'string' ? meta.session_jsonl_path : null

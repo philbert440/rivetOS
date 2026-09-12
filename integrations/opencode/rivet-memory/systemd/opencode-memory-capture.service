@@ -1,0 +1,15 @@
+[Unit]
+Description=RivetOS OpenCode memory capture watcher
+After=network.target rivetos.service
+Wants=rivetos.service
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /opt/rivetos/integrations/opencode/rivet-memory/bin/opencode-memory-capture.sh --watch
+EnvironmentFile=-%h/.rivetos/.env
+Environment=RIVETOS_ROOT=/opt/rivetos
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

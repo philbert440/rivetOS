@@ -7,9 +7,12 @@ import {
   createGetFullTool,
   extractCodexFromLine,
   extractFullFromLine,
+  extractOpencodeFromPart,
   formatMissingJsonlMessage,
+  isCaptureSqlitePath,
   isCaptureTranscriptPath,
   readJsonlLine,
+  readOpencodePart,
 } from './get-full-tool.js'
 import { isCodexSessionKey, truncationHint } from './helpers.js'
 
@@ -367,5 +370,74 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
     const out = await createGetFullTool(pool).execute({ id: 'row-codex' })
     expect(out).toContain('## Full payload for row-codex')
     expect(out).toContain(big)
+  })
+
+  it('recovers a truncated OpenCode SQLite part from disk', async () => {
+    const big = 'w'.repeat(30_000)
+    const dir = mkdtempSync(join(tmpdir(), 'getfull-oc-'))
+    const dbFile = join(dir, 'opencode.db')
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(dbFile)
+    db.exec(`
+      CREATE TABLE part (
+        id TEXT PRIMARY KEY,
+        message_id TEXT,
+        session_id TEXT,
+        time_created INTEGER,
+        data TEXT
+      );
+    `)
+    db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      'prt_tool1',
+      'msg_asst1',
+      'ses_abcdefghijklmnopqrstuvwxyz',
+      Date.now(),
+      JSON.stringify({
+        type: 'tool',
+        tool: 'bash',
+        state: { status: 'completed', input: { command: 'ls' }, output: big },
+      }),
+    )
+    db.close()
+
+    const row = {
+      id: 'row-oc',
+      content: '[tool-result] bash',
+      tool_name: 'bash',
+      tool_result: 'preview…',
+      agent: 'rivet-glm',
+      metadata: {
+        truncated: true,
+        session_sqlite_path: dbFile,
+        session_sqlite_part_id: 'prt_tool1',
+        full_tool_result_length: big.length,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+    const out = await createGetFullTool(pool).execute({ id: 'row-oc' })
+    expect(out).toContain('## Full payload for row-oc')
+    expect(out).toContain(big)
+    expect(isCaptureSqlitePath(dbFile)).toBe(true)
+    const extracted = readOpencodePart(dbFile, 'prt_tool1')
+    expect(extracted?.toolResult).toBe(big)
+  })
+})
+
+describe('extractOpencodeFromPart', () => {
+  it('prefixes reasoning as [thinking]', () => {
+    const out = extractOpencodeFromPart({ type: 'reasoning', text: 'plan' })
+    expect(out.content).toBe('[thinking] plan')
+  })
+
+  it('extracts tool output from state', () => {
+    const out = extractOpencodeFromPart({
+      type: 'tool',
+      tool: 'bash',
+      state: { status: 'completed', output: 'a.txt' },
+    })
+    expect(out.content).toBe('[tool-result] bash')
+    expect(out.toolResult).toBe('a.txt')
   })
 })
