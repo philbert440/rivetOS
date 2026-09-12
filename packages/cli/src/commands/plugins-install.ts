@@ -577,7 +577,7 @@ export function opencodeJsonHasRivetos(cfgPath: string): boolean {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue
       const mcp = parsed.mcp
       if (!mcp || typeof mcp !== 'object' || Array.isArray(mcp)) continue
-      if (Boolean((mcp as Record<string, unknown>).rivetos)) return true
+      if ((mcp as Record<string, unknown>).rivetos) return true
     } catch {
       // missing or non-JSON (comments-only jsonc) — try the sibling
     }
@@ -806,14 +806,7 @@ function captureScriptPath(root: string): string {
 }
 
 function opencodeCaptureScriptPath(root: string): string {
-  return join(
-    root,
-    'integrations',
-    'opencode',
-    'rivet-memory',
-    'bin',
-    'opencode-memory-capture.sh',
-  )
+  return join(root, 'integrations', 'opencode', 'rivet-memory', 'bin', 'opencode-memory-capture.sh')
 }
 
 /** systemd user unit for the Codex capture watcher. ExecStart is always

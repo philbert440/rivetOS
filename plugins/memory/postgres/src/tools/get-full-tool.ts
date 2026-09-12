@@ -333,7 +333,7 @@ function stringifyToolArgs(args: unknown): string | null {
   try {
     return JSON.stringify(args)
   } catch {
-    return String(args)
+    return typeof args === 'string' ? args : '[unserializable arguments]'
   }
 }
 
@@ -354,11 +354,7 @@ export function extractOpencodeFromPart(data: unknown): {
   }
   if (type === 'tool' || type === 'tool_use' || type === 'tool-call') {
     const name =
-      typeof part.tool === 'string'
-        ? part.tool
-        : typeof part.name === 'string'
-          ? part.name
-          : 'tool'
+      typeof part.tool === 'string' ? part.tool : typeof part.name === 'string' ? part.name : 'tool'
     const state =
       part.state && typeof part.state === 'object' && !Array.isArray(part.state)
         ? (part.state as Record<string, unknown>)
@@ -546,11 +542,8 @@ export function createGetFullTool(pool: pg.Pool): Tool {
         if (!existsSync(sqlitePath))
           return formatMissingJsonlMessage(sqlitePath, { agent: row.agent })
         const extracted = readOpencodePart(sqlitePath, partId)
-        if (!extracted)
-          return `Part ${partId} not found in ${sqlitePath} (db rotated/rewritten?).`
-        const sections: string[] = [
-          `## Full payload for ${id} (from ${sqlitePath} part ${partId})`,
-        ]
+        if (!extracted) return `Part ${partId} not found in ${sqlitePath} (db rotated/rewritten?).`
+        const sections: string[] = [`## Full payload for ${id} (from ${sqlitePath} part ${partId})`]
         if (typeof meta.full_content_length === 'number' && extracted.content) {
           sections.push(
             `### content (${String(extracted.content.length)} chars)\n${extracted.content.slice(0, PREVIEW_GUARD)}`,

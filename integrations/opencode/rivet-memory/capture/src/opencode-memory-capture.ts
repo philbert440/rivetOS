@@ -447,8 +447,7 @@ export function foldPart(
       : state && 'output' in state
         ? state.output
         : (part.data.output ?? part.data.result)
-    const toolResult =
-      typeof out === 'string' ? out : out != null ? safeJson(out) : null
+    const toolResult = typeof out === 'string' ? out : out != null ? safeJson(out) : null
     if (isRunning && !toolResult) {
       bump(skipped, 'tool:running')
       return null
@@ -599,7 +598,9 @@ export async function insertMessage(
       dbPath ||
       (typeof m.extra?.session_sqlite_path === 'string' ? m.extra.session_sqlite_path : null),
     partId:
-      typeof m.extra?.session_sqlite_part_id === 'string' ? m.extra.session_sqlite_part_id : m.eventId,
+      typeof m.extra?.session_sqlite_part_id === 'string'
+        ? m.extra.session_sqlite_part_id
+        : m.eventId,
   }
 
   const contentCap = capForStorage(m.content ?? '', pointer)
