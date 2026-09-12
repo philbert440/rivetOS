@@ -51,6 +51,7 @@ import {
   embeddedPgLockAlive,
   embeddedPgUrl,
   readEmbeddedPgLock,
+  resolveEnvVars,
   validateConfig,
 } from '@rivetos/boot'
 import { sharedDir, sharedPath } from '@rivetos/types'
@@ -63,7 +64,6 @@ import {
   herdrBinPath,
   herdrManifestCacheDir,
   herdrRepoManifestsDir,
-  readDotEnvValue,
   readHerdrVersion,
   readRivetosDotEnv,
   resolveHerdrMux,
@@ -1087,7 +1087,7 @@ async function checkDNS(rawConfig: string | null): Promise<CheckResult[]> {
 // Check: Provider Connectivity
 // ---------------------------------------------------------------------------
 
-async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> {
+export async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> {
   const results: CheckResult[] = []
   if (!rawConfig) return results
 
@@ -1096,14 +1096,14 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
     const parsed = parseYaml(rawConfig) as { providers?: Section }
     const providers: Section = parsed.providers ?? {}
 
-    // The runtime resolves `${VAR}` placeholders (api_key, base_url, …) from the
-    // environment, which systemd loads from ~/.rivetos/.env; a shell-launched
-    // doctor must do the same or it sends the literal placeholder as the bearer
-    // token and reports every keyed provider as unreachable.
-    const dotEnv = readRivetosDotEnv()
+    // Resolve `${VAR}` placeholders (api_key, base_url, …) exactly like the
+    // runtime's config loader — from process.env, which loadRivetEnv() has
+    // already populated from the selected env file. Probing with the raw block
+    // sent the literal placeholder as the bearer token and reported every keyed
+    // provider as unreachable.
     for (const [name, rawProviderCfg] of Object.entries(providers)) {
       if (!rawProviderCfg) continue
-      const providerCfg = resolveProviderEnv(rawProviderCfg, process.env, dotEnv)
+      const providerCfg = resolveEnvVars(rawProviderCfg)
       try {
         const ok = await checkProviderConnectivity(name, providerCfg)
         if (ok) {
@@ -1113,7 +1113,13 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
         }
       } catch (err) {
         results.push(
-          check('providers', name, 'fail', `Provider ${name}: error`, (err as Error).message),
+          check(
+            'providers',
+            name,
+            'fail',
+            `Provider ${name}: error`,
+            redactResolvedSecrets((err as Error).message, rawProviderCfg, providerCfg),
+          ),
         )
       }
     }
@@ -1122,6 +1128,36 @@ async function checkProviders(rawConfig: string | null): Promise<CheckResult[]> 
   }
 
   return results
+}
+
+/** Strings in `resolved` that differ from their `raw` counterpart came from the
+ *  environment (keys, tokens, URLs with embedded credentials). Native fetch
+ *  echoes header/URL values in its error messages, so scrub every such value
+ *  from a detail line before it reaches the terminal or JSON output. */
+export function redactResolvedSecrets(message: string, raw: unknown, resolved: unknown): string {
+  const secrets = new Set<string>()
+  const walk = (r: unknown, v: unknown): void => {
+    if (typeof v === 'string') {
+      if (v !== r && v.length > 0) secrets.add(v)
+      return
+    }
+    if (Array.isArray(v)) {
+      v.forEach((item, i) => {
+        walk(Array.isArray(r) ? r[i] : undefined, item)
+      })
+      return
+    }
+    if (v && typeof v === 'object') {
+      const rawObj = r && typeof r === 'object' ? (r as Record<string, unknown>) : {}
+      for (const [k, item] of Object.entries(v as Record<string, unknown>)) walk(rawObj[k], item)
+    }
+  }
+  walk(raw, resolved)
+  let out = message
+  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+    out = out.split(secret).join('[redacted]')
+  }
+  return out
 }
 
 // ---------------------------------------------------------------------------
@@ -1828,35 +1864,6 @@ function vllmDoctorModelsUrl(config: Record<string, unknown>, baseUrl: string): 
     else prefix = (trimmed.startsWith('/') ? trimmed : `/${trimmed}`).replace(/\/+$/, '')
   }
   return `${baseUrl}${prefix}/models`
-}
-
-/** Resolve `${VAR}` references in a provider block the way the runtime's config
- *  loader does — process env first, then the unit's EnvironmentFile
- *  (~/.rivetos/.env) — so the connectivity probe below uses the real key and
- *  URL. Unknown names resolve to '' (same as the runtime). Pure: returns a copy. */
-export function resolveProviderEnv(
-  config: Record<string, unknown>,
-  env: NodeJS.ProcessEnv = process.env,
-  dotEnv: string | null = null,
-): Record<string, unknown> {
-  const resolveValue = (value: unknown): unknown => {
-    if (typeof value === 'string') {
-      return value.replace(/\$\{(\w+)\}/g, (_, name: string) => {
-        const fromEnv = env[name]
-        if (fromEnv !== undefined) return fromEnv
-        return readDotEnvValue(name, dotEnv) ?? ''
-      })
-    }
-    if (Array.isArray(value)) return value.map(resolveValue)
-    if (value && typeof value === 'object') {
-      const out: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(value as Record<string, unknown>))
-        out[k] = resolveValue(v)
-      return out
-    }
-    return value
-  }
-  return resolveValue(config) as Record<string, unknown>
 }
 
 export async function checkProviderConnectivity(
