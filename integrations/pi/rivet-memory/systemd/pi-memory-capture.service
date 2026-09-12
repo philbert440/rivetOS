@@ -8,6 +8,7 @@ Type=simple
 ExecStart=/bin/bash /opt/rivetos/integrations/pi/rivet-memory/bin/pi-memory-capture.sh --watch
 EnvironmentFile=-%h/.rivetos/.env
 Environment=RIVETOS_ROOT=/opt/rivetos
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=5
 

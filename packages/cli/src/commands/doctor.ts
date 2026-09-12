@@ -1664,11 +1664,9 @@ export async function captureWatcherStatus(
     return /\bstate\s*=\s*running\b/i.test(blob) ? 'active' : 'inactive'
   }
   if (platform === 'linux') {
-    const r = await exec(
-      'systemctl',
-      ['--user', 'show', '-p', 'NRestarts,ActiveState', unit],
-      { timeoutMs: 5_000 },
-    )
+    const r = await exec('systemctl', ['--user', 'show', '-p', 'NRestarts,ActiveState', unit], {
+      timeoutMs: 5_000,
+    })
     const { nRestarts, activeState } = parseSystemctlShow(`${r.stdout}\n${r.stderr}`)
     if (nRestarts > 3) return 'crash-looping'
     return activeState === 'active' ? 'active' : 'inactive'

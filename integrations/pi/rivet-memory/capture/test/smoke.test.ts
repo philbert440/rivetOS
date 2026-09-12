@@ -10,8 +10,8 @@
  *      does not add deps beyond kimi's (pg).
  *   4. File-cursor tailing (incomplete last line stays pending).
  *   5. Watch tick over a temp cwd-bucket tree + a flat --session-dir.
- *   6. Fold-parity against den-server `piTurnsFromLines` when that module
- *      is importable from this worktree.
+ *   6. Fold-parity against den-server `piTurnsFromLines`. Import failure
+ *      (missing @rivetos/types or the den adapter) is a test failure.
  */
 import {
   mkdtempSync,
@@ -29,6 +29,7 @@ import {
   parseSessionText,
   parseSessionFile,
   uuidFromSessionName,
+  isNativeSessionId,
   deriveSessionKey,
   eventIdFromLine,
   capForStorage,
@@ -95,6 +96,13 @@ console.log('— identity constants —')
     SESSION,
   )
   eq(
+    'uuidFromSessionName accepts non-uuid --session-id',
+    uuidFromSessionName('2026-09-11T14-25-16-803Z_custom-id.jsonl'),
+    'custom-id',
+  )
+  eq('isNativeSessionId accepts a custom --session-id', isNativeSessionId('custom-id'), true)
+  eq('isNativeSessionId rejects path tokens', isNativeSessionId('../evil'), false)
+  eq(
     'eventIdFromLine prefers line id',
     eventIdFromLine(SESSION, 'aa11bb22', 4),
     `pi:${SESSION}:aa11bb22`,
@@ -118,8 +126,8 @@ console.log('\n— parseSessionText (fixture) —')
 
   eq('session id from session line', parsed.sessionId, SESSION)
   eq('cwd from session line', parsed.cwd, '/tmp/demo')
-  eq('title is the -n name', parsed.title, 'demo session')
-  eq('name field captured', parsed.name, 'demo session')
+  eq('title is session_info.name (-n)', parsed.title, 'demo session')
+  eq('name field captured from session_info', parsed.name, 'demo session')
   eq('model from model_change', parsed.model, 'deepseek-v4-flash')
   eq('provider from model_change', parsed.provider, 'deepseek')
   eq('thinkingLevel from thinking_level_change', parsed.thinkingLevel, 'high')
@@ -190,6 +198,72 @@ console.log('\n— parseSessionText (fixture) —')
     null,
   )
   eq('title falls back to first user text', untitled.title, 'hello world')
+
+  const inventedName = parseSessionText(
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: SESSION,
+        cwd: '/tmp/demo',
+        name: 'invented session.name',
+      }),
+      JSON.stringify({
+        type: 'name_change',
+        name: 'invented name_change',
+      }),
+      JSON.stringify({
+        type: 'session_name',
+        name: 'invented session_name',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'aabbccdd',
+        message: { role: 'user', content: [{ type: 'text', text: 'hello world' }] },
+      }),
+    ].join('\n'),
+    null,
+    null,
+  )
+  eq(
+    'session.name / name_change / session_name are not title sources',
+    inventedName.title,
+    'hello world',
+  )
+
+  const renamed = parseSessionText(
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: SESSION,
+        cwd: '/tmp/demo',
+      }),
+      JSON.stringify({
+        type: 'session_info',
+        id: SESSION,
+        parentId: null,
+        timestamp: '2026-09-11T14:25:16.803Z',
+        name: 'first name',
+      }),
+      JSON.stringify({
+        type: 'session_info',
+        id: SESSION,
+        parentId: null,
+        timestamp: '2026-09-11T14:25:17.000Z',
+        name: 'latest name',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'aabbccdd',
+        message: { role: 'user', content: [{ type: 'text', text: 'hello world' }] },
+      }),
+    ].join('\n'),
+    null,
+    null,
+  )
+  eq('latest session_info.name wins', renamed.title, 'latest name')
+  eq('latest session_info fills name field', renamed.name, 'latest name')
 
   const reparsed = parseSessionFile(FIXTURE)
   check(
@@ -577,7 +651,7 @@ console.log('\n— scanOnce retries a failed file without another append —')
 }
 
 // =============================================================================
-// Fold-parity with den-server parser (optional; worktree only)
+// Fold-parity with den-server parser (fails if the adapter cannot be imported)
 // =============================================================================
 console.log('\n— fold-parity with piTurnsFromLines —')
 {
@@ -593,11 +667,15 @@ console.log('\n— fold-parity with piTurnsFromLines —')
   try {
     loaded = (await import(denPath)) as typeof loaded
   } catch (err) {
-    console.log(
-      `↷ skip fold-parity (den-server parser not importable: ${err instanceof Error ? err.message : String(err)})`,
+    check(
+      'fold-parity imports den-server pi adapter (@rivetos/types resolvable)',
+      false,
+      err instanceof Error ? err.message : String(err),
     )
   }
-  if (loaded?.piTurnsFromLines) {
+  if (!loaded?.piTurnsFromLines) {
+    if (loaded) check('fold-parity: piTurnsFromLines exported', false)
+  } else {
     const text = readFileSync(FIXTURE, 'utf8')
     const objects: Record<string, unknown>[] = []
     for (const line of text.split('\n')) {
@@ -616,7 +694,11 @@ console.log('\n— fold-parity with piTurnsFromLines —')
     eq('ingest user text matches folded user text', ingestUser[0]?.content, foldedUser[0]?.text)
     const foldedAsst = turns.find((t) => t.role === 'assistant')
     eq('folded assistant text', foldedAsst?.text, 'here they are')
-    eq('ingest reasoning matches folded thinking', parsed.messages.find((m) => m.role === 'assistant')?.reasoning, foldedAsst?.thinking)
+    eq(
+      'ingest reasoning matches folded thinking',
+      parsed.messages.find((m) => m.role === 'assistant')?.reasoning,
+      foldedAsst?.thinking,
+    )
   }
 }
 

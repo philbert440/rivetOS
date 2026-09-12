@@ -6,20 +6,22 @@
  * Pi has no Claude/kimi-style lifecycle hooks. The capture source is the
  * append-only session file the CLI writes:
  *
- *   ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<uuid-v7>.jsonl
+ *   ~/.pi/agent/sessions/<encoded-cwd>/<ISO-ts>_<id>.jsonl
  *
  * encoded cwd: `/home/rivet` → `--home-rivet--`. A custom `--session-dir` is
- * flat (`<dir>/<ts>_<uuid>.jsonl`, no cwd bucket).
+ * flat (`<dir>/<ts>_<id>.jsonl`, no cwd bucket). `--session-id` may be any
+ * non-empty token, not only a UUID.
  *
  * A file watcher over that tree tails new lines, folds with the same rules as
  * den-server's `piTurnsFromLines` (copy, not import), and upserts
  * ros_conversations / ros_messages.
  *
  * Identity: agent='rivet-deepseek' (env `RIVETOS_CAPTURE_AGENT`),
- * channel='pi', session_key='pi:<uuid>'.
- * Dedup: `pi:<uuid>:<lineId>` (line `id` is 8-hex); messages without an id
- * use `pi:<uuid>:line:<index>`. Tool-call items on an assistant line append
+ * channel='pi', session_key='pi:<id>'.
+ * Dedup: `pi:<id>:<lineId>` (line `id` is 8-hex); messages without an id
+ * use `pi:<id>:line:<index>`. Tool-call items on an assistant line append
  * `:tool:<callId>` so they do not collide with the assistant row.
+ * Title: latest `session_info.name` (pi `-n`); else first user text.
  *
  * Truncation: 16K cap only when the row carries an absolute session path +
  * line offset so memory_get_full can re-read from disk.
@@ -49,12 +51,14 @@ export const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
 const WATCH_POLL_MS = 2000
 
-/** Native session id — UUID, any version (pi mints v7). */
+/** Native session id — UUID, any version (pi mints v7). `--session-id` may be any token. */
 export const PI_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-/** `<ISO-timestamp-with-dashes>_<uuid>.jsonl` inside a cwd bucket or flat dir. */
-export const PI_SESSION_FILE_RE =
-  /^(.+)_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i
+/** `<timestamp>_<id>.jsonl` inside a cwd bucket or flat dir. Id is any non-empty token. */
+export const PI_SESSION_FILE_RE = /^([^_]+)_(.+)\.jsonl$/i
+
+/** Paths already logged as skipped (non-matching *.jsonl). */
+const skippedSessionFiles = new Set<string>()
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,7 +147,8 @@ export function uuidFromSessionName(name: string): string | undefined {
 }
 
 export function isNativeSessionId(id: string): boolean {
-  return PI_NATIVE_RE.test(id) && !id.includes('/') && !id.includes('..')
+  if (PI_NATIVE_RE.test(id)) return true
+  return id.length > 0 && !id.includes('/') && !id.includes('\\') && !id.includes('..')
 }
 
 /**
@@ -361,13 +366,13 @@ export function parseSessionText(
       if (id && isNativeSessionId(id)) sessionId = id
       const cwdVal = asString(obj.cwd)
       if (cwdVal) cwd = cwdVal
-      const named = pickStr(obj, 'name', 'title')
-      if (named) sessionName = named
       continue
     }
 
-    if (type === 'name_change' || type === 'session_name') {
-      const named = pickStr(obj, 'name', 'title')
+    if (type === 'session_info') {
+      // Real pi 0.85.1 `-n` writes session_info.name (latest wins). The
+      // session line has no name; name_change / session_name are not on-disk.
+      const named = asString(obj.name)
       if (named) sessionName = named
       continue
     }
@@ -540,7 +545,13 @@ export function parseSessionFile(file: string, sessionIdHint?: string | null): P
 }
 
 function pushSessionFile(out: string[], full: string, name: string): void {
-  if (!PI_SESSION_FILE_RE.test(name)) return
+  if (!PI_SESSION_FILE_RE.test(name)) {
+    if (name.endsWith('.jsonl') && !skippedSessionFiles.has(full)) {
+      skippedSessionFiles.add(full)
+      log(`skip session file (name does not match <ts>_<id>.jsonl): ${full}`)
+    }
+    return
+  }
   try {
     if (fs.statSync(full).isFile()) out.push(full)
   } catch {
@@ -549,8 +560,8 @@ function pushSessionFile(out: string[], full: string, name: string): void {
 }
 
 /**
- * Every `*_ <uuid>.jsonl` under the sessions root. Accepts both the default
- * cwd-bucket layout and a flat `--session-dir`.
+ * Every `<ts>_<id>.jsonl` under the sessions root. Accepts both the default
+ * cwd-bucket layout and a flat `--session-dir`. Id is any non-empty token.
  */
 export function discoverSessionFiles(root: string): string[] {
   const out: string[] = []
