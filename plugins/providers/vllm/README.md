@@ -12,8 +12,8 @@ vLLM surface on top of vLLM's OpenAI-compatible server:
   a server-side `--reasoning-parser`).
 - Folds mid-conversation `system` messages into `user [SYSTEM NOTICE]` content
   (vLLM/Qwen/Llama chat templates reject them).
-- `/v1/models` probe that auto-selects the served model and its context window
-  when `model: default`.
+- Models probe that auto-selects the served model and its context window
+  when `model: default` (`<base><api_prefix>/models`, overridable via `models_url`).
 
 For llama.cpp's `llama-server`, use [`@rivetos/provider-llama-server`](../llama-server)
 instead.
@@ -24,7 +24,7 @@ instead.
 providers:
   vllm:
     base_url: http://localhost:8000      # trailing /v1 optional
-    model: default                       # auto-discovers from /v1/models
+    model: default                       # auto-discovers from <base><api_prefix>/models
     top_k: 40
     min_p: 0.05
     # api_key: ${VLLM_API_KEY}           # only if vLLM was started with --api-key
@@ -35,13 +35,32 @@ agents:
     local: true
 ```
 
+z.ai / GLM (coding endpoint has no `/v1` segment — `api_prefix: ""` is enough;
+the models listing is at `<base>/models`):
+
+```yaml
+providers:
+  vllm:
+    name: GLM (Z.ai)
+    base_url: https://api.z.ai/api/coding/paas/v4
+    api_prefix: ""
+    api_key: ${ZAI_API_KEY}
+    model: glm-5.3-flash
+```
+
+Use `models_url` only if the models listing lives somewhere other than
+`<base><api_prefix>/models`.
+
 Start a server with `vllm serve <model> --port 8000 [--reasoning-parser ...]
 [--enable-auto-tool-choice]`. The API key falls back to the `VLLM_API_KEY`
 environment variable.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `base_url` | string | **required** | vLLM server URL (`/v1` optional). |
+| `base_url` | string | **required** | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`). |
+| `api_prefix` | string | `"/v1"` | OpenAI-compat path prefix. `""` means none. |
+| `models_url` | string | — | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
+| `probe_models` | boolean | `true` | When `false`, skip the models probe and treat as available. |
 | `model` | string | `default` | Served model id; `default` auto-discovers. |
 | `api_key` | string | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set). |
 | `max_tokens` | number | `4096` | Maximum output tokens. |
@@ -51,7 +70,7 @@ environment variable.
 | `repetition_penalty` / `min_tokens` | number | — | vLLM extensions. |
 | `mm_processor_kwargs` / `chat_template_kwargs` / `extra_body` | object | — | vLLM passthroughs. |
 | `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
-| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot. |
+| `verify_model_on_init` | boolean | `false` | Reject when the pinned model is missing from the models listing. |
 | `context_window` / `max_output_tokens` | number | — | Runtime budgeting overrides. |
 | `name` | string | `vllm` | Display name in logs/errors. |
 
