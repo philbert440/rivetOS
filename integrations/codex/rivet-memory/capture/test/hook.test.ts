@@ -84,6 +84,14 @@ function createStub(): { client: Queryable; convs: Conv[]; msgs: Msg[] } {
   const client: Queryable = {
     async query(sql: string, params: unknown[] = []) {
       const s = sql.replace(/\s+/g, ' ').trim()
+      if (
+        String(sql).startsWith('SET lock_timeout') ||
+        String(sql).startsWith('RESET lock_timeout') ||
+        String(sql).startsWith('SELECT pg_advisory_lock(') ||
+        String(sql).startsWith('SELECT pg_advisory_unlock(')
+      ) {
+        return { rows: [], rowCount: 0 }
+      }
       if (s === 'BEGIN') {
         snapshot = { convs: convs.length, msgs: msgs.length }
         return { rows: [], rowCount: 0 }

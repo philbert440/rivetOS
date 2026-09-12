@@ -895,7 +895,15 @@ export async function removeLegacyCaptureWatcher(opts: {
   uid?: number
 }): Promise<LegacyWatcherRemoval> {
   const { unit, label } = LEGACY_CAPTURE_WATCHER[opts.id]
-  const unitPath = join(opts.home, '.config', 'systemd', 'user', unit)
+  // Same location rule as the setup scripts: $XDG_CONFIG_HOME/systemd/user when
+  // set, else ~/.config/systemd/user — check both so neither layer misses a unit.
+  const xdg = process.env.XDG_CONFIG_HOME
+  const unitCandidates = [
+    ...(xdg ? [join(xdg, 'systemd', 'user', unit)] : []),
+    join(opts.home, '.config', 'systemd', 'user', unit),
+  ]
+  const unitPath =
+    unitCandidates.find((p) => existsSync(p)) ?? unitCandidates[unitCandidates.length - 1]
   const plistPath = join(opts.home, 'Library', 'LaunchAgents', `${label}.plist`)
   let removed = false
 

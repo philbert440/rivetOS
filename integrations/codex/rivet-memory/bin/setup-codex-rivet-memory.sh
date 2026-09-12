@@ -356,6 +356,10 @@ if [ "$DO_REMOVE" -eq 1 ]; then
   fi
   print_trust_note
   echo
+  if [ "${REGISTRATION_INCOMPLETE:-0}" -eq 1 ]; then
+    echo "⚠️  Unregistration INCOMPLETE (see ❌ above) — rivet-memory hooks may still be active."
+    exit 3
+  fi
   echo "Done. Capture hooks unregistered."
   exit 0
 fi

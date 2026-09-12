@@ -4,22 +4,20 @@
  * moves backwards. The mkdir lock serializes ingests; the merge protects
  * an unlocked writer. Tests must be able to fail.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  acquireStateLock,
   emptyState,
   loadState,
   mergeState,
-  releaseStateLock,
   saveState,
   parseDelayMs,
+  claimPending,
   pendingQueuePath,
   queuePending,
   takePending,
-  withStateLock,
 } from '../src/opencode-memory-capture.ts'
 
 const dirs: string[] = []
@@ -82,39 +80,6 @@ describe('saveState / mergeState', () => {
   })
 })
 
-describe('state lock', () => {
-  it('second acquirer does not own the lock while the first holds it; release frees it', () => {
-    const file = tmpState()
-    const first = acquireStateLock(file)
-    expect(first.owned).toBe(true)
-    expect(existsSync(`${file}.lock`)).toBe(true)
-    releaseStateLock(first)
-    expect(existsSync(`${file}.lock`)).toBe(false)
-    const again = acquireStateLock(file)
-    expect(again.owned).toBe(true)
-    releaseStateLock(again)
-  })
-})
-
-describe('withStateLock', () => {
-  it('runs the callback when free and returns its value', async () => {
-    const file = tmpState()
-    const r = await withStateLock(async () => 'ran', file)
-    expect(r).toBe('ran')
-    expect(existsSync(`${file}.lock`)).toBe(false)
-  })
-
-  it('does not release a lock owned by another process', () => {
-    const file = tmpState()
-    const hold = acquireStateLock(file)
-    // another process reclaimed and re-stamped the dir with its pid
-    writeFileSync(path.join(`${file}.lock`, 'owner'), `${process.pid + 1}\n${Date.now()}\n`)
-    releaseStateLock(hold)
-    expect(existsSync(`${file}.lock`)).toBe(true)
-    rmSync(`${file}.lock`, { recursive: true, force: true })
-  })
-})
-
 describe('pending queue', () => {
   it('queues, dedupes by key, and clears on take', () => {
     const file = tmpState()
@@ -126,6 +91,24 @@ describe('pending queue', () => {
     expect(taken.map((e) => e.sessionId)).toEqual(['ses_a', 'ses_b'])
     expect(existsSync(pendingQueuePath(file))).toBe(false)
     expect(takePending(file, 'sessionId')).toEqual([])
+  })
+})
+
+describe('claimPending', () => {
+  it('claims by rename, keeps late appends for the next holder, and release re-queues the batch', () => {
+    const file = tmpState()
+    queuePending(file, { sessionId: 'ses_a' })
+    const claim = claimPending(file, 'sessionId')
+    expect(claim.entries.map((e) => e.sessionId)).toEqual(['ses_a'])
+    // an append that races the claim lands in a fresh queue file
+    queuePending(file, { sessionId: 'ses_b' })
+    expect(existsSync(pendingQueuePath(file))).toBe(true)
+    // the holder failed → its batch goes back to the head of the queue
+    claim.release()
+    const again = claimPending(file, 'sessionId')
+    expect(again.entries.map((e) => e.sessionId)).toEqual(['ses_a', 'ses_b'])
+    again.done()
+    expect(existsSync(pendingQueuePath(file))).toBe(false)
   })
 })
 

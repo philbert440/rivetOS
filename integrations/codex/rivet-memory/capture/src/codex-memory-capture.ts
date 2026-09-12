@@ -942,22 +942,33 @@ export function queuePending(stateFile: string, entry: Record<string, unknown>):
   }
 }
 
-/** Read + clear the queue (call only while holding the state lock). Dedupes on `key`. */
-export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
-  const file = pendingQueuePath(stateFile)
-  let raw: string
+export interface PendingClaim {
+  entries: Record<string, unknown>[]
+  done: () => void
+  release: () => void
+}
+
+/** Claim the queue by ATOMIC RENAME (appends that race the claim land in a new
+ *  queue file for the next holder), dedupe on `key`, and hand back a batch that
+ *  is only dropped once the caller reports success. Call while holding the
+ *  state lock. */
+export function claimPending(stateFile: string, key: string): PendingClaim {
+  const queue = pendingQueuePath(stateFile)
+  const claimed = `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`
+  const none: PendingClaim = { entries: [], done: () => {}, release: () => {} }
   try {
-    raw = fs.readFileSync(file, 'utf8')
+    fs.renameSync(queue, claimed)
   } catch {
-    return []
+    return none
   }
+  let raw = ''
   try {
-    fs.unlinkSync(file)
+    raw = fs.readFileSync(claimed, 'utf8')
   } catch {
-    // ignore
+    return none
   }
   const seen = new Set<string>()
-  const out: Record<string, unknown>[] = []
+  const entries: Record<string, unknown>[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
     try {
@@ -966,209 +977,133 @@ export function takePending(stateFile: string, key: string): Record<string, unkn
       const k = typeof v === 'string' ? v : ''
       if (!k || seen.has(k)) continue
       seen.add(k)
-      out.push(parsed)
+      entries.push(parsed)
     } catch {
       // skip a bad line
     }
   }
-  return out
+  const drop = (): void => {
+    try {
+      fs.unlinkSync(claimed)
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    entries,
+    done: drop,
+    release: () => {
+      try {
+        let rest = ''
+        try {
+          rest = fs.readFileSync(queue, 'utf8')
+        } catch {
+          rest = ''
+        }
+        fs.writeFileSync(queue, raw + rest)
+      } catch {
+        // ignore
+      }
+      drop()
+    },
+  }
+}
+
+/** Test/inspection helper: read + clear the queue without a claim protocol. */
+export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
+  const claim = claimPending(stateFile, key)
+  claim.done()
+  return claim.entries
 }
 
 /** One-hop retry delay when an ingest was skipped on a busy lock. */
 export const RETRY_HOP_DELAY_MS = 15_000
-export const STATE_LOCK_STALE_MS = 120_000
-export const STATE_LOCK_WAIT_MS = 30_000
-export const STATE_LOCK_POLL_MS = 100
-
-export interface StateLockOpts {
-  staleMs?: number
-  waitMs?: number
-  pollMs?: number
-}
-
-export interface StateLockHandle {
-  dir: string
-  held: boolean
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms)
   })
 }
 
-function lockDirFor(stateFile: string): string {
-  return `${stateFile}.lock`
+/** Bounded wait for the per-harness state lock (a Postgres advisory lock). */
+export const STATE_LOCK_WAIT_MS = 30_000
+
+// ---------------------------------------------------------------------------
+// Per-harness state lock = Postgres session-level advisory lock on the client
+// that does the ingest. True mutual exclusion across processes, no stale-lock
+// reclamation (the server releases it when a holder's connection drops),
+// bounded wait via lock_timeout. A run that cannot take it is SKIPPED (null).
+// ---------------------------------------------------------------------------
+
+export function stateLockKey(stateFile = captureStatePath()): string {
+  return `rivetos-capture-state:${os.hostname()}:${path.resolve(stateFile)}`
 }
 
-function writeLockOwner(dir: string): void {
-  fs.writeFileSync(
-    path.join(dir, 'owner.json'),
-    `${JSON.stringify({ pid: process.pid, ts: Date.now() })}\n`,
-  )
+function isLockTimeout(err: unknown): boolean {
+  const code = (err as { code?: unknown }).code
+  const msg = err instanceof Error ? err.message : String(err)
+  return code === '55P03' || /lock timeout|lock_not_available/i.test(msg)
 }
 
-function readLockStamp(dir: string): number | null {
-  try {
-    const raw = fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')
-    const parsed = JSON.parse(raw) as { ts?: unknown }
-    if (typeof parsed.ts === 'number' && Number.isFinite(parsed.ts)) return parsed.ts
-  } catch {
-    // fall through to directory mtime
-  }
-  try {
-    return fs.statSync(dir).mtimeMs
-  } catch {
-    return null
-  }
-}
-
-function lockOwnerPid(dir: string): number | null {
-  try {
-    const raw = fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')
-    const parsed = JSON.parse(raw) as { pid?: unknown }
-    return typeof parsed.pid === 'number' && Number.isFinite(parsed.pid) ? parsed.pid : null
-  } catch {
-    return null
-  }
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
-/** Stale = older than the threshold AND the recorded owner is not a live
- *  process (a slow live backfill keeps its lock however long it runs). */
-function lockIsStale(dir: string, staleMs: number): boolean {
-  const ts = readLockStamp(dir)
-  if (ts !== null && Date.now() - ts <= staleMs) return false
-  const owner = lockOwnerPid(dir)
-  if (owner !== null && pidAlive(owner)) return false
-  return true
-}
-
-/** Reclaim a stale lock atomically: rename it to a private tombstone (exactly
- *  one reclaimer wins the rename), then verify the tombstone still holds the
- *  dead/expired owner we observed. If it holds a fresh live owner instead —
- *  another process re-acquired between our check and the rename — put it back
- *  and yield. Returns true when the stale lock is gone and we may mkdir. */
-function reclaimStaleLock(dir: string): boolean {
-  const observedOwner = lockOwnerPid(dir)
-  const tomb = `${dir}.reclaim.${String(process.pid)}.${String(Date.now())}`
-  try {
-    fs.renameSync(dir, tomb)
-  } catch {
-    return false // someone else reclaimed (or released) first
-  }
-  const tombOwner = lockOwnerPid(tomb)
-  const fresh = tombOwner !== null && tombOwner !== observedOwner && pidAlive(tombOwner)
-  if (fresh) {
-    try {
-      fs.renameSync(tomb, dir) // give it back
-    } catch {
-      removeLockDir(tomb) // the slot was re-taken meanwhile; nothing else to restore
-    }
-    return false
-  }
-  removeLockDir(tomb)
-  return true
-}
-
-function tryAcquireLock(dir: string): 'acquired' | 'exists' | 'error' {
-  try {
-    fs.mkdirSync(dir)
-    writeLockOwner(dir)
-    return 'acquired'
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return 'exists'
-    log(`state lock mkdir failed: ${err instanceof Error ? err.message : String(err)}`)
-    return 'error'
-  }
-}
-
-function removeLockDir(dir: string): void {
-  try {
-    fs.rmSync(dir, { recursive: true, force: true })
-  } catch {
-    // ignore
-  }
-}
-
-export async function acquireStateLock(
-  stateFile: string,
-  opts: StateLockOpts = {},
-): Promise<StateLockHandle> {
-  const dir = lockDirFor(stateFile)
-  try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
-  } catch {
-    // a missing/unwritable parent surfaces as 'error' from tryAcquireLock
-  }
-  const staleMs = opts.staleMs ?? STATE_LOCK_STALE_MS
-  const waitMs = opts.waitMs ?? STATE_LOCK_WAIT_MS
-  const pollMs = opts.pollMs ?? STATE_LOCK_POLL_MS
-  const deadline = Date.now() + waitMs
-  while (true) {
-    const result = tryAcquireLock(dir)
-    if (result === 'acquired') return { dir, held: true }
-    if (result === 'error') {
-      log(`state lock: cannot create ${dir}; treating as busy`)
-      return { dir, held: false }
-    }
-    if (lockIsStale(dir, staleMs) && Date.now() < deadline) {
-      if (reclaimStaleLock(dir)) log(`state lock stale (${dir}); reclaimed`)
-      await sleep(pollMs)
-      continue
-    }
-    if (Date.now() >= deadline) {
-      log(`state lock timeout for ${dir}`)
-      return { dir, held: false }
-    }
-    await sleep(pollMs)
-  }
-}
-
-/** Release only when the recorded owner is us; a missing stamp is NOT permission. */
-export function releaseStateLock(handle: StateLockHandle): void {
-  if (!handle.held) return
-  if (lockOwnerPid(handle.dir) === process.pid) removeLockDir(handle.dir)
-}
-
-/** Run `fn` under the state lock; when the bounded wait expires the work is
- *  SKIPPED (null) — the persistence critical section never runs unowned; the
- *  next hook retries. */
 export async function withStateLock<T>(
-  stateFile: string,
+  client: Queryable,
   fn: () => Promise<T>,
-  opts: StateLockOpts = {},
+  stateFile = captureStatePath(),
+  waitMs = STATE_LOCK_WAIT_MS,
 ): Promise<T | null> {
-  const handle = await acquireStateLock(stateFile, opts)
-  if (!handle.held) {
-    log(`state lock busy (${handle.dir}); skipping — the next hook retries`)
+  const key = stateLockKey(stateFile)
+  try {
+    await client.query(`SET lock_timeout = ${String(Math.max(1, Math.floor(waitMs)))}`)
+    await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
+  } catch (err) {
+    if (isLockTimeout(err)) {
+      log(`state lock busy (${key}); skipping this run — the next hook retries`)
+    } else {
+      log(`state lock unavailable (${err instanceof Error ? err.message : String(err)}); skipping`)
+    }
     return null
   }
   try {
     return await fn()
   } finally {
-    releaseStateLock(handle)
+    try {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key])
+    } catch {
+      // connection gone → the server already released it
+    }
+    try {
+      await client.query('RESET lock_timeout')
+    } catch {
+      // ignore
+    }
   }
 }
 
 /** `--stamp-installed`: record hookInstalledAt under the state lock (setup
  *  scripts must not race detached workers with an unlocked write). */
 export async function runStampInstalled(stateFile = captureStatePath()): Promise<void> {
-  await withStateLock(stateFile, () => {
+  const stamp = (): void => {
     const st = loadCaptureState(stateFile)
     const now = new Date().toISOString()
     saveCaptureState({ ...st, hookInstalledAt: st.hookInstalledAt ?? now }, stateFile)
     console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${stateFile}`)
-    return Promise.resolve()
-  })
+  }
+  try {
+    const r = await withPool((client) =>
+      withStateLock(
+        client,
+        () => {
+          stamp()
+          return Promise.resolve(true)
+        },
+        stateFile,
+      ),
+    )
+    if (r === null) stamp()
+  } catch (err) {
+    // no database from setup (first install before the env is wired): merged atomic write
+    log(`stamp-installed without db lock: ${err instanceof Error ? err.message : String(err)}`)
+    stamp()
+  }
 }
 
 /** Apply this run's cursor/session fields on top of `base`. Cursors never regress. */
@@ -1433,30 +1368,53 @@ export async function runBackfill(
   if (delayMs > 0) await sleep(delayMs)
   const root = sessionsDir ?? codexSessionsDir()
   const source = typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
-  await withStateLock(stateFile, async () => {
-    takePending(stateFile, 'file') // a full scan covers every queued file
-    const persisted = loadCaptureState(stateFile)
-    const state = stateToWatcher(persisted)
-    const summary = await withPool((client) =>
-      scanOnce(root, client, state, true, { days, triggerEvent: source }),
-    )
-    const latest = loadCaptureState(stateFile)
-    const next = mergeCaptureState(latest, {
-      lastIngestAt: new Date().toISOString(),
-      lastIngestSource: source,
-      files: summary.files,
-      inserted: summary.inserted,
-      skipped: summary.skipped,
-      cursors: watcherToCursors(state),
-    })
-    saveCaptureState(next, stateFile)
-    log(
-      `backfill ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
-    )
-    console.log(
-      `codex-memory-capture --backfill: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
-    )
-  })
+  const done = await withPool((client) =>
+    withStateLock(
+      client,
+      async () => {
+        // queued files are ingested explicitly (a days-filtered scan may not cover them)
+        const claim = claimPending(stateFile, 'file')
+        try {
+          for (const p of claim.entries) {
+            await ingestTranscriptFile(p.file as string, {
+              client,
+              stateFile,
+              alreadyLocked: true,
+              closeSession: p.closeSession === true,
+              sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+              triggerEvent: 'backfill:pending',
+            })
+          }
+          claim.done()
+        } catch (err) {
+          claim.release()
+          throw err
+        }
+        const persisted = loadCaptureState(stateFile)
+        const state = stateToWatcher(persisted)
+        const summary = await scanOnce(root, client, state, true, { days, triggerEvent: source })
+        const latest = loadCaptureState(stateFile)
+        const next = mergeCaptureState(latest, {
+          lastIngestAt: new Date().toISOString(),
+          lastIngestSource: source,
+          files: summary.files,
+          inserted: summary.inserted,
+          skipped: summary.skipped,
+          cursors: watcherToCursors(state),
+        })
+        saveCaptureState(next, stateFile)
+        log(
+          `backfill ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
+        )
+        console.log(
+          `codex-memory-capture --backfill: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
+        )
+        return true
+      },
+      stateFile,
+    ),
+  )
+  if (done === null) log('backfill skipped: state lock busy')
 }
 
 /** @deprecated alias of runBackfill */
@@ -1469,7 +1427,7 @@ export interface HookHandleOpts {
   stateFile?: string
   sessionsDir?: string
   delayMs?: number
-  lock?: StateLockOpts
+  lockWaitMs?: number
 }
 
 export interface IngestFileOpts {
@@ -1478,7 +1436,7 @@ export interface IngestFileOpts {
   client: Queryable
   stateFile?: string
   delayMs?: number
-  lock?: StateLockOpts
+  lockWaitMs?: number
   closeSession?: boolean
   sessionId?: string | null
   triggerEvent?: string
@@ -1527,18 +1485,26 @@ export async function ingestTranscriptFile(
     const finalize = Boolean(opts.closeSession)
     const body = async (): Promise<HookHandleResult> => {
       if (!opts.alreadyLocked) {
-        // drain files that earlier could not take the lock (we hold it now)
-        for (const p of takePending(stateFile, 'file')) {
-          const f = p.file as string
-          if (path.resolve(f) === abs) continue
-          await ingestTranscriptFile(f, {
-            ...opts,
-            alreadyLocked: true,
-            delayMs: 0,
-            closeSession: p.closeSession === true,
-            sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
-            triggerEvent: typeof p.event === 'string' ? `${p.event}:pending` : 'pending',
-          })
+        // drain files that earlier could not take the lock (claimed by rename;
+        // released back to the queue if this run fails)
+        const claim = claimPending(stateFile, 'file')
+        try {
+          for (const p of claim.entries) {
+            const f = p.file as string
+            if (path.resolve(f) === abs) continue
+            await ingestTranscriptFile(f, {
+              ...opts,
+              alreadyLocked: true,
+              delayMs: 0,
+              closeSession: p.closeSession === true,
+              sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+              triggerEvent: typeof p.event === 'string' ? `${p.event}:pending` : 'pending',
+            })
+          }
+          claim.done()
+        } catch (err) {
+          claim.release()
+          throw err
         }
       }
       const cursor = cursorFromState(loadCaptureState(stateFile), abs)
@@ -1594,7 +1560,7 @@ export async function ingestTranscriptFile(
       }
     }
     if (opts.alreadyLocked) return await body()
-    const locked = await withStateLock(stateFile, body, opts.lock)
+    const locked = await withStateLock(opts.client, body, stateFile, opts.lockWaitMs)
     return locked ?? { ...empty, lockBusy: true }
   } catch (err) {
     log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -1639,7 +1605,7 @@ export async function handleHookPayload(
       client: opts.client,
       stateFile: opts.stateFile,
       delayMs: opts.delayMs,
-      lock: opts.lock,
+      lockWaitMs: opts.lockWaitMs,
       closeSession: finalize,
       sessionId,
       triggerEvent: source,
