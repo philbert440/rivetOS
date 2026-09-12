@@ -39,9 +39,10 @@ describe('HARNESS_BINARIES', () => {
 })
 
 describe('WATCHER_CAPTURE_HARNESSES', () => {
-  it('covers codex and opencode', () => {
-    expect(WATCHER_CAPTURE_HARNESSES).toEqual(['codex', 'opencode'])
+  it('covers codex, pi and opencode', () => {
+    expect(WATCHER_CAPTURE_HARNESSES).toEqual(['codex', 'pi', 'opencode'])
     expect(isWatcherCaptureHarness('codex')).toBe(true)
+    expect(isWatcherCaptureHarness('pi')).toBe(true)
     expect(isWatcherCaptureHarness('opencode')).toBe(true)
     expect(isWatcherCaptureHarness('claude-code')).toBe(false)
   })
