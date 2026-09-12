@@ -79,6 +79,8 @@ import { findRoot } from './plugins-sync.js'
 import {
   CODEX_LAUNCHD_LABEL,
   CODEX_WATCHER_UNIT,
+  PI_LAUNCHD_LABEL,
+  PI_WATCHER_UNIT,
   artefactConfigHomes,
   kimiConfigHomes,
   mcpJsonHasRivetos,
@@ -1606,8 +1608,17 @@ function pluginMarker(h: DetectedHarness, home: string): boolean {
     case 'opencode':
       return opencodePluginInstalled(h.configHome)
     case 'pi':
-      return false
+      return piPluginInstalled(home)
   }
+}
+
+/** Installed when the watcher has written its doctor marker, or the
+ *  systemd/launchd unit file is present (enabled by `plugins install`). */
+function piPluginInstalled(home: string): boolean {
+  if (existsSync(join(home, '.rivetos', 'pi-capture-state.json'))) return true
+  if (existsSync(join(home, '.config', 'systemd', 'user', PI_WATCHER_UNIT))) return true
+  if (existsSync(join(home, 'Library', 'LaunchAgents', `${PI_LAUNCHD_LABEL}.plist`))) return true
+  return false
 }
 
 async function claudePluginListed(
@@ -1639,10 +1650,13 @@ export async function captureWatcherStatus(
   exec: typeof execFileAsync,
   platform: NodeJS.Platform,
   uid?: number,
+  kind: 'codex' | 'pi' = 'codex',
 ): Promise<CaptureWatcherHealth> {
+  const launchdLabel = kind === 'pi' ? PI_LAUNCHD_LABEL : CODEX_LAUNCHD_LABEL
+  const unit = kind === 'pi' ? PI_WATCHER_UNIT : CODEX_WATCHER_UNIT
   if (platform === 'darwin') {
     const id = uid ?? process.getuid?.() ?? 0
-    const r = await exec('launchctl', ['print', `gui/${id}/${CODEX_LAUNCHD_LABEL}`], {
+    const r = await exec('launchctl', ['print', `gui/${id}/${launchdLabel}`], {
       timeoutMs: 5_000,
     })
     if (r.code !== 0) return 'inactive'
@@ -1652,7 +1666,7 @@ export async function captureWatcherStatus(
   if (platform === 'linux') {
     const r = await exec(
       'systemctl',
-      ['--user', 'show', '-p', 'NRestarts,ActiveState', CODEX_WATCHER_UNIT],
+      ['--user', 'show', '-p', 'NRestarts,ActiveState', unit],
       { timeoutMs: 5_000 },
     )
     const { nRestarts, activeState } = parseSystemctlShow(`${r.stdout}\n${r.stderr}`)
@@ -1718,8 +1732,13 @@ export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<Ch
     }
     let extra = ''
     let watcher: CaptureWatcherHealth | undefined
-    if (h.id === 'codex') {
-      watcher = await captureWatcherStatus(exec, probe.platform ?? process.platform, probe.uid)
+    if (h.id === 'codex' || h.id === 'pi') {
+      watcher = await captureWatcherStatus(
+        exec,
+        probe.platform ?? process.platform,
+        probe.uid,
+        h.id,
+      )
       extra = ` — capture watcher: ${watcher}`
     }
     const watcherBroken = watcher === 'inactive' || watcher === 'crash-looping'

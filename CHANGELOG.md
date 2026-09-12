@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Harness integrations
 
 - `opencode` harness (id `opencode`, provider `opencode-cli`, roster `opencode`) surfaced in RivetHub web, Android, and docs. Default backend: z.ai GLM (Anthropic-compatible).
+- `pi` memory capture (`integrations/pi/rivet-memory`): v3 session jsonl watcher under `agent=rivet-deepseek` / `channel=pi`, systemd user unit `pi-memory-capture.service` / launchd `dev.rivetos.pi-capture`, wired into `rivetos plugins install` and doctor.
+
 ### Harness
 
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).

@@ -1,0 +1,665 @@
+/**
+ * Smoke + unit tests for pi-memory-capture.
+ *
+ * Layers:
+ *   1. Pure parser against a synthetic v3 session fixture (den-adapter shape).
+ *      No DB required — user + assistant + tool, runtime events skipped.
+ *   2. Identity: session_key, event ids (pi:<uuid>:<lineId> vs line fallback).
+ *   3. In-memory stub pool — a session lands as user+assistant+tool
+ *      with truncation pointers. Stands in for sqlite/pg-lite; this package
+ *      does not add deps beyond kimi's (pg).
+ *   4. File-cursor tailing (incomplete last line stays pending).
+ *   5. Watch tick over a temp cwd-bucket tree + a flat --session-dir.
+ *   6. Fold-parity against den-server `piTurnsFromLines` when that module
+ *      is importable from this worktree.
+ */
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  rmSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import {
+  parseSessionText,
+  parseSessionFile,
+  uuidFromSessionName,
+  deriveSessionKey,
+  eventIdFromLine,
+  capForStorage,
+  consumeNewLines,
+  ingestMessages,
+  createWatcherState,
+  scanOnce,
+  watchTick,
+  encodePiCwd,
+  captureAgent,
+  CAPTURE_AGENT,
+  CAPTURE_CHANNEL,
+  MAX_CONTENT,
+  type FileCursor,
+  type Queryable,
+  type PendingMessage,
+} from '../src/pi-memory-capture.ts'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const FIXTURE = path.join(
+  __dirname,
+  'fixtures',
+  'sample-session',
+  '2026-09-11T14-25-16-803Z_01a091f5-6deb-723d-8737-eb83070c9154.jsonl',
+)
+
+const SESSION = '01a091f5-6deb-723d-8737-eb83070c9154'
+
+let failed = 0
+function check(name: string, cond: boolean, detail = ''): void {
+  if (cond) console.log(`✓ ${name}`)
+  else {
+    console.error(`✗ ${name}${detail ? ': ' + detail : ''}`)
+    failed++
+  }
+}
+function eq(name: string, actual: unknown, expected: unknown): void {
+  check(name, Object.is(actual, expected), `expected ${String(expected)}, got ${String(actual)}`)
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+console.log('Running Pi Memory Capture tests...\n')
+
+// =============================================================================
+// Identity constants
+// =============================================================================
+console.log('— identity constants —')
+{
+  eq('CAPTURE_AGENT is rivet-deepseek', CAPTURE_AGENT, 'rivet-deepseek')
+  eq('CAPTURE_CHANNEL is pi', CAPTURE_CHANNEL, 'pi')
+  eq('captureAgent default', captureAgent(), 'rivet-deepseek')
+  const prev = process.env.RIVETOS_CAPTURE_AGENT
+  process.env.RIVETOS_CAPTURE_AGENT = 'rivet-test'
+  eq('captureAgent honours RIVETOS_CAPTURE_AGENT', captureAgent(), 'rivet-test')
+  if (prev === undefined) delete process.env.RIVETOS_CAPTURE_AGENT
+  else process.env.RIVETOS_CAPTURE_AGENT = prev
+  eq('deriveSessionKey prefixes pi:', deriveSessionKey(SESSION), `pi:${SESSION}`)
+  eq(
+    'uuidFromSessionName reads the trailing uuid',
+    uuidFromSessionName(path.basename(FIXTURE)),
+    SESSION,
+  )
+  eq(
+    'eventIdFromLine prefers line id',
+    eventIdFromLine(SESSION, 'aa11bb22', 4),
+    `pi:${SESSION}:aa11bb22`,
+  )
+  eq(
+    'eventIdFromLine falls back to line index',
+    eventIdFromLine(SESSION, null, 7),
+    `pi:${SESSION}:line:7`,
+  )
+  eq('encodePiCwd /home/rivet', encodePiCwd('/home/rivet'), '--home-rivet--')
+  eq('encodePiCwd /tmp/demo', encodePiCwd('/tmp/demo'), '--tmp-demo--')
+}
+
+// =============================================================================
+// Parser
+// =============================================================================
+console.log('\n— parseSessionText (fixture) —')
+{
+  const text = readFileSync(FIXTURE, 'utf8')
+  const parsed = parseSessionText(text, null, FIXTURE)
+
+  eq('session id from session line', parsed.sessionId, SESSION)
+  eq('cwd from session line', parsed.cwd, '/tmp/demo')
+  eq('title is the -n name', parsed.title, 'demo session')
+  eq('name field captured', parsed.name, 'demo session')
+  eq('model from model_change', parsed.model, 'deepseek-v4-flash')
+  eq('provider from model_change', parsed.provider, 'deepseek')
+  eq('thinkingLevel from thinking_level_change', parsed.thinkingLevel, 'high')
+  eq('malformed non-json line counted', parsed.malformed, 1)
+
+  const byRole: Record<string, number> = {}
+  for (const m of parsed.messages) byRole[m.role] = (byRole[m.role] ?? 0) + 1
+  eq('one user row', byRole.user, 1)
+  eq('one assistant row', byRole.assistant, 1)
+  eq('tool rows include call + result', byRole.tool, 2)
+
+  const user = parsed.messages.find((m) => m.role === 'user')
+  eq('user content', user?.content, 'list the files')
+  eq('user event id is scoped line id', user?.eventId, `pi:${SESSION}:aa11bb22`)
+  check(
+    'user row points at the session file',
+    user?.extra?.session_jsonl_path === FIXTURE,
+    `path=${String(user?.extra?.session_jsonl_path)}`,
+  )
+  check('user row has a line index', typeof user?.lineIndex === 'number')
+
+  const asst = parsed.messages.find((m) => m.role === 'assistant')
+  eq('assistant content is text only', asst?.content, 'here they are')
+  eq('thinking lives in reasoning field', asst?.reasoning, 'I should list')
+  eq('assistant event id', asst?.eventId, `pi:${SESSION}:cc33dd44`)
+  check(
+    'assistant usage from message.usage',
+    isRecord(asst?.extra?.usage) && (asst?.extra?.usage as { input?: number }).input === 100,
+    `usage=${JSON.stringify(asst?.extra?.usage)}`,
+  )
+  eq('assistant model from model_change', asst?.extra?.model, 'deepseek-v4-flash')
+
+  const call = parsed.messages.find((m) => m.eventId === `pi:${SESSION}:cc33dd44:tool:t1`)
+  eq('tool call content', call?.content, '[tool] bash')
+  eq('tool call name', call?.toolName, 'bash')
+  check(
+    'tool args parsed from object',
+    isRecord(call?.toolArgs) && (call?.toolArgs as { command?: string }).command === 'ls',
+    `args=${JSON.stringify(call?.toolArgs)}`,
+  )
+
+  const result = parsed.messages.find((m) => m.eventId === `pi:${SESSION}:ee55ff66`)
+  eq('tool result content', result?.content, '[tool-result] bash')
+  eq('tool result body', result?.toolResult, 'a.txt')
+  eq('tool result name paired via toolCallId', result?.toolName, 'bash')
+
+  check(
+    'runtime agent_start skipped',
+    (parsed.skipped['type:agent_start'] ?? 0) >= 1,
+    `skipped=${JSON.stringify(parsed.skipped)}`,
+  )
+
+  const untitled = parseSessionText(
+    [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: SESSION,
+        cwd: '/tmp/demo',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'aabbccdd',
+        message: { role: 'user', content: [{ type: 'text', text: 'hello world' }] },
+      }),
+    ].join('\n'),
+    null,
+    null,
+  )
+  eq('title falls back to first user text', untitled.title, 'hello world')
+
+  const reparsed = parseSessionFile(FIXTURE)
+  check(
+    'parser is deterministic',
+    JSON.stringify(reparsed.messages.map((m) => m.eventId)) ===
+      JSON.stringify(parsed.messages.map((m) => m.eventId)),
+  )
+}
+
+console.log('\n— capForStorage —')
+{
+  const small = capForStorage('hello', { sessionJsonlPath: '/x.jsonl', lineIndex: 0 })
+  eq('short text is not truncated', small.truncated, false)
+  const big = 'x'.repeat(MAX_CONTENT + 50)
+  const capped = capForStorage(big, { sessionJsonlPath: '/x.jsonl', lineIndex: 3 })
+  check(
+    'long text with pointer is truncated',
+    capped.truncated && capped.stored.endsWith('…[truncated]'),
+  )
+  const uncapped = capForStorage(big, { sessionJsonlPath: null, lineIndex: null })
+  check(
+    'long text without pointer is left full (deepseek lesson)',
+    uncapped.uncapped === true && uncapped.stored.length === big.length,
+  )
+}
+
+function stubClient(): {
+  client: Queryable
+  convs: Array<{
+    id: string
+    session_key: string
+    agent: string
+    channel: string
+    title: string
+    active: boolean
+  }>
+  msgs: Array<{
+    id: string
+    conversation_id: string
+    agent: string
+    channel: string
+    role: string
+    content: string
+    tool_name: string | null
+    tool_result: string | null
+    metadata: Record<string, unknown>
+  }>
+  storedArgs: Map<string, unknown>
+  setFailEvent: (id: string | undefined) => void
+} {
+  type Conv = {
+    id: string
+    session_key: string
+    agent: string
+    channel: string
+    title: string
+    active: boolean
+  }
+  type Msg = {
+    id: string
+    conversation_id: string
+    agent: string
+    channel: string
+    role: string
+    content: string
+    tool_name: string | null
+    tool_result: string | null
+    metadata: Record<string, unknown>
+  }
+
+  const convs: Conv[] = []
+  const msgs: Msg[] = []
+  let ids = 0
+  let snapshot: { convs: number; msgs: number } | undefined
+  let failEvent: string | undefined
+  const storedArgs = new Map<string, unknown>()
+
+  const client: Queryable = {
+    async query(sql: string, params: unknown[] = []) {
+      const s = sql.replace(/\s+/g, ' ').trim()
+      if (s === 'BEGIN') {
+        snapshot = { convs: convs.length, msgs: msgs.length }
+        return { rows: [], rowCount: 0 }
+      }
+      if (s === 'ROLLBACK' && snapshot) {
+        convs.length = snapshot.convs
+        msgs.length = snapshot.msgs
+        snapshot = undefined
+        return { rows: [], rowCount: 0 }
+      }
+      if (s === 'COMMIT') {
+        snapshot = undefined
+        return { rows: [], rowCount: 0 }
+      }
+      if (s.startsWith('SELECT pg_advisory_xact_lock')) {
+        return { rows: [], rowCount: 0 }
+      }
+      if (s.startsWith('SELECT id FROM ros_conversations')) {
+        const row = convs.find((c) => c.session_key === params[0] && c.agent === params[1])
+        return { rows: row ? [{ id: row.id }] : [], rowCount: row ? 1 : 0 }
+      }
+      if (s.startsWith('INSERT INTO ros_conversations')) {
+        const found = convs.find(
+          (c) => c.session_key === String(params[0]) && c.agent === String(params[1]),
+        )
+        if (found) return { rows: [{ id: found.id, created: false }], rowCount: 1 }
+        const row: Conv = {
+          id: `conv-${String(++ids)}`,
+          session_key: String(params[0]),
+          agent: String(params[1]),
+          channel: String(params[2]),
+          title: String(params[3]),
+          active: Boolean(params[5]),
+        }
+        convs.push(row)
+        return { rows: [{ id: row.id, created: true }], rowCount: 1 }
+      }
+      if (s.startsWith("SELECT metadata->>'event_id'")) {
+        const rows = msgs
+          .filter((m) => m.conversation_id === params[0] && m.metadata.event_id)
+          .map((m) => ({ e: String(m.metadata.event_id) }))
+        return { rows, rowCount: rows.length }
+      }
+      if (s.startsWith('SELECT 1 FROM ros_messages')) {
+        const hit = msgs.some(
+          (m) => m.conversation_id === params[0] && m.metadata.event_id === params[1],
+        )
+        return { rows: hit ? [{ '?column?': 1 }] : [], rowCount: hit ? 1 : 0 }
+      }
+      if (s.startsWith('INSERT INTO ros_messages')) {
+        const meta =
+          typeof params[8] === 'string' ? (JSON.parse(params[8]) as Record<string, unknown>) : {}
+        if (meta.event_id === failEvent) throw new Error('injected transient database failure')
+        if (params[6] !== null) storedArgs.set(String(meta.event_id), JSON.parse(String(params[6])))
+        msgs.push({
+          id: `msg-${String(++ids)}`,
+          conversation_id: String(params[0]),
+          agent: String(params[1]),
+          channel: String(params[2]),
+          role: String(params[3]),
+          content: String(params[4]),
+          tool_name: (params[5] as string | null) ?? null,
+          tool_result: (params[7] as string | null) ?? null,
+          metadata: meta,
+        })
+        return { rows: [], rowCount: 1 }
+      }
+      if (s.startsWith('UPDATE ros_conversations')) {
+        return { rows: [], rowCount: 1 }
+      }
+      throw new Error(`unexpected sql: ${s}`)
+    },
+  }
+
+  return {
+    client,
+    convs,
+    msgs,
+    storedArgs,
+    setFailEvent: (id) => {
+      failEvent = id
+    },
+  }
+}
+
+// =============================================================================
+// In-memory stub ingest (stands in for sqlite / pg-lite)
+// =============================================================================
+console.log('\n— stub pool ingest —')
+{
+  const stub = stubClient()
+  const { client, convs, msgs, storedArgs, setFailEvent } = stub
+
+  const parsed = parseSessionFile(FIXTURE)
+  const first = await ingestMessages(client, parsed.sessionId, parsed.messages, {
+    title: parsed.title,
+    cwd: parsed.cwd,
+    transcriptPath: FIXTURE,
+    triggerEvent: 'smoke',
+  })
+  eq('first ingest inserts every parsed row', first.inserted, parsed.messages.length)
+  eq('first ingest skips none', first.skipped, 0)
+  eq('conversation session_key', convs[0]?.session_key, `pi:${SESSION}`)
+  eq('conversation agent', convs[0]?.agent, 'rivet-deepseek')
+  eq('conversation channel', convs[0]?.channel, 'pi')
+  eq('conversation title is -n name', convs[0]?.title, 'demo session')
+
+  const roles = new Set(msgs.map((m) => m.role))
+  check('stored roles include user', roles.has('user'))
+  check('stored roles include assistant', roles.has('assistant'))
+  check('stored roles include tool', roles.has('tool'))
+  check(
+    'every stored row is agent=rivet-deepseek channel=pi',
+    msgs.every((m) => m.agent === 'rivet-deepseek' && m.channel === 'pi'),
+  )
+  check(
+    'every stored row carries event_id + jsonl pointer',
+    msgs.every(
+      (m) =>
+        typeof m.metadata.event_id === 'string' &&
+        m.metadata.session_jsonl_path === FIXTURE &&
+        typeof m.metadata.session_jsonl_line === 'number',
+    ),
+  )
+  const asst = msgs.find((m) => m.role === 'assistant')
+  eq('stored reasoning field', asst?.metadata.reasoning, 'I should list')
+
+  const second = await ingestMessages(client, parsed.sessionId, parsed.messages, {
+    title: parsed.title,
+    transcriptPath: FIXTURE,
+  })
+  eq('re-ingest is idempotent (all skipped)', second.skipped, parsed.messages.length)
+  eq('re-ingest inserts nothing', second.inserted, 0)
+  eq('still one conversation', convs.length, 1)
+  eq('message count unchanged', msgs.length, parsed.messages.length)
+
+  const argsRows: PendingMessage[] = [
+    {
+      role: 'tool',
+      content: '[tool] exec',
+      eventId: 'freeform',
+      toolArgs: 'text("hello")',
+      lineIndex: 0,
+    },
+    {
+      role: 'tool',
+      content: '[tool] shell',
+      eventId: 'array',
+      toolArgs: ['one', 'two'],
+      lineIndex: 0,
+    },
+    {
+      role: 'tool',
+      content: '[tool] shell',
+      eventId: 'long-object',
+      toolArgs: { value: 'x'.repeat(MAX_CONTENT * 2) },
+      lineIndex: 0,
+    },
+  ]
+  await ingestMessages(client, SESSION, argsRows, { transcriptPath: FIXTURE })
+  eq('free-form input survives jsonb encoding', storedArgs.get('freeform'), 'text("hello")')
+  check('array arguments remain JSON arrays', Array.isArray(storedArgs.get('array')))
+  check(
+    'truncated object is a valid JSON string preview',
+    String(storedArgs.get('long-object')).endsWith('…[truncated]'),
+  )
+
+  const retryRows: PendingMessage[] = [
+    { role: 'user', content: 'first row', eventId: 'retry-first' },
+    { role: 'assistant', content: 'second row', eventId: 'retry-second' },
+  ]
+  const seen = new Set(['already-committed'])
+  const before = msgs.length
+  setFailEvent('retry-second')
+  let rejected = false
+  try {
+    await ingestMessages(client, SESSION, retryRows, { seen })
+  } catch {
+    rejected = true
+  }
+  check('batch reports the database failure', rejected)
+  eq('rollback removes the first insert', msgs.length, before)
+  eq('failed batch does not publish dedup progress', seen.size, 1)
+  setFailEvent(undefined)
+  const replay = await ingestMessages(client, SESSION, retryRows, { seen })
+  eq('retry recovers both rolled-back rows', replay.inserted, 2)
+  eq('committed batch publishes dedup progress', seen.size, 3)
+}
+
+// =============================================================================
+// File cursor
+// =============================================================================
+console.log('\n— consumeNewLines cursor —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-cap-'))
+  const file = path.join(dir, `2026-09-11T14-25-16-803Z_${SESSION}.jsonl`)
+  writeFileSync(
+    file,
+    '{"type":"session","version":3,"id":"' + SESSION + '","cwd":"/tmp/demo"}\n',
+    'utf8',
+  )
+  const cursor: FileCursor = { offset: 0, pending: '' }
+  const first = consumeNewLines(file, cursor)
+  eq('first read yields the complete line', first.length, 1)
+  check('offset advanced past the newline', cursor.offset > 0)
+  eq('no pending remainder', cursor.pending, '')
+
+  appendFileSync(file, '{"type":"message","id":"aabbcc00","message":{"role":"user"', 'utf8')
+  const mid = consumeNewLines(file, cursor)
+  eq('incomplete line yields nothing yet', mid.length, 0)
+  check('pending holds the partial line', cursor.pending.startsWith('{"type":"message"'))
+
+  appendFileSync(
+    file,
+    ',"content":[{"type":"text","text":"hi"}]}}\n',
+    'utf8',
+  )
+  const rest = consumeNewLines(file, cursor)
+  eq('newline completes the pending line', rest.length, 1)
+  check('completed line parses as json', rest[0]!.includes('aabbcc00'))
+  rmSync(dir, { recursive: true, force: true })
+}
+
+// =============================================================================
+// Watch tick over cwd-bucket tree + appended line + second-tick dedup
+// =============================================================================
+console.log('\n— scanOnce cwd-bucket + append + dedup —')
+{
+  const stub = stubClient()
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-watch-'))
+  try {
+    const bucket = path.join(dir, encodePiCwd('/tmp/demo'))
+    mkdirSync(bucket, { recursive: true })
+    const file = path.join(bucket, path.basename(FIXTURE))
+    writeFileSync(file, readFileSync(FIXTURE, 'utf8'))
+    const state = createWatcherState()
+    const first = await scanOnce(dir, stub.client, state, true)
+    eq('first tick inserts parsed rows', first.inserted, 4)
+    eq('first tick skips none', first.skipped, 0)
+    eq('discovered the cwd-bucket file', first.files, 1)
+
+    const second = await scanOnce(dir, stub.client, state, false)
+    eq('second tick with no append inserts nothing', second.inserted, 0)
+
+    appendFileSync(
+      file,
+      JSON.stringify({
+        type: 'message',
+        id: 'ff00aa11',
+        message: { role: 'user', content: [{ type: 'text', text: 'and again' }] },
+      }) + '\n',
+      'utf8',
+    )
+    const tailed = await scanOnce(dir, stub.client, state, false)
+    eq('appended line inserts one new user row', tailed.inserted, 1)
+    const users = stub.msgs.filter((m) => m.role === 'user')
+    check(
+      'tailed user content present',
+      users.some((m) => m.content === 'and again'),
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+console.log('\n— scanOnce flat --session-dir —')
+{
+  const stub = stubClient()
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-flat-'))
+  try {
+    const file = path.join(dir, path.basename(FIXTURE))
+    writeFileSync(file, readFileSync(FIXTURE, 'utf8'))
+    const state = createWatcherState()
+    const first = await scanOnce(dir, stub.client, state, true)
+    eq('flat session-dir discovers the jsonl', first.files, 1)
+    eq('flat session-dir inserts parsed rows', first.inserted, 4)
+    eq('flat session_key still pi:<uuid>', stub.convs[0]?.session_key, `pi:${SESSION}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+console.log('\n— scanOnce retries a failed file without another append —')
+{
+  const stub = stubClient()
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-retry-'))
+  try {
+    const bucket = path.join(dir, encodePiCwd('/tmp/demo'))
+    mkdirSync(bucket, { recursive: true })
+    const file = path.join(bucket, path.basename(FIXTURE))
+    const rewritten = readFileSync(FIXTURE, 'utf8')
+      .replaceAll('aa11bb22', 'watch-retry-user')
+      .replaceAll('cc33dd44', 'watch-retry-assistant')
+    writeFileSync(file, rewritten)
+    const state = createWatcherState()
+    stub.setFailEvent(`pi:${SESSION}:watch-retry-assistant`)
+    await scanOnce(dir, stub.client, state, true)
+    eq('failed watch preserves its file offset for retry', state.cursors.get(file)?.offset, 0)
+    stub.setFailEvent(undefined)
+    const retried = await scanOnce(dir, stub.client, state, false)
+    check('watch retries without requiring another file append', retried.inserted >= 1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// =============================================================================
+// Fold-parity with den-server parser (optional; worktree only)
+// =============================================================================
+console.log('\n— fold-parity with piTurnsFromLines —')
+{
+  const denPath = path.resolve(
+    __dirname,
+    '../../../../../services/den-server/src/harness/adapters/pi.ts',
+  )
+  let loaded: {
+    piTurnsFromLines?: (
+      lines: Record<string, unknown>[],
+    ) => Array<{ role: string; text?: string; thinking?: string }>
+  } | null = null
+  try {
+    loaded = (await import(denPath)) as typeof loaded
+  } catch (err) {
+    console.log(
+      `↷ skip fold-parity (den-server parser not importable: ${err instanceof Error ? err.message : String(err)})`,
+    )
+  }
+  if (loaded?.piTurnsFromLines) {
+    const text = readFileSync(FIXTURE, 'utf8')
+    const objects: Record<string, unknown>[] = []
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        objects.push(JSON.parse(line) as Record<string, unknown>)
+      } catch {
+        // ignore
+      }
+    }
+    const turns = loaded.piTurnsFromLines(objects)
+    const parsed = parseSessionText(text, SESSION, FIXTURE)
+    const foldedUser = turns.filter((t) => t.role === 'user')
+    const ingestUser = parsed.messages.filter((m: PendingMessage) => m.role === 'user')
+    eq('fold and ingest agree on one human user turn', foldedUser.length, 1)
+    eq('ingest user text matches folded user text', ingestUser[0]?.content, foldedUser[0]?.text)
+    const foldedAsst = turns.find((t) => t.role === 'assistant')
+    eq('folded assistant text', foldedAsst?.text, 'here they are')
+    eq('ingest reasoning matches folded thinking', parsed.messages.find((m) => m.role === 'assistant')?.reasoning, foldedAsst?.thinking)
+  }
+}
+
+// =============================================================================
+// watchTick — boot race against PGlite must not kill the watcher
+// =============================================================================
+console.log('\n— watchTick boot race —')
+{
+  const dir = mkdtempSync(path.join(tmpdir(), 'pi-watch-boot-'))
+  const state = createWatcherState()
+  let released = 0
+  const refused = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:5433'), {
+    code: 'ECONNREFUSED',
+  })
+
+  await watchTick({ connect: async () => { throw refused } }, dir, state, true)
+  eq('ECONNREFUSED first tick does not throw', released, 0)
+
+  let connects = 0
+  const recovering = {
+    connect: async () => {
+      connects++
+      if (connects === 1) throw refused
+      return {
+        query: async () => ({ rows: [], rowCount: 0 }),
+        release: () => {
+          released++
+        },
+      }
+    },
+  }
+  await watchTick(recovering, dir, state, true)
+  eq('first recovering tick still refuses without release', released, 0)
+  await watchTick(recovering, dir, state, false)
+  eq('second tick acquires a client', connects, 2)
+  eq('release runs only after successful connect', released, 1)
+
+  rmSync(dir, { recursive: true, force: true })
+}
+
+if (failed > 0) {
+  console.error(`\n${String(failed)} test(s) failed`)
+  process.exitCode = 1
+} else {
+  console.log('\nAll Pi Memory Capture tests passed.')
+}

@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"01a091f5-6deb-723d-8737-eb83070c9154","timestamp":"2026-09-11T14:25:16.803Z","cwd":"/tmp/demo","name":"demo session"}
+{"type":"model_change","provider":"deepseek","modelId":"deepseek-v4-flash"}
+{"type":"thinking_level_change","thinkingLevel":"high"}
+{"type":"message","id":"aa11bb22","parentId":null,"timestamp":"2026-09-11T14:25:17.000Z","message":{"role":"user","content":[{"type":"text","text":"list the files"}],"timestamp":1757600717000}}
+not json
+{"type":"agent_start"}
+{"type":"message","id":"cc33dd44","parentId":"aa11bb22","timestamp":"2026-09-11T14:25:18.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"I should list"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls"}},{"type":"text","text":"here they are"}],"usage":{"input":100,"output":20,"cacheRead":10,"cacheWrite":2,"reasoning":5,"totalTokens":137},"stopReason":"stop","timestamp":1757600718000}}
+{"type":"message","id":"ee55ff66","parentId":"cc33dd44","timestamp":"2026-09-11T14:25:19.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"a.txt"}]}}
