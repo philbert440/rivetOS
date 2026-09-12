@@ -36,7 +36,7 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
   const positional: string[] = []
 
   for (let i = 0; i < argv.length; i++) {
-    const token = argv[i]!
+    const token = argv[i]
     if (token === '--out') {
       const next = argv[i + 1]
       if (next === undefined || next.startsWith('--')) {
@@ -66,7 +66,7 @@ export function parseArgs(argv: readonly string[]): ParseArgsResult {
 
   return {
     ok: true,
-    input: positional[0]!,
+    input: positional[0],
     out,
     noSet,
     transparent,
