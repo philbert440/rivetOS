@@ -12,9 +12,6 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  queuePending,
-  takePending,
-  pendingQueuePath,
   handleHookPayload,
   loadCaptureState,
   mergeCaptureState,
@@ -213,22 +210,6 @@ console.log('\n— concurrent handleHookPayload —')
   check('cursor for A persisted', typeof state.cursors[path.resolve(a)]?.offset === 'number')
   check('cursor for B persisted', typeof state.cursors[path.resolve(b)]?.offset === 'number')
   eq('both cursors present', Object.keys(state.cursors).length, 2)
-  rmSync(dir, { recursive: true, force: true })
-}
-
-console.log('\n— pending queue —')
-{
-  const dir = mkdtempSync(path.join(tmpdir(), 'codex-pending-'))
-  const stateFile = path.join(dir, 'state.json')
-  queuePending(stateFile, { file: '/x/a.jsonl', closeSession: true, event: 'SessionEnd' })
-  queuePending(stateFile, { file: '/x/b.jsonl' })
-  queuePending(stateFile, { file: '/x/a.jsonl' })
-  eq('queue file exists', existsSync(pendingQueuePath(stateFile)), true)
-  const taken = takePending(stateFile, 'file')
-  eq('take dedupes by file', taken.map((e) => e.file).join(','), '/x/a.jsonl,/x/b.jsonl')
-  eq('take keeps the first entry fields', taken[0]?.closeSession, true)
-  eq('take clears the queue', existsSync(pendingQueuePath(stateFile)), false)
-  eq('second take is empty', takePending(stateFile, 'file').length, 0)
   rmSync(dir, { recursive: true, force: true })
 }
 

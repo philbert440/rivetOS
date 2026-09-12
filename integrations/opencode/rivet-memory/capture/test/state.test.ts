@@ -4,7 +4,7 @@
  * moves backwards. The mkdir lock serializes ingests; the merge protects
  * an unlocked writer. Tests must be able to fail.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -14,10 +14,6 @@ import {
   mergeState,
   saveState,
   parseDelayMs,
-  claimPending,
-  pendingQueuePath,
-  queuePending,
-  takePending,
 } from '../src/opencode-memory-capture.ts'
 
 const dirs: string[] = []
@@ -77,44 +73,6 @@ describe('saveState / mergeState', () => {
     expect(JSON.parse(left).version).toBe(1)
     const siblings = readdirSync(path.dirname(file))
     expect(siblings.filter((n) => n.endsWith('.tmp'))).toEqual([])
-  })
-})
-
-describe('pending queue', () => {
-  it('queues, dedupes by key, and clears on take', () => {
-    const file = tmpState()
-    queuePending(file, { sessionId: 'ses_a' })
-    queuePending(file, { sessionId: 'ses_b' })
-    queuePending(file, { sessionId: 'ses_a' })
-    expect(existsSync(pendingQueuePath(file))).toBe(true)
-    const taken = takePending(file, 'sessionId')
-    expect(taken.map((e) => e.sessionId)).toEqual(['ses_a', 'ses_b'])
-    expect(existsSync(pendingQueuePath(file))).toBe(false)
-    expect(takePending(file, 'sessionId')).toEqual([])
-  })
-})
-
-describe('claimPending', () => {
-  it('claims by rename, recovers orphaned batches, keeps late appends, drops only on done()', () => {
-    const file = tmpState()
-    queuePending(file, { sessionId: 'ses_a' })
-    // an orphan left by a holder that died mid-batch
-    writeFileSync(
-      `${pendingQueuePath(file)}.claimed.999.1`,
-      JSON.stringify({ sessionId: 'ses_z' }) + '\n',
-    )
-    const claim = claimPending(file, 'sessionId')
-    expect(claim.entries.map((e) => e.sessionId).sort()).toEqual(['ses_a', 'ses_z'])
-    expect(claim.files.length).toBe(2)
-    // an append that races the claim lands in a fresh queue file
-    queuePending(file, { sessionId: 'ses_b' })
-    expect(existsSync(pendingQueuePath(file))).toBe(true)
-    // the holder failed (no done()) → nothing dropped: the next holder sees all three
-    const again = claimPending(file, 'sessionId')
-    expect(again.entries.map((e) => e.sessionId).sort()).toEqual(['ses_a', 'ses_b', 'ses_z'])
-    again.done()
-    expect(existsSync(pendingQueuePath(file))).toBe(false)
-    expect(claimPending(file, 'sessionId').entries).toEqual([])
   })
 })
 
