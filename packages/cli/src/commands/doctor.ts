@@ -1145,8 +1145,8 @@ const PROBE_KEY_ENV = [
  *  URL from …`), and the probes normalise URLs before use, so redact the
  *  individual values rather than whole fields: every env value substituted for
  *  a `${VAR}` in the raw block, every credential-looking resolved value (literal
- *  keys too), and the env fallbacks the probes read directly. Newlines inside a
- *  value are also matched in their escaped `\n` form. */
+ *  keys too), and the env fallbacks the probes read directly. Trimmed and
+ *  newline-escaped forms of each value are matched as well. */
 export function redactResolvedSecrets(
   message: string,
   raw: unknown,
@@ -1175,10 +1175,15 @@ export function redactResolvedSecrets(
   walkRaw(raw)
   walkResolved(resolved)
   for (const name of PROBE_KEY_ENV) add(env[name])
+  // Native fetch trims surrounding whitespace from a header value before
+  // echoing it, so match the trimmed form too; newlines also in escaped form.
   const needles = new Set<string>()
   for (const secret of secrets) {
-    needles.add(secret)
-    if (secret.includes('\n')) needles.add(secret.replace(/\n/g, '\\n'))
+    for (const form of [secret, secret.trim()]) {
+      if (!form) continue
+      needles.add(form)
+      if (/[\r\n]/.test(form)) needles.add(form.replace(/\r/g, '\\r').replace(/\n/g, '\\n'))
+    }
   }
   let out = message
   for (const needle of [...needles].sort((a, b) => b.length - a.length)) {

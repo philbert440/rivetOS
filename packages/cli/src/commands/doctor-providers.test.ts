@@ -104,6 +104,16 @@ describe('redactResolvedSecrets', () => {
 })
 
 describe('checkProviders error details (native fetch, no network)', () => {
+  it('does not echo a key with trailing whitespace that native header validation trims', async () => {
+    vi.stubEnv('K', 'FAKE-REVIEW-SECRET\ntrailing\n')
+    const [r] = await checkProviders(['providers:', '  xai:', '    api_key: ${K}', ''].join('\n'))
+    // native fetch: 'Headers.append: "Bearer FAKE-REVIEW-SECRET\ntrailing" is an invalid header value.'
+    expect(r.message).toBe('Provider xai: error')
+    expect(r.detail).toBeDefined()
+    expect(r.detail).not.toContain('FAKE-REVIEW-SECRET')
+    expect(r.detail).toContain('[redacted]')
+  })
+
   it('does not echo a secret substituted into a base_url the probe normalised', async () => {
     vi.stubEnv('K', 'FAKE-URL-SECRET')
     const [r] = await checkProviders(
