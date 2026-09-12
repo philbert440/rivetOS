@@ -7,7 +7,7 @@
 
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import type {
   HarnessExecutor,
   HarnessExecutorCapabilities,
@@ -153,7 +153,11 @@ describe('/api/tasks', () => {
     expect(task.acceptanceCriteria).toEqual([{ id: 'c1', description: 'done', kind: 'manual' }])
 
     const { base: offBase } = await startApi()
-    const malformed = await create(offBase, { goal: 'g', agentId: 'a', acceptanceCriteria: [{ id: '' }] })
+    const malformed = await create(offBase, {
+      goal: 'g',
+      agentId: 'a',
+      acceptanceCriteria: [{ id: '' }],
+    })
     expect(malformed.status).toBe(400)
     const legacyEmpty = await create(offBase, { goal: 'g', agentId: 'a' })
     expect(legacyEmpty.status).toBe(201)
@@ -224,9 +228,23 @@ describe('/api/tasks', () => {
 
   it('404 on unknown ids, 405 on unsupported methods', async () => {
     const { base } = await startApi()
-    expect((await fetch(`${base}/api/tasks/nope`)).status).toBe(404)
+    expect((await fetch(`${base}/api/tasks/00000000-0000-0000-0000-000000000000`)).status).toBe(404)
     expect((await fetch(`${base}/api/tasks`, { method: 'DELETE' })).status).toBe(405)
   })
+
+  it.each(['', '/wait', '/kill', '/steer'])(
+    'rejects malformed task IDs before reading the store (%s)',
+    async (action) => {
+      const { base, store } = await startApi()
+      const get = vi.spyOn(store, 'get')
+      const response = await fetch(`${base}/api/tasks/not-a-uuid${action}`, {
+        method: ['/kill', '/steer'].includes(action) ? 'POST' : 'GET',
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({ error: 'Invalid task ID. Check the task link.' })
+      expect(get).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe('agent-aware dispatch (resolveAffinity)', () => {

@@ -1,5 +1,18 @@
 import { test, expect } from '../fixtures.mjs'
 
+test('desktop CSP allows terminal WebAssembly while blocking JavaScript eval', async ({ hub }) => {
+  const result = await hub.evaluate(async () => {
+    await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]))
+    try {
+      new Function('return 1')()
+      return { wasm: true, evalBlocked: false }
+    } catch (error) {
+      return { wasm: true, evalBlocked: error instanceof EvalError }
+    }
+  })
+  expect(result).toEqual({ wasm: true, evalBlocked: true })
+})
+
 test('native shell bridge is available and renderer remains isolated', async ({ hub }) => {
   expect(
     await hub.evaluate(() => ({

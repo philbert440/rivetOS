@@ -22,13 +22,19 @@ test('workflows: definitions open an input form', async ({ hub }) => {
   await expect(hub.getByRole('button', { name: 'Start run', exact: true })).toBeVisible()
 })
 
-test('missing task gives a recoverable error', async ({ hub }) => {
-  await enable(hub, 'Tasks')
-  await hub.goto('app://bundle/tasks/rivethub-e2e-not-found')
-  await expect(hub.locator('main')).toContainText(/not found|404|unknown task/i)
-  await hub.getByRole('link', { name: 'Settings', exact: true }).click()
-  await expect(hub.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
-})
+for (const [id, status, message] of [
+  ['rivethub-e2e-not-found', 400, 'Invalid task ID. Check the task link.'],
+  ['00000000-0000-0000-0000-000000000000', 404, 'Task not found. Check the task link.'],
+])
+  test(`task link ${status} gives a recoverable error`, async ({ hub }) => {
+    await enable(hub, 'Tasks')
+    const result = hub.waitForResponse((r) => new URL(r.url()).pathname === `/api/tasks/${id}`)
+    await hub.goto(`app://bundle/tasks/${id}`)
+    expect((await result).status()).toBe(status)
+    await expect(hub.locator('main')).toContainText(message)
+    await hub.getByRole('link', { name: 'Settings', exact: true }).click()
+    await expect(hub.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
+  })
 
 test('tasks: create a bounded task, open details, and reach completion', async ({ hub }) => {
   test.setTimeout(120_000)
