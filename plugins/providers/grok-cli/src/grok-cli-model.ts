@@ -1,16 +1,20 @@
 /**
  * GrokCliModel — a LanguageModelV3 that answers each turn with ONE headless
- * Grok Build call (`grok -p … --output-format json`).
+ * Grok Build call (`grok -p … --output-format streaming-messages-json
+ * --include-partial-messages`).
  *
  * Default `session: resume` keeps ONE grok session per RivetOS conversation
  * (`--session-id` on the first turn with the full transcript, `--resume` after
  * with only the newest USER chunk). `session: replay` is the old behavior:
  * every turn re-sends the whole conversation as one prompt, no session flags.
  *
- * There is no incremental streaming in v1 — `--output-format json` only
- * arrives at the end — and no RivetOS tool bridge: grok runs with its own
- * tools (denied unless `allow` rules are configured) plus whatever MCP
- * servers ~/.grok/config.toml wires, e.g. the rivet-memory plugin.
+ * Stdout is Anthropic Messages API NDJSON (same wire format claude-cli
+ * parses): `stream_event` lines become `text-delta` / `reasoning-delta` as
+ * they arrive. Grok owns its tool loop — this model does not emit V3
+ * tool-call parts, matching claude-cli and the old json-blob path. There is
+ * no RivetOS tool bridge: grok runs with its own tools (denied unless
+ * `allow` rules are configured) plus whatever MCP servers
+ * ~/.grok/config.toml wires, e.g. the rivet-memory plugin.
  */
 import type {
   LanguageModelV3,
@@ -27,9 +31,11 @@ import {
   buildArgs,
   parseGrokJson,
   spawnGrokTurn,
+  type GrokCliEvent,
   type GrokJsonResult,
   type GrokReasoningEffort,
   type GrokSpawnFlags,
+  type GrokUsage,
 } from './spawn-turn.js'
 import type { BridgeLogger } from './log.js'
 import { createLogger } from './log.js'
@@ -247,12 +253,136 @@ export function buildUsage(r: GrokJsonResult): LanguageModelV3Usage {
   }
 }
 
+/** Merge sparse usage objects (message_start input + message_delta output). Defined numbers win. */
+export function mergeGrokUsage(prev: GrokUsage | undefined, next: GrokUsage): GrokUsage {
+  if (!prev) return { ...next }
+  const out: GrokUsage = { ...prev }
+  if (typeof next.input_tokens === 'number') out.input_tokens = next.input_tokens
+  if (typeof next.output_tokens === 'number') out.output_tokens = next.output_tokens
+  if (typeof next.cache_read_input_tokens === 'number') {
+    out.cache_read_input_tokens = next.cache_read_input_tokens
+  }
+  if (typeof next.cache_creation_input_tokens === 'number') {
+    out.cache_creation_input_tokens = next.cache_creation_input_tokens
+  }
+  if (typeof next.reasoning_tokens === 'number') out.reasoning_tokens = next.reasoning_tokens
+  if (typeof next.total_tokens === 'number') out.total_tokens = next.total_tokens
+  return out
+}
+
 export function finishReasonFor(
   stop: string | undefined,
 ): LanguageModelV3GenerateResult['finishReason'] {
   if (stop === 'max_tokens' || stop === 'length') return { unified: 'length', raw: stop }
   if (stop === 'tool_use' || stop === 'tool-calls') return { unified: 'tool-calls', raw: stop }
   return { unified: 'stop', raw: stop }
+}
+
+// ---------------------------------------------------------------------------
+// streaming-messages-json (Anthropic Messages wire, same as claude-cli)
+// ---------------------------------------------------------------------------
+
+const RECOGNIZED_STREAM_TYPES = new Set([
+  'stream_event',
+  'assistant',
+  'user',
+  'result',
+  'error',
+  'system',
+  'message',
+  'message_start',
+  'message_delta',
+  'message_stop',
+  'content_block_start',
+  'content_block_delta',
+  'content_block_stop',
+])
+
+export function isRecognizedStreamEvent(ev: unknown): ev is GrokCliEvent {
+  if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return false
+  const t = (ev as GrokCliEvent).type
+  return typeof t === 'string' && RECOGNIZED_STREAM_TYPES.has(t)
+}
+
+export function sessionIdOf(ev: GrokCliEvent): string | undefined {
+  if (typeof ev.session_id === 'string' && ev.session_id) return ev.session_id
+  if (typeof ev.sessionId === 'string' && ev.sessionId) return ev.sessionId
+  return undefined
+}
+
+export function streamErrorMessage(ev: GrokCliEvent): string | undefined {
+  if (ev.type === 'error') {
+    const err = ev.error
+    if (typeof err === 'string' && err) return err
+    if (err && typeof err === 'object' && !Array.isArray(err)) {
+      const msg = (err as { message?: unknown }).message
+      if (typeof msg === 'string' && msg) return msg
+    }
+    if (typeof ev.message === 'string' && ev.message) return ev.message
+    return 'grok stream error'
+  }
+  if (ev.type === 'result' && ev.is_error) {
+    if (typeof ev.result === 'string' && ev.result) return ev.result
+    if (typeof ev.message === 'string' && ev.message) return ev.message
+    return 'grok result is_error'
+  }
+  return undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function asUsage(raw: unknown): GrokUsage | undefined {
+  return asRecord(raw)
+}
+
+/** Unwrap `{type:"stream_event", event}` or accept a bare Anthropic event. */
+export function innerStreamEvent(ev: GrokCliEvent): Record<string, unknown> | undefined {
+  if (ev.type === 'stream_event') return asRecord(ev.event)
+  if (
+    ev.type === 'content_block_delta' ||
+    ev.type === 'content_block_start' ||
+    ev.type === 'message_delta' ||
+    ev.type === 'message_start' ||
+    ev.type === 'message_stop' ||
+    ev.type === 'content_block_stop'
+  ) {
+    return ev
+  }
+  return undefined
+}
+
+export function deltaOf(inner: Record<string, unknown>): { text?: string; thinking?: string } {
+  if (inner.type !== 'content_block_delta') return {}
+  const d = asRecord(inner.delta)
+  if (!d) return {}
+  if (d.type === 'text_delta' && typeof d.text === 'string' && d.text) return { text: d.text }
+  if (d.type === 'thinking_delta' && typeof d.thinking === 'string' && d.thinking) {
+    return { thinking: d.thinking }
+  }
+  return {}
+}
+
+function contentBlocks(ev: GrokCliEvent): Array<Record<string, unknown>> {
+  const msg = asRecord(ev.message)
+  const content = msg?.content ?? ev.content
+  if (!Array.isArray(content)) return []
+  const out: Array<Record<string, unknown>> = []
+  for (const block of content) {
+    const rec = asRecord(block)
+    if (rec) out.push(rec)
+  }
+  return out
+}
+
+function thinkingFromBlock(block: Record<string, unknown>): string {
+  if (block.type === 'thinking' || block.type === 'reasoning') {
+    if (typeof block.thinking === 'string') return block.thinking
+    if (typeof block.text === 'string') return block.text
+  }
+  return ''
 }
 
 // ---------------------------------------------------------------------------
@@ -433,11 +563,153 @@ export class GrokCliModel implements LanguageModelV3 {
         const REASON_ID = 'grok-reasoning'
         controller.enqueue({ type: 'stream-start', warnings: [] })
         try {
-          let exitCode = await turn.waitExit()
-          let result = parseGrokJson(turn.stdoutText())
+          let textOpen = false
+          let reasoningOpen = false
+          let streamedAnyText = false
+          let streamedAnyReasoning = false
+          let recognizedEvents = 0
+          let sawResult = false
+          let usage = emptyUsage()
+          let grokUsage: GrokUsage | undefined
+          let stopReason: string | undefined
+          let returnedSessionId: string | undefined
+          let costUsd: number | undefined
+          let numTurns: number | undefined
+          let fallbackText = ''
+          let fallbackThinking = ''
+          let streamError: APICallError | undefined
           let usedSessionId = requestedSessionId
 
-          if (persistSessions && wasResume && exitCode !== 0 && !options.abortSignal?.aborted) {
+          const closeText = (): void => {
+            if (!textOpen) return
+            controller.enqueue({ type: 'text-end', id: TEXT_ID })
+            textOpen = false
+          }
+          const closeReasoning = (): void => {
+            if (!reasoningOpen) return
+            controller.enqueue({ type: 'reasoning-end', id: REASON_ID })
+            reasoningOpen = false
+          }
+          const emitText = (delta: string): void => {
+            if (!delta) return
+            if (reasoningOpen) closeReasoning()
+            if (!textOpen) {
+              controller.enqueue({ type: 'text-start', id: TEXT_ID })
+              textOpen = true
+            }
+            streamedAnyText = true
+            controller.enqueue({ type: 'text-delta', id: TEXT_ID, delta })
+          }
+          const emitThinking = (delta: string): void => {
+            if (!delta) return
+            if (textOpen) closeText()
+            if (!reasoningOpen) {
+              controller.enqueue({ type: 'reasoning-start', id: REASON_ID })
+              reasoningOpen = true
+            }
+            streamedAnyReasoning = true
+            controller.enqueue({ type: 'reasoning-delta', id: REASON_ID, delta })
+          }
+          const applyUsage = (raw: unknown, replace = false): void => {
+            const u = asUsage(raw)
+            if (!u) return
+            grokUsage = replace ? { ...u } : mergeGrokUsage(grokUsage, u)
+            usage = buildUsage({ usage: grokUsage })
+          }
+          const applyStop = (raw: unknown): void => {
+            if (typeof raw === 'string' && raw) stopReason = raw
+          }
+
+          const handleEvent = (event: GrokCliEvent): void => {
+            const sid = sessionIdOf(event)
+            if (sid) returnedSessionId = sid
+
+            const errMsg = streamErrorMessage(event)
+            if (errMsg) {
+              streamError = new APICallError({
+                message: errMsg,
+                url: 'grok-cli://stream',
+                requestBodyValues: {},
+                statusCode: 500,
+                isRetryable: false,
+              })
+              return
+            }
+
+            const inner = innerStreamEvent(event)
+            if (inner) {
+              const delta = deltaOf(inner)
+              if (delta.thinking) emitThinking(delta.thinking)
+              if (delta.text) emitText(delta.text)
+              if (inner.type === 'message_delta') {
+                const d = asRecord(inner.delta)
+                applyStop(d?.stop_reason ?? d?.stopReason)
+                applyUsage(inner.usage)
+              }
+              if (inner.type === 'message_start') {
+                const msg = asRecord(inner.message)
+                applyUsage(msg?.usage)
+                const msgSid = sessionIdOf(msg ?? {})
+                if (msgSid) returnedSessionId = msgSid
+              }
+              return
+            }
+
+            if (event.type === 'assistant' || event.type === 'message') {
+              for (const block of contentBlocks(event)) {
+                if (block.type === 'text' && typeof block.text === 'string') {
+                  fallbackText += block.text
+                } else {
+                  const thought = thinkingFromBlock(block)
+                  if (thought) fallbackThinking += thought
+                }
+              }
+              const msg = asRecord(event.message)
+              applyUsage(msg?.usage ?? event.usage)
+              applyStop(
+                msg?.stop_reason ?? msg?.stopReason ?? event.stop_reason ?? event.stopReason,
+              )
+              return
+            }
+
+            if (event.type === 'result') {
+              sawResult = true
+              applyUsage(event.usage, true)
+              applyStop(event.stop_reason ?? event.stopReason)
+              if (typeof event.total_cost_usd === 'number') costUsd = event.total_cost_usd
+              if (typeof event.num_turns === 'number') numTurns = event.num_turns
+              if (typeof event.result === 'string' && event.result && !fallbackText) {
+                fallbackText = event.result
+              }
+              if (typeof event.thought === 'string' && event.thought && !fallbackThinking) {
+                fallbackThinking = event.thought
+              }
+            }
+          }
+
+          const drain = async (): Promise<number | null> => {
+            for await (const event of turn.events()) {
+              if (!isRecognizedStreamEvent(event)) continue
+              recognizedEvents++
+              handleEvent(event)
+              if (streamError) {
+                turn.kill()
+                throw streamError
+              }
+            }
+            return turn.waitExit()
+          }
+
+          let exitCode = await drain()
+
+          if (
+            persistSessions &&
+            wasResume &&
+            exitCode !== 0 &&
+            !streamedAnyText &&
+            !streamedAnyReasoning &&
+            !options.abortSignal?.aborted
+          ) {
             const freshId = uuidForConversation(convKey)
             log.warn('session.resume.failed', {
               conversationId: convKey,
@@ -459,53 +731,111 @@ export class GrokCliModel implements LanguageModelV3 {
               })
             }
             usedSessionId = freshId
-            exitCode = await turn.waitExit()
-            result = parseGrokJson(turn.stdoutText())
+            recognizedEvents = 0
+            sawResult = false
+            streamError = undefined
+            fallbackText = ''
+            fallbackThinking = ''
+            usage = emptyUsage()
+            grokUsage = undefined
+            stopReason = undefined
+            returnedSessionId = undefined
+            costUsd = undefined
+            numTurns = undefined
+            exitCode = await drain()
           }
 
-          if (!result) {
+          if (streamError) throw streamError
+
+          if (recognizedEvents === 0 && exitCode === 0) {
+            const blob = parseGrokJson(turn.stdoutText())
+            if (blob) {
+              if (persistSessions) rememberSession(blob.sessionId, usedSessionId)
+              if (blob.thought) emitThinking(blob.thought)
+              if (blob.text) emitText(blob.text)
+              closeText()
+              closeReasoning()
+              const durationMs = Date.now() - startedAt
+              const blobUsage = buildUsage(blob)
+              log.info('grok.exit', {
+                exitCode,
+                durationMs,
+                sessionId: blob.sessionId,
+                stopReason: blob.stopReason,
+                numTurns: blob.num_turns,
+                costUsd: blob.total_cost_usd,
+                usage: blobUsage,
+                via: 'json-blob-fallback',
+              })
+              controller.enqueue({
+                type: 'finish',
+                usage: blobUsage,
+                finishReason: finishReasonFor(blob.stopReason),
+                providerMetadata: {
+                  [providerId]: {
+                    model: modelId,
+                    durationMs,
+                    sessionId: blob.sessionId ?? usedSessionId ?? null,
+                    costUsd: blob.total_cost_usd ?? null,
+                    exitCode,
+                  },
+                },
+              })
+              controller.close()
+              return
+            }
+          }
+
+          if (exitCode !== 0 && !sawResult) {
             const err = turn.stderrText().trim() || turn.stdoutText().trim()
             throw new APICallError({
-              message: `grok CLI exited ${String(exitCode)} without a JSON result: ${err.slice(0, 500)}`,
-              url: 'grok-cli://json',
+              message: `grok CLI exited ${String(exitCode)}: ${err.slice(0, 500)}`,
+              url: 'grok-cli://stream',
               requestBodyValues: {},
               statusCode: exitCode ?? 500,
               isRetryable: false,
             })
           }
-          if (persistSessions) rememberSession(result.sessionId, usedSessionId)
-          if (result.thought) {
-            controller.enqueue({ type: 'reasoning-start', id: REASON_ID })
-            controller.enqueue({ type: 'reasoning-delta', id: REASON_ID, delta: result.thought })
-            controller.enqueue({ type: 'reasoning-end', id: REASON_ID })
+
+          if (!streamedAnyReasoning && fallbackThinking) emitThinking(fallbackThinking)
+          if (!streamedAnyText && fallbackText) emitText(fallbackText)
+
+          closeText()
+          closeReasoning()
+
+          if (!streamedAnyText && !streamedAnyReasoning && recognizedEvents === 0) {
+            const err = turn.stderrText().trim() || turn.stdoutText().trim()
+            throw new APICallError({
+              message: `grok CLI exited ${String(exitCode)} without a JSON result: ${err.slice(0, 500)}`,
+              url: 'grok-cli://stream',
+              requestBodyValues: {},
+              statusCode: exitCode ?? 500,
+              isRetryable: false,
+            })
           }
-          const text = result.text ?? ''
-          if (text) {
-            controller.enqueue({ type: 'text-start', id: TEXT_ID })
-            controller.enqueue({ type: 'text-delta', id: TEXT_ID, delta: text })
-            controller.enqueue({ type: 'text-end', id: TEXT_ID })
-          }
+
+          if (persistSessions) rememberSession(returnedSessionId, usedSessionId)
           const durationMs = Date.now() - startedAt
-          const usage = buildUsage(result)
           log.info('grok.exit', {
             exitCode,
             durationMs,
-            sessionId: result.sessionId,
-            stopReason: result.stopReason,
-            numTurns: result.num_turns,
-            costUsd: result.total_cost_usd,
+            sessionId: returnedSessionId ?? usedSessionId,
+            stopReason,
+            numTurns,
+            costUsd,
             usage,
+            recognizedEvents,
           })
           controller.enqueue({
             type: 'finish',
             usage,
-            finishReason: finishReasonFor(result.stopReason),
+            finishReason: finishReasonFor(stopReason),
             providerMetadata: {
               [providerId]: {
                 model: modelId,
                 durationMs,
-                sessionId: result.sessionId ?? null,
-                costUsd: result.total_cost_usd ?? null,
+                sessionId: returnedSessionId ?? usedSessionId ?? null,
+                costUsd: costUsd ?? null,
                 exitCode,
               },
             },
@@ -517,7 +847,7 @@ export class GrokCliModel implements LanguageModelV3 {
               ? err
               : new APICallError({
                   message: err instanceof Error ? err.message : String(err),
-                  url: 'grok-cli://json',
+                  url: 'grok-cli://stream',
                   requestBodyValues: {},
                   isRetryable: false,
                 })

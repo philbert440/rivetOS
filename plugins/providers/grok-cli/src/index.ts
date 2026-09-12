@@ -2,8 +2,9 @@
  * @rivetos/provider-grok-cli — Grok Build CLI provider.
  *
  * Shells out to the local `grok` binary (Grok Build, the xAI coding agent
- * CLI) for every turn: `grok -p <prompt> --output-format json`. Uses the
- * user's Grok Build subscription/OIDC login in ~/.grok — no xAI API key, no
+ * CLI) for every turn: `grok -p <prompt> --output-format
+ * streaming-messages-json --include-partial-messages`. Uses the user's
+ * Grok Build subscription/OIDC login in ~/.grok — no xAI API key, no
  * metered API (see the `xai` provider for that).
  *
  * Config (`providers.grok-cli` in config.yaml):
@@ -44,8 +45,13 @@ export {
   finishReasonFor,
   effortFromProviderOptions,
   MAX_PROMPT_BYTES,
+  isRecognizedStreamEvent,
+  sessionIdOf,
+  streamErrorMessage,
+  innerStreamEvent,
+  deltaOf,
 } from './grok-cli-model.js'
-export { buildArgs, parseGrokJson, spawnGrokTurn } from './spawn-turn.js'
+export { buildArgs, parseGrokJson, parseGrokStreamLine, spawnGrokTurn } from './spawn-turn.js'
 export {
   defaultSessionMapPath,
   loadSessionMap,
@@ -58,7 +64,7 @@ export type {
   GrokSessionMode,
   GrokSystemPromptMode,
 } from './grok-cli-model.js'
-export type { GrokSpawnFlags, GrokJsonResult, GrokTurn } from './spawn-turn.js'
+export type { GrokSpawnFlags, GrokJsonResult, GrokTurn, GrokCliEvent } from './spawn-turn.js'
 
 export const GROK_CLI_PROVIDER_ID = 'grok-cli'
 

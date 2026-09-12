@@ -1,23 +1,23 @@
 /**
  * `AdoptingPtyHarnessDriver` — the shared body of the PTY harness drivers that
- * cannot be told what to call a new session: `hermes`, `kimi-code`,
- * `deepseek-harness` and `codex`.
+ * cannot be told what to call a new session: `hermes`, `kimi-code`, and
+ * `codex`.
  *
  * Extraction history, because both were rule-of-three calls: `PtyHarnessDriver`
  * was pulled out at driver THREE so its shape had three data points. The
  * ADOPTING shape was then deliberately left duplicated between hermes and kimi
  * (the EXTRACTION POINT notes on both room maps said so) — an adopting-driver
- * base drawn from two would be guessing at which parts are general.
- * `deepseek-harness` is that third adopting driver, and this file is the
- * extraction those notes deferred to.
+ * base drawn from two would be guessing at which parts are general. Codex is
+ * that third adopting driver, and this file is the extraction those notes
+ * deferred to.
  *
  * What "adopting" means. None of these CLIs has a `--session-id`-style flag:
  * hermes's `--resume`/`--continue`, kimi's `-S/--session`/`--continue` and
- * dsh's `--resume` all reference EXISTING sessions only. So:
+ * Codex's `resume` all reference EXISTING sessions only. So:
  *
  *   1. **The den room key is not the native id.** A harness spawned from the
  *      drawer runs under a room key den chose while the CLI mints its own id
- *      (`20260802_225647_6ad0b9`, `session_<uuid>`, `session-<uuid>`). The
+ *      (`20260802_225647_6ad0b9`, `session_<uuid>`, a Codex rollout UUID). The
  *      room ↔ native pair is learned from the den stream: the den hook stamps
  *      the harness's own id on every event as `harnessSession` (the optional
  *      `AgentEventMeta` field added to the den protocol for hermes), the one
@@ -37,10 +37,9 @@
  *
  *   - **`announcedNative`** — how the harness's own id is validated off the
  *     wire. Deliberately NOT unified: hermes rejects only the translator's
- *     `unknown-<ppid>` fallback, kimi requires the `session_` prefix, dsh
- *     requires its `session-<uuid>` shape verbatim. Each check is that
- *     harness's product knowledge.
- *   - **`canonicalRoomNative`** — kimi and dsh accept a canonical
+ *     `unknown-<ppid>` fallback, kimi requires the `session_` prefix. Each
+ *     check is that harness's product knowledge.
+ *   - **`canonicalRoomNative`** — kimi accepts a canonical
  *     `<harness-id>:<native>` room key as an id announcement (a harness
  *     running OUTSIDE den entirely, with no `RIVET_DEN_SESSION` to pin a
  *     room, posts under its own canonical id). Hermes has no such path and
@@ -51,7 +50,7 @@
  * What a room changing session MEANS is likewise per-harness product
  * knowledge: hermes switches session inside one process (`/new`, `/branch`,
  * a mid-chat `/resume`, a rewind, a forking compaction) and fires a hook for
- * it; kimi and dsh never do — for them a changed room means the PTY was
+ * it; kimi never does — for it a changed room means the PTY was
  * re-spawned into a fresh harness (a reaped PTY restarted from the drawer).
  * The room is the conversation either way, so the MECHANICS are identical and
  * live in `bindRoom` here; the meaning is written down in each driver's own
@@ -168,7 +167,7 @@ export abstract class AdoptingPtyHarnessDriver<
   /**
    * The native id out of a CANONICAL room key (`<harness-id>:<native>`), for
    * a harness running outside den with no `RIVET_DEN_SESSION` to pin a room.
-   * Default is no such path (hermes); kimi and dsh override.
+   * Default is no such path (hermes); kimi overrides.
    */
   protected canonicalRoomNative(_room: string): string | undefined {
     return undefined
@@ -198,7 +197,7 @@ export abstract class AdoptingPtyHarnessDriver<
    * The driver cannot tell WHY the id changed on the den wire and does not
    * need to: an in-process session switch (hermes's `/new`, `/branch`,
    * mid-chat `/resume`, rewind, forking compaction) and a den room re-spawned
-   * into a fresh harness (the only way kimi/dsh rooms change session) both
+   * into a fresh harness (the only way kimi rooms change session) both
    * replace the native id of the session this room is running, which is
    * exactly what the contract's `previousSessionId` means. The room is the
    * conversation every attached client is watching either way.

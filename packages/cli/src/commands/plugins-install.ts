@@ -13,7 +13,6 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
-import { parse as parseYaml } from 'yaml'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
 import {
   DEFAULT_EXTRA_DIRS,
@@ -41,7 +40,7 @@ const HARNESS_ID_SET = new Set<string>(HARNESS_IDS)
  *  so omitting it deletes the Shell picker entry. */
 export const DEFAULT_ROSTER_COMMANDS: Record<
   string,
-  { label: string; cmd: string[]; room: boolean }
+  { label: string; cmd: string[]; room: boolean; cwd?: string }
 > = {
   claude: { label: 'Claude Code', cmd: ['claude'], room: true },
   grok: {
@@ -51,14 +50,15 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   },
   hermes: { label: 'Hermes', cmd: ['hermes', '--yolo', '--accept-hooks'], room: true },
   kimi: { label: 'Kimi Code', cmd: ['kimi', '--yolo'], room: true },
-  dsh: { label: 'DeepSeek Harness', cmd: ['dsh', '--profile', 'tui'], room: true },
   codex: { label: 'Codex', cmd: ['codex'], room: true },
+  opencode: { label: 'OpenCode', cmd: ['opencode'], room: true },
+  pi: { label: 'Pi', cmd: ['pi'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
 export interface TermRosterFile {
   default: string
-  commands: Record<string, { label: string; cmd: string[]; room: boolean }>
+  commands: Record<string, { label: string; cmd: string[]; room: boolean; cwd?: string }>
   cwd: string
   env: Record<string, string>
 }
@@ -97,13 +97,6 @@ export const CODEX_LAUNCHD_LABEL = 'dev.rivetos.codex-capture'
 
 const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
   'kimi-code': join('integrations', 'kimi', 'rivet-memory', 'bin', 'setup-kimi-rivet-memory.sh'),
-  'deepseek-harness': join(
-    'integrations',
-    'deepseek',
-    'rivet-memory',
-    'bin',
-    'setup-deepseek-rivet-memory.sh',
-  ),
   codex: join('integrations', 'codex', 'rivet-memory', 'bin', 'setup-codex-rivet-memory.sh'),
 }
 
@@ -247,8 +240,6 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       ]
     case 'kimi-code':
       return [`run ${SETUP_SCRIPTS['kimi-code']} --apply`]
-    case 'deepseek-harness':
-      return [`run ${SETUP_SCRIPTS['deepseek-harness']} --apply`]
     case 'codex':
       return [
         `run ${SETUP_SCRIPTS.codex} --apply`,
@@ -263,6 +254,10 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         'merge memory.provider: rivet_memory into ~/.hermes/config.yaml',
         'ensure RIVETOS_PG_URL in ~/.hermes/.env (from ~/.rivetos/.env)',
       ]
+    case 'opencode':
+      return ['no rivet-memory installer for opencode yet']
+    case 'pi':
+      return ['pi memory capture not wired yet']
   }
 }
 
@@ -274,11 +269,14 @@ export function buildDenTermRoster(
   for (const h of harnesses) {
     const entry = DEFAULT_ROSTER_COMMANDS[h.command]
     if (!entry) continue
-    commands[h.command] = {
+    const built: TermRosterFile['commands'][string] = {
       label: entry.label,
       room: entry.room,
       cmd: [h.binary, ...entry.cmd.slice(1)],
     }
+    if (h.command === 'opencode') built.cwd = join(home, '.rivetos', 'workspace')
+    else if (entry.cwd) built.cwd = entry.cwd
+    commands[h.command] = built
   }
   const keys = Object.keys(commands)
   if (keys.length === 0) return null
@@ -564,28 +562,8 @@ export function tomlFileHasRivetosTable(path: string): boolean {
   }
 }
 
-function yamlContainsRivetMemory(value: unknown): boolean {
-  if (typeof value === 'string')
-    return value === 'rivet-memory' || /(?:^|\/)rivet-memory(?:\/|$)/.test(value)
-  if (Array.isArray(value)) return value.some(yamlContainsRivetMemory)
-  if (value && typeof value === 'object') {
-    const rec = value as Record<string, unknown>
-    if (rec.id === 'rivet-memory') return true
-    return Object.values(rec).some(yamlContainsRivetMemory)
-  }
-  return false
-}
-
-export function yamlFileHasRivetMemory(path: string): boolean {
-  try {
-    return yamlContainsRivetMemory(parseYaml(readFileSync(path, 'utf-8')))
-  } catch {
-    return false
-  }
-}
-
 /** Config homes the setup scripts actually write. An explicit
- *  CODEX_HOME / KIMI_CODE_HOME / DSH_HOME is the script's effective home
+ *  CODEX_HOME / KIMI_CODE_HOME is the script's effective home
  *  — do not also repair or validate the defaults. */
 export function artefactConfigHomes(id: HarnessId, home: string, configHome: string): string[] {
   const envHome = nonemptyEnv(
@@ -593,9 +571,7 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
       ? process.env.KIMI_CODE_HOME
       : id === 'codex'
         ? process.env.CODEX_HOME
-        : id === 'deepseek-harness'
-          ? process.env.DSH_HOME
-          : undefined
+        : undefined
     )?.trim(),
   )
   if (envHome) return [envHome]
@@ -604,9 +580,7 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
       ? [configHome, join(home, '.kimi-code'), join(home, '.kimi')]
       : id === 'codex'
         ? [configHome, join(home, '.codex')]
-        : id === 'deepseek-harness'
-          ? [configHome, join(home, '.dsh')]
-          : [configHome]
+        : [configHome]
   return [...new Set(defaults.filter((d) => d.length > 0))]
 }
 
@@ -634,10 +608,6 @@ export function setupArtefactMissing(
       )
       return mcp ? null : 'mcp.json / config.toml missing rivetos MCP block'
     }
-    case 'deepseek-harness':
-      return homes.some((dir) => yamlFileHasRivetMemory(join(dir, 'cordis.patch.yml')))
-        ? null
-        : 'cordis.patch.yml missing rivet-memory plugin'
     default:
       return null
   }
@@ -701,17 +671,6 @@ function ensureSetupArtefact(id: HarnessId, h: DetectedHarness, root: string, ho
       }
     }
     return
-  }
-  if (id === 'deepseek-harness') {
-    const plugin = join(root, 'integrations', 'deepseek', 'rivet-memory', 'plugin', 'index.js')
-    const block =
-      `\n# --- rivet-memory capture (merged by rivetos plugins install) ---\n` +
-      `- insert:\n    - id: rivet-memory\n      name: '${plugin}'\n`
-    for (const dir of artefactConfigHomes(id, home, h.configHome)) {
-      const patch = join(dir, 'cordis.patch.yml')
-      if (!existsSync(patch) || yamlFileHasRivetMemory(patch)) continue
-      writeFileSync(patch, readFileSync(patch, 'utf-8') + block)
-    }
   }
 }
 
@@ -966,10 +925,9 @@ export async function installCodexCaptureWatcher(opts: {
 const SETUP_BIN_ENV: Partial<Record<HarnessId, string>> = {
   codex: 'CODEX_BIN',
   'kimi-code': 'KIMI_BIN',
-  'deepseek-harness': 'DSH_BIN',
 }
 
-/** PATH + `CODEX_BIN`/`KIMI_BIN`/`DSH_BIN` so a harness found only in a
+/** PATH + `CODEX_BIN`/`KIMI_BIN` so a harness found only in a
  *  mise shim / extra dir is visible to `command -v` inside setup scripts. */
 export function setupScriptEnv(h: DetectedHarness, root: string, home: string): NodeJS.ProcessEnv {
   const extra = DEFAULT_EXTRA_DIRS.map((d) => expandHome(d, home))
@@ -1187,7 +1145,7 @@ export async function runPluginsInstall(
 
   if (selected.length === 0 && want.length === 0) {
     console.log('No coding harnesses detected on PATH.')
-    console.log('Install claude, grok, kimi, hermes, dsh, or codex and re-run.')
+    console.log('Install claude, grok, kimi, hermes, or codex and re-run.')
     writeDenTerm([], home, parsed.force, parsed.dryRun)
     return
   }
@@ -1220,8 +1178,10 @@ export async function runPluginsInstall(
         case 'hermes':
           result = await installHermes(h, root, home, exec, false, parsed.force)
           break
+        case 'opencode':
+          result = { ok: false, detail: 'no rivet-memory installer for opencode yet' }
+          break
         case 'kimi-code':
-        case 'deepseek-harness':
         case 'codex':
           result = await runSetupScript(
             h.id,
@@ -1236,6 +1196,9 @@ export async function runPluginsInstall(
               uid: deps.uid,
             },
           )
+          break
+        case 'pi':
+          result = { ok: true, detail: 'no capture installer yet' }
           break
       }
       oneLine(h.id, result.ok, result.detail, false)

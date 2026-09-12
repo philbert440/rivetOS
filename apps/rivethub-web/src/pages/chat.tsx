@@ -1754,8 +1754,7 @@ function ActiveSession(props: {
   }
 
   // Approvals only exist for drivers that surface their permission gate on the
-  // wire; `claude-code` reports `approvals: false` always (its prompts live
-  // inside the TUI), so this stays empty there.
+  // wire; `claude-code` reports `approvals: true` when PTY+herdr are up.
   const pendingApprovals = useChat((s) => s.approvals[props.sessionId])
   const onDecideApproval = (requestId: string, decision: ApprovalDecision): void => {
     if (!canonicalId) return

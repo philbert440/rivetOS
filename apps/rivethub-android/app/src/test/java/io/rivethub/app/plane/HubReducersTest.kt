@@ -11,9 +11,15 @@ class HubReducersTest {
         assertEquals("claude-code", harnessIdForAgent("claude", "claude-cli"))
         assertEquals("grok-build", harnessIdForAgent("grok", null))
         assertEquals("kimi-code", harnessIdForAgent("kimi-code", null))
+        assertEquals("opencode", harnessIdForAgent("opencode", null))
+        assertEquals("opencode", harnessIdForAgent("bot", "opencode-cli"))
+        assertEquals(null, harnessIdForAgent("opencode-migration-helper", null))
         assertEquals("hermes", harnessIdForAgent("hermes", null))
-        assertEquals("deepseek-harness", harnessIdForAgent("dsh", null))
         assertEquals("codex", harnessIdForAgent("codex", null))
+        assertEquals("pi", harnessIdForAgent("pi", "pi-cli"))
+        assertEquals("pi", harnessIdForAgent("pi", null))
+        assertEquals(null, harnessIdForAgent("gippity", null))
+        assertEquals(null, harnessIdForAgent("copilot", null))
         assertEquals(null, harnessIdForAgent("wiki", "local"))
     }
 

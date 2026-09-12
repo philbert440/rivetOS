@@ -7,12 +7,12 @@ describe('adapterForCommand', () => {
     expect(adapterForCommand('claude')?.capabilities().liveTurn).toBe(true)
   })
 
-  it('grok and hermes liveTurn is true; dsh stays text-only', () => {
+  it('grok, hermes, kimi and codex liveTurn is true', () => {
     expect(adapterForCommand('grok')?.capabilities().liveTurn).toBe(true)
     expect(adapterForCommand('hermes')?.capabilities().liveTurn).toBe(true)
-    expect(adapterForCommand('dsh')?.capabilities().liveTurn).toBe(false)
     expect(adapterForCommand('kimi')?.capabilities().liveTurn).toBe(true)
     expect(adapterForCommand('codex')?.capabilities().liveTurn).toBe(true)
+    expect(adapterForCommand('opencode')?.capabilities().liveTurn).toBe(true)
   })
 
   it('every roster command in ROSTER_TO_HARNESS resolves to an adapter', () => {

@@ -34,7 +34,15 @@ describe('contextWindowFromModel', () => {
     expect(contextWindowFromModel('grok-4.6', 'grok')).toBe(500_000)
     expect(contextWindowFromModel(undefined, 'grok-build')).toBe(500_000)
     expect(contextWindowFromModel(undefined, 'hermes')).toBe(262_144)
+    expect(contextWindowFromModel(undefined, 'opencode')).toBe(262_144)
+    expect(contextWindowFromModel(undefined, 'pi')).toBe(262_144)
     expect(contextWindowFromModel('local-vllm')).toBe(262_144)
+  })
+
+  it('stamps Codex / GPT-5-class at 400k', () => {
+    expect(contextWindowFromModel('gpt-5')).toBe(400_000)
+    expect(contextWindowFromModel('gpt-5-codex')).toBe(400_000)
+    expect(contextWindowFromModel(undefined, 'codex')).toBe(400_000)
   })
 })
 
@@ -106,6 +114,15 @@ describe('overlaySessionContext', () => {
     expect(stamp).toEqual({
       contextWindow: 200_000,
       compactAt: 165_000,
+      contextSource: 'default',
+    })
+  })
+
+  it('defaults Codex transcripts den did not spawn to 400k', () => {
+    const stamp = overlaySessionContext('codex:abc', [{ role: 'user' }], 'codex')
+    expect(stamp).toEqual({
+      contextWindow: 400_000,
+      compactAt: 365_000,
       contextSource: 'default',
     })
   })

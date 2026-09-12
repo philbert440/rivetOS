@@ -33,25 +33,28 @@ export function compactAtFor(window: number, reserve = COMPACT_RESERVE): number 
 
 /**
  * Max context tokens for a spawn model option / transcript model id / roster
- * command. Claude is 200k unless the id carries `[1m]` / `-1m` (then 1M).
+ * command. Claude is 200k unless the id carries `[1m]` / `-1m` (then 1M);
+ * Codex / GPT-5-class is 400k. Callers with an existing stamp keep it.
  */
 export function contextWindowFromModel(model: string | undefined, command?: string): number {
   const id = (model ?? '').trim()
   const cmd = (command ?? '').trim().toLowerCase()
   const claudeCmd = cmd === 'claude' || cmd === 'claude-code'
   const grokCmd = cmd === 'grok' || cmd === 'grok-build'
+  const codexCmd = cmd === 'codex'
   const localCmd =
     cmd === 'hermes' ||
     cmd === 'kimi' ||
     cmd === 'kimi-code' ||
-    cmd === 'dsh' ||
-    cmd === 'deepseek-harness' ||
+    cmd === 'opencode' ||
+    cmd === 'pi' ||
     cmd === 'local'
 
   // 1M is a request-side flag, not a model family. Only this substring.
   if (/\[1m\]|-1m/i.test(id)) return 1_000_000
   if (claudeCmd || /claude|anthropic|opus|sonnet|haiku|fable/i.test(id)) return 200_000
   if (grokCmd || /grok/i.test(id)) return 500_000
+  if (codexCmd || /^gpt-5|codex/i.test(id)) return 400_000
   if (localCmd || /local|vllm|llama-server|llama_server/i.test(id)) return 262_144
   return 262_144
 }

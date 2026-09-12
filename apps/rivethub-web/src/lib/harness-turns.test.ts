@@ -2,10 +2,24 @@ import { describe, expect, it } from 'vitest'
 import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
 import {
   agentStatusLine,
+  foldHermesAssistant,
   isLiveTurnCommand,
   liveFromTranscript,
   messagesFromHarnessTurns,
 } from './harness-turns.js'
+
+/** Copied from apps/rivethub-android HermesReasoningTest.kt (and packages/types). */
+const HERMES_HEADER =
+  '┌─ Reasoning ──────────────────────────────────────────────────────────────────────────────────────┐'
+const HERMES_FOOTER =
+  '└──────────────────────────────────────────────────────────────────────────────────────────────────┘'
+const HERMES_BOXED = [
+  HERMES_HEADER,
+  '│ The user wants the leak fixed.',
+  HERMES_FOOTER,
+  '',
+  'Fixed.',
+].join('\n')
 
 const turn = (role: 'user' | 'assistant', text: string): HarnessTranscriptTurn => ({ role, text })
 
@@ -105,16 +119,71 @@ describe('messagesFromHarnessTurns', () => {
     expect(msgs).toHaveLength(1)
     expect(msgs[0].text).toBe('hi')
   })
+
+  it('splits a Hermes reasoning box onto thinking and strips the chrome from text', () => {
+    const msgs = messagesFromHarnessTurns('hermes:s1', [
+      turn('user', 'hi'),
+      turn('assistant', HERMES_BOXED),
+    ])
+    expect(msgs[0].text).toBe('hi')
+    expect(msgs[0].thinking).toBeUndefined()
+    expect(msgs[1].text).toBe('Fixed.')
+    expect(msgs[1].thinking).toBe('The user wants the leak fixed.')
+    expect(msgs[1].text).not.toContain('┌')
+    expect(msgs[1].text).not.toContain('Reasoning')
+  })
+
+  it('keeps an existing thinking field when the box is also present', () => {
+    const msgs = messagesFromHarnessTurns('s1', [
+      { role: 'assistant', text: HERMES_BOXED, thinking: 'from sqlite' },
+    ])
+    expect(msgs[0].thinking).toBe('from sqlite')
+    expect(msgs[0].text).toBe('Fixed.')
+  })
+
+  it('leaves a normal assistant reply (no box) unchanged', () => {
+    const msgs = messagesFromHarnessTurns('s1', [turn('assistant', 'The parser is in src/parse.ts.')])
+    expect(msgs[0].text).toBe('The parser is in src/parse.ts.')
+    expect(msgs[0].thinking).toBeUndefined()
+  })
+
+  it('reuses the folded hermes message when the boxed turn is unchanged', () => {
+    const t0 = turn('assistant', HERMES_BOXED)
+    const first = messagesFromHarnessTurns('s1', [t0])
+    const second = messagesFromHarnessTurns('s1', [t0], first)
+    expect(second[0]).toBe(first[0])
+    expect(second[0].thinking).toBe('The user wants the leak fixed.')
+  })
+})
+
+describe('foldHermesAssistant', () => {
+  it('box-only payload is all thinking, empty text', () => {
+    const raw = [HERMES_HEADER, '│ only thinking', HERMES_FOOTER].join('\n')
+    expect(foldHermesAssistant('assistant', raw, undefined)).toEqual({
+      text: '',
+      thinking: 'only thinking',
+      extracted: true,
+    })
+  })
+
+  it('does not fold user turns', () => {
+    expect(foldHermesAssistant('user', HERMES_BOXED, undefined)).toEqual({
+      text: HERMES_BOXED,
+      extracted: false,
+    })
+  })
 })
 
 describe('isLiveTurnCommand', () => {
-  it('treats claude/kimi/grok/hermes/codex as live-turn stores; dsh is not', () => {
+  it('treats claude/kimi/opencode/pi/grok/hermes/codex as live-turn stores', () => {
     expect(isLiveTurnCommand('claude')).toBe(true)
     expect(isLiveTurnCommand('kimi-code')).toBe(true)
+    expect(isLiveTurnCommand('opencode')).toBe(true)
+    expect(isLiveTurnCommand('pi')).toBe(true)
     expect(isLiveTurnCommand('grok')).toBe(true)
     expect(isLiveTurnCommand('hermes')).toBe(true)
     expect(isLiveTurnCommand('codex')).toBe(true)
-    expect(isLiveTurnCommand('dsh')).toBe(false)
+    expect(isLiveTurnCommand('shell')).toBe(false)
     expect(isLiveTurnCommand('')).toBe(false)
   })
 })
@@ -158,6 +227,42 @@ describe('liveFromTranscript', () => {
       liveFromTranscript([{ ...incomplete, complete: true }], working),
     ).toBeUndefined()
     expect(liveFromTranscript([turn('user', 'hi')], working)).toBeUndefined()
+  })
+
+  it('splits a live Hermes box into reasoningText and reply text', () => {
+    const live = liveFromTranscript([{ role: 'assistant', text: HERMES_BOXED }], working)
+    expect(live?.text).toBe('Fixed.')
+    expect(live?.reasoningText).toBe('The user wants the leak fixed.')
+    expect(live?.reasoning).toBe(false)
+  })
+
+  it('opens live reasoning when the box has no reply yet', () => {
+    const raw = [HERMES_HEADER, '│ only thinking', HERMES_FOOTER].join('\n')
+    const live = liveFromTranscript([{ role: 'assistant', text: raw }], working)
+    expect(live?.text).toBe('')
+    expect(live?.reasoningText).toBe('only thinking')
+    expect(live?.reasoning).toBe(true)
+  })
+
+  it('does not hold reasoning open for non-Hermes thinking then tool_use', () => {
+    const live = liveFromTranscript(
+      [
+        {
+          role: 'assistant',
+          text: '',
+          thinking: 'check the files',
+          lastBlock: 'tool_use',
+          tools: [{ name: 'Bash', status: 'running', id: 't1' }],
+        },
+      ],
+      working,
+    )
+    expect(live?.reasoning).toBe(false)
+    expect(live?.reasoningText).toBe('check the files')
+    expect(live?.text).toBe('')
+    expect(live?.tools).toEqual([
+      expect.objectContaining({ id: 't1', name: 'Bash', status: 'running' }),
+    ])
   })
 })
 

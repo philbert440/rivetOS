@@ -182,6 +182,8 @@ export const CLI_HARNESS_PROVIDERS = new Set([
   'kimi-code',
   'claude-cli',
   'codex-cli',
+  'opencode-cli',
+  'pi-cli',
 ])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
@@ -217,6 +219,24 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
   ]),
   'hermes-cli': new Set(['model', 'binary', 'cwd', 'name', 'context_window', 'max_output_tokens']),
   'kimi-code': new Set([
+    'model',
+    'binary',
+    'home',
+    'cwd',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
+  'opencode-cli': new Set([
+    'model',
+    'binary',
+    'home',
+    'cwd',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
+  'pi-cli': new Set([
     'model',
     'binary',
     'home',

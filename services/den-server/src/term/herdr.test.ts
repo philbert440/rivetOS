@@ -123,8 +123,6 @@ describe('herdr argv builders', () => {
     expect(herdrKindForCommand('kimi')).toBe('kimi')
     expect(herdrKindForCommand('codex')).toBe('codex')
     expect(herdrKindForCommand('hermes')).toBe('hermes')
-    expect(herdrKindForCommand('dsh')).toBeUndefined()
-    expect(herdrKindForCommand('deepseek')).toBeUndefined()
     expect(herdrKindForCommand('shell')).toBeUndefined()
     expect(herdrKindForCommand('bash')).toBeUndefined()
     expect(herdrKindForCommand('operator-key')).toBeUndefined()

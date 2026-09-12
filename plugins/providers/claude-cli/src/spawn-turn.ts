@@ -13,9 +13,10 @@
  * iterator plus idempotent kill (SIGTERM → SIGKILL after a grace period)
  * and capped stderr capture.
  *
- * Constraint (locked per migration plan): no RivetOS-side max-output-tokens
- * or per-spawn timeouts. Claude Code owns those. Callers forward abort
- * signals to `kill()` when a turn must die early.
+ * Optional `timeoutMs` (0 = none) arms a per-spawn timer: on fire, SIGTERM
+ * the child then SIGKILL after KILL_GRACE_MS, and the event iterator rejects
+ * with `ClaudeCliTimeoutError`. Callers still forward abort signals to
+ * `kill()` when a turn must die early.
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
@@ -24,8 +25,20 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 // Config
 // ---------------------------------------------------------------------------
 
-/** Grace period between SIGTERM and SIGKILL when terminating the child. */
-export const KILL_GRACE_MS = 2_000
+/** Grace period between SIGTERM and SIGKILL when terminating the child.
+ *  Matches `@rivetos/provider-codex-cli`. */
+export const KILL_GRACE_MS = 3_000
+
+/** Thrown from `events()` when `timeoutMs` fires before the child exits. */
+export class ClaudeCliTimeoutError extends Error {
+  readonly code = 'timeout' as const
+  readonly timeoutMs: number
+  constructor(timeoutMs: number) {
+    super(`claude-cli spawn timed out after ${timeoutMs}ms`)
+    this.name = 'ClaudeCliTimeoutError'
+    this.timeoutMs = timeoutMs
+  }
+}
 
 /** Max bytes of child stderr we retain (only the first 500 chars are surfaced). */
 export const STDERR_CAP = 64 * 1024
@@ -242,11 +255,18 @@ export interface SpawnedTurn {
 export function spawnClaudeTurn(
   flags: SpawnTurnFlags,
   userContent: string | CliContentBlock[],
-  opts?: { env?: Record<string, string | undefined> },
+  opts?: {
+    env?: Record<string, string | undefined>
+    timeoutMs?: number
+    /** Injectable spawner; defaults to `node:child_process.spawn`. */
+    spawn?: typeof spawn
+  },
 ): SpawnedTurn {
   const args = buildArgs(flags)
+  const timeoutMs = opts?.timeoutMs ?? 0
+  const spawnFn = opts?.spawn ?? spawn
 
-  const proc = spawn(flags.binary, args, {
+  const proc = spawnFn(flags.binary, args, {
     env: buildChildEnv(opts?.env),
     cwd: flags.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -259,19 +279,48 @@ export function spawnClaudeTurn(
   proc.stdin.end()
 
   // Terminate the child idempotently: SIGTERM, then SIGKILL if it ignores us.
-  // No internal *runtime* timeout — Claude Code owns max-output-tokens and
-  // runtime limits — this only bounds how long a *kill* can hang.
+  // The SIGKILL fallback is armed whenever SIGTERM is sent (not on SIGTERM
+  // exit) so a child that ignores SIGTERM is still killed after grace.
   let killTimer: ReturnType<typeof setTimeout> | undefined
+  let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+  let timeoutError: ClaudeCliTimeoutError | undefined
   const exited = (): boolean => proc.exitCode !== null || proc.signalCode !== null
+  const armSigkillFallback = (): void => {
+    if (killTimer) return
+    killTimer = setTimeout(() => {
+      if (!exited()) proc.kill('SIGKILL')
+    }, KILL_GRACE_MS)
+    killTimer.unref()
+  }
   const kill = (): void => {
     if (exited()) return // already exited (or signalled) — nothing to do
-    if (!proc.killed) proc.kill('SIGTERM')
-    if (!killTimer) {
-      killTimer = setTimeout(() => {
-        if (!exited()) proc.kill('SIGKILL')
-      }, KILL_GRACE_MS)
-      killTimer.unref()
+    try {
+      proc.kill('SIGTERM')
+    } catch {
+      /* already gone */
     }
+    armSigkillFallback()
+  }
+
+  // events() races each stdout chunk against this latch so a timeout (or
+  // close with stdout still open) cannot leave the iterator pending.
+  let notifyTerminate: (() => void) | undefined
+  const terminated = new Promise<void>((resolve) => {
+    notifyTerminate = resolve
+  })
+  const wakeIterator = (): void => {
+    notifyTerminate?.()
+    notifyTerminate = undefined
+  }
+
+  // Optional per-spawn timeout (0 = none). SIGTERM then SIGKILL after grace.
+  if (timeoutMs > 0) {
+    timeoutTimer = setTimeout(() => {
+      timeoutError = new ClaudeCliTimeoutError(timeoutMs)
+      kill()
+      wakeIterator()
+    }, timeoutMs)
+    timeoutTimer.unref()
   }
 
   // Exit is latched from a listener attached HERE, at spawn time, and every
@@ -286,7 +335,9 @@ export function spawnClaudeTurn(
   proc.once('close', (code) => {
     exitCode = code
     if (killTimer) clearTimeout(killTimer)
+    if (timeoutTimer) clearTimeout(timeoutTimer)
     for (const waiter of exitWaiters.splice(0)) waiter(code)
+    wakeIterator()
   })
 
   // Cap stderr accumulation — callers only ever surface the first 500 chars,
@@ -298,16 +349,32 @@ export function spawnClaudeTurn(
   })
 
   async function* events(): AsyncIterable<CliEvent> {
-    for await (const line of iterateLines(proc.stdout)) {
-      if (!line.trim()) continue
-      let event: CliEvent
-      try {
-        event = JSON.parse(line) as CliEvent
-      } catch {
-        continue
+    const iter = iterateLines(proc.stdout)[Symbol.asyncIterator]()
+    try {
+      while (true) {
+        const nextLine = iter.next().then((result) => ({ tag: 'line' as const, result }))
+        const nextStop = terminated.then(() => ({ tag: 'stop' as const }))
+        const winner = await Promise.race([nextLine, nextStop])
+        if (winner.tag === 'stop') {
+          if (timeoutError) throw timeoutError
+          break
+        }
+        if (winner.result.done) break
+        const line = winner.result.value
+        if (!line.trim()) continue
+        let event: CliEvent
+        try {
+          event = JSON.parse(line) as CliEvent
+        } catch {
+          continue
+        }
+        yield event
       }
-      yield event
+    } catch (err) {
+      if (timeoutError) throw timeoutError
+      throw err
     }
+    if (timeoutError) throw timeoutError
   }
 
   const waitExit = (): Promise<number | null> =>

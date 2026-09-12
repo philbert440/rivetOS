@@ -1,14 +1,14 @@
 # RivetHub
 
-> RivetHub gives you a private, local hub for capturing, organizing, and retrieving sessions, tool calls, and outputs from supported agent tools. It is a distribution of the open-source RivetOS runtime.
+> RivetHub is a self-hosted hub that records sessions, tool calls, and outputs from AI coding tools, and makes that history searchable — by you and by the tools themselves. It is a distribution of the open-source RivetOS runtime.
 
 ## Start here
 
-- [Product and examples](https://rivethub.io/): automatic memory, cross-agent continuity, and product knowledge. Product screenshots show actual RivetHub desktop sessions, including a recorded memory search and a terminal replay of that exchange.
+- [Product and examples](https://rivethub.io/): the problem RivetHub solves, how capture and recall work, and which agent tools are shipped versus planned. Product screenshots show the real desktop app, including a memory search inside a live session and a terminal replay of a saved exchange.
 - [Quickstart](https://rivethub.io/install-local.html): Linux and macOS installation and first use.
 - [Omarchy setup](https://rivethub.io/omarchy.html): Linux desktop installation, Omarchy appearance, terminal palette sync, and first capture verification. Theme detection requires the desktop app; refocus it after changing themes.
-- [Supported integrations](https://rivethub.io/install-local.html#harnesses): Claude Code, Codex, Grok Build, Kimi Code, Hermes, and DeepSeek; verify capture and recall for each configured integration.
-- [Applications](https://rivethub.io/apps.html): Linux and Windows desktop clients, Android app, macOS browser use, and iPhone browser pairing guidance.
+- [Supported integrations](https://rivethub.io/install-local.html#harnesses): Claude Code, Codex, Grok Build, Kimi Code, and Hermes are shipped. opencode and pi are planned; verify capture and recall for each configured integration.
+- [Applications](https://rivethub.io/apps.html): Linux and Windows desktop clients, Android app, and macOS browser use. There is no iPhone app yet; enrollment QR codes are for Android.
 - [Common questions](https://rivethub.io/#questions): current capabilities, local processing boundaries, and planned features.
 
 ## Availability and data boundaries
@@ -24,7 +24,7 @@ Embedding and compaction endpoints and models can be configured on the server to
 - [Release explanation](https://rivethub.io/releases.html): runtime and app channels are distinct.
 - [Current release manifest](https://rivethub.io/releases/latest.json): consult this for current versions, checksums, and app download filenames instead of inferring versions from examples.
 - [Server setup](https://rivethub.io/server.html): server, VM, or system container setup, from datahub to agent node and verification.
-- [Support](https://rivethub.io/support.html): tweet @rivetphilbot or email rivetphilbot@gmail.com.
+- [Support](https://rivethub.io/support.html): GitHub issues, email rivetphilbot@gmail.com, or @rivetphilbot on X.
 - [Datahub setup](https://rivethub.io/install-datahub.html): dedicated hub.
 - [Add a node](https://rivethub.io/install-node.html): expand to another machine.
 - [Runtime documentation](https://rivetos.dev/): RivetOS documentation.

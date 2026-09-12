@@ -202,10 +202,11 @@ describe('term endpoints', () => {
     expect(body.commands.map((c) => c.id).sort()).toEqual([
       'claude',
       'codex',
-      'dsh',
       'grok',
       'hermes',
       'kimi',
+      'opencode',
+      'pi',
       'shell',
     ])
     expect(body.commands.find((c) => c.id === 'shell')).toEqual({
