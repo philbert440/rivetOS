@@ -610,9 +610,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
         ? process.env.CODEX_HOME
         : id === 'pi'
           ? process.env.PI_AGENT_HOME
-        : id === 'opencode'
-          ? process.env.OPENCODE_CONFIG_DIR
-          : undefined
+          : id === 'opencode'
+            ? process.env.OPENCODE_CONFIG_DIR
+            : undefined
     )?.trim(),
   )
   if (envHome) return [envHome]
@@ -623,9 +623,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
         ? [configHome, join(home, '.codex')]
         : id === 'pi'
           ? [configHome, join(home, '.pi', 'agent')]
-        : id === 'opencode'
-          ? [configHome, join(home, '.config', 'opencode')]
-          : [configHome]
+          : id === 'opencode'
+            ? [configHome, join(home, '.config', 'opencode')]
+            : [configHome]
   return [...new Set(defaults.filter((d) => d.length > 0))]
 }
 
