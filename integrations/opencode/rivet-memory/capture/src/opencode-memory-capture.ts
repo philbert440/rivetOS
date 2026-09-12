@@ -1297,7 +1297,7 @@ export function queuePending(stateFile: string, entry: Record<string, unknown>):
 /** Read + clear the queue (call only while holding the state lock). Dedupes on `key`. */
 export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
   const file = pendingQueuePath(stateFile)
-  let raw = ''
+  let raw: string
   try {
     raw = fs.readFileSync(file, 'utf8')
   } catch {
@@ -1314,7 +1314,8 @@ export function takePending(stateFile: string, key: string): Record<string, unkn
     if (!line.trim()) continue
     try {
       const parsed = JSON.parse(line) as Record<string, unknown>
-      const k = typeof parsed[key] === 'string' ? (parsed[key] as string) : ''
+      const v = parsed[key]
+      const k = typeof v === 'string' ? v : ''
       if (!k || seen.has(k)) continue
       seen.add(k)
       out.push(parsed)
