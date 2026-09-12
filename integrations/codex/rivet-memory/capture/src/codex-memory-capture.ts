@@ -922,6 +922,8 @@ export function loadCaptureState(file = captureStatePath()): CaptureState {
   }
 }
 
+/** One-hop retry delay when an ingest was skipped on a busy lock. */
+export const RETRY_HOP_DELAY_MS = 15_000
 export const STATE_LOCK_STALE_MS = 120_000
 export const STATE_LOCK_WAIT_MS = 30_000
 export const STATE_LOCK_POLL_MS = 100
@@ -1023,6 +1025,11 @@ export async function acquireStateLock(
   opts: StateLockOpts = {},
 ): Promise<StateLockHandle> {
   const dir = lockDirFor(stateFile)
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true })
+  } catch {
+    // a missing/unwritable parent surfaces as 'error' from tryAcquireLock
+  }
   const staleMs = opts.staleMs ?? STATE_LOCK_STALE_MS
   const waitMs = opts.waitMs ?? STATE_LOCK_WAIT_MS
   const pollMs = opts.pollMs ?? STATE_LOCK_POLL_MS
@@ -1398,6 +1405,8 @@ export interface IngestFileOpts {
 }
 
 export interface HookHandleResult {
+  /** Set when the run was skipped because the state lock stayed busy. */
+  lockBusy?: boolean
   inserted: number
   skipped: number
   file: string | null
@@ -1499,7 +1508,7 @@ export async function ingestTranscriptFile(
       },
       opts.lock,
     )
-    return locked ?? empty
+    return locked ?? { ...empty, lockBusy: true }
   } catch (err) {
     log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
     return empty
@@ -1891,6 +1900,14 @@ async function main(): Promise<void> {
       console.log(
         `${file}: event=${result.event} inserted=${result.inserted} skipped=${result.skipped}${result.finalized ? ' finalized' : ''}`,
       )
+      if (result.lockBusy && !flagPresent(args, '--retry-once')) {
+        // one-hop deferral: a terminal event must not lose its tail to a busy lock
+        const entry = captureEntryPath()
+        const hop = [...entry.prefix, ...args.filter((a) => a !== '--delay-ms' && !/^\d+$/.test(a))]
+        hop.push('--retry-once', '--delay-ms', String(RETRY_HOP_DELAY_MS))
+        defaultSpawn(entry.command, hop, { env: process.env })
+        log(`lock busy for ${file}; re-queued once with --delay-ms ${String(RETRY_HOP_DELAY_MS)}`)
+      }
     })
     return
   }

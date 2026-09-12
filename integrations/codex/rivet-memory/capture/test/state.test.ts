@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   acquireStateLock,
+  withStateLock,
   releaseStateLock,
   handleHookPayload,
   loadCaptureState,
@@ -217,10 +218,32 @@ console.log('\n— mkdir lock stale vs timeout —')
   mkdirSync(staleDir)
   writeFileSync(
     path.join(staleDir, 'owner.json'),
-    `${JSON.stringify({ pid: 1, ts: Date.now() - 200_000 })}\n`,
+    `${JSON.stringify({ pid: 999_999_999, ts: Date.now() - 200_000 })}\n`,
   )
   const stolen = await acquireStateLock(stateFile, { staleMs: 120_000, waitMs: 500, pollMs: 50 })
-  eq('stale lock is acquired', stolen.held, true)
+  eq('stale lock is acquired (dead owner)', stolen.held, true)
+  releaseStateLock(stolen)
+
+  // a LIVE owner keeps its lock however old the stamp is
+  mkdirSync(staleDir)
+  writeFileSync(
+    path.join(staleDir, 'owner.json'),
+    `${JSON.stringify({ pid: process.pid, ts: Date.now() - 200_000 })}\n`,
+  )
+  const live = await acquireStateLock(stateFile, { staleMs: 120_000, waitMs: 200, pollMs: 50 })
+  eq('old stamp with a live owner is NOT stolen', live.held, false)
+  let ran = false
+  const skipped = await withStateLock(
+    stateFile,
+    async () => {
+      ran = true
+      return 'x'
+    },
+    { waitMs: 100, pollMs: 20 },
+  )
+  eq('withStateLock skips (null) while the lock is busy', skipped, null)
+  eq('busy skip never ran the callback', ran, false)
+  rmSync(staleDir, { recursive: true, force: true })
   releaseStateLock(stolen)
 
   mkdirSync(`${stateFile}.lock`)

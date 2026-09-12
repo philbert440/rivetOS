@@ -34,6 +34,7 @@
  * ~/.rivetos/pi-capture-state.json (cursors + lastIngestAt).
  */
 
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -1405,10 +1406,44 @@ export async function runOnce(sessionsDir?: string, days?: number): Promise<void
  * Tail one session file from the persisted per-file cursor, then upsert.
  * Dedup keys are unchanged (line id). Always updates lastIngestAt / source.
  */
+/** One-hop deferral: a terminal event must not lose its tail to a busy lock. */
+export const RETRY_HOP_DELAY_MS = 15_000
+
+export function retryHopOnce(argv: string[]): void {
+  if (argv.includes('--retry-once')) return
+  try {
+    const launcher = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'bin',
+      'pi-memory-capture.sh',
+    )
+    const kept: string[] = []
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === '--delay-ms') {
+        i++
+        continue
+      }
+      kept.push(argv[i])
+    }
+    const child = spawn(
+      'bash',
+      [launcher, ...kept, '--retry-once', '--delay-ms', String(RETRY_HOP_DELAY_MS)],
+      { detached: true, stdio: 'ignore', env: process.env },
+    )
+    child.on('error', () => {})
+    child.unref()
+    log(`lock busy; re-queued once with --delay-ms ${String(RETRY_HOP_DELAY_MS)}`)
+  } catch {
+    // best effort
+  }
+}
+
 export async function ingestFileFromCursor(
   file: string,
   client: Queryable,
-): Promise<{ inserted: number; skipped: number }> {
+): Promise<{ inserted: number; skipped: number; lockBusy?: boolean }> {
   const abs = path.resolve(file)
   const locked = await withStateLockAsync(async () => {
     const persisted = loadCaptureState()
@@ -1435,7 +1470,7 @@ export async function ingestFileFromCursor(
       throw err
     }
   })
-  return locked ?? { inserted: 0, skipped: 0 }
+  return locked ?? { inserted: 0, skipped: 0, lockBusy: true }
 }
 
 /** `--ingest-file` CLI: never throws out of this function; caller exits 0. */
@@ -1449,6 +1484,7 @@ export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
     await withPool(async (client) => {
       const result = await ingestFileFromCursor(file, client)
       console.log(`${file}: inserted=${result.inserted} skipped=${result.skipped}`)
+      if (result.lockBusy) retryHopOnce(process.argv.slice(2))
     })
   } catch (err) {
     log(`ingest-file ${file} failed: ${err instanceof Error ? err.message : String(err)}`)

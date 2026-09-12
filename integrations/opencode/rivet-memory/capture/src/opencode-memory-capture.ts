@@ -31,6 +31,7 @@
  * ~/.rivetos/logs/opencode-capture.log.
  */
 
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
@@ -1246,9 +1247,43 @@ export async function runOnce(
   }
 }
 
+/** One-hop deferral: a terminal event must not lose its tail to a busy lock. */
+export const RETRY_HOP_DELAY_MS = 15_000
+
+export function retryHopOnce(argv: string[]): void {
+  if (argv.includes('--retry-once')) return
+  try {
+    const launcher = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'bin',
+      'opencode-memory-capture.sh',
+    )
+    const kept: string[] = []
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === '--delay-ms') {
+        i++
+        continue
+      }
+      kept.push(argv[i])
+    }
+    const child = spawn(
+      'bash',
+      [launcher, ...kept, '--retry-once', '--delay-ms', String(RETRY_HOP_DELAY_MS)],
+      { detached: true, stdio: 'ignore', env: process.env },
+    )
+    child.on('error', () => {})
+    child.unref()
+    log(`lock busy; re-queued once with --delay-ms ${String(RETRY_HOP_DELAY_MS)}`)
+  } catch {
+    // best effort
+  }
+}
+
 export async function runIngestSession(
   sessionId: string,
-  opts: { dbPath?: string; delayMs?: number } = {},
+  opts: { dbPath?: string; delayMs?: number; argv?: string[] } = {},
 ): Promise<void> {
   try {
     // Several plugin events for one session may spawn several children within
@@ -1265,7 +1300,10 @@ export async function runIngestSession(
         ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' }),
       )
     }, stateFile)
-    if (summary === null) return
+    if (summary === null) {
+      if (opts.argv) retryHopOnce(opts.argv)
+      return
+    }
     log(
       `ingest-session ${sessionId}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
@@ -1379,7 +1417,7 @@ async function main(): Promise<void> {
       log('ingest-session: missing session id')
       return
     }
-    await runIngestSession(sessionId, { dbPath, delayMs: parseDelayMs(args) })
+    await runIngestSession(sessionId, { dbPath, delayMs: parseDelayMs(args), argv: args })
     return
   }
   if (args[0] === '--backfill' || args[0] === '--once') {
