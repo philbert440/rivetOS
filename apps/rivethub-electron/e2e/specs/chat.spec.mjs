@@ -71,28 +71,76 @@ test('all advertised harnesses have working session-list endpoints', async ({ hu
   }
 })
 
+function isTermSpawnUrl(url) {
+  try {
+    const path = new URL(url).pathname
+    return path === '/api/terminal' || path === '/api/term'
+  } catch {
+    return false
+  }
+}
+
 test('terminal opens, accepts input and returns to chat', async ({ hub }) => {
   await draft(hub)
+  const marker = `RIVETHUB_E2E_${randomUUID().slice(0, 8)}`
+  // Conversation Terminal otherwise spawns the node default (usually a harness
+  // TUI). Force the den `shell` roster entry so `echo` is a real observable.
+  const forceShell = async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    const body = route.request().postDataJSON() ?? {}
+    await route.continue({ postData: JSON.stringify({ ...body, command: 'shell' }) })
+  }
+  await hub.route(isTermSpawnUrl, forceShell)
+  const ptyChunks = []
+  const onSocket = (ws) => {
+    ws.on('framereceived', ({ payload }) => {
+      ptyChunks.push(typeof payload === 'string' ? payload : Buffer.from(payload).toString('utf8'))
+    })
+  }
+  hub.on('websocket', onSocket)
   const response = hub.waitForResponse(
-    (r) => r.request().method() === 'POST' && r.url().includes('/api/term'),
+    (r) => r.request().method() === 'POST' && isTermSpawnUrl(r.url()),
   )
-  await hub.getByRole('button', { name: 'Terminal', exact: true }).click()
   let ptyId
   try {
+    await hub.getByRole('button', { name: 'Terminal', exact: true }).click()
     const res = await response
     expect(res.status(), await res.text()).toBeLessThan(300)
     const payload = await res.json()
     ptyId = payload.ptyId ?? payload.id ?? payload.session?.ptyId
     expect(ptyId, 'PTY id is required for test cleanup').toBeTruthy()
+    expect(payload.command, 'spawn must use the shell roster command').toBe('shell')
     await expect(hub.locator('.xterm')).toBeVisible()
+    // Input is dropped while the socket is not OPEN; wait until attached.
+    await expect(hub.getByText('connecting', { exact: true })).toHaveCount(0)
     const terminal = hub.locator('.xterm-helper-textarea')
     await terminal.focus()
-    // Input without Enter: exercises keyboard transport without executing a command.
-    await terminal.pressSequentially('RIVETHUB_E2E_INPUT')
-    await terminal.press('Control+u')
+    await terminal.pressSequentially(`echo ${marker}`)
+    await terminal.press('Enter')
+    await expect
+      .poll(
+        async () => {
+          const rendered = await hub.evaluate(() => {
+            const host = document.querySelector('[data-term-host]')
+            if (!host) return ''
+            const rows = host.querySelector('.xterm-rows')
+            const text = rows?.innerText || rows?.textContent || host.innerText || ''
+            return text.replace(/\u00a0/g, ' ')
+          })
+          if (rendered.includes(marker)) return rendered
+          return ptyChunks.join('')
+        },
+        { timeout: 20_000 },
+      )
+      .toContain(marker)
     await hub.getByRole('button', { name: 'Chat', exact: true }).click()
     await expect(hub.getByRole('button', { name: 'send', exact: true })).toBeVisible()
   } finally {
+    hub.off('websocket', onSocket)
+    await hub.unroute(isTermSpawnUrl, forceShell)
     if (ptyId) {
       const result = await api(hub, `/api/terminal?id=${encodeURIComponent(ptyId)}`, {
         method: 'DELETE',
