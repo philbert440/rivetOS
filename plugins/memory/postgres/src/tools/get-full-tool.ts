@@ -376,7 +376,7 @@ export function extractPiFromLine(j: unknown): ExtractedFull | null {
         try {
           toolResult = JSON.stringify(rawResult)
         } catch {
-          toolResult = String(rawResult)
+          toolResult = typeof rawResult === 'string' ? rawResult : '[unserializable tool result]'
         }
       }
     }
