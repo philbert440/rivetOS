@@ -66,27 +66,56 @@ describe('checkProviders (vllm with a ${VAR} api_key)', () => {
 })
 
 describe('redactResolvedSecrets', () => {
-  it('scrubs every env-sourced string, longest first, and leaves literals alone', () => {
+  it('scrubs substituted env values, credential-looking fields and probe fallbacks', () => {
+    const env = { K: 'abc123', HOST: 'h.example', T: 'tok', VLLM_API_KEY: 'fallback-key' }
     const raw = {
       api_key: '${K}',
       base_url: 'https://${HOST}/v1',
       model: 'm',
-      nested: { t: '${T}' },
+      nested: { token: '${T}' },
     }
     const resolved = {
       api_key: 'abc123',
       base_url: 'https://h.example/v1',
       model: 'm',
-      nested: { t: 'tok' },
+      nested: { token: 'tok' },
     }
     const out = redactResolvedSecrets(
-      'Failed to parse URL from https://h.example/v1/models with abc123 and tok for m',
+      'URL https://h.example/models with abc123, tok, fallback-key for m',
       raw,
       resolved,
+      env,
     )
-    expect(out).toBe(
-      'Failed to parse URL from [redacted]/models with [redacted] and [redacted] for m',
+    // the host was substituted (so it is scrubbed) even though the probe
+    // normalised the URL and the whole resolved field never appears
+    expect(out).toBe('URL https://[redacted]/models with [redacted], [redacted], [redacted] for m')
+  })
+
+  it('scrubs a literal api_key and the escaped-newline form of a value', () => {
+    const raw = { api_key: 'LIT-SECRET\ntrailing' }
+    const out = redactResolvedSecrets(
+      'bad: "Bearer LIT-SECRET\ntrailing" and escaped LIT-SECRET\\ntrailing',
+      raw,
+      raw,
+      {},
     )
+    expect(out).toBe('bad: "Bearer [redacted]" and escaped [redacted]')
+  })
+})
+
+describe('checkProviders error details (native fetch, no network)', () => {
+  it('does not echo a secret substituted into a base_url the probe normalised', async () => {
+    vi.stubEnv('K', 'FAKE-URL-SECRET')
+    const [r] = await checkProviders(
+      ['providers:', '  vllm:', '    base_url: not-a-url/${K}/v1', '    api_prefix: ""', ''].join(
+        '\n',
+      ),
+    )
+    // native fetch rejects the relative URL: "Failed to parse URL from not-a-url/…/models"
+    expect(r.message).toBe('Provider vllm: error')
+    expect(r.detail).toBeDefined()
+    expect(r.detail).not.toContain('FAKE-URL-SECRET')
+    expect(r.detail).toContain('[redacted]')
   })
 })
 
