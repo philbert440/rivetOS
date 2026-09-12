@@ -72,7 +72,10 @@ describe('checkProviderConnectivity (vllm)', () => {
       urls.push(String(input))
       return new Response('{}', { status: 200 })
     }) as typeof fetch
-    await checkProviderConnectivity('vllm', { base_url: 'https://api.deepseek.example/v1', api_key: 'k' })
+    await checkProviderConnectivity('vllm', {
+      base_url: 'https://api.deepseek.example/v1',
+      api_key: 'k',
+    })
     await checkProviderConnectivity('vllm', {
       base_url: 'https://api.z.example/api/coding/paas/v4',
       api_prefix: '',
