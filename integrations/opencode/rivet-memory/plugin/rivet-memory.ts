@@ -57,6 +57,8 @@ function spawnIngest(sessionId: string): void {
       [script, '--ingest-session', sessionId, '--delay-ms', String(CHILD_DELAY_MS)],
       { stdio: 'ignore', detached: true, env: { ...process.env } },
     )
+    // an asynchronous 'error' (ENOENT/EAGAIN) with no listener would throw into opencode
+    child.on('error', () => {})
     child.unref()
   } catch {
     // never throw into opencode

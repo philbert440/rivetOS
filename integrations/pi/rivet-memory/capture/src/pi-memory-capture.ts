@@ -1065,11 +1065,18 @@ function stateLockDir(stateFile = captureStatePath()): string {
   return `${stateFile}.lock`
 }
 
+/** Lock age source: the owner stamp when present, else the lock dir's mtime
+ *  (a fresh mkdir whose owner has not written its stamp yet must NOT look stale). */
 function readLockStamp(lockDir: string): number | null {
   try {
     const raw = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8')
     const ts = Number(raw.split('\n')[1])
-    return Number.isFinite(ts) ? ts : null
+    if (Number.isFinite(ts)) return ts
+  } catch {
+    // fall through to the directory mtime
+  }
+  try {
+    return fs.statSync(lockDir).mtimeMs
   } catch {
     return null
   }
@@ -1125,17 +1132,36 @@ function acquireStateLock(): StateLockHold {
     if (tryAcquireStateLock(dir)) return { dir, owned: true }
     sleepSync(STATE_LOCK_POLL_MS)
   }
-  log(`state lock timeout after ${STATE_LOCK_WAIT_MS}ms; proceeding without lock (${dir})`)
+  log(`state lock timeout after ${STATE_LOCK_WAIT_MS}ms (${dir})`)
   return { dir, owned: false }
 }
 
-function releaseStateLock(hold: StateLockHold): void {
-  if (!hold.owned) return
-  removeLockDir(hold.dir)
+function lockOwnerPid(lockDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8')
+    const pid = Number(raw.split('\n')[0])
+    return Number.isFinite(pid) ? pid : null
+  } catch {
+    return null
+  }
 }
 
-function withStateLock<T>(fn: () => T): T {
+/** Release only a lock we own (never remove another process's reclaimed lock). */
+function releaseStateLock(hold: StateLockHold): void {
+  if (!hold.owned) return
+  const owner = lockOwnerPid(hold.dir)
+  if (owner === null || owner === process.pid) removeLockDir(hold.dir)
+}
+
+/** Run `fn` under the state lock; when the bounded wait expires the work is
+ *  SKIPPED (null) — the persistence critical section never runs unowned; the
+ *  next native event retries. */
+function withStateLock<T>(fn: () => T): T | null {
   const hold = acquireStateLock()
+  if (!hold.owned) {
+    log(`state lock busy (${hold.dir}); skipping — the next event retries`)
+    return null
+  }
   try {
     return fn()
   } finally {
@@ -1143,8 +1169,12 @@ function withStateLock<T>(fn: () => T): T {
   }
 }
 
-async function withStateLockAsync<T>(fn: () => Promise<T>): Promise<T> {
+async function withStateLockAsync<T>(fn: () => Promise<T>): Promise<T | null> {
   const hold = acquireStateLock()
+  if (!hold.owned) {
+    log(`state lock busy (${hold.dir}); skipping — the next event retries`)
+    return null
+  }
   try {
     return await fn()
   } finally {
@@ -1207,7 +1237,7 @@ export function saveCaptureState(
     return next
   }
   if (opts.alreadyLocked) return run()
-  return withStateLock(run)
+  return withStateLock(run) ?? loadCaptureState()
 }
 
 export function persistWatcherCursors(
@@ -1362,7 +1392,7 @@ export async function ingestFileFromCursor(
   client: Queryable,
 ): Promise<{ inserted: number; skipped: number }> {
   const abs = path.resolve(file)
-  return withStateLockAsync(async () => {
+  const locked = await withStateLockAsync(async () => {
     const persisted = loadCaptureState()
     const stored = persisted.cursors[abs]
     const cursor: FileCursor = stored
@@ -1387,6 +1417,7 @@ export async function ingestFileFromCursor(
       throw err
     }
   })
+  return locked ?? { inserted: 0, skipped: 0 }
 }
 
 /** `--ingest-file` CLI: never throws out of this function; caller exits 0. */
@@ -1437,7 +1468,7 @@ export const USAGE = `pi-memory-capture — ingest pi v3 session jsonl into Rive
 `
 
 export interface CliArgs {
-  mode: 'help' | 'backfill' | 'ingest-file' | 'status' | 'unknown'
+  mode: 'help' | 'backfill' | 'ingest-file' | 'status' | 'stamp-installed' | 'unknown'
   file?: string
   sessionsDir?: string
   days?: number
@@ -1456,6 +1487,8 @@ export function parseCli(argv: string[]): CliArgs {
       out.mode = 'ingest-file'
       out.file = argv[i + 1]
       i++
+    } else if (arg === '--stamp-installed') {
+      out.mode = 'stamp-installed'
     } else if (arg === '--status') {
       out.mode = 'status'
     } else if (arg === '--sessions-dir') {
@@ -1494,6 +1527,13 @@ async function main(): Promise<void> {
 
   if (cli.mode === 'status') {
     console.log(formatStatus())
+    return
+  }
+
+  if (cli.mode === 'stamp-installed') {
+    const now = new Date().toISOString()
+    const st = saveCaptureState({ hookInstalledAt: now })
+    console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${captureStatePath()}`)
     return
   }
 

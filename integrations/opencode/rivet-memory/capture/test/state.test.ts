@@ -4,7 +4,7 @@
  * moves backwards. The mkdir lock serializes ingests; the merge protects
  * an unlocked writer. Tests must be able to fail.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -16,6 +16,7 @@ import {
   releaseStateLock,
   saveState,
   parseDelayMs,
+  withStateLock,
 } from '../src/opencode-memory-capture.ts'
 
 const dirs: string[] = []
@@ -89,6 +90,25 @@ describe('state lock', () => {
     const again = acquireStateLock(file)
     expect(again.owned).toBe(true)
     releaseStateLock(again)
+  })
+})
+
+describe('withStateLock', () => {
+  it('runs the callback when free and returns its value', async () => {
+    const file = tmpState()
+    const r = await withStateLock(async () => 'ran', file)
+    expect(r).toBe('ran')
+    expect(existsSync(`${file}.lock`)).toBe(false)
+  })
+
+  it('does not release a lock owned by another process', () => {
+    const file = tmpState()
+    const hold = acquireStateLock(file)
+    // another process reclaimed and re-stamped the dir with its pid
+    writeFileSync(path.join(`${file}.lock`, 'owner'), `${process.pid + 1}\n${Date.now()}\n`)
+    releaseStateLock(hold)
+    expect(existsSync(`${file}.lock`)).toBe(true)
+    rmSync(`${file}.lock`, { recursive: true, force: true })
   })
 })
 

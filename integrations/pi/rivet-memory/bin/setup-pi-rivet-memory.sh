@@ -150,19 +150,35 @@ stop_old_watcher() {
   echo
   echo "=== Migrating off capture watcher ==="
   if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user stop pi-memory-capture.service 2>/dev/null || true
-    systemctl --user disable pi-memory-capture.service 2>/dev/null || true
-    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/pi-memory-capture.service"
-    systemctl --user daemon-reload 2>/dev/null || true
-    echo "Stopped/disabled/removed pi-memory-capture.service (user unit) if present"
+    local unit_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/pi-memory-capture.service"
+    if [ -f "$unit_file" ]; then
+      local out
+      if out="$(systemctl --user disable --now pi-memory-capture.service 2>&1)" \
+        || case "$out" in *"not loaded"*|*"could not be found"*|*"No such file"*|*"not found"*) true ;; *) false ;; esac; then
+        rm -f "$unit_file"
+        systemctl --user daemon-reload 2>/dev/null || true
+        echo "Stopped/disabled/removed pi-memory-capture.service (user unit)"
+      else
+        echo "⚠️  Could not stop pi-memory-capture.service; keeping $unit_file so the next install retries: $out" >&2
+        MIGRATION_INCOMPLETE=1
+      fi
+    else
+      echo "No user unit at $unit_file"
+    fi
   fi
   if command -v launchctl >/dev/null 2>&1; then
     local plist="$HOME/Library/LaunchAgents/dev.rivetos.pi-capture.plist"
     if [ -f "$plist" ]; then
-      launchctl bootout "gui/$(id -u)/dev.rivetos.pi-capture" 2>/dev/null || \
-        launchctl unload "$plist" 2>/dev/null || true
-      rm -f "$plist"
-      echo "Unloaded/removed $plist"
+      local lout
+      if lout="$(launchctl bootout "gui/$(id -u)/dev.rivetos.pi-capture" 2>&1)" \
+        || lout="$(launchctl unload "$plist" 2>&1)" \
+        || case "$lout" in *"No such process"*|*"Could not find"*|*"not find"*) true ;; *) false ;; esac; then
+        rm -f "$plist"
+        echo "Unloaded/removed $plist"
+      else
+        echo "⚠️  Could not unload $plist; keeping it so the next install retries: $lout" >&2
+        MIGRATION_INCOMPLETE=1
+      fi
     else
       echo "No launchd plist at $plist"
     fi
@@ -205,32 +221,9 @@ PY
 }
 
 stamp_hook_installed() {
-  local state="$HOME/.rivetos/pi-capture-state.json"
-  mkdir -p "$HOME/.rivetos"
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - "$state" <<'PY'
-import json, os, sys
-from datetime import datetime, timezone
-path = sys.argv[1]
-data = {}
-if os.path.isfile(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            parsed = json.load(f)
-        if isinstance(parsed, dict):
-            data = parsed
-    except Exception:
-        data = {}
-data["hookInstalledAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(path, "w", encoding="utf-8") as f:
-    json.dump(data, f)
-    f.write("\n")
-PY
-    echo "✅ Recorded hookInstalledAt in $state"
-  else
-    echo "⚠️  python3 not found; skipped hookInstalledAt stamp"
-  fi
+  # Through the capture CLI so the write takes the same cross-process state
+  # lock as the detached workers (never an unlocked write from setup).
+  bash "$PLUGIN_PATH/bin/pi-memory-capture.sh" --stamp-installed 2>/dev/null | tail -1 || true
 }
 
 if [ "$DO_APPLY" -eq 1 ]; then

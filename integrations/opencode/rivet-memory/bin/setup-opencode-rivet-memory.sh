@@ -59,42 +59,40 @@ PLUGIN_DEST="$OPENCODE_CONFIG_HOME/plugins/rivet-memory.ts"
 remove_old_watcher() {
   local unit="opencode-memory-capture.service"
   local label="dev.rivetos.opencode-capture"
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user stop "$unit" 2>/dev/null || true
-    systemctl --user disable "$unit" 2>/dev/null || true
-    systemctl --user daemon-reload 2>/dev/null || true
+  local unit_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit"
+  if [ -f "$unit_file" ] && command -v systemctl >/dev/null 2>&1; then
+    local out
+    if out="$(systemctl --user disable --now "$unit" 2>&1)" \
+      || case "$out" in *"not loaded"*|*"could not be found"*|*"No such file"*|*"not found"*) true ;; *) false ;; esac; then
+      rm -f "$unit_file"
+      systemctl --user daemon-reload 2>/dev/null || true
+      echo "Stopped/disabled/removed $unit"
+    else
+      echo "⚠️  Could not stop $unit; keeping $unit_file so the next install retries: $out" >&2
+      MIGRATION_INCOMPLETE=1
+    fi
   fi
-  rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit"
   local plist="$HOME/Library/LaunchAgents/${label}.plist"
   if [ -f "$plist" ]; then
-    if command -v launchctl >/dev/null 2>&1; then
-      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || \
-        launchctl unload "$plist" 2>/dev/null || true
+    local lout
+    if ! command -v launchctl >/dev/null 2>&1 \
+      || lout="$(launchctl bootout "gui/$(id -u)" "$plist" 2>&1)" \
+      || lout="$(launchctl unload "$plist" 2>&1)" \
+      || case "$lout" in *"No such process"*|*"Could not find"*|*"not find"*) true ;; *) false ;; esac; then
+      rm -f "$plist"
+      echo "Unloaded/removed $plist"
+    else
+      echo "⚠️  Could not unload $plist; keeping it so the next install retries: $lout" >&2
+      MIGRATION_INCOMPLETE=1
     fi
-    rm -f "$plist"
   fi
-  echo "Removed old capture watcher unit/plist if present ($unit / $label)"
+  echo "Legacy capture watcher migration checked ($unit / $label)"
 }
 
 stamp_hook_installed() {
-  local state="${HOME}/.rivetos/opencode-capture-state.json"
-  mkdir -p "$(dirname "$state")"
-  node - "$state" <<'JS'
-const fs = require('node:fs')
-const file = process.argv[2]
-let data = { version: 1, partTimeUpdated: 0, messageTimeUpdated: 0, sessions: {} }
-if (fs.existsSync(file)) {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed
-  } catch { /* keep default */ }
-}
-if (data.version !== 1) data.version = 1
-if (typeof data.partTimeUpdated !== 'number') data.partTimeUpdated = 0
-if (typeof data.messageTimeUpdated !== 'number') data.messageTimeUpdated = 0
-data.hookInstalledAt = new Date().toISOString()
-fs.writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`)
-JS
+  # Through the capture CLI so the write takes the same cross-process state
+  # lock as the detached workers (never an unlocked write from setup).
+  bash "$PLUGIN_PATH/bin/opencode-memory-capture.sh" --stamp-installed 2>/dev/null | tail -1 || true
 }
 
 install_plugin_copy() {

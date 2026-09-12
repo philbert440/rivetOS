@@ -60,8 +60,10 @@ function spawnIngest(sessionFile: string): ChildHandle | null {
     stdio: 'ignore',
     detached: true,
     env: process.env,
-  }) as unknown as ChildHandle
-  return child
+  })
+  // an asynchronous 'error' (ENOENT/EAGAIN) with no listener would throw into pi
+  child.on('error', () => {})
+  return child as unknown as ChildHandle
 }
 
 export default function (pi: Pi): void {

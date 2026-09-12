@@ -133,11 +133,14 @@ def apply_merge(dest: str, fragment_path: str, plugin_path: str) -> None:
             )
         else:
             existing = existing_raw
-        if event_has_marker(existing):
-            continue
+        # Replace any existing Rivet entries with the freshly built command
+        # (repairs an old unquoted registration or a moved install root);
+        # foreign inner commands and group metadata are preserved.
+        stripped = [g for g in (strip_group(x) for x in existing) if g is not None]
         built = [our_group_from_template(g, command) for g in groups]
-        hooks[event] = list(existing) + built
-        added += len(built)
+        hooks[event] = stripped + built
+        if not event_has_marker(existing):
+            added += len(built)
     os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
     with open(dest, "w", encoding="utf-8") as handle:
         json.dump(dest_obj, handle, indent=2)

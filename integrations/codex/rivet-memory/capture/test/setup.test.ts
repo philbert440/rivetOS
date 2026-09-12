@@ -246,6 +246,78 @@ try {
   }
 
   // ===========================================================================
+  // TOML: nested HookHandlerConfig shape, quoted keys, upgrade from an old
+  // unquoted registration (the shapes Codex 0.154 actually loads)
+  // ===========================================================================
+  console.log('\n— merge-requirements.py shape / quoted keys / upgrade —')
+  {
+    const existing = path.join(dir, 'shape.toml')
+    writeFileSync(
+      existing,
+      [
+        '[mcp_servers."audit.prod".identity]',
+        'name = "x"',
+        '',
+        '[[hooks.Stop]]',
+        'matcher = "^Bash$"',
+        '[[hooks.Stop.hooks]]',
+        'type = "command"',
+        'command = "company-audit.sh"',
+        '',
+        '[[hooks.UserPromptSubmit]]',
+        `command = "bash ${pluginBin}/codex-memory-capture.sh --hook"`,
+        'timeout = 20',
+        '',
+      ].join('\n'),
+    )
+    const r = run('python3', [
+      MERGE_TOML,
+      'apply',
+      '--plugin-bin',
+      pluginBin,
+      '--existing',
+      existing,
+      '--out',
+      existing,
+    ])
+    eq('shape apply exit 0', r.status, 0)
+    const probe = run('python3', [
+      '-c',
+      [
+        'import tomllib,json,sys',
+        `d=tomllib.load(open(${JSON.stringify(existing)},'rb'))`,
+        'h=d["hooks"]',
+        'ours=lambda g: any("codex-memory-capture.sh" in (x.get("command") or "") for x in g.get("hooks",[]))',
+        'out={',
+        ' "audit_kept": "audit.prod" in d.get("mcp_servers",{}),',
+        ' "stop_foreign": any(any(x.get("command")=="company-audit.sh" for x in g.get("hooks",[])) for g in h["Stop"]),',
+        ' "stop_ours_nested": any(ours(g) and all(x.get("type")=="command" for x in g["hooks"]) for g in h["Stop"]),',
+        ' "ups_flat_left": any("command" in g for g in h["UserPromptSubmit"]),',
+        ' "ups_ours_quoted": any(ours(g) and any(x["command"].startswith("bash \'") for x in g["hooks"]) for g in h["UserPromptSubmit"]),',
+        ' "ups_count": sum(1 for g in h["UserPromptSubmit"] if ours(g)),',
+        ' "sessionend": any(ours(g) for g in h.get("SessionEnd",[])),',
+        '}',
+        'print(json.dumps(out))',
+      ].join('\n'),
+    ])
+    eq('shape probe exit 0', probe.status, 0)
+    const got = JSON.parse(probe.stdout.trim() || '{}') as Record<string, unknown>
+    check('quoted dotted key kept its identity', got.audit_kept === true)
+    check('foreign nested Stop handler survived', got.stop_foreign === true)
+    check(
+      'our Stop entry is nested [[hooks.Stop.hooks]] type=command',
+      got.stop_ours_nested === true,
+    )
+    check('old flat unquoted registration was removed on apply', got.ups_flat_left === false)
+    check(
+      'our UserPromptSubmit command is the fresh shell-quoted form',
+      got.ups_ours_quoted === true,
+    )
+    eq('exactly one Rivet UserPromptSubmit group after upgrade', got.ups_count, 1)
+    check('SessionEnd registered', got.sessionend === true)
+  }
+
+  // ===========================================================================
   // JSON merge: python + node, empty / mixed / invalid / spaces
   // ===========================================================================
   const jsonTools: Array<{ name: string; cmd: string; args: string[] }> = [

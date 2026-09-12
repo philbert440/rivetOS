@@ -387,11 +387,18 @@ function stateLockDir(stateFile: string): string {
   return `${stateFile}.lock`
 }
 
+/** Lock age source: the owner stamp when present, else the lock dir's mtime
+ *  (a fresh mkdir whose owner has not written its stamp yet must NOT look stale). */
 function readLockStamp(lockDir: string): number | null {
   try {
     const raw = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8')
     const ts = Number(raw.split('\n')[1])
-    return Number.isFinite(ts) ? ts : null
+    if (Number.isFinite(ts)) return ts
+  } catch {
+    // fall through to the directory mtime
+  }
+  try {
+    return fs.statSync(lockDir).mtimeMs
   } catch {
     return null
   }
@@ -452,24 +459,59 @@ export function acquireStateLock(stateFile = captureStatePath()): StateLockHold 
     if (tryAcquireStateLock(dir)) return { dir, owned: true }
     sleepSync(STATE_LOCK_POLL_MS)
   }
-  log(`state lock timeout after ${String(STATE_LOCK_WAIT_MS)}ms; proceeding without lock (${dir})`)
+  log(`state lock timeout after ${String(STATE_LOCK_WAIT_MS)}ms (${dir})`)
   return { dir, owned: false }
 }
 
-export function releaseStateLock(hold: StateLockHold): void {
-  if (hold.owned) removeLockDir(hold.dir)
+function lockOwnerPid(lockDir: string): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(lockDir, 'owner'), 'utf8')
+    const pid = Number(raw.split('\n')[0])
+    return Number.isFinite(pid) ? pid : null
+  } catch {
+    return null
+  }
 }
 
+/** Release only a lock we own (a stale reclaim by another process may have
+ *  replaced ours — never remove someone else's lock). */
+export function releaseStateLock(hold: StateLockHold): void {
+  if (!hold.owned) return
+  const owner = lockOwnerPid(hold.dir)
+  if (owner === null || owner === process.pid) removeLockDir(hold.dir)
+}
+
+/** Run `fn` under the state lock. When the lock cannot be acquired within the
+ *  bounded wait the work is SKIPPED (returns null) — never run the persistence
+ *  critical section without ownership; the next native event retries. */
 export async function withStateLock<T>(
   fn: () => Promise<T>,
   stateFile = captureStatePath(),
-): Promise<T> {
+): Promise<T | null> {
   const hold = acquireStateLock(stateFile)
+  if (!hold.owned) {
+    log(`state lock busy (${hold.dir}); skipping this run — the next event retries`)
+    return null
+  }
   try {
     return await fn()
   } finally {
     releaseStateLock(hold)
   }
+}
+
+/** `--stamp-installed`: record hookInstalledAt through the locked, merged writer
+ *  (setup scripts must not race detached workers with an unlocked write). */
+export async function runStampInstalled(): Promise<void> {
+  const stateFile = captureStatePath()
+  await withStateLock(() => {
+    const state = loadState(stateFile)
+    const now = new Date().toISOString()
+    state.hookInstalledAt = now
+    saveState(state, stateFile)
+    console.log(`hookInstalledAt=${now} ${stateFile}`)
+    return Promise.resolve()
+  }, stateFile)
 }
 
 export function backfillCutoffMs(days = DEFAULT_BACKFILL_DAYS, now = Date.now()): number {
@@ -1174,6 +1216,7 @@ export async function runOnce(
         }),
       )
     }, stateFile)
+    if (summary === null) return
     log(
       `backfill ${dbPath}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
@@ -1204,6 +1247,7 @@ export async function runIngestSession(
         ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' }),
       )
     }, stateFile)
+    if (summary === null) return
     log(
       `ingest-session ${sessionId}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
@@ -1288,6 +1332,7 @@ export const USAGE = `opencode-memory-capture — ingest OpenCode SQLite session
   --delay-ms N         sleep N ms first so several quick triggers collapse into one read
   --backfill [--days N] one-shot catch-up (default ${String(DEFAULT_BACKFILL_DAYS)}; 0 = none)
   --status             print last ingest time + counts from the state file
+  --stamp-installed    record hookInstalledAt in the state file (used by setup --apply)
   --db FILE            override the SQLite path
 `
 
@@ -1304,6 +1349,10 @@ async function main(): Promise<void> {
 
   if (args[0] === '--status') {
     runStatus()
+    return
+  }
+  if (args[0] === '--stamp-installed') {
+    await runStampInstalled()
     return
   }
   if (args[0] === '--ingest-session') {

@@ -81,6 +81,16 @@ describe('RivetMemory plugin', () => {
     expect(spawn).toHaveBeenCalledTimes(2)
   })
 
+  it('attaches an error listener so an asynchronous spawn error cannot throw into opencode', async () => {
+    const plugin = await RivetMemory({ directory: '/tmp' })
+    await plugin.event(idle())
+    const child = spawn.mock.results[0].value as { on: ReturnType<typeof vi.fn> }
+    const errorCalls = child.on.mock.calls.filter((c: unknown[]) => c[0] === 'error')
+    expect(errorCalls.length).toBe(1)
+    const handler = errorCalls[0][1] as (err: Error) => void
+    expect(() => handler(new Error('spawn bash ENOENT'))).not.toThrow()
+  })
+
   it('spawns immediately on session.compacted / session.deleted / session.error', async () => {
     const plugin = await RivetMemory({ directory: '/tmp' })
     await plugin.event({ event: { type: 'session.compacted', properties: { sessionID: SESSION } } })

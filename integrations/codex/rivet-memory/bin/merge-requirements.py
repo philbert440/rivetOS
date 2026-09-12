@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from typing import Any
@@ -74,7 +75,64 @@ def command_is_ours(command: Any) -> bool:
 
 
 def our_entry(plugin_bin: str) -> dict[str, Any]:
-    return {"command": hook_command(plugin_bin), "timeout": HOOK_TIMEOUT}
+    """One HookHandlerConfig group: `[[hooks.<Event>]]` + `[[hooks.<Event>.hooks]]`.
+
+    This is the shape Codex 0.154 actually loads (verified on ct113 2026-09-12);
+    a flat `command =` directly under `[[hooks.<Event>]]` is ignored.
+    """
+    return {
+        "hooks": [
+            {"type": "command", "command": hook_command(plugin_bin), "timeout": HOOK_TIMEOUT}
+        ]
+    }
+
+
+def _group_commands(group: Any) -> list[Any]:
+    """Commands inside a hook group: the nested `hooks[*].command` list, plus a
+    legacy flat `command` for tolerance when reading."""
+    if not isinstance(group, dict):
+        return []
+    out: list[Any] = []
+    inner = group.get("hooks")
+    if isinstance(inner, list):
+        for item in inner:
+            if isinstance(item, dict):
+                out.append(item.get("command"))
+    if "command" in group:
+        out.append(group.get("command"))
+    return out
+
+
+def group_is_ours(group: Any) -> bool:
+    return any(command_is_ours(c) for c in _group_commands(group))
+
+
+def group_has_foreign(group: Any) -> bool:
+    return any(not command_is_ours(c) for c in _group_commands(group))
+
+
+def strip_ours(group: dict[str, Any]) -> tuple[dict[str, Any] | None, int]:
+    """Remove our inner commands from a group; None when nothing is left."""
+    removed = 0
+    new_group = dict(group)
+    inner = group.get("hooks")
+    if isinstance(inner, list):
+        kept = []
+        for item in inner:
+            if isinstance(item, dict) and command_is_ours(item.get("command")):
+                removed += 1
+            else:
+                kept.append(item)
+        if kept:
+            new_group["hooks"] = kept
+        else:
+            new_group.pop("hooks", None)
+    if command_is_ours(group.get("command")):
+        new_group.pop("command", None)
+        new_group.pop("timeout", None)
+        removed += 1
+    has_commands = bool(_group_commands(new_group))
+    return (new_group if has_commands else None), removed
 
 
 def normalize_dir(value: str) -> str:
@@ -117,8 +175,17 @@ def _is_table(value: Any) -> bool:
     return isinstance(value, dict)
 
 
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _key(key: str) -> str:
+    """TOML key component: bare when allowed, else a basic (quoted) string so a
+    dotted or spaced key like `"audit.prod"` keeps its identity."""
+    return key if _BARE_KEY.fullmatch(key) else _toml_str(key)
+
+
 def _dump_pair(key: str, value: Any) -> str:
-    return f"{key} = {_toml_scalar(value)}"
+    return f"{_key(key)} = {_toml_scalar(value)}"
 
 
 def _dump_table_header(path: str, array: bool = False) -> str:
@@ -137,7 +204,7 @@ def _dump_inline_pairs(table: dict[str, Any]) -> list[str]:
 def _dump_nested(prefix: str, table: dict[str, Any]) -> list[str]:
     chunks: list[str] = []
     for key, value in table.items():
-        path = f"{prefix}.{key}" if prefix else key
+        path = f"{prefix}.{_key(key)}" if prefix else _key(key)
         if _is_array_of_tables(value):
             for item in value:
                 chunks.append(_dump_table_header(path, array=True))
@@ -204,9 +271,9 @@ def _has_foreign_hook_entries(hooks: dict[str, Any]) -> bool:
             continue
         if isinstance(value, list):
             for item in value:
-                if isinstance(item, dict) and not command_is_ours(item.get("command")):
+                if group_has_foreign(item):
                     return True
-        elif not command_is_ours(value):
+        else:
             return True
     return False
 
@@ -226,10 +293,13 @@ def apply_merge(doc: dict[str, Any], plugin_bin: str) -> tuple[dict[str, Any], s
     if isinstance(managed, str) and managed.strip() and not managed_dir_is_ours(managed, plugin_bin):
         return doc, "skip-foreign-managed_dir"
 
+    # "already" only when every event carries EXACTLY the current command;
+    # anything else (old unquoted form, moved install root) is rebuilt below.
+    current = hook_command(plugin_bin)
     already = True
     for event in HOOK_EVENTS:
         entries = _event_entries(hooks, event)
-        if not any(command_is_ours(item.get("command")) for item in entries):
+        if not any(current in _group_commands(item) for item in entries):
             already = False
             break
 
@@ -243,9 +313,15 @@ def apply_merge(doc: dict[str, Any], plugin_bin: str) -> tuple[dict[str, Any], s
         if not _has_foreign_hook_entries(hooks):
             new_hooks["managed_dir"] = plugin_bin
     for event in HOOK_EVENTS:
-        entries = list(_event_entries(new_hooks, event))
-        if not any(command_is_ours(item.get("command")) for item in entries):
-            entries.append(our_entry(plugin_bin))
+        entries: list[dict[str, Any]] = []
+        for item in _event_entries(new_hooks, event):
+            if group_is_ours(item):
+                stripped, _ = strip_ours(item)
+                if stripped is not None:
+                    entries.append(stripped)
+            else:
+                entries.append(item)
+        entries.append(our_entry(plugin_bin))
         new_hooks[event] = entries
     merged = dict(doc)
     merged["hooks"] = new_hooks
@@ -267,8 +343,11 @@ def remove_merge(doc: dict[str, Any], plugin_bin: str) -> tuple[dict[str, Any], 
             continue
         kept: list[Any] = []
         for item in value:
-            if isinstance(item, dict) and command_is_ours(item.get("command")):
-                removed += 1
+            if isinstance(item, dict) and group_is_ours(item):
+                stripped, n = strip_ours(item)
+                removed += n
+                if stripped is not None:
+                    kept.append(stripped)
             else:
                 kept.append(item)
         if kept:
@@ -336,10 +415,18 @@ def atomic_write(path: str, text: str, tomllib_mod) -> None:
         raise
 
 
-def emit(text: str, out: str | None, tomllib_mod) -> None:
+def emit(text: str, out: str | None, tomllib_mod, intended: dict[str, Any] | None = None) -> None:
     if not text.endswith("\n") and text:
         text += "\n"
     validate_roundtrip(text, tomllib_mod)
+    if intended is not None:
+        reparsed = tomllib_mod.loads(text) if text.strip() else {}
+        if reparsed != intended:
+            sys.stderr.write(
+                "refusing to write: the serialized TOML does not round-trip to the merged "
+                "document (key quoting or an unsupported value). Leaving the file untouched.\n"
+            )
+            raise SystemExit(1)
     if out:
         atomic_write(out, text, tomllib_mod)
     else:
@@ -398,7 +485,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 2
             text = dump_toml(merged)
-            emit(text, args.out, tomllib_mod)
+            emit(text, args.out, tomllib_mod, merged)
             sys.stderr.write(
                 "hooks already present in requirements.toml\n"
                 if status == "already"
@@ -407,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         merged, removed = remove_merge(doc, plugin_bin)
         text = dump_toml(merged)
-        emit(text, args.out, tomllib_mod)
+        emit(text, args.out, tomllib_mod, merged)
         sys.stderr.write(f"removed {removed} rivet-memory hook table(s) from requirements.toml\n")
         return 0
     except SystemExit:

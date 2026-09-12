@@ -1008,16 +1008,17 @@ export async function acquireStateLock(
     const result = tryAcquireLock(dir)
     if (result === 'acquired') return { dir, held: true }
     if (result === 'error') {
-      log(`state lock: proceeding without lock for ${dir}`)
+      log(`state lock: cannot create ${dir}; treating as busy`)
       return { dir, held: false }
     }
-    if (lockIsStale(dir, staleMs)) {
+    if (lockIsStale(dir, staleMs) && Date.now() < deadline) {
       log(`state lock stale (${dir}); removing`)
       removeLockDir(dir)
+      await sleep(pollMs)
       continue
     }
     if (Date.now() >= deadline) {
-      log(`state lock timeout for ${dir}; proceeding without lock`)
+      log(`state lock timeout for ${dir}`)
       return { dir, held: false }
     }
     await sleep(pollMs)
@@ -1029,17 +1030,36 @@ export function releaseStateLock(handle: StateLockHandle): void {
   removeLockDir(handle.dir)
 }
 
+/** Run `fn` under the state lock; when the bounded wait expires the work is
+ *  SKIPPED (null) — the persistence critical section never runs unowned; the
+ *  next hook retries. */
 export async function withStateLock<T>(
   stateFile: string,
   fn: () => Promise<T>,
   opts: StateLockOpts = {},
-): Promise<T> {
+): Promise<T | null> {
   const handle = await acquireStateLock(stateFile, opts)
+  if (!handle.held) {
+    log(`state lock busy (${handle.dir}); skipping — the next hook retries`)
+    return null
+  }
   try {
     return await fn()
   } finally {
     releaseStateLock(handle)
   }
+}
+
+/** `--stamp-installed`: record hookInstalledAt under the state lock (setup
+ *  scripts must not race detached workers with an unlocked write). */
+export async function runStampInstalled(stateFile = captureStatePath()): Promise<void> {
+  await withStateLock(stateFile, () => {
+    const st = loadCaptureState(stateFile)
+    const now = new Date().toISOString()
+    saveCaptureState({ ...st, hookInstalledAt: st.hookInstalledAt ?? now }, stateFile)
+    console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${stateFile}`)
+    return Promise.resolve()
+  })
 }
 
 /** Apply this run's cursor/session fields on top of `base`. Cursors never regress. */
@@ -1391,7 +1411,7 @@ export async function ingestTranscriptFile(
   try {
     if (opts.delayMs && opts.delayMs > 0) await sleep(opts.delayMs)
     const finalize = Boolean(opts.closeSession)
-    return await withStateLock(
+    const locked = await withStateLock(
       stateFile,
       async () => {
         const cursor = cursorFromState(loadCaptureState(stateFile), abs)
@@ -1455,6 +1475,7 @@ export async function ingestTranscriptFile(
       },
       opts.lock,
     )
+    return locked ?? empty
   } catch (err) {
     log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
     return empty
@@ -1601,11 +1622,16 @@ export function hookChildArgs(
 }
 
 function defaultSpawn(command: string, args: string[], options: SpawnOpts): SpawnHandle {
-  return spawn(command, args, {
+  const child = spawn(command, args, {
     detached: options.detached ?? true,
     stdio: 'ignore',
     env: options.env,
   })
+  // never let an asynchronous spawn error surface as an unhandled 'error' event
+  child.on('error', (err: unknown) => {
+    log(`handoff spawn error: ${err instanceof Error ? err.message : String(err)}`)
+  })
+  return child
 }
 
 /**
@@ -1801,6 +1827,10 @@ async function main(): Promise<void> {
   }
   if (mode === '--status') {
     runStatus()
+    return
+  }
+  if (mode === '--stamp-installed') {
+    await runStampInstalled()
     return
   }
   if (mode === '--backfill' || mode === '--once') {

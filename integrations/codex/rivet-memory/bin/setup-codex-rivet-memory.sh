@@ -29,6 +29,33 @@ HOOK_FRAGMENT="$PLUGIN_DIR/hooks/hooks.json"
 HOOK_MARKER="$PLUGIN_BIN/codex-memory-capture.sh"
 MERGE_HOOKS_PY="$SCRIPT_DIR/merge-hooks-json.py"
 MERGE_HOOKS_JS="$SCRIPT_DIR/merge-hooks-json.cjs"
+
+MIGRATION_INCOMPLETE=0
+REGISTRATION_INCOMPLETE=0
+
+# Stop + disable a legacy user unit. Success when it stopped OR was never loaded;
+# a real failure (unit still running) returns 1 so the caller keeps the file.
+stop_user_unit() {
+  local unit="$1" out
+  command -v systemctl >/dev/null 2>&1 || return 0
+  out="$(systemctl --user disable --now "$unit" 2>&1)" && return 0
+  case "$out" in
+    *"not loaded"*|*"could not be found"*|*"No such file"*|*"not found"*|*"does not exist"*) return 0 ;;
+  esac
+  echo "$out" >&2
+  return 1
+}
+
+bootout_plist() {
+  local domain="$1" plist="$2" out
+  command -v launchctl >/dev/null 2>&1 || return 0
+  out="$(launchctl bootout "$domain" "$plist" 2>&1)" && return 0
+  case "$out" in
+    *"No such process"*|*"Could not find"*|*"not find"*|*"No such file"*) return 0 ;;
+  esac
+  echo "$out" >&2
+  return 1
+}
 MERGE_TOML_PY="$SCRIPT_DIR/merge-requirements.py"
 MANAGED_TOML="/etc/codex/requirements.toml"
 WATCHER_UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/codex-memory-capture.service"
@@ -165,10 +192,11 @@ write_managed_toml() {
     return 1
   fi
   sudo mkdir -p /etc/codex
-  sudo cp "$outf" "${dest}.rivet.$$"
+  # world-readable: codex runs as the user and must be able to read the managed file
+  sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$"
   sudo mv "${dest}.rivet.$$" "$dest"
   cat "$errf" || true
-  echo "Wrote managed hooks to $dest"
+  echo "Wrote managed hooks to $dest (0644 root:root)"
   rm -f "$outf" "$errf"
 }
 
@@ -204,7 +232,7 @@ remove_managed_toml() {
     sudo rm -f "$dest"
     echo "Removed $dest (was only rivet-memory hooks)"
   else
-    sudo cp "$outf" "${dest}.rivet.$$"
+    sudo install -m 0644 -o root -g root "$outf" "${dest}.rivet.$$"
     sudo mv "${dest}.rivet.$$" "$dest"
     cat "$errf" || true
     echo "Removed rivet-memory hook tables from $dest"
@@ -213,21 +241,9 @@ remove_managed_toml() {
 }
 
 stamp_hook_installed() {
-  command -v node >/dev/null 2>&1 || return 0
-  node -e '
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const file = process.env.RIVETOS_CODEX_STATE || path.join(os.homedir(), ".rivetos", "codex-capture-state.json");
-let state = { version: 1, cursors: {} };
-try {
-  const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-  if (parsed && typeof parsed === "object") state = { version: 1, cursors: {}, ...parsed };
-} catch {}
-if (!state.hookInstalledAt) state.hookInstalledAt = new Date().toISOString();
-fs.mkdirSync(path.dirname(file), { recursive: true });
-fs.writeFileSync(file, JSON.stringify(state, null, 2) + "\n");
-'
+  # Goes through the capture CLI so the write takes the same cross-process
+  # state lock as the detached workers (never an unlocked write from setup).
+  bash "$PLUGIN_BIN/codex-memory-capture.sh" --stamp-installed 2>/dev/null | tail -1 || true
 }
 
 print_trust_note() {
@@ -244,10 +260,14 @@ print_migration() {
     echo "  rm -f $WATCHER_UNIT"
     echo "  systemctl --user daemon-reload"
     if [ "$1" = apply ]; then
-      systemctl --user disable --now codex-memory-capture.service >/dev/null 2>&1 || true
-      rm -f "$WATCHER_UNIT" || true
-      systemctl --user daemon-reload >/dev/null 2>&1 || true
-      echo "Disabled and removed $WATCHER_UNIT"
+      if stop_user_unit codex-memory-capture.service; then
+        rm -f "$WATCHER_UNIT" || true
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+        echo "Disabled and removed $WATCHER_UNIT"
+      else
+        echo "⚠️  Could not stop codex-memory-capture.service; keeping $WATCHER_UNIT so the next install retries." >&2
+        MIGRATION_INCOMPLETE=1
+      fi
     fi
     ran=1
   fi
@@ -259,9 +279,13 @@ print_migration() {
     if [ "$1" = apply ]; then
       local uid
       uid="$(id -u)"
-      launchctl bootout "gui/${uid}" "$WATCHER_PLIST" >/dev/null 2>&1 || true
-      rm -f "$WATCHER_PLIST" || true
-      echo "Booted out and removed $WATCHER_PLIST"
+      if bootout_plist "gui/${uid}" "$WATCHER_PLIST"; then
+        rm -f "$WATCHER_PLIST" || true
+        echo "Booted out and removed $WATCHER_PLIST"
+      else
+        echo "⚠️  Could not boot out $WATCHER_PLIST; keeping it so the next install retries." >&2
+        MIGRATION_INCOMPLETE=1
+      fi
     fi
     ran=1
   fi
@@ -410,6 +434,12 @@ if [ "$DO_APPLY" -eq 1 ]; then
     exit 1
   fi
 
+  # Decide the mode from what is already registered, then end with EXACTLY one
+  # registration active (managed OR user). Never leave both.
+  managed_present=0
+  if [ -r "$MANAGED_TOML" ] && grep -q 'codex-memory-capture.sh' "$MANAGED_TOML" 2>/dev/null; then
+    managed_present=1
+  fi
   managed_ok=0
   if sudo_n; then
     if write_managed_toml "$PLUGIN_BIN"; then
@@ -417,17 +447,25 @@ if [ "$DO_APPLY" -eq 1 ]; then
     else
       echo "Managed hooks unavailable; falling back to user $USER_HOOKS."
     fi
+  elif [ "$managed_present" -eq 1 ]; then
+    echo "Managed registration already present in $MANAGED_TOML (no sudo to change it) — keeping it; not adding user hooks."
+    managed_ok=1
   else
     echo "Skipped managed hooks (sudo -n failed): $MANAGED_TOML"
   fi
 
   if [ "$managed_ok" -eq 1 ]; then
     if ! sync_user_hooks "$USER_HOOKS" managed; then
-      echo "⚠️  Could not strip user-level rivet-memory hooks from $USER_HOOKS (left untouched). Managed registration is active."
+      echo "❌ Incomplete: managed registration is active but user-level rivet-memory hooks could not be removed from $USER_HOOKS — both would run. Fix the file and re-run." >&2
+      REGISTRATION_INCOMPLETE=1
     fi
     echo "Capture registration mode: managed ($MANAGED_TOML)"
   else
-    if ! sync_user_hooks "$USER_HOOKS" user; then
+    if [ "$managed_present" -eq 1 ]; then
+      # sudo was available but the managed write failed: the old managed entries still exist
+      echo "❌ Incomplete: a managed registration exists in $MANAGED_TOML and could not be updated; not adding user hooks (both would run). Repair the file and re-run." >&2
+      REGISTRATION_INCOMPLETE=1
+    elif ! sync_user_hooks "$USER_HOOKS" user; then
       echo "⚠️  User hooks merge failed; left $USER_HOOKS untouched and continuing."
     else
       echo "User hooks path: $USER_HOOKS"
@@ -457,4 +495,8 @@ echo "4. Trust non-managed hooks once via /hooks in the Codex TUI (skip if manag
 echo "5. Optional: $PLUGIN_PATH/bin/codex-memory-capture.sh --backfill"
 echo "6. Test with a memory-stats or time-bounded recall question"
 echo
+if [ "${REGISTRATION_INCOMPLETE:-0}" -eq 1 ] || [ "${MIGRATION_INCOMPLETE:-0}" -eq 1 ]; then
+  echo "⚠️  Setup finished with an INCOMPLETE step (see ❌/⚠️ above)."
+  exit 3
+fi
 echo "Done. Memory should now feel dramatically better in Codex sessions."
