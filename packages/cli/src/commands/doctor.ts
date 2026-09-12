@@ -1113,13 +1113,7 @@ export async function checkProviders(rawConfig: string | null): Promise<CheckRes
         }
       } catch (err) {
         results.push(
-          check(
-            'providers',
-            name,
-            'fail',
-            `Provider ${name}: error`,
-            redactResolvedSecrets((err as Error).message, rawProviderCfg, providerCfg),
-          ),
+          check('providers', name, 'fail', `Provider ${name}: error`, probeErrorDetail(err)),
         )
       }
     }
@@ -1130,66 +1124,24 @@ export async function checkProviders(rawConfig: string | null): Promise<CheckRes
   return results
 }
 
-/** Env fallbacks the probes below consult when a provider block has no api_key. */
-const PROBE_KEY_ENV = [
-  'ANTHROPIC_API_KEY',
-  'XAI_API_KEY',
-  'GOOGLE_API_KEY',
-  'LLAMA_SERVER_API_KEY',
-  'VLLM_API_KEY',
-]
-
-/** Scrub secrets from a probe error detail before it reaches the terminal or
- *  JSON output. Native fetch echoes header and URL values in its messages
- *  (`Headers.append: "Bearer …" is an invalid header value`, `Failed to parse
- *  URL from …`), and the probes normalise URLs before use, so redact the
- *  individual values rather than whole fields: every env value substituted for
- *  a `${VAR}` in the raw block, every credential-looking resolved value (literal
- *  keys too), and the env fallbacks the probes read directly. Trimmed and
- *  newline-escaped forms of each value are matched as well. */
-export function redactResolvedSecrets(
-  message: string,
-  raw: unknown,
-  resolved: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const secrets = new Set<string>()
-  const add = (v: string | undefined): void => {
-    if (v) secrets.add(v)
-  }
-  const walkRaw = (v: unknown): void => {
-    if (typeof v === 'string') {
-      for (const m of v.matchAll(/\$\{(\w+)\}/g)) add(env[m[1]])
-    } else if (Array.isArray(v)) v.forEach(walkRaw)
-    else if (v && typeof v === 'object')
-      Object.values(v as Record<string, unknown>).forEach(walkRaw)
-  }
-  const walkResolved = (v: unknown, key = ''): void => {
-    if (typeof v === 'string') {
-      if (/key|token|secret|password/i.test(key)) add(v)
-    } else if (Array.isArray(v)) v.forEach((item) => walkResolved(item, key))
-    else if (v && typeof v === 'object') {
-      for (const [k, item] of Object.entries(v as Record<string, unknown>)) walkResolved(item, k)
-    }
-  }
-  walkRaw(raw)
-  walkResolved(resolved)
-  for (const name of PROBE_KEY_ENV) add(env[name])
-  // Native fetch trims surrounding whitespace from a header value before
-  // echoing it, so match the trimmed form too; newlines also in escaped form.
-  const needles = new Set<string>()
-  for (const secret of secrets) {
-    for (const form of [secret, secret.trim()]) {
-      if (!form) continue
-      needles.add(form)
-      if (/[\r\n]/.test(form)) needles.add(form.replace(/\r/g, '\\r').replace(/\n/g, '\\n'))
-    }
-  }
-  let out = message
-  for (const needle of [...needles].sort((a, b) => b.length - a.length)) {
-    out = out.split(needle).join('[redacted]')
-  }
-  return out
+/** Detail line for a failed probe. Native fetch echoes request data in its
+ *  messages — header values (`Headers.append: "Bearer …" is an invalid header
+ *  value`) and URLs (`Failed to parse URL from …`) — and the probes resolve
+ *  `${VAR}` secrets into both, so the message itself must never reach the
+ *  terminal or JSON output. Report only the error class and its code. */
+export function probeErrorDetail(err: unknown): string {
+  if (!(err instanceof Error)) return 'unknown error'
+  const cause = err.cause as { code?: unknown } | undefined
+  const own = (err as unknown as { code?: unknown }).code
+  const code =
+    typeof cause?.code === 'string'
+      ? cause.code
+      : typeof own === 'string'
+        ? own
+        : err.name === 'TimeoutError' || err.name === 'AbortError'
+          ? 'timeout'
+          : undefined
+  return code ? `${err.name} (${code})` : err.name
 }
 
 // ---------------------------------------------------------------------------

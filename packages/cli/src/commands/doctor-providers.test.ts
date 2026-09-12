@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { checkProviderConnectivity, checkProviders, redactResolvedSecrets } from './doctor.js'
+import { checkProviderConnectivity, checkProviders, probeErrorDetail } from './doctor.js'
 
 const realFetch = globalThis.fetch
 afterEach(() => {
@@ -60,46 +60,22 @@ describe('checkProviders (vllm with a ${VAR} api_key)', () => {
     }) as typeof fetch
     const [r] = await checkProviders(yaml)
     expect(r.message).toBe('Provider vllm: error')
-    expect(r.detail).not.toContain('FAKE-REVIEW-SECRET')
-    expect(r.detail).toContain('[redacted]')
+    expect(r.detail).toBe('TypeError')
   })
 })
 
-describe('redactResolvedSecrets', () => {
-  it('scrubs substituted env values, credential-looking fields and probe fallbacks', () => {
-    const env = { K: 'abc123', HOST: 'h.example', T: 'tok', VLLM_API_KEY: 'fallback-key' }
-    const raw = {
-      api_key: '${K}',
-      base_url: 'https://${HOST}/v1',
-      model: 'm',
-      nested: { token: '${T}' },
-    }
-    const resolved = {
-      api_key: 'abc123',
-      base_url: 'https://h.example/v1',
-      model: 'm',
-      nested: { token: 'tok' },
-    }
-    const out = redactResolvedSecrets(
-      'URL https://h.example/models with abc123, tok, fallback-key for m',
-      raw,
-      resolved,
-      env,
-    )
-    // the host was substituted (so it is scrubbed) even though the probe
-    // normalised the URL and the whole resolved field never appears
-    expect(out).toBe('URL https://[redacted]/models with [redacted], [redacted], [redacted] for m')
-  })
-
-  it('scrubs a literal api_key and the escaped-newline form of a value', () => {
-    const raw = { api_key: 'LIT-SECRET\ntrailing' }
-    const out = redactResolvedSecrets(
-      'bad: "Bearer LIT-SECRET\ntrailing" and escaped LIT-SECRET\\ntrailing',
-      raw,
-      raw,
-      {},
-    )
-    expect(out).toBe('bad: "Bearer [redacted]" and escaped [redacted]')
+describe('probeErrorDetail', () => {
+  it('reports only the error class and code, never the message', () => {
+    const fetchFailed = new TypeError('fetch failed https://h.example/secret-in-url')
+    ;(fetchFailed as { cause?: unknown }).cause = { code: 'ECONNREFUSED' }
+    expect(probeErrorDetail(fetchFailed)).toBe('TypeError (ECONNREFUSED)')
+    const badUrl = new TypeError('Failed to parse URL from not-a-url/FAKE-URL-SECRET/models')
+    ;(badUrl as { cause?: unknown }).cause = { code: 'ERR_INVALID_URL' }
+    expect(probeErrorDetail(badUrl)).toBe('TypeError (ERR_INVALID_URL)')
+    const timeout = new Error('The operation was aborted due to timeout')
+    timeout.name = 'TimeoutError'
+    expect(probeErrorDetail(timeout)).toBe('TimeoutError (timeout)')
+    expect(probeErrorDetail('boom')).toBe('unknown error')
   })
 })
 
@@ -109,23 +85,19 @@ describe('checkProviders error details (native fetch, no network)', () => {
     const [r] = await checkProviders(['providers:', '  xai:', '    api_key: ${K}', ''].join('\n'))
     // native fetch: 'Headers.append: "Bearer FAKE-REVIEW-SECRET\ntrailing" is an invalid header value.'
     expect(r.message).toBe('Provider xai: error')
-    expect(r.detail).toBeDefined()
-    expect(r.detail).not.toContain('FAKE-REVIEW-SECRET')
-    expect(r.detail).toContain('[redacted]')
+    expect(r.detail).toBe('TypeError')
   })
 
-  it('does not echo a secret substituted into a base_url the probe normalised', async () => {
-    vi.stubEnv('K', 'FAKE-URL-SECRET')
+  it('does not echo a secret substituted into a base_url, even one the probe normalised', async () => {
+    vi.stubEnv('K', 'FAKE-URL-SECRET/v1')
     const [r] = await checkProviders(
-      ['providers:', '  vllm:', '    base_url: not-a-url/${K}/v1', '    api_prefix: ""', ''].join(
+      ['providers:', '  vllm:', '    base_url: not-a-url/${K}', '    api_prefix: ""', ''].join(
         '\n',
       ),
     )
-    // native fetch rejects the relative URL: "Failed to parse URL from not-a-url/…/models"
+    // native fetch rejects the relative URL: "Failed to parse URL from not-a-url/FAKE-URL-SECRET/models"
     expect(r.message).toBe('Provider vllm: error')
-    expect(r.detail).toBeDefined()
-    expect(r.detail).not.toContain('FAKE-URL-SECRET')
-    expect(r.detail).toContain('[redacted]')
+    expect(r.detail).toBe('TypeError (ERR_INVALID_URL)')
   })
 })
 
