@@ -426,31 +426,27 @@ export async function withStateLock<T>(
  *  (setup scripts must not race detached workers with an unlocked write). */
 export async function runStampInstalled(): Promise<void> {
   const stateFile = captureStatePath()
-  const stamp = (): void => {
-    const state = loadState(stateFile)
-    const now = new Date().toISOString()
-    state.hookInstalledAt = now
-    saveState(state, stateFile)
-    console.log(`hookInstalledAt=${now} ${stateFile}`)
-  }
   try {
     const r = await withPool((client) =>
       withStateLock(
         client,
         () => {
-          stamp()
+          const state = loadState(stateFile)
+          const now = new Date().toISOString()
+          state.hookInstalledAt = now
+          saveState(state, stateFile)
+          console.log(`hookInstalledAt=${now} ${stateFile}`)
           return Promise.resolve(true)
         },
         stateFile,
       ),
     )
-    if (r === null)
-      log('stamp-installed: lock busy; stamped without the lock (merged atomic write)')
-    if (r === null) stamp()
+    if (r === null) {
+      log('stamp-installed deferred: state lock busy — the next ingest records hookInstalledAt')
+    }
   } catch (err) {
-    // no database from setup (e.g. first install before the env is wired): merged atomic write
-    log(`stamp-installed without db lock: ${err instanceof Error ? err.message : String(err)}`)
-    stamp()
+    // no database from setup: never write shared state unlocked; the next ingest stamps it
+    log(`stamp-installed deferred (${err instanceof Error ? err.message : String(err)})`)
   }
 }
 
@@ -954,7 +950,12 @@ function stampIngest(
   source: string,
   nowIso = new Date().toISOString(),
 ): CaptureState {
-  return { ...state, lastIngestAt: nowIso, lastIngestSource: source }
+  return {
+    ...state,
+    lastIngestAt: nowIso,
+    lastIngestSource: source,
+    hookInstalledAt: state.hookInstalledAt ?? nowIso,
+  }
 }
 
 function mergeSessionCursors(state: CaptureState, parts: PartRow[]): Record<string, SessionCursor> {
@@ -1066,16 +1067,15 @@ export async function ingestSession(
   client: Queryable,
   state: WatcherState,
   opts: { stateFile?: string; source?: string } = {},
-): Promise<{ parts: number; inserted: number; skipped: number }> {
+): Promise<{ parts: number; inserted: number; skipped: number; failed?: boolean }> {
   const sid = sessionId.trim()
   if (!sid) return { parts: 0, inserted: 0, skipped: 0 }
   const db = openOpencodeDb(dbPath)
   const source = opts.source ?? 'plugin'
   const stateFile = opts.stateFile ?? captureStatePath()
   if (!db) {
-    state.capture = stampIngest(state.capture, source)
-    saveState(state.capture, stateFile)
-    return { parts: 0, inserted: 0, skipped: 0 }
+    log(`ingest ${sid}: sqlite db not readable at ${dbPath}; nothing acknowledged`)
+    return { parts: 0, inserted: 0, skipped: 0, failed: true }
   }
   try {
     const prior = state.capture.sessions?.[sid]
@@ -1153,18 +1153,15 @@ export async function runOnce(
           const state = createWatcherState(loadState(stateFile))
           // queued sessions are ingested explicitly (a filtered scan may not cover them)
           const claim = claimPending(stateFile, 'sessionId')
-          try {
-            for (const p of claim.entries) {
-              await ingestSession(dbPath, p.sessionId as string, client, state, {
-                stateFile,
-                source: 'backfill:pending',
-              })
-            }
-            claim.done()
-          } catch (err) {
-            claim.release()
-            throw err
+          let allOk = true
+          for (const p of claim.entries) {
+            const r = await ingestSession(dbPath, p.sessionId as string, client, state, {
+              stateFile,
+              source: 'backfill:pending',
+            })
+            if (r.failed) allOk = false
           }
+          if (allOk) claim.done()
           return scanOnce(dbPath, client, state, {
             backfillDays: opts.backfillDays,
             stateFile,
@@ -1208,75 +1205,78 @@ export function queuePending(stateFile: string, entry: Record<string, unknown>):
 
 export interface PendingClaim {
   entries: Record<string, unknown>[]
-  /** ingested successfully → drop the claimed batch */
+  /** claimed batch files (ours + recovered orphans); immutable until done() */
+  files: string[]
+  /** every entry ingested successfully → drop the claimed batches */
   done: () => void
-  /** failed → put the batch back at the head of the queue */
-  release: () => void
 }
 
-/** Claim the queue by ATOMIC RENAME (appends that race the claim land in a new
- *  queue file for the next holder), dedupe on `key`, and hand back a batch that
- *  is only dropped once the caller reports success. Call while holding the
- *  state lock. */
+/** Claim queued work while holding the state lock: rename the live queue to a
+ *  private claimed file (an append that races the rename lands in a fresh
+ *  queue file for the next holder) and ALSO pick up every claimed batch left
+ *  behind by a holder that died or failed — batches are immutable and are only
+ *  deleted by `done()` after the whole batch succeeded, so nothing is ever
+ *  rewritten under a producer and nothing is dropped on failure. */
 export function claimPending(stateFile: string, key: string): PendingClaim {
   const queue = pendingQueuePath(stateFile)
-  const claimed = `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`
-  const none: PendingClaim = { entries: [], done: () => {}, release: () => {} }
+  const dir = path.dirname(queue)
+  const base = `${path.basename(queue)}.claimed.`
   try {
-    fs.renameSync(queue, claimed)
+    fs.renameSync(queue, `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`)
   } catch {
-    return none
+    // nothing newly queued
   }
-  let raw = ''
+  let names: string[]
   try {
-    raw = fs.readFileSync(claimed, 'utf8')
+    names = fs
+      .readdirSync(dir)
+      .filter((n) => n.startsWith(base))
+      .sort()
   } catch {
-    return none
+    names = []
   }
+  const files: string[] = []
   const seen = new Set<string>()
   const entries: Record<string, unknown>[] = []
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
+  for (const name of names) {
+    const file = path.join(dir, name)
+    let raw: string
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>
-      const v = parsed[key]
-      const k = typeof v === 'string' ? v : ''
-      if (!k || seen.has(k)) continue
-      seen.add(k)
-      entries.push(parsed)
+      raw = fs.readFileSync(file, 'utf8')
     } catch {
-      // skip a bad line
+      continue // left for the next holder
     }
-  }
-  const drop = (): void => {
-    try {
-      fs.unlinkSync(claimed)
-    } catch {
-      // ignore
+    files.push(file)
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        const v = parsed[key]
+        const k = typeof v === 'string' ? v : ''
+        if (!k || seen.has(k)) continue
+        seen.add(k)
+        entries.push(parsed)
+      } catch {
+        // skip a bad line
+      }
     }
   }
   return {
     entries,
-    done: drop,
-    release: () => {
-      try {
-        // prepend the unfinished batch to whatever was queued meanwhile
-        let rest = ''
+    files,
+    done: () => {
+      for (const f of files) {
         try {
-          rest = fs.readFileSync(queue, 'utf8')
+          fs.unlinkSync(f)
         } catch {
-          rest = ''
+          // ignore
         }
-        fs.writeFileSync(queue, raw + rest)
-      } catch {
-        // ignore
       }
-      drop()
     },
   }
 }
 
-/** Test/inspection helper: read + clear the queue without a claim protocol. */
+/** Test/inspection helper: claim + acknowledge in one step. */
 export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
   const claim = claimPending(stateFile, key)
   claim.done()
@@ -1335,24 +1335,26 @@ export async function runIngestSession(
         client,
         async () => {
           const state = createWatcherState(loadState(stateFile))
-          // drain sessions that earlier could not take the lock (claimed by rename;
-          // released back to the queue if this run fails)
+          const mine = await ingestSession(dbPath, sessionId, client, state, {
+            stateFile,
+            source: 'plugin',
+          })
+          if (mine.failed) return mine
+          // drain sessions that earlier could not take the lock; the claimed
+          // batches are only dropped when every one of them succeeded
           const claim = claimPending(stateFile, 'sessionId')
-          try {
-            for (const p of claim.entries) {
-              const id = p.sessionId as string
-              if (id === sessionId) continue
-              await ingestSession(dbPath, id, client, state, {
-                stateFile,
-                source: 'plugin:pending',
-              })
-            }
-            claim.done()
-          } catch (err) {
-            claim.release()
-            throw err
+          let allOk = true
+          for (const p of claim.entries) {
+            const id = p.sessionId as string
+            if (id === sessionId) continue
+            const r = await ingestSession(dbPath, id, client, state, {
+              stateFile,
+              source: 'plugin:pending',
+            })
+            if (r.failed) allOk = false
           }
-          return ingestSession(dbPath, sessionId, client, state, { stateFile, source: 'plugin' })
+          if (allOk) claim.done()
+          return mine
         },
         stateFile,
       ),

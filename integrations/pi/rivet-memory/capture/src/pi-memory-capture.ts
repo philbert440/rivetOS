@@ -1145,7 +1145,9 @@ export function saveCaptureState(
       updatedAt: new Date().toISOString(),
       files: Object.keys(cursors).length,
       hookInstalledAt:
-        patch.hookInstalledAt !== undefined ? patch.hookInstalledAt : prev.hookInstalledAt,
+        patch.hookInstalledAt !== undefined
+          ? patch.hookInstalledAt
+          : (prev.hookInstalledAt ?? new Date().toISOString()),
     }
     try {
       const dest = captureStatePath()
@@ -1297,16 +1299,22 @@ export async function runOnce(sessionsDir?: string, days?: number): Promise<void
     withStateLock(client, async () => {
       // queued files are ingested explicitly (a filtered scan may not cover them)
       const claim = claimPending(captureStatePath(), 'file')
-      try {
-        for (const p of claim.entries) {
+      let allOk = true
+      for (const p of claim.entries) {
+        try {
           await ingestFileFromCursor(p.file as string, client, { alreadyLocked: true })
+        } catch (err) {
+          allOk = false
+          log(
+            `pending ingest ${String(p.file)} failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
         }
-        claim.done()
-      } catch (err) {
-        claim.release()
-        throw err
       }
-      return scanOnce(root, client, state, true, { days, triggerEvent: 'backfill' })
+      if (allOk) claim.done()
+      const scanned = await scanOnce(root, client, state, true, { days, triggerEvent: 'backfill' })
+      // persist under the same lock as the ingests
+      persistWatcherCursors(root, state, scanned, 'backfill')
+      return scanned
     }),
   )
 
@@ -1314,7 +1322,6 @@ export async function runOnce(sessionsDir?: string, days?: number): Promise<void
     log('backfill skipped: state lock busy')
     return
   }
-  persistWatcherCursors(root, state, summary, 'backfill')
   log(
     `once ${root}: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
   )
@@ -1350,72 +1357,78 @@ export function queuePending(stateFile: string, entry: Record<string, unknown>):
 
 export interface PendingClaim {
   entries: Record<string, unknown>[]
+  /** claimed batch files (ours + recovered orphans); immutable until done() */
+  files: string[]
+  /** every entry ingested successfully → drop the claimed batches */
   done: () => void
-  release: () => void
 }
 
-/** Claim the queue by ATOMIC RENAME (appends that race the claim land in a new
- *  queue file for the next holder), dedupe on `key`, and hand back a batch that
- *  is only dropped once the caller reports success. Call while holding the
- *  state lock. */
+/** Claim queued work while holding the state lock: rename the live queue to a
+ *  private claimed file (an append that races the rename lands in a fresh
+ *  queue file for the next holder) and ALSO pick up every claimed batch left
+ *  behind by a holder that died or failed — batches are immutable and are only
+ *  deleted by `done()` after the whole batch succeeded, so nothing is ever
+ *  rewritten under a producer and nothing is dropped on failure. */
 export function claimPending(stateFile: string, key: string): PendingClaim {
   const queue = pendingQueuePath(stateFile)
-  const claimed = `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`
-  const none: PendingClaim = { entries: [], done: () => {}, release: () => {} }
+  const dir = path.dirname(queue)
+  const base = `${path.basename(queue)}.claimed.`
   try {
-    fs.renameSync(queue, claimed)
+    fs.renameSync(queue, `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`)
   } catch {
-    return none
+    // nothing newly queued
   }
-  let raw = ''
+  let names: string[]
   try {
-    raw = fs.readFileSync(claimed, 'utf8')
+    names = fs
+      .readdirSync(dir)
+      .filter((n) => n.startsWith(base))
+      .sort()
   } catch {
-    return none
+    names = []
   }
+  const files: string[] = []
   const seen = new Set<string>()
   const entries: Record<string, unknown>[] = []
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
+  for (const name of names) {
+    const file = path.join(dir, name)
+    let raw: string
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>
-      const v = parsed[key]
-      const k = typeof v === 'string' ? v : ''
-      if (!k || seen.has(k)) continue
-      seen.add(k)
-      entries.push(parsed)
+      raw = fs.readFileSync(file, 'utf8')
     } catch {
-      // skip a bad line
+      continue // left for the next holder
     }
-  }
-  const drop = (): void => {
-    try {
-      fs.unlinkSync(claimed)
-    } catch {
-      // ignore
+    files.push(file)
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        const v = parsed[key]
+        const k = typeof v === 'string' ? v : ''
+        if (!k || seen.has(k)) continue
+        seen.add(k)
+        entries.push(parsed)
+      } catch {
+        // skip a bad line
+      }
     }
   }
   return {
     entries,
-    done: drop,
-    release: () => {
-      try {
-        let rest = ''
+    files,
+    done: () => {
+      for (const f of files) {
         try {
-          rest = fs.readFileSync(queue, 'utf8')
+          fs.unlinkSync(f)
         } catch {
-          rest = ''
+          // ignore
         }
-        fs.writeFileSync(queue, raw + rest)
-      } catch {
-        // ignore
       }
-      drop()
     },
   }
 }
 
-/** Test/inspection helper: read + clear the queue without a claim protocol. */
+/** Test/inspection helper: claim + acknowledge in one step. */
 export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
   const claim = claimPending(stateFile, key)
   claim.done()
@@ -1463,22 +1476,6 @@ export async function ingestFileFromCursor(
 ): Promise<{ inserted: number; skipped: number; lockBusy?: boolean }> {
   const abs = path.resolve(file)
   const body = async (): Promise<{ inserted: number; skipped: number }> => {
-    if (!opts.alreadyLocked) {
-      // drain files that earlier could not take the lock (claimed by rename;
-      // released back to the queue if this run fails)
-      const claim = claimPending(captureStatePath(), 'file')
-      try {
-        for (const p of claim.entries) {
-          const f = p.file as string
-          if (path.resolve(f) === abs) continue
-          await ingestFileFromCursor(f, client, { alreadyLocked: true })
-        }
-        claim.done()
-      } catch (err) {
-        claim.release()
-        throw err
-      }
-    }
     const persisted = loadCaptureState()
     const stored = persisted.cursors[abs]
     const cursor: FileCursor = stored
@@ -1497,7 +1494,25 @@ export async function ingestFileFromCursor(
         },
         { alreadyLocked: true },
       )
-      return { inserted: r?.inserted ?? 0, skipped: r?.skipped ?? 0 }
+      const mine = { inserted: r?.inserted ?? 0, skipped: r?.skipped ?? 0 }
+      if (!opts.alreadyLocked) {
+        // drain files that earlier could not take the lock; claimed batches are
+        // only dropped when every one of them succeeded (we hold the lock)
+        const claim = claimPending(captureStatePath(), 'file')
+        let allOk = true
+        for (const p of claim.entries) {
+          const f = p.file as string
+          if (path.resolve(f) === abs) continue
+          try {
+            await ingestFileFromCursor(f, client, { alreadyLocked: true })
+          } catch (err) {
+            allOk = false
+            log(`pending ingest ${f} failed: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+        if (allOk) claim.done()
+      }
+      return mine
     } catch (err) {
       Object.assign(cursor, before)
       throw err
@@ -1625,9 +1640,20 @@ async function main(): Promise<void> {
   }
 
   if (cli.mode === 'stamp-installed') {
-    const now = new Date().toISOString()
-    const st = saveCaptureState({ hookInstalledAt: now })
-    console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${captureStatePath()}`)
+    try {
+      const r = await withPool((client) =>
+        withStateLock(client, () => {
+          const now = new Date().toISOString()
+          const st = saveCaptureState({ hookInstalledAt: now })
+          console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${captureStatePath()}`)
+          return Promise.resolve(true)
+        }),
+      )
+      if (r === null) log('stamp-installed deferred: state lock busy — the next ingest records it')
+    } catch (err) {
+      // never write shared state unlocked; the next ingest stamps hookInstalledAt
+      log(`stamp-installed deferred (${err instanceof Error ? err.message : String(err)})`)
+    }
     return
   }
 

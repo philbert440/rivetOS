@@ -944,72 +944,78 @@ export function queuePending(stateFile: string, entry: Record<string, unknown>):
 
 export interface PendingClaim {
   entries: Record<string, unknown>[]
+  /** claimed batch files (ours + recovered orphans); immutable until done() */
+  files: string[]
+  /** every entry ingested successfully → drop the claimed batches */
   done: () => void
-  release: () => void
 }
 
-/** Claim the queue by ATOMIC RENAME (appends that race the claim land in a new
- *  queue file for the next holder), dedupe on `key`, and hand back a batch that
- *  is only dropped once the caller reports success. Call while holding the
- *  state lock. */
+/** Claim queued work while holding the state lock: rename the live queue to a
+ *  private claimed file (an append that races the rename lands in a fresh
+ *  queue file for the next holder) and ALSO pick up every claimed batch left
+ *  behind by a holder that died or failed — batches are immutable and are only
+ *  deleted by `done()` after the whole batch succeeded, so nothing is ever
+ *  rewritten under a producer and nothing is dropped on failure. */
 export function claimPending(stateFile: string, key: string): PendingClaim {
   const queue = pendingQueuePath(stateFile)
-  const claimed = `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`
-  const none: PendingClaim = { entries: [], done: () => {}, release: () => {} }
+  const dir = path.dirname(queue)
+  const base = `${path.basename(queue)}.claimed.`
   try {
-    fs.renameSync(queue, claimed)
+    fs.renameSync(queue, `${queue}.claimed.${String(process.pid)}.${String(Date.now())}`)
   } catch {
-    return none
+    // nothing newly queued
   }
-  let raw = ''
+  let names: string[]
   try {
-    raw = fs.readFileSync(claimed, 'utf8')
+    names = fs
+      .readdirSync(dir)
+      .filter((n) => n.startsWith(base))
+      .sort()
   } catch {
-    return none
+    names = []
   }
+  const files: string[] = []
   const seen = new Set<string>()
   const entries: Record<string, unknown>[] = []
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue
+  for (const name of names) {
+    const file = path.join(dir, name)
+    let raw: string
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>
-      const v = parsed[key]
-      const k = typeof v === 'string' ? v : ''
-      if (!k || seen.has(k)) continue
-      seen.add(k)
-      entries.push(parsed)
+      raw = fs.readFileSync(file, 'utf8')
     } catch {
-      // skip a bad line
+      continue // left for the next holder
     }
-  }
-  const drop = (): void => {
-    try {
-      fs.unlinkSync(claimed)
-    } catch {
-      // ignore
+    files.push(file)
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        const v = parsed[key]
+        const k = typeof v === 'string' ? v : ''
+        if (!k || seen.has(k)) continue
+        seen.add(k)
+        entries.push(parsed)
+      } catch {
+        // skip a bad line
+      }
     }
   }
   return {
     entries,
-    done: drop,
-    release: () => {
-      try {
-        let rest = ''
+    files,
+    done: () => {
+      for (const f of files) {
         try {
-          rest = fs.readFileSync(queue, 'utf8')
+          fs.unlinkSync(f)
         } catch {
-          rest = ''
+          // ignore
         }
-        fs.writeFileSync(queue, raw + rest)
-      } catch {
-        // ignore
       }
-      drop()
     },
   }
 }
 
-/** Test/inspection helper: read + clear the queue without a claim protocol. */
+/** Test/inspection helper: claim + acknowledge in one step. */
 export function takePending(stateFile: string, key: string): Record<string, unknown>[] {
   const claim = claimPending(stateFile, key)
   claim.done()
@@ -1081,28 +1087,26 @@ export async function withStateLock<T>(
 /** `--stamp-installed`: record hookInstalledAt under the state lock (setup
  *  scripts must not race detached workers with an unlocked write). */
 export async function runStampInstalled(stateFile = captureStatePath()): Promise<void> {
-  const stamp = (): void => {
-    const st = loadCaptureState(stateFile)
-    const now = new Date().toISOString()
-    saveCaptureState({ ...st, hookInstalledAt: st.hookInstalledAt ?? now }, stateFile)
-    console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${stateFile}`)
-  }
   try {
     const r = await withPool((client) =>
       withStateLock(
         client,
         () => {
-          stamp()
+          const st = loadCaptureState(stateFile)
+          const now = new Date().toISOString()
+          saveCaptureState({ ...st, hookInstalledAt: st.hookInstalledAt ?? now }, stateFile)
+          console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${stateFile}`)
           return Promise.resolve(true)
         },
         stateFile,
       ),
     )
-    if (r === null) stamp()
+    if (r === null) {
+      log('stamp-installed deferred: state lock busy — the next ingest records hookInstalledAt')
+    }
   } catch (err) {
-    // no database from setup (first install before the env is wired): merged atomic write
-    log(`stamp-installed without db lock: ${err instanceof Error ? err.message : String(err)}`)
-    stamp()
+    // no database from setup: never write shared state unlocked; the next ingest stamps it
+    log(`stamp-installed deferred (${err instanceof Error ? err.message : String(err)})`)
   }
 }
 
@@ -1374,22 +1378,19 @@ export async function runBackfill(
       async () => {
         // queued files are ingested explicitly (a days-filtered scan may not cover them)
         const claim = claimPending(stateFile, 'file')
-        try {
-          for (const p of claim.entries) {
-            await ingestTranscriptFile(p.file as string, {
-              client,
-              stateFile,
-              alreadyLocked: true,
-              closeSession: p.closeSession === true,
-              sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
-              triggerEvent: 'backfill:pending',
-            })
-          }
-          claim.done()
-        } catch (err) {
-          claim.release()
-          throw err
+        let allOk = true
+        for (const p of claim.entries) {
+          const r = await ingestTranscriptFile(p.file as string, {
+            client,
+            stateFile,
+            alreadyLocked: true,
+            closeSession: p.closeSession === true,
+            sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+            triggerEvent: 'backfill:pending',
+          })
+          if (r.failed) allOk = false
         }
+        if (allOk) claim.done()
         const persisted = loadCaptureState(stateFile)
         const state = stateToWatcher(persisted)
         const summary = await scanOnce(root, client, state, true, { days, triggerEvent: source })
@@ -1446,6 +1447,8 @@ export interface IngestFileOpts {
 export interface HookHandleResult {
   /** Set when the run was skipped because the state lock stayed busy. */
   lockBusy?: boolean
+  /** Set when the ingest itself failed (nothing was acknowledged). */
+  failed?: boolean
   inserted: number
   skipped: number
   file: string | null
@@ -1483,28 +1486,25 @@ export async function ingestTranscriptFile(
   try {
     if (opts.delayMs && opts.delayMs > 0) await sleep(opts.delayMs)
     const finalize = Boolean(opts.closeSession)
+    // holder object: assignments inside the closure are invisible to TS narrowing
+    const pending: { claim: PendingClaim | null; allOk: boolean } = { claim: null, allOk: true }
     const body = async (): Promise<HookHandleResult> => {
       if (!opts.alreadyLocked) {
-        // drain files that earlier could not take the lock (claimed by rename;
-        // released back to the queue if this run fails)
-        const claim = claimPending(stateFile, 'file')
-        try {
-          for (const p of claim.entries) {
-            const f = p.file as string
-            if (path.resolve(f) === abs) continue
-            await ingestTranscriptFile(f, {
-              ...opts,
-              alreadyLocked: true,
-              delayMs: 0,
-              closeSession: p.closeSession === true,
-              sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
-              triggerEvent: typeof p.event === 'string' ? `${p.event}:pending` : 'pending',
-            })
-          }
-          claim.done()
-        } catch (err) {
-          claim.release()
-          throw err
+        // drain files that earlier could not take the lock; the claimed batches
+        // are only dropped once THIS run and every queued one succeeded
+        pending.claim = claimPending(stateFile, 'file')
+        for (const p of pending.claim.entries) {
+          const f = p.file as string
+          if (path.resolve(f) === abs) continue
+          const r = await ingestTranscriptFile(f, {
+            ...opts,
+            alreadyLocked: true,
+            delayMs: 0,
+            closeSession: p.closeSession === true,
+            sessionId: typeof p.sessionId === 'string' ? p.sessionId : null,
+            triggerEvent: typeof p.event === 'string' ? `${p.event}:pending` : 'pending',
+          })
+          if (r.failed) pending.allOk = false
         }
       }
       const cursor = cursorFromState(loadCaptureState(stateFile), abs)
@@ -1522,7 +1522,7 @@ export async function ingestTranscriptFile(
       } catch (err) {
         Object.assign(cursor, before)
         log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
-        return { ...empty, file: abs }
+        return { ...empty, file: abs, failed: true }
       }
 
       const latest = loadCaptureState(stateFile)
@@ -1561,6 +1561,7 @@ export async function ingestTranscriptFile(
     }
     if (opts.alreadyLocked) return await body()
     const locked = await withStateLock(opts.client, body, stateFile, opts.lockWaitMs)
+    if (locked && !locked.failed && pending.allOk) pending.claim?.done()
     return locked ?? { ...empty, lockBusy: true }
   } catch (err) {
     log(`ingest ${triggerEvent} failed: ${err instanceof Error ? err.message : String(err)}`)
