@@ -23,7 +23,7 @@ Then resolve the owner id — one executable step, no reading USER.md:
   user. This is deliberately fail-safe: a missing map can make the owner's
   own session slightly more formal, but it can never lock anyone out or
   disclose the owner's context to a guest. In routed mode: the memory tools
-  already hit *that user's* database (#561), so findings are their history.
+  already hit _that user's_ database (#561), so findings are their history.
   Address them directly; do not apply the owner's projects, preferences, or
   past to them; and the owner's USER.md / private workspace context is **not
   yours to disclose** to them. Resolve the id to a display name via
@@ -39,7 +39,6 @@ mode says exactly "node owner"; routed mode says exactly
 "routed user: <name> (<id>)". Never phrase the owner as a routed user. The
 researcher has no shell and cannot run this check; an unstated identity
 forces it into neutral framing.
-
 
 You have access to this user's persistent memory store, shared by every
 Rivet agent **serving that same user** (Step 0 — never across users)
@@ -65,7 +64,7 @@ Prompts like "how's everything looking", "status", "catch me up" mean **current 
 
 Any prompt that pins a timeframe ("this morning", "yesterday", "today", "earlier",
 "last week", "the standup", "what we did on Tuesday") means the user already knows
-*when*. They need exhaustive results in order, not relevance-ranked hits.
+_when_. They need exhaustive results in order, not relevance-ranked hits.
 
 **Use the enhanced `window=` parameter whenever available**:
 
@@ -93,17 +92,19 @@ One embedding call is fragile. Run from different semantic vectors:
 - Exact tokens: IPs, MACs, error strings, port numbers → use `mode="trigram"`
 
 **FTS power move** (when supported):
+
 - `memory_search(query="frigate OR minipc OR \"error 1234\"", mode="fts")` — real OR, phrases, exclusions.
 
 ### 3. Semantic/FTS returns thin? Immediately retry with `mode="trigram"`
 
-The moment you get 0–2 results on something that *should* exist, re-issue the same
+The moment you get 0–2 results on something that _should_ exist, re-issue the same
 queries with trigram mode. Literal token matches (hostnames, error messages, config
 values) are often indexed under different surrounding text.
 
 ### 4. "No results" is a signal to try harder — never the final answer
 
 Treat empty results + any user pushback as a cue to change strategy:
+
 - Switch to browse with a wider window
 - Add more angles or trigram
 - Check cross-agent history (filter by `agent` only when you specifically want to exclude other Rivet faces)
@@ -171,4 +172,4 @@ This skill prevents repeating that expensive mistake.
 
 - Write synonym-bridging memory entries when you discover facts through probing or user correction.
 - Use `memory_stats` to understand coverage and health.
-- OpenCode capture is an SQLite watcher (no hooks). Pre-compaction context is whatever `opencode.db` still holds.
+- OpenCode capture is a native plugin (`session.idle` / `compacted` / `deleted` / `error`) that ingests from SQLite. Pre-compaction context is whatever `opencode.db` still holds.

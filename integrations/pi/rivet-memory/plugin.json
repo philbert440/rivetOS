@@ -1,17 +1,8 @@
 {
   "name": "rivet-memory",
   "version": "0.1.0",
-  "description": "RivetOS persistent cross-agent memory for the pi CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via a v3 session jsonl watcher.",
-  "keywords": [
-    "memory",
-    "recall",
-    "discipline",
-    "rivetos",
-    "mcp",
-    "cross-agent",
-    "pi",
-    "capture"
-  ],
+  "description": "RivetOS persistent cross-agent memory for the pi CLI. Includes elite memory-recall discipline, quick commands, memory-researcher subagent, MCP tools, and automatic capture via a pi extension that ingests v3 session jsonl.",
+  "keywords": ["memory", "recall", "discipline", "rivetos", "mcp", "cross-agent", "pi", "capture"],
   "homepage": "https://github.com/philbert440/rivetOS",
   "repository": "https://github.com/philbert440/rivetOS",
   "license": "MIT",

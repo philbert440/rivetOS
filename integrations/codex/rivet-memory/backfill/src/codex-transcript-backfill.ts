@@ -4,7 +4,7 @@
  * jsonl files into the shared RivetOS memory store.
  *
  * Identity scheme is reused verbatim from the capture worker so a live
- * watcher and this tool collide rather than duplicate:
+ * hook ingest and this tool collide rather than duplicate:
  *   agent='rivet-gpt', channel='codex', session_key='codex:<uuid>'
  *   event_id = rollout item id (`rs_…`/`ctc_…`/`ctco_…`) or
  *              `codex:<uuid>:line:<index>`

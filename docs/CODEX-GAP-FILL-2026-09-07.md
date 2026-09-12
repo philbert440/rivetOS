@@ -1,5 +1,7 @@
 # Codex integration followups — rivet-gpt, 2026-09-07
 
+> Superseded 2026-09-12: capture now uses Codex hooks (`~/.codex/hooks.json` / managed `/etc/codex/requirements.toml` → `codex-memory-capture.sh --hook`). The user `codex-memory-capture.service` watcher described below is legacy.
+
 Companion to `/rivet-shared/plans/codex-node-parity-2026-09-07.md`.
 Implementation is in the local `/home/rivet/rivetos` checkout, uncommitted.
 
