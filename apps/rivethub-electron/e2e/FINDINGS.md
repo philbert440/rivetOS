@@ -1,5 +1,9 @@
 # ct111 desktop audit — 2026-09-11
 
+Historical baseline on main. See [FIXES.md](FIXES.md) for the subsequent fixes
+and verification. The original HTML report and JSON results are preserved under
+`artifacts/main-audit-report/` and `artifacts/main-audit-results.json`.
+
 The application is **not fully passing**: **41 of 46 tests passed; 5 failed**
 (5.4 minutes, no retries or skips). The full run results are recorded in
 `artifacts/results.json` and `playwright-report/index.html`. Known failures remain

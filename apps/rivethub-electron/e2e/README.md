@@ -1,6 +1,7 @@
 # RivetHub desktop end-to-end tests
 
 Initial ct111 audit: [findings and build details](FINDINGS.md).
+Subsequent fixes: [candidate build and verification](FIXES.md).
 
 These tests control the **real installed Electron app** on ct111 through an SSH
 tunnel. Requests use the app's native mTLS bridge and its real gateway. Nothing
@@ -13,7 +14,7 @@ The normal desktop profile is never used for test mutations.
 ```bash
 cd apps/rivethub-electron/e2e
 npm ci
-E2E_EXPECT_SHA=abd8572f E2E_EXPECT_VERSION=0.5.22 npm run test:remote
+E2E_EXPECT_SHA=ccebc1c0 E2E_EXPECT_VERSION=0.5.22 npm run test:remote
 ```
 
 Set `E2E_EXPECT_SHA` to the commit actually built from main. The launcher checks
@@ -41,8 +42,8 @@ not for this suite on the existing desktop display.
 Run a subset by passing normal Playwright arguments:
 
 ```bash
-E2E_EXPECT_SHA=abd8572f npm run test:remote -- --grep 'files:'
-E2E_EXPECT_SHA=abd8572f npm run test:remote -- specs/memory.spec.mjs
+E2E_EXPECT_SHA=ccebc1c0 npm run test:remote -- --grep 'files:'
+E2E_EXPECT_SHA=ccebc1c0 npm run test:remote -- specs/memory.spec.mjs
 npm run test:list
 npm run report
 ```
