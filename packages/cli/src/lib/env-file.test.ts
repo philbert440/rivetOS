@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadRivetEnv, parseRivetEnv } from './env-file.js'
+import { loadRivetEnv, parseRivetEnv, upsertEnvVars } from './env-file.js'
 
 const TRACKED = ['EXISTING', 'NEW'] as const
 const ORIGINAL: Record<string, string | undefined> = {}
@@ -91,5 +91,43 @@ describe('loadRivetEnv', () => {
 
   it('returns [] when the file is missing', () => {
     expect(loadRivetEnv(join(tmpdir(), 'no-such-rivet-env-file'))).toEqual([])
+  })
+})
+
+describe('upsertEnvVars', () => {
+  it('creates a 0600 file and keeps unrelated lines when updating keys', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-env-upsert-'))
+    const path = join(dir, '.env')
+    writeFileSync(path, 'KEEP=yes\nRIVETOS_PG_URL=old\n')
+
+    const result = upsertEnvVars(path, {
+      RIVETOS_PG_URL: 'postgres://n',
+      RIVETOS_EMBED_URL: 'https://rivetos.cloud/embed/t',
+    })
+
+    const body = readFileSync(path, 'utf8')
+    expect(body).toContain('KEEP=yes')
+    expect(body).toContain('RIVETOS_PG_URL=postgres://n')
+    expect(body).toContain('RIVETOS_EMBED_URL=https://rivetos.cloud/embed/t')
+    expect(result.written).toBe(true)
+    expect(result.diff.find((d) => d.key === 'RIVETOS_PG_URL')).toEqual({
+      key: 'RIVETOS_PG_URL',
+      from: 'old',
+      to: 'postgres://n',
+    })
+    const mode = statSync(path).mode & 0o777
+    expect(mode).toBe(0o600)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('dry-run does not write', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-env-dry-'))
+    const path = join(dir, '.env')
+    writeFileSync(path, 'FOO=bar\n')
+    const result = upsertEnvVars(path, { FOO: 'baz' }, { dryRun: true })
+    expect(readFileSync(path, 'utf8')).toBe('FOO=bar\n')
+    expect(result.written).toBe(false)
+    expect(result.next).toContain('FOO=baz')
+    rmSync(dir, { recursive: true, force: true })
   })
 })

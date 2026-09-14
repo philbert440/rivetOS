@@ -77,6 +77,7 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   skill: (args) => runSubRoute(routeSkill(args)),
   workflow: () => import('./commands/workflow.js').then((m) => m.default()),
   local: (args) => import('./commands/local.js').then((m) => m.default(args)),
+  cloud: (args) => import('./commands/cloud.js').then((m) => m.default(args)),
   help: () => showHelp(),
   // Provider commands — rivetos <provider> <action>
   'codex-cli': () => import('./commands/provider.js').then((m) => m.default('codex-cli')),
@@ -158,6 +159,12 @@ export function helpText(): string {
     rivetos memory backfill-tool-synth  Enqueue historical tool calls for synthesis
     rivetos memory queue-status         Show graphile-worker job queue state
     rivetos memory retry-failed         Reset dead graphile jobs (after a code fix)
+    rivetos memory export [--out file]  Write gzip NDJSON v1 (stdout; refuses a TTY)
+    rivetos memory import <file>        Load gzip NDJSON v1 (ON CONFLICT DO NOTHING)
+
+  Cloud:
+    rivetos cloud connect <pg-url> --embed-url <url>  Point this laptop at Rivet Cloud memory
+    rivetos cloud status                Show cloud env (host/db) and ping DB + embed
 
   Database:
     rivetos db migrate [--config <path>] Apply pending migrations (Postgres or embedded)

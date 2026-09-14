@@ -6,9 +6,9 @@
  * process environment win. Never log values.
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 export interface LoadRivetEnvOptions {
   /** When true, file values replace already-set keys. Default false. */
@@ -123,4 +123,99 @@ function decodeDoubleQuoted(s: string): string {
     out += c
   }
   return out
+}
+
+export interface EnvDiffEntry {
+  key: string
+  from: string | undefined
+  to: string
+}
+
+export interface UpsertEnvVarsResult {
+  created: boolean
+  written: boolean
+  diff: EnvDiffEntry[]
+  next: string
+}
+
+function encodeEnvValue(value: string): string {
+  if (/[\s#"']/.test(value)) {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  }
+  return value
+}
+
+function envAssignment(key: string, value: string, exportPrefix: boolean): string {
+  const line = `${key}=${encodeEnvValue(value)}`
+  return exportPrefix ? `export ${line}` : line
+}
+
+/**
+ * Create or update `path` with the given keys. Existing unrelated lines are
+ * kept. The file is created 0600 (directory 0700) when missing.
+ */
+export function upsertEnvVars(
+  path: string,
+  vars: Record<string, string>,
+  opts: { dryRun?: boolean } = {},
+): UpsertEnvVarsResult {
+  const existed = existsSync(path)
+  const previous = existed ? readFileSync(path, 'utf8') : ''
+  const parsed = parseRivetEnv(previous)
+  const keys = Object.keys(vars)
+  const replaced = new Set<string>()
+  const diff: EnvDiffEntry[] = []
+
+  const rawLines = previous.length === 0 ? [] : previous.split(/\r?\n/)
+  // drop a single trailing empty line from split so we can re-add a final newline
+  if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') rawLines.pop()
+
+  const outLines: string[] = []
+  for (const line of rawLines) {
+    const parsedLine = parseEnvLine(line)
+    if (parsedLine && Object.prototype.hasOwnProperty.call(vars, parsedLine.key)) {
+      if (!replaced.has(parsedLine.key)) {
+        const to = vars[parsedLine.key]
+        diff.push({ key: parsedLine.key, from: parsedLine.value, to })
+        const exportPrefix = /^\s*export\s/.test(line)
+        outLines.push(envAssignment(parsedLine.key, to, exportPrefix))
+        replaced.add(parsedLine.key)
+      }
+      continue
+    }
+    outLines.push(line)
+  }
+
+  for (const key of keys) {
+    if (replaced.has(key)) continue
+    const to = vars[key]
+    diff.push({ key, from: parsed[key], to })
+    if (outLines.length > 0 && outLines[outLines.length - 1] !== '') outLines.push('')
+    outLines.push(envAssignment(key, to, false))
+    replaced.add(key)
+  }
+
+  const next = outLines.length > 0 ? `${outLines.join('\n')}\n` : ''
+  const changed =
+    !existed ||
+    next !== (previous.endsWith('\n') || previous.length === 0 ? previous : `${previous}\n`)
+
+  if (!opts.dryRun && changed) {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    writeFileSync(path, next, { encoding: 'utf8', mode: 0o600 })
+    try {
+      chmodSync(path, 0o600)
+    } catch {
+      // Windows may ignore mode bits
+    }
+  }
+
+  return { created: !existed, written: Boolean(!opts.dryRun && changed), diff, next }
+}
+
+/** One line per changed key. Callers redact secret values before printing. */
+export function formatEnvDiff(diff: EnvDiffEntry[]): string {
+  return diff
+    .map((d) => `${d.key}: ${d.from === undefined || d.from === '' ? '(unset)' : d.from} → ${d.to}`)
+    .join('\n')
 }

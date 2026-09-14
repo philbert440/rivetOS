@@ -324,3 +324,28 @@ export type {
   TopicResolution,
   ResolveReason,
 } from './wiki/index-reader.js'
+
+export {
+  exportMemory,
+  importMemory,
+  insertBatchSql,
+  selectTableSql,
+  pickKnownColumns,
+  EXPORT_TABLES,
+  EXPORT_COLUMNS,
+  EXPORT_TYPE,
+  EXPORT_VERSION,
+  IMPORT_BATCH_SIZE,
+  DEFER_EMBED_GUC_SQL,
+  GRAPHILE_NAMESPACE_SQL,
+  ENQUEUE_UNEMBEDDED_SQL,
+  GRAPHILE_MISSING_HINT,
+} from './portability.js'
+export type {
+  ExportHeader,
+  ExportOptions,
+  ExportSource,
+  ImportOptions,
+  ImportResult,
+  PortabilityPool,
+} from './portability.js'

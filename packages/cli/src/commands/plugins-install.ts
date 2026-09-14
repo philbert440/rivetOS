@@ -77,6 +77,12 @@ export interface InstallAction {
   steps: string[]
 }
 
+export interface HarnessInstallEvent {
+  id: HarnessId
+  ok: boolean
+  detail: string
+}
+
 export interface PluginsInstallDeps {
   home?: string
   detect?: (opts: {
@@ -90,6 +96,8 @@ export interface PluginsInstallDeps {
   platform?: NodeJS.Platform
   /** Override `process.getuid()` for launchd `gui/$UID` (tests). */
   uid?: number
+  /** Optional per-harness reporter (`rivetos cloud connect` checklist). */
+  onHarness?: (event: HarnessInstallEvent) => void
 }
 
 /** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
@@ -1160,12 +1168,16 @@ export async function runPluginsInstall(
   const want = parsed.harnesses
   const selected = want.length === 0 ? detected : detected.filter((h) => want.includes(h.id))
   const platform = deps.platform ?? process.platform
+  const emit = (id: HarnessId, ok: boolean, detail: string): void => {
+    oneLine(id, ok, detail, parsed.dryRun)
+    deps.onHarness?.({ id, ok, detail })
+  }
 
   let failed = 0
   if (want.length > 0) {
     for (const id of want) {
       if (!detected.some((h) => h.id === id)) {
-        oneLine(id, false, 'not detected on PATH', parsed.dryRun)
+        emit(id, false, 'not detected on PATH')
         failed++
       }
     }
@@ -1187,7 +1199,7 @@ export async function runPluginsInstall(
 
   if (parsed.dryRun) {
     for (const action of planPluginsInstall(selected, root)) {
-      oneLine(action.id, true, action.steps.join('; '), true)
+      emit(action.id, true, action.steps.join('; '))
     }
     writeDenTerm(selected, home, parsed.force, true)
     return
@@ -1225,10 +1237,10 @@ export async function runPluginsInstall(
           )
           break
       }
-      oneLine(h.id, result.ok, result.detail, false)
+      emit(h.id, result.ok, result.detail)
       if (!result.ok) failed++
     } catch (err) {
-      oneLine(h.id, false, (err as Error).message, false)
+      emit(h.id, false, (err as Error).message)
       failed++
     }
   }

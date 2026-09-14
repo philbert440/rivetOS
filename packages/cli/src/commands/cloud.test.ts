@@ -1,0 +1,204 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+  DEFAULT_EMBED_MODEL,
+  NEXT_STEP,
+  SSLMODE_REQUIRED_MSG,
+  describePgUrl,
+  harnessLineFromEvent,
+  parseConnectArgs,
+  redactEmbedUrl,
+  redactSecret,
+  renderChecklist,
+  runCloudConnect,
+  validateEmbedUrl,
+  validatePgUrl,
+} from './cloud.js'
+
+const PG = 'postgres://tenant_demo:s3cret@rivetos.cloud:5432/tenant_demo?sslmode=require'
+const EMBED = 'https://rivetos.cloud/embed/aabbccddeeff00112233445566778899'
+const tmpDirs: string[] = []
+
+afterEach(() => {
+  tmpDirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
+  vi.restoreAllMocks()
+})
+
+describe('validatePgUrl', () => {
+  it('accepts postgres and postgresql with sslmode=', () => {
+    expect(validatePgUrl(PG).hostname).toBe('rivetos.cloud')
+    expect(
+      validatePgUrl('postgresql://tenant_demo:x@203.0.113.10:5432/tenant_demo?sslmode=require')
+        .hostname,
+    ).toBe('203.0.113.10')
+  })
+
+  it('rejects a missing sslmode with the specified message', () => {
+    expect(() => validatePgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo')).toThrow(
+      SSLMODE_REQUIRED_MSG,
+    )
+  })
+
+  it('rejects a non-postgres scheme and an unparseable URL', () => {
+    expect(() => validatePgUrl('https://rivetos.cloud/db')).toThrow(/scheme/)
+    expect(() => validatePgUrl('not a url')).toThrow(/invalid postgres URL/)
+  })
+})
+
+describe('validateEmbedUrl', () => {
+  it('requires https', () => {
+    expect(validateEmbedUrl(EMBED).protocol).toBe('https:')
+    expect(() => validateEmbedUrl('http://rivetos.cloud/embed/token')).toThrow(
+      /embed URL must be https/,
+    )
+    expect(() => validateEmbedUrl('not-a-url')).toThrow(/invalid embed URL/)
+  })
+})
+
+describe('parseConnectArgs', () => {
+  it('parses the positional URL plus flags', () => {
+    const flags = parseConnectArgs([
+      PG,
+      '--embed-url',
+      EMBED,
+      '--embed-model',
+      'qwen3-embedding-0.6b',
+      '--harness',
+      'grok-build',
+      '--root',
+      '/opt/rivetos',
+      '--dry-run',
+      '--yes',
+    ])
+    expect(flags).toEqual({
+      pgUrl: PG,
+      embedUrl: EMBED,
+      embedModel: 'qwen3-embedding-0.6b',
+      harnesses: ['grok-build'],
+      root: '/opt/rivetos',
+      dryRun: true,
+      yes: true,
+    })
+  })
+
+  it('defaults the embed model and requires pg-url + --embed-url', () => {
+    expect(parseConnectArgs([PG, '--embed-url', EMBED]).embedModel).toBe(DEFAULT_EMBED_MODEL)
+    expect(() => parseConnectArgs(['--embed-url', EMBED])).toThrow(/postgres URL/)
+    expect(() => parseConnectArgs([PG])).toThrow(/--embed-url/)
+  })
+})
+
+describe('redaction', () => {
+  it('never includes the password in host/db descriptions', () => {
+    expect(describePgUrl(PG)).toBe('rivetos.cloud:5432/tenant_demo (sslmode=require)')
+    expect(describePgUrl(PG)).not.toContain('s3cret')
+    expect(redactSecret(PG)).not.toContain('s3cret')
+    expect(redactEmbedUrl(EMBED)).toBe('https://rivetos.cloud/embed/***')
+    expect(redactEmbedUrl(EMBED)).not.toContain('aabbcc')
+  })
+})
+
+describe('renderChecklist', () => {
+  it('prints DB, embed, per-harness status, and the next-step line', () => {
+    const text = renderChecklist({
+      db: { ok: true, messages: 12 },
+      embed: { ok: true, dims: 1024 },
+      harnesses: [
+        { id: 'claude-code', status: 'installed' },
+        { id: 'grok-build', status: 'skipped', reason: 'not found' },
+        { id: 'kimi-code', status: 'failed', reason: 'setup script missing' },
+      ],
+    })
+    expect(text).toContain('DB ok (12 messages)')
+    expect(text).toContain('embed ok (1024 dims)')
+    expect(text).toContain('claude-code: installed')
+    expect(text).toContain('grok-build: skipped (not found)')
+    expect(text).toContain('kimi-code: failed (setup script missing)')
+    expect(text).toContain(NEXT_STEP)
+  })
+
+  it('maps not-detected install events to skipped (not found)', () => {
+    expect(harnessLineFromEvent({ id: 'pi', ok: false, detail: 'not detected on PATH' })).toEqual({
+      id: 'pi',
+      status: 'skipped',
+      reason: 'not found',
+    })
+  })
+})
+
+describe('runCloudConnect', () => {
+  it('upserts env into a temp dir and renders the checklist with mocked smoke', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-connect-'))
+    tmpDirs.push(dir)
+    const envPath = join(dir, '.env')
+    const logs: string[] = []
+    const smokeDb = vi.fn(async () => ({ ok: true as const, messages: 7 }))
+    const smokeEmbed = vi.fn(async () => ({ ok: true as const, dims: 1024 }))
+    const runInstall = vi.fn(
+      async (_parsed: unknown, deps: { onHarness?: (e: unknown) => void }) => {
+        deps.onHarness?.({ id: 'grok-build', ok: true, detail: 'synced' })
+      },
+    )
+
+    const checklist = await runCloudConnect([PG, '--embed-url', EMBED, '--yes'], {
+      envPath,
+      home: dir,
+      smokeDb,
+      smokeEmbed,
+      runInstall: runInstall as never,
+      log: (m) => logs.push(m),
+      error: (m) => logs.push(m),
+    })
+
+    const body = readFileSync(envPath, 'utf8')
+    expect(body).toContain(`RIVETOS_PG_URL=${PG}`)
+    expect(body).toContain(`RIVETOS_EMBED_URL=${EMBED}`)
+    expect(body).toContain(`RIVETOS_EMBED_MODEL=${DEFAULT_EMBED_MODEL}`)
+    expect(smokeDb).toHaveBeenCalledWith(PG)
+    expect(smokeEmbed).toHaveBeenCalledWith(EMBED, DEFAULT_EMBED_MODEL)
+    expect(runInstall).toHaveBeenCalled()
+    expect(checklist.db).toEqual({ ok: true, messages: 7 })
+    expect(logs.join('\n')).toContain('DB ok (7 messages)')
+    expect(logs.join('\n')).toContain('grok-build: installed')
+    expect(logs.join('\n')).not.toContain('s3cret')
+  })
+
+  it('dry-run prints the env diff and does not write', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-dry-'))
+    tmpDirs.push(dir)
+    const envPath = join(dir, '.env')
+    const logs: string[] = []
+    await runCloudConnect([PG, '--embed-url', EMBED, '--dry-run'], {
+      envPath,
+      home: dir,
+      smokeDb: async () => ({ ok: true, messages: 0 }),
+      smokeEmbed: async () => ({ ok: true, dims: 1024 }),
+      runInstall: async () => undefined,
+      log: (m) => logs.push(m),
+    })
+    expect(() => readFileSync(envPath, 'utf8')).toThrow()
+    expect(logs.join('\n')).toMatch(/dry-run env/)
+    expect(logs.join('\n')).toMatch(/RIVETOS_PG_URL/)
+    expect(logs.join('\n')).not.toContain('s3cret')
+  })
+
+  it('does not install hooks when DB smoke fails', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-fail-'))
+    tmpDirs.push(dir)
+    const runInstall = vi.fn()
+    await expect(
+      runCloudConnect([PG, '--embed-url', EMBED], {
+        envPath: join(dir, '.env'),
+        home: dir,
+        smokeDb: async () => ({ ok: false, error: 'DB unmigrated (ros_messages missing)' }),
+        smokeEmbed: async () => ({ ok: true, dims: 1024 }),
+        runInstall: runInstall as never,
+        log: () => undefined,
+        error: () => undefined,
+      }),
+    ).rejects.toThrow(/smoke failed/)
+    expect(runInstall).not.toHaveBeenCalled()
+  })
+})

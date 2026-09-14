@@ -21,6 +21,7 @@
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@rivetos/boot": "0.5.0",
+    "@rivetos/memory-postgres": "0.5.0",
     "@rivetos/types": "0.5.0",
     "@rivetos/workflows": "0.5.0",
     "pg": "^8.22.0",

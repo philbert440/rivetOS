@@ -3,6 +3,9 @@ import {
   buildRetryFailedWhere,
   parseRetryFailedFlags,
   parseRequeueFlags,
+  parseExportFlags,
+  parseImportFlags,
+  shouldRefuseGzipToTty,
   requeueDeadJobs,
   REQUEUE_PRIORITY,
   REQUEUE_RESCHEDULE_SQL,
@@ -255,5 +258,45 @@ describe('requeueDeadJobs', () => {
         { tasks: ['extract-wiki'], limit: 200, dryRun: false, json: false },
       ),
     ).rejects.toMatchObject({ code: '42P01' })
+  })
+})
+
+describe('parseExportFlags', () => {
+  it('parses --out and --since', () => {
+    expect(
+      parseExportFlags(['--out', 'mem.ndjson.gz', '--since', '2026-09-01T00:00:00.000Z']),
+    ).toEqual({
+      out: 'mem.ndjson.gz',
+      since: '2026-09-01T00:00:00.000Z',
+    })
+  })
+
+  it('defaults to stdout (no --out)', () => {
+    expect(parseExportFlags([])).toEqual({})
+  })
+
+  it('rejects an invalid --since and unknown options', () => {
+    expect(() => parseExportFlags(['--since', 'not-a-date'])).toThrow(/invalid --since/)
+    expect(() => parseExportFlags(['--nope'])).toThrow(/Unknown option/)
+    expect(() => parseExportFlags(['--out'])).toThrow(/--out requires/)
+  })
+})
+
+describe('parseImportFlags', () => {
+  it('requires a file path and parses --dry-run', () => {
+    expect(parseImportFlags(['dump.ndjson.gz', '--dry-run'])).toEqual({
+      file: 'dump.ndjson.gz',
+      dryRun: true,
+    })
+    expect(() => parseImportFlags(['--dry-run'])).toThrow(/import requires a file path/)
+    expect(() => parseImportFlags(['a.gz', 'b.gz'])).toThrow(/unexpected argument/)
+  })
+})
+
+describe('shouldRefuseGzipToTty', () => {
+  it('refuses gzip on a TTY without --out and allows redirects', () => {
+    expect(shouldRefuseGzipToTty(undefined, true)).toBe(true)
+    expect(shouldRefuseGzipToTty('mem.ndjson.gz', true)).toBe(false)
+    expect(shouldRefuseGzipToTty(undefined, false)).toBe(false)
   })
 })

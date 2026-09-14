@@ -28,6 +28,12 @@
  *       unbounded. Use retry-failed when you also need last_error cleared or
  *       an --error substring filter.
  *
+ *   rivetos memory export [--out <file>] [--since <iso>]
+ *       Gzip NDJSON v1 dump. Default stdout. Refuses gzip to a TTY.
+ *
+ *   rivetos memory import <file> [--dry-run]
+ *       Load a gzip NDJSON v1 dump (ON CONFLICT DO NOTHING).
+ *
  * Environment:
  *   RIVETOS_PG_URL  Required.
  */
@@ -36,6 +42,9 @@
 // Entrypoint
 // ---------------------------------------------------------------------------
 
+import { createReadStream, createWriteStream } from 'node:fs'
+import { hostname as osHostname } from 'node:os'
+import { finished } from 'node:stream/promises'
 import { loadRivetEnv } from '../lib/env-file.js'
 
 export default async function memory(): Promise<void> {
@@ -56,6 +65,12 @@ export default async function memory(): Promise<void> {
     case 'requeue':
       await requeue(args.slice(1))
       break
+    case 'export':
+      await memoryExport(args.slice(1))
+      break
+    case 'import':
+      await memoryImport(args.slice(1))
+      break
     default:
       printHelp()
   }
@@ -70,6 +85,8 @@ function printHelp(): void {
     queue-status          Show graphile-worker job queue state
     retry-failed          Re-queue dead jobs (attempts >= max_attempts)
     requeue               Revive dead jobs via reschedule_jobs (operators' default)
+    export                Write a gzip NDJSON v1 dump (stdout or --out)
+    import                Load a gzip NDJSON v1 dump (ON CONFLICT DO NOTHING)
 
   Run "rivetos memory <command> --help" for command-specific options.
 `)
@@ -870,6 +887,181 @@ async function requeue(args: string[]): Promise<void> {
       process.exit(1)
     }
     throw err
+  } finally {
+    await pool.end()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// export / import (gzip NDJSON v1)
+// ---------------------------------------------------------------------------
+
+export interface MemoryExportFlags {
+  out?: string
+  since?: string
+}
+
+export interface MemoryImportFlags {
+  file: string
+  dryRun: boolean
+}
+
+export function parseExportFlags(args: string[]): MemoryExportFlags {
+  const flags: MemoryExportFlags = {}
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    switch (arg) {
+      case '--out': {
+        const v = args[++i]
+        if (!v || v.startsWith('-')) throw new Error('--out requires a file path')
+        flags.out = v
+        break
+      }
+      case '--since': {
+        const v = args[++i]
+        if (!v || v.startsWith('-')) throw new Error('--since requires an ISO timestamp')
+        if (Number.isNaN(Date.parse(v))) throw new Error(`invalid --since timestamp: ${v}`)
+        flags.since = v
+        break
+      }
+      default:
+        throw new Error(`Unknown option: ${arg}`)
+    }
+  }
+  return flags
+}
+
+export function parseImportFlags(args: string[]): MemoryImportFlags {
+  const flags: MemoryImportFlags = { file: '', dryRun: false }
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--dry-run') {
+      flags.dryRun = true
+      continue
+    }
+    if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`)
+    if (flags.file) throw new Error(`unexpected argument: ${arg}`)
+    flags.file = arg
+  }
+  if (!flags.file) throw new Error('import requires a file path')
+  return flags
+}
+
+/** Gzip on a TTY is unreadable; require a redirect or --out. */
+export function shouldRefuseGzipToTty(
+  out: string | undefined,
+  isTTY: boolean | undefined,
+): boolean {
+  return !out && Boolean(isTTY)
+}
+
+function requirePgUrl(): string {
+  const pgUrl = process.env.RIVETOS_PG_URL
+  if (!pgUrl) {
+    console.error('Error: RIVETOS_PG_URL is required.')
+    process.exit(1)
+  }
+  return pgUrl
+}
+
+function exportSourceFromUrl(pgUrl: string): { kind: 'cloud' | 'local' | 'datahub'; id: string } {
+  try {
+    const u = new URL(pgUrl)
+    const db = u.pathname.replace(/^\//, '')
+    if (u.hostname === 'rivetos.cloud') return { kind: 'cloud', id: db || 'cloud' }
+    if (u.hostname === 'datahub' || u.hostname.endsWith('.datahub')) {
+      return { kind: 'datahub', id: db || u.hostname }
+    }
+  } catch {
+    // fall through
+  }
+  return { kind: 'local', id: osHostname() }
+}
+
+async function memoryExport(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+  rivetos memory export
+
+  Write a gzip-compressed NDJSON v1 dump of the memory store (conversations,
+  messages, summaries, wiki index). Embeddings are omitted; importers re-embed.
+
+  Default destination is stdout, so \`rivetos memory export > mem.ndjson.gz\`
+  works. Refuses to write gzip to a TTY.
+
+  Options:
+    --out <file>     Write to this path instead of stdout
+    --since <iso>    Only rows with created_at/cited_at >= this timestamp
+`)
+    return
+  }
+
+  let flags: MemoryExportFlags
+  try {
+    flags = parseExportFlags(args)
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+    return
+  }
+
+  if (shouldRefuseGzipToTty(flags.out, process.stdout.isTTY)) {
+    console.error('Error: refusing to write gzip to a TTY (redirect stdout or pass --out <file>)')
+    process.exit(1)
+  }
+
+  const pgUrl = requirePgUrl()
+  const { default: pg } = await import('pg')
+  const { exportMemory } = await import('@rivetos/memory-postgres')
+  const pool = new pg.Pool({ connectionString: pgUrl, max: 2 })
+  const dest = flags.out ? createWriteStream(flags.out) : process.stdout
+  try {
+    await exportMemory(pool, dest, {
+      since: flags.since,
+      source: exportSourceFromUrl(pgUrl),
+    })
+    if (flags.out) {
+      dest.end()
+      await finished(dest)
+    }
+  } finally {
+    await pool.end()
+  }
+}
+
+async function memoryImport(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+  rivetos memory import <file>
+
+  Load a gzip NDJSON v1 dump into the store pointed at by RIVETOS_PG_URL.
+  Existing rows are skipped (ON CONFLICT DO NOTHING). Embeddings are not in
+  the file; a single enqueue-unembedded job is added when graphile_worker
+  is installed.
+
+  Options:
+    --dry-run   Parse and validate the file; do not write
+`)
+    return
+  }
+
+  let flags: MemoryImportFlags
+  try {
+    flags = parseImportFlags(args)
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+    return
+  }
+
+  const pgUrl = requirePgUrl()
+  const { default: pg } = await import('pg')
+  const { importMemory } = await import('@rivetos/memory-postgres')
+  const pool = new pg.Pool({ connectionString: pgUrl, max: 2 })
+  const input = createReadStream(flags.file)
+  try {
+    const summary = await importMemory(pool, input, { dryRun: flags.dryRun })
+    console.log(JSON.stringify(summary, null, 2))
   } finally {
     await pool.end()
   }
