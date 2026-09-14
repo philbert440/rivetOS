@@ -87,10 +87,14 @@ rivetos cloud import mem.ndjson.gz
 ```
 
 - `GET https://<host>/api/t/<slug>/export` — `Authorization: Bearer <token>`,
-  `Accept: application/gzip`. Default destination is stdout; refuses gzip to a
-  TTY (redirect or `--out`).
-- `POST https://<host>/api/t/<slug>/import` — body is the gzip file,
-  `Content-Type: application/gzip`, `Authorization: Bearer <token>`.
+  `Accept: application/gzip`. Streams the response to `--out` or stdout (does
+  not buffer the gzip, does not use a short AbortController timeout). Default
+  destination is stdout; refuses gzip to a TTY (redirect or `--out`). Progress
+  (bytes received) is printed when writing to `--out`.
+- `POST https://<host>/api/t/<slug>/import` — streams the gzip file
+  (`Content-Type: application/gzip`, `Authorization: Bearer <token>`). No short
+  client timeout; an inactivity guard of 30 minutes is the only limit. Prints
+  bytes sent. On a server error, prints the JSON `committed` counts if present.
 
 ## Direct (local / datahub) export
 
@@ -116,14 +120,16 @@ same as the other `rivetos memory` subcommands.
 **dependency closure** of the selected rows so it restores into an empty schema:
 
 - **messages** — `created_at >= --since`.
-- **conversations** — conversations referenced by those messages **or** by the
-  selected summaries (including recursive parents). Older conversations are
-  pulled in when a recent message or summary needs them.
+- **conversations** — the union of (1) rows with `created_at` or `updated_at`
+  > = `--since` and (2) the conversation of every exported message (and of
+  > selected summaries, including recursive parents). Older conversations are
+  > pulled in when a recent message needs them.
 - **summaries** — `created_at >= --since`, plus each selected row's
   `parent_id` chain (recursive) so the DAG can be inserted.
-- **summary_sources** — only rows whose `summary_id` **and** `message_id` are
-  both in the dump. Junction rows are never exported in full “to keep FKs”;
-  dangling endpoints are omitted instead.
+- **summary_sources** — only rows whose `summary_id` is in the exported
+  summaries **and** whose `message_id` is in the exported messages. Bound with
+  `= ANY($1::uuid[])` over those id sets (chunks of 5k). Junction rows are
+  never exported in full “to keep FKs”; dangling endpoints are omitted instead.
 - **wiki** — when `--since` is **absent**, `ros_wiki_topics`,
   `ros_wiki_redirects`, and `ros_wiki_citations` are exported in full. When
   `--since` is **present**: topics with `created_at` or `updated_at` >= the

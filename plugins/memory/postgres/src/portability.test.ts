@@ -12,6 +12,7 @@ import {
   ENQUEUE_UNEMBEDDED_SQL,
   EXISTING_CONVERSATION_IDS_SQL,
   EXPORT_CURSOR_PAGE,
+  EXPORT_ID_CHUNK,
   EXPORT_TX_BEGIN_SQL,
   EXPORT_TX_COMMIT_SQL,
   EXPORT_TX_ROLLBACK_SQL,
@@ -24,6 +25,7 @@ import {
   SELECTED_SUMMARIES_CTE,
   SUMMARY_PARENT_UNRESOLVED_SQL,
   SUMMARY_PARENT_UPDATE_SQL,
+  chunkIds,
   closeCursorSql,
   declareCursorSql,
   exportCursorName,
@@ -34,6 +36,7 @@ import {
   insertBatchSql,
   pickKnownColumns,
   selectTableSql,
+  summarySourcesByExportedIdsSql,
   type PortabilityPool,
   type PortabilityQueryResult,
 } from './portability.js'
@@ -108,6 +111,82 @@ function cursorHandler(
   }
 }
 
+/** Apply --since closure in the mock so dump contents reflect SQL/params. */
+function sinceClosureHandler(
+  fixture: Partial<Record<string, Record<string, unknown>[]>>,
+  since: string,
+): (sql: string, params?: unknown[]) => PortabilityQueryResult {
+  const cursors = new Map<string, { rows: Record<string, unknown>[]; offset: number }>()
+  const filterSources = (params?: unknown[]): Record<string, unknown>[] => {
+    const sumIds = new Set((params?.[0] as string[] | undefined) ?? [])
+    const msgIds = new Set((params?.[1] as string[] | undefined) ?? [])
+    return (fixture.ros_summary_sources ?? []).filter((r) => {
+      return sumIds.has(String(r.summary_id)) && msgIds.has(String(r.message_id))
+    })
+  }
+  return (sql, params) => {
+    if (
+      sql.startsWith('CLOSE ') ||
+      sql === EXPORT_TX_BEGIN_SQL ||
+      sql === EXPORT_TX_COMMIT_SQL ||
+      sql === EXPORT_TX_ROLLBACK_SQL
+    ) {
+      return { rows: [], rowCount: 0 }
+    }
+    if (
+      sql.includes('FROM ros_summary_sources') &&
+      sql.includes('= ANY($1::uuid[])') &&
+      !sql.startsWith('DECLARE')
+    ) {
+      const rows = filterSources(params)
+      return { rows, rowCount: rows.length }
+    }
+    const decl = /^DECLARE (export_(ros_\w+)) NO SCROLL CURSOR FOR /.exec(sql)
+    if (decl) {
+      const table = decl[2]
+      let rows = fixture[table] ?? []
+      if (table === 'ros_messages' && sql.includes('created_at >=')) {
+        rows = rows.filter((r) => String(r.created_at) >= since)
+      } else if (table === 'ros_conversations') {
+        const byTime = sql.includes(
+          'created_at >= $1::timestamptz OR updated_at >= $1::timestamptz',
+        )
+        const byMessage = sql.includes('FROM ros_messages WHERE created_at >= $1::timestamptz')
+        const recentConv = new Set(
+          (fixture.ros_messages ?? [])
+            .filter((m) => String(m.created_at) >= since)
+            .map((m) => String(m.conversation_id)),
+        )
+        rows = rows.filter((c) => {
+          const id = String(c.id)
+          if (byTime && (String(c.created_at) >= since || String(c.updated_at) >= since)) {
+            return true
+          }
+          return byMessage && recentConv.has(id)
+        })
+      } else if (table === 'ros_summaries' && sql.includes('created_at >=')) {
+        rows = rows.filter((r) => String(r.created_at) >= since)
+      } else if (table === 'ros_summary_sources') {
+        rows = sql.includes('= ANY($1::uuid[])')
+          ? filterSources(params)
+          : (fixture.ros_summary_sources ?? [])
+      }
+      cursors.set(decl[1], { rows, offset: 0 })
+      return { rows: [], rowCount: 0 }
+    }
+    const fetch = /^FETCH (\d+) FROM (export_ros_\w+)$/.exec(sql)
+    if (fetch) {
+      const cur = cursors.get(fetch[2])
+      if (!cur) return { rows: [], rowCount: 0 }
+      const n = Number(fetch[1])
+      const slice = cur.rows.slice(cur.offset, cur.offset + n)
+      cur.offset += slice.length
+      return { rows: slice, rowCount: slice.length }
+    }
+    return { rows: [], rowCount: 0 }
+  }
+}
+
 function ndjsonGzip(lines: unknown[]): Readable {
   const body = lines.map((l) => JSON.stringify(l)).join('\n') + '\n'
   return Readable.from([gzipSync(body)])
@@ -148,6 +227,17 @@ describe('column lists', () => {
     expect(ROS_MESSAGES_COLUMNS).toContain('content_hash')
     expect(EXPORT_COLUMNS.ros_wiki_topics).toContain('article')
     expect(EXPORT_COLUMNS.ros_wiki_topics).toContain('related')
+  })
+})
+
+describe('chunkIds / summarySourcesByExportedIdsSql', () => {
+  it('chunks at 5k and binds both exported id arrays', () => {
+    expect(EXPORT_ID_CHUNK).toBe(5000)
+    expect(chunkIds([])).toEqual([])
+    expect(chunkIds(['a', 'b'], 1)).toEqual([['a'], ['b']])
+    const sql = summarySourcesByExportedIdsSql(['summary_id', 'message_id', 'ordinal'])
+    expect(sql).toContain('summary_id = ANY($1::uuid[])')
+    expect(sql).toContain('message_id = ANY($2::uuid[])')
   })
 })
 
@@ -197,11 +287,11 @@ describe('pickKnownColumns / groupByPresentColumns', () => {
 describe('selectTableSql --since closure', () => {
   const since = '2026-09-01T00:00:00.000Z'
 
-  it('pulls conversations of selected messages and selected summaries', () => {
+  it('pulls timestamp-changed conversations plus those of selected messages and summaries', () => {
     const { sql, params } = selectTableSql('ros_conversations', ['id'], since)
     expect(params).toEqual([since])
     expect(sql).toContain(SELECTED_SUMMARIES_CTE)
-    expect(sql).toContain('FROM ros_conversations WHERE id IN')
+    expect(sql).toContain('created_at >= $1::timestamptz OR updated_at >= $1::timestamptz')
     expect(sql).toContain('FROM ros_messages WHERE created_at >= $1::timestamptz')
     expect(sql).toContain('SELECT conversation_id FROM selected_summaries')
   })
@@ -307,18 +397,100 @@ describe('exportMemory', () => {
   })
 
   it('binds --since closure SQL on the declared cursors', async () => {
-    const { pool, calls } = recordedPool(cursorHandler({}))
+    const { pool, calls } = recordedPool(
+      cursorHandler({
+        ros_messages: [{ id: 'm1', created_at: '2026-09-12T00:00:00.000Z' }],
+        ros_summaries: [{ id: 's1', created_at: '2026-09-12T00:00:00.000Z' }],
+      }),
+    )
     const { out } = collectWritable()
     await exportMemory(pool, out, {
       since: '2026-09-01T00:00:00.000Z',
       source: { kind: 'cloud', id: 'demo' },
     })
     const conv = calls.find((c) => c.sql.includes('export_ros_conversations'))
-    expect(conv?.sql).toContain('FROM ros_conversations WHERE id IN')
+    expect(conv?.sql).toContain('created_at >= $1::timestamptz OR updated_at >= $1::timestamptz')
+    expect(conv?.sql).toContain('FROM ros_messages WHERE created_at >= $1::timestamptz')
     expect(conv?.params).toEqual(['2026-09-01T00:00:00.000Z'])
-    const sources = calls.find((c) => c.sql.includes('export_ros_summary_sources'))
-    expect(sources?.sql).toContain('summary_id IN')
-    expect(sources?.sql).toContain('message_id IN')
+    const sources = calls.find(
+      (c) => c.sql.includes('ros_summary_sources') && c.sql.includes('ANY'),
+    )
+    expect(sources?.sql).toContain('summary_id = ANY($1::uuid[])')
+    expect(sources?.sql).toContain('message_id = ANY($2::uuid[])')
+    expect(sources?.params).toEqual([['s1'], ['m1']])
+  })
+
+  it('exports an older conversation of an in-window message and drops out-of-window summary_sources', async () => {
+    const since = '2026-09-10T00:00:00.000Z'
+    const oldConvId = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    const newMsgId = '11111111-1111-1111-1111-111111111111'
+    const oldMsgId = '22222222-2222-2222-2222-222222222222'
+    const sumId = '33333333-3333-3333-3333-333333333333'
+    const fixture = {
+      ros_conversations: [
+        {
+          id: oldConvId,
+          session_key: 's',
+          agent: 'grok',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      ros_messages: [
+        {
+          id: oldMsgId,
+          conversation_id: oldConvId,
+          agent: 'grok',
+          channel: 'unknown',
+          role: 'user',
+          content: 'old',
+          created_at: '2026-01-02T00:00:00.000Z',
+        },
+        {
+          id: newMsgId,
+          conversation_id: oldConvId,
+          agent: 'grok',
+          channel: 'unknown',
+          role: 'user',
+          content: 'new',
+          created_at: '2026-09-12T00:00:00.000Z',
+        },
+      ],
+      ros_summaries: [
+        {
+          id: sumId,
+          conversation_id: oldConvId,
+          content: 'sum',
+          kind: 'leaf',
+          created_at: '2026-09-12T00:00:00.000Z',
+        },
+      ],
+      ros_summary_sources: [
+        { summary_id: sumId, message_id: newMsgId, ordinal: 0 },
+        { summary_id: sumId, message_id: oldMsgId, ordinal: 1 },
+      ],
+    }
+    const { pool } = recordedPool(sinceClosureHandler(fixture, since))
+    const { out, chunks } = collectWritable()
+    await exportMemory(pool, out, {
+      since,
+      exportedAt: '2026-09-14T12:00:00.000Z',
+      source: { kind: 'local', id: 'closure' },
+    })
+    const lines = gunzipSync(Buffer.concat(chunks))
+      .toString('utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { t?: string; r?: Record<string, unknown> })
+    const convIds = lines.filter((l) => l.t === 'ros_conversations').map((l) => l.r?.id)
+    const msgIds = lines.filter((l) => l.t === 'ros_messages').map((l) => l.r?.id)
+    const sources = lines.filter((l) => l.t === 'ros_summary_sources')
+    expect(convIds).toContain(oldConvId)
+    expect(msgIds).toEqual([newMsgId])
+    expect(sources).toEqual([
+      { t: 'ros_summary_sources', r: { summary_id: sumId, message_id: newMsgId, ordinal: 0 } },
+    ])
+    expect(sources.some((s) => s.r?.message_id === oldMsgId)).toBe(false)
   })
 
   it('fetches through the cursor in pages of 1000', async () => {

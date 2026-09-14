@@ -10,12 +10,14 @@
  *   rivetos cloud import <file>
  */
 
-import { createWriteStream } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { finished } from 'node:stream/promises'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import type { Writable } from 'node:stream'
+import { Agent as UndiciAgent, fetch as undiciFetch } from 'undici'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
 import { defaultRivetEnvPath, formatEnvDiff, loadRivetEnv, upsertEnvVars } from '../lib/env-file.js'
 import { parseInstallArgs, runPluginsInstall, type HarnessInstallEvent } from './plugins-install.js'
@@ -30,6 +32,14 @@ export const CLOUD_IMPORT_HINT =
 const HARNESS_ID_SET = new Set<string>(HARNESS_IDS)
 const EMBED_DIMS = 1024
 const SMOKE_TIMEOUT_MS = 15_000
+/** Inactivity guard only — the transfer itself must not time out. */
+export const CLOUD_TRANSFER_IDLE_TIMEOUT_MS = 30 * 60 * 1000
+const TRANSFER_PROGRESS_EVERY = 1024 * 1024
+
+type CloudFetchInit = RequestInit & {
+  duplex?: 'half'
+  dispatcher?: UndiciAgent
+}
 
 export interface CloudConnectFlags {
   pgUrl: string
@@ -562,9 +572,85 @@ function requireCloudEnv(): { pgUrl: string; token: string } {
   return { pgUrl, token }
 }
 
+export function formatCloudHttpError(kind: string, status: number, body: string): string {
+  const statusPart = `${kind} HTTP ${String(status)}`
+  if (!body) return statusPart
+  try {
+    const parsed: unknown = JSON.parse(body)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>
+      const bits: string[] = []
+      if (typeof rec.error === 'string') bits.push(rec.error)
+      if (rec.committed != null) bits.push(`committed: ${JSON.stringify(rec.committed)}`)
+      if (bits.length > 0) return `${statusPart}: ${bits.join('; ')}`
+    }
+  } catch {
+    // not JSON
+  }
+  return `${statusPart}: ${body.slice(0, 500)}`
+}
+
 async function throwHttpError(kind: string, res: Response): Promise<never> {
   const body = await res.text().catch(() => '')
-  throw new Error(`${kind} HTTP ${String(res.status)}${body ? `: ${body.slice(0, 200)}` : ''}`)
+  throw new Error(formatCloudHttpError(kind, res.status, body))
+}
+
+let transferAgent: UndiciAgent | undefined
+
+function transferDispatcher(): UndiciAgent {
+  if (!transferAgent) {
+    transferAgent = new UndiciAgent({
+      headersTimeout: CLOUD_TRANSFER_IDLE_TIMEOUT_MS,
+      bodyTimeout: CLOUD_TRANSFER_IDLE_TIMEOUT_MS,
+    })
+  }
+  return transferAgent
+}
+
+async function cloudFetch(
+  fetchFn: typeof fetch | undefined,
+  url: string,
+  init: CloudFetchInit,
+): Promise<Response> {
+  if (fetchFn) return fetchFn(url, init as RequestInit)
+  return undiciFetch(url, { ...init, dispatcher: transferDispatcher() }) as Promise<Response>
+}
+
+function logTransferProgress(
+  log: (message: string) => void,
+  label: string,
+  sent: number,
+  total?: number,
+): void {
+  const totalPart = total == null ? '' : `/${String(total)}`
+  log(`${label}: ${String(sent)}${totalPart} bytes`)
+}
+
+function chunkByteLength(chunk: unknown): number {
+  if (typeof chunk === 'string') return Buffer.byteLength(chunk)
+  if (Buffer.isBuffer(chunk)) return chunk.length
+  if (chunk instanceof Uint8Array) return chunk.byteLength
+  return 0
+}
+
+function countingTransform(onBytes: (n: number) => void, onEnd?: () => void): Transform {
+  return new Transform({
+    transform(chunk, _enc, cb) {
+      onBytes(chunkByteLength(chunk))
+      cb(null, chunk)
+    },
+    flush(cb) {
+      onEnd?.()
+      cb()
+    },
+  })
+}
+
+function responseBodyToNode(res: Response): Readable {
+  if (res.body == null) {
+    throw new Error('cloud export: empty response body')
+  }
+  return Readable.fromWeb(res.body as import('node:stream/web').ReadableStream<Uint8Array>)
 }
 
 export async function runCloudExport(args: string[], deps: CloudDeps = {}): Promise<void> {
@@ -581,19 +667,32 @@ export async function runCloudExport(args: string[], deps: CloudDeps = {}): Prom
   loadRivetEnv(deps.envPath ?? defaultRivetEnvPath())
   const { pgUrl, token } = requireCloudEnv()
   const url = cloudExportApiUrl(pgUrl)
-  const fetchFn = deps.fetch ?? fetch
-  const res = await fetchFn(url, {
+  const log = deps.log ?? console.log
+  const res = await cloudFetch(deps.fetch, url, {
     method: 'GET',
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/gzip' },
   })
   if (!res.ok) await throwHttpError('cloud export', res)
-  const buf = Buffer.from(await res.arrayBuffer())
+  const readable = responseBodyToNode(res)
+  let received = 0
+  let lastLogged = 0
+  const reportProgress = flags.out !== undefined
+  const counter = countingTransform(
+    (n) => {
+      received += n
+      if (!reportProgress || received - lastLogged < TRANSFER_PROGRESS_EVERY) return
+      lastLogged = received
+      logTransferProgress(log, 'cloud export', received)
+    },
+    () => {
+      if (reportProgress) logTransferProgress(log, 'cloud export', received)
+    },
+  )
   if (flags.out) {
     const dest = createWriteStream(flags.out, { mode: 0o600 })
-    dest.end(buf)
-    await finished(dest)
+    await pipeline(readable, counter, dest)
   } else {
-    stdout.write(buf)
+    await pipeline(readable, stdout, { end: false })
   }
 }
 
@@ -606,18 +705,47 @@ export async function runCloudImport(args: string[], deps: CloudDeps = {}): Prom
   loadRivetEnv(deps.envPath ?? defaultRivetEnvPath())
   const { pgUrl, token } = requireCloudEnv()
   const url = cloudImportApiUrl(pgUrl)
-  const fileBytes = await readFile(flags.file)
-  const fetchFn = deps.fetch ?? fetch
-  const res = await fetchFn(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/gzip',
-    },
-    body: new Uint8Array(fileBytes),
-  })
-  if (!res.ok) await throwHttpError('cloud import', res)
   const log = deps.log ?? console.log
+  const fileStat = await stat(flags.file)
+  const fileStream = createReadStream(flags.file)
+  let sent = 0
+  let lastLogged = 0
+  const report = (force: boolean): void => {
+    if (!force && sent - lastLogged < TRANSFER_PROGRESS_EVERY) return
+    lastLogged = sent
+    logTransferProgress(log, 'cloud import', sent, fileStat.size)
+  }
+  const body = countingTransform(
+    (n) => {
+      sent += n
+      report(false)
+    },
+    () => {
+      report(true)
+    },
+  )
+  fileStream.on('error', (err) => {
+    body.destroy(err)
+  })
+  fileStream.pipe(body)
+  let res: Response
+  try {
+    res = await cloudFetch(deps.fetch, url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/gzip',
+        'Content-Length': String(fileStat.size),
+      },
+      body: body as unknown as BodyInit,
+      duplex: 'half',
+    })
+  } catch (err) {
+    fileStream.destroy()
+    body.destroy()
+    throw err
+  }
+  if (!res.ok) await throwHttpError('cloud import', res)
   const text = await res.text().catch(() => '')
   log(text || 'cloud import ok')
 }

@@ -10,6 +10,7 @@ import {
   cloudExportApiUrl,
   cloudImportApiUrl,
   describePgUrl,
+  formatCloudHttpError,
   harnessLineFromEvent,
   isRivetCloudPgUrl,
   parseCloudExportArgs,
@@ -290,9 +291,14 @@ describe('runCloudExport / runCloudImport', () => {
       expect(url).toBe('https://rivetos.cloud/api/t/demo/export')
       expect(init?.method).toBe('GET')
       expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok_abc')
+      expect(init?.signal).toBeUndefined()
       return new Response(payload, { status: 200 })
     })
-    await runCloudExport(['--out', out], { fetch: fetchFn as never, envPath: join(dir, 'nope') })
+    await runCloudExport(['--out', out], {
+      fetch: fetchFn as never,
+      envPath: join(dir, 'nope'),
+      log: () => undefined,
+    })
     expect(readFileSync(out)).toEqual(payload)
     expect(fetchFn).toHaveBeenCalled()
   })
@@ -311,7 +317,14 @@ describe('runCloudExport / runCloudImport', () => {
       const headers = init?.headers as Record<string, string>
       expect(headers.Authorization).toBe('Bearer tok_abc')
       expect(headers['Content-Type']).toBe('application/gzip')
-      expect(Buffer.from(init?.body as Uint8Array).toString()).toBe('gzip-bytes')
+      expect(init?.signal).toBeUndefined()
+      expect((init as { duplex?: string }).duplex).toBe('half')
+      const body = init?.body as AsyncIterable<Buffer>
+      const chunks: Buffer[] = []
+      for await (const chunk of body) {
+        chunks.push(Buffer.from(chunk))
+      }
+      expect(Buffer.concat(chunks).toString()).toBe('gzip-bytes')
       return new Response('{"ok":true}', { status: 200 })
     })
     await runCloudImport([file], {
@@ -320,5 +333,52 @@ describe('runCloudExport / runCloudImport', () => {
       log: (m) => logs.push(m),
     })
     expect(logs.join('\n')).toContain('{"ok":true}')
+    expect(logs.join('\n')).toMatch(/bytes/)
+  })
+
+  it('prints server committed counts on import HTTP error', async () => {
+    process.env.RIVETOS_PG_URL = PG
+    process.env.RIVETOS_CLOUD_TOKEN = 'tok_abc'
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-import-err-'))
+    tmpDirs.push(dir)
+    const file = join(dir, 'dump.ndjson.gz')
+    writeFileSync(file, 'gzip-bytes')
+    const payload = {
+      error: 'The operation was aborted',
+      committed: { ros_conversations: 34, ros_messages: 2305, orphan_messages: 120 },
+    }
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = init?.body as AsyncIterable<unknown> | undefined
+      if (body && typeof body[Symbol.asyncIterator] === 'function') {
+        for await (const _chunk of body) {
+          // drain the upload so the file stream does not linger
+        }
+      }
+      return new Response(JSON.stringify(payload), { status: 500 })
+    })
+    await expect(
+      runCloudImport([file], {
+        fetch: fetchFn as never,
+        envPath: join(dir, 'nope'),
+        log: () => undefined,
+      }),
+    ).rejects.toThrow(/committed.*orphan_messages/)
+  })
+})
+
+describe('formatCloudHttpError', () => {
+  it('surfaces committed counts from a JSON error body', () => {
+    const msg = formatCloudHttpError(
+      'cloud import',
+      500,
+      JSON.stringify({
+        error: 'The operation was aborted',
+        committed: { ros_messages: 2305, orphan_messages: 120 },
+      }),
+    )
+    expect(msg).toContain('cloud import HTTP 500')
+    expect(msg).toContain('The operation was aborted')
+    expect(msg).toContain('orphan_messages')
+    expect(msg).toContain('2305')
   })
 })

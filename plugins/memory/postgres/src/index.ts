@@ -338,6 +338,7 @@ export {
   EXPORT_VERSION,
   IMPORT_BATCH_SIZE,
   EXPORT_CURSOR_PAGE,
+  EXPORT_ID_CHUNK,
   EXPORT_TX_BEGIN_SQL,
   DEFER_EMBED_GUC_SQL,
   GRAPHILE_NAMESPACE_SQL,
@@ -347,6 +348,8 @@ export {
   SUMMARY_PARENT_UNRESOLVED_SQL,
   RESOLVE_CONVERSATIONS_SQL,
   EXISTING_CONVERSATION_IDS_SQL,
+  chunkIds,
+  summarySourcesByExportedIdsSql,
 } from './portability.js'
 export type {
   ExportHeader,

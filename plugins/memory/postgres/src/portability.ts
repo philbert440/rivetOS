@@ -24,6 +24,8 @@ export const EXPORT_TYPE = 'rivet-memory-export'
 export const EXPORT_VERSION = 1
 export const IMPORT_BATCH_SIZE = 500
 export const EXPORT_CURSOR_PAGE = 1000
+/** Max uuids per `= ANY($1::uuid[])` bind when filtering junction rows. */
+export const EXPORT_ID_CHUNK = 5000
 
 export const EXPORT_TX_BEGIN_SQL = 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY'
 export const EXPORT_TX_COMMIT_SQL = 'COMMIT'
@@ -166,6 +168,23 @@ export function exportCursorName(table: ExportTable): string {
   return `export_${table}`
 }
 
+export function chunkIds(ids: readonly string[], size = EXPORT_ID_CHUNK): string[][] {
+  const out: string[][] = []
+  for (let i = 0; i < ids.length; i += size) {
+    out.push(ids.slice(i, i + size))
+  }
+  return out
+}
+
+/** Junction rows whose both ends are in the exported id sets. */
+export function summarySourcesByExportedIdsSql(cols: readonly string[]): string {
+  const list = cols.join(', ')
+  return (
+    `SELECT ${list} FROM ros_summary_sources ` +
+    `WHERE summary_id = ANY($1::uuid[]) AND message_id = ANY($2::uuid[])`
+  )
+}
+
 export function selectTableSql(
   table: ExportTable,
   cols: readonly string[],
@@ -186,7 +205,9 @@ export function selectTableSql(
     case 'ros_conversations':
       return {
         sql:
-          `${SELECTED_SUMMARIES_CTE} SELECT ${list} FROM ros_conversations WHERE id IN (` +
+          `${SELECTED_SUMMARIES_CTE} SELECT ${list} FROM ros_conversations WHERE ` +
+          `(created_at >= $1::timestamptz OR updated_at >= $1::timestamptz) ` +
+          `OR id IN (` +
           `SELECT conversation_id FROM ros_messages WHERE created_at >= $1::timestamptz ` +
           `UNION SELECT conversation_id FROM selected_summaries)`,
         params,
@@ -197,6 +218,9 @@ export function selectTableSql(
         params,
       }
     case 'ros_summary_sources':
+      // Live --since export does not use this SQL: exportMemory binds the
+      // ids that were actually emitted (`summarySourcesByExportedIdsSql`).
+      // Subquery form is the standalone equivalent (both ends in-window).
       return {
         sql:
           `${SELECTED_SUMMARIES_CTE} SELECT ${list} FROM ros_summary_sources ` +
@@ -300,6 +324,41 @@ function asError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err))
 }
 
+async function* emitSummarySourcesByExportedIds(
+  client: PortabilityClient,
+  cols: readonly string[],
+  summaryIds: readonly string[],
+  messageIds: readonly string[],
+  openCursors: string[],
+): AsyncGenerator<string> {
+  if (summaryIds.length === 0 || messageIds.length === 0) return
+  const selectSql = summarySourcesByExportedIdsSql(cols)
+  const cursor = exportCursorName('ros_summary_sources')
+  for (const sumChunk of chunkIds(summaryIds)) {
+    for (const msgChunk of chunkIds(messageIds)) {
+      await client.query(declareCursorSql(cursor, selectSql), [sumChunk, msgChunk])
+      openCursors.push(cursor)
+      try {
+        for (;;) {
+          const result = await client.query(fetchCursorSql(cursor))
+          if (result.rows.length === 0) break
+          for (const row of result.rows) {
+            const payload = {
+              t: 'ros_summary_sources' as const,
+              r: pickKnownColumns(row, cols),
+            }
+            yield `${JSON.stringify(payload)}\n`
+          }
+        }
+      } finally {
+        await client.query(closeCursorSql(cursor))
+        const idx = openCursors.lastIndexOf(cursor)
+        if (idx >= 0) openCursors.splice(idx, 1)
+      }
+    }
+  }
+}
+
 export async function exportMemory(
   pool: PortabilityPool,
   out: Writable,
@@ -321,8 +380,21 @@ export async function exportMemory(
         }
         yield `${JSON.stringify(header)}\n`
 
+        const messageIds: string[] = []
+        const summaryIds: string[] = []
+
         for (const table of EXPORT_TABLES) {
           const cols = EXPORT_COLUMNS[table]
+          if (table === 'ros_summary_sources' && opts.since !== undefined) {
+            yield* emitSummarySourcesByExportedIds(
+              client,
+              cols,
+              summaryIds,
+              messageIds,
+              openCursors,
+            )
+            continue
+          }
           const { sql, params } = selectTableSql(table, cols, opts.since)
           const cursor = exportCursorName(table)
           await client.query(declareCursorSql(cursor, sql), params)
@@ -332,6 +404,13 @@ export async function exportMemory(
               const result = await client.query(fetchCursorSql(cursor))
               if (result.rows.length === 0) break
               for (const row of result.rows) {
+                if (table === 'ros_messages') {
+                  const id = asText(row.id)
+                  if (id != null) messageIds.push(id)
+                } else if (table === 'ros_summaries') {
+                  const id = asText(row.id)
+                  if (id != null) summaryIds.push(id)
+                }
                 const payload = { t: table, r: pickKnownColumns(row, cols) }
                 yield `${JSON.stringify(payload)}\n`
               }

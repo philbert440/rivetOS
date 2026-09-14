@@ -139,7 +139,7 @@ export const EXPORT_COLUMNS: Record<ExportTable, readonly string[]> = {
  * `--since` is set, in which case topics changed since + their citations/redirects.
  */
 export const EXPORT_SINCE_COLUMN: Partial<Record<ExportTable, string>> = {
-  ros_conversations: 'created_at',
+  ros_conversations: 'created_at', // plus updated_at in selectTableSql closure
   ros_messages: 'created_at',
   ros_summaries: 'created_at',
   ros_wiki_topics: 'created_at',
