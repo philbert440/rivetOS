@@ -210,7 +210,7 @@ export function upsertEnvVars(
     }
   }
 
-  return { created: !existed, written: Boolean(!opts.dryRun && changed), diff, next }
+  return { created: !existed, written: !opts.dryRun && changed, diff, next }
 }
 
 /** Enforce 0600. Windows may ignore mode bits; POSIX failures surface. */

@@ -476,10 +476,17 @@ describe('importMemory', () => {
         },
       },
     ])
-    const { pool, calls } = recordedPool((sql) => {
+    const { pool, calls } = recordedPool((sql, params) => {
       if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
       if (sql === SUMMARY_PARENT_UPDATE_SQL) return { rows: [], rowCount: 1 }
       if (sql === SUMMARY_PARENT_UNRESOLVED_SQL) return { rows: [{ n: 0 }], rowCount: 1 }
+      if (sql.includes('INSERT INTO ros_summaries')) {
+        const payload = JSON.parse(String(params?.[0] ?? '[]')) as Array<{ id?: unknown }>
+        return {
+          rows: payload.filter((r) => r.id != null).map((r) => ({ id: r.id })),
+          rowCount: payload.length,
+        }
+      }
       if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
       return { rows: [], rowCount: 0 }
     })
@@ -488,6 +495,7 @@ describe('importMemory', () => {
     expect(inserts.length).toBeGreaterThan(0)
     for (const ins of inserts) {
       expect(ins.sql).not.toMatch(/INSERT INTO ros_summaries \([^)]*parent_id/)
+      expect(ins.sql).toContain('RETURNING id')
       const payload = JSON.parse(String(ins.params?.[0])) as Array<{ parent_id?: unknown }>
       for (const row of payload) expect(row.parent_id).toBeUndefined()
     }
@@ -521,15 +529,73 @@ describe('importMemory', () => {
         },
       },
     ])
-    const { pool } = recordedPool((sql) => {
+    const { pool } = recordedPool((sql, params) => {
       if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
       if (sql === SUMMARY_PARENT_UPDATE_SQL) return { rows: [], rowCount: 0 }
       if (sql === SUMMARY_PARENT_UNRESOLVED_SQL) return { rows: [{ n: 1 }], rowCount: 1 }
+      if (sql.includes('INSERT INTO ros_summaries')) {
+        const payload = JSON.parse(String(params?.[0] ?? '[]')) as Array<{ id?: unknown }>
+        return {
+          rows: payload.filter((r) => r.id != null).map((r) => ({ id: r.id })),
+          rowCount: payload.length,
+        }
+      }
       if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
       return { rows: [], rowCount: 0 }
     })
     const result = await importMemory(pool, input, { log: () => undefined })
     expect(result.unresolvedParentLinks).toBe(1)
+  })
+
+  it('does not rewrite parent_id on summaries skipped by ON CONFLICT', async () => {
+    const child = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+    const p1 = '11111111-1111-1111-1111-111111111111'
+    const p2 = '22222222-2222-2222-2222-222222222222'
+    const dest = new Map<string, string | null>([
+      [child, p2],
+      [p2, null],
+    ])
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_summaries',
+        r: { id: child, parent_id: p1, content: 'child', kind: 'leaf' },
+      },
+      {
+        t: 'ros_summaries',
+        r: { id: p1, parent_id: null, content: 'dump-parent', kind: 'root' },
+      },
+    ])
+    const { pool, calls } = recordedPool((sql, params) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql === SUMMARY_PARENT_UPDATE_SQL) {
+        const links = JSON.parse(String(params?.[0] ?? '[]')) as Array<{
+          id: string
+          parent_id: string
+        }>
+        for (const link of links) {
+          if (dest.has(link.id)) dest.set(link.id, link.parent_id)
+        }
+        return { rows: [], rowCount: links.length }
+      }
+      if (sql === SUMMARY_PARENT_UNRESOLVED_SQL) return { rows: [{ n: 0 }], rowCount: 1 }
+      if (sql.includes('INSERT INTO ros_summaries')) {
+        const payload = JSON.parse(String(params?.[0] ?? '[]')) as Array<{ id: string }>
+        const wrote = payload.filter((r) => !dest.has(r.id))
+        for (const row of wrote) dest.set(row.id, null)
+        return { rows: wrote.map((r) => ({ id: r.id })), rowCount: wrote.length }
+      }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    const result = await importMemory(pool, input, { log: () => undefined })
+    expect(result.skipped.ros_summaries).toBe(1)
+    expect(dest.get(child)).toBe(p2)
+    const update = calls.find((c) => c.sql === SUMMARY_PARENT_UPDATE_SQL)
+    if (update) {
+      const links = JSON.parse(String(update.params?.[0])) as Array<{ id: string }>
+      expect(links.some((l) => l.id === child)).toBe(false)
+    }
   })
 
   it('SET LOCAL inside the transaction for a summaries-only dump', async () => {

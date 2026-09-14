@@ -5,7 +5,6 @@
  * EXPORT_TABLES order. Importers re-embed (no vector columns in the file).
  */
 
-import { once } from 'node:events'
 import { createInterface } from 'node:readline'
 import type { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -273,61 +272,60 @@ function destroyQuiet(stream: Readable): void {
   }
 }
 
+function asError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err))
+}
+
 export async function exportMemory(
   pool: PortabilityPool,
   out: Writable,
   opts: ExportOptions = {},
 ): Promise<void> {
-  const gzip = createGzip()
-  const done = new Promise<void>((resolve, reject) => {
-    gzip.on('error', reject)
-    out.on('error', reject)
-    gzip.on('end', () => resolve())
-  })
-  gzip.pipe(out, { end: false })
-
   await withClient(pool, async (client) => {
     await client.query(EXPORT_TX_BEGIN_SQL)
     let txOpen = true
     const openCursors: string[] = []
+    const gzip = createGzip()
     try {
-      const header: ExportHeader = {
-        type: EXPORT_TYPE,
-        version: EXPORT_VERSION,
-        exported_at: opts.exportedAt ?? new Date().toISOString(),
-        source: opts.source ?? { kind: 'local', id: osHostname() },
-        tables: EXPORT_TABLES,
-      }
-      if (!gzip.write(`${JSON.stringify(header)}\n`)) await once(gzip, 'drain')
+      async function* ndjson(): AsyncGenerator<string> {
+        const header: ExportHeader = {
+          type: EXPORT_TYPE,
+          version: EXPORT_VERSION,
+          exported_at: opts.exportedAt ?? new Date().toISOString(),
+          source: opts.source ?? { kind: 'local', id: osHostname() },
+          tables: EXPORT_TABLES,
+        }
+        yield `${JSON.stringify(header)}\n`
 
-      for (const table of EXPORT_TABLES) {
-        const cols = EXPORT_COLUMNS[table]
-        const { sql, params } = selectTableSql(table, cols, opts.since)
-        const cursor = exportCursorName(table)
-        await client.query(declareCursorSql(cursor, sql), params)
-        openCursors.push(cursor)
-        try {
-          for (;;) {
-            const result = await client.query(fetchCursorSql(cursor))
-            if (result.rows.length === 0) break
-            for (const row of result.rows) {
-              const payload = { t: table, r: pickKnownColumns(row, cols) }
-              if (!gzip.write(`${JSON.stringify(payload)}\n`)) await once(gzip, 'drain')
+        for (const table of EXPORT_TABLES) {
+          const cols = EXPORT_COLUMNS[table]
+          const { sql, params } = selectTableSql(table, cols, opts.since)
+          const cursor = exportCursorName(table)
+          await client.query(declareCursorSql(cursor, sql), params)
+          openCursors.push(cursor)
+          try {
+            for (;;) {
+              const result = await client.query(fetchCursorSql(cursor))
+              if (result.rows.length === 0) break
+              for (const row of result.rows) {
+                const payload = { t: table, r: pickKnownColumns(row, cols) }
+                yield `${JSON.stringify(payload)}\n`
+              }
             }
+          } finally {
+            await client.query(closeCursorSql(cursor))
+            const idx = openCursors.lastIndexOf(cursor)
+            if (idx >= 0) openCursors.splice(idx, 1)
           }
-        } finally {
-          await client.query(closeCursorSql(cursor))
-          const idx = openCursors.lastIndexOf(cursor)
-          if (idx >= 0) openCursors.splice(idx, 1)
         }
       }
-      gzip.end()
-      await done
+
+      // end: false — do not close stdout; --out files are ended by the CLI.
+      await pipeline(ndjson(), gzip, out, { end: false })
       await client.query(EXPORT_TX_COMMIT_SQL)
       txOpen = false
     } catch (err) {
-      gzip.destroy()
-      await done.catch(() => undefined)
+      gzip.destroy(asError(err))
       throw err
     } finally {
       for (const cursor of openCursors) {
@@ -367,26 +365,41 @@ export async function importMemory(
         table: ExportTable,
         cols: readonly string[],
         groupRows: Record<string, unknown>[],
-      ): Promise<void> => {
+      ): Promise<unknown[]> => {
         const defer = table === 'ros_messages' || table === 'ros_summaries'
+        const returning = table === 'ros_summaries'
+        const sql = returning
+          ? `${insertBatchSql(table, cols)} RETURNING id`
+          : insertBatchSql(table, cols)
+        const ids: unknown[] = []
         await client.query('BEGIN')
         try {
           if (defer) await client.query(DEFER_EMBED_GUC_SQL)
           if (cols.length === 0) {
             for (let i = 0; i < groupRows.length; i++) {
-              const res = await client.query(insertBatchSql(table, cols))
+              const res = await client.query(sql)
               const wrote = res.rowCount ?? 0
               inserted[table] += wrote
               skipped[table] += wrote > 0 ? 0 : 1
+              if (returning) {
+                for (const row of res.rows) {
+                  if (row.id != null) ids.push(row.id)
+                }
+              }
             }
           } else {
-            const sql = insertBatchSql(table, cols)
             const res = await client.query(sql, [JSON.stringify(groupRows)])
             const wrote = res.rowCount ?? 0
             inserted[table] += wrote
             skipped[table] += Math.max(0, groupRows.length - wrote)
+            if (returning) {
+              for (const row of res.rows) {
+                if (row.id != null) ids.push(row.id)
+              }
+            }
           }
           await client.query('COMMIT')
+          return ids
         } catch (err) {
           await client.query('ROLLBACK').catch(() => undefined)
           throw err
@@ -420,19 +433,28 @@ export async function importMemory(
         batch = []
         if (dryRun) return
 
+        const parentById = new Map<string, unknown>()
         if (table === 'ros_summaries') {
           for (const row of rows) {
             if (row.parent_id != null && row.id != null) {
-              pendingParents.push({ id: row.id, parent_id: row.parent_id })
+              parentById.set(String(row.id), row.parent_id)
             }
             delete row.parent_id
           }
         }
 
+        const insertedIds: unknown[] = []
         for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
           const chunk = rows.slice(i, i + IMPORT_BATCH_SIZE)
           for (const group of groupByPresentColumns(chunk, allowed)) {
-            await insertGroup(table, group.cols, group.rows)
+            insertedIds.push(...(await insertGroup(table, group.cols, group.rows)))
+          }
+        }
+
+        if (table === 'ros_summaries') {
+          for (const id of insertedIds) {
+            const parentId = parentById.get(String(id))
+            if (parentId != null) pendingParents.push({ id, parent_id: parentId })
           }
         }
       }
