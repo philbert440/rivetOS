@@ -4,12 +4,18 @@
  * Usage:
  *   rivetos cloud connect <pg-url> --embed-url <url>
  *       [--embed-model qwen3-embedding-0.6b] [--harness <id>…] [--root <dir>]
- *       [--dry-run] [--yes]
+ *       [--token <token>] [--dry-run] [--yes]
  *   rivetos cloud status
+ *   rivetos cloud export [--out <file>]
+ *   rivetos cloud import <file>
  */
 
+import { createWriteStream } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { finished } from 'node:stream/promises'
+import type { Writable } from 'node:stream'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
 import { defaultRivetEnvPath, formatEnvDiff, loadRivetEnv, upsertEnvVars } from '../lib/env-file.js'
 import { parseInstallArgs, runPluginsInstall, type HarnessInstallEvent } from './plugins-install.js'
@@ -17,6 +23,9 @@ import { parseInstallArgs, runPluginsInstall, type HarnessInstallEvent } from '.
 export const DEFAULT_EMBED_MODEL = 'qwen3-embedding-0.6b'
 export const SSLMODE_REQUIRED_MSG = 'cloud URLs must include sslmode=require'
 export const NEXT_STEP = 'next: open your harness and run one turn; then `rivetos memory search …`'
+export const CLOUD_TOKEN_ENV = 'RIVETOS_CLOUD_TOKEN'
+export const CLOUD_IMPORT_HINT =
+  'RIVETOS_PG_URL host is rivetos.cloud; tenant roles cannot import summaries/wiki. Use `rivetos cloud import <file>` instead.'
 
 const HARNESS_ID_SET = new Set<string>(HARNESS_IDS)
 const EMBED_DIMS = 1024
@@ -30,6 +39,7 @@ export interface CloudConnectFlags {
   root?: string
   dryRun: boolean
   yes: boolean
+  token?: string
 }
 
 export type HarnessChecklistStatus = 'installed' | 'skipped' | 'failed'
@@ -59,6 +69,9 @@ export interface CloudDeps {
   runInstall?: typeof runPluginsInstall
   log?: (message: string) => void
   error?: (message: string) => void
+  fetch?: typeof fetch
+  stdout?: Writable
+  isTTY?: boolean
 }
 
 export default async function cloud(args: string[]): Promise<void> {
@@ -75,6 +88,14 @@ export default async function cloud(args: string[]): Promise<void> {
     await runCloudStatus(args.slice(1))
     return
   }
+  if (sub === 'export') {
+    await runCloudExport(args.slice(1))
+    return
+  }
+  if (sub === 'import') {
+    await runCloudImport(args.slice(1))
+    return
+  }
   throw new Error(`unknown cloud subcommand: ${sub}`)
 }
 
@@ -86,10 +107,13 @@ Point this laptop at Rivet Cloud memory (no local PGlite required).
 Commands:
   connect <pg-url> --embed-url <url>   Write ~/.rivetos/.env, smoke DB + embed, install harness hooks
   status                               Show host/db (never the password) and ping DB + embed
+  export [--out <file>]                Download a gzip dump via the cloud HTTPS API
+  import <file>                        Upload a gzip dump via the cloud HTTPS API
 
 Options for connect:
   --embed-url <url>    HTTPS embed endpoint (https://rivetos.cloud/embed/<token>)
   --embed-model <id>   Embedding model (default: ${DEFAULT_EMBED_MODEL})
+  --token <token>      Tenant token (written as RIVETOS_CLOUD_TOKEN)
   --harness <id>       Limit hook install to one harness (repeatable)
   --root <dir>         RivetOS source tree (or set RIVETOS_ROOT)
   --dry-run            Print the env diff and install plan; write nothing
@@ -106,6 +130,7 @@ export function parseConnectArgs(args: string[]): CloudConnectFlags {
     harnesses: [],
     dryRun: false,
     yes: false,
+    token: undefined,
   }
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -134,6 +159,12 @@ export function parseConnectArgs(args: string[]): CloudConnectFlags {
       const v = args[++i]
       if (!v || v.startsWith('-')) throw new Error('--root requires a directory')
       flags.root = v
+      continue
+    }
+    if (arg === '--token') {
+      const v = args[++i]
+      if (!v || v.startsWith('-')) throw new Error('--token requires a token')
+      flags.token = v
       continue
     }
     if (arg === '--harness') {
@@ -198,7 +229,51 @@ export function describePgUrl(raw: string): string {
 }
 
 export function redactSecret(url: string): string {
-  return url.replace(/:([^:@/]+)@/, ':***@')
+  try {
+    const u = new URL(url)
+    if (u.username !== '' || u.password !== '') {
+      u.username = '***'
+      u.password = ''
+    }
+    for (const key of [...u.searchParams.keys()]) {
+      if (key.toLowerCase() === 'password') u.searchParams.set(key, '***')
+    }
+    return u.toString()
+  } catch {
+    return '<redacted>'
+  }
+}
+
+export function isRivetCloudPgUrl(pgUrl: string): boolean {
+  try {
+    return new URL(pgUrl).hostname === 'rivetos.cloud'
+  } catch {
+    return false
+  }
+}
+
+/** HTTPS origin + tenant slug from RIVETOS_PG_URL (hostname, not postgres port). */
+export function resolveCloudApi(pgUrl: string): { origin: string; slug: string } {
+  let u: URL
+  try {
+    u = new URL(pgUrl)
+  } catch {
+    throw new Error('invalid postgres URL')
+  }
+  const db = decodeURIComponent(u.pathname.replace(/^\//, '').split('/')[0] ?? '')
+  const slug = db.startsWith('tenant_') ? db.slice('tenant_'.length) : db
+  if (!slug) throw new Error('cloud API slug missing from RIVETOS_PG_URL database name')
+  return { origin: `https://${u.hostname}`, slug }
+}
+
+export function cloudExportApiUrl(pgUrl: string): string {
+  const { origin, slug } = resolveCloudApi(pgUrl)
+  return `${origin}/api/t/${encodeURIComponent(slug)}/export`
+}
+
+export function cloudImportApiUrl(pgUrl: string): string {
+  const { origin, slug } = resolveCloudApi(pgUrl)
+  return `${origin}/api/t/${encodeURIComponent(slug)}/import`
 }
 
 export function redactEmbedUrl(raw: string): string {
@@ -329,11 +404,12 @@ export async function runCloudConnect(
 
   const home = deps.home ?? homedir()
   const envPath = deps.envPath ?? join(home, '.rivetos', '.env')
-  const vars = {
+  const vars: Record<string, string> = {
     RIVETOS_PG_URL: flags.pgUrl,
     RIVETOS_EMBED_URL: flags.embedUrl,
     RIVETOS_EMBED_MODEL: flags.embedModel,
   }
+  if (flags.token) vars.RIVETOS_CLOUD_TOKEN = flags.token
   const upsert = upsertEnvVars(envPath, vars, { dryRun: flags.dryRun })
   const printable = upsert.diff.map((d) => ({
     ...d,
@@ -350,6 +426,7 @@ export async function runCloudConnect(
   process.env.RIVETOS_PG_URL = flags.pgUrl
   process.env.RIVETOS_EMBED_URL = flags.embedUrl
   process.env.RIVETOS_EMBED_MODEL = flags.embedModel
+  if (flags.token) process.env.RIVETOS_CLOUD_TOKEN = flags.token
 
   const dbFn = deps.smokeDb ?? smokeDb
   const embedFn = deps.smokeEmbed ?? smokeEmbed
@@ -377,6 +454,7 @@ export async function runCloudConnect(
     await runInstall(parseInstallArgs([...installArgs]), {
       home,
       onHarness: (event) => harnessEvents.push(event),
+      overrideEnv: true,
     })
   } catch (err) {
     installErr = err as Error
@@ -402,6 +480,7 @@ export async function runCloudConnect(
 function redactForKey(key: string, value: string): string {
   if (key === 'RIVETOS_PG_URL') return redactSecret(value)
   if (key === 'RIVETOS_EMBED_URL') return redactEmbedUrl(value)
+  if (key === CLOUD_TOKEN_ENV) return '***'
   return value
 }
 
@@ -436,4 +515,109 @@ async function runCloudStatus(args: string[], deps: CloudDeps = {}): Promise<voi
     const embed = await (deps.smokeEmbed ?? smokeEmbed)(embedUrl, embedModel)
     log(embed.ok ? `embed: ok (${String(embed.dims)} dims)` : `embed: failed (${embed.error})`)
   }
+}
+
+export interface CloudExportFlags {
+  out?: string
+}
+
+export interface CloudImportFlags {
+  file: string
+}
+
+export function parseCloudExportArgs(args: string[]): CloudExportFlags {
+  const flags: CloudExportFlags = {}
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--out') {
+      const v = args[++i]
+      if (!v || v.startsWith('-')) throw new Error('--out requires a file path')
+      flags.out = v
+      continue
+    }
+    if (arg.startsWith('-')) throw new Error(`unknown argument: ${arg}`)
+    throw new Error(`unexpected argument: ${arg}`)
+  }
+  return flags
+}
+
+export function parseCloudImportArgs(args: string[]): CloudImportFlags {
+  const flags: CloudImportFlags = { file: '' }
+  for (const arg of args) {
+    if (arg.startsWith('-')) throw new Error(`unknown argument: ${arg}`)
+    if (flags.file) throw new Error(`unexpected argument: ${arg}`)
+    flags.file = arg
+  }
+  if (!flags.file) throw new Error('import requires a file path')
+  return flags
+}
+
+function requireCloudEnv(): { pgUrl: string; token: string } {
+  const pgUrl = process.env.RIVETOS_PG_URL
+  const token = process.env[CLOUD_TOKEN_ENV]
+  if (!pgUrl) throw new Error('RIVETOS_PG_URL is required')
+  if (!token) {
+    throw new Error(`${CLOUD_TOKEN_ENV} is required (pass --token to rivetos cloud connect)`)
+  }
+  return { pgUrl, token }
+}
+
+async function throwHttpError(kind: string, res: Response): Promise<never> {
+  const body = await res.text().catch(() => '')
+  throw new Error(`${kind} HTTP ${String(res.status)}${body ? `: ${body.slice(0, 200)}` : ''}`)
+}
+
+export async function runCloudExport(args: string[], deps: CloudDeps = {}): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    printHelp()
+    return
+  }
+  const flags = parseCloudExportArgs(args)
+  const stdout = deps.stdout ?? process.stdout
+  const isTTY = deps.isTTY ?? (stdout as NodeJS.WriteStream).isTTY
+  if (!flags.out && Boolean(isTTY)) {
+    throw new Error('refusing to write gzip to a TTY (redirect stdout or pass --out <file>)')
+  }
+  loadRivetEnv(deps.envPath ?? defaultRivetEnvPath())
+  const { pgUrl, token } = requireCloudEnv()
+  const url = cloudExportApiUrl(pgUrl)
+  const fetchFn = deps.fetch ?? fetch
+  const res = await fetchFn(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/gzip' },
+  })
+  if (!res.ok) await throwHttpError('cloud export', res)
+  const buf = Buffer.from(await res.arrayBuffer())
+  if (flags.out) {
+    const dest = createWriteStream(flags.out, { mode: 0o600 })
+    dest.end(buf)
+    await finished(dest)
+  } else {
+    stdout.write(buf)
+  }
+}
+
+export async function runCloudImport(args: string[], deps: CloudDeps = {}): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    printHelp()
+    return
+  }
+  const flags = parseCloudImportArgs(args)
+  loadRivetEnv(deps.envPath ?? defaultRivetEnvPath())
+  const { pgUrl, token } = requireCloudEnv()
+  const url = cloudImportApiUrl(pgUrl)
+  const fileBytes = await readFile(flags.file)
+  const fetchFn = deps.fetch ?? fetch
+  const res = await fetchFn(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/gzip',
+    },
+    body: new Uint8Array(fileBytes),
+  })
+  if (!res.ok) await throwHttpError('cloud import', res)
+  const log = deps.log ?? console.log
+  const text = await res.text().catch(() => '')
+  log(text || 'cloud import ok')
 }

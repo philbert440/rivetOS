@@ -165,6 +165,8 @@ export function helpText(): string {
   Cloud:
     rivetos cloud connect <pg-url> --embed-url <url>  Point this laptop at Rivet Cloud memory
     rivetos cloud status                Show cloud env (host/db) and ping DB + embed
+    rivetos cloud export [--out file]   Download a gzip dump via the cloud HTTPS API
+    rivetos cloud import <file>         Upload a gzip dump via the cloud HTTPS API
 
   Database:
     rivetos db migrate [--config <path>] Apply pending migrations (Postgres or embedded)

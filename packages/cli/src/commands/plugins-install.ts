@@ -14,6 +14,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from '
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
+import { upsertEnvVars } from '../lib/env-file.js'
 import {
   DEFAULT_EXTRA_DIRS,
   detectHarnesses,
@@ -98,6 +99,11 @@ export interface PluginsInstallDeps {
   uid?: number
   /** Optional per-harness reporter (`rivetos cloud connect` checklist). */
   onHarness?: (event: HarnessInstallEvent) => void
+  /**
+   * When true (cloud connect only), rewrite RIVETOS_PG_URL / RIVETOS_EMBED_URL
+   * in ~/.hermes/.env. Ordinary `plugins install` leaves a nonempty URL alone.
+   */
+  overrideEnv?: boolean
 }
 
 /** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
@@ -232,13 +238,18 @@ function nonemptyEnv(value: string | undefined): string | undefined {
   return value && value.length > 0 ? value : undefined
 }
 
-/** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
-export function sourcePgUrl(home: string): string | undefined {
+/** Source env value: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
+export function sourceEnvValue(home: string, key: string): string | undefined {
   const envFile = process.env.RIVETOS_ENV_FILE || join(home, '.rivetos', '.env')
   const fromFile = existsSync(envFile)
-    ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), 'RIVETOS_PG_URL'))
+    ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), key))
     : undefined
-  return fromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
+  return fromFile ?? nonemptyEnv(process.env[key])
+}
+
+/** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
+export function sourcePgUrl(home: string): string | undefined {
+  return sourceEnvValue(home, 'RIVETOS_PG_URL')
 }
 
 export function planPluginsInstall(harnesses: DetectedHarness[], root: string): InstallAction[] {
@@ -1060,6 +1071,7 @@ async function installHermes(
   exec: typeof execFileAsync,
   dryRun: boolean,
   force: boolean,
+  overrideEnv = false,
 ): Promise<{ ok: boolean; detail: string }> {
   if (dryRun) {
     return {
@@ -1106,8 +1118,22 @@ async function installHermes(
   const before = existsSync(hermesEnv) ? readFileSync(hermesEnv, 'utf-8') : ''
   const existing = readEnvKey(before, 'RIVETOS_PG_URL')
   const destNonEmpty = existing && existing.length > 0 ? existing : undefined
-  const pgUrl = destNonEmpty ?? sourcePgUrl(home)
-  if (destNonEmpty) {
+  const pgUrl = overrideEnv ? sourcePgUrl(home) : (destNonEmpty ?? sourcePgUrl(home))
+  const embedUrl = sourceEnvValue(home, 'RIVETOS_EMBED_URL')
+  if (overrideEnv) {
+    if (pgUrl) {
+      const vars: Record<string, string> = { RIVETOS_PG_URL: pgUrl }
+      if (embedUrl) vars.RIVETOS_EMBED_URL = embedUrl
+      upsertEnvVars(hermesEnv, vars)
+      bits.push('overrode RIVETOS_PG_URL in ~/.hermes/.env')
+      if (embedUrl) bits.push('overrode RIVETOS_EMBED_URL in ~/.hermes/.env')
+    } else {
+      bits.push(
+        'RIVETOS_PG_URL missing (set in ~/.rivetos/.env or RIVETOS_ENV_FILE / RIVETOS_PG_URL)',
+      )
+      ok = false
+    }
+  } else if (destNonEmpty) {
     bits.push('RIVETOS_PG_URL already in ~/.hermes/.env')
   } else if (pgUrl) {
     const after = ensureNonEmptyEnvKey(before, 'RIVETOS_PG_URL', pgUrl)
@@ -1216,7 +1242,15 @@ export async function runPluginsInstall(
           result = await installGrok(h, root, home, false, exec)
           break
         case 'hermes':
-          result = await installHermes(h, root, home, exec, false, parsed.force)
+          result = await installHermes(
+            h,
+            root,
+            home,
+            exec,
+            false,
+            parsed.force,
+            deps.overrideEnv === true,
+          )
           break
         case 'opencode':
         case 'kimi-code':

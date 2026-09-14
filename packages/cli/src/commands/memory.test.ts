@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  CLOUD_IMPORT_HINT,
   buildRetryFailedWhere,
+  isRivetCloudPgUrl,
   parseRetryFailedFlags,
   parseRequeueFlags,
   parseExportFlags,
@@ -298,5 +300,15 @@ describe('shouldRefuseGzipToTty', () => {
     expect(shouldRefuseGzipToTty(undefined, true)).toBe(true)
     expect(shouldRefuseGzipToTty('mem.ndjson.gz', true)).toBe(false)
     expect(shouldRefuseGzipToTty(undefined, false)).toBe(false)
+  })
+})
+
+describe('cloud direct-import gate', () => {
+  it('recognizes rivetos.cloud hosts and points at rivetos cloud import', () => {
+    expect(
+      isRivetCloudPgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode=require'),
+    ).toBe(true)
+    expect(isRivetCloudPgUrl('postgres://u:p@127.0.0.1:5432/local')).toBe(false)
+    expect(CLOUD_IMPORT_HINT).toMatch(/rivetos cloud import/)
   })
 })

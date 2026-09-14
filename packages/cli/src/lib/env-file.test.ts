@@ -130,4 +130,18 @@ describe('upsertEnvVars', () => {
     expect(result.next).toContain('FOO=baz')
     rmSync(dir, { recursive: true, force: true })
   })
+
+  it('chmods 0600 even when contents are unchanged', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-env-chmod-'))
+    const path = join(dir, '.env')
+    writeFileSync(path, 'FOO=bar\n', { mode: 0o644 })
+    expect(statSync(path).mode & 0o777).toBe(0o644)
+
+    const result = upsertEnvVars(path, { FOO: 'bar' })
+
+    expect(result.written).toBe(false)
+    expect(readFileSync(path, 'utf8')).toBe('FOO=bar\n')
+    expect(statSync(path).mode & 0o777).toBe(0o600)
+    rmSync(dir, { recursive: true, force: true })
+  })
 })

@@ -132,7 +132,12 @@ export const EXPORT_COLUMNS: Record<ExportTable, readonly string[]> = {
   ros_wiki_citations: ROS_WIKI_CITATIONS_COLUMNS,
 }
 
-/** Timestamp column used by `--since`. Junction tables without one export in full. */
+/**
+ * Timestamp column used by `--since` filters on the row itself.
+ * Export still computes a dependency closure (see `selectTableSql`): junction
+ * rows are included only when both ends are in the dump; wiki is full unless
+ * `--since` is set, in which case topics changed since + their citations/redirects.
+ */
 export const EXPORT_SINCE_COLUMN: Partial<Record<ExportTable, string>> = {
   ros_conversations: 'created_at',
   ros_messages: 'created_at',

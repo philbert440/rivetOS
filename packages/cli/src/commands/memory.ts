@@ -46,6 +46,9 @@ import { createReadStream, createWriteStream } from 'node:fs'
 import { hostname as osHostname } from 'node:os'
 import { finished } from 'node:stream/promises'
 import { loadRivetEnv } from '../lib/env-file.js'
+import { CLOUD_IMPORT_HINT, isRivetCloudPgUrl } from './cloud.js'
+
+export { CLOUD_IMPORT_HINT, isRivetCloudPgUrl }
 
 export default async function memory(): Promise<void> {
   loadRivetEnv()
@@ -1039,6 +1042,9 @@ async function memoryImport(args: string[]): Promise<void> {
   the file; a single enqueue-unembedded job is added when graphile_worker
   is installed.
 
+  Against rivetos.cloud this command exits 2 and tells you to use
+  \`rivetos cloud import\` (tenant roles cannot write summaries/wiki).
+
   Options:
     --dry-run   Parse and validate the file; do not write
 `)
@@ -1055,6 +1061,10 @@ async function memoryImport(args: string[]): Promise<void> {
   }
 
   const pgUrl = requirePgUrl()
+  if (isRivetCloudPgUrl(pgUrl)) {
+    console.error(CLOUD_IMPORT_HINT)
+    process.exit(2)
+  }
   const { default: pg } = await import('pg')
   const { importMemory } = await import('@rivetos/memory-postgres')
   const pool = new pg.Pool({ connectionString: pgUrl, max: 2 })

@@ -1,18 +1,27 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  CLOUD_IMPORT_HINT,
   DEFAULT_EMBED_MODEL,
   NEXT_STEP,
   SSLMODE_REQUIRED_MSG,
+  cloudExportApiUrl,
+  cloudImportApiUrl,
   describePgUrl,
   harnessLineFromEvent,
+  isRivetCloudPgUrl,
+  parseCloudExportArgs,
+  parseCloudImportArgs,
   parseConnectArgs,
   redactEmbedUrl,
   redactSecret,
   renderChecklist,
+  resolveCloudApi,
   runCloudConnect,
+  runCloudExport,
+  runCloudImport,
   validateEmbedUrl,
   validatePgUrl,
 } from './cloud.js'
@@ -80,7 +89,12 @@ describe('parseConnectArgs', () => {
       root: '/opt/rivetos',
       dryRun: true,
       yes: true,
+      token: undefined,
     })
+  })
+
+  it('parses --token', () => {
+    expect(parseConnectArgs([PG, '--embed-url', EMBED, '--token', 'tok_abc']).token).toBe('tok_abc')
   })
 
   it('defaults the embed model and requires pg-url + --embed-url', () => {
@@ -97,6 +111,40 @@ describe('redaction', () => {
     expect(redactSecret(PG)).not.toContain('s3cret')
     expect(redactEmbedUrl(EMBED)).toBe('https://rivetos.cloud/embed/***')
     expect(redactEmbedUrl(EMBED)).not.toContain('aabbcc')
+  })
+
+  it('replaces colon-containing userinfo and password= query values; malformed → <redacted>', () => {
+    const colon = redactSecret('postgres://user:alpha:beta@rivetos.cloud/db?sslmode=require')
+    expect(colon).not.toContain('alpha')
+    expect(colon).not.toContain('beta')
+    expect(colon).toContain('***')
+    const q = redactSecret('postgres://rivetos.cloud/db?password=example-secret&sslmode=require')
+    expect(q).not.toContain('example-secret')
+    expect(q).toMatch(/password=\*\*\*/)
+    expect(redactSecret('not a url')).toBe('<redacted>')
+  })
+})
+
+describe('cloud API target', () => {
+  it('uses the URL hostname (not postgres port) and strips tenant_ from the db name', () => {
+    expect(resolveCloudApi(PG)).toEqual({
+      origin: 'https://rivetos.cloud',
+      slug: 'demo',
+    })
+    expect(cloudExportApiUrl(PG)).toBe('https://rivetos.cloud/api/t/demo/export')
+    expect(cloudImportApiUrl(PG)).toBe('https://rivetos.cloud/api/t/demo/import')
+    expect(isRivetCloudPgUrl(PG)).toBe(true)
+    expect(isRivetCloudPgUrl('postgres://u:p@127.0.0.1:5432/local')).toBe(false)
+    expect(CLOUD_IMPORT_HINT).toMatch(/rivetos cloud import/)
+  })
+})
+
+describe('parseCloudExportArgs / parseCloudImportArgs', () => {
+  it('parses --out and requires an import file', () => {
+    expect(parseCloudExportArgs(['--out', 'mem.ndjson.gz'])).toEqual({ out: 'mem.ndjson.gz' })
+    expect(parseCloudExportArgs([])).toEqual({})
+    expect(parseCloudImportArgs(['dump.ndjson.gz'])).toEqual({ file: 'dump.ndjson.gz' })
+    expect(() => parseCloudImportArgs([])).toThrow(/import requires a file path/)
   })
 })
 
@@ -159,6 +207,8 @@ describe('runCloudConnect', () => {
     expect(smokeDb).toHaveBeenCalledWith(PG)
     expect(smokeEmbed).toHaveBeenCalledWith(EMBED, DEFAULT_EMBED_MODEL)
     expect(runInstall).toHaveBeenCalled()
+    const installDeps = runInstall.mock.calls[0]?.[1] as { overrideEnv?: boolean }
+    expect(installDeps.overrideEnv).toBe(true)
     expect(checklist.db).toEqual({ ok: true, messages: 7 })
     expect(logs.join('\n')).toContain('DB ok (7 messages)')
     expect(logs.join('\n')).toContain('grok-build: installed')
@@ -200,5 +250,75 @@ describe('runCloudConnect', () => {
       }),
     ).rejects.toThrow(/smoke failed/)
     expect(runInstall).not.toHaveBeenCalled()
+  })
+
+  it('writes RIVETOS_CLOUD_TOKEN when --token is passed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-token-'))
+    tmpDirs.push(dir)
+    const envPath = join(dir, '.env')
+    await runCloudConnect([PG, '--embed-url', EMBED, '--token', 'tok_live'], {
+      envPath,
+      home: dir,
+      smokeDb: async () => ({ ok: true, messages: 0 }),
+      smokeEmbed: async () => ({ ok: true, dims: 1024 }),
+      runInstall: async () => undefined,
+      log: () => undefined,
+    })
+    expect(readFileSync(envPath, 'utf8')).toContain('RIVETOS_CLOUD_TOKEN=tok_live')
+  })
+})
+
+describe('runCloudExport / runCloudImport', () => {
+  const prevPg = process.env.RIVETOS_PG_URL
+  const prevTok = process.env.RIVETOS_CLOUD_TOKEN
+
+  afterEach(() => {
+    if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+    else process.env.RIVETOS_PG_URL = prevPg
+    if (prevTok === undefined) delete process.env.RIVETOS_CLOUD_TOKEN
+    else process.env.RIVETOS_CLOUD_TOKEN = prevTok
+  })
+
+  it('GET /api/t/<slug>/export with the bearer token', async () => {
+    process.env.RIVETOS_PG_URL = PG
+    process.env.RIVETOS_CLOUD_TOKEN = 'tok_abc'
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-export-'))
+    tmpDirs.push(dir)
+    const out = join(dir, 'dump.ndjson.gz')
+    const payload = Buffer.from('gzip-bytes')
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('https://rivetos.cloud/api/t/demo/export')
+      expect(init?.method).toBe('GET')
+      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok_abc')
+      return new Response(payload, { status: 200 })
+    })
+    await runCloudExport(['--out', out], { fetch: fetchFn as never, envPath: join(dir, 'nope') })
+    expect(readFileSync(out)).toEqual(payload)
+    expect(fetchFn).toHaveBeenCalled()
+  })
+
+  it('POST /api/t/<slug>/import with application/gzip', async () => {
+    process.env.RIVETOS_PG_URL = PG
+    process.env.RIVETOS_CLOUD_TOKEN = 'tok_abc'
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-import-'))
+    tmpDirs.push(dir)
+    const file = join(dir, 'dump.ndjson.gz')
+    writeFileSync(file, 'gzip-bytes')
+    const logs: string[] = []
+    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('https://rivetos.cloud/api/t/demo/import')
+      expect(init?.method).toBe('POST')
+      const headers = init?.headers as Record<string, string>
+      expect(headers.Authorization).toBe('Bearer tok_abc')
+      expect(headers['Content-Type']).toBe('application/gzip')
+      expect(Buffer.from(init?.body as Uint8Array).toString()).toBe('gzip-bytes')
+      return new Response('{"ok":true}', { status: 200 })
+    })
+    await runCloudImport([file], {
+      fetch: fetchFn as never,
+      envPath: join(dir, 'nope'),
+      log: (m) => logs.push(m),
+    })
+    expect(logs.join('\n')).toContain('{"ok":true}')
   })
 })

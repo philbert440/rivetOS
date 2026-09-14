@@ -200,17 +200,27 @@ export function upsertEnvVars(
     !existed ||
     next !== (previous.endsWith('\n') || previous.length === 0 ? previous : `${previous}\n`)
 
-  if (!opts.dryRun && changed) {
+  if (!opts.dryRun) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
-    writeFileSync(path, next, { encoding: 'utf8', mode: 0o600 })
-    try {
-      chmodSync(path, 0o600)
-    } catch {
-      // Windows may ignore mode bits
+    // Tighten an existing file before rewriting secrets into it.
+    if (existed) chmod600(path)
+    if (changed) {
+      writeFileSync(path, next, { encoding: 'utf8', mode: 0o600 })
+      chmod600(path)
     }
   }
 
   return { created: !existed, written: Boolean(!opts.dryRun && changed), diff, next }
+}
+
+/** Enforce 0600. Windows may ignore mode bits; POSIX failures surface. */
+function chmod600(path: string): void {
+  try {
+    chmodSync(path, 0o600)
+  } catch (err) {
+    if (process.platform === 'win32') return
+    throw err
+  }
 }
 
 /** One line per changed key. Callers redact secret values before printing. */

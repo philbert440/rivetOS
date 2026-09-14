@@ -10,12 +10,24 @@ import {
 import {
   DEFER_EMBED_GUC_SQL,
   ENQUEUE_UNEMBEDDED_SQL,
+  EXPORT_CURSOR_PAGE,
+  EXPORT_TX_BEGIN_SQL,
+  EXPORT_TX_COMMIT_SQL,
+  EXPORT_TX_ROLLBACK_SQL,
   EXPORT_TYPE,
   EXPORT_VERSION,
   GRAPHILE_MISSING_HINT,
   GRAPHILE_NAMESPACE_SQL,
   IMPORT_BATCH_SIZE,
+  SELECTED_SUMMARIES_CTE,
+  SUMMARY_PARENT_UNRESOLVED_SQL,
+  SUMMARY_PARENT_UPDATE_SQL,
+  closeCursorSql,
+  declareCursorSql,
+  exportCursorName,
   exportMemory,
+  fetchCursorSql,
+  groupByPresentColumns,
   importMemory,
   insertBatchSql,
   pickKnownColumns,
@@ -42,13 +54,56 @@ function recordedPool(
   ) => PortabilityQueryResult | Promise<PortabilityQueryResult>,
 ): { pool: PortabilityPool; calls: Array<{ sql: string; params?: unknown[] }> } {
   const calls: Array<{ sql: string; params?: unknown[] }> = []
+  const query = async (sql: string, params?: unknown[]): Promise<PortabilityQueryResult> => {
+    calls.push({ sql, params })
+    return handler(sql, params)
+  }
   const pool: PortabilityPool = {
-    async query(sql, params) {
-      calls.push({ sql, params })
-      return handler(sql, params)
+    query,
+    async connect() {
+      return { query, release() {} }
     },
   }
   return { pool, calls }
+}
+
+/** Serve DECLARE/FETCH/CLOSE against in-memory table rows. */
+function cursorHandler(
+  tableRows: Partial<Record<string, Record<string, unknown>[]>>,
+  extra?: (
+    sql: string,
+    params?: unknown[],
+  ) => PortabilityQueryResult | Promise<PortabilityQueryResult> | undefined,
+): (sql: string, params?: unknown[]) => PortabilityQueryResult | Promise<PortabilityQueryResult> {
+  const cursors = new Map<string, { rows: Record<string, unknown>[]; offset: number }>()
+  return (sql, params) => {
+    const fromExtra = extra?.(sql, params)
+    if (fromExtra) return fromExtra
+    const decl = /^DECLARE (export_(ros_\w+)) NO SCROLL CURSOR FOR /.exec(sql)
+    if (decl) {
+      const table = decl[2]
+      cursors.set(decl[1], { rows: tableRows[table] ?? [], offset: 0 })
+      return { rows: [], rowCount: 0 }
+    }
+    const fetch = /^FETCH (\d+) FROM (export_ros_\w+)$/.exec(sql)
+    if (fetch) {
+      const cur = cursors.get(fetch[2])
+      if (!cur) return { rows: [], rowCount: 0 }
+      const n = Number(fetch[1])
+      const slice = cur.rows.slice(cur.offset, cur.offset + n)
+      cur.offset += slice.length
+      return { rows: slice, rowCount: slice.length }
+    }
+    if (
+      sql.startsWith('CLOSE ') ||
+      sql === EXPORT_TX_BEGIN_SQL ||
+      sql === EXPORT_TX_COMMIT_SQL ||
+      sql === EXPORT_TX_ROLLBACK_SQL
+    ) {
+      return { rows: [], rowCount: 0 }
+    }
+    return { rows: [], rowCount: 0 }
+  }
 }
 
 function ndjsonGzip(lines: unknown[]): Readable {
@@ -103,70 +158,130 @@ describe('insertBatchSql', () => {
     )
     expect(sql).toContain('ON CONFLICT DO NOTHING')
   })
+
+  it('uses DEFAULT VALUES when the column set is empty', () => {
+    expect(insertBatchSql('ros_conversations', [])).toBe(
+      'INSERT INTO ros_conversations DEFAULT VALUES ON CONFLICT DO NOTHING',
+    )
+  })
 })
 
-describe('pickKnownColumns', () => {
+describe('pickKnownColumns / groupByPresentColumns', () => {
   it('drops unknown row keys (forward-compat)', () => {
     expect(pickKnownColumns({ id: 'a', extra: 'nope', content: 'hi' }, ['id', 'content'])).toEqual({
       id: 'a',
       content: 'hi',
     })
   })
+
+  it('groups mixed shapes and treats explicit null as present', () => {
+    const groups = groupByPresentColumns(
+      [
+        { id: 'c1', session_key: 's' },
+        { id: 'c2', session_key: 's', channel: null },
+        { id: 'c3', session_key: 's' },
+      ],
+      ['id', 'session_key', 'channel'],
+    )
+    expect(groups).toHaveLength(2)
+    const byLen = [...groups].sort((a, b) => a.cols.length - b.cols.length)
+    expect(byLen[0]?.cols).toEqual(['id', 'session_key'])
+    expect(byLen[0]?.rows).toHaveLength(2)
+    expect(byLen[1]?.cols).toEqual(['id', 'session_key', 'channel'])
+    expect(byLen[1]?.rows[0]?.channel).toBeNull()
+  })
+})
+
+describe('selectTableSql --since closure', () => {
+  const since = '2026-09-01T00:00:00.000Z'
+
+  it('pulls conversations of selected messages and selected summaries', () => {
+    const { sql, params } = selectTableSql('ros_conversations', ['id'], since)
+    expect(params).toEqual([since])
+    expect(sql).toContain(SELECTED_SUMMARIES_CTE)
+    expect(sql).toContain('FROM ros_conversations WHERE id IN')
+    expect(sql).toContain('FROM ros_messages WHERE created_at >= $1::timestamptz')
+    expect(sql).toContain('SELECT conversation_id FROM selected_summaries')
+  })
+
+  it('walks summary parents recursively and keeps junction rows only when both ends are in the dump', () => {
+    const summaries = selectTableSql('ros_summaries', ['id'], since)
+    expect(summaries.sql).toContain('id IN (SELECT id FROM selected_summaries)')
+    const sources = selectTableSql('ros_summary_sources', ['summary_id', 'message_id'], since)
+    expect(sources.sql).toContain('summary_id IN (SELECT id FROM selected_summaries)')
+    expect(sources.sql).toContain(
+      'message_id IN (SELECT id FROM ros_messages WHERE created_at >= $1::timestamptz)',
+    )
+  })
+
+  it('limits wiki to topics changed since plus their redirects and citations', () => {
+    const topics = selectTableSql('ros_wiki_topics', ['slug'], since)
+    expect(topics.sql).toContain('created_at >= $1::timestamptz OR updated_at >= $1::timestamptz')
+    const redirects = selectTableSql('ros_wiki_redirects', ['from_slug', 'to_slug'], since)
+    expect(redirects.sql).toContain('to_slug IN (')
+    expect(redirects.sql).toContain('FROM ros_wiki_topics')
+    const citations = selectTableSql('ros_wiki_citations', ['topic_slug'], since)
+    expect(citations.sql).toContain('topic_slug IN (')
+    expect(citations.sql).not.toContain('cited_at')
+  })
+
+  it('exports wiki (and everything else) unfiltered when --since is absent', () => {
+    expect(selectTableSql('ros_wiki_topics', ['slug']).sql).toBe('SELECT slug FROM ros_wiki_topics')
+    expect(selectTableSql('ros_summary_sources', ['summary_id']).params).toEqual([])
+    expect(selectTableSql('ros_summary_sources', ['summary_id']).sql).not.toContain('WHERE')
+  })
 })
 
 describe('exportMemory', () => {
-  it('writes a gzip NDJSON v1 header then rows in table order', async () => {
-    const { pool, calls } = recordedPool((sql) => {
-      if (sql.includes('FROM ros_conversations')) {
-        return {
-          rows: [
-            {
-              id: 'c1',
-              session_key: 's',
-              agent: 'grok',
-              channel: 'unknown',
-              created_at: new Date('2026-09-14T00:00:00.000Z'),
-              extra: 'drop-me',
-            },
-          ],
-          rowCount: 1,
-        }
-      }
-      if (sql.includes('FROM ros_messages')) {
-        return {
-          rows: [
-            {
-              id: 'm1',
-              conversation_id: 'c1',
-              agent: 'grok',
-              channel: 'unknown',
-              role: 'user',
-              content: 'hello',
-              embedding: [1, 2, 3],
-              created_at: new Date('2026-09-14T00:01:00.000Z'),
-            },
-          ],
-          rowCount: 1,
-        }
-      }
-      return { rows: [], rowCount: 0 }
-    })
+  it('writes a gzip NDJSON v1 header then rows in table order through a pinned cursor', async () => {
+    const { pool, calls } = recordedPool(
+      cursorHandler({
+        ros_conversations: [
+          {
+            id: 'c1',
+            session_key: 's',
+            agent: 'grok',
+            channel: 'unknown',
+            created_at: new Date('2026-09-14T00:00:00.000Z'),
+            extra: 'drop-me',
+          },
+        ],
+        ros_messages: [
+          {
+            id: 'm1',
+            conversation_id: 'c1',
+            agent: 'grok',
+            channel: 'unknown',
+            role: 'user',
+            content: 'hello',
+            embedding: [1, 2, 3],
+            created_at: new Date('2026-09-14T00:01:00.000Z'),
+          },
+        ],
+      }),
+    )
     const { out, chunks } = collectWritable()
     await exportMemory(pool, out, {
       exportedAt: '2026-09-14T12:00:00.000Z',
       source: { kind: 'local', id: 'test-host' },
     })
 
-    const tablesInSelect = calls
-      .map((c) => {
-        const m = /FROM (ros_\w+)/.exec(c.sql)
-        return m?.[1]
-      })
+    expect(calls[0]?.sql).toBe(EXPORT_TX_BEGIN_SQL)
+    const declared = calls
+      .map((c) => /^DECLARE (export_(ros_\w+)) /.exec(c.sql)?.[2])
       .filter(Boolean)
-    expect(tablesInSelect).toEqual([...EXPORT_TABLES])
-    expect(calls[0]?.sql).toContain(EXPORT_COLUMNS.ros_conversations.join(', '))
-    expect(calls[1]?.sql).toContain(EXPORT_COLUMNS.ros_messages.join(', '))
-    expect(calls[1]?.sql).not.toContain('embedding')
+    expect(declared).toEqual([...EXPORT_TABLES])
+    const convDecl = calls.find((c) =>
+      c.sql.startsWith(declareCursorSql(exportCursorName('ros_conversations'), '')),
+    )
+    expect(convDecl?.sql).toContain(EXPORT_COLUMNS.ros_conversations.join(', '))
+    const msgDecl = calls.find((c) => c.sql.includes('export_ros_messages'))
+    expect(msgDecl?.sql).toContain(EXPORT_COLUMNS.ros_messages.join(', '))
+    expect(msgDecl?.sql).not.toContain('embedding')
+    expect(calls.some((c) => c.sql === EXPORT_TX_COMMIT_SQL)).toBe(true)
+    expect(calls.some((c) => c.sql === closeCursorSql(exportCursorName('ros_conversations')))).toBe(
+      true,
+    )
 
     const lines = gunzipSync(Buffer.concat(chunks))
       .toString('utf8')
@@ -189,27 +304,62 @@ describe('exportMemory', () => {
     expect((lines[2] as { r: Record<string, unknown> }).r.embedding).toBeUndefined()
   })
 
-  it('binds --since on tables that have a timestamp column', async () => {
-    const { pool, calls } = recordedPool(() => ({ rows: [], rowCount: 0 }))
+  it('binds --since closure SQL on the declared cursors', async () => {
+    const { pool, calls } = recordedPool(cursorHandler({}))
     const { out } = collectWritable()
     await exportMemory(pool, out, {
       since: '2026-09-01T00:00:00.000Z',
       source: { kind: 'cloud', id: 'demo' },
     })
-    const conv = calls.find((c) => c.sql.includes('FROM ros_conversations'))
-    expect(conv?.sql).toContain('WHERE created_at >= $1::timestamptz')
+    const conv = calls.find((c) => c.sql.includes('export_ros_conversations'))
+    expect(conv?.sql).toContain('FROM ros_conversations WHERE id IN')
     expect(conv?.params).toEqual(['2026-09-01T00:00:00.000Z'])
-    const sources = calls.find((c) => c.sql.includes('FROM ros_summary_sources'))
-    expect(sources?.sql).not.toContain('WHERE')
-    expect(sources?.params).toEqual([])
-    expect(
-      selectTableSql('ros_wiki_citations', ['topic_slug'], '2026-09-01T00:00:00.000Z').sql,
-    ).toContain('cited_at')
+    const sources = calls.find((c) => c.sql.includes('export_ros_summary_sources'))
+    expect(sources?.sql).toContain('summary_id IN')
+    expect(sources?.sql).toContain('message_id IN')
+  })
+
+  it('fetches through the cursor in pages of 1000', async () => {
+    const rows = Array.from({ length: EXPORT_CURSOR_PAGE + 1 }, (_, i) => ({
+      id: `c${String(i)}`,
+    }))
+    const { pool, calls } = recordedPool(cursorHandler({ ros_conversations: rows }))
+    const { out, chunks } = collectWritable()
+    await exportMemory(pool, out, {
+      exportedAt: '2026-09-14T12:00:00.000Z',
+      source: { kind: 'local', id: 'page' },
+    })
+    const convFetches = calls.filter(
+      (c) => c.sql === fetchCursorSql(exportCursorName('ros_conversations')),
+    )
+    expect(convFetches).toHaveLength(3)
+    const body = gunzipSync(Buffer.concat(chunks)).toString('utf8')
+    expect(body.match(/"t":"ros_conversations"/g)).toHaveLength(EXPORT_CURSOR_PAGE + 1)
+  })
+
+  it('closes open cursors and rolls back when a later DECLARE fails', async () => {
+    const { pool, calls } = recordedPool(
+      cursorHandler({}, (sql) => {
+        if (sql.startsWith('DECLARE export_ros_messages')) throw new Error('boom')
+        return undefined
+      }),
+    )
+    const { out } = collectWritable()
+    await expect(
+      exportMemory(pool, out, {
+        exportedAt: '2026-09-14T12:00:00.000Z',
+        source: { kind: 'local', id: 'fail' },
+      }),
+    ).rejects.toThrow(/boom/)
+    expect(calls.some((c) => c.sql === EXPORT_TX_ROLLBACK_SQL)).toBe(true)
+    expect(calls.some((c) => c.sql === closeCursorSql(exportCursorName('ros_conversations')))).toBe(
+      true,
+    )
   })
 })
 
 describe('importMemory', () => {
-  it('checks the header, batches 500, sets the defer GUC before messages, ON CONFLICT, drops unknown keys', async () => {
+  it('checks the header, batches 500, SET LOCAL per batch, ON CONFLICT, drops unknown keys', async () => {
     const messageRows = Array.from({ length: IMPORT_BATCH_SIZE + 1 }, (_, i) => ({
       t: 'ros_messages',
       r: {
@@ -237,7 +387,6 @@ describe('importMemory', () => {
         const payload = JSON.parse(
           String(calls[calls.length - 1]?.params?.[0] ?? '[]'),
         ) as unknown[]
-        // rowCount = inserted; last batch of 1 conflicts
         return { rows: [], rowCount: payload.length === 1 ? 0 : payload.length }
       }
       if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
@@ -251,12 +400,17 @@ describe('importMemory', () => {
     expect(sqls.some((s) => s.includes('INSERT INTO ros_conversations'))).toBe(true)
     const deferAt = sqls.indexOf(DEFER_EMBED_GUC_SQL)
     const firstMsg = sqls.findIndex((s) => s.includes('INSERT INTO ros_messages'))
+    const firstBegin = sqls.indexOf('BEGIN')
     expect(deferAt).toBeGreaterThan(-1)
+    expect(firstBegin).toBeGreaterThan(-1)
+    expect(firstBegin).toBeLessThan(deferAt)
     expect(firstMsg).toBeGreaterThan(deferAt)
+    expect(DEFER_EMBED_GUC_SQL).toContain('SET LOCAL')
 
+    const msgCols = ['id', 'conversation_id', 'agent', 'channel', 'role', 'content']
     const msgInserts = calls.filter((c) => c.sql.includes('INSERT INTO ros_messages'))
     expect(msgInserts).toHaveLength(2)
-    expect(msgInserts[0]?.sql).toBe(insertBatchSql('ros_messages', EXPORT_COLUMNS.ros_messages))
+    expect(msgInserts[0]?.sql).toBe(insertBatchSql('ros_messages', msgCols))
     expect(msgInserts[0]?.sql).toContain('ON CONFLICT DO NOTHING')
     expect(msgInserts[0]?.sql).toContain('json_populate_recordset(NULL::ros_messages, $1::json)')
     const batch0 = JSON.parse(String(msgInserts[0]?.params?.[0])) as Record<string, unknown>[]
@@ -272,6 +426,162 @@ describe('importMemory', () => {
     expect(result.inserted.ros_conversations).toBe(1)
     expect(result.inserted.ros_messages).toBe(IMPORT_BATCH_SIZE)
     expect(result.skipped.ros_messages).toBe(1)
+    expect(result.unresolvedParentLinks).toBe(0)
+  })
+
+  it('groups mixed column shapes into one INSERT per shape and preserves explicit null', async () => {
+    const input = ndjsonGzip([
+      HEADER,
+      { t: 'ros_conversations', r: { id: 'c1', session_key: 's', agent: 'grok' } },
+      {
+        t: 'ros_conversations',
+        r: { id: 'c2', session_key: 's', agent: 'grok', channel: null },
+      },
+    ])
+    const { pool, calls } = recordedPool((sql) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    await importMemory(pool, input, { log: () => undefined })
+    const inserts = calls.filter((c) => c.sql.includes('INSERT INTO ros_conversations'))
+    expect(inserts).toHaveLength(2)
+    expect(inserts[0]?.sql).toBe(
+      insertBatchSql('ros_conversations', ['id', 'session_key', 'agent']),
+    )
+    expect(inserts[1]?.sql).toContain('channel')
+    const withNull = JSON.parse(String(inserts[1]?.params?.[0])) as Array<{ channel: unknown }>
+    expect(withNull[0]?.channel).toBeNull()
+  })
+
+  it('inserts summaries with parent_id omitted then UPDATEs parent links', async () => {
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_summaries',
+        r: {
+          id: '11111111-1111-1111-1111-111111111111',
+          parent_id: '22222222-2222-2222-2222-222222222222',
+          content: 'child',
+          kind: 'leaf',
+        },
+      },
+      {
+        t: 'ros_summaries',
+        r: {
+          id: '22222222-2222-2222-2222-222222222222',
+          parent_id: null,
+          content: 'parent',
+          kind: 'root',
+        },
+      },
+    ])
+    const { pool, calls } = recordedPool((sql) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql === SUMMARY_PARENT_UPDATE_SQL) return { rows: [], rowCount: 1 }
+      if (sql === SUMMARY_PARENT_UNRESOLVED_SQL) return { rows: [{ n: 0 }], rowCount: 1 }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    const result = await importMemory(pool, input, { log: () => undefined })
+    const inserts = calls.filter((c) => c.sql.includes('INSERT INTO ros_summaries'))
+    expect(inserts.length).toBeGreaterThan(0)
+    for (const ins of inserts) {
+      expect(ins.sql).not.toMatch(/INSERT INTO ros_summaries \([^)]*parent_id/)
+      const payload = JSON.parse(String(ins.params?.[0])) as Array<{ parent_id?: unknown }>
+      for (const row of payload) expect(row.parent_id).toBeUndefined()
+    }
+    const update = calls.find((c) => c.sql === SUMMARY_PARENT_UPDATE_SQL)
+    expect(update).toBeDefined()
+    const links = JSON.parse(String(update?.params?.[0])) as Array<{
+      id: string
+      parent_id: string
+    }>
+    expect(links).toEqual([
+      {
+        id: '11111111-1111-1111-1111-111111111111',
+        parent_id: '22222222-2222-2222-2222-222222222222',
+      },
+    ])
+    expect(result.unresolvedParentLinks).toBe(0)
+    const sqls = calls.map((c) => c.sql)
+    expect(sqls.indexOf(DEFER_EMBED_GUC_SQL)).toBeGreaterThan(-1)
+  })
+
+  it('counts unresolved summary parent links', async () => {
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_summaries',
+        r: {
+          id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+          parent_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+          content: 'orphan',
+          kind: 'leaf',
+        },
+      },
+    ])
+    const { pool } = recordedPool((sql) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql === SUMMARY_PARENT_UPDATE_SQL) return { rows: [], rowCount: 0 }
+      if (sql === SUMMARY_PARENT_UNRESOLVED_SQL) return { rows: [{ n: 1 }], rowCount: 1 }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    const result = await importMemory(pool, input, { log: () => undefined })
+    expect(result.unresolvedParentLinks).toBe(1)
+  })
+
+  it('SET LOCAL inside the transaction for a summaries-only dump', async () => {
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_summaries',
+        r: { id: 's1', content: 'only', kind: 'leaf' },
+      },
+    ])
+    const { pool, calls } = recordedPool((sql) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    await importMemory(pool, input, { log: () => undefined })
+    const sqls = calls.map((c) => c.sql)
+    const begin = sqls.indexOf('BEGIN')
+    const defer = sqls.indexOf(DEFER_EMBED_GUC_SQL)
+    const insert = sqls.findIndex((s) => s.includes('INSERT INTO ros_summaries'))
+    const commit = sqls.indexOf('COMMIT')
+    expect(begin).toBeGreaterThan(-1)
+    expect(defer).toBeGreaterThan(begin)
+    expect(insert).toBeGreaterThan(defer)
+    expect(commit).toBeGreaterThan(insert)
+  })
+
+  it('rolls back a failed batch', async () => {
+    const input = ndjsonGzip([HEADER, { t: 'ros_messages', r: { id: 'm1', content: 'x' } }])
+    const { pool, calls } = recordedPool((sql) => {
+      if (sql.includes('INSERT INTO')) throw new Error('sql boom')
+      return { rows: [], rowCount: 0 }
+    })
+    await expect(importMemory(pool, input)).rejects.toThrow(/sql boom/)
+    expect(calls.some((c) => c.sql === 'ROLLBACK')).toBe(true)
+  })
+
+  it('rejects when the source stream errors', async () => {
+    const input = new Readable({
+      read() {
+        this.destroy(new Error('source boom'))
+      },
+    })
+    const { pool } = recordedPool(() => ({ rows: [], rowCount: 0 }))
+    await expect(importMemory(pool, input)).rejects.toThrow(/source boom/)
+  })
+
+  it('rejects truncated gzip', async () => {
+    const full = gzipSync(`${JSON.stringify(HEADER)}\n`)
+    const input = Readable.from([full.subarray(0, 8)])
+    const { pool } = recordedPool(() => ({ rows: [], rowCount: 0 }))
+    await expect(importMemory(pool, input)).rejects.toThrow()
   })
 
   it('skips enqueue-unembedded when graphile_worker schema is absent and prints a hint', async () => {

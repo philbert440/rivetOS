@@ -2,7 +2,8 @@
 
 Rivet Cloud is hosted memory (`rivetos.cloud`) that any coding harness already
 on your laptop can capture into and search. This page covers the public CLI:
-`rivetos cloud connect`, `rivetos memory export`, and `rivetos memory import`.
+`rivetos cloud connect`, `rivetos cloud export`, `rivetos cloud import`,
+`rivetos memory export`, and `rivetos memory import`.
 
 No RivetOS runtime or PGlite is required on the laptop for cloud mode. The
 harness hooks talk to Postgres and the embed endpoint directly.
@@ -15,6 +16,7 @@ You get a customer bundle when the tenant is created:
 RIVETOS_PG_URL=postgres://tenant_<slug>:<password>@rivetos.cloud:5432/tenant_<slug>?sslmode=require
 RIVETOS_EMBED_URL=https://rivetos.cloud/embed/<embed_token>
 RIVETOS_EMBED_MODEL=qwen3-embedding-0.6b
+RIVETOS_CLOUD_TOKEN=<tenant_token>
 ```
 
 (`sslmode=require` is mandatory. node-pg verifies against system CAs. Do not
@@ -22,19 +24,26 @@ add `sslrootcert=system` — node-pg ENOENTs on that parameter.)
 
 ```bash
 rivetos cloud connect 'postgres://tenant_demo:…@rivetos.cloud:5432/tenant_demo?sslmode=require' \
-  --embed-url 'https://rivetos.cloud/embed/…'
+  --embed-url 'https://rivetos.cloud/embed/…' \
+  --token '…'
 ```
 
 What it does:
 
 1. Validates the Postgres URL (`postgres` / `postgresql`, must include
    `sslmode=`) and that the embed URL is `https`.
-2. Upserts `RIVETOS_PG_URL`, `RIVETOS_EMBED_URL`, and `RIVETOS_EMBED_MODEL`
-   into `~/.rivetos/.env` (created `0600` if missing; other keys kept).
+2. Upserts `RIVETOS_PG_URL`, `RIVETOS_EMBED_URL`, `RIVETOS_EMBED_MODEL`, and
+   (when `--token` is passed) `RIVETOS_CLOUD_TOKEN` into `~/.rivetos/.env`
+   (created `0600` if missing; existing files are chmod'd `0600` even when
+   contents do not change; other keys kept).
 3. Smokes **before** installing hooks: `SELECT count(*) FROM ros_messages` and
    one `POST <embed-url>/v1/embeddings` with `{input:"ping", model}` expecting
    a 1024-d vector.
-4. Runs `rivetos plugins install` for detected harnesses (or `--harness <id>`).
+4. Runs `rivetos plugins install` for detected harnesses (or `--harness <id>`)
+   with `overrideEnv: true`, so an existing `~/.hermes/.env` is rewritten to
+   the new `RIVETOS_PG_URL` / `RIVETOS_EMBED_URL` (other lines kept, file
+   `0600`). Ordinary `rivetos plugins install` still preserves a nonempty
+   Hermes `RIVETOS_PG_URL`.
 5. Prints a checklist:
 
 ```
@@ -45,14 +54,45 @@ grok-build: skipped (not found)
 next: open your harness and run one turn; then `rivetos memory search …`
 ```
 
-Flags: `--embed-model` (default `qwen3-embedding-0.6b`), `--harness` (repeatable),
-`--root`, `--dry-run` (print the env diff and the install plan; write nothing),
-`--yes` (accepted for non-interactive scripts; connect does not prompt).
+Flags: `--embed-model` (default `qwen3-embedding-0.6b`), `--token` (written as
+`RIVETOS_CLOUD_TOKEN`), `--harness` (repeatable), `--root`, `--dry-run` (print
+the env diff and the install plan; write nothing), `--yes` (accepted for
+non-interactive scripts; connect does not prompt).
 
 `rivetos cloud status` shows which env vars are set (**host and database only,
 never the password**) and pings DB + embed.
 
-## Export
+## Which export/import command?
+
+| Store                                               | Export                  | Import                  |
+| --------------------------------------------------- | ----------------------- | ----------------------- |
+| Local / self-hosted datahub (owner Postgres URL)    | `rivetos memory export` | `rivetos memory import` |
+| Rivet Cloud (`RIVETOS_PG_URL` host `rivetos.cloud`) | `rivetos cloud export`  | `rivetos cloud import`  |
+
+Tenant roles on Rivet Cloud can INSERT conversations/messages but cannot INSERT
+summaries/wiki or enqueue graphile jobs. `rivetos memory import` against a
+`rivetos.cloud` URL prints a hint to use `rivetos cloud import` and exits 2
+without attempting a half-failed restore.
+
+## Cloud HTTPS export / import
+
+Host and slug come from `RIVETOS_PG_URL`: **hostname** (not the Postgres port)
+and database name with a leading `tenant_` stripped (`tenant_demo` → `demo`).
+The bearer token is `RIVETOS_CLOUD_TOKEN` (set by `rivetos cloud connect --token`).
+
+```bash
+rivetos cloud export --out mem.ndjson.gz
+rivetos cloud export > mem.ndjson.gz
+rivetos cloud import mem.ndjson.gz
+```
+
+- `GET https://<host>/api/t/<slug>/export` — `Authorization: Bearer <token>`,
+  `Accept: application/gzip`. Default destination is stdout; refuses gzip to a
+  TTY (redirect or `--out`).
+- `POST https://<host>/api/t/<slug>/import` — body is the gzip file,
+  `Content-Type: application/gzip`, `Authorization: Bearer <token>`.
+
+## Direct (local / datahub) export
 
 ```bash
 rivetos memory export > mem.ndjson.gz
@@ -62,33 +102,70 @@ rivetos memory export --out mem.ndjson.gz --since 2026-09-01T00:00:00Z
 Gzip NDJSON v1. Default destination is stdout so a shell redirect works. The
 command refuses to write gzip to a TTY — redirect or pass `--out`.
 
-`--since` filters tables that have `created_at` (or `cited_at` on
-`ros_wiki_citations`). Junction rows without a timestamp (`ros_summary_sources`)
-are exported in full so foreign keys stay intact.
+Export pins one client, `BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY`,
+and reads each table through a server-side cursor in pages of 1000 (backpressure
+on the gzip writer is respected). The cursor and transaction are closed on
+success and in `finally` on failure, so the dump is one snapshot.
 
 Uses `RIVETOS_PG_URL` from the environment or `~/.rivetos/.env` (`loadRivetEnv`),
 same as the other `rivetos memory` subcommands.
 
-## Import
+### `--since` closure
+
+`--since` is not an independent timestamp filter per table. The dump is the
+**dependency closure** of the selected rows so it restores into an empty schema:
+
+- **messages** — `created_at >= --since`.
+- **conversations** — conversations referenced by those messages **or** by the
+  selected summaries (including recursive parents). Older conversations are
+  pulled in when a recent message or summary needs them.
+- **summaries** — `created_at >= --since`, plus each selected row's
+  `parent_id` chain (recursive) so the DAG can be inserted.
+- **summary_sources** — only rows whose `summary_id` **and** `message_id` are
+  both in the dump. Junction rows are never exported in full “to keep FKs”;
+  dangling endpoints are omitted instead.
+- **wiki** — when `--since` is **absent**, `ros_wiki_topics`,
+  `ros_wiki_redirects`, and `ros_wiki_citations` are exported in full. When
+  `--since` is **present**: topics with `created_at` or `updated_at` >= the
+  cutoff, plus redirects whose `to_slug` is one of those topics, plus citations
+  whose `topic_slug` is one of those topics.
+
+## Direct (local / datahub) import
 
 ```bash
 rivetos memory import mem.ndjson.gz
 rivetos memory import mem.ndjson.gz --dry-run
 ```
 
-Streaming gunzip → header check → batches of 500 per table:
+Streaming `pipeline(source, gunzip)` so a missing file or truncated gzip
+rejects the import (not an unhandled source error). Header check, then batches
+of 500 per table.
+
+Each batch is grouped by the **exact present column set**. One `INSERT` per
+shape names only those columns, so omitted keys take SQL defaults. An explicit
+JSON `null` is a present key and is inserted as NULL. Empty column sets use
+`DEFAULT VALUES`.
 
 ```sql
-INSERT INTO <t> (<cols>)
-SELECT <cols> FROM json_populate_recordset(NULL::<t>, $1::json)
+INSERT INTO <t> (<present-cols>)
+SELECT <present-cols> FROM json_populate_recordset(NULL::<t>, $1::json)
 ON CONFLICT DO NOTHING
 ```
 
-Unknown columns in a row are ignored (forward-compat). Before messages:
-`SET rivet.defer_embed_enqueue = on` so the insert trigger does not enqueue
-one embed job per row. After the file: one
-`graphile_worker.add_job('enqueue-unembedded', '{}')` **if** the
-`graphile_worker` schema exists (`pg_namespace`). Local-mode databases may
+Unknown columns in a row are ignored (forward-compat).
+
+Each messages and summaries batch runs in `BEGIN` … `COMMIT` with
+`SET LOCAL rivet.defer_embed_enqueue = on` so the insert trigger does not
+enqueue one embed job per row, the GUC does not leak to later pool borrowers,
+and a summaries-only dump still defers. Failure `ROLLBACK`s that batch.
+
+**Summaries** are two-pass (same as the cloud API importer): insert with
+`parent_id` omitted (NULL), then `UPDATE` parent links after every summary in
+the file is present. Unresolved parent ids (child inserted, parent missing) are
+counted on the result as `unresolvedParentLinks`.
+
+After the file: one `graphile_worker.add_job('enqueue-unembedded', '{}')` **if**
+the `graphile_worker` schema exists (`pg_namespace`). Local-mode databases may
 not have it yet — import then prints a hint and skips the enqueue.
 
 `--dry-run` parses and validates the file without writing.
@@ -126,15 +203,15 @@ Not in the dump: `ros_message_chunks` (rebuilt by the embed worker),
 
 The same format is used by the cloud API (`GET/POST /api/t/:slug/export|import`).
 A file exported from local mode (PGlite, PG18 schema identical) imports into
-the cloud and vice versa.
+the cloud (via `rivetos cloud import`) and vice versa.
 
 ## Local ↔ cloud portability
 
-| Direction     | How                                                                                                                                                                                              |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Local → cloud | `rivetos memory export --out dump.ndjson.gz` against the laptop `RIVETOS_PG_URL`, then `rivetos memory import dump.ndjson.gz` after `rivetos cloud connect …` (or the dashboard Import control). |
-| Cloud → local | Export from the dashboard or `rivetos memory export` while pointed at the cloud URL, then import into the local store.                                                                           |
-| Cloud → cloud | Same file; `ON CONFLICT DO NOTHING` so a re-import is idempotent.                                                                                                                                |
+| Direction     | How                                                                                                                                                             |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local → cloud | `rivetos memory export --out dump.ndjson.gz` against the laptop `RIVETOS_PG_URL`, then `rivetos cloud import dump.ndjson.gz` (or the dashboard Import control). |
+| Cloud → local | `rivetos cloud export --out dump.ndjson.gz`, then `rivetos memory import dump.ndjson.gz` into the local store.                                                  |
+| Cloud → cloud | Same file through `rivetos cloud import`; `ON CONFLICT DO NOTHING` so a re-import is idempotent.                                                                |
 
 Embeddings are always rebuilt at the destination. After import, wait for the
 embed worker (`enqueue-unembedded`) before hybrid search is complete; FTS and
