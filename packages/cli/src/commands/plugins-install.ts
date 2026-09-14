@@ -104,6 +104,11 @@ export interface PluginsInstallDeps {
    * in ~/.hermes/.env. Ordinary `plugins install` leaves a nonempty URL alone.
    */
   overrideEnv?: boolean
+  /**
+   * Env file `cloud connect` just wrote. When set, source PG/embed URLs from
+   * this path instead of guessing `$RIVETOS_ENV_FILE` vs `~/.rivetos/.env`.
+   */
+  envFile?: string
 }
 
 /** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
@@ -239,8 +244,13 @@ function nonemptyEnv(value: string | undefined): string | undefined {
 }
 
 /** Source env value: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
-export function sourceEnvValue(home: string, key: string): string | undefined {
-  const envFile = process.env.RIVETOS_ENV_FILE || join(home, '.rivetos', '.env')
+export function sourceEnvValue(
+  home: string,
+  key: string,
+  envFilePath?: string,
+): string | undefined {
+  const envFile =
+    envFilePath?.trim() || process.env.RIVETOS_ENV_FILE?.trim() || join(home, '.rivetos', '.env')
   const fromFile = existsSync(envFile)
     ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), key))
     : undefined
@@ -248,8 +258,8 @@ export function sourceEnvValue(home: string, key: string): string | undefined {
 }
 
 /** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
-export function sourcePgUrl(home: string): string | undefined {
-  return sourceEnvValue(home, 'RIVETOS_PG_URL')
+export function sourcePgUrl(home: string, envFilePath?: string): string | undefined {
+  return sourceEnvValue(home, 'RIVETOS_PG_URL', envFilePath)
 }
 
 export function planPluginsInstall(harnesses: DetectedHarness[], root: string): InstallAction[] {
@@ -1072,6 +1082,7 @@ async function installHermes(
   dryRun: boolean,
   force: boolean,
   overrideEnv = false,
+  envFile?: string,
 ): Promise<{ ok: boolean; detail: string }> {
   if (dryRun) {
     return {
@@ -1118,8 +1129,10 @@ async function installHermes(
   const before = existsSync(hermesEnv) ? readFileSync(hermesEnv, 'utf-8') : ''
   const existing = readEnvKey(before, 'RIVETOS_PG_URL')
   const destNonEmpty = existing && existing.length > 0 ? existing : undefined
-  const pgUrl = overrideEnv ? sourcePgUrl(home) : (destNonEmpty ?? sourcePgUrl(home))
-  const embedUrl = sourceEnvValue(home, 'RIVETOS_EMBED_URL')
+  const pgUrl = overrideEnv
+    ? sourcePgUrl(home, envFile)
+    : (destNonEmpty ?? sourcePgUrl(home, envFile))
+  const embedUrl = sourceEnvValue(home, 'RIVETOS_EMBED_URL', envFile)
   if (overrideEnv) {
     if (pgUrl) {
       const vars: Record<string, string> = { RIVETOS_PG_URL: pgUrl }
@@ -1250,6 +1263,7 @@ export async function runPluginsInstall(
             false,
             parsed.force,
             deps.overrideEnv === true,
+            deps.envFile,
           )
           break
         case 'opencode':

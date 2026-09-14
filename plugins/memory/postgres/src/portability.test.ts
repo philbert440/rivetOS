@@ -214,6 +214,15 @@ describe('column lists', () => {
     }
   })
 
+  it('omits terminal embed columns so importers re-embed', () => {
+    for (const table of ['ros_messages', 'ros_summaries', 'ros_wiki_topics'] as const) {
+      expect(EXPORT_COLUMNS[table]).not.toContain('embed_status')
+      expect(EXPORT_COLUMNS[table]).not.toContain('embed_error')
+      expect(EXPORT_COLUMNS[table]).not.toContain('embed_failures')
+      expect(EXPORT_COLUMNS[table]).not.toContain('embedded_at')
+    }
+  })
+
   it('includes columns added after the baseline', () => {
     expect(ROS_CONVERSATIONS_COLUMNS).toContain('task_id')
     expect(ROS_CONVERSATIONS_COLUMNS).toContain('owner_user_id')

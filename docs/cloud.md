@@ -19,8 +19,10 @@ RIVETOS_EMBED_MODEL=qwen3-embedding-0.6b
 RIVETOS_CLOUD_TOKEN=<tenant_token>
 ```
 
-(`sslmode=require` is mandatory. node-pg verifies against system CAs. Do not
-add `sslrootcert=system` — node-pg ENOENTs on that parameter.)
+(`sslmode` must be `require`, `verify-ca`, or `verify-full`. `disable`,
+`allow`, `prefer`, and a missing sslmode are rejected. node-pg verifies
+against system CAs. Do not add `sslrootcert=system` — node-pg ENOENTs on
+that parameter.)
 
 ```bash
 rivetos cloud connect 'postgres://tenant_demo:…@rivetos.cloud:5432/tenant_demo?sslmode=require' \
@@ -30,12 +32,14 @@ rivetos cloud connect 'postgres://tenant_demo:…@rivetos.cloud:5432/tenant_demo
 
 What it does:
 
-1. Validates the Postgres URL (`postgres` / `postgresql`, must include
-   `sslmode=`) and that the embed URL is `https`.
+1. Validates the Postgres URL (`postgres` / `postgresql`, `sslmode` of
+   `require` / `verify-ca` / `verify-full`) and that the embed URL is `https`.
 2. Upserts `RIVETOS_PG_URL`, `RIVETOS_EMBED_URL`, `RIVETOS_EMBED_MODEL`, and
-   (when `--token` is passed) `RIVETOS_CLOUD_TOKEN` into `~/.rivetos/.env`
-   (created `0600` if missing; existing files are chmod'd `0600` even when
-   contents do not change; other keys kept).
+   (when `--token` is passed) `RIVETOS_CLOUD_TOKEN` into `$RIVETOS_ENV_FILE`
+   if set, otherwise `~/.rivetos/.env` (created `0600` if missing; existing
+   files are chmod'd `0600` even when contents do not change; other keys
+   kept). The same path is passed to `plugins install` so a custom env file
+   cannot keep old credentials.
 3. Smokes **before** installing hooks: `SELECT count(*) FROM ros_messages` and
    one `POST <embed-url>/v1/embeddings` with `{input:"ping", model}` expecting
    a 1024-d vector.
@@ -214,10 +218,14 @@ Line 1 is the header:
 ```
 
 Following lines are `{"t":"<table>","r":{…}}` in that table order (FK-safe).
-Every non-generated, non-vector column of migrations 0001–0016 is included.
-**Omitted:** `embedding` and generated tsvector columns (`content_tsv`).
-Importers re-embed. Timestamps are ISO-8601, UUIDs are strings, jsonb is
-objects.
+Every non-generated, non-vector column of migrations 0001–0016 is included
+except embed bookkeeping.
+**Omitted:** `embedding`, generated tsvector columns (`content_tsv`), and
+`embed_status` / `embed_error` / `embed_failures` (and any `embedded_at`-style
+column) on `ros_messages`, `ros_summaries`, and `ros_wiki_topics`. Importers
+get SQL defaults (NULL status) and re-embed; terminal status in a dump would
+skip `enqueue-unembedded`. Timestamps are ISO-8601, UUIDs are strings, jsonb
+is objects.
 
 Not in the dump: `ros_message_chunks` (rebuilt by the embed worker),
 `ros_tasks`, wiki provenance/extraction tables.

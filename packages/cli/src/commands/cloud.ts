@@ -15,15 +15,15 @@ import { stat } from 'node:fs/promises'
 import type { IncomingMessage, ClientRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
-import type { Readable, Writable } from 'node:stream'
+import { Transform, type Readable, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
 import { defaultRivetEnvPath, formatEnvDiff, loadRivetEnv, upsertEnvVars } from '../lib/env-file.js'
 import { parseInstallArgs, runPluginsInstall, type HarnessInstallEvent } from './plugins-install.js'
 
 export const DEFAULT_EMBED_MODEL = 'qwen3-embedding-0.6b'
-export const SSLMODE_REQUIRED_MSG = 'cloud URLs must include sslmode=require'
+export const SSLMODE_REQUIRED_MSG =
+  'cloud URLs must set sslmode to require, verify-ca, or verify-full'
 export const NEXT_STEP = 'next: open your harness and run one turn; then use the memory_search tool'
 export const CLOUD_TOKEN_ENV = 'RIVETOS_CLOUD_TOKEN'
 export const CLOUD_IMPORT_HINT =
@@ -216,7 +216,8 @@ export function validatePgUrl(raw: string): URL {
   if (parsed.protocol !== 'postgres:' && parsed.protocol !== 'postgresql:') {
     throw new Error('cloud URL scheme must be postgres or postgresql')
   }
-  if (!raw.includes('sslmode=')) {
+  const sslmode = parsed.searchParams.get('sslmode')
+  if (sslmode !== 'require' && sslmode !== 'verify-ca' && sslmode !== 'verify-full') {
     throw new Error(SSLMODE_REQUIRED_MSG)
   }
   return parsed
@@ -423,7 +424,8 @@ export async function runCloudConnect(
   void flags.yes
 
   const home = deps.home ?? homedir()
-  const envPath = deps.envPath ?? join(home, '.rivetos', '.env')
+  // Same file plugins-install reads: $RIVETOS_ENV_FILE, else ~/.rivetos/.env.
+  const envPath = deps.envPath ?? defaultRivetEnvPath()
   const vars: Record<string, string> = {
     RIVETOS_PG_URL: flags.pgUrl,
     RIVETOS_EMBED_URL: flags.embedUrl,
@@ -475,6 +477,7 @@ export async function runCloudConnect(
       home,
       onHarness: (event) => harnessEvents.push(event),
       overrideEnv: true,
+      envFile: envPath,
     })
   } catch (err) {
     installErr = err as Error
@@ -615,25 +618,43 @@ function chunkByteLength(chunk: string | Buffer | Uint8Array): number {
   return chunk.length
 }
 
-function attachIdleGuard(res: IncomingMessage, req: ClientRequest): void {
-  let timer: ReturnType<typeof setTimeout> | undefined
+/**
+ * Socket inactivity timeout only — never a `data` listener. Attaching `data`
+ * before the caller pipes/iterates the response puts IncomingMessage in
+ * flowing mode and can drain buffered bytes before the consumer attaches.
+ */
+export function attachIdleGuard(res: IncomingMessage, req: ClientRequest): void {
+  res.setTimeout(CLOUD_TRANSFER_IDLE_TIMEOUT_MS, () => {
+    req.destroy(new Error('cloud transfer idle timeout'))
+  })
   const clear = (): void => {
-    if (timer !== undefined) {
-      clearTimeout(timer)
-      timer = undefined
-    }
+    res.setTimeout(0)
   }
-  const kick = (): void => {
-    clear()
-    timer = setTimeout(() => {
-      req.destroy(new Error('cloud transfer idle timeout'))
-    }, CLOUD_TRANSFER_IDLE_TIMEOUT_MS)
-  }
-  res.on('data', kick)
   res.on('end', clear)
   res.on('close', clear)
   res.on('error', clear)
-  kick()
+}
+
+function transferProgressTransform(log: (message: string) => void, label: string): Transform {
+  let received = 0
+  let lastLogged = 0
+  return new Transform({
+    transform(chunk: Buffer | string, _enc, cb) {
+      if (typeof chunk === 'string' || chunk instanceof Uint8Array) {
+        received += chunkByteLength(chunk)
+      }
+      if (received - lastLogged >= TRANSFER_PROGRESS_EVERY) {
+        lastLogged = received
+        logTransferProgress(log, label, received)
+      }
+      this.push(chunk)
+      cb()
+    },
+    flush(cb) {
+      logTransferProgress(log, label, received)
+      cb()
+    },
+  })
 }
 
 async function readStreamUtf8(stream: Readable): Promise<string> {
@@ -706,23 +727,9 @@ export async function runCloudExport(args: string[], deps: CloudDeps = {}): Prom
     const body = await readStreamUtf8(res.stream).catch(() => '')
     throw new Error(formatCloudHttpError('cloud export', res.statusCode, body))
   }
-  let received = 0
-  let lastLogged = 0
-  const reportProgress = flags.out !== undefined
-  res.stream.on('data', (chunk) => {
-    if (typeof chunk === 'string' || chunk instanceof Uint8Array) {
-      received += chunkByteLength(chunk)
-    }
-    if (!reportProgress || received - lastLogged < TRANSFER_PROGRESS_EVERY) return
-    lastLogged = received
-    logTransferProgress(log, 'cloud export', received)
-  })
-  res.stream.on('end', () => {
-    if (reportProgress) logTransferProgress(log, 'cloud export', received)
-  })
   if (flags.out) {
     const dest = createWriteStream(flags.out, { mode: 0o600 })
-    await pipeline(res.stream, dest)
+    await pipeline(res.stream, transferProgressTransform(log, 'cloud export'), dest)
   } else {
     await pipeline(res.stream, stdout, { end: false })
   }

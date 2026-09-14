@@ -2,8 +2,13 @@
  * Explicit NDJSON v1 column lists for memory export/import.
  *
  * Derived from schema/migrations/0001–0016. Omit `embedding` (re-embedded on
- * import) and generated columns (`content_tsv`). Each column comments the
- * migration that introduced it.
+ * import) and generated columns (`content_tsv`). Also omit terminal embed
+ * bookkeeping (`embed_status`, `embed_error`, `embed_failures`, and any
+ * `embedded_at`-style column) from messages, summaries, wiki, and chunks —
+ * `enqueue-unembedded` selects only NULL status, so imported failed rows
+ * would never retry. Importers get DB defaults (NULL) and re-embed.
+ * `ros_message_chunks` is not in the dump (rebuilt by the embed worker).
+ * Each remaining column comments the migration that introduced it.
  */
 
 export const EXPORT_TABLES = [
@@ -35,7 +40,7 @@ export const ROS_CONVERSATIONS_COLUMNS = [
   'owner_user_id', // 0013_owner_user_id
 ] as const
 
-/** ros_messages — 0001_baseline + 0013_owner_user_id + 0014_chunks; omit embedding, content_tsv */
+/** ros_messages — 0001_baseline + 0013_owner_user_id + 0014_chunks; omit embedding, content_tsv, embed_* */
 export const ROS_MESSAGES_COLUMNS = [
   'id', // 0001_baseline
   'conversation_id', // 0001_baseline
@@ -50,14 +55,11 @@ export const ROS_MESSAGES_COLUMNS = [
   'access_count', // 0001_baseline
   'last_accessed_at', // 0001_baseline
   'created_at', // 0001_baseline
-  'embed_failures', // 0001_baseline
-  'embed_error', // 0001_baseline
-  'embed_status', // 0001_baseline
   'owner_user_id', // 0013_owner_user_id
   'content_hash', // 0014_chunks
 ] as const
 
-/** ros_summaries — 0001_baseline; omit embedding, content_tsv */
+/** ros_summaries — 0001_baseline; omit embedding, content_tsv, embed_* */
 export const ROS_SUMMARIES_COLUMNS = [
   'id', // 0001_baseline
   'conversation_id', // 0001_baseline
@@ -72,10 +74,7 @@ export const ROS_SUMMARIES_COLUMNS = [
   'access_count', // 0001_baseline
   'last_accessed_at', // 0001_baseline
   'created_at', // 0001_baseline
-  'embed_failures', // 0001_baseline
-  'embed_error', // 0001_baseline
   'pipeline_version', // 0001_baseline
-  'embed_status', // 0001_baseline
 ] as const
 
 /** ros_summary_sources — 0001_baseline */
@@ -85,7 +84,7 @@ export const ROS_SUMMARY_SOURCES_COLUMNS = [
   'ordinal', // 0001_baseline
 ] as const
 
-/** ros_wiki_topics — 0005_wiki + 0007_wiki_article; omit embedding, content_tsv */
+/** ros_wiki_topics — 0005_wiki + 0007_wiki_article; omit embedding, content_tsv, embed_* */
 export const ROS_WIKI_TOPICS_COLUMNS = [
   'slug', // 0005_wiki
   'title', // 0005_wiki
@@ -94,9 +93,6 @@ export const ROS_WIKI_TOPICS_COLUMNS = [
   'entities', // 0005_wiki
   'current_state', // 0005_wiki
   'search_text', // 0005_wiki
-  'embed_status', // 0005_wiki
-  'embed_failures', // 0005_wiki
-  'embed_error', // 0005_wiki
   'history_count', // 0005_wiki
   'git_sha', // 0005_wiki
   'last_verified_at', // 0005_wiki

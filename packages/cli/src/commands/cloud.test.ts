@@ -1,4 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { IncomingMessage } from 'node:http'
+import { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -8,6 +10,7 @@ import {
   DEFAULT_EMBED_MODEL,
   NEXT_STEP,
   SSLMODE_REQUIRED_MSG,
+  attachIdleGuard,
   cloudExportApiUrl,
   cloudImportApiUrl,
   describePgUrl,
@@ -38,7 +41,7 @@ afterEach(() => {
 })
 
 describe('validatePgUrl', () => {
-  it('accepts postgres and postgresql with sslmode=', () => {
+  it('accepts postgres and postgresql with sslmode=require', () => {
     expect(validatePgUrl(PG).hostname).toBe('rivetos.cloud')
     expect(
       validatePgUrl('postgresql://tenant_demo:x@203.0.113.10:5432/tenant_demo?sslmode=require')
@@ -46,10 +49,35 @@ describe('validatePgUrl', () => {
     ).toBe('203.0.113.10')
   })
 
-  it('rejects a missing sslmode with the specified message', () => {
+  it('accepts sslmode verify-ca and verify-full', () => {
+    expect(
+      validatePgUrl(
+        'postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode=verify-ca',
+      ).searchParams.get('sslmode'),
+    ).toBe('verify-ca')
+    expect(
+      validatePgUrl(
+        'postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode=verify-full',
+      ).searchParams.get('sslmode'),
+    ).toBe('verify-full')
+  })
+
+  it('rejects missing, disable, allow, prefer, and empty sslmode', () => {
     expect(() => validatePgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo')).toThrow(
       SSLMODE_REQUIRED_MSG,
     )
+    expect(() =>
+      validatePgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode=disable'),
+    ).toThrow(SSLMODE_REQUIRED_MSG)
+    expect(() =>
+      validatePgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode=allow'),
+    ).toThrow(SSLMODE_REQUIRED_MSG)
+    expect(() =>
+      validatePgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode=prefer'),
+    ).toThrow(SSLMODE_REQUIRED_MSG)
+    expect(() =>
+      validatePgUrl('postgres://tenant_demo:x@rivetos.cloud:5432/tenant_demo?sslmode='),
+    ).toThrow(SSLMODE_REQUIRED_MSG)
   })
 
   it('rejects a non-postgres scheme and an unparseable URL', () => {
@@ -209,8 +237,12 @@ describe('runCloudConnect', () => {
     expect(smokeDb).toHaveBeenCalledWith(PG)
     expect(smokeEmbed).toHaveBeenCalledWith(EMBED, DEFAULT_EMBED_MODEL)
     expect(runInstall).toHaveBeenCalled()
-    const installDeps = runInstall.mock.calls[0]?.[1] as { overrideEnv?: boolean }
+    const installDeps = runInstall.mock.calls[0]?.[1] as {
+      overrideEnv?: boolean
+      envFile?: string
+    }
     expect(installDeps.overrideEnv).toBe(true)
+    expect(installDeps.envFile).toBe(envPath)
     expect(checklist.db).toEqual({ ok: true, messages: 7 })
     expect(logs.join('\n')).toContain('DB ok (7 messages)')
     expect(logs.join('\n')).toContain('grok-build: installed')
@@ -267,6 +299,30 @@ describe('runCloudConnect', () => {
       log: () => undefined,
     })
     expect(readFileSync(envPath, 'utf8')).toContain('RIVETOS_CLOUD_TOKEN=tok_live')
+  })
+
+  it('writes $RIVETOS_ENV_FILE when set and passes that path to plugins-install', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cloud-envfile-'))
+    tmpDirs.push(dir)
+    const custom = join(dir, 'custom.env')
+    const prev = process.env.RIVETOS_ENV_FILE
+    process.env.RIVETOS_ENV_FILE = custom
+    const runInstall = vi.fn(async () => undefined)
+    try {
+      await runCloudConnect([PG, '--embed-url', EMBED], {
+        home: dir,
+        smokeDb: async () => ({ ok: true, messages: 0 }),
+        smokeEmbed: async () => ({ ok: true, dims: 1024 }),
+        runInstall: runInstall as never,
+        log: () => undefined,
+      })
+      expect(readFileSync(custom, 'utf8')).toContain(`RIVETOS_PG_URL=${PG}`)
+      const installDeps = runInstall.mock.calls[0]?.[1] as { envFile?: string }
+      expect(installDeps.envFile).toBe(custom)
+    } finally {
+      if (prev === undefined) delete process.env.RIVETOS_ENV_FILE
+      else process.env.RIVETOS_ENV_FILE = prev
+    }
   })
 })
 
@@ -370,6 +426,41 @@ describe('runCloudExport / runCloudImport', () => {
         log: () => undefined,
       }),
     ).rejects.toThrow(/committed.*orphan_messages/)
+  })
+})
+
+describe('attachIdleGuard', () => {
+  it('delivers a 12-byte body pushed on nextTick after resolve to the consumer', async () => {
+    const socket = new Socket()
+    socket.on('error', () => undefined)
+    const res = new IncomingMessage(socket)
+    const req = { destroy: vi.fn() }
+    attachIdleGuard(res, req as never)
+
+    const ready = Promise.resolve(res)
+    const stream = await ready
+    const body = Buffer.from('0123456789AB')
+    expect(body.length).toBe(12)
+    process.nextTick(() => {
+      stream.push(body)
+      stream.push(null)
+    })
+    // Push on nextTick after resolve, before this consumer would attach if
+    // the idle guard had already switched the stream to flowing mode.
+    await new Promise<void>((resolve) => {
+      process.nextTick(resolve)
+    })
+    try {
+      const chunks: Buffer[] = []
+      for await (const chunk of stream) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      }
+      expect(Buffer.concat(chunks)).toEqual(body)
+    } finally {
+      res.setTimeout(0)
+      socket.setTimeout(0)
+      socket.destroy()
+    }
   })
 })
 

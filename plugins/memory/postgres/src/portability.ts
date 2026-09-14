@@ -841,7 +841,14 @@ export async function importMemory(
         })()
 
         piped = pipeline(input, gunzip)
+        // Observe immediately so a gzip/source failure during a pending SQL
+        // await cannot become an unhandled rejection (S2).
+        let pipelineError: unknown
+        void piped.catch((err: unknown) => {
+          pipelineError = err
+        })
         const result = await consume
+        if (pipelineError !== undefined) throw pipelineError
         await piped
         return result
       } catch (err) {
