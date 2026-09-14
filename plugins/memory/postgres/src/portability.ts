@@ -73,8 +73,16 @@ WHERE (session_key, agent) IN (
 export const EXISTING_CONVERSATION_IDS_SQL =
   'SELECT id FROM ros_conversations WHERE id = ANY($1::uuid[])'
 
-function conversationPairKey(sessionKey: unknown, agent: unknown): string {
-  return `${String(sessionKey)}\0${String(agent)}`
+function asText(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value)
+  }
+  return undefined
+}
+
+function conversationPairKey(sessionKey: string, agent: string): string {
+  return `${sessionKey}\0${agent}`
 }
 
 export interface PortabilityQueryResult {
@@ -427,23 +435,30 @@ export async function importMemory(
       }
 
       const resolveConversationIds = async (incoming: Record<string, unknown>[]): Promise<void> => {
-        const pairs: Array<{ session_key: unknown; agent: unknown }> = []
+        const pairs: Array<{ session_key: string; agent: string }> = []
         for (const row of incoming) {
-          if (row.session_key == null || row.agent == null) continue
-          pairs.push({ session_key: row.session_key, agent: row.agent })
+          const sessionKey = asText(row.session_key)
+          const agent = asText(row.agent)
+          if (sessionKey == null || agent == null) continue
+          pairs.push({ session_key: sessionKey, agent })
         }
         if (pairs.length === 0) return
         const res = await client.query(RESOLVE_CONVERSATIONS_SQL, [JSON.stringify(pairs)])
         const destByPair = new Map<string, string>()
         for (const row of res.rows) {
-          if (row.id == null || row.session_key == null || row.agent == null) continue
-          destByPair.set(conversationPairKey(row.session_key, row.agent), String(row.id))
+          const id = asText(row.id)
+          const sessionKey = asText(row.session_key)
+          const agent = asText(row.agent)
+          if (id == null || sessionKey == null || agent == null) continue
+          destByPair.set(conversationPairKey(sessionKey, agent), id)
         }
         for (const row of incoming) {
-          if (row.id == null || row.session_key == null || row.agent == null) continue
-          const destId = destByPair.get(conversationPairKey(row.session_key, row.agent))
+          const srcId = asText(row.id)
+          const sessionKey = asText(row.session_key)
+          const agent = asText(row.agent)
+          if (srcId == null || sessionKey == null || agent == null) continue
+          const destId = destByPair.get(conversationPairKey(sessionKey, agent))
           if (destId == null) continue
-          const srcId = String(row.id)
           conversationIdMap.set(srcId, destId)
           if (srcId !== destId) merged.ros_conversations += 1
         }
@@ -460,8 +475,8 @@ export async function importMemory(
         if (unknown.length === 0) return
         const found = await client.query(EXISTING_CONVERSATION_IDS_SQL, [unknown])
         for (const row of found.rows) {
-          if (row.id == null) continue
-          const id = String(row.id)
+          const id = asText(row.id)
+          if (id == null) continue
           conversationIdMap.set(id, id)
         }
       }
@@ -471,8 +486,9 @@ export async function importMemory(
       ): Promise<Record<string, unknown>[]> => {
         const pending: string[] = []
         for (const row of rows) {
-          if (row.conversation_id == null) continue
-          pending.push(String(row.conversation_id))
+          const cid = asText(row.conversation_id)
+          if (cid == null) continue
+          pending.push(cid)
         }
         await ensureMappedConversationIds(pending)
         const keep: Record<string, unknown>[] = []
@@ -481,7 +497,8 @@ export async function importMemory(
             keep.push(row)
             continue
           }
-          const dest = conversationIdMap.get(String(row.conversation_id))
+          const src = asText(row.conversation_id)
+          const dest = src == null ? undefined : conversationIdMap.get(src)
           if (dest == null) {
             skipped.orphan_messages += 1
             continue
@@ -497,13 +514,15 @@ export async function importMemory(
       ): Promise<void> => {
         const pending: string[] = []
         for (const row of rows) {
-          if (row.conversation_id == null) continue
-          pending.push(String(row.conversation_id))
+          const cid = asText(row.conversation_id)
+          if (cid == null) continue
+          pending.push(cid)
         }
         await ensureMappedConversationIds(pending)
         for (const row of rows) {
           if (row.conversation_id == null) continue
-          const dest = conversationIdMap.get(String(row.conversation_id))
+          const src = asText(row.conversation_id)
+          const dest = src == null ? undefined : conversationIdMap.get(src)
           if (dest == null) {
             // Nullable FK — drop the dangling id rather than 500.
             delete row.conversation_id
@@ -543,8 +562,9 @@ export async function importMemory(
         const parentById = new Map<string, unknown>()
         if (table === 'ros_summaries') {
           for (const row of rows) {
-            if (row.parent_id != null && row.id != null) {
-              parentById.set(String(row.id), row.parent_id)
+            const id = asText(row.id)
+            if (row.parent_id != null && id != null) {
+              parentById.set(id, row.parent_id)
             }
             delete row.parent_id
           }
@@ -569,7 +589,8 @@ export async function importMemory(
 
         if (table === 'ros_summaries') {
           for (const id of insertedIds) {
-            const parentId = parentById.get(String(id))
+            const key = asText(id)
+            const parentId = key == null ? undefined : parentById.get(key)
             if (parentId != null) pendingParents.push({ id, parent_id: parentId })
           }
         }

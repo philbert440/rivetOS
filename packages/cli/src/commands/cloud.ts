@@ -575,7 +575,7 @@ export async function runCloudExport(args: string[], deps: CloudDeps = {}): Prom
   const flags = parseCloudExportArgs(args)
   const stdout = deps.stdout ?? process.stdout
   const isTTY = deps.isTTY ?? (stdout as NodeJS.WriteStream).isTTY
-  if (!flags.out && Boolean(isTTY)) {
+  if (!flags.out && isTTY) {
     throw new Error('refusing to write gzip to a TTY (redirect stdout or pass --out <file>)')
   }
   loadRivetEnv(deps.envPath ?? defaultRivetEnvPath())
