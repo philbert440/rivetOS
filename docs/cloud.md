@@ -154,6 +154,17 @@ ON CONFLICT DO NOTHING
 
 Unknown columns in a row are ignored (forward-compat).
 
+`ros_conversations` also has `UNIQUE (session_key, agent)`. After each
+conversation batch the importer resolves destination ids with
+`SELECT id, session_key, agent … WHERE (session_key, agent) IN (…)` and keeps
+an `incoming id → destination id` map for the rest of the import. Messages
+are rewritten through that map before insert. A natural-key hit on a different
+id is counted in `merged.ros_conversations`. A message whose conversation is
+not in the map and does not exist in the destination is counted in
+`skipped.orphan_messages` and is not inserted. Wiki topics already merge on
+PK `slug`; summaries still conflict on `id` only (their nullable
+`conversation_id` is rewritten through the same map, or dropped if dangling).
+
 Each messages and summaries batch runs in `BEGIN` … `COMMIT` with
 `SET LOCAL rivet.defer_embed_enqueue = on` so the insert trigger does not
 enqueue one embed job per row, the GUC does not leak to later pool borrowers,

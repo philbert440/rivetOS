@@ -63,6 +63,20 @@ WHERE v.parent_id IS NOT NULL
   AND EXISTS (SELECT 1 FROM ros_summaries AS c WHERE c.id = v.id)
   AND NOT EXISTS (SELECT 1 FROM ros_summaries AS p WHERE p.id = v.parent_id)`
 
+/** Destination id for every incoming conversation, including natural-key merges. */
+export const RESOLVE_CONVERSATIONS_SQL = `SELECT id, session_key, agent FROM ros_conversations
+WHERE (session_key, agent) IN (
+  SELECT session_key, agent FROM json_to_recordset($1::json) AS v(session_key text, agent text)
+)`
+
+/** Presence check for message conversation_ids that were not in the dump map. */
+export const EXISTING_CONVERSATION_IDS_SQL =
+  'SELECT id FROM ros_conversations WHERE id = ANY($1::uuid[])'
+
+function conversationPairKey(sessionKey: unknown, agent: unknown): string {
+  return `${String(sessionKey)}\0${String(agent)}`
+}
+
 export interface PortabilityQueryResult {
   rows: Record<string, unknown>[]
   rowCount: number | null
@@ -108,6 +122,8 @@ export interface ImportOptions {
 export interface ImportResult {
   inserted: Record<string, number>
   skipped: Record<string, number>
+  /** Natural-key merges; `ros_conversations` counts (session_key, agent) remaps. */
+  merged: Record<string, number>
   enqueuedEmbeds: number
   unresolvedParentLinks: number
 }
@@ -347,8 +363,12 @@ export async function importMemory(
   const dryRun = opts.dryRun ?? false
   const inserted = emptyCounts()
   const skipped = emptyCounts()
+  skipped.orphan_messages = 0
+  const merged = emptyCounts()
   let enqueuedEmbeds = 0
   let unresolvedParentLinks = 0
+  /** incoming conversation id → destination id (equal when inserted, different when merged). */
+  const conversationIdMap = new Map<string, string>()
 
   const gunzip = createGunzip()
   const rl = createInterface({ input: gunzip, crlfDelay: Infinity })
@@ -406,6 +426,93 @@ export async function importMemory(
         }
       }
 
+      const resolveConversationIds = async (incoming: Record<string, unknown>[]): Promise<void> => {
+        const pairs: Array<{ session_key: unknown; agent: unknown }> = []
+        for (const row of incoming) {
+          if (row.session_key == null || row.agent == null) continue
+          pairs.push({ session_key: row.session_key, agent: row.agent })
+        }
+        if (pairs.length === 0) return
+        const res = await client.query(RESOLVE_CONVERSATIONS_SQL, [JSON.stringify(pairs)])
+        const destByPair = new Map<string, string>()
+        for (const row of res.rows) {
+          if (row.id == null || row.session_key == null || row.agent == null) continue
+          destByPair.set(conversationPairKey(row.session_key, row.agent), String(row.id))
+        }
+        for (const row of incoming) {
+          if (row.id == null || row.session_key == null || row.agent == null) continue
+          const destId = destByPair.get(conversationPairKey(row.session_key, row.agent))
+          if (destId == null) continue
+          const srcId = String(row.id)
+          conversationIdMap.set(srcId, destId)
+          if (srcId !== destId) merged.ros_conversations += 1
+        }
+      }
+
+      const ensureMappedConversationIds = async (ids: string[]): Promise<void> => {
+        const unknown: string[] = []
+        const seen = new Set<string>()
+        for (const id of ids) {
+          if (conversationIdMap.has(id) || seen.has(id)) continue
+          seen.add(id)
+          unknown.push(id)
+        }
+        if (unknown.length === 0) return
+        const found = await client.query(EXISTING_CONVERSATION_IDS_SQL, [unknown])
+        for (const row of found.rows) {
+          if (row.id == null) continue
+          const id = String(row.id)
+          conversationIdMap.set(id, id)
+        }
+      }
+
+      const filterAndRewriteMessages = async (
+        rows: Record<string, unknown>[],
+      ): Promise<Record<string, unknown>[]> => {
+        const pending: string[] = []
+        for (const row of rows) {
+          if (row.conversation_id == null) continue
+          pending.push(String(row.conversation_id))
+        }
+        await ensureMappedConversationIds(pending)
+        const keep: Record<string, unknown>[] = []
+        for (const row of rows) {
+          if (row.conversation_id == null) {
+            keep.push(row)
+            continue
+          }
+          const dest = conversationIdMap.get(String(row.conversation_id))
+          if (dest == null) {
+            skipped.orphan_messages += 1
+            continue
+          }
+          row.conversation_id = dest
+          keep.push(row)
+        }
+        return keep
+      }
+
+      const rewriteSummaryConversationIds = async (
+        rows: Record<string, unknown>[],
+      ): Promise<void> => {
+        const pending: string[] = []
+        for (const row of rows) {
+          if (row.conversation_id == null) continue
+          pending.push(String(row.conversation_id))
+        }
+        await ensureMappedConversationIds(pending)
+        for (const row of rows) {
+          if (row.conversation_id == null) continue
+          const dest = conversationIdMap.get(String(row.conversation_id))
+          if (dest == null) {
+            // Nullable FK — drop the dangling id rather than 500.
+            delete row.conversation_id
+          } else {
+            row.conversation_id = dest
+          }
+        }
+      }
+
       const applySummaryParentLinks = async (): Promise<void> => {
         if (dryRun || pendingParents.length === 0) {
           pendingParents = []
@@ -445,9 +552,18 @@ export async function importMemory(
 
         const insertedIds: unknown[] = []
         for (let i = 0; i < rows.length; i += IMPORT_BATCH_SIZE) {
-          const chunk = rows.slice(i, i + IMPORT_BATCH_SIZE)
+          let chunk = rows.slice(i, i + IMPORT_BATCH_SIZE)
+          if (table === 'ros_messages') {
+            chunk = await filterAndRewriteMessages(chunk)
+          } else if (table === 'ros_summaries') {
+            await rewriteSummaryConversationIds(chunk)
+          }
+          if (chunk.length === 0) continue
           for (const group of groupByPresentColumns(chunk, allowed)) {
             insertedIds.push(...(await insertGroup(table, group.cols, group.rows)))
+          }
+          if (table === 'ros_conversations') {
+            await resolveConversationIds(chunk)
           }
         }
 
@@ -503,7 +619,7 @@ export async function importMemory(
         }
       }
 
-      return { inserted, skipped, enqueuedEmbeds, unresolvedParentLinks }
+      return { inserted, skipped, merged, enqueuedEmbeds, unresolvedParentLinks }
     })
     rl.close()
     await piped

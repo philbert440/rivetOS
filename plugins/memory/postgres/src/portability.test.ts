@@ -10,6 +10,7 @@ import {
 import {
   DEFER_EMBED_GUC_SQL,
   ENQUEUE_UNEMBEDDED_SQL,
+  EXISTING_CONVERSATION_IDS_SQL,
   EXPORT_CURSOR_PAGE,
   EXPORT_TX_BEGIN_SQL,
   EXPORT_TX_COMMIT_SQL,
@@ -19,6 +20,7 @@ import {
   GRAPHILE_MISSING_HINT,
   GRAPHILE_NAMESPACE_SQL,
   IMPORT_BATCH_SIZE,
+  RESOLVE_CONVERSATIONS_SQL,
   SELECTED_SUMMARIES_CTE,
   SUMMARY_PARENT_UNRESOLVED_SQL,
   SUMMARY_PARENT_UPDATE_SQL,
@@ -383,6 +385,9 @@ describe('importMemory', () => {
 
     const { pool, calls } = recordedPool((sql) => {
       if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [{ '?column?': 1 }], rowCount: 1 }
+      if (sql === RESOLVE_CONVERSATIONS_SQL) {
+        return { rows: [{ id: 'c1', session_key: 's', agent: 'grok' }], rowCount: 1 }
+      }
       if (sql.includes('INSERT INTO ros_messages')) {
         const payload = JSON.parse(
           String(calls[calls.length - 1]?.params?.[0] ?? '[]'),
@@ -426,7 +431,10 @@ describe('importMemory', () => {
     expect(result.inserted.ros_conversations).toBe(1)
     expect(result.inserted.ros_messages).toBe(IMPORT_BATCH_SIZE)
     expect(result.skipped.ros_messages).toBe(1)
+    expect(result.merged.ros_conversations).toBe(0)
+    expect(result.skipped.orphan_messages).toBe(0)
     expect(result.unresolvedParentLinks).toBe(0)
+    expect(sqls).toContain(RESOLVE_CONVERSATIONS_SQL)
   })
 
   it('groups mixed column shapes into one INSERT per shape and preserves explicit null', async () => {
@@ -683,5 +691,125 @@ describe('importMemory', () => {
     const input = ndjsonGzip([{ type: 'nope', version: 1 }])
     const { pool } = recordedPool(() => ({ rows: [], rowCount: 0 }))
     await expect(importMemory(pool, input)).rejects.toThrow(/invalid rivet-memory-export/)
+  })
+
+  it('merges conversations on (session_key, agent) and rewrites message conversation_id', async () => {
+    const destId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    const incomingId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    const dest = {
+      conversations: [{ id: destId, session_key: 'S', agent: 'A' }],
+      messages: [] as Array<Record<string, unknown>>,
+    }
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_conversations',
+        r: { id: incomingId, session_key: 'S', agent: 'A', channel: 'unknown' },
+      },
+      {
+        t: 'ros_messages',
+        r: {
+          id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+          conversation_id: incomingId,
+          agent: 'A',
+          channel: 'unknown',
+          role: 'user',
+          content: 'hello',
+        },
+      },
+    ])
+    const { pool, calls } = recordedPool((sql, params) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql === RESOLVE_CONVERSATIONS_SQL) {
+        const pairs = JSON.parse(String(params?.[0] ?? '[]')) as Array<{
+          session_key: string
+          agent: string
+        }>
+        const rows = dest.conversations.filter((c) =>
+          pairs.some((p) => p.session_key === c.session_key && p.agent === c.agent),
+        )
+        return { rows, rowCount: rows.length }
+      }
+      if (sql === EXISTING_CONVERSATION_IDS_SQL) {
+        const want = new Set((params?.[0] as string[] | undefined)?.map(String) ?? [])
+        const rows = dest.conversations.filter((c) => want.has(c.id)).map((c) => ({ id: c.id }))
+        return { rows, rowCount: rows.length }
+      }
+      if (sql.includes('INSERT INTO ros_conversations')) {
+        const payload = JSON.parse(String(params?.[0] ?? '[]')) as Array<{
+          id: string
+          session_key: string
+          agent: string
+        }>
+        let wrote = 0
+        for (const row of payload) {
+          const conflict = dest.conversations.some(
+            (c) => c.id === row.id || (c.session_key === row.session_key && c.agent === row.agent),
+          )
+          if (!conflict) {
+            dest.conversations.push(row)
+            wrote += 1
+          }
+        }
+        return { rows: [], rowCount: wrote }
+      }
+      if (sql.includes('INSERT INTO ros_messages')) {
+        const payload = JSON.parse(String(params?.[0] ?? '[]')) as Array<Record<string, unknown>>
+        for (const row of payload) {
+          const cid = String(row.conversation_id)
+          if (!dest.conversations.some((c) => c.id === cid)) {
+            throw new Error('ros_messages_conversation_id_fkey')
+          }
+          dest.messages.push(row)
+        }
+        return { rows: [], rowCount: payload.length }
+      }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    const result = await importMemory(pool, input, { log: () => undefined })
+    expect(result.merged.ros_conversations).toBe(1)
+    expect(result.inserted.ros_conversations).toBe(0)
+    expect(result.skipped.ros_conversations).toBe(1)
+    expect(result.inserted.ros_messages).toBe(1)
+    expect(result.skipped.orphan_messages).toBe(0)
+    expect(dest.messages).toHaveLength(1)
+    expect(dest.messages[0]?.conversation_id).toBe(destId)
+    expect(calls.some((c) => c.sql === RESOLVE_CONVERSATIONS_SQL)).toBe(true)
+    expect(RESOLVE_CONVERSATIONS_SQL).toContain(
+      'SELECT id, session_key, agent FROM ros_conversations',
+    )
+    expect(RESOLVE_CONVERSATIONS_SQL).toContain('WHERE (session_key, agent) IN')
+  })
+
+  it('counts messages whose conversation is neither mapped nor present as orphan_messages', async () => {
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_messages',
+        r: {
+          id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+          conversation_id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+          agent: 'A',
+          channel: 'unknown',
+          role: 'user',
+          content: 'orphan',
+        },
+      },
+    ])
+    const { pool, calls } = recordedPool((sql) => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql === EXISTING_CONVERSATION_IDS_SQL) return { rows: [], rowCount: 0 }
+      if (sql.includes('INSERT INTO ros_messages')) {
+        throw new Error('ros_messages_conversation_id_fkey')
+      }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    })
+    const result = await importMemory(pool, input, { log: () => undefined })
+    expect(result.skipped.orphan_messages).toBe(1)
+    expect(result.inserted.ros_messages).toBe(0)
+    expect(calls.some((c) => c.sql.includes('INSERT INTO ros_messages'))).toBe(false)
+    expect(calls.some((c) => c.sql === EXISTING_CONVERSATION_IDS_SQL)).toBe(true)
   })
 })
