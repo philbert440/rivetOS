@@ -622,13 +622,16 @@ function chunkByteLength(chunk: string | Buffer | Uint8Array): number {
  * Socket inactivity timeout only — never a `data` listener. Attaching `data`
  * before the caller pipes/iterates the response puts IncomingMessage in
  * flowing mode and can drain buffered bytes before the consumer attaches.
+ * IncomingMessage.setTimeout reads `this.socket` with no null check; Node
+ * detaches the socket on end, so skip when it is already gone.
  */
 export function attachIdleGuard(res: IncomingMessage, req: ClientRequest): void {
-  res.setTimeout(CLOUD_TRANSFER_IDLE_TIMEOUT_MS, () => {
+  const onIdle = (): void => {
     req.destroy(new Error('cloud transfer idle timeout'))
-  })
+  }
+  if (res.socket) res.setTimeout(CLOUD_TRANSFER_IDLE_TIMEOUT_MS, onIdle)
   const clear = (): void => {
-    res.setTimeout(0)
+    if (res.socket) res.setTimeout(0)
   }
   res.on('end', clear)
   res.on('close', clear)

@@ -457,10 +457,25 @@ describe('attachIdleGuard', () => {
       }
       expect(Buffer.concat(chunks)).toEqual(body)
     } finally {
-      res.setTimeout(0)
+      if (res.socket) res.setTimeout(0)
       socket.setTimeout(0)
       socket.destroy()
     }
+  })
+
+  it('does not throw when IncomingMessage.socket is null after end', () => {
+    const socket = new Socket()
+    socket.on('error', () => undefined)
+    const res = new IncomingMessage(socket)
+    const req = { destroy: vi.fn() }
+    attachIdleGuard(res, req as never)
+    // Node detaches the socket before/as 'end' fires (node:_http_incoming).
+    Object.defineProperty(res, 'socket', { configurable: true, value: null })
+    expect(() => {
+      res.emit('end')
+      res.emit('close')
+    }).not.toThrow()
+    socket.destroy()
   })
 })
 
