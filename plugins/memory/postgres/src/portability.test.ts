@@ -8,6 +8,9 @@ import {
   ROS_MESSAGES_COLUMNS,
 } from './portability-columns.js'
 import {
+  COLLECT_CONVERSATION_IDS_SQL,
+  COLLECT_MESSAGE_IDS_SQL,
+  COLLECT_SUMMARY_IDS_SQL,
   DEFER_EMBED_GUC_SQL,
   ENQUEUE_UNEMBEDDED_SQL,
   EXISTING_CONVERSATION_IDS_SQL,
@@ -27,6 +30,7 @@ import {
   SUMMARY_PARENT_UPDATE_SQL,
   chunkIds,
   closeCursorSql,
+  conversationsByExportedIdsSql,
   declareCursorSql,
   exportCursorName,
   exportMemory,
@@ -148,22 +152,12 @@ function sinceClosureHandler(
       if (table === 'ros_messages' && sql.includes('created_at >=')) {
         rows = rows.filter((r) => String(r.created_at) >= since)
       } else if (table === 'ros_conversations') {
-        const byTime = sql.includes(
-          'created_at >= $1::timestamptz OR updated_at >= $1::timestamptz',
-        )
-        const byMessage = sql.includes('FROM ros_messages WHERE created_at >= $1::timestamptz')
-        const recentConv = new Set(
-          (fixture.ros_messages ?? [])
-            .filter((m) => String(m.created_at) >= since)
-            .map((m) => String(m.conversation_id)),
-        )
-        rows = rows.filter((c) => {
-          const id = String(c.id)
-          if (byTime && (String(c.created_at) >= since || String(c.updated_at) >= since)) {
-            return true
-          }
-          return byMessage && recentConv.has(id)
-        })
+        if (sql.includes('id = ANY($1::uuid[])')) {
+          const ids = new Set(((params?.[0] as string[] | undefined) ?? []).map(String))
+          rows = rows.filter((c) => ids.has(String(c.id)))
+        } else if (sql.includes('created_at >= $1::timestamptz OR updated_at >= $1::timestamptz')) {
+          rows = rows.filter((c) => String(c.created_at) >= since || String(c.updated_at) >= since)
+        }
       } else if (table === 'ros_summaries' && sql.includes('created_at >=')) {
         rows = rows.filter((r) => String(r.created_at) >= since)
       } else if (table === 'ros_summary_sources') {
@@ -238,6 +232,7 @@ describe('chunkIds / summarySourcesByExportedIdsSql', () => {
     const sql = summarySourcesByExportedIdsSql(['summary_id', 'message_id', 'ordinal'])
     expect(sql).toContain('summary_id = ANY($1::uuid[])')
     expect(sql).toContain('message_id = ANY($2::uuid[])')
+    expect(conversationsByExportedIdsSql(['id'])).toContain('id = ANY($1::uuid[])')
   })
 })
 
@@ -396,28 +391,81 @@ describe('exportMemory', () => {
     expect((lines[2] as { r: Record<string, unknown> }).r.embedding).toBeUndefined()
   })
 
-  it('binds --since closure SQL on the declared cursors', async () => {
+  it('binds --since live-path SQL and the collected id arrays', async () => {
+    const since = '2026-09-01T00:00:00.000Z'
     const { pool, calls } = recordedPool(
       cursorHandler({
-        ros_messages: [{ id: 'm1', created_at: '2026-09-12T00:00:00.000Z' }],
-        ros_summaries: [{ id: 's1', created_at: '2026-09-12T00:00:00.000Z' }],
+        ros_conversations: [
+          {
+            id: 'c1',
+            session_key: 's',
+            agent: 'grok',
+            created_at: '2026-01-01T00:00:00.000Z',
+            updated_at: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+        ros_messages: [{ id: 'm1', conversation_id: 'c1', created_at: '2026-09-12T00:00:00.000Z' }],
+        ros_summaries: [
+          { id: 's1', conversation_id: 'c1', created_at: '2026-09-12T00:00:00.000Z' },
+        ],
       }),
     )
     const { out } = collectWritable()
     await exportMemory(pool, out, {
-      since: '2026-09-01T00:00:00.000Z',
+      since,
       source: { kind: 'cloud', id: 'demo' },
     })
-    const conv = calls.find((c) => c.sql.includes('export_ros_conversations'))
-    expect(conv?.sql).toContain('created_at >= $1::timestamptz OR updated_at >= $1::timestamptz')
-    expect(conv?.sql).toContain('FROM ros_messages WHERE created_at >= $1::timestamptz')
-    expect(conv?.params).toEqual(['2026-09-01T00:00:00.000Z'])
+    const collectMsgs = calls.find((c) => c.sql.includes(COLLECT_MESSAGE_IDS_SQL))
+    expect(collectMsgs?.params).toEqual([since])
+    const collectSums = calls.find((c) => c.sql.includes(COLLECT_SUMMARY_IDS_SQL))
+    expect(collectSums?.params).toEqual([since])
+    const collectConvs = calls.find((c) => c.sql.includes(COLLECT_CONVERSATION_IDS_SQL))
+    expect(collectConvs?.params).toEqual([since])
+
+    const convEmit = calls.find(
+      (c) => c.sql.includes('export_ros_conversations') && c.sql.includes('id = ANY($1::uuid[])'),
+    )
+    expect(convEmit?.sql).toBe(
+      declareCursorSql(
+        exportCursorName('ros_conversations'),
+        conversationsByExportedIdsSql(EXPORT_COLUMNS.ros_conversations),
+      ),
+    )
+    expect(convEmit?.params).toEqual([['c1']])
+
     const sources = calls.find(
       (c) => c.sql.includes('ros_summary_sources') && c.sql.includes('ANY'),
+    )
+    expect(sources?.sql).toBe(
+      declareCursorSql(
+        exportCursorName('ros_summary_sources'),
+        summarySourcesByExportedIdsSql(EXPORT_COLUMNS.ros_summary_sources),
+      ),
     )
     expect(sources?.sql).toContain('summary_id = ANY($1::uuid[])')
     expect(sources?.sql).toContain('message_id = ANY($2::uuid[])')
     expect(sources?.params).toEqual([['s1'], ['m1']])
+  })
+
+  it('does not retain message or summary ids on a full export', async () => {
+    const { pool, calls } = recordedPool(
+      cursorHandler({
+        ros_messages: [{ id: 'm1', created_at: '2026-09-12T00:00:00.000Z' }],
+        ros_summaries: [{ id: 's1', created_at: '2026-09-12T00:00:00.000Z' }],
+        ros_summary_sources: [{ summary_id: 's1', message_id: 'm1', ordinal: 0 }],
+      }),
+    )
+    const { out } = collectWritable()
+    await exportMemory(pool, out, {
+      exportedAt: '2026-09-14T12:00:00.000Z',
+      source: { kind: 'local', id: 'full' },
+    })
+    expect(calls.some((c) => c.sql.includes('= ANY($1::uuid[])'))).toBe(false)
+    expect(calls.some((c) => c.sql.includes(COLLECT_MESSAGE_IDS_SQL))).toBe(false)
+    const sources = calls.find((c) => c.sql.includes('export_ros_summary_sources'))
+    expect(sources?.sql).toContain('SELECT ')
+    expect(sources?.sql).toContain('FROM ros_summary_sources')
+    expect(sources?.sql).not.toContain('WHERE')
   })
 
   it('exports an older conversation of an in-window message and drops out-of-window summary_sources', async () => {
@@ -491,6 +539,76 @@ describe('exportMemory', () => {
       { t: 'ros_summary_sources', r: { summary_id: sumId, message_id: newMsgId, ordinal: 0 } },
     ])
     expect(sources.some((s) => s.r?.message_id === oldMsgId)).toBe(false)
+  })
+
+  it('unions conversation_ids from every message page, not the first FETCH', async () => {
+    const since = '2026-09-10T00:00:00.000Z'
+    const oldConvFirst = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+    const oldConvLast = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    const lastMsgId = '22222222-2222-2222-2222-222222222222'
+    const pageMessages = Array.from({ length: EXPORT_CURSOR_PAGE }, (_, i) => ({
+      id: `11111111-1111-1111-1111-${String(i).padStart(12, '0')}`,
+      conversation_id: oldConvFirst,
+      agent: 'grok',
+      channel: 'unknown',
+      role: 'user',
+      content: 'page',
+      created_at: '2026-09-12T00:00:00.000Z',
+    }))
+    const fixture = {
+      ros_conversations: [
+        {
+          id: oldConvFirst,
+          session_key: 's1',
+          agent: 'grok',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          id: oldConvLast,
+          session_key: 's2',
+          agent: 'grok',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      ros_messages: [
+        ...pageMessages,
+        {
+          id: lastMsgId,
+          conversation_id: oldConvLast,
+          agent: 'grok',
+          channel: 'unknown',
+          role: 'user',
+          content: 'after-page',
+          created_at: '2026-09-12T00:01:00.000Z',
+        },
+      ],
+    }
+    const { pool, calls } = recordedPool(sinceClosureHandler(fixture, since))
+    const { out, chunks } = collectWritable()
+    await exportMemory(pool, out, {
+      since,
+      exportedAt: '2026-09-14T12:00:00.000Z',
+      source: { kind: 'local', id: 'pages' },
+    })
+    const lines = gunzipSync(Buffer.concat(chunks))
+      .toString('utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { t?: string; r?: Record<string, unknown> })
+    const convIds = lines.filter((l) => l.t === 'ros_conversations').map((l) => l.r?.id)
+    const msgIds = lines.filter((l) => l.t === 'ros_messages').map((l) => l.r?.id)
+    expect(convIds).toContain(oldConvFirst)
+    expect(convIds).toContain(oldConvLast)
+    expect(msgIds).toHaveLength(EXPORT_CURSOR_PAGE + 1)
+    expect(msgIds).toContain(lastMsgId)
+    const convAny = calls.filter(
+      (c) => c.sql.includes('FROM ros_conversations') && c.sql.includes('id = ANY($1::uuid[])'),
+    )
+    const bound = new Set(convAny.flatMap((c) => (c.params?.[0] as string[] | undefined) ?? []))
+    expect(bound.has(oldConvLast)).toBe(true)
+    expect(bound.has(oldConvFirst)).toBe(true)
   })
 
   it('fetches through the cursor in pages of 1000', async () => {
@@ -983,5 +1101,65 @@ describe('importMemory', () => {
     expect(result.inserted.ros_messages).toBe(0)
     expect(calls.some((c) => c.sql.includes('INSERT INTO ros_messages'))).toBe(false)
     expect(calls.some((c) => c.sql === EXISTING_CONVERSATION_IDS_SQL)).toBe(true)
+  })
+
+  it('imports a valid archive when pool.connect is delayed', async () => {
+    const input = ndjsonGzip([
+      HEADER,
+      {
+        t: 'ros_conversations',
+        r: { id: 'c1', session_key: 's', agent: 'grok', channel: 'unknown' },
+      },
+    ])
+    const query = async (sql: string): Promise<PortabilityQueryResult> => {
+      if (sql === GRAPHILE_NAMESPACE_SQL) return { rows: [], rowCount: 0 }
+      if (sql.includes('INSERT INTO')) return { rows: [], rowCount: 1 }
+      return { rows: [], rowCount: 0 }
+    }
+    const pool: PortabilityPool = {
+      query,
+      async connect() {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 50)
+        })
+        return { query, release() {} }
+      },
+    }
+    const result = await importMemory(pool, input, { log: () => undefined })
+    expect(result.inserted.ros_conversations).toBe(1)
+  })
+
+  it('rejects a failing source after a delayed connection', async () => {
+    const input = new Readable({
+      read() {
+        this.destroy(new Error('source boom'))
+      },
+    })
+    const query = async (): Promise<PortabilityQueryResult> => ({ rows: [], rowCount: 0 })
+    const pool: PortabilityPool = {
+      query,
+      async connect() {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 50)
+        })
+        return { query, release() {} }
+      },
+    }
+    await expect(importMemory(pool, input)).rejects.toThrow(/source boom/)
+  })
+
+  it('destroys the input when connect fails', async () => {
+    const input = ndjsonGzip([HEADER])
+    const closed = new Promise<void>((resolve) => {
+      input.on('close', () => resolve())
+    })
+    const pool: PortabilityPool = {
+      query: async () => ({ rows: [], rowCount: 0 }),
+      async connect() {
+        throw new Error('connect boom')
+      },
+    }
+    await expect(importMemory(pool, input)).rejects.toThrow(/connect boom/)
+    await closed
   })
 })

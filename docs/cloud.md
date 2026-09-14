@@ -51,7 +51,7 @@ DB ok (12 messages)
 embed ok (1024 dims)
 claude-code: installed
 grok-build: skipped (not found)
-next: open your harness and run one turn; then `rivetos memory search …`
+next: open your harness and run one turn; then use the memory_search tool
 ```
 
 Flags: `--embed-model` (default `qwen3-embedding-0.6b`), `--token` (written as
@@ -87,14 +87,17 @@ rivetos cloud import mem.ndjson.gz
 ```
 
 - `GET https://<host>/api/t/<slug>/export` — `Authorization: Bearer <token>`,
-  `Accept: application/gzip`. Streams the response to `--out` or stdout (does
-  not buffer the gzip, does not use a short AbortController timeout). Default
-  destination is stdout; refuses gzip to a TTY (redirect or `--out`). Progress
-  (bytes received) is printed when writing to `--out`.
-- `POST https://<host>/api/t/<slug>/import` — streams the gzip file
-  (`Content-Type: application/gzip`, `Authorization: Bearer <token>`). No short
-  client timeout; an inactivity guard of 30 minutes is the only limit. Prints
-  bytes sent. On a server error, prints the JSON `committed` counts if present.
+  `Accept: application/gzip`. Uses `node:https` `request()` and streams the
+  response to `--out` or stdout (does not buffer the gzip, no socket timeout).
+  Default destination is stdout; refuses gzip to a TTY (redirect or `--out`).
+  Progress (bytes received) is printed when writing to `--out`. An inactivity
+  guard of 120 seconds applies to the response.
+- `POST https://<host>/api/t/<slug>/import` — streams the gzip file with
+  `fs.createReadStream` piped into `node:https` `request()`
+  (`Content-Type: application/gzip`, `Content-Length` from `fs.stat`,
+  `Authorization: Bearer <token>`). No socket timeout; an inactivity guard of
+  120 seconds on the response is the only limit. Prints bytes sent from the
+  read stream. On a server error, prints the JSON `committed` counts if present.
 
 ## Direct (local / datahub) export
 
@@ -143,9 +146,10 @@ rivetos memory import mem.ndjson.gz
 rivetos memory import mem.ndjson.gz --dry-run
 ```
 
-Streaming `pipeline(source, gunzip)` so a missing file or truncated gzip
-rejects the import (not an unhandled source error). Header check, then batches
-of 500 per table.
+Connects the pool client before consuming the gzip so a slow connect cannot
+drop the header. Then `pipeline(source, gunzip)` with the readline iterator
+already attached, so a missing file or truncated gzip rejects the import (not
+an unhandled source error). Header check, then batches of 500 per table.
 
 Each batch is grouped by the **exact present column set**. One `INSERT` per
 shape names only those columns, so omitted keys take SQL defaults. An explicit

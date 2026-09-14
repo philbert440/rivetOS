@@ -185,6 +185,23 @@ export function summarySourcesByExportedIdsSql(cols: readonly string[]): string 
   )
 }
 
+/** Conversations whose ids were collected from the --since closure. */
+export function conversationsByExportedIdsSql(cols: readonly string[]): string {
+  const list = cols.join(', ')
+  return `SELECT ${list} FROM ros_conversations WHERE id = ANY($1::uuid[])`
+}
+
+/** Lightweight --since id pass: every in-window message (all pages). */
+export const COLLECT_MESSAGE_IDS_SQL =
+  'SELECT id, conversation_id FROM ros_messages WHERE created_at >= $1::timestamptz ORDER BY created_at ASC'
+
+/** Lightweight --since id pass: selected summaries + parent chain. */
+export const COLLECT_SUMMARY_IDS_SQL = `${SELECTED_SUMMARIES_CTE} SELECT id, conversation_id FROM selected_summaries`
+
+/** Lightweight --since id pass: conversations changed in the window. */
+export const COLLECT_CONVERSATION_IDS_SQL =
+  'SELECT id FROM ros_conversations WHERE created_at >= $1::timestamptz OR updated_at >= $1::timestamptz'
+
 export function selectTableSql(
   table: ExportTable,
   cols: readonly string[],
@@ -203,6 +220,10 @@ export function selectTableSql(
         params,
       }
     case 'ros_conversations':
+      // Live --since export does not use this SQL: exportMemory collects
+      // conversation_ids from every message page (plus the time window) and
+      // binds `conversationsByExportedIdsSql`. Subquery form is the standalone
+      // equivalent.
       return {
         sql:
           `${SELECTED_SUMMARIES_CTE} SELECT ${list} FROM ros_conversations WHERE ` +
@@ -324,6 +345,71 @@ function asError(err: unknown): Error {
   return err instanceof Error ? err : new Error(String(err))
 }
 
+async function collectCursorRows(
+  client: PortabilityClient,
+  cursor: string,
+  sql: string,
+  params: unknown[],
+  openCursors: string[],
+  visit: (row: Record<string, unknown>) => void,
+): Promise<void> {
+  await client.query(declareCursorSql(cursor, sql), params)
+  openCursors.push(cursor)
+  try {
+    for (;;) {
+      const result = await client.query(fetchCursorSql(cursor))
+      if (result.rows.length === 0) break
+      for (const row of result.rows) visit(row)
+    }
+  } finally {
+    await client.query(closeCursorSql(cursor))
+    const idx = openCursors.lastIndexOf(cursor)
+    if (idx >= 0) openCursors.splice(idx, 1)
+  }
+}
+
+async function* emitCursorRows(
+  client: PortabilityClient,
+  table: ExportTable,
+  cols: readonly string[],
+  sql: string,
+  params: unknown[],
+  openCursors: string[],
+): AsyncGenerator<string> {
+  const cursor = exportCursorName(table)
+  await client.query(declareCursorSql(cursor, sql), params)
+  openCursors.push(cursor)
+  try {
+    for (;;) {
+      const result = await client.query(fetchCursorSql(cursor))
+      if (result.rows.length === 0) break
+      for (const row of result.rows) {
+        const payload = { t: table, r: pickKnownColumns(row, cols) }
+        yield `${JSON.stringify(payload)}\n`
+      }
+    }
+  } finally {
+    await client.query(closeCursorSql(cursor))
+    const idx = openCursors.lastIndexOf(cursor)
+    if (idx >= 0) openCursors.splice(idx, 1)
+  }
+}
+
+async function* emitRowsByIdChunks(
+  client: PortabilityClient,
+  table: ExportTable,
+  cols: readonly string[],
+  ids: readonly string[],
+  openCursors: string[],
+  sqlForCols: (cols: readonly string[]) => string,
+): AsyncGenerator<string> {
+  if (ids.length === 0) return
+  const selectSql = sqlForCols(cols)
+  for (const chunk of chunkIds(ids)) {
+    yield* emitCursorRows(client, table, cols, selectSql, [chunk], openCursors)
+  }
+}
+
 async function* emitSummarySourcesByExportedIds(
   client: PortabilityClient,
   cols: readonly string[],
@@ -333,28 +419,16 @@ async function* emitSummarySourcesByExportedIds(
 ): AsyncGenerator<string> {
   if (summaryIds.length === 0 || messageIds.length === 0) return
   const selectSql = summarySourcesByExportedIdsSql(cols)
-  const cursor = exportCursorName('ros_summary_sources')
   for (const sumChunk of chunkIds(summaryIds)) {
     for (const msgChunk of chunkIds(messageIds)) {
-      await client.query(declareCursorSql(cursor, selectSql), [sumChunk, msgChunk])
-      openCursors.push(cursor)
-      try {
-        for (;;) {
-          const result = await client.query(fetchCursorSql(cursor))
-          if (result.rows.length === 0) break
-          for (const row of result.rows) {
-            const payload = {
-              t: 'ros_summary_sources' as const,
-              r: pickKnownColumns(row, cols),
-            }
-            yield `${JSON.stringify(payload)}\n`
-          }
-        }
-      } finally {
-        await client.query(closeCursorSql(cursor))
-        const idx = openCursors.lastIndexOf(cursor)
-        if (idx >= 0) openCursors.splice(idx, 1)
-      }
+      yield* emitCursorRows(
+        client,
+        'ros_summary_sources',
+        cols,
+        selectSql,
+        [sumChunk, msgChunk],
+        openCursors,
+      )
     }
   }
 }
@@ -380,12 +454,75 @@ export async function exportMemory(
         }
         yield `${JSON.stringify(header)}\n`
 
-        const messageIds: string[] = []
-        const summaryIds: string[] = []
+        // Id sets are only needed for --since closure. Full exports page
+        // through cursors and must not retain every message/summary id.
+        let messageIds: readonly string[] = []
+        let summaryIds: readonly string[] = []
+        let conversationIds: readonly string[] = []
+        const since = opts.since
+        if (since !== undefined) {
+          const iso = since instanceof Date ? since.toISOString() : since
+          const collectedMessages: string[] = []
+          const collectedSummaries: string[] = []
+          const conversationIdSet = new Set<string>()
+
+          await collectCursorRows(
+            client,
+            exportCursorName('ros_messages'),
+            COLLECT_MESSAGE_IDS_SQL,
+            [iso],
+            openCursors,
+            (row) => {
+              const id = asText(row.id)
+              if (id != null) collectedMessages.push(id)
+              const cid = asText(row.conversation_id)
+              if (cid != null) conversationIdSet.add(cid)
+            },
+          )
+          await collectCursorRows(
+            client,
+            exportCursorName('ros_summaries'),
+            COLLECT_SUMMARY_IDS_SQL,
+            [iso],
+            openCursors,
+            (row) => {
+              const id = asText(row.id)
+              if (id != null) collectedSummaries.push(id)
+              const cid = asText(row.conversation_id)
+              if (cid != null) conversationIdSet.add(cid)
+            },
+          )
+          await collectCursorRows(
+            client,
+            exportCursorName('ros_conversations'),
+            COLLECT_CONVERSATION_IDS_SQL,
+            [iso],
+            openCursors,
+            (row) => {
+              const id = asText(row.id)
+              if (id != null) conversationIdSet.add(id)
+            },
+          )
+
+          messageIds = collectedMessages
+          summaryIds = collectedSummaries
+          conversationIds = [...conversationIdSet]
+        }
 
         for (const table of EXPORT_TABLES) {
           const cols = EXPORT_COLUMNS[table]
-          if (table === 'ros_summary_sources' && opts.since !== undefined) {
+          if (since !== undefined && table === 'ros_conversations') {
+            yield* emitRowsByIdChunks(
+              client,
+              table,
+              cols,
+              conversationIds,
+              openCursors,
+              conversationsByExportedIdsSql,
+            )
+            continue
+          }
+          if (since !== undefined && table === 'ros_summary_sources') {
             yield* emitSummarySourcesByExportedIds(
               client,
               cols,
@@ -395,31 +532,8 @@ export async function exportMemory(
             )
             continue
           }
-          const { sql, params } = selectTableSql(table, cols, opts.since)
-          const cursor = exportCursorName(table)
-          await client.query(declareCursorSql(cursor, sql), params)
-          openCursors.push(cursor)
-          try {
-            for (;;) {
-              const result = await client.query(fetchCursorSql(cursor))
-              if (result.rows.length === 0) break
-              for (const row of result.rows) {
-                if (table === 'ros_messages') {
-                  const id = asText(row.id)
-                  if (id != null) messageIds.push(id)
-                } else if (table === 'ros_summaries') {
-                  const id = asText(row.id)
-                  if (id != null) summaryIds.push(id)
-                }
-                const payload = { t: table, r: pickKnownColumns(row, cols) }
-                yield `${JSON.stringify(payload)}\n`
-              }
-            }
-          } finally {
-            await client.query(closeCursorSql(cursor))
-            const idx = openCursors.lastIndexOf(cursor)
-            if (idx >= 0) openCursors.splice(idx, 1)
-          }
+          const { sql, params } = selectTableSql(table, cols, since)
+          yield* emitCursorRows(client, table, cols, sql, params, openCursors)
         }
       }
 
@@ -457,12 +571,13 @@ export async function importMemory(
   /** incoming conversation id → destination id (equal when inserted, different when merged). */
   const conversationIdMap = new Map<string, string>()
 
-  const gunzip = createGunzip()
-  const rl = createInterface({ input: gunzip, crlfDelay: Infinity })
-  const piped = pipeline(input, gunzip)
+  try {
+    return await withClient(pool, async (client) => {
+      // Client first, then attach the iterator, then start the source.
+      // Piping before connect drops the header when connect is slow (X4).
+      const gunzip = createGunzip()
+      const rl = createInterface({ input: gunzip, crlfDelay: Infinity })
 
-  const run = async (): Promise<ImportResult> => {
-    const result = await withClient(pool, async (client) => {
       let headerSeen = false
       let currentTable: ExportTable | null = null
       let batch: Record<string, unknown>[] = []
@@ -680,59 +795,66 @@ export async function importMemory(
         if (currentTable === 'ros_summaries') await applySummaryParentLinks()
       }
 
-      for await (const raw of rl) {
-        const line = raw.trim()
-        if (!line) continue
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(line) as unknown
-        } catch {
-          throw new Error('invalid NDJSON: line is not JSON')
-        }
-        if (!headerSeen) {
-          assertHeader(parsed)
-          headerSeen = true
-          continue
-        }
-        const row = parseRow(parsed)
-        if (!row) continue
-        if (row.t !== currentTable) {
+      let piped: Promise<void> | undefined
+      try {
+        const consume = (async (): Promise<ImportResult> => {
+          for await (const raw of rl) {
+            const line = raw.trim()
+            if (!line) continue
+            let parsed: unknown
+            try {
+              parsed = JSON.parse(line) as unknown
+            } catch {
+              throw new Error('invalid NDJSON: line is not JSON')
+            }
+            if (!headerSeen) {
+              assertHeader(parsed)
+              headerSeen = true
+              continue
+            }
+            const row = parseRow(parsed)
+            if (!row) continue
+            if (row.t !== currentTable) {
+              await finishTable()
+              currentTable = row.t
+            }
+            batch.push(row.r)
+            if (batch.length >= IMPORT_BATCH_SIZE) await flush()
+          }
           await finishTable()
-          currentTable = row.t
-        }
-        batch.push(row.r)
-        if (batch.length >= IMPORT_BATCH_SIZE) await flush()
-      }
-      await finishTable()
 
-      if (!headerSeen) {
-        throw new Error('invalid rivet-memory-export: missing header')
-      }
+          if (!headerSeen) {
+            throw new Error('invalid rivet-memory-export: missing header')
+          }
 
-      if (!dryRun) {
-        const ns = await client.query(GRAPHILE_NAMESPACE_SQL)
-        if ((ns.rowCount ?? ns.rows.length) > 0) {
-          await client.query(ENQUEUE_UNEMBEDDED_SQL)
-          enqueuedEmbeds = 1
-        } else {
-          log(GRAPHILE_MISSING_HINT)
-        }
-      }
+          if (!dryRun) {
+            const ns = await client.query(GRAPHILE_NAMESPACE_SQL)
+            if ((ns.rowCount ?? ns.rows.length) > 0) {
+              await client.query(ENQUEUE_UNEMBEDDED_SQL)
+              enqueuedEmbeds = 1
+            } else {
+              log(GRAPHILE_MISSING_HINT)
+            }
+          }
 
-      return { inserted, skipped, merged, enqueuedEmbeds, unresolvedParentLinks }
+          return { inserted, skipped, merged, enqueuedEmbeds, unresolvedParentLinks }
+        })()
+
+        piped = pipeline(input, gunzip)
+        const result = await consume
+        await piped
+        return result
+      } catch (err) {
+        destroyQuiet(input)
+        destroyQuiet(gunzip)
+        if (piped !== undefined) await piped.catch(() => undefined)
+        throw err
+      } finally {
+        rl.close()
+      }
     })
-    rl.close()
-    await piped
-    return result
-  }
-
-  try {
-    return await run()
   } catch (err) {
-    rl.close()
     destroyQuiet(input)
-    destroyQuiet(gunzip)
-    await piped.catch(() => undefined)
     throw err
   }
 }

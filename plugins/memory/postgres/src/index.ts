@@ -350,6 +350,7 @@ export {
   EXISTING_CONVERSATION_IDS_SQL,
   chunkIds,
   summarySourcesByExportedIdsSql,
+  conversationsByExportedIdsSql,
 } from './portability.js'
 export type {
   ExportHeader,

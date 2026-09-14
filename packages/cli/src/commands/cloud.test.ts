@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CLOUD_IMPORT_HINT,
@@ -287,20 +288,21 @@ describe('runCloudExport / runCloudImport', () => {
     tmpDirs.push(dir)
     const out = join(dir, 'dump.ndjson.gz')
     const payload = Buffer.from('gzip-bytes')
-    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe('https://rivetos.cloud/api/t/demo/export')
-      expect(init?.method).toBe('GET')
-      expect((init?.headers as Record<string, string>).Authorization).toBe('Bearer tok_abc')
-      expect(init?.signal).toBeUndefined()
-      return new Response(payload, { status: 200 })
-    })
+    const cloudHttpsRequest = vi.fn(
+      async (url: string, init: { method: string; headers: Record<string, string> }) => {
+        expect(url).toBe('https://rivetos.cloud/api/t/demo/export')
+        expect(init.method).toBe('GET')
+        expect(init.headers.Authorization).toBe('Bearer tok_abc')
+        return { statusCode: 200, stream: Readable.from([payload]) }
+      },
+    )
     await runCloudExport(['--out', out], {
-      fetch: fetchFn as never,
+      cloudHttpsRequest,
       envPath: join(dir, 'nope'),
       log: () => undefined,
     })
     expect(readFileSync(out)).toEqual(payload)
-    expect(fetchFn).toHaveBeenCalled()
+    expect(cloudHttpsRequest).toHaveBeenCalled()
   })
 
   it('POST /api/t/<slug>/import with application/gzip', async () => {
@@ -311,24 +313,29 @@ describe('runCloudExport / runCloudImport', () => {
     const file = join(dir, 'dump.ndjson.gz')
     writeFileSync(file, 'gzip-bytes')
     const logs: string[] = []
-    const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
-      expect(url).toBe('https://rivetos.cloud/api/t/demo/import')
-      expect(init?.method).toBe('POST')
-      const headers = init?.headers as Record<string, string>
-      expect(headers.Authorization).toBe('Bearer tok_abc')
-      expect(headers['Content-Type']).toBe('application/gzip')
-      expect(init?.signal).toBeUndefined()
-      expect((init as { duplex?: string }).duplex).toBe('half')
-      const body = init?.body as AsyncIterable<Buffer>
-      const chunks: Buffer[] = []
-      for await (const chunk of body) {
-        chunks.push(Buffer.from(chunk))
-      }
-      expect(Buffer.concat(chunks).toString()).toBe('gzip-bytes')
-      return new Response('{"ok":true}', { status: 200 })
-    })
+    const cloudHttpsRequest = vi.fn(
+      async (
+        url: string,
+        init: { method: string; headers: Record<string, string>; body?: Readable },
+      ) => {
+        expect(url).toBe('https://rivetos.cloud/api/t/demo/import')
+        expect(init.method).toBe('POST')
+        expect(init.headers.Authorization).toBe('Bearer tok_abc')
+        expect(init.headers['Content-Type']).toBe('application/gzip')
+        expect(init.headers['Content-Length']).toBe(String(Buffer.byteLength('gzip-bytes')))
+        const body = init.body
+        const chunks: Buffer[] = []
+        if (body) {
+          for await (const chunk of body) {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+          }
+        }
+        expect(Buffer.concat(chunks).toString()).toBe('gzip-bytes')
+        return { statusCode: 200, stream: Readable.from(['{"ok":true}']) }
+      },
+    )
     await runCloudImport([file], {
-      fetch: fetchFn as never,
+      cloudHttpsRequest,
       envPath: join(dir, 'nope'),
       log: (m) => logs.push(m),
     })
@@ -347,18 +354,18 @@ describe('runCloudExport / runCloudImport', () => {
       error: 'The operation was aborted',
       committed: { ros_conversations: 34, ros_messages: 2305, orphan_messages: 120 },
     }
-    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
-      const body = init?.body as AsyncIterable<unknown> | undefined
-      if (body && typeof body[Symbol.asyncIterator] === 'function') {
+    const cloudHttpsRequest = vi.fn(async (_url: string, init: { body?: Readable }) => {
+      const body = init.body
+      if (body) {
         for await (const _chunk of body) {
           // drain the upload so the file stream does not linger
         }
       }
-      return new Response(JSON.stringify(payload), { status: 500 })
+      return { statusCode: 500, stream: Readable.from([JSON.stringify(payload)]) }
     })
     await expect(
       runCloudImport([file], {
-        fetch: fetchFn as never,
+        cloudHttpsRequest,
         envPath: join(dir, 'nope'),
         log: () => undefined,
       }),
