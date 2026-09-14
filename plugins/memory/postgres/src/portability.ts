@@ -342,7 +342,7 @@ function destroyQuiet(stream: Readable): void {
 }
 
 function asError(err: unknown): Error {
-  return err instanceof Error ? err : new Error(String(err))
+  return err instanceof Error ? err : new Error(String(err), { cause: err })
 }
 
 async function collectCursorRows(
@@ -848,7 +848,7 @@ export async function importMemory(
           pipelineError = err
         })
         const result = await consume
-        if (pipelineError !== undefined) throw pipelineError
+        if (pipelineError !== undefined) throw asError(pipelineError)
         await piped
         return result
       } catch (err) {
