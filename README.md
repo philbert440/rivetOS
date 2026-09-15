@@ -36,32 +36,20 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 ## Quick start
 
-Laptop (supported):
+**One happy path** — laptop node + first captured chat. Mesh, Docker, Proxmox, and `rivetos init` come later.
+
+1. Have a supported coding tool on PATH (Claude Code is the reference; Codex, Grok, Kimi, Hermes, opencode, pi, and qwen-code also wire in).
+2. Install the node:
 
 ```bash
 curl -fsSL https://get.rivethub.io/local.sh | bash
 ```
 
-Desktop and Android first downloads: [rivethub.io](https://rivethub.io/). In-app updates read the mesh share `/rivet-shared/builds/rivethub/`.
+3. Open RivetHub: the Linux AppImage the installer launched, or `https://localhost:5174`. First win is the next turn in your coding tool showing up in Hub (and that tool being able to search it).
 
-Source checkout (development):
+Desktop / Windows / Android first downloads: [rivethub.io](https://rivethub.io/). Phone pairing and mesh are day-2 — [Getting Started](docs/GETTING-STARTED.md).
 
-```bash
-git clone https://github.com/philbert440/rivetOS.git
-cd rivetOS
-npm install
-
-# Interactive setup — configures everything
-npx rivetos init
-
-# Or manual setup:
-cp config.example.yaml config.yaml
-cp .env.example .env
-# Edit both files, then:
-npx rivetos start
-```
-
-See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
+**Developers** (this repo): `npm install` then `npx rivetos local` (Node ≥ 22). Do **not** start with `npx rivetos init` — that wizard is Node ≥ 24 and targets Docker / mesh / datahub.
 
 ## Architecture
 
@@ -127,11 +115,12 @@ rivetOS/
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
 ├── services/           # den-server, embedding-worker, compaction-worker, mcp-sidecar
 ├── apps/
-│   ├── den/            # rivet-den companion renderer
-│   ├── rivethub-web/   # RivetHub web client
-│   ├── rivethub-electron/ # RivetHub Electron desktop shell
-│   ├── rivet-android/  # RivetHub Android client (AGPL RikkaHub fork)
-│   └── site/           # Astro docs site
+│   ├── rivethub-web/      # RivetHub web client (gateway UI)
+│   ├── rivethub-electron/ # RivetHub Electron desktop shell (own lockfile; not an npm workspace member)
+│   ├── rivethub-android/  # RivetHub Android client (thin gateway client, Apache-2.0)
+│   ├── rivet-android/     # On-device RivetOS node (AGPL RikkaHub fork) — not the Hub client
+│   ├── rivethub-site/     # rivethub.io marketing / install pages (Nx only; not an npm workspace member)
+│   └── site/              # rivetos.dev Astro docs (synced from docs/ via apps/site/scripts/sync-docs.mjs)
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
 └── docs/               # Full documentation (incl. example configs under docs/examples/)
 ```
@@ -251,7 +240,8 @@ Containers & Service:
 
 Mesh:
   rivetos mesh list|ping|status   Mesh management
-  rivetos mesh join <host>        Join an existing mesh
+  rivetos mesh enroll <user@host> --name <node>   Join a RivetHub mesh
+  rivetos mesh join --manual <host>               Legacy seed-node YAML only
 
 Memory:
   rivetos memory backfill-tool-synth   Synthesize content for historical tool calls

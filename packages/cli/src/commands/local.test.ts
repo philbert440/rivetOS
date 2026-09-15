@@ -190,6 +190,21 @@ describe('chooseProvider + answers object shape', () => {
     })
   })
 
+  it('ollama/vllm/llama-server include baseUrl default so interpretAnswers accepts them', () => {
+    for (const provider of ['ollama', 'vllm', 'llama-server'] as const) {
+      const answers = buildLocalAnswers({
+        configExists: false,
+        provider,
+        postgresUrl: 'postgres://postgres:postgres@127.0.0.1:5433/postgres',
+      })
+      const agent = (answers.agents as Record<string, unknown>[])[0]
+      expect(agent).toMatchObject({ provider, baseUrl: { default: true } })
+      const interpreted = interpretAnswers(answers, { configExists: false, dockerAvailable: false })
+      expect(interpreted.agents[0]?.provider).toBe(provider)
+      expect(interpreted.agents[0]?.baseUrl).toBeTruthy()
+    }
+  })
+
   it('existing config uses overwrite + confirm so interpretAnswers continues', () => {
     const answers = buildLocalAnswers({
       configExists: true,
