@@ -162,7 +162,7 @@ Edit `.env`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
+RIVETOS_PG_URL=postgresql://rivetos:${POSTGRES_PASSWORD}@datahub:5432/rivetos
 ```
 
 > **Security:** Never put API keys in `config.yaml`. Always use `.env` or environment variables.

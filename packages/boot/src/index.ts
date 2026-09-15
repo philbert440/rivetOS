@@ -27,6 +27,8 @@ import {
   type EmbeddedPgHandle,
 } from './embedded-pg.js'
 
+export { ensureGatewayToken, GATEWAY_TOKEN_FILE } from './registrars/gateway.js'
+
 // Re-export config types for consumers
 export {
   loadConfig,
@@ -259,7 +261,7 @@ async function bootWithConfig(
   )
 
   // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
-  //      task-engine route families mounted behind its bearer gate.
+  //      task-engine route families mounted behind den TLS / device certs.
   const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
 
   // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.

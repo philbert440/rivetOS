@@ -4,6 +4,13 @@
 # directly — schema is applied by the `migrate` service (--role migrate) on
 # every stack start.
 #
+# Required host env (repo-root `.env` or exported). Do not commit real values.
+#   POSTGRES_PASSWORD   datahub password
+#   RIVETOS_PG_URL      e.g. postgres://rivetos:${POSTGRES_PASSWORD}@datahub:5432/rivetos
+#
+# `rivetos init` writes both into ~/.rivetos/.env. Copy those two lines into
+# a `.env` in the compose project directory (usually the repo root).
+#
 # Quick start (from repo root):
 #
 #   docker compose -f infra/docker/rivetos/docker-compose.yml up --build
@@ -42,15 +49,15 @@ services:
   datahub:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: rivetos
-      POSTGRES_PASSWORD: rivetos
-      POSTGRES_DB: rivetos
+      POSTGRES_USER: ${POSTGRES_USER:-rivetos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-rivetos}
     volumes:
       - rivetos-pgdata:/var/lib/postgresql/data
     networks:
       - rivetos-net
     ports:
-      - '5433:5432'
+      - '127.0.0.1:5433:5432'
     restart: unless-stopped
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U rivetos -d rivetos']
@@ -66,7 +73,7 @@ services:
     image: rivetos:latest
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'migrate']
     environment:
-      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      RIVETOS_PG_URL: ${RIVETOS_PG_URL:?set RIVETOS_PG_URL in .env}
       # Also tells the image's inline HEALTHCHECK to skip — it keys off
       # RIVETOS_ROLE, not the --role flag.
       RIVETOS_ROLE: migrate
@@ -88,7 +95,7 @@ services:
     image: rivetos:latest
     command: ['node', 'services/embedding-worker/dist/index.js']
     environment:
-      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      RIVETOS_PG_URL: ${RIVETOS_PG_URL:?set RIVETOS_PG_URL in .env}
       # e.g. RIVETOS_EMBED_URL=http://gpu-host:9401 and
       # RIVETOS_EMBED_MODEL=text-embedding-3-small in the shell or a .env file
       # next to this compose file. Left empty the worker logs
@@ -117,7 +124,7 @@ services:
     image: rivetos:latest
     command: ['node', 'services/compaction-worker/dist/index.js']
     environment:
-      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      RIVETOS_PG_URL: ${RIVETOS_PG_URL:?set RIVETOS_PG_URL in .env}
       # OpenAI-compatible base URL — the worker appends /chat/completions.
       # e.g. RIVETOS_COMPACTOR_URL=http://llm-host:8003/v1 and
       # RIVETOS_COMPACTOR_MODEL=gpt-4o-mini. Left empty the worker logs
@@ -141,8 +148,9 @@ services:
     image: rivetos:latest
     command: ['node', 'dist/rivetos.js', 'start', '--role', 'agent']
     environment:
-      RIVETOS_PG_URL: postgres://rivetos:rivetos@datahub:5432/rivetos
+      RIVETOS_PG_URL: ${RIVETOS_PG_URL:?set RIVETOS_PG_URL in .env}
       RIVETOS_HEALTH_PORT: '3100'
+      RIVETOS_HEALTH_HOST: '127.0.0.1'
     volumes:
       # Bring in the user's config + secrets. Read-only by default; the
       # runtime writes only to /home/rivetos/.rivetos/workspace inside the
@@ -157,7 +165,7 @@ services:
     networks:
       - rivetos-net
     ports:
-      - '3100:3100'
+      - '127.0.0.1:3100:3100'
     restart: unless-stopped
 
 volumes:

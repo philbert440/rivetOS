@@ -515,14 +515,16 @@ Inter-agent communication channel. Enables delegation between agents and mesh ne
 ```yaml
 channels:
   agent:
+    host: 127.0.0.1
     port: 3100
     secret: ${AGENT_CHANNEL_SECRET} # still enforced by this plugin when set
 ```
 
-| Key      | Type   | Default | Description                                                                                                                                                 |
-| -------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `port`   | number | `3100`  | HTTPS port for agent-to-agent messaging.                                                                                                                    |
-| `secret` | string | —       | **Deprecated but enforced.** Bearer token checked by the standalone agent channel plugin when set. Mesh node-to-node auth uses mTLS via `mesh.tls` instead. |
+| Key      | Type   | Default     | Description                                                                                                                                                 |
+| -------- | ------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`   | string | `127.0.0.1` | Bind address for the standalone agent-channel HTTP listener.                                                                                                |
+| `port`   | number | `3100`      | HTTPS port for agent-to-agent messaging.                                                                                                                    |
+| `secret` | string | —           | **Deprecated but enforced.** Bearer token checked by the standalone agent channel plugin when set. Mesh node-to-node auth uses mTLS via `mesh.tls` instead. |
 
 ---
 

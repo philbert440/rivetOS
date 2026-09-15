@@ -31,10 +31,9 @@ On RivetOS-managed nodes these come from `~/.rivetos/den.env`, which
 — edit the config, not the env file (see Deploy below).
 
 - `RIVETOS_DEN_PORT` (5174) / `RIVETOS_DEN_HOST` (127.0.0.1 — loopback
-  fail-safe; set `0.0.0.0` to serve the LAN, ideally with a token)
-- `RIVETOS_DEN_TOKEN` — when set, every endpoint except `/healthz` requires
-  `Authorization: Bearer <token>` (or `?token=` for browser WebSockets).
-  Optional on trusted mesh nodes; required for anything internet-facing.
+  fail-safe; set `0.0.0.0` to serve the LAN with den TLS + a device cert)
+- `RIVETOS_DEN_TOKEN` — ignored. Bearer mint is removed; see
+  [GATEWAY-MTLS.md](../../docs/GATEWAY-MTLS.md).
 - `RIVETOS_DEN_STATE_DIR` (`~/.rivetos/den`) — layout persistence
 - `RIVETOS_DEN_STATIC_DIR` — optional hub static root
 - `RIVETOS_DEN_MESH_FILE` — mesh roster for `/mesh.json`; empty tries
@@ -51,10 +50,8 @@ This puts a shell running as the service user behind the HTTP API, so the
 posture is deliberately strict:
 
 - **Off by default.** Terminals only exist when `RIVETOS_DEN_TERM=1`/`on`.
-- **Token-gated off loopback.** If the host is not `127.0.0.1`/`::1`/
-  `localhost` and `RIVETOS_DEN_TOKEN` is empty, terminals are forced off at
-  startup (loud log, term endpoints answer 503; the event relay keeps
-  running).
+- **TLS off loopback.** If the host is not `127.0.0.1`/`::1`/`localhost`,
+  den TLS is required to listen. Bearer tokens are ignored.
 - **Roster keys only over the wire.** The API accepts only command keys from
   the operator-owned roster (`RIVETOS_DEN_TERM_CONFIG`, default
   `~/.rivetos/den-term.json`, re-read lazily — no restart needed). Each entry

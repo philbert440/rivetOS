@@ -833,6 +833,7 @@ client certificate (`rivet-ca.sh issue-client`). Bearer tokens (`den.token`,
 See [HUB-SETUP.md](/guides/hub-setup/) and [GATEWAY-MTLS.md](https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md).
 Mesh discovery via `GET /mesh.json` projects den-enabled roster entries
 (`capabilities` includes `den`, or `metadata.denPort` / `metadata.denUrl`).
+The mesh `denUrl` field is the node gateway URL.
 
 ---
 
