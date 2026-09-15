@@ -30,8 +30,8 @@ To stream a real session, install an adapter:
   terminal but no agent messages; the `kimi-code` harness driver serves both out
   of kimi's own transcript instead.
 - **opencode**: harness id `opencode`, provider `opencode-cli`, roster `opencode`.
-  Drive via `opencode run` / ACP nd-JSON. Den hook layout is confirmed with
-  the backend package; default model backend is z.ai GLM (Anthropic-compatible).
+  Drive via `opencode run --format json`. Den hook layout is confirmed with
+  the backend package. The installed CLI owns backend, endpoint, and credentials.
 - **pi**: CLI `@earendil-works/pi-coding-agent` (roster command `pi`, harness id
   `pi`, provider `pi-cli`). Drive via print/JSON or RPC; native session store
   confirmed at driver wiring. Recommended default backend is z.ai GLM.

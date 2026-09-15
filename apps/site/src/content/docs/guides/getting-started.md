@@ -4,11 +4,23 @@ sidebar:
   order: 2
 description: Get RivetOS running in under 5 minutes
 ---
-Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or **bare-metal**.
+Get RivetOS running in under 5 minutes. The supported laptop path is one command on [rivethub.io](https://rivethub.io/). Clone-and-`rivetos init` is the development / mesh-node path.
 
 ---
 
-## Prerequisites
+## Laptop (supported)
+
+Stable first-install lives on the production server, not on GitHub Releases:
+
+```bash
+curl -fsSL https://get.rivethub.io/local.sh | bash
+```
+
+That clones the pinned `local_ref` from [get.rivethub.io/pins/stable.json](https://get.rivethub.io/pins/stable.json), stands up embedded PGlite + den on `https://localhost:5174`, wires harness memory plugins, and (on Linux) installs the desktop AppImage. Desktop and Android **first downloads** are on [rivethub.io](https://rivethub.io/). **Dev / nightly** app builds live on the mesh share (`/rivet-shared/builds/rivethub/`) — that is what Settings → Updates already reads. GitHub tags are source pins only.
+
+Day-2: `rivetos local status`, `rivetos local backup`, `rivetos local reset`. Full contract: [LOCAL-MODE.md](https://github.com/philbert440/rivetOS/blob/main/docs/LOCAL-MODE.md).
+
+## Prerequisites (source / mesh)
 
 | Requirement | Version | Check |
 |---|---|---|
@@ -19,12 +31,15 @@ Get RivetOS running in under 5 minutes. Two paths: **Docker** (recommended) or *
 
 > **Note:** `npm install` automatically builds all packages via postinstall. No separate build step needed.
 
-## Option A: interactive setup (recommended)
+## Option A: interactive setup (source checkout)
 
-The `rivetos init` wizard walks you through deployment target, agent configuration, API keys, and channels, then generates your config automatically.
+Cloning `main` is the development path. GitHub Releases are not the supported install pin.
+
+The `rivetos init` wizard walks you through deployment target, agent configuration, and API keys, then generates your config automatically. Human UX is RivetHub; the wizard no longer collects social-bot tokens.
 
 ```bash
 git clone https://github.com/philbert440/rivetOS.git
+# production: git checkout <tag>
 cd rivetOS
 npm install
 npx rivetos init
@@ -34,8 +49,63 @@ The wizard will:
 1. **Detect your environment**: Docker available? Proxmox? How much memory?
 2. **Choose deployment target**: Docker (recommended), Proxmox, or manual
 3. **Configure agents**: pick a provider, enter your API key, choose a model
-4. **Configure channels**: Discord, Telegram, or terminal-only
-5. **Review and deploy**: summary of your choices, then one-click deploy
+4. **Join a RivetHub mesh** (optional): datahub SSH target, node name, optional advertise host — enrolls via the same path as `rivetos mesh enroll`
+5. **Owner user id** for a single-owner `users.json` seed at `$RIVETOS_SHARED_DIR/rivetos/users.json` (default `owner`; existing file is left in place). First init on an install that has no `users.json` writes `unmappedIsOwner: false` (fail closed) — a missing file used to be treated as permissive (unmapped devices resolve as the owner). This file is the only per-user routing source (`rivetos user add` writes it; override the path with `RIVETOS_USERS_FILE`). den loads the registry once at boot (no watcher) — restart den / the rivetos node after `rivetos user add` for routing to take effect.
+6. **Review and deploy**: summary of your choices, then one-click deploy
+
+Social bots (Discord, Telegram, Voice) were removed in Phase 5; human UX is RivetHub.
+
+For non-interactive / distro installs, pass a JSON answers file:
+
+```bash
+npx rivetos init --answers-file /path/to/answers.json
+```
+
+Every prompt that would fire on this run must be present as a key. A missing key is a hard error that names the key (no silent defaults). A value of `{ "default": true }` opts into that prompt's interactive default.
+
+```json
+{
+  "deployment": "manual",
+  "agents": [
+    {
+      "name": { "default": true },
+      "provider": "xai",
+      "apiKey": "xai-...",
+      "model": { "default": true },
+      "thinking": { "default": true }
+    }
+  ],
+  "postgresUrl": "postgres://rivetos:...@datahub:5432/rivetos",
+  "joinMesh": true,
+  "meshHub": "rivet@192.0.2.10",
+  "meshName": "node-a",
+  "meshAdvertise": "192.0.2.11",
+  "ownerId": { "default": true },
+  "confirm": true
+}
+```
+
+| Key | Required when | Notes |
+|-----|----------------|-------|
+| `existingConfig` | A config already exists | `deploy` \| `reconfigure` \| `validate` \| `overwrite` \| `cancel` |
+| `overwriteConfirm` | `existingConfig` is `overwrite` | boolean (`{ "default": true }` → `false`) |
+| `deployment` | wizard runs | `docker` \| `proxmox` \| `manual` (no default) |
+| `dockerContinue` | `deployment` is `docker` and Docker was not detected | boolean |
+| `agents` | wizard runs | non-empty array; each entry is one agent (no add-another loop) |
+| `agents[].name` | each agent | `{ "default": true }` → `rivet` on the first agent |
+| `agents[].provider` | each agent | no default |
+| `agents[].apiKey` | providers that need a key | `{ "default": true }` uses `$ANTHROPIC_API_KEY` / `$XAI_API_KEY` / `$GOOGLE_API_KEY` when set. Optional for `vllm` / `llama-server` (omit or empty = unauthenticated server; ignored when blank). Not collected for `claude-cli` or `codex-cli`. |
+| `agents[].baseUrl` | `ollama` / `vllm` / `llama-server` | interactive URL defaults |
+| `agents[].model` | each agent, including `claude-cli` | provider default model |
+| `agents[].thinking` | each agent | `{ "default": true }` → `medium` |
+| `postgresUrl` | `deployment` is `manual` | `postgres://…` |
+| `joinMesh` | wizard runs | boolean (`{ "default": true }` → `false`) |
+| `meshHub` | `joinMesh` is `true` | `user@host` |
+| `meshName` | `joinMesh` is `true` | DNS-label node name. `{ "default": true }` is rejected — the interactive hostname-derived default is not a silent answers default |
+| `meshAdvertise` | optional when joining | omit or `{ "default": true }` to auto-detect |
+| `ownerId` | wizard runs | `{ "default": true }` → `owner` |
+| `confirm` | wizard runs | `{ "default": true }` → `true` |
+| `deployNow` | `deployment` is `docker`, **or** `existingConfig` is `deploy` | `{ "default": true }` → `true` |
 
 After the wizard completes, your agent is running.
 
@@ -262,7 +332,7 @@ You are a helpful AI assistant named Rivet.
 
 ## First conversation
 
-Once your agent is running, talk to it through whichever channel you configured:
+Once your agent is running, talk to it through RivetHub:
 
 **Hub:** Open RivetHub pointed at this node's gateway and start a harness session.
 
@@ -295,6 +365,7 @@ In any channel, you can use slash commands:
 ```bash
 # Setup
 rivetos init                          # Interactive setup wizard
+rivetos init --answers-file FILE      # Non-interactive (JSON answers)
 rivetos update                        # Pull latest, rebuild, re-symlink (add --mesh or --bare-metal)
 rivetos doctor                        # Health check (config, providers, connectivity)
 
@@ -305,7 +376,7 @@ rivetos status                        # Show runtime status and metrics
 
 # Configuration
 rivetos config show|validate|edit|path
-rivetos config init                   # Generate a default config.yaml
+rivetos config init                   # Same as rivetos init — setup wizard
 
 # Agents & models
 rivetos agent list|add|remove
@@ -342,15 +413,16 @@ rivetos skills list
 
 ## Next steps
 
-- **[Channel Setup](/guides/channels/)**: Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)**: Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
-- **[Mesh Networking](/guides/mesh/)**: Multi-node fleets with mTLS delegation
-- **[Configuration Reference](/reference/config/)**: every config option explained
-- **[Architecture](/reference/architecture/)**: how the system works
-- **[Plugins](/guides/plugins/)**: How to write your own channel, provider, or tool
-- **[Skills](/guides/skills/)**: How to write and share skills
-- **[Deployment](/guides/deployment/)**: Docker, Proxmox, multi-agent, networking
-- **[Troubleshooting](/reference/troubleshooting/)**: common issues and fixes
+- **[Provider Setup](/guides/providers/)** — API, local, and harness CLI providers
+- **[Channels](/guides/channels/)** — RivetHub is the human UX. The agent channel is mesh only
+- **[Hub Setup](/guides/hub-setup/)** — Run RivetHub clients against a node
+- **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
+- **[Configuration Reference](/reference/config/)** — Every config option explained
+- **[Architecture](/reference/architecture/)** — How the system works
+- **[Plugins](/guides/plugins/)** — How to write your own channel, provider, or tool
+- **[Skills](/guides/skills/)** — How to write and share skills
+- **[Deployment](/guides/deployment/)** — Docker, Proxmox, multi-agent, networking
+- **[Troubleshooting](/reference/troubleshooting/)** — Common issues and fixes
 
 ---
 

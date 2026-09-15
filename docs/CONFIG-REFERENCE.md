@@ -385,21 +385,21 @@ providers:
 
 ### opencode-cli
 
-Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`; interactive/ACP is nd-JSON over stdin/stdout. Default model backend is z.ai GLM via an openai-compatible endpoint. Add `@rivetos/provider-opencode-cli` to `plugins`.
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode` by shelling `opencode run --format json`. Default `model` is `zai/glm-5.3-flash`. The installed CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol. Add `@rivetos/provider-opencode-cli` to `plugins`.
 
 ```yaml
 providers:
   opencode-cli:
     binary: opencode # path or name on PATH
-    # model: zai/glm-5.3-flash  # optional — defaults to the CLI / z.ai GLM backend
+    # model: zai/glm-5.3-flash  # RivetOS default --model; CLI owns backend
 ```
 
 | Key      | Type   | Default             | Description                   |
 | -------- | ------ | ------------------- | ----------------------------- |
 | `binary` | string | `opencode`          | Path or name on PATH.         |
-| `model`  | string | `zai/glm-5.3-flash` | Model id as `provider/model`. |
+| `model`  | string | `zai/glm-5.3-flash` | Model id passed as `--model`. |
 
-**Auth:** z.ai GLM (openai-compatible). No separate OpenCode OAuth in v1; keys stay in the CLI's own config.
+**Auth:** The installed OpenCode CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol and ships no OpenCode key or OAuth.
 
 ### pi-cli
 
@@ -489,7 +489,18 @@ providers:
 | `tools`            | —                               | `--tools` pass-through.                                                                                                                                                                        |
 | `cwd`              | —                               | Working directory for the spawned grok (`--cwd`).                                                                                                                                              |
 
-Limits: no incremental streaming (the JSON arrives when grok finishes) and no RivetOS tool bridge (grok cannot call `delegate_task`/`memory_*` as RivetOS tools; it has its own MCP servers from `~/.grok/config.toml`). Session capture is the rivet-memory Grok hooks' job.
+Limits: incremental streaming is live. `streaming-messages-json` prints NDJSON `stream_event` deltas as they arrive. The older `--output-format json` blob is only a fallback when a turn emits no NDJSON and exits 0. There is no RivetOS tool bridge (grok cannot call `delegate_task`/`memory_*` as RivetOS tools; it has its own MCP servers from `~/.grok/config.toml`). Session capture is the rivet-memory Grok hooks' job.
+
+---
+
+## `channels`
+
+Messaging channel configuration. Each key is a channel type / plugin name.
+
+> **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
+> Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
+> Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
+> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
 
 ### Agent (HTTP)
 

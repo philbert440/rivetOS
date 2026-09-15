@@ -21,7 +21,7 @@ providers:
 
   # opencode-cli:                         # harness id `opencode`; plugin @rivetos/provider-opencode-cli
   #   binary: opencode                    # path or name on PATH
-  #   # Default backend: z.ai GLM (openai-compatible).
+  #   # Default --model is zai/glm-5.3-flash. The CLI owns backend/endpoint/credentials.
   #   # model: zai/glm-5.3-flash
   # pi-cli:                            # @rivetos/provider-pi-cli; harness id `pi`
   #   binary: pi                       # @earendil-works/pi-coding-agent

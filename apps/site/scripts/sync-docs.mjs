@@ -38,11 +38,17 @@ const LINK_MAP = {
   'docs/TROUBLESHOOTING.md': '/reference/troubleshooting/',
   'HUB-SETUP.md': '/guides/hub-setup/',
   'docs/HUB-SETUP.md': '/guides/hub-setup/',
+  'PROVIDERS.md': '/guides/providers/',
+  'docs/PROVIDERS.md': '/guides/providers/',
   // No site pages exist for these — link out to the repository.
   'MICBRIDGE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/MICBRIDGE.md',
   'DEN.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md',
   'CODEBASE-REFERENCE.md':
     'https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md',
+  'LOCAL-MODE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/LOCAL-MODE.md',
+  'docs/LOCAL-MODE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/LOCAL-MODE.md',
+  'GATEWAY-MTLS.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md',
+  'docs/GATEWAY-MTLS.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md',
 };
 
 const MAPPINGS = [
@@ -83,6 +89,16 @@ const MAPPINGS = [
       title: 'Plugin Development',
       sidebar: { order: 4 },
       description: 'Write custom provider, channel, tool, and memory plugins',
+    },
+  },
+  {
+    src: 'docs/PROVIDERS.md',
+    dest: 'guides/providers.md',
+    frontmatter: {
+      title: 'Provider Setup',
+      sidebar: { order: 6 },
+      description:
+        'How to configure LLM providers: API and local plugins, plus harness CLIs under plugins/providers',
     },
   },
   {
@@ -204,13 +220,13 @@ function rewriteLinks(body) {
   for (const [from, to] of Object.entries(LINK_MAP)) {
     out = out.replaceAll(`](${from})`, `](${to})`);
   }
-  // Site-friendly next-steps block for getting started
   out = out.replace(
-    /## Next Steps\n\n([\s\S]*?)\n\n---/,
-    `## Next Steps
+    /## Next steps\n\n([\s\S]*?)\n\n---/,
+    `## Next steps
 
-- **[Channel Setup](/guides/channels/)** — Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
+- **[Provider Setup](/guides/providers/)** — API, local, and harness CLI providers
+- **[Channels](/guides/channels/)** — RivetHub is the human UX. The agent channel is mesh only
+- **[Hub Setup](/guides/hub-setup/)** — Run RivetHub clients against a node
 - **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
