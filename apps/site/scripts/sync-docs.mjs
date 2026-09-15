@@ -204,10 +204,9 @@ function rewriteLinks(body) {
   for (const [from, to] of Object.entries(LINK_MAP)) {
     out = out.replaceAll(`](${from})`, `](${to})`);
   }
-  // Site-friendly next-steps block for getting started
   out = out.replace(
-    /## Next [Ss]teps\n\n([\s\S]*?)\n\n---/,
-    `## Next Steps
+    /## Next steps\n\n([\s\S]*?)\n\n---/,
+    `## Next steps
 
 - **[Hub Setup](/guides/hub-setup/)** — Run a harness-first RivetOS node with the RivetHub clients
 - **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, claude-cli, and opencode-cli
