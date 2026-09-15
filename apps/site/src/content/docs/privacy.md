@@ -1,15 +1,21 @@
 ---
 title: Privacy
-description: You run RivetOS on your own hardware and choose the models. Your privacy is yours to control.
+description: You run RivetOS on your own hardware. The runtime does not phone home. The marketing sites record anonymous pageviews.
 sidebar:
   hidden: true
 ---
 
-**The short version: you run RivetOS on your own hardware and choose your own models, so your privacy is up to you. There's no service collecting your data.**
+**The short version: you run RivetOS on your own hardware and choose your own models. The runtime does not phone home. The marketing sites record anonymous pageviews.**
 
-## We don't collect anything
+## Marketing sites
 
-rivetos.dev is a static documentation site. RivetOS itself is software you install and run on your own infrastructure. There is no RivetOS account, no telemetry, no analytics pipeline phoning your usage home, and no central server that sees your agents, conversations, or memory.
+rivetos.dev and [rivethub.io](https://rivethub.io/privacy.html) are static marketing and documentation sites. When a PostHog project key is configured at build time, they record pageviews — which page was opened, and when the visitor leaves — so we can see which docs and landing pages are useful. There is no RivetOS account, and we do not collect names, emails, or other account data on these sites. Anonymous visitors are not turned into marketing profiles.
+
+This is website analytics only. It is not RivetOS runtime telemetry, and it is not enabled in the Hub desktop or Android apps.
+
+## The runtime does not phone home
+
+RivetOS itself is software you install and run on your own infrastructure. There is no RivetOS account, no runtime telemetry, and no central server that sees your agents, conversations, or memory.
 
 ## Your data stays where you put it
 
@@ -23,4 +29,4 @@ You decide which providers RivetOS talks to. Point it at a cloud provider (Anthr
 
 Any channels or tools you connect, such as web search or MCP servers, are governed by their own privacy policies. RivetOS is the plumbing; what you plug into it is up to you.
 
-In short: your privacy is your own. RivetOS is built so you keep control of it.
+In short: the marketing sites may record anonymous pageviews. The runtime is built so you keep control of everything it sees.

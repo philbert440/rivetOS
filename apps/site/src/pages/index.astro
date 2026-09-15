@@ -3,6 +3,7 @@
 // DM Sans + JetBrains Mono, blueprint grid). Docs remain Starlight; this
 // replaces only the splash. Assets self-hosted except Google Fonts.
 import robot from '../assets/robot.png'
+import PostHog from '../components/PostHog.astro'
 const GH = 'https://github.com/philbert440/rivetOS'
 ---
 
@@ -26,6 +27,7 @@ const GH = 'https://github.com/philbert440/rivetOS'
       href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;600&display=swap"
       rel="stylesheet"
     />
+    <PostHog />
   </head>
   <body>
     <nav>
@@ -145,6 +147,7 @@ const GH = 'https://github.com/philbert440/rivetOS'
       <span>Apache 2.0</span>
       <a href="/guides/introduction/">Docs</a>
       <a href="/reference/changelog/">Changelog</a>
+      <a href="/privacy/">Privacy</a>
       <a href={GH}>GitHub</a>
     </footer>
   </body>
