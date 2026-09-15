@@ -368,7 +368,7 @@ export function sessionIdFromEvent(event: QwenJsonEvent): string | undefined {
   }
   const id = pickStr(rec, 'session_id', 'sessionId', 'id')
   if (!id) return undefined
-  return QWEN_NATIVE_RE.test(id) ? id : id
+  return id
 }
 
 function isInitLine(event: QwenJsonEvent): boolean {
@@ -377,11 +377,15 @@ function isInitLine(event: QwenJsonEvent): boolean {
   return subtype === undefined || subtype === 'init'
 }
 
-function contentItems(message: QwenAssistantMessage | undefined): Record<string, unknown>[] {
+function contentItems(message: QwenAssistantMessage | undefined): QwenContentItem[] {
   if (!message) return []
   const content = message.content
   if (!Array.isArray(content)) return []
-  return content.filter(isRecord)
+  return content
+}
+
+function isQwenToolUse(item: QwenContentItem): item is QwenContentToolUse {
+  return item.type === 'tool_use'
 }
 
 function toolResultOutput(raw: unknown): unknown {
@@ -433,9 +437,9 @@ export function toHarnessEvents(event: QwenJsonEvent, sessionId: string): Harnes
       const msg = assistantMessage(event)
       const out: HarnessEvent[] = []
       for (const item of contentItems(msg)) {
-        if (item.type !== 'tool_use') continue
-        const id = pickStr(item, 'id')
-        const name = pickStr(item, 'name')
+        if (!isQwenToolUse(item)) continue
+        const id = typeof item.id === 'string' && item.id !== '' ? item.id : undefined
+        const name = typeof item.name === 'string' && item.name !== '' ? item.name : undefined
         if (!id || !name) continue
         out.push({
           type: 'tool-use',
@@ -572,7 +576,13 @@ export function toHarnessEventsFromDisk(event: QwenJsonEvent, sessionId: string)
   return out
 }
 
-/** Sum token fields; unknown shapes degrade to 0. Runtime keys first, disk aliases fallback. */
+/**
+ * Sum token fields; unknown shapes degrade to 0. Runtime keys first, disk aliases fallback.
+ *
+ * Prompt totals (`input_tokens` / `promptTokenCount` / `input_token_count`)
+ * already include cache. `cacheRead` is a subset of that prompt, not extra —
+ * same as the den adapter. Callers must not add `cacheRead` onto `inputTokens`.
+ */
 export function tokensFromUsage(u: QwenUsageFields | Record<string, unknown> | undefined): {
   inputTokens: number
   outputTokens: number
@@ -707,6 +717,9 @@ function eventTimeMs(event: QwenJsonEvent): number | undefined {
  * `qwen-code.api_response` is counted only when no assistant usage was
  * found. `sinceMs` is the spawn clock. Never throws.
  *
+ * Cached tokens are a subset of the prompt total: they are recorded on
+ * `cacheRead` and not added to `inputTokens`.
+ *
  * `sessionDir` is the jsonl path (name kept so executor call sites stay small).
  */
 export function reconcileTurn(opts: { sessionDir: string; sinceMs: number }): QwenTurnFacts {
@@ -734,7 +747,7 @@ export function reconcileTurn(opts: { sessionDir: string; sinceMs: number }): Qw
       if (event.type === 'assistant') {
         const tokens = usageFromEvent(event)
         if (tokens) {
-          facts.usage.inputTokens += tokens.inputTokens + tokens.cacheRead
+          facts.usage.inputTokens += tokens.inputTokens
           facts.usage.outputTokens += tokens.outputTokens
           facts.usage.cacheRead = (facts.usage.cacheRead ?? 0) + tokens.cacheRead
           facts.usageRecords += 1
@@ -751,7 +764,7 @@ export function reconcileTurn(opts: { sessionDir: string; sinceMs: number }): Qw
   }
   if (facts.usageRecords === 0) {
     for (const row of telemetry) {
-      facts.usage.inputTokens += row.tokens.inputTokens + row.tokens.cacheRead
+      facts.usage.inputTokens += row.tokens.inputTokens
       facts.usage.outputTokens += row.tokens.outputTokens
       facts.usage.cacheRead = (facts.usage.cacheRead ?? 0) + row.tokens.cacheRead
       facts.usageRecords += 1

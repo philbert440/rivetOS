@@ -13,6 +13,7 @@ import {
   describeCodexSession,
   describePiSession,
   describeQwenCodeSession,
+  qwenSessionCwd,
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
@@ -782,7 +783,9 @@ describe('listHarnessSessions', () => {
       id,
       command: 'qwen',
       title: 'reply with the single word pong',
+      cwd: '/home/example/proj',
     })
+    expect(qwenSessionCwd(id)).toBe('/home/example/proj')
     expect(await describeQwenCodeSession(id)).toEqual(sessions[0])
     expect(harnessSessionExists('qwen', id)).toBe(true)
     expect(harnessSessionExists('qwen', 'deadbeef')).toBe(false)
@@ -857,6 +860,8 @@ describe('listHarnessSessions', () => {
     expect(sessions.map((s) => s.id).sort()).toEqual([other, id].sort())
     expect(harnessSessionExists('qwen', id)).toBe(true)
     expect((await readQwenCodeTranscript(id)).turns).toEqual([{ role: 'user', text: 'new cwd' }])
+    expect((await describeQwenCodeSession(id))?.cwd).toBe('/home/example/b')
+    expect(qwenSessionCwd(id)).toBe('/home/example/b')
     expect(await resolveHarnessStore(`qwen-code:${id}`)).toEqual({ command: 'qwen', path: newer })
   })
 
@@ -868,6 +873,7 @@ describe('listHarnessSessions', () => {
     const id = '15cb936c-3364-49d6-8769-21f0c635f160'
     expect(harnessSessionExists('qwen', id)).toBe(false)
     expect(await describeQwenCodeSession(id)).toBeUndefined()
+    expect(qwenSessionCwd(id)).toBeUndefined()
     expect(await readQwenCodeTranscript(id)).toEqual({ id, command: '', turns: [] })
   })
 

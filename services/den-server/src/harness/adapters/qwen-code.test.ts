@@ -1,5 +1,10 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { createTurnTracker } from '../turn-tracker.js'
 import { qwenCodeAdapter, qwenCodeTurnsFromLines } from './qwen-code.js'
+
+const TOOL_TURN_SAMPLE =
+  '/rivet-shared/tmp/harness-qwen-code/samples/22222222-2222-4222-8222-222222222222.jsonl'
 
 describe('qwenCodeTurnsFromLines', () => {
   it('folds a real_user + thinking/text assistant line and skips system', () => {
@@ -48,6 +53,9 @@ describe('qwenCodeTurnsFromLines', () => {
       text: 'pong',
       thinking: 'The user is asking for a response with just the single word "pong".',
       model: 'qwen-27b',
+      lastBlock: 'text',
+      stopReason: 'end_turn',
+      complete: true,
       usage: { promptTokens: 26724, completionTokens: 78, cachedTokens: 0 },
     })
   })
@@ -181,6 +189,8 @@ describe('qwenCodeTurnsFromLines', () => {
         args: { query: 'select:run_shell_command' },
       },
     ])
+    expect(turns[1].complete).toBeUndefined()
+    expect(turns[1].stopReason).toBe('tool_use')
     expect(turns[2].tools).toEqual([
       {
         name: 'run_shell_command',
@@ -189,12 +199,65 @@ describe('qwenCodeTurnsFromLines', () => {
         args: { command: 'echo tool-sample-ok', description: 'Print a sample marker' },
       },
     ])
+    expect(turns[2].complete).toBeUndefined()
     expect(turns[3]).toMatchObject({
       role: 'assistant',
       text: 'tool-sample-ok',
       model: 'qwen-27b',
+      lastBlock: 'text',
+      stopReason: 'end_turn',
+      complete: true,
       usage: { promptTokens: 26388, completionTokens: 22, cachedTokens: 0 },
     })
+  })
+
+  it('replays the real tool-turn transcript: final tool-sample-ok is complete and idle', () => {
+    const lines = readFileSync(TOOL_TURN_SAMPLE, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim())
+    const turns = qwenCodeAdapter.store.parseLines?.(lines) ?? []
+    const last = turns.at(-1)
+    expect(last).toMatchObject({
+      role: 'assistant',
+      text: 'tool-sample-ok',
+      complete: true,
+    })
+    const tracker = createTurnTracker(qwenCodeAdapter)
+    tracker.apply(turns, 'qwen')
+    expect(tracker.inFlight()).toBe(false)
+  })
+
+  it('a following real_user closes the previous assistant turn', () => {
+    const turns = qwenCodeTurnsFromLines([
+      {
+        type: 'user',
+        provenance: 'real_user',
+        message: { role: 'user', parts: [{ text: 'first' }] },
+      },
+      {
+        type: 'assistant',
+        message: {
+          role: 'model',
+          parts: [
+            {
+              functionCall: { id: 'c1', name: 'read_file', args: { path: '/x' } },
+            },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        provenance: 'real_user',
+        message: { role: 'user', parts: [{ text: 'second' }] },
+      },
+    ])
+    expect(turns).toHaveLength(3)
+    expect(turns[1]).toMatchObject({
+      role: 'assistant',
+      stopReason: 'end_turn',
+      complete: true,
+    })
+    expect(turns[2]).toEqual({ role: 'user', text: 'second' })
   })
 
   it('does not invent a turn for the tool_result line itself', () => {

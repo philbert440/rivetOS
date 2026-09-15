@@ -108,7 +108,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── grok-bot/                # Cursor Grok Bot: MCP recall + gated sidecar write tools (no auto-capture yet)
 │   ├── kimi/                    # Kimi Code CLI: TOML hooks, payload capture worker, backfill + rivet-den
 │   ├── pi/                      # pi CLI: extension on turn_end + MCP recall
-│   ├── qwen-code/               # Qwen Code CLI: extension hooks on Stop/SessionEnd + MCP recall
+│   ├── qwen-code/               # Qwen Code CLI: capture-only hooks (UserPromptSubmit/Stop/SessionEnd) + MCP recall; no den hook
 │   ├── codex/                   # Codex CLI: hooks.json / managed requirements.toml + MCP recall
 │   ├── opencode/                # OpenCode CLI: plugin on session.idle + MCP recall
 │   ├── shared/                  # rivet-paths.sh — install-root discovery sourced by every bin/rivet-memory-mcp.sh
@@ -178,7 +178,7 @@ infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 `@rivetos/den-protocol`, which supplies the den event contract that the runtime types
 reference. Beyond that, if you need a class or function, it goes in `core`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps). Headless `qwen-code` is `@rivetos/harness-qwen-code` + provider `qwen-code` (same discovery path).
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps). Headless `qwen-code` is split: `@rivetos/boot` depends on and imports `@rivetos/harness-qwen-code` to register the task executor; the `qwen-code` provider (`plugins/providers/qwen-code`) is discovered as a provider plugin via `manifest.register()`.
 
 ---
 

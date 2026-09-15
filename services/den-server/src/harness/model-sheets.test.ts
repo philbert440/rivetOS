@@ -260,7 +260,7 @@ describe('qwenCodeSheet', () => {
         openai: [
           {
             id: 'qwen-27b',
-            name: 'qwen-27b (pve3 vLLM)',
+            name: 'qwen-27b (local vLLM)',
             baseUrl: 'http://192.0.2.10:8003/v1',
             envKey: 'OPENAI_API_KEY',
           },
@@ -288,7 +288,7 @@ describe('qwenCodeSheet', () => {
     expect(sheet.models?.map((m) => m.id)).toEqual(['qwen-27b', 'qwen-think'])
     expect(sheet.models?.[0]).toMatchObject({
       id: 'qwen-27b',
-      label: 'qwen-27b (pve3 vLLM)',
+      label: 'qwen-27b (local vLLM)',
       default: true,
     })
     expect(sheet.models?.[0]?.efforts).toBeUndefined()

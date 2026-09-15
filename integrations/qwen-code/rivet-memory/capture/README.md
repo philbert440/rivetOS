@@ -12,7 +12,8 @@ capture/
 ├── tsconfig.json         # src build (extends ../../../../tsconfig.base.json)
 ├── tsconfig.test.json    # noEmit check of src + test
 ├── src/
-│   └── qwen-memory-capture.ts
+│   ├── qwen-memory-capture.ts
+│   └── merge-settings-hooks.ts   # settings.json hook merge + extension stage CLI
 ├── test/
 │   ├── smoke.test.ts
 │   ├── hook.test.ts
@@ -21,18 +22,21 @@ capture/
 │   └── fixtures/
 │       └── sample-session/   # scrubbed real transcript
 └── dist/                 # built by `npm run build` — gitignored
-    └── qwen-memory-capture.js
+    ├── qwen-memory-capture.js
+    └── merge-settings-hooks.js
 ```
 
 ## Build
 
 ```bash
 npm install
-npm run build      # produces dist/qwen-memory-capture.js
+npm run build      # produces dist/qwen-memory-capture.js and dist/merge-settings-hooks.js
 ```
 
 `bin/qwen-memory-capture.sh` prefers `dist/qwen-memory-capture.js` and falls
 back to `npx --yes tsx` against the .ts source if the build is missing.
+`bin/setup-qwen-rivet-memory.sh` calls `dist/merge-settings-hooks.js` the same
+way (`npx --yes tsx` on `src/merge-settings-hooks.ts` when dist is absent).
 
 ## Design
 

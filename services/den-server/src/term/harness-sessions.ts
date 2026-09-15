@@ -70,6 +70,9 @@ export interface HarnessSession {
   title: string
   /** epoch ms of last activity (file mtime) */
   updatedAt: number
+  /** Project directory recorded on the store row / transcript. Qwen sessions
+   *  are cwd-scoped (`--resume` from another dir is a silent miss). */
+  cwd?: string
   /** Model id when the store row records one. */
   model?: string
   /** epoch ms the session was created. Claude has no field for it, so its
@@ -1021,13 +1024,46 @@ async function readQwenSession(id: string): Promise<HarnessSession | undefined> 
     return undefined
   }
   const title = (await qwenTitleFromTranscript(transcript).catch(() => '')) || id
+  const cwd = qwenCwdFromFile(transcript)
   return {
     id,
     command: 'qwen',
     title,
     updatedAt: Math.floor(mtime),
     createdAt: Math.floor(birth),
+    ...(cwd ? { cwd } : {}),
   }
+}
+
+/** First `cwd` stamped on a qwen jsonl line. Sync — term spawn is sync. */
+function qwenCwdFromFile(file: string): string | undefined {
+  try {
+    const text = readFileSync(file, 'utf8')
+    const window = text.length > 64 * 1024 ? text.slice(0, 64 * 1024) : text
+    for (const line of window.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const obj: unknown = JSON.parse(line)
+        if (isRecord(obj) && typeof obj.cwd === 'string' && obj.cwd.trim()) return obj.cwd.trim()
+      } catch {
+        continue
+      }
+    }
+  } catch {
+    /* skip */
+  }
+  return undefined
+}
+
+/**
+ * Recorded project cwd for a qwen native id. Used by the term manager so
+ * `--resume` runs in the directory the session was created in.
+ */
+export function qwenSessionCwd(id: string): string | undefined {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const path = qwenTranscriptPath(id)
+  if (!path) return undefined
+  return qwenCwdFromFile(path)
 }
 
 async function collectQwenSessionFiles(): Promise<

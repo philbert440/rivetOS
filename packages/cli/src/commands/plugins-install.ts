@@ -699,6 +699,29 @@ function uncommentedLineHasCodexCapture(text: string): boolean {
   return false
 }
 
+function commandHasQwenCapture(command: string): boolean {
+  return command.includes('qwen-memory-capture.sh') && command.includes('--hook')
+}
+
+function jsonCommandHasQwenCapture(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(jsonCommandHasQwenCapture)
+  if (value && typeof value === 'object') {
+    const rec = value as Record<string, unknown>
+    if (typeof rec.command === 'string' && commandHasQwenCapture(rec.command)) return true
+    return Object.values(rec).some(jsonCommandHasQwenCapture)
+  }
+  return false
+}
+
+/** True when settings.json `hooks` contain a marker `qwen-memory-capture.sh --hook` group. */
+export function qwenSettingsHasCaptureHooks(path: string): boolean {
+  try {
+    return jsonCommandHasQwenCapture(JSON.parse(readFileSync(path, 'utf-8')))
+  } catch {
+    return false
+  }
+}
+
 /** True when hooks.json has a command entry containing `codex-memory-capture.sh` and `--hook`. */
 export function hooksJsonHasCodexCapture(path: string): boolean {
   try {
@@ -756,7 +779,10 @@ export function nativeCaptureArtefactMissing(
           return false
         }
       })
-      return ext ? null : 'qwen extension missing (extensions/rivet-memory/hooks/hooks.json)'
+      const settings = homes.some((dir) => qwenSettingsHasCaptureHooks(join(dir, 'settings.json')))
+      return ext || settings
+        ? null
+        : 'qwen extension missing (extensions/rivet-memory/hooks/hooks.json)'
     }
     default:
       return null

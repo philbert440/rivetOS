@@ -306,7 +306,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 
 **Dependency Rule:** Every arrow points inward. Plugins depend on types. Domain depends on types. Application depends on domain + types. **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps). Headless `qwen-code` is `@rivetos/harness-qwen-code` + provider `qwen-code` (same discovery path).
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code` (the kimi task executor). A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps). Headless `qwen-code` is split: `@rivetos/boot` depends on and imports `@rivetos/harness-qwen-code` to register the task executor; the `qwen-code` provider (`plugins/providers/qwen-code`) is discovered as a provider plugin via `manifest.register()`.
 
 ---
 
@@ -489,7 +489,7 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes, opencode, pi, qwen-code)
+  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes, opencode, pi); qwen-code capture-only (no den hook)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
@@ -760,8 +760,11 @@ Composable async pipeline with priority ordering (0-99):
 - **Auto-actions**: Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks**: Daily context loading, session summaries, auto-commit, pre/post-compact
 
-Harness-side hooks (claude/grok/kimi/hermes/opencode/qwen-code den + memory integrations) are
+Harness-side hooks (claude/grok/kimi/hermes/opencode den + memory integrations) are
 **outside** this pipeline; they feed den AgentEvents and capture, not the AI-SDK hook bus.
+qwen-code ships MEMORY hooks only (`UserPromptSubmit` / `Stop` / `SessionEnd` → capture
+via `integrations/qwen-code/rivet-memory`); there is no den hook. liveStream is tap-only,
+like pi.
 
 ---
 
@@ -789,7 +792,7 @@ Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
 ## Memory and capture
 
 - Capture plugins (under `integrations/*/rivet-memory`) write under canonical `SessionId` where possible.
-- OpenCode capture is a read-only SQLite watcher (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a rollout jsonl watcher. qwen-code capture is native hooks via a qwen extension (`UserPromptSubmit` / `Stop` / `SessionEnd`) → `integrations/qwen-code/rivet-memory`.
+- OpenCode capture is a read-only SQLite watcher (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a rollout jsonl watcher. qwen-code capture is native hooks via a qwen extension (`UserPromptSubmit` / `Stop` / `SessionEnd`) → `integrations/qwen-code/rivet-memory` (capture-only; no den hook).
 - Mesh-shared DB: disambiguate by `agent` column; native id entropy is the collision defense.
 - Hermes rotation: alias + breadcrumb (not close+new). Predecessor stays open until true session end.
 - Compaction / embedding: graphile-worker jobs from SQL triggers and crons in the worker packages, not LISTEN/NOTIFY.

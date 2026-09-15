@@ -139,7 +139,7 @@ export function buildTaskScaffold(spec: TaskSpec, cwd: string): string {
           .map((c) => `- [${c.id}] ${c.description}`)
           .join('\n')}`
       : '',
-    `### Working directory\nStay in this directory for every turn of the task: ${cwd}`,
+    `Working directory: ${cwd}`,
     spec.systemPromptAppend ?? '',
     taskResultFenceInstructions(),
   ]
@@ -626,7 +626,8 @@ export class QwenCodeExecutor implements HarnessExecutor {
             sawTerminal = true
           },
           onAssistantUsage: (tokens) => {
-            stdoutInput = tokens.inputTokens + tokens.cacheRead
+            // cacheRead is a subset of inputTokens, not extra.
+            stdoutInput = tokens.inputTokens
             stdoutOutput = tokens.outputTokens
             stdoutUsageRecords += 1
           },
@@ -688,7 +689,7 @@ export class QwenCodeExecutor implements HarnessExecutor {
       usage.outputTokens += stdoutOutput
       usage.totalTokens = usage.inputTokens + usage.outputTokens
     } else if (resultUsage) {
-      usage.inputTokens += resultUsage.inputTokens + resultUsage.cacheRead
+      usage.inputTokens += resultUsage.inputTokens
       usage.outputTokens += resultUsage.outputTokens
       usage.totalTokens = usage.inputTokens + usage.outputTokens
     } else {

@@ -1,19 +1,17 @@
 /**
  * Setup merge / staging rewrite tests for Qwen Code rivet-memory.
  *
- * Spawns bin/merge-settings-hooks.cjs against fixture inputs (empty, foreign,
- * mixed, invalid, path-with-spaces) and stages extension/ rewriting
+ * Drives capture/src/merge-settings-hooks.ts against fixture inputs (empty,
+ * foreign, mixed, invalid, path-with-spaces) and stages extension/ rewriting
  * <PLUGIN_PATH>.
  */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runMergeCli } from '../src/merge-settings-hooks.ts'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const BIN = path.join(__dirname, '../../bin')
-const MERGE = path.join(BIN, 'merge-settings-hooks.cjs')
 const FRAGMENT = path.join(__dirname, '../../extension/hooks/hooks.json')
 const EXT_SRC = path.join(__dirname, '../../extension')
 
@@ -30,12 +28,23 @@ function eq(name: string, actual: unknown, expected: unknown): void {
 }
 
 function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync('node', [MERGE, ...args], { encoding: 'utf8' })
-  return {
-    status: result.status,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-  }
+  let stdout = ''
+  let stderr = ''
+  const status = runMergeCli(args, {
+    stdout: {
+      write(chunk: string) {
+        stdout += chunk
+        return true
+      },
+    },
+    stderr: {
+      write(chunk: string) {
+        stderr += chunk
+        return true
+      },
+    },
+  })
+  return { status, stdout, stderr }
 }
 
 function commandOf(doc: unknown, event: string, group = 0, hook = 0): string {

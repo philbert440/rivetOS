@@ -1995,4 +1995,30 @@ describe('artefact validation + grok hook bake', () => {
     writeQwenExtension(dir)
     expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toBeNull()
   })
+
+  it('nativeCaptureArtefactMissing accepts settings-mode hooks with no extension dir', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    '/opt/rivetos/integrations/qwen-code/rivet-memory/bin/qwen-memory-capture.sh --hook',
+                  timeout: 20,
+                  name: 'rivet-memory',
+                },
+              ],
+            },
+          ],
+        },
+      }) + '\n',
+    )
+    expect(existsSync(join(dir, 'extensions'))).toBe(false)
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toBeNull()
+  })
 })

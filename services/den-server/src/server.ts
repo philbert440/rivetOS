@@ -77,6 +77,7 @@ import { handleAudioHttp } from './audio/http.js'
 import {
   listHarnessSessions,
   harnessSessionExists,
+  qwenSessionCwd,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
@@ -594,6 +595,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
+        sessionCwd: (command, id) => (command === 'qwen' ? qwenSessionCwd(id) : undefined),
         harnessArgv: (command, session, argv) =>
           command === 'codex' ? codexProtocol?.terminalArgv(session, argv[0]) : undefined,
         tmuxCtl: opts.tmuxCtl,

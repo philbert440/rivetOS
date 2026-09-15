@@ -4,7 +4,9 @@
  * Each turn shells out to the local Qwen Code CLI
  * (`qwen -p <prompt> --output-format stream-json --include-partial-messages
  * --approval-mode yolo`) and replays its Claude-shaped stream-json wire
- * (content_block_delta text/thinking, assistant tool_use, result usage).
+ * (content_block_delta text/thinking, assistant snapshots, result usage).
+ * Native `tool_use` / `tool_result` stay inside the CLI (already executed);
+ * they are not emitted as LanguageModelV3 tool-call parts.
  * The first turn of a conversation pins `--session-id <uuid>` (minted here,
  * stored in ~/.rivetos/qwen-code-sessions.json); later turns pass
  * `--resume <uuid>`. System messages go out as `--append-system-prompt`.
@@ -393,12 +395,13 @@ export class QwenCodeModel implements LanguageModelV3 {
         let retried = false
         let resultError = false
         let resultSubtype: string | undefined
+        /** A `result` event with `is_error:false` — the only terminal success. */
+        let sawTerminalSuccess = false
         let lastNonZeroUsage: { input: number; output: number; cacheRead: number } | undefined
         let resultUsage: { input: number; output: number; cacheRead: number } | undefined
         let stderr = ''
         let buffer = ''
         let killTimer: ReturnType<typeof setTimeout> | undefined
-        const seenToolCalls = new Set<string>()
 
         const enqueue = (part: LanguageModelV3StreamPart): void => {
           if (closed) return
@@ -470,19 +473,10 @@ export class QwenCodeModel implements LanguageModelV3 {
                   cacheRead: ev.cacheRead ?? 0,
                 }
               }
-            } else if (ev.kind === 'tool-call') {
-              const key = ev.id || `${ev.name}:${JSON.stringify(ev.input)}`
-              if (seenToolCalls.has(key)) continue
-              seenToolCalls.add(key)
-              enqueue({
-                type: 'tool-call',
-                toolCallId: ev.id,
-                toolName: ev.name,
-                input: ev.input,
-              } as LanguageModelV3StreamPart)
             } else if (ev.kind === 'finish') {
               resultError = ev.isError
               resultSubtype = ev.subtype
+              if (!ev.isError) sawTerminalSuccess = true
               if (ev.usage) {
                 resultUsage = {
                   input: ev.usage.inputTokens,
@@ -495,7 +489,7 @@ export class QwenCodeModel implements LanguageModelV3 {
           }
         }
 
-        const finishStream = (code: number | null): void => {
+        const finishStream = (code: number | null, signal: NodeJS.Signals | null = null): void => {
           if (closed) return
           try {
             const tail = buffer.trim()
@@ -503,6 +497,8 @@ export class QwenCodeModel implements LanguageModelV3 {
             if (reasonOpen) enqueue({ type: 'reasoning-end', id: REASON_ID })
             if (textOpen) enqueue({ type: 'text-end', id: TEXT_ID })
             const aborted = Boolean(abortSignal?.aborted)
+            const processFailed = code !== 0
+            const missingSuccess = !sawTerminalSuccess
             if (!sawText && code !== 0 && !aborted && !resultError) {
               enqueue({ type: 'text-start', id: TEXT_ID })
               enqueue({
@@ -513,15 +509,20 @@ export class QwenCodeModel implements LanguageModelV3 {
               enqueue({ type: 'text-end', id: TEXT_ID })
             }
             const chosen = lastNonZeroUsage ?? resultUsage
+            const failed = aborted || resultError || processFailed || missingSuccess
             enqueue({
               type: 'finish',
               finishReason: {
-                unified: aborted || resultError || (code !== 0 && code !== null) ? 'error' : 'stop',
+                unified: failed ? 'error' : 'stop',
                 raw: aborted
                   ? 'aborted'
                   : resultError
                     ? (resultSubtype ?? 'error')
-                    : String(code ?? 0),
+                    : processFailed
+                      ? (signal ?? (code === null ? 'killed' : String(code)))
+                      : missingSuccess
+                        ? 'missing-result'
+                        : String(code ?? 0),
               },
               usage: usageFromTokens(chosen?.input, chosen?.output, chosen?.cacheRead),
             })
@@ -584,7 +585,7 @@ export class QwenCodeModel implements LanguageModelV3 {
           child.on('error', (err) => {
             enqueue({ type: 'error', error: err })
           })
-          child.on('close', (code) => {
+          child.on('close', (code, signal) => {
             if (killTimer) {
               clearTimeout(killTimer)
               killTimer = undefined
@@ -607,7 +608,7 @@ export class QwenCodeModel implements LanguageModelV3 {
               attach(next, false)
               return
             }
-            finishStream(code)
+            finishStream(code, signal)
           })
         }
 

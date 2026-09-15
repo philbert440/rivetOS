@@ -4,7 +4,8 @@ Qwen Code CLI provider for the [Qwen Code](https://github.com/QwenLM/qwen-code)
 harness (`npm i -g @qwen-code/qwen-code`). Each turn runs the local
 `qwen -p <prompt> --output-format stream-json --include-partial-messages
 --approval-mode yolo` and replays the Claude-shaped stream-json wire (text /
-thinking deltas, tool_use, usage) as a turn. System messages go out as
+thinking deltas, usage) as a turn. Native `tool_use` already ran inside the
+CLI and is not re-emitted as an AI SDK tool-call. System messages go out as
 `--append-system-prompt`. Stdin is ignored. Abort/cancel is SIGTERM then
 SIGKILL after 3s.
 

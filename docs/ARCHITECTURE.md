@@ -492,7 +492,7 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes, qwen-code)
+  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes); qwen-code capture-only (no den hook)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
@@ -763,8 +763,11 @@ Composable async pipeline with priority ordering (0-99):
 - **Auto-actions**: Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks**: Daily context loading, session summaries, auto-commit, pre/post-compact
 
-Harness-side hooks (claude/grok/kimi/hermes/qwen-code den + memory integrations) are
+Harness-side hooks (claude/grok/kimi/hermes den + memory integrations) are
 **outside** this pipeline; they feed den AgentEvents and capture, not the AI-SDK hook bus.
+qwen-code ships MEMORY hooks only (`UserPromptSubmit` / `Stop` / `SessionEnd` → capture
+via `integrations/qwen-code/rivet-memory`); there is no den hook. liveStream is tap-only,
+like pi.
 
 ---
 
@@ -790,7 +793,7 @@ Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
 ## Memory and capture
 
 - Capture plugins (under `integrations/*/rivet-memory`) write under canonical `SessionId` where possible.
-- OpenCode capture is a native plugin on `session.idle` (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a Codex hook (`hooks.json` / managed `requirements.toml`) over the rollout jsonl. qwen-code capture is native hooks via a qwen extension (`UserPromptSubmit` / `Stop` / `SessionEnd`) → `integrations/qwen-code/rivet-memory`.
+- OpenCode capture is a native plugin on `session.idle` (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a Codex hook (`hooks.json` / managed `requirements.toml`) over the rollout jsonl. qwen-code capture is native hooks via a qwen extension (`UserPromptSubmit` / `Stop` / `SessionEnd`) → `integrations/qwen-code/rivet-memory` (capture-only; no den hook).
 - Mesh-shared DB: disambiguate by `agent` column; native id entropy is the collision defense.
 - Hermes rotation: alias + breadcrumb (not close+new). Predecessor stays open until true session end.
 - Compaction / embedding: graphile-worker jobs from SQL triggers and crons in the worker packages, not LISTEN/NOTIFY.

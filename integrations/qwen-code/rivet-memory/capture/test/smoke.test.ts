@@ -32,7 +32,14 @@ const FIXTURE = path.join(
   'sample-session',
   '11111111-2222-4333-8444-555555555555.jsonl',
 )
+const TOOL_TURN_FIXTURE = path.join(
+  __dirname,
+  'fixtures',
+  'sample-session',
+  '22222222-2222-4222-8222-222222222222.jsonl',
+)
 const SESSION = '11111111-2222-4333-8444-555555555555'
+const TOOL_TURN_SESSION = '22222222-2222-4222-8222-222222222222'
 
 let failed = 0
 function check(name: string, cond: boolean, detail = ''): void {
@@ -217,6 +224,46 @@ console.log('\n— parseTranscriptText (fixture) —')
     parsed.messages[0]?.eventId === `qwen-code:${SESSION}:181c8cae-c294-4d77-b993-166db8e5788b`,
   )
   eq('no private tmp paths', parsed.cwd?.includes('/tmp/claude') ?? true, false)
+  const existingToolCall = parsed.messages.find(
+    (m) => m.role === 'tool' && m.toolName === 'run_shell_command' && !m.toolResult,
+  )
+  check(
+    'existing fixture tool-call keeps thought:true reasoning',
+    typeof existingToolCall?.extra?.reasoning === 'string' &&
+      String(existingToolCall.extra.reasoning).includes('I will run the command'),
+  )
+}
+
+console.log('\n— parseTranscriptText (tool-turn 22222222, thought+functionCall) —')
+{
+  const text = readFileSync(TOOL_TURN_FIXTURE, 'utf8')
+  const parsed = parseTranscriptText(text, null, TOOL_TURN_FIXTURE)
+  eq('tool-turn session id', parsed.sessionId, TOOL_TURN_SESSION)
+  eq('tool-turn cwd scrubbed', parsed.cwd, '/home/example/scratchpad/proj')
+  const nativeCalls = parsed.messages.filter((m) => m.role === 'tool' && !m.toolResult)
+  eq('two native tool calls', nativeCalls.length, 2)
+  const search = nativeCalls.find((m) => m.toolName === 'tool_search')
+  const shell = nativeCalls.find((m) => m.toolName === 'run_shell_command')
+  check('tool_search row exists', Boolean(search))
+  check('run_shell_command row exists', Boolean(shell))
+  check(
+    'tool_search stores reasoning',
+    typeof search?.extra?.reasoning === 'string' &&
+      String(search.extra.reasoning).includes('deferred tool available via tool_search'),
+  )
+  check(
+    'run_shell_command stores reasoning',
+    typeof shell?.extra?.reasoning === 'string' &&
+      String(shell.extra.reasoning).includes('echo tool-sample-ok'),
+  )
+  check(
+    'tool_search reasoning is not only the tool name',
+    String(search?.extra?.reasoning ?? '').length > String(search?.content ?? '').length,
+  )
+  check(
+    'run_shell_command reasoning is not only the tool name',
+    String(shell?.extra?.reasoning ?? '').length > String(shell?.content ?? '').length,
+  )
 }
 
 console.log('\n— ingest fixture through fake pg + re-ingest dedup —')

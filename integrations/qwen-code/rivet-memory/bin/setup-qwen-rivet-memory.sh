@@ -32,8 +32,21 @@ PLUGIN_PATH="$RIVETOS_ROOT/integrations/qwen-code/rivet-memory"
 PLUGIN_BIN="$PLUGIN_PATH/bin"
 HOOK_FRAGMENT="$PLUGIN_DIR/extension/hooks/hooks.json"
 HOOK_MARKER="qwen-memory-capture.sh"
-MERGE_JS="$SCRIPT_DIR/merge-settings-hooks.cjs"
+CAPTURE_DIR="$PLUGIN_PATH/capture"
+MERGE_BUILT="$CAPTURE_DIR/dist/merge-settings-hooks.js"
+MERGE_SRC="$CAPTURE_DIR/src/merge-settings-hooks.ts"
 EXT_SRC="$PLUGIN_DIR/extension"
+
+run_merge() {
+  if [ -f "$MERGE_BUILT" ]; then
+    node "$MERGE_BUILT" "$@"
+  elif [ -f "$MERGE_SRC" ]; then
+    npx --yes tsx "$MERGE_SRC" "$@"
+  else
+    echo "error: merge-settings-hooks not found at $MERGE_BUILT or $MERGE_SRC" >&2
+    return 1
+  fi
+}
 
 DO_APPLY=0
 DO_REMOVE=0
@@ -128,7 +141,7 @@ if [ "$DO_REMOVE" -eq 1 ]; then
     echo "Removed $EXT_INSTALLED"
   fi
   if [ -f "$USER_SETTINGS" ]; then
-    node "$MERGE_JS" remove "$USER_SETTINGS" "$PLUGIN_PATH" || true
+    run_merge remove "$USER_SETTINGS" "$PLUGIN_PATH" || true
   else
     echo "no $USER_SETTINGS"
   fi
@@ -173,7 +186,7 @@ if [ "$DO_DISABLE_AUTO" -eq 1 ]; then
   echo
   echo "=== Disabling managed auto-memory ==="
   mkdir -p "$QWEN_HOME_DIR"
-  node "$MERGE_JS" disable-auto-memory "$USER_SETTINGS"
+  run_merge disable-auto-memory "$USER_SETTINGS"
 fi
 
 if [ "$DO_APPLY" -ne 1 ]; then
@@ -191,7 +204,7 @@ if [ "$MODE" = "settings" ]; then
     echo "❌ Missing hook fragment $HOOK_FRAGMENT" >&2
     exit 1
   fi
-  node "$MERGE_JS" apply "$USER_SETTINGS" "$HOOK_FRAGMENT" "$PLUGIN_PATH"
+  run_merge apply "$USER_SETTINGS" "$HOOK_FRAGMENT" "$PLUGIN_PATH"
   if ! grep -q "$HOOK_MARKER" "$USER_SETTINGS" 2>/dev/null; then
     echo "❌ Verification failed: $USER_SETTINGS does not contain $HOOK_MARKER" >&2
     exit 1
@@ -205,7 +218,7 @@ else
   STAGE="$(mktemp -d "${TMPDIR:-/tmp}/qwen-rivet-memory.XXXXXX")"
   cleanup_stage() { rm -rf "$STAGE"; }
   trap cleanup_stage EXIT
-  node "$MERGE_JS" stage "$EXT_SRC" "$STAGE" "$PLUGIN_PATH"
+  run_merge stage "$EXT_SRC" "$STAGE" "$PLUGIN_PATH"
   "$QWEN_BIN" extensions uninstall rivet-memory >/dev/null 2>&1 || true
   "$QWEN_BIN" extensions install "$STAGE" --consent
   if [ ! -f "$EXT_HOOKS" ] || ! grep -q "$HOOK_MARKER" "$EXT_HOOKS" 2>/dev/null; then

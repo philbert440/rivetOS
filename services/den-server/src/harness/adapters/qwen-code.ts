@@ -68,16 +68,35 @@ function completeRunningTool(
   }
 }
 
+function closeLastAssistant(turns: HarnessTurn[]): void {
+  const last = turns.at(-1)
+  if (last?.role !== 'assistant' || last.complete === true) return
+  last.complete = true
+  if (!last.stopReason || last.stopReason === 'tool_use') last.stopReason = 'end_turn'
+}
+
+function uiEventRecord(obj: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (obj.type !== 'system' || obj.subtype !== 'ui_telemetry') return undefined
+  const payload = isRecord(obj.systemPayload) ? obj.systemPayload : undefined
+  const uiEvent = payload && isRecord(payload.uiEvent) ? payload.uiEvent : undefined
+  return uiEvent
+}
+
 /**
  * Fold a qwen-code on-disk session JSONL (gemini-style `parts`) into logical
  * turns.
  *
- *   - `type:user` + `provenance:real_user` → user turn (`message.parts[].text`)
+ *   - `type:user` + `provenance:real_user` → user turn (`message.parts[].text`);
+ *     also closes the previous assistant turn
  *   - `type:assistant` `message.parts` → `{text,thought:true}` reasoning,
  *     `{text}` text, `{functionCall}` tool call
+ *   - an assistant whose parts *end* in text (no following `functionCall`) is
+ *     `complete`; a trailing `functionCall` is `stopReason: tool_use`
  *   - `type:tool_result` → completes the matching running tool
  *     (`functionResponse.response.output`); not a turn of its own
- *   - `type:system` skipped
+ *   - `type:system` `ui_telemetry` `qwen-code.api_response` with `response_text`
+ *     marks the end of a model call (closes a text-bearing assistant)
+ *   - other `type:system` skipped
  *   - usage from `usageMetadata` (`promptTokenCount` → input,
  *     `candidatesTokenCount` → output, `cachedContentTokenCount` → cacheRead)
  *   - model from the assistant line's `model`
@@ -85,7 +104,25 @@ function completeRunningTool(
 export function qwenCodeTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
   const turns: HarnessTurn[] = []
   for (const obj of lines) {
-    if (obj.type === 'system') continue
+    if (obj.type === 'system') {
+      const uiEvent = uiEventRecord(obj)
+      if (
+        uiEvent &&
+        pickStr(uiEvent, 'event.name') === 'qwen-code.api_response' &&
+        typeof uiEvent.response_text === 'string'
+      ) {
+        const last = turns.at(-1)
+        if (
+          last?.role === 'assistant' &&
+          last.complete !== true &&
+          last.lastBlock === 'text' &&
+          !(last.tools ?? []).some((t) => t.status === 'running')
+        ) {
+          closeLastAssistant(turns)
+        }
+      }
+      continue
+    }
 
     if (obj.type === 'tool_result') {
       const message = isRecord(obj.message) ? obj.message : undefined
@@ -107,6 +144,7 @@ export function qwenCodeTurnsFromLines(lines: Record<string, unknown>[]): Harnes
       const joined = textParts.join('\n')
       const text = extractTurnText(joined, 'user') ?? joined.trim()
       if (!text) continue
+      closeLastAssistant(turns)
       turns.push({ role: 'user', text })
       continue
     }
@@ -116,13 +154,16 @@ export function qwenCodeTurnsFromLines(lines: Record<string, unknown>[]): Harnes
     const tools: HarnessTranscriptTool[] = []
     let thinking = ''
     const textParts: string[] = []
+    let lastBlock: HarnessTurn['lastBlock']
     for (const part of messageParts(message)) {
       if (part.thought === true && typeof part.text === 'string' && part.text) {
         thinking += part.text
+        lastBlock = 'thinking'
         continue
       }
       if (typeof part.text === 'string' && part.text.trim()) {
         textParts.push(part.text.trim())
+        lastBlock = 'text'
         continue
       }
       const fc = isRecord(part.functionCall) ? part.functionCall : undefined
@@ -135,6 +176,7 @@ export function qwenCodeTurnsFromLines(lines: Record<string, unknown>[]): Harnes
       const summarized = summarizeTurnArgs(fc.args)
       if (summarized) entry.args = summarized
       tools.push(entry)
+      lastBlock = 'tool_use'
     }
 
     const extracted = extractTurnText(textParts.join('\n'), 'assistant')
@@ -149,9 +191,18 @@ export function qwenCodeTurnsFromLines(lines: Record<string, unknown>[]): Harnes
           : thinking
     }
     if (tools.length > 0) turn.tools = tools
+    if (lastBlock) turn.lastBlock = lastBlock
     const usage = usageFromMetadata(obj)
     if (usage) turn.usage = usage
     if (typeof obj.model === 'string' && obj.model.trim()) turn.model = obj.model.trim()
+    // Parts that end in text (no following functionCall) close the model call.
+    // A trailing functionCall is still in flight until the answer lands.
+    if (lastBlock === 'text' && !tools.some((t) => t.status === 'running')) {
+      turn.stopReason = 'end_turn'
+      turn.complete = true
+    } else if (tools.length > 0) {
+      turn.stopReason = 'tool_use'
+    }
     turns.push(turn)
   }
   return turns

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import type { LanguageModelV3Prompt, LanguageModelV3StreamPart } from '@ai-sdk/provider'
 import type { Provider, RegistrationContext } from '@rivetos/types'
 import {
@@ -70,6 +72,69 @@ function model(
 }
 
 const SID = '857b4b7d-3d13-4281-a648-11947cf530ed'
+const TOOL_TURN_NDJSON = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'fixtures',
+  'headless-tool-turn-stream-json.ndjson',
+)
+
+function finishOf(
+  parts: LanguageModelV3StreamPart[],
+): { unified: string; raw: unknown } | undefined {
+  const fin = parts.find((p) => p.type === 'finish')
+  return fin && fin.type === 'finish' ? fin.finishReason : undefined
+}
+
+/** Client-executed = a `tool-call` part without providerExecuted. We emit none. */
+function clientExecutedToolCalls(parts: LanguageModelV3StreamPart[]): LanguageModelV3StreamPart[] {
+  return parts.filter((p) => p.type === 'tool-call')
+}
+
+/** Deterministic child that emits `close(code, signal)` without a real process. */
+function closedProc(opts: {
+  stdout?: string
+  code?: number | null
+  signal?: NodeJS.Signals | null
+}): ChildProcess {
+  const stdout = new EventEmitter() as EventEmitter & {
+    setEncoding: (enc: BufferEncoding) => typeof stdout
+  }
+  stdout.setEncoding = () => stdout
+  const stderr = new EventEmitter() as EventEmitter & {
+    setEncoding: (enc: BufferEncoding) => typeof stderr
+  }
+  stderr.setEncoding = () => stderr
+  const child = new EventEmitter() as EventEmitter & {
+    stdout: typeof stdout
+    stderr: typeof stderr
+    stdin: null
+    killed: boolean
+    pid: number
+    exitCode: number | null
+    signalCode: NodeJS.Signals | null
+    kill: () => boolean
+  }
+  child.stdout = stdout
+  child.stderr = stderr
+  child.stdin = null
+  child.killed = false
+  child.pid = 1
+  child.exitCode = null
+  child.signalCode = null
+  child.kill = () => {
+    child.killed = true
+    return true
+  }
+  queueMicrotask(() => {
+    if (opts.stdout) stdout.emit('data', opts.stdout)
+    const code = 'code' in opts ? (opts.code ?? null) : opts.signal ? null : 0
+    const signal = opts.signal ?? null
+    child.exitCode = code
+    child.signalCode = signal
+    child.emit('close', code, signal)
+  })
+  return child as unknown as ChildProcess
+}
 
 /** Compact real-shaped stream-json (from samples/headless-stream-json-partial.ndjson). */
 function streamJsonLines(opts: { text?: string; thinking?: string } = {}): string {
@@ -435,7 +500,7 @@ describe('QwenCodeModel.doStream', () => {
     expect(text(parts)).toContain('qwen-code bridge error: nope')
   })
 
-  it('emits tool-call from assistant tool_use blocks', async () => {
+  it('keeps native tool_use internal (object input is not a LanguageModelV3 tool-call)', async () => {
     const bin = fakeScript(
       '#!/usr/bin/env bash\n' +
         `echo '{"type":"system","subtype":"init","session_id":"${SID}"}'\n` +
@@ -443,11 +508,62 @@ describe('QwenCodeModel.doStream', () => {
         'echo \'{"type":"result","subtype":"success","is_error":false,"result":""}\'\n',
     )
     const parts = await collect(model(bin, path.join(tmp(), 'map.json')), prompt)
-    const tc = parts.find((p) => p.type === 'tool-call') as
-      { type: 'tool-call'; toolCallId: string; toolName: string; input: unknown } | undefined
-    expect(tc?.toolCallId).toBe('call_6ef8c237955540faabb31812')
-    expect(tc?.toolName).toBe('run_shell_command')
-    expect(tc?.input).toEqual({ command: 'echo tool-sample-ok' })
+    expect(clientExecutedToolCalls(parts)).toEqual([])
+    expect(parts.filter((p) => p.type === 'tool-call')).toEqual([])
+  })
+
+  it('replays headless-tool-turn-stream-json with no client-executed tool call and final text', async () => {
+    const sample = fs.readFileSync(TOOL_TURN_NDJSON, 'utf8')
+    expect(sample).toContain('"type":"tool_use"')
+    expect(sample).toContain('tool-sample-ok')
+    const bin = fakeScript(`#!/usr/bin/env bash\ncat ${JSON.stringify(TOOL_TURN_NDJSON)}\n`)
+    const parts = await collect(model(bin, path.join(tmp(), 'map.json')), prompt)
+    expect(clientExecutedToolCalls(parts)).toEqual([])
+    expect(parts.filter((p) => p.type === 'tool-call')).toEqual([])
+    expect(text(parts)).toContain('tool-sample-ok')
+    expect(finishOf(parts)?.unified).toBe('stop')
+  })
+
+  it('empty exit-0 stream (no result event) finishes as error', async () => {
+    const bin = fakeScript('#!/usr/bin/env bash\nexit 0\n')
+    const parts = await collect(model(bin, path.join(tmp(), 'map.json')), prompt)
+    expect(finishOf(parts)).toEqual({ unified: 'error', raw: 'missing-result' })
+  })
+
+  it('signal exit (code === null) finishes as error, not stop', async () => {
+    const spawnImpl = (
+      _command: string,
+      _args: readonly string[],
+      _options: SpawnOptions,
+    ): ChildProcess => closedProc({ code: null, signal: 'SIGTERM' })
+    const parts = await collect(model('qwen', path.join(tmp(), 'map.json'), { spawnImpl }), prompt)
+    expect(finishOf(parts)).toEqual({ unified: 'error', raw: 'SIGTERM' })
+  })
+
+  it('second resume rejection after the one retry finishes as error', async () => {
+    const bin = fakeScript(
+      '#!/usr/bin/env bash\n' +
+        'printf "%s\\n" "$@" >> "$0.argv.log"\n' +
+        'echo "No saved session found with ID deadbeef-dead-4eef-8eef-deadbeefdead"\n' +
+        'exit 0\n',
+    )
+    const mapPath = path.join(tmp(), 'map.json')
+    saveSessionMap(mapPath, { 'conv-1': 'deadbeef-dead-4eef-8eef-deadbeefdead' })
+    let n = 0
+    const parts = await collect(
+      model(bin, mapPath, {
+        randomUUID: () => {
+          n += 1
+          return `bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb${String(n)}`
+        },
+      }),
+      prompt,
+    )
+    const log = fs.readFileSync(`${bin}.argv.log`, 'utf8')
+    expect(log).toContain('--resume')
+    expect(log).toContain('--session-id')
+    expect(n).toBe(1)
+    expect(finishOf(parts)).toEqual({ unified: 'error', raw: 'missing-result' })
   })
 })
 

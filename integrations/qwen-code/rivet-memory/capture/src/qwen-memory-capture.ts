@@ -338,7 +338,11 @@ export function parseTranscriptText(
           eventId,
           eventTs,
           lineIndex: i,
-          extra: { ...extraBase, callId: asString(firstCall.id) },
+          extra: {
+            ...extraBase,
+            ...(thinking ? { reasoning: thinking } : {}),
+            callId: asString(firstCall.id),
+          },
         })
         continue
       }

@@ -601,10 +601,38 @@ describe('reconcileTurn', () => {
     })
     const facts = reconcileTurn({ sessionDir: file, sinceMs: 0 })
     expect(facts.usage).toEqual({
-      inputTokens: 110,
+      inputTokens: 100,
       outputTokens: 25,
-      totalTokens: 135,
+      totalTokens: 125,
       cacheRead: 10,
+    })
+    expect(facts.usageRecords).toBe(1)
+  })
+
+  it('does not double-count disk cachedContentTokenCount (subset of promptTokenCount)', () => {
+    const home = tmpHome()
+    const file = writeSession({
+      home,
+      sessionId: SID,
+      lines: [
+        {
+          type: 'assistant',
+          timestamp: '2026-09-15T20:21:45.793Z',
+          message: { role: 'model', parts: [{ text: 'ok' }] },
+          usageMetadata: {
+            promptTokenCount: 100,
+            candidatesTokenCount: 4,
+            cachedContentTokenCount: 40,
+          },
+        },
+      ],
+    })
+    const facts = reconcileTurn({ sessionDir: file, sinceMs: 0 })
+    expect(facts.usage).toEqual({
+      inputTokens: 100,
+      outputTokens: 4,
+      totalTokens: 104,
+      cacheRead: 40,
     })
     expect(facts.usageRecords).toBe(1)
   })
@@ -630,7 +658,7 @@ describe('reconcileTurn', () => {
     })
     const facts = reconcileTurn({ sessionDir: file, sinceMs: 0 })
     expect(facts.malformed).toBe(1)
-    expect(facts.usage.totalTokens).toBe(115)
+    expect(facts.usage.totalTokens).toBe(110)
   })
 
   it('reports zero rather than throwing when there is no transcript', () => {

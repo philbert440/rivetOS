@@ -6,7 +6,12 @@
 // UUID natives (any version), `--resume` resumes, no rotation.
 
 import { describe, expect, it, vi } from 'vitest'
-import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
+import {
+  HarnessError,
+  type HarnessEvent,
+  type SessionId,
+  type TranscriptWsFrame,
+} from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { QwenCodeDriver, type QwenCodePtyHost, type QwenCodeStoreHost } from './qwen-code-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
@@ -44,14 +49,15 @@ function fakeStore(rows: HarnessSession[] = []) {
 }
 
 function fakePty() {
-  const spawns: { key?: string; session?: string; resume?: string }[] = []
+  const spawns: { key?: string; session?: string; resume?: string; cwd?: string }[] = []
   const injects: { id: string; text: string; submit: boolean; interrupt?: boolean }[] = []
   const live = new Map<string, string>()
   let writable = true
   const dead = new Set<string>()
   const host: QwenCodePtyHost = {
-    spawn: (key, _cols, _rows, _remote, session, resume) => {
-      spawns.push({ key, session, resume })
+    spawn: (key, _cols, _rows, _remote, session, resume, ...rest) => {
+      const cwd = rest[4]
+      spawns.push({ key, session, resume, ...(typeof cwd === 'string' && cwd ? { cwd } : {}) })
       const id = `pty-${String(spawns.length)}`
       if (session) live.set(session, id)
       return { id, denSession: session ?? id }
@@ -81,6 +87,33 @@ const missingQwenFiles: SheetReaders = {
   },
 }
 
+function fakeTranscript(): {
+  subscribe: (session: string, sink: (f: TranscriptWsFrame) => void) => () => void
+  sync: (session: string) => void
+  emit: (session: string, frame: TranscriptWsFrame) => void
+} {
+  const bySession = new Map<string, Set<(f: TranscriptWsFrame) => void>>()
+  return {
+    subscribe(session, sink) {
+      let set = bySession.get(session)
+      if (!set) {
+        set = new Set()
+        bySession.set(session, set)
+      }
+      set.add(sink)
+      return () => {
+        set!.delete(sink)
+      }
+    },
+    sync() {
+      /* tests drive frames via emit */
+    },
+    emit(session, frame) {
+      for (const s of bySession.get(session) ?? []) s(frame)
+    },
+  }
+}
+
 function makeDriver(
   opts: {
     rows?: HarnessSession[]
@@ -88,6 +121,7 @@ function makeDriver(
     withEvents?: boolean
     cwd?: () => string | undefined
     sheetReaders?: SheetReaders
+    transcript?: ReturnType<typeof fakeTranscript>
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -105,6 +139,7 @@ function makeDriver(
           }
         }
       : undefined,
+    transcript: opts.transcript,
     cwd: opts.cwd ?? ((): string => '/home/example'),
     turnQuietMs: 0,
     sheetReaders: opts.sheetReaders ?? missingQwenFiles,
@@ -289,6 +324,25 @@ describe('resumeSession', () => {
     expect(pty.spawns).toEqual([{ key: 'qwen', session: UUID, resume: UUID }])
   })
 
+  it('resumes a project-dir session in its recorded cwd, not homedir', async () => {
+    const { driver, pty } = makeDriver({
+      rows: [
+        {
+          id: UUID,
+          command: 'qwen',
+          title: 't',
+          updatedAt: 2,
+          cwd: '/home/example/proj',
+        },
+      ],
+    })
+    const summary = await driver.resumeSession(SID)
+    expect(summary.cwd).toBe('/home/example/proj')
+    expect(pty.spawns).toEqual([
+      { key: 'qwen', session: UUID, resume: UUID, cwd: '/home/example/proj' },
+    ])
+  })
+
   it('resumes a session the store cannot describe yet', async () => {
     const { driver, store, pty } = makeDriver()
     store.sessions.add(UUID)
@@ -356,11 +410,39 @@ describe('sendUserTurn', () => {
     })
   })
 
-  it('releases the lock on turn.end so the next turn goes through', async () => {
-    const { driver, emitDen } = makeDriver()
+  it('releases the lock when the transcript marks the turn complete', async () => {
+    // Memory capture does not emit den `turn.end`; completion is the store.
+    const tx = fakeTranscript()
+    const { driver } = makeDriver({ transcript: tx })
     await driver.startSession({ nativeSessionId: UUID })
     await driver.sendUserTurn(SID, { text: 'one' })
-    emitDen(qwenEvent(UUID, { type: 'turn.end' }))
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 1,
+      command: 'qwen',
+      turns: [{ role: 'user', text: 'one' }],
+    })
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 2,
+      from: 0,
+      total: 2,
+      command: 'qwen',
+      turns: [
+        { role: 'user', text: 'one' },
+        {
+          role: 'assistant',
+          text: 'ok',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+      ],
+    })
     await expect(driver.sendUserTurn(SID, { text: 'two' })).resolves.toBeUndefined()
   })
 })
@@ -389,8 +471,9 @@ describe('interrupt', () => {
 })
 
 describe('subscribe maps den AgentEvents onto the contract', () => {
-  it('streams paired tool calls and turn completion', async () => {
-    const { driver, emitDen } = makeDriver()
+  it('streams paired tool calls; turn completion comes from the transcript', async () => {
+    const tx = fakeTranscript()
+    const { driver, emitDen } = makeDriver({ transcript: tx })
     await driver.startSession({ nativeSessionId: UUID })
     const seen: HarnessEvent[] = []
     const off = driver.subscribe(SID, (e) => seen.push(e))
@@ -399,7 +482,24 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
       qwenEvent(UUID, { type: 'tool.start', tool: 'run_shell_command', args: { command: 'ls' } }),
     )
     emitDen(qwenEvent(UUID, { type: 'tool.end', tool: 'run_shell_command' }))
-    emitDen(qwenEvent(UUID, { type: 'turn.end' }))
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'qwen',
+      turns: [
+        { role: 'user', text: 'ls' },
+        {
+          role: 'assistant',
+          text: 'done',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+      ],
+    })
     off()
     emitDen(qwenEvent(UUID, { type: 'tool.start', tool: 'read_file' }))
 
@@ -483,7 +583,6 @@ describe('native session ids do not rotate on the den path', () => {
     const registry: HarnessEvent[] = []
     driver.subscribeEvents((e) => registry.push(e))
     emitDen(qwenEvent(UUID, { type: 'session.start', title: 'fresh' }))
-    emitDen(qwenEvent(UUID, { type: 'turn.end' }))
     for (const e of registry) {
       expect(e.type === 'session-updated' && e.previousSessionId).toBeFalsy()
       expect(e.sessionId).toBe(SID)

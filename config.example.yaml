@@ -28,9 +28,10 @@ providers:
   #   # model: glm-4.6                 # optional; recommended default backend is z.ai GLM
   #                                    # (reuse the coding-plan / Anthropic-compat key)
   # qwen-code:                         # @rivetos/provider-qwen-code; harness id `qwen-code`
-  #   binary: qwen
+  #   binary: qwen                     # path or name on PATH; $QWEN_BINARY also honoured
   #   # model: qwen3-coder-plus
-  #   # home: ~/.qwen
+  #   # home: ~/.qwen                  # RivetOS read path for settings.json / projects/
+  #                                    # (den model sheet + session listing); qwen still writes ~/.qwen
 
   anthropic:
     model: claude-opus-4-7

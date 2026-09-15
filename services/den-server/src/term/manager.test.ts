@@ -96,6 +96,7 @@ function makeManager(
     roomOpen?: (s: string) => boolean
     spawn?: PtySpawn
     sessionExists?: (command: string, id: string) => boolean
+    sessionCwd?: (command: string, id: string) => string | undefined
     tmuxCtl?: TmuxCtl
     herdrCtl?: HerdrCtl
     findHerdr?: () => string | null
@@ -161,6 +162,7 @@ function makeManager(
     ingest: (ev) => ingested.push(ev),
     roomOpen: extra.roomOpen,
     sessionExists: extra.sessionExists,
+    sessionCwd: extra.sessionCwd,
     tmuxCtl: extra.tmuxCtl,
     herdrCtl: extra.herdrCtl,
     findHerdr: extra.findHerdr,
@@ -401,6 +403,35 @@ describe('term manager', () => {
     const qwenResume = makeManager({}, { sessionExists: () => true })
     qwenResume.manager.spawn('qwen', 80, 24, '', uuid)
     expect(qwenResume.spawns[0].argv).toEqual(['qwen', '--approval-mode', 'yolo', '--resume', uuid])
+    expect(qwenResume.spawns[0].opts.cwd).toBe(homedir())
+
+    const qwenProj = makeManager(
+      {},
+      {
+        sessionExists: () => true,
+        sessionCwd: (command, id) =>
+          command === 'qwen' && id === uuid ? '/home/example/proj' : undefined,
+      },
+    )
+    qwenProj.manager.spawn('qwen', 80, 24, '', uuid)
+    expect(qwenProj.spawns[0].argv).toEqual(['qwen', '--approval-mode', 'yolo', '--resume', uuid])
+    expect(qwenProj.spawns[0].opts.cwd).toBe('/home/example/proj')
+    qwenProj.manager.close()
+
+    const qwenNewCwd = makeManager(
+      {},
+      { sessionExists: () => false, sessionCwd: () => '/home/example/proj' },
+    )
+    qwenNewCwd.manager.spawn('qwen', 80, 24, '', uuid)
+    expect(qwenNewCwd.spawns[0].argv).toEqual([
+      'qwen',
+      '--approval-mode',
+      'yolo',
+      '--session-id',
+      uuid,
+    ])
+    expect(qwenNewCwd.spawns[0].opts.cwd).toBe(homedir())
+    qwenNewCwd.manager.close()
 
     // a non-harness command gets no flags; a claude non-UUID that isn't in the
     // store gets no flag either (no --session-id on a non-UUID).

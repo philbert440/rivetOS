@@ -120,11 +120,11 @@ describe('QwenCodeExecutor', () => {
 
     expect(events.find((e) => e.type === 'turn.end')).toMatchObject({
       harnessSessionId: `qwen-code:${SESSION}`,
-      // last non-zero assistant usage: 100 in + cacheRead 10, 25 out.
-      usage: { inputTokens: 110, outputTokens: 25, totalTokens: 135, turns: 1 },
+      // last non-zero assistant usage: 100 in (cacheRead 10 is a subset), 25 out.
+      usage: { inputTokens: 100, outputTokens: 25, totalTokens: 125, turns: 1 },
     })
     expect(result.verdict).toBe('completed')
-    expect(result.usage.totalTokens).toBe(135)
+    expect(result.usage.totalTokens).toBe(125)
     expect(events.some((e) => e.type === 'cost')).toBe(false)
     expect(result.usage.costUsd).toBeUndefined()
   })
@@ -189,13 +189,14 @@ describe('QwenCodeExecutor', () => {
 
     const args = fake.args()
     expect(args).toContain('--append-system-prompt')
-    const sys = args[args.indexOf('--append-system-prompt') + 1]
-    expect(sys).toContain('## Task Context')
-    expect(sys).toContain(fake.cwd)
-    const prompt = fake.invocationTexts()[0]
-    expect(prompt).toContain('[c1] widget ships')
-    expect(prompt).toContain('TASK_RESULT')
-    expect(prompt).toContain('/goal ship the widget')
+    // fake.args() splits on newlines, so multi-line argv values are not one
+    // element there. invocationTexts() is the full recorded argv.
+    const recorded = fake.invocationTexts()[0]
+    expect(recorded).toContain('## Task Context')
+    expect(recorded).toContain(`Working directory: ${fake.cwd}`)
+    expect(recorded).toContain('[c1] widget ships')
+    expect(recorded).toContain('TASK_RESULT')
+    expect(recorded).toContain('/goal ship the widget')
   })
 
   it('steers onto the SAME native session with --resume', async () => {
@@ -421,6 +422,7 @@ describe('buildTaskScaffold', () => {
     expect(scaffold).toContain('[c1] it works')
     expect(scaffold).toContain('extra instruction')
     expect(scaffold).toContain('TASK_RESULT')
+    expect(scaffold).toContain('Working directory: /home/example')
     expect(scaffold).toContain('/home/example')
   })
 })
