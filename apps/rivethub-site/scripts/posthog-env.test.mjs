@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import {
+  parseEnvFile,
   posthogCacheDigest,
   renderPosthogConfig,
   resolvePosthogEnv,
@@ -97,56 +98,60 @@ describe('sanitizeAnalyticsUrl', () => {
 function leakyPayload() {
   return {
     $current_url: 'https://rivethub.io/apps.html?utm_source=alice%40example.com',
-    $initial_current_url: 'https://rivethub.io/?ref=newsletter#welcome',
-    $referrer: 'https://mail.example/c?email=a@b.com',
-    $initial_referrer: 'https://rivetos.dev/privacy/?utm=1',
-    $session_entry_url: 'https://rivethub.io/support.html?email=a@b.com',
-    $session_entry_referrer: 'https://mail.example/c?email=a@b.com',
-    utm_source: 'alice@example.com',
-    $session_entry_utm_source: 'alice@example.com',
-    $initial_utm_source: 'alice@example.com',
-    gclid: 'abc',
-    $session_entry_gclid: 'alice@example.com',
     $pathname: '/apps.html',
+    $host: 'rivethub.io',
+    $browser: 'Chrome',
+    $referrer: 'https://www.google.com/search?q=alice%40example.com',
+    $session_entry_url: 'https://rivethub.io/apps.html?epik=alice%40example.com',
+    $session_entry_epik: 'alice@example.com',
+    $session_entry_ph_keyword: 'alice@example.com',
+    $initial_epik: 'alice@example.com',
+    epik: 'alice@example.com',
+    qclid: 'alice@example.com',
+    sccid: 'alice@example.com',
+    irclid: 'alice@example.com',
+    _kx: 'alice@example.com',
+    ph_keyword: 'alice@example.com',
+    utm_source: 'alice@example.com',
     $set_once: { $initial_utm_source: 'alice@example.com' },
   };
 }
 
 const cleanPayload = {
   $current_url: 'https://rivethub.io/apps.html',
-  $initial_current_url: 'https://rivethub.io/',
-  $referrer: 'https://mail.example/c',
-  $initial_referrer: 'https://rivetos.dev/privacy/',
-  $session_entry_url: 'https://rivethub.io/support.html',
-  $session_entry_referrer: 'https://mail.example/c',
   $pathname: '/apps.html',
-  $set_once: {},
+  $host: 'rivethub.io',
+  $browser: 'Chrome',
 };
 
 describe('sanitizeAnalyticsProperties', () => {
-  it('strips query and hash from pageview and pageleave URL fields', () => {
+  it('keeps only allowlisted pageview fields and strips query from $current_url', () => {
     assert.deepEqual(
       sanitizeAnalyticsProperties({
         $current_url: 'https://rivethub.io/apps.html?email=a@b.com',
-        $initial_current_url: 'https://rivethub.io/?ref=newsletter#welcome',
-        $referrer: 'https://mail.example/c?email=a@b.com',
-        $initial_referrer: 'https://rivetos.dev/privacy/?utm=1',
-        $session_entry_url: 'https://rivethub.io/support.html?email=a@b.com',
         $pathname: '/apps.html',
+        $host: 'rivethub.io',
+        $referrer: 'https://mail.example/c?email=a@b.com',
+        $session_entry_url: 'https://rivethub.io/support.html?email=a@b.com',
       }),
       {
         $current_url: 'https://rivethub.io/apps.html',
-        $initial_current_url: 'https://rivethub.io/',
-        $referrer: 'https://mail.example/c',
-        $initial_referrer: 'https://rivetos.dev/privacy/',
-        $session_entry_url: 'https://rivethub.io/support.html',
         $pathname: '/apps.html',
+        $host: 'rivethub.io',
       },
     );
   });
 
-  it('drops campaign fields and sanitizes session-entry referrer', () => {
+  it('drops click-id, search-keyword, and session-entry attribution', () => {
     assert.deepEqual(sanitizeAnalyticsProperties(leakyPayload()), cleanPayload);
+  });
+});
+
+describe('parseEnvFile', () => {
+  it('reads export KEY=value the way Node --env-file does', () => {
+    assert.deepEqual(parseEnvFile('export PUBLIC_POSTHOG_KEY=phc_a\n'), {
+      PUBLIC_POSTHOG_KEY: 'phc_a',
+    });
   });
 });
 
@@ -158,10 +163,13 @@ describe('posthog cache digest', () => {
       const first = posthogCacheDigest(dir, {});
       writeFileSync(join(dir, '.env'), 'PUBLIC_POSTHOG_KEY=phc_b\n');
       const second = posthogCacheDigest(dir, {});
+      writeFileSync(join(dir, '.env'), 'export PUBLIC_POSTHOG_KEY=phc_c\n');
+      const exported = posthogCacheDigest(dir, {});
       writeFileSync(join(dir, '.env'), 'PUBLIC_POSTHOG_KEY=\n');
       const empty = posthogCacheDigest(dir, {});
       assert.notEqual(first, second);
-      assert.notEqual(second, empty);
+      assert.notEqual(second, exported);
+      assert.notEqual(exported, empty);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -292,17 +300,34 @@ describe('generated tracker snippets', () => {
     assert.equal(context.window.__rivetPosthogBound, undefined);
   });
 
-  it('Hub snippet drops utm_* and sanitizes session-entry referrer', () => {
+  function assertAllowlisted(out) {
+    assert.deepEqual(Object.keys(out).sort(), [
+      '$browser',
+      '$current_url',
+      '$host',
+      '$pathname',
+    ]);
+    assert.equal(out.$current_url, 'https://rivethub.io/apps.html');
+    assert.equal(out.$pathname, '/apps.html');
+    assert.equal(out.epik, undefined);
+    assert.equal(out.$session_entry_epik, undefined);
+    assert.equal(out.ph_keyword, undefined);
+    assert.equal(out.$session_entry_ph_keyword, undefined);
+    assert.equal(out.$referrer, undefined);
+    assert.equal(out.$set_once, undefined);
+  }
+
+  it('Hub snippet allowlists pageview fields and drops attribution', () => {
     const { captured } = runHubTracker('phc_test');
     assert.equal(captured.init.key, 'phc_test');
     assert.equal(captured.init.opts.save_campaign_params, false);
-    assert.deepEqual(captured.init.opts.sanitize_properties(leakyPayload()), cleanPayload);
+    assertAllowlisted(captured.init.opts.sanitize_properties(leakyPayload()));
   });
 
-  it('Astro snippet drops utm_* and sanitizes session-entry referrer', () => {
+  it('Astro snippet allowlists pageview fields and drops attribution', () => {
     const { captured } = runAstroTracker('phc_test');
     assert.equal(captured.init.key, 'phc_test');
     assert.equal(captured.init.opts.save_campaign_params, false);
-    assert.deepEqual(captured.init.opts.sanitize_properties(leakyPayload()), cleanPayload);
+    assertAllowlisted(captured.init.opts.sanitize_properties(leakyPayload()));
   });
 });

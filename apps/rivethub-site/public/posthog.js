@@ -14,39 +14,39 @@
       return cut === -1 ? text : text.slice(0, cut);
     }
   }
-  function rivetIsCampaignProp(name) {
-    if (/(^|_)utm_/i.test(name)) return true;
-    if (
-      /(^|_|\$)(gclid|gclsrc|dclid|fbclid|msclkid|twclid|ttclid|li_fat_id|rdt_cid|wbraid|gbraid|igshid|gad_source|mc_cid)$/i.test(
-        name,
-      )
-    ) {
-      return true;
-    }
-    return name === '$search_engine';
-  }
-  function rivetIsUrlProp(name) {
-    return /url|referrer|href/i.test(name);
-  }
+  var rivetAllowed = {
+    $current_url: 1,
+    $pathname: 1,
+    $host: 1,
+    $referring_domain: 1,
+    $browser: 1,
+    $browser_version: 1,
+    $browser_language: 1,
+    $os: 1,
+    $os_version: 1,
+    $device_type: 1,
+    $screen_height: 1,
+    $screen_width: 1,
+    $viewport_height: 1,
+    $viewport_width: 1,
+    $lib: 1,
+    $lib_version: 1,
+    $insert_id: 1,
+    $time: 1,
+    $timestamp: 1,
+    $sent_at: 1,
+    $session_id: 1,
+  };
   function rivetSanitizeProperties(properties) {
     if (!properties || typeof properties !== 'object') return properties;
-    var names = Object.keys(properties);
-    for (var i = 0; i < names.length; i++) {
-      var name = names[i];
+    var next = {};
+    for (var name in rivetAllowed) {
+      if (!Object.prototype.hasOwnProperty.call(properties, name)) continue;
       var value = properties[name];
-      if (rivetIsCampaignProp(name)) {
-        delete properties[name];
-        continue;
-      }
-      if ((name === '$set' || name === '$set_once') && value && typeof value === 'object') {
-        rivetSanitizeProperties(value);
-        continue;
-      }
-      if (typeof value === 'string' && rivetIsUrlProp(name)) {
-        properties[name] = rivetSafeUrl(value);
-      }
+      next[name] =
+        name === '$current_url' && typeof value === 'string' ? rivetSafeUrl(value) : value;
     }
-    return properties;
+    return next;
   }
   posthog.init(key, {
     api_host: host,
