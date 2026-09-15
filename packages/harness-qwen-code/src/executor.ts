@@ -578,7 +578,6 @@ export class QwenCodeExecutor implements HarnessExecutor {
 
     let text = ''
     let sessionId: string | undefined
-    let sawInit = false
     let sawTerminal = false
     let sawTextDelta = false
     let sawThinkingDelta = false
@@ -619,7 +618,7 @@ export class QwenCodeExecutor implements HarnessExecutor {
             sessionId = id
           },
           onInit: () => {
-            sawInit = true
+            // The init line no longer drives the resume fallback (measured-string only).
           },
           onTerminal: () => {
             sawTerminal = true
