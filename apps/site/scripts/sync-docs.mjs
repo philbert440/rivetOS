@@ -38,6 +38,8 @@ const LINK_MAP = {
   'docs/TROUBLESHOOTING.md': '/reference/troubleshooting/',
   'HUB-SETUP.md': '/guides/hub-setup/',
   'docs/HUB-SETUP.md': '/guides/hub-setup/',
+  'PROVIDERS.md': '/guides/providers/',
+  'docs/PROVIDERS.md': '/guides/providers/',
   // No site pages exist for these — link out to the repository.
   'MICBRIDGE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/MICBRIDGE.md',
   'DEN.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md',
@@ -87,6 +89,16 @@ const MAPPINGS = [
       title: 'Plugin Development',
       sidebar: { order: 4 },
       description: 'Write custom provider, channel, tool, and memory plugins',
+    },
+  },
+  {
+    src: 'docs/PROVIDERS.md',
+    dest: 'guides/providers.md',
+    frontmatter: {
+      title: 'Provider Setup',
+      sidebar: { order: 6 },
+      description:
+        'How to configure LLM providers: API and local plugins, plus harness CLIs under plugins/providers',
     },
   },
   {

@@ -385,21 +385,21 @@ providers:
 
 ### opencode-cli
 
-Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`; interactive/ACP is nd-JSON over stdin/stdout. Default model backend is z.ai GLM (Anthropic-compatible). Add `@rivetos/provider-opencode-cli` to `plugins`.
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode` by shelling `opencode run --format json`. Default `model` is `zai/glm-5.3-flash`. The installed CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol. Add `@rivetos/provider-opencode-cli` to `plugins`.
 
 ```yaml
 providers:
   opencode-cli:
     binary: opencode # path or name on PATH
-    # model: zai/glm-5.3-flash  # optional — defaults to the CLI / z.ai GLM backend
+    # model: zai/glm-5.3-flash  # RivetOS default --model; CLI owns backend
 ```
 
 | Key      | Type   | Default    | Description                         |
 | -------- | ------ | ---------- | ----------------------------------- |
 | `binary` | string | `opencode` | Path or name on PATH.               |
-| `model`  | string | `zai/glm-5.3-flash` | Model id as `provider/model`. |
+| `model`  | string | `zai/glm-5.3-flash` | Model id passed as `--model`. |
 
-**Auth:** z.ai GLM (Anthropic-compatible). RivetOS drives the OpenCode CLI. The CLI owns the z.ai endpoint. No separate OpenCode OAuth in v1.
+**Auth:** The installed OpenCode CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol and ships no OpenCode key or OAuth.
 
 ### pi-cli
 

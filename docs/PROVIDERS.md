@@ -1,9 +1,5 @@
----
-title: Provider Setup
-sidebar:
-  order: 6
-description: "How to configure LLM providers: API and local plugins, plus harness CLIs under plugins/providers"
----
+# Provider Setup
+
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
 
 API and local plugins: Anthropic, xAI, Google, Ollama, vLLM, llama-server. Harness CLIs: claude-cli, opencode-cli, codex-cli, grok-cli, hermes-cli, kimi-code, pi-cli, and the rest under `plugins/providers/`.
@@ -35,7 +31,7 @@ API and local plugins: Anthropic, xAI, Google, Ollama, vLLM, llama-server. Harne
 3. Go to **API Keys** → **Create Key**
 4. Copy the key (starts with `sk-ant-`)
 
-Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead; it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](/reference/config/).
+Prefer subscription/OAuth auth over an API key? Use the **`claude-cli` provider** instead; it drives the local `claude` binary (Claude Code CLI), which owns the OAuth flow. Run `claude login` once via the CLI itself; RivetOS does not handle the OAuth handshake. See the `claude-cli` provider in the [Configuration Reference](CONFIG-REFERENCE.md).
 
 ### 2. Configure
 
@@ -384,7 +380,7 @@ The installed OpenCode CLI owns backend, endpoint, and credentials. RivetOS sets
 
 ## Harness CLI stubs
 
-These plugins live under `plugins/providers/`. Full option tables are in the [Configuration Reference](/reference/config/). No model tables here. The CLI owns auth and its own tools.
+These plugins live under `plugins/providers/`. Full option tables are in the [Configuration Reference](CONFIG-REFERENCE.md). No model tables here. The CLI owns auth and its own tools.
 
 ### codex-cli
 
@@ -429,8 +425,8 @@ From a source checkout, run the same commands with `npx` only after `npm install
 
 ## Next steps
 
-- **[Hub Setup](/guides/hub-setup/)**: RivetHub is the human UX
+- **[Hub Setup](HUB-SETUP.md)**: RivetHub is the human UX
 - **[Channels](/guides/channels/)**: social bots are gone. The remaining channel is agent mesh
-- **[Mesh Networking](/guides/mesh/)**: multi-node fleets with mTLS delegation
-- **[Configuration Reference](/reference/config/)**: full option tables for all config sections
-- **[Plugin Development](/guides/plugins/)**: Build your own provider plugin
+- **[Mesh Networking](mesh.md)**: multi-node fleets with mTLS delegation
+- **[Configuration Reference](CONFIG-REFERENCE.md)**: full option tables for all config sections
+- **[Plugin Development](PLUGINS.md)**: Build your own provider plugin
