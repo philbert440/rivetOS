@@ -33,7 +33,7 @@ const host = String(
         function rivetIsCampaignProp(name) {
           if (/(^|_)utm_/i.test(name)) return true;
           if (
-            /^(gclid|gclsrc|dclid|fbclid|msclkid|twclid|ttclid|li_fat_id|rdt_cid|wbraid|gbraid)$/i.test(
+            /(^|_|\$)(gclid|gclsrc|dclid|fbclid|msclkid|twclid|ttclid|li_fat_id|rdt_cid|wbraid|gbraid|igshid|gad_source|mc_cid)$/i.test(
               name,
             )
           ) {

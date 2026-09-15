@@ -106,6 +106,7 @@ function leakyPayload() {
     $session_entry_utm_source: 'alice@example.com',
     $initial_utm_source: 'alice@example.com',
     gclid: 'abc',
+    $session_entry_gclid: 'alice@example.com',
     $pathname: '/apps.html',
     $set_once: { $initial_utm_source: 'alice@example.com' },
   };

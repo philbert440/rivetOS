@@ -13,7 +13,7 @@ export const ASTRO_ENV_FILES = [
 ];
 
 const CLICK_IDS =
-  /^(gclid|gclsrc|dclid|fbclid|msclkid|twclid|ttclid|li_fat_id|rdt_cid|wbraid|gbraid)$/i;
+  /(^|_|\$)(gclid|gclsrc|dclid|fbclid|msclkid|twclid|ttclid|li_fat_id|rdt_cid|wbraid|gbraid|igshid|gad_source|mc_cid)$/i;
 
 export function resolvePosthogEnv(env = process.env) {
   const key = String(env.PUBLIC_POSTHOG_KEY || env.NEXT_PUBLIC_POSTHOG_KEY || '').trim();
