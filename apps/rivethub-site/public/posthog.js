@@ -15,6 +15,8 @@
     }
   }
   var rivetAllowed = {
+    token: 1,
+    distinct_id: 1,
     $current_url: 1,
     $pathname: 1,
     $host: 1,

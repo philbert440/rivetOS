@@ -14,6 +14,8 @@ export const ASTRO_ENV_FILES = [
 ];
 
 export const PAGEVIEW_ALLOWLIST = [
+  'token',
+  'distinct_id',
   '$current_url',
   '$pathname',
   '$host',

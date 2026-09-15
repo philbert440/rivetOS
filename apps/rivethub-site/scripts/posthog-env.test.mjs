@@ -97,6 +97,9 @@ describe('sanitizeAnalyticsUrl', () => {
 
 function leakyPayload() {
   return {
+    token: 'phc_test',
+    distinct_id: 'anon-1',
+    $session_id: 'sess-1',
     $current_url: 'https://rivethub.io/apps.html?utm_source=alice%40example.com',
     $pathname: '/apps.html',
     $host: 'rivethub.io',
@@ -118,10 +121,13 @@ function leakyPayload() {
 }
 
 const cleanPayload = {
+  token: 'phc_test',
+  distinct_id: 'anon-1',
   $current_url: 'https://rivethub.io/apps.html',
   $pathname: '/apps.html',
   $host: 'rivethub.io',
   $browser: 'Chrome',
+  $session_id: 'sess-1',
 };
 
 describe('sanitizeAnalyticsProperties', () => {
@@ -306,7 +312,13 @@ describe('generated tracker snippets', () => {
       '$current_url',
       '$host',
       '$pathname',
+      '$session_id',
+      'distinct_id',
+      'token',
     ]);
+    assert.equal(out.token, 'phc_test');
+    assert.equal(out.distinct_id, 'anon-1');
+    assert.equal(out.$session_id, 'sess-1');
     assert.equal(out.$current_url, 'https://rivethub.io/apps.html');
     assert.equal(out.$pathname, '/apps.html');
     assert.equal(out.epik, undefined);
