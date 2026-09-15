@@ -27,8 +27,8 @@ description: Build and point RivetHub at a RivetOS node gateway
 | `@rivetos/gateway-client` | Typed HTTP+WS client for harness control plane and gateway surfaces               |
 
 **Primary interactive path:** harness sessions on the node
-(`claude-code`, `grok-build`, `kimi-code`, `hermes`, `opencode`) via the gateway contract.
-(`claude-code`, `grok-build`, `kimi-code`, `hermes`, `pi`) via the gateway contract.
+(`claude-code`, `grok-build`, `kimi-code`, `hermes`, `codex`, `opencode`, `pi`)
+via the gateway contract. A driver on the control plane is not a task executor.
 
 **Removed (Phase 5):** Telegram / Discord / voice-discord channel plugins are gone. Hub is the product path. Leftover `channels.telegram:` in config is a validation warning only (no crash-loop).
 
@@ -98,7 +98,7 @@ standalone; use whatever your config/`den.port` advertises).
 
 Authenticate with an enrolled **device client certificate** (`rivet-ca.sh
 issue-client`). Bearer tokens (`den.token`, `RIVETOS_DEN_TOKEN`, `?token=`,
-`Authorization: Bearer`) are not accepted. See [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
+`Authorization: Bearer`) are not accepted. See [GATEWAY-MTLS.md](https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md).
 
 ### Dev mode (Vite)
 
@@ -179,8 +179,10 @@ Create tasks in-UI (goal + agent/harness from catalog + optional criteria).
 Catalog entries for `harness-session` include `harnessId` and `implemented`;
 grey options that are honest rejections (e.g. grok-build / hermes executors).
 
-Implemented headless executors today: `claude-code`, `kimi-code`, `pi`. Prefer those
-for automated task runs. Interactive coding remains the harness TUI + Hub chat.
+Implemented headless executors today: `claude-code`, `kimi-code`, `opencode`, `pi`.
+Prefer those for automated task runs. `grok-build`, `hermes`, and `codex` stay
+on the control plane as drivers and reject spawn-for-task. Interactive coding
+remains the harness TUI + Hub chat.
 
 ---
 
@@ -223,9 +225,7 @@ curl -sS --cert /path/to/device.crt --key /path/to/device.key \
   "$GATEWAY/api/harnesses" | jq .
 
 # Expect harness ids when all drivers registered:
-# claude-code, grok-build, hermes, kimi-code, opencode
-# Expect ids when all drivers registered:
-# claude-code, grok-build, hermes, kimi-code, pi
+# claude-code, grok-build, kimi-code, hermes, codex, opencode, pi
 
 # 4. Open Hub, set gateway origin, present a device client cert, confirm drawer lists sessions
 # 5. Open a claude-code or grok-build session — Stop visible if terminals on
@@ -255,7 +255,7 @@ npx nx test @rivetos/rivethub-web
 ## Related
 
 - [ARCHITECTURE.md](/reference/architecture/): harness-first node OS
-- [GATEWAY-MTLS.md](GATEWAY-MTLS.md): device client certificates (bearer tokens removed)
+- [GATEWAY-MTLS.md](https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md): device client certificates (bearer tokens removed)
 - [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md): den viewer and protocol
 - [GETTING-STARTED.md](/guides/getting-started/): install RivetOS
 - [DEPLOYMENT.md](/guides/deployment/): Docker / Proxmox / mesh

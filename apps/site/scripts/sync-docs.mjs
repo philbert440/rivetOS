@@ -43,6 +43,10 @@ const LINK_MAP = {
   'DEN.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md',
   'CODEBASE-REFERENCE.md':
     'https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md',
+  'LOCAL-MODE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/LOCAL-MODE.md',
+  'docs/LOCAL-MODE.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/LOCAL-MODE.md',
+  'GATEWAY-MTLS.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md',
+  'docs/GATEWAY-MTLS.md': 'https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md',
 };
 
 const MAPPINGS = [

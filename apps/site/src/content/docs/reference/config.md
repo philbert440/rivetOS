@@ -389,7 +389,7 @@ providers:
 
 ### opencode-cli
 
-Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`; interactive/ACP is nd-JSON over stdin/stdout. Default model backend is z.ai GLM via an openai-compatible endpoint. Add `@rivetos/provider-opencode-cli` to `plugins`.
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`; interactive/ACP is nd-JSON over stdin/stdout. Default model backend is z.ai GLM (Anthropic-compatible). Add `@rivetos/provider-opencode-cli` to `plugins`.
 
 ```yaml
 providers:
@@ -403,7 +403,8 @@ providers:
 | `binary` | string | `opencode` | Path or name on PATH.               |
 | `model`  | string | `zai/glm-5.3-flash` | Model id as `provider/model`. |
 
-**Auth:** z.ai GLM (openai-compatible). No separate OpenCode OAuth in v1; keys stay in the CLI's own config.
+**Auth:** z.ai GLM (Anthropic-compatible). RivetOS drives the OpenCode CLI. The CLI owns the z.ai endpoint. No separate OpenCode OAuth in v1.
+
 ### pi-cli
 
 Drives the local `pi` binary (`@earendil-works/pi-coding-agent`) headlessly — print/JSON or RPC. Harness id is `pi`; roster command is `pi`. Recommended default backend is z.ai GLM (reuse the coding-plan / Anthropic-compat key). Add `@rivetos/provider-pi-cli` to `plugins`.
@@ -421,17 +422,6 @@ providers:
 | `model`  | string | —       | Model alias to pass to the CLI. |
 
 **Auth:** whatever backend `pi` is configured to use (z.ai GLM recommended). RivetOS does not ship a dedicated `pi` API key; reuse the coding-plan credentials.
-
----
-
-## `channels`
-
-Messaging channel configuration. Each key is a channel type / plugin name.
-
-> **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
-> Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
-> Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
-> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
 
 ### grok-cli
 
@@ -466,7 +456,18 @@ providers:
 | `tools`            | —                               | `--tools` pass-through.                                                                                                                                                                        |
 | `cwd`              | —                               | Working directory for the spawned grok (`--cwd`).                                                                                                                                              |
 
-Limits: no incremental streaming (the JSON arrives when grok finishes) and no RivetOS tool bridge (grok cannot call `delegate_task`/`memory_*` as RivetOS tools; it has its own MCP servers from `~/.grok/config.toml`). Session capture is the rivet-memory Grok hooks' job.
+Limits: incremental streaming is live. `streaming-messages-json` prints NDJSON `stream_event` deltas as they arrive. The older `--output-format json` blob is only a fallback when a turn emits no NDJSON and exits 0. There is no RivetOS tool bridge (grok cannot call `delegate_task`/`memory_*` as RivetOS tools; it has its own MCP servers from `~/.grok/config.toml`). Session capture is the rivet-memory Grok hooks' job.
+
+---
+
+## `channels`
+
+Messaging channel configuration. Each key is a channel type / plugin name.
+
+> **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
+> Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
+> Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
+> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
 
 ### Agent (HTTP)
 
@@ -533,7 +534,7 @@ mesh:
 
 ## `den`
 
-Embedded node gateway (den-server in-process). Off by default. See [`docs/DEN.md`](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md) and [`docs/GATEWAY-MTLS.md`](GATEWAY-MTLS.md). Independent of `mesh.discovery.mode`.
+Embedded node gateway (den-server in-process). Off by default. See [`docs/DEN.md`](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md) and [`docs/GATEWAY-MTLS.md`](https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md). Independent of `mesh.discovery.mode`.
 
 ```yaml
 den:

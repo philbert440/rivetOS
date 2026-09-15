@@ -365,7 +365,7 @@ server with `--api-key`.
 
 ## opencode-cli
 
-Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`. Interactive and ACP use nd-JSON over stdin/stdout. The default model backend is z.ai GLM via an openai-compatible endpoint. Add `@rivetos/provider-opencode-cli` to `plugins`.
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`. Interactive and ACP use nd-JSON over stdin/stdout. The default model backend is z.ai GLM (Anthropic-compatible). Add `@rivetos/provider-opencode-cli` to `plugins`.
 
 ```yaml
 providers:
@@ -379,7 +379,7 @@ providers:
 | `binary` | string | `opencode` | Path or name on PATH. |
 | `model` | string | `zai/glm-5.3-flash` | Model id as `provider/model`. |
 
-Auth is z.ai GLM (openai-compatible). There is no separate OpenCode OAuth. Keys stay in the CLI's own config.
+Auth is z.ai GLM (Anthropic-compatible). RivetOS drives the OpenCode CLI. The CLI owns the z.ai endpoint. There is no separate OpenCode OAuth.
 
 ---
 

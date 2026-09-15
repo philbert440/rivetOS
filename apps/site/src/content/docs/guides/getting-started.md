@@ -18,7 +18,7 @@ curl -fsSL https://get.rivethub.io/local.sh | bash
 
 That clones the pinned `local_ref` from [get.rivethub.io/pins/stable.json](https://get.rivethub.io/pins/stable.json), stands up embedded PGlite + den on `https://localhost:5174`, wires harness memory plugins, and (on Linux) installs the desktop AppImage. Desktop and Android **first downloads** are on [rivethub.io](https://rivethub.io/). **Dev / nightly** app builds live on the mesh share (`/rivet-shared/builds/rivethub/`) — that is what Settings → Updates already reads. GitHub tags are source pins only.
 
-Day-2: `rivetos local status`, `rivetos local backup`, `rivetos local reset`. Full contract: [LOCAL-MODE.md](LOCAL-MODE.md).
+Day-2: `rivetos local status`, `rivetos local backup`, `rivetos local reset`. Full contract: [LOCAL-MODE.md](https://github.com/philbert440/rivetOS/blob/main/docs/LOCAL-MODE.md).
 
 ## Prerequisites (source / mesh)
 
