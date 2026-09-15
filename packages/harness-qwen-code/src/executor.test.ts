@@ -159,7 +159,6 @@ describe('QwenCodeExecutor', () => {
       const env = fake.env()
       expect(env.RIVETOS_TASK_ID).toBe('task-env-check')
       expect(env.RIVETOS_SESSION_KEY).toBeUndefined()
-      expect(env.RIVETOS_DEN_HOOK_DISABLED).toBe('1')
       expect(env.QWEN_CODE_SUPPRESS_YOLO_WARNING).toBe('1')
 
       const args = fake.args()
@@ -251,6 +250,51 @@ describe('QwenCodeExecutor', () => {
     expect(invocations[2]).toContain('--session-id')
     expect(invocations[2]).not.toContain('--resume')
     expect(fake.invocationTexts()[2]).toContain('what turn one already did')
+    expect(result.verdict).toBe('completed')
+    expect(events.some((e) => e.type === 'log' && e.message.includes('fresh session'))).toBe(true)
+  })
+
+  it('does not retry a resume that exits nonzero with no system/init', async () => {
+    const fake = makeFakeQwen({
+      lines: successLines('done', SESSION),
+      sessionId: SESSION,
+      onResume: {
+        stdout: 'error: provider auth failed',
+        exitCode: 1,
+      },
+    })
+    const handle = makeExecutor(fake).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    })
+    await handle.steer('carry on')
+    const [events, result] = await Promise.all([drain(handle.events), handle.result])
+
+    const invocations = fake.invocations()
+    expect(invocations).toHaveLength(2)
+    expect(invocations[1]).toContain('--resume')
+    expect(invocations[1]).not.toContain('--session-id')
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toMatch(/exited 1/)
+    expect(events.some((e) => e.type === 'log' && e.message.includes('fresh session'))).toBe(false)
+  })
+
+  it('retries a resume that exits 0 with no system/init even without the rejection string', async () => {
+    const fake = makeFakeQwen({
+      lines: successLines('done', SESSION),
+      sessionId: SESSION,
+      onResume: { stdout: '', exitCode: 0 },
+    })
+    const handle = makeExecutor(fake).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    })
+    await handle.steer('carry on')
+    const [events, result] = await Promise.all([drain(handle.events), handle.result])
+
+    const invocations = fake.invocations()
+    expect(invocations).toHaveLength(3)
+    expect(invocations[1]).toContain('--resume')
+    expect(invocations[2]).toContain('--session-id')
+    expect(invocations[2]).not.toContain('--resume')
     expect(result.verdict).toBe('completed')
     expect(events.some((e) => e.type === 'log' && e.message.includes('fresh session'))).toBe(true)
   })

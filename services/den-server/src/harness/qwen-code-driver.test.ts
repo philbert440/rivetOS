@@ -482,6 +482,9 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
       qwenEvent(UUID, { type: 'tool.start', tool: 'run_shell_command', args: { command: 'ls' } }),
     )
     emitDen(qwenEvent(UUID, { type: 'tool.end', tool: 'run_shell_command' }))
+    // Tracker fires turnCompleted on the incomplete→complete rising edge, not
+    // on a first snapshot that is already complete. Mirror the real sample:
+    // functionCall → tool_result → closing assistant text.
     tx.emit(SID, {
       kind: 'transcript',
       session: SID,
@@ -491,6 +494,31 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
       command: 'qwen',
       turns: [
         { role: 'user', text: 'ls' },
+        {
+          role: 'assistant',
+          text: '',
+          lastBlock: 'tool_use',
+          stopReason: 'tool_use',
+          tools: [{ name: 'run_shell_command', status: 'running' }],
+        },
+      ],
+    })
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 2,
+      from: 0,
+      total: 3,
+      command: 'qwen',
+      turns: [
+        { role: 'user', text: 'ls' },
+        {
+          role: 'assistant',
+          text: '',
+          lastBlock: 'tool_use',
+          stopReason: 'tool_use',
+          tools: [{ name: 'run_shell_command', status: 'done' }],
+        },
         {
           role: 'assistant',
           text: 'done',

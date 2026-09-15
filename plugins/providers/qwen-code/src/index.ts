@@ -354,8 +354,10 @@ export class QwenCodeModel implements LanguageModelV3 {
     const resolveSession = (
       forceFresh: boolean,
     ): { pinSessionId?: string; sessionId?: string; nativeId: string } => {
-      const map = loadSessionMap(mapPath)
-      if (forceFresh) delete map[convKey]
+      let map = loadSessionMap(mapPath)
+      if (forceFresh) {
+        map = Object.fromEntries(Object.entries(map).filter(([key]) => key !== convKey))
+      }
       const existing = map[convKey]
       if (!forceFresh && existing) {
         return { sessionId: existing, nativeId: existing }

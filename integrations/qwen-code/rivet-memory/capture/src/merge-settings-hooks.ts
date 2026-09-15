@@ -44,7 +44,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function shellQuote(value: string): string {
-  return "'" + String(value).replace(/'/g, `'\\''`) + "'"
+  return "'" + value.replace(/'/g, `'\\''`) + "'"
 }
 
 export function hookCommand(pluginPath: string): string {
@@ -170,9 +170,13 @@ export function removeMerge(dest: string, io: MergeIo): void {
   const destObj = requireHooksObject(destObjRaw, dest)
   const hooks = destObj.hooks as Record<string, unknown>
   let removed = 0
+  const nextHooks: Record<string, unknown> = {}
   for (const event of Object.keys(hooks)) {
     const existing = hooks[event]
-    if (!Array.isArray(existing)) continue
+    if (!Array.isArray(existing)) {
+      nextHooks[event] = existing
+      continue
+    }
     const kept: unknown[] = []
     for (const group of existing) {
       const before = isRecord(group) && Array.isArray(group.hooks) ? group.hooks.length : 0
@@ -186,15 +190,15 @@ export function removeMerge(dest: string, io: MergeIo): void {
       if (after < before) removed += before - after
       kept.push(stripped)
     }
-    if (kept.length) hooks[event] = kept
-    else delete hooks[event]
+    if (kept.length) nextHooks[event] = kept
   }
+  destObj.hooks = nextHooks
   fs.writeFileSync(dest, JSON.stringify(destObj, null, 2) + '\n')
   io.stdout.write(`removed ${removed} hook command(s) from ${dest}\n`)
 }
 
 function rewriteText(text: string, pluginPath: string): string {
-  return String(text).split(PLACEHOLDER).join(pluginPath)
+  return text.split(PLACEHOLDER).join(pluginPath)
 }
 
 export function stageExtension(src: string, dest: string, pluginPath: string): void {

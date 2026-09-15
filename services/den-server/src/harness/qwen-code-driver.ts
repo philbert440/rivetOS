@@ -42,7 +42,9 @@ const SPAWN_ROWS = 40
  * Term manager `spawn` accepts cwd as the 11th argument (after effort).
  * `HarnessPtyHost` does not declare it; qwen resume needs it because
  * sessions are cwd-scoped (`qwen --resume` in the wrong dir exits 0 with
- * "No saved session found").
+ * "No saved session found"). Extra optional params are assignable from the
+ * 6-arg host method, so annotate `const spawn: SpawnWithCwd = pty.spawn`
+ * rather than asserting — the assertion is a no-op to the type checker.
  */
 type SpawnWithCwd = (
   rosterKey: string | undefined,
@@ -112,8 +114,9 @@ export class QwenCodeDriver extends PtyHarnessDriver<QwenCodeStoreHost> {
       const row = await this.deps.store.describe(native)
       if (row?.cwd) cwd = row.cwd
     }
+    const spawn: SpawnWithCwd = pty.spawn
     const spawned = await Promise.resolve(
-      (pty.spawn as SpawnWithCwd)(
+      spawn(
         this.rosterCommand,
         SPAWN_COLS,
         SPAWN_ROWS,

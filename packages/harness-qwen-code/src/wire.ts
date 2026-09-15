@@ -218,7 +218,6 @@ export interface QwenSystemInitEvent {
   qwen_code_version?: string
   tools?: unknown
   mcp_servers?: unknown
-  [key: string]: unknown | undefined
 }
 
 export interface QwenStreamDelta {
@@ -242,7 +241,6 @@ export interface QwenStreamEvent {
   uuid?: string
   parent_tool_use_id?: unknown
   event?: QwenStreamInner
-  [key: string]: unknown | undefined
 }
 
 export interface QwenAssistantEvent {
@@ -252,7 +250,6 @@ export interface QwenAssistantEvent {
   parent_tool_use_id?: unknown
   message?: QwenAssistantMessage
   usageMetadata?: Record<string, unknown>
-  [key: string]: unknown | undefined
 }
 
 export interface QwenToolResultItem {
@@ -268,7 +265,6 @@ export interface QwenUserEvent {
   uuid?: string
   parent_tool_use_id?: unknown
   message?: { role?: string; content?: QwenToolResultItem[] }
-  [key: string]: unknown | undefined
 }
 
 export interface QwenResultEvent {
@@ -283,12 +279,11 @@ export interface QwenResultEvent {
   duration_ms?: number
   duration_api_ms?: number
   permission_denials?: unknown
-  [key: string]: unknown | undefined
 }
 
 export interface QwenUnknownEvent {
   type: string
-  [key: string]: unknown | undefined
+  [key: string]: unknown
 }
 
 export type QwenJsonEvent =
@@ -508,12 +503,16 @@ interface DiskPart {
   }
 }
 
+function isDiskPart(value: unknown): value is DiskPart {
+  return isRecord(value)
+}
+
 function diskParts(event: QwenJsonEvent): DiskPart[] {
   const rec = event as unknown as Record<string, unknown>
   const message = isRecord(rec.message) ? rec.message : undefined
   const parts = message?.parts
   if (!Array.isArray(parts)) return []
-  return parts.filter(isRecord) as DiskPart[]
+  return parts.filter(isDiskPart)
 }
 
 /**

@@ -25,9 +25,9 @@
  *     back to {verdict:'completed', summary:<last text>}. `result` NEVER rejects.
  *   - kill(): SIGTERM then SIGKILL after the grace period → verdict 'killed'.
  *
- * Task association (#467) is the claude contract verbatim: `RIVETOS_TASK_ID`
- * on the child env, the inherited `RIVETOS_SESSION_KEY` explicitly DELETED,
- * `RIVETOS_DEN_HOOK_DISABLED=1` because this executor owns den emission.
+ * Task association (#467): `RIVETOS_TASK_ID` on the child env, the inherited
+ * `RIVETOS_SESSION_KEY` explicitly DELETED. No `RIVETOS_DEN_HOOK_DISABLED` —
+ * this integration ships no qwen den hook (unlike claude/kimi).
  * `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` is set by spawn-turn.
  *
  * Locked constraint: NO RivetOS-side per-turn timeout. The runner enforces
@@ -550,7 +550,6 @@ export class QwenCodeExecutor implements HarnessExecutor {
           env: {
             RIVETOS_TASK_ID: spec.taskId,
             RIVETOS_SESSION_KEY: undefined,
-            RIVETOS_DEN_HOOK_DISABLED: '1',
           },
         },
       )
@@ -656,7 +655,11 @@ export class QwenCodeExecutor implements HarnessExecutor {
       const stdoutTail = spawned.stdoutText()
       const refused =
         RESUME_REJECTED_RE.test(stdoutTail) || RESUME_REJECTED_RE.test(spawned.stderrText())
-      const resumeRejected = turn.resumeSessionId !== undefined && (refused || !sawInit)
+      // Measured contract: retry only when the rejection string was seen, or
+      // the process exited 0 with no system/init. A nonzero exit / signal
+      // with no init is a plain failure, not a rejection.
+      const resumeRejected =
+        turn.resumeSessionId !== undefined && (refused || (exitCode === 0 && !sawInit))
 
       if (resumeRejected && !run.isKilled()) {
         return {
