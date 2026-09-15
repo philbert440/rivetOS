@@ -7,12 +7,20 @@
   "targets": {
     "build": {
       "command": "node apps/rivethub-site/scripts/build.mjs",
-      "inputs": ["{projectRoot}/public/**/*", "{projectRoot}/scripts/**/*"],
+      "inputs": [
+        "{projectRoot}/public/**/*",
+        "{projectRoot}/scripts/**/*",
+        "{projectRoot}/.env*",
+        { "env": "PUBLIC_POSTHOG_KEY" },
+        { "env": "PUBLIC_POSTHOG_HOST" },
+        { "env": "NEXT_PUBLIC_POSTHOG_KEY" },
+        { "env": "NEXT_PUBLIC_POSTHOG_HOST" }
+      ],
       "outputs": ["{projectRoot}/dist"]
     },
     "test": {
       "command": "node --test apps/rivethub-site/scripts/*.test.mjs",
-      "inputs": ["{projectRoot}/scripts/**/*"]
+      "inputs": ["{projectRoot}/scripts/**/*", "{projectRoot}/public/**/*"]
     }
   }
 }

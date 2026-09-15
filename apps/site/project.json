@@ -21,6 +21,11 @@
         "{projectRoot}/scripts/**/*",
         "{projectRoot}/astro.config.mjs",
         "{projectRoot}/package.json",
+        "{projectRoot}/.env*",
+        { "env": "PUBLIC_POSTHOG_KEY" },
+        { "env": "PUBLIC_POSTHOG_HOST" },
+        { "env": "NEXT_PUBLIC_POSTHOG_KEY" },
+        { "env": "NEXT_PUBLIC_POSTHOG_HOST" },
         "{workspaceRoot}/docs/**/*",
         "{workspaceRoot}/CHANGELOG.md",
         "{workspaceRoot}/CONTRIBUTING.md"
