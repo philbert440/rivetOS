@@ -530,7 +530,20 @@ describe('formatBanner + readPersistedDen + waitHealthz', () => {
     const dir = mkdtempSync(join(tmpdir(), 'local-den-'))
     try {
       const lanPath = join(dir, 'lan.yaml')
-      writeFileSync(lanPath, ['den:', '  host: 0.0.0.0', '  port: 5174', ''].join('\n'))
+      writeFileSync(
+        lanPath,
+        [
+          'memory:',
+          '  postgres:',
+          '    embedded:',
+          `      data_dir: ${dir}/pglite`,
+          '      port: 5433',
+          'den:',
+          '  host: 0.0.0.0',
+          '  port: 5174',
+          '',
+        ].join('\n'),
+      )
       expect(readPersistedDen(lanPath)).toEqual({ port: 5174, exposeLan: true })
       expect(readPersistedDen(join(dir, 'missing.yaml'))).toEqual({
         port: 5174,
