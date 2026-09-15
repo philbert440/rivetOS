@@ -14,18 +14,36 @@
       return cut === -1 ? text : text.slice(0, cut);
     }
   }
+  function rivetIsCampaignProp(name) {
+    if (/(^|_)utm_/i.test(name)) return true;
+    if (
+      /^(gclid|gclsrc|dclid|fbclid|msclkid|twclid|ttclid|li_fat_id|rdt_cid|wbraid|gbraid)$/i.test(
+        name,
+      )
+    ) {
+      return true;
+    }
+    return name === '$search_engine';
+  }
+  function rivetIsUrlProp(name) {
+    return /url|referrer|href/i.test(name);
+  }
   function rivetSanitizeProperties(properties) {
-    var names = [
-      '$current_url',
-      '$initial_current_url',
-      '$referrer',
-      '$initial_referrer',
-      '$session_entry_url',
-    ];
+    if (!properties || typeof properties !== 'object') return properties;
+    var names = Object.keys(properties);
     for (var i = 0; i < names.length; i++) {
       var name = names[i];
-      if (typeof properties[name] === 'string') {
-        properties[name] = rivetSafeUrl(properties[name]);
+      var value = properties[name];
+      if (rivetIsCampaignProp(name)) {
+        delete properties[name];
+        continue;
+      }
+      if ((name === '$set' || name === '$set_once') && value && typeof value === 'object') {
+        rivetSanitizeProperties(value);
+        continue;
+      }
+      if (typeof value === 'string' && rivetIsUrlProp(name)) {
+        properties[name] = rivetSafeUrl(value);
       }
     }
     return properties;
@@ -37,6 +55,8 @@
     person_profiles: 'identified_only',
     autocapture: false,
     disable_session_recording: true,
+    save_campaign_params: false,
+    save_referrer: false,
     sanitize_properties: rivetSanitizeProperties,
     loaded: function (ph) {
       ph.capture('$pageview', {

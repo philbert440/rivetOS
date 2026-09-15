@@ -14,13 +14,20 @@
         { "env": "PUBLIC_POSTHOG_KEY" },
         { "env": "PUBLIC_POSTHOG_HOST" },
         { "env": "NEXT_PUBLIC_POSTHOG_KEY" },
-        { "env": "NEXT_PUBLIC_POSTHOG_HOST" }
+        { "env": "NEXT_PUBLIC_POSTHOG_HOST" },
+        {
+          "runtime": "node apps/rivethub-site/scripts/posthog-cache-key.mjs apps/rivethub-site hub"
+        }
       ],
       "outputs": ["{projectRoot}/dist"]
     },
     "test": {
       "command": "node --test apps/rivethub-site/scripts/*.test.mjs",
-      "inputs": ["{projectRoot}/scripts/**/*", "{projectRoot}/public/**/*"]
+      "inputs": [
+        "{projectRoot}/scripts/**/*",
+        "{projectRoot}/public/**/*",
+        "{workspaceRoot}/apps/site/src/components/PostHog.astro"
+      ]
     }
   }
 }
