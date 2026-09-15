@@ -44,7 +44,7 @@ const GH = 'https://github.com/philbert440/rivetOS'
         <h1>Run your own agents.<br /><em>Watch them work.</em></h1>
         <p class="tagline">
           RivetOS is a lightweight agent runtime you self-host: a tiny stable core, everything
-          else a plugin. Persistent memory, a multi-agent mesh, eight LLM providers, and a live
+          else a plugin. Persistent memory, a multi-agent mesh, LLM providers as plugins, and a live
           diorama of what your agent is doing right now.
         </p>
         <div class="install">
@@ -54,6 +54,11 @@ const GH = 'https://github.com/philbert440/rivetOS'
           <a class="btn primary" href="/guides/getting-started/">Get started</a>
           <a class="btn" href={GH}>View on GitHub</a>
         </div>
+        <p class="fine">
+          Prefer a source checkout? After <code>git clone</code> and <code>npm install</code>, run
+          <code>npx rivetos init</code>.
+          <a href="/guides/getting-started/">Getting started</a>
+        </p>
         <p class="fine">Apache 2.0 · no CLA · runs in a container on your hardware</p>
       </div>
     </header>
@@ -130,8 +135,7 @@ const GH = 'https://github.com/philbert440/rivetOS'
           <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
         </div>
         <p>
-          That command is the laptop install. In a source checkout, <code>npx rivetos init</code>
-          walks through providers, RivetHub, and the mesh.
+          The installer sets up RivetHub on your machine. From a source checkout, init walks providers and mesh deployment.
           <a href="/guides/getting-started/">Getting started →</a>
         </p>
       </section>

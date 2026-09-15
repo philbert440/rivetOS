@@ -208,8 +208,9 @@ function rewriteLinks(body) {
     /## Next steps\n\n([\s\S]*?)\n\n---/,
     `## Next steps
 
-- **[Hub Setup](/guides/hub-setup/)** — Run a harness-first RivetOS node with the RivetHub clients
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, claude-cli, and opencode-cli
+- **[Provider Setup](/guides/providers/)** — API, local, and harness CLI providers
+- **[Channels](/guides/channels/)** — RivetHub is the human UX. The agent channel is mesh only
+- **[Hub Setup](/guides/hub-setup/)** — Run RivetHub clients against a node
 - **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
