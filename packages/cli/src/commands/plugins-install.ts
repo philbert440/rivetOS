@@ -703,20 +703,33 @@ function commandHasQwenCapture(command: string): boolean {
   return command.includes('qwen-memory-capture.sh') && command.includes('--hook')
 }
 
-function jsonCommandHasQwenCapture(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(jsonCommandHasQwenCapture)
-  if (value && typeof value === 'object') {
-    const rec = value as Record<string, unknown>
-    if (typeof rec.command === 'string' && commandHasQwenCapture(rec.command)) return true
-    return Object.values(rec).some(jsonCommandHasQwenCapture)
-  }
-  return false
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** True when settings.json `hooks` contain a marker `qwen-memory-capture.sh --hook` group. */
+/** True when `hooks.<Event>[]` groups contain a `type:command` capture marker. */
+function qwenHookGroupsHaveCapture(groups: unknown): boolean {
+  if (!Array.isArray(groups)) return false
+  return groups.some((group) => {
+    if (!isPlainObject(group) || !Array.isArray(group.hooks)) return false
+    return group.hooks.some((entry) => {
+      if (!isPlainObject(entry) || entry.type !== 'command') return false
+      return typeof entry.command === 'string' && commandHasQwenCapture(entry.command)
+    })
+  })
+}
+
+/**
+ * True when settings.json has a `type:command` marker under
+ * `hooks.Stop[].hooks[]` (`qwen-memory-capture.sh` + `--hook`). Capture
+ * ingests on Stop; a marker elsewhere (mcpServers, SessionStart-only, …)
+ * does not count as installed.
+ */
 export function qwenSettingsHasCaptureHooks(path: string): boolean {
   try {
-    return jsonCommandHasQwenCapture(JSON.parse(readFileSync(path, 'utf-8')))
+    const settings: unknown = JSON.parse(readFileSync(path, 'utf-8'))
+    if (!isPlainObject(settings) || !isPlainObject(settings.hooks)) return false
+    return qwenHookGroupsHaveCapture(settings.hooks.Stop)
   } catch {
     return false
   }

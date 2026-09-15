@@ -216,16 +216,19 @@ else
     exit 1
   fi
   STAGE="$(mktemp -d "${TMPDIR:-/tmp}/qwen-rivet-memory.XXXXXX")"
+  # qwen extensions install <dir> keys the copy by directory basename.
+  # Stage into a rivet-memory child so that equals the extension name.
+  STAGE_EXT="$STAGE/rivet-memory"
   cleanup_stage() { rm -rf "$STAGE"; }
   trap cleanup_stage EXIT
-  run_merge stage "$EXT_SRC" "$STAGE" "$PLUGIN_PATH"
+  run_merge stage "$EXT_SRC" "$STAGE_EXT" "$PLUGIN_PATH"
   "$QWEN_BIN" extensions uninstall rivet-memory >/dev/null 2>&1 || true
-  "$QWEN_BIN" extensions install "$STAGE" --consent
+  "$QWEN_BIN" extensions install "$STAGE_EXT" --consent
   if [ ! -f "$EXT_HOOKS" ] || ! grep -q "$HOOK_MARKER" "$EXT_HOOKS" 2>/dev/null; then
     echo "❌ Verification failed: $EXT_HOOKS does not contain $HOOK_MARKER" >&2
     exit 1
   fi
-  echo "Installed qwen extension rivet-memory from staging copy of $EXT_SRC"
+  echo "Installed qwen extension rivet-memory from staging copy $STAGE_EXT"
   echo "Verified $EXT_HOOKS contains $HOOK_MARKER"
   echo "Capture registration mode: extension ($EXT_INSTALLED)"
 fi

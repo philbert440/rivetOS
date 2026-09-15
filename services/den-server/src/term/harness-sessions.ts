@@ -935,7 +935,11 @@ function qwenProjectsDir(): string {
   return join(qwenHome(), 'projects')
 }
 
-/** `/home/rivet/x` → `-home-rivet-x`. Leading dash, no trailing dash. */
+/**
+ * `/home/rivet/x` → `-home-rivet-x`. Leading dash, no trailing dash.
+ * Local copy of `packages/harness-qwen-code/src/wire.ts` `encodeQwenCwd`
+ * (den-server does not depend on `@rivetos/harness-qwen-code`).
+ */
 export function encodeQwenCwd(cwd: string): string {
   let encoded = cwd.replaceAll('/', '-')
   if (!encoded.startsWith('-')) encoded = `-${encoded}`
@@ -1011,8 +1015,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-async function readQwenSession(id: string): Promise<HarnessSession | undefined> {
-  const transcript = qwenTranscriptPath(id)
+async function readQwenSession(
+  id: string,
+  knownPath?: string,
+): Promise<HarnessSession | undefined> {
+  const transcript = knownPath ?? qwenTranscriptPath(id)
   if (!transcript) return undefined
   let mtime: number
   let birth: number
@@ -1114,7 +1121,7 @@ async function listQwenSessions(limit: number): Promise<HarnessSession[]> {
   const ranked = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, limit)
   const out: HarnessSession[] = []
   for (const row of ranked) {
-    const parsed = await readQwenSession(row.id)
+    const parsed = await readQwenSession(row.id, row.path)
     if (parsed) out.push(parsed)
   }
   return out

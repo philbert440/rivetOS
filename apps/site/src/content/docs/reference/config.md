@@ -433,18 +433,18 @@ providers:
   qwen-code:
     binary: qwen # path or name on PATH; $QWEN_BINARY when unset
     # model: qwen3-coder-plus # optional — omit for the CLI's configured model
-    # home: ~/.qwen # RivetOS read path; qwen still writes ~/.qwen
+    # home: ~/.qwen # accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's ~/.qwen; qwen itself always writes there)
 ```
 
-| Key                 | Type   | Default   | Description                                                                                                                                        |
-| ------------------- | ------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `binary`            | string | `qwen`    | Path to the `qwen` binary. `$QWEN_BINARY` overrides when `binary` is unset (provider + setup script).                                              |
-| `model`             | string | —         | Model id passed via `-m`. Optional.                                                                                                                |
-| `home`              | string | `~/.qwen` | Where RivetOS reads qwen's `settings.json` and `projects/` sessions (den model sheet + session listing). Does not change where qwen itself writes. |
-| `cwd`               | string | —         | Working directory for the spawn.                                                                                                                   |
-| `name`              | string | —         | Display name for the provider.                                                                                                                     |
-| `context_window`    | number | —         | Context-window size reported to the runtime.                                                                                                       |
-| `max_output_tokens` | number | —         | Hard cap on output tokens.                                                                                                                         |
+| Key                 | Type   | Default   | Description                                                                                                                               |
+| ------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`            | string | `qwen`    | Path to the `qwen` binary. `$QWEN_BINARY` overrides when `binary` is unset (provider + setup script).                                     |
+| `model`             | string | —         | Model id passed via `-m`. Optional.                                                                                                       |
+| `home`              | string | `~/.qwen` | Accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's `~/.qwen`; qwen itself always writes there). |
+| `cwd`               | string | —         | Working directory for the spawn.                                                                                                          |
+| `name`              | string | —         | Display name for the provider.                                                                                                            |
+| `context_window`    | number | —         | Context-window size reported to the runtime.                                                                                              |
+| `max_output_tokens` | number | —         | Hard cap on output tokens.                                                                                                                |
 
 qwen-code 0.23.4 has no env or flag to relocate `~/.qwen`; qwen always writes there. `$QWEN_HOME` is the same RivetOS-side lookup override for `rivetos plugins install`, `rivetos doctor`, and the setup script.
 
@@ -681,7 +681,7 @@ inert instead of failing boot.
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
-Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `home` is RivetOS's read path for `settings.json` / `projects/` (default `~/.qwen`); it does not relocate qwen's own writes.
+Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `home` is accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's `~/.qwen`; qwen itself always writes there).
 
 ---
 

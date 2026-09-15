@@ -78,8 +78,9 @@ $RIVETOS_ROOT/integrations/qwen-code/rivet-memory/bin/setup-qwen-rivet-memory.sh
 4. Verifies `~/.qwen/extensions/rivet-memory/hooks/hooks.json` contains
    `qwen-memory-capture.sh`. Exit non-zero only on verification failure.
 
-Override the binary / data home with `QWEN_BINARY` and `QWEN_HOME`
-(default `~/.qwen`).
+Override the binary with `QWEN_BINARY`. `QWEN_HOME` is the RivetOS CLI lookup
+override for `plugins install` / `doctor` (default `~/.qwen`); it does not
+relocate where qwen itself writes.
 
 Fallback if the node refuses extensions:
 

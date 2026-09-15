@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { createTurnTracker } from '../turn-tracker.js'
 import { qwenCodeAdapter, qwenCodeTurnsFromLines } from './qwen-code.js'
 
-const TOOL_TURN_SAMPLE =
-  '/rivet-shared/tmp/harness-qwen-code/samples/22222222-2222-4222-8222-222222222222.jsonl'
+const TOOL_TURN_SAMPLE = fileURLToPath(
+  new URL('./__fixtures__/qwen-code-tool-turn.jsonl', import.meta.url),
+)
 
 describe('qwenCodeTurnsFromLines', () => {
   it('folds a real_user + thinking/text assistant line and skips system', () => {

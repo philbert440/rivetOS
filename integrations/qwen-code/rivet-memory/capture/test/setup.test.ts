@@ -144,9 +144,12 @@ try {
 
   console.log('\n— stage rewrites <PLUGIN_PATH> —')
   {
-    const staged = path.join(dir, 'staged-ext')
+    // Match setup-qwen-rivet-memory.sh: stage into <tmp>/rivet-memory/ so the
+    // directory basename qwen extensions install sees equals the extension name.
+    const staged = path.join(dir, 'rivet-memory')
     const result = run(['stage', EXT_SRC, staged, pluginPath])
     eq('stage exit 0', result.status, 0)
+    eq('stage dest basename is rivet-memory', path.basename(staged), 'rivet-memory')
     const hooks = JSON.parse(readFileSync(path.join(staged, 'hooks', 'hooks.json'), 'utf8')) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
     }

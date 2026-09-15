@@ -32,6 +32,7 @@ import {
   parseInstallArgs,
   parseTomlTableKeys,
   planPluginsInstall,
+  qwenSettingsHasCaptureHooks,
   readEnvKey,
   removeLegacyCaptureWatcher,
   runPluginsInstall,
@@ -2020,5 +2021,46 @@ describe('artefact validation + grok hook bake', () => {
     )
     expect(existsSync(join(dir, 'extensions'))).toBe(false)
     expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toBeNull()
+  })
+
+  it('qwenSettingsHasCaptureHooks is true for a Stop command hook', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const settings = join(dir, 'settings.json')
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    '/opt/rivetos/integrations/qwen-code/rivet-memory/bin/qwen-memory-capture.sh --hook',
+                  timeout: 20,
+                  name: 'rivet-memory',
+                },
+              ],
+            },
+          ],
+        },
+      }) + '\n',
+    )
+    expect(qwenSettingsHasCaptureHooks(settings)).toBe(true)
+  })
+
+  it('qwenSettingsHasCaptureHooks is false when the marker is outside hooks', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const settings = join(dir, 'settings.json')
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        mcpServers: {
+          capture: { command: 'bash qwen-memory-capture.sh --hook' },
+        },
+      }) + '\n',
+    )
+    expect(qwenSettingsHasCaptureHooks(settings)).toBe(false)
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toMatch(/qwen extension missing/)
   })
 })

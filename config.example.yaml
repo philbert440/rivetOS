@@ -30,8 +30,8 @@ providers:
   # qwen-code:                         # @rivetos/provider-qwen-code; harness id `qwen-code`
   #   binary: qwen                     # path or name on PATH; $QWEN_BINARY also honoured
   #   # model: qwen3-coder-plus
-  #   # home: ~/.qwen                  # RivetOS read path for settings.json / projects/
-  #                                    # (den model sheet + session listing); qwen still writes ~/.qwen
+  #   # home: ~/.qwen                  # accepted for parity with the other CLI providers; currently unused
+  #                                    # (RivetOS reads the node's ~/.qwen; qwen itself always writes there)
 
   anthropic:
     model: claude-opus-4-7
