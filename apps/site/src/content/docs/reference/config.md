@@ -4,9 +4,11 @@ sidebar:
   order: 1
 description: Every configuration option for RivetOS
 ---
+
 RivetOS uses a single YAML config file for all settings. API keys and secrets go in `.env`, never in the config file.
 
 **Config file locations** (checked in order):
+
 1. `--config` CLI flag
 2. `./config.yaml` (current directory)
 3. `~/.rivetos/config.yaml`
@@ -63,14 +65,15 @@ Unset variables resolve to empty strings. Recommended: put all secrets in `.env`
 
 Top-level runtime configuration.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `workspace` | string | **required** | Path to workspace directory containing CORE.md, USER.md, etc. |
-| `default_agent` | string | **required** | Agent to use when no channel binding matches. Must match a key in `agents`. |
-| `turn_timeout` | number | `900` | Wall-clock timeout for a single agent turn, in seconds. |
-| `context` | object | — | Context-management tuning. `context.soft_nudge_pct` (number[]) and `context.hard_nudge_pct` (number) control when the agent is nudged to compact as the window fills. |
-| `skill_dirs` | string[] | `[~/.rivetos/workspace/skills]` | Directories to scan for skills. |
-| `plugin_dirs` | string[] | `[]` | Additional directories to scan for plugins beyond the default `plugins/`. |
+| Key             | Type     | Default                         | Description                                                                                                                                                                                                                                                                                                                                                                                            |
+| --------------- | -------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workspace`     | string   | **required**                    | Path to workspace directory containing CORE.md, USER.md, etc.                                                                                                                                                                                                                                                                                                                                          |
+| `default_agent` | string   | **required**                    | Agent to use when no channel binding matches. Must match a key in `agents`.                                                                                                                                                                                                                                                                                                                            |
+| `turn_timeout`  | number   | `900`                           | Wall-clock timeout for a single agent turn, in seconds.                                                                                                                                                                                                                                                                                                                                                |
+| `context`       | object   | —                               | Context-management tuning. `context.soft_nudge_pct` (number[]) and `context.hard_nudge_pct` (number) control when the agent is nudged to compact as the window fills.                                                                                                                                                                                                                                  |
+| `skill_dirs`    | string[] | `[~/.rivetos/workspace/skills]` | Directories to scan for skills.                                                                                                                                                                                                                                                                                                                                                                        |
+| `plugin_dirs`   | string[] | `[]`                            | Additional directories to scan for plugins beyond the default `plugins/`.                                                                                                                                                                                                                                                                                                                              |
+| `experimental`  | boolean  | `false` (omit)                  | Nightly / experimental switch. When `true`, boot sets `RIVETOS_EXPERIMENTAL=1` on the env map passed wholesale to den-server `loadConfig` (same map the in-process gateway builds). Not process-env prefix passthrough (`RIVETOS_DEN_*` / `RIVETOS_USER*`). den-server currently has no dedicated field for the key; it is present on the env object den is constructed from. Stable installs omit it. |
 
 ### `runtime.heartbeats`
 
@@ -80,24 +83,24 @@ Array of scheduled agent tasks. Each heartbeat triggers the agent periodically.
 runtime:
   heartbeats:
     - agent: opus
-      schedule: "*/30 * * * *"    # Every 30 minutes
-      prompt: "Check for unread emails and calendar events."
-      output_channel: ""  # no social channel output
+      schedule: '*/30 * * * *' # Every 30 minutes
+      prompt: 'Check for unread emails and calendar events.'
+      output_channel: '' # no social channel output
       timezone: America/New_York
       quiet_hours:
         start: 23
         end: 8
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `agent` | string | **required** | Which agent runs this heartbeat. Must match a key in `agents`. |
-| `schedule` | string | **required** | Cron expression (e.g., `*/30 * * * *` = every 30 min). |
-| `prompt` | string | **required** | The message sent to the agent on each heartbeat tick. |
-| `output_channel` | string | — | Channel to deliver output (format: `platform:channel_id`). |
-| `timezone` | string | `UTC` | Timezone for schedule evaluation. |
-| `quiet_hours.start` | number | — | Hour (0-23) to start quiet period (no heartbeats). |
-| `quiet_hours.end` | number | — | Hour (0-23) to end quiet period. |
+| Key                 | Type   | Default      | Description                                                    |
+| ------------------- | ------ | ------------ | -------------------------------------------------------------- |
+| `agent`             | string | **required** | Which agent runs this heartbeat. Must match a key in `agents`. |
+| `schedule`          | string | **required** | Cron expression (e.g., `*/30 * * * *` = every 30 min).         |
+| `prompt`            | string | **required** | The message sent to the agent on each heartbeat tick.          |
+| `output_channel`    | string | —            | Channel to deliver output (format: `platform:channel_id`).     |
+| `timezone`          | string | `UTC`        | Timezone for schedule evaluation.                              |
+| `quiet_hours.start` | number | —            | Hour (0-23) to start quiet period (no heartbeats).             |
+| `quiet_hours.end`   | number | —            | Hour (0-23) to end quiet period.                               |
 
 ### `runtime.safety`
 
@@ -120,14 +123,14 @@ runtime:
         - file_edit
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `shellDanger` | boolean | `true` | Block dangerous shell commands (rm -rf /, etc.). |
-| `audit` | boolean | `true` | Log all tool executions to audit log. |
-| `workspaceFence` | object | — | Restrict file/shell operations to specific directories. |
-| `workspaceFence.allowedDirs` | string[] | **required if fence enabled** | Directories the agent can access. |
-| `workspaceFence.alwaysAllow` | string[] | `[]` | Paths always allowed regardless of fence. |
-| `workspaceFence.tools` | string[] | all tools | Which tools the fence applies to. |
+| Key                          | Type     | Default                       | Description                                             |
+| ---------------------------- | -------- | ----------------------------- | ------------------------------------------------------- |
+| `shellDanger`                | boolean  | `true`                        | Block dangerous shell commands (rm -rf /, etc.).        |
+| `audit`                      | boolean  | `true`                        | Log all tool executions to audit log.                   |
+| `workspaceFence`             | object   | —                             | Restrict file/shell operations to specific directories. |
+| `workspaceFence.allowedDirs` | string[] | **required if fence enabled** | Directories the agent can access.                       |
+| `workspaceFence.alwaysAllow` | string[] | `[]`                          | Paths always allowed regardless of fence.               |
+| `workspaceFence.tools`       | string[] | all tools                     | Which tools the fence applies to.                       |
 
 ### `runtime.auto_actions`
 
@@ -142,11 +145,11 @@ runtime:
     gitCheck: true
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `format` | boolean | `false` | Auto-format files after edits. |
-| `lint` | boolean | `false` | Auto-lint files after edits. |
-| `test` | boolean | `false` | Auto-run tests after code changes. |
+| Key        | Type    | Default | Description                             |
+| ---------- | ------- | ------- | --------------------------------------- |
+| `format`   | boolean | `false` | Auto-format files after edits.          |
+| `lint`     | boolean | `false` | Auto-lint files after edits.            |
+| `test`     | boolean | `false` | Auto-run tests after code changes.      |
 | `gitCheck` | boolean | `false` | Check git status after file operations. |
 
 ---
@@ -170,14 +173,14 @@ agents:
     local: true
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `provider` | string | **required** | Provider ID. Must match a key in `providers`. |
-| `model` | string | provider default | Model override — use a specific model from this provider instead of its default. Lets several agents share one provider at different models. |
-| `default_thinking` | string | `off` | Default thinking level: `off`, `low`, `medium`, `high`. |
-| `local` | boolean | `false` | If true, uses extended workspace context (includes CAPABILITIES.md, daily notes). Use for local models where tokens are free. |
-| `tools.exclude` | string[] | `[]` | Tool names to block for this agent. |
-| `tools.include` | string[] | all | If set, only these tools are available to this agent. |
+| Key                | Type     | Default          | Description                                                                                                                                  |
+| ------------------ | -------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider`         | string   | **required**     | Provider ID. Must match a key in `providers`.                                                                                                |
+| `model`            | string   | provider default | Model override — use a specific model from this provider instead of its default. Lets several agents share one provider at different models. |
+| `default_thinking` | string   | `off`            | Default thinking level: `off`, `low`, `medium`, `high`.                                                                                      |
+| `local`            | boolean  | `false`          | If true, uses extended workspace context (includes CAPABILITIES.md, daily notes). Use for local models where tokens are free.                |
+| `tools.exclude`    | string[] | `[]`             | Tool names to block for this agent.                                                                                                          |
+| `tools.include`    | string[] | all              | If set, only these tools are available to this agent.                                                                                        |
 
 ---
 
@@ -208,13 +211,13 @@ providers:
     max_tokens: 8192
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | `claude-opus-4-7` | Model identifier. |
-| `max_tokens` | number | `8192` | Maximum output tokens. |
-| `api_key` | string | `${ANTHROPIC_API_KEY}` | API key. Prefer env var. |
-| `context_window` | number | — | Override the model's context-window size (advanced; for budgeting). |
-| `max_output_tokens` | number | — | Hard cap on output tokens, independent of `max_tokens`. |
+| Key                 | Type   | Default                | Description                                                         |
+| ------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
+| `model`             | string | `claude-opus-4-7`      | Model identifier.                                                   |
+| `max_tokens`        | number | `8192`                 | Maximum output tokens.                                              |
+| `api_key`           | string | `${ANTHROPIC_API_KEY}` | API key. Prefer env var.                                            |
+| `context_window`    | number | —                      | Override the model's context-window size (advanced; for budgeting). |
+| `max_output_tokens` | number | —                      | Hard cap on output tokens, independent of `max_tokens`.             |
 
 **Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
@@ -226,14 +229,14 @@ providers:
     model: grok-4.20-reasoning
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
-| `api_key` | string | `${XAI_API_KEY}` | API key. |
-| `max_tokens` | number | `4096` | Maximum output tokens. |
-| `temperature` | number | — | Sampling temperature. |
-| `context_window` | number | — | Override the model's context-window size (advanced). |
-| `max_output_tokens` | number | — | Hard cap on output tokens. |
+| Key                 | Type   | Default               | Description                                                                          |
+| ------------------- | ------ | --------------------- | ------------------------------------------------------------------------------------ |
+| `model`             | string | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
+| `api_key`           | string | `${XAI_API_KEY}`      | API key.                                                                             |
+| `max_tokens`        | number | `4096`                | Maximum output tokens.                                                               |
+| `temperature`       | number | —                     | Sampling temperature.                                                                |
+| `context_window`    | number | —                     | Override the model's context-window size (advanced).                                 |
+| `max_output_tokens` | number | —                     | Hard cap on output tokens.                                                           |
 
 ### Google (Gemini)
 
@@ -243,13 +246,13 @@ providers:
     model: gemini-2.5-pro
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | `gemini-2.5-pro` | Model identifier. |
-| `api_key` | string | `${GOOGLE_API_KEY}` | API key. |
-| `max_tokens` | number | `8192` | Maximum output tokens. |
-| `context_window` | number | — | Override the model's context-window size (advanced). |
-| `max_output_tokens` | number | — | Hard cap on output tokens. |
+| Key                 | Type   | Default             | Description                                          |
+| ------------------- | ------ | ------------------- | ---------------------------------------------------- |
+| `model`             | string | `gemini-2.5-pro`    | Model identifier.                                    |
+| `api_key`           | string | `${GOOGLE_API_KEY}` | API key.                                             |
+| `max_tokens`        | number | `8192`              | Maximum output tokens.                               |
+| `context_window`    | number | —                   | Override the model's context-window size (advanced). |
+| `max_output_tokens` | number | —                   | Hard cap on output tokens.                           |
 
 ### Ollama
 
@@ -260,15 +263,15 @@ providers:
     base_url: http://localhost:11434
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `model` | string | **required** | Model name (must be pulled locally). |
-| `base_url` | string | `http://localhost:11434` | Ollama API endpoint. |
-| `temperature` | number | — | Sampling temperature. |
-| `num_ctx` | number | — | Context window size passed to Ollama. |
-| `keep_alive` | string | — | How long Ollama keeps the model loaded between requests (e.g. `5m`, `-1` for always). |
-| `context_window` | number | — | Override the context-window size reported to the runtime (advanced). |
-| `max_output_tokens` | number | — | Hard cap on output tokens. |
+| Key                 | Type   | Default                  | Description                                                                           |
+| ------------------- | ------ | ------------------------ | ------------------------------------------------------------------------------------- |
+| `model`             | string | **required**             | Model name (must be pulled locally).                                                  |
+| `base_url`          | string | `http://localhost:11434` | Ollama API endpoint.                                                                  |
+| `temperature`       | number | —                        | Sampling temperature.                                                                 |
+| `num_ctx`           | number | —                        | Context window size passed to Ollama.                                                 |
+| `keep_alive`        | string | —                        | How long Ollama keeps the model loaded between requests (e.g. `5m`, `-1` for always). |
+| `context_window`    | number | —                        | Override the context-window size reported to the runtime (advanced).                  |
+| `max_output_tokens` | number | —                        | Hard cap on output tokens.                                                            |
 
 ### vllm
 
@@ -276,42 +279,59 @@ Dedicated provider for a vLLM server. Exposes the full vLLM surface.
 
 - Folds any post-first `system` message into a `user` message with a `[SYSTEM NOTICE]` prefix (vLLM/Qwen/Llama templates reject mid-conversation system messages)
 - Consumes vLLM's native `reasoning_content` field when a `--reasoning-parser` is configured server-side
-- `model: default` auto-discovers the served model (and its context window) from `/v1/models`
+- `model: default` auto-discovers the served model (and its context window) from the models listing (`<base><api_prefix>/models`)
 
 ```yaml
 providers:
   vllm:
-    base_url: http://vllm.local:8000      # trailing /v1 optional
+    base_url: http://vllm.local:8000 # trailing /v1 optional
     model: default
     top_k: 40
     min_p: 0.05
     # api_key: ${VLLM_API_KEY}            # only if vLLM started with --api-key
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `base_url` | string | **required** | vLLM server URL (`/v1` optional). |
-| `model` | string | `default` | Served model id; `default` auto-discovers. |
-| `api_key` | string | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set). |
-| `max_tokens` | number | `4096` | Maximum output tokens. |
-| `temperature` | number | `0.7` | Sampling temperature. |
-| `top_p` | number | `0.95` | Nucleus sampling. |
-| `top_k` | number | — | vLLM sampling extension. |
-| `min_p` | number | — | vLLM sampling extension. |
-| `presence_penalty` | number | — | Standard OpenAI penalty. |
-| `frequency_penalty` | number | — | Standard OpenAI penalty. |
-| `repetition_penalty` | number | — | vLLM extension. |
-| `min_tokens` | number | — | vLLM extension; minimum output tokens. |
-| `stop` | string[] | — | Stop sequences. |
-| `seed` | number | — | Reproducible sampling seed. |
-| `context_window` | number | — | Context-window size reported to the runtime. |
-| `max_output_tokens` | number | — | Hard cap on output tokens. |
-| `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
-| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot to confirm the model is served. |
-| `name` | string | — | Display name for the provider. |
-| `mm_processor_kwargs` | object | — | vLLM multimodal processor kwargs (passthrough). |
-| `chat_template_kwargs` | object | — | vLLM chat-template kwargs (passthrough). |
-| `extra_body` | object | — | Arbitrary JSON merged into the request body (vLLM passthrough). |
+z.ai / GLM (OpenAI-compatible coding endpoint has no `/v1` segment — `api_prefix: ""` is enough; models listing is at `<base>/models`):
+
+```yaml
+providers:
+  vllm:
+    name: GLM (Z.ai)
+    base_url: https://api.z.ai/api/coding/paas/v4
+    api_prefix: ''
+    api_key: ${ZAI_API_KEY}
+    model: glm-5.3-flash
+```
+
+Use `models_url` only if the models listing lives somewhere other than `<base><api_prefix>/models`.
+
+| Key                    | Type     | Default           | Description                                                                                                |
+| ---------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).                               |
+| `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).                            |
+| `models_url`           | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
+| `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.                         |
+| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                                                 |
+| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                                                    |
+| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                                                                     |
+| `temperature`          | number   | `0.7`             | Sampling temperature.                                                                                      |
+| `top_p`                | number   | `0.95`            | Nucleus sampling.                                                                                          |
+| `top_k`                | number   | —                 | vLLM sampling extension.                                                                                   |
+| `min_p`                | number   | —                 | vLLM sampling extension.                                                                                   |
+| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `repetition_penalty`   | number   | —                 | vLLM extension.                                                                                            |
+| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                                                                     |
+| `stop`                 | string[] | —                 | Stop sequences.                                                                                            |
+| `seed`                 | number   | —                 | Reproducible sampling seed.                                                                                |
+| `context_window`       | number   | —                 | Context-window size reported to the runtime.                                                               |
+| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                                                                 |
+| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                                                             |
+| `verify_model_on_init` | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.                              |
+| `name`                 | string   | —                 | Display name for the provider.                                                                             |
+| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                                            |
+| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                                                                   |
+| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                                            |
 
 ### llama-server
 
@@ -328,26 +348,26 @@ providers:
     min_p: 0.05
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `base_url` | string | **required** | llama-server URL (`/v1` optional). |
-| `model` | string | `default` | Served model id; `default` auto-discovers. |
-| `api_key` | string | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set). |
-| `max_tokens` | number | `4096` | Maximum output tokens. |
-| `temperature` | number | `0.7` | Sampling temperature. |
-| `top_p` | number | `0.95` | Nucleus sampling. |
-| `top_k` | number | — | llama.cpp sampling extension. |
-| `min_p` | number | — | llama.cpp sampling extension. |
-| `presence_penalty` | number | — | Standard OpenAI penalty. |
-| `frequency_penalty` | number | — | Standard OpenAI penalty. |
-| `stop` | string[] | — | Stop sequences. |
-| `seed` | number | — | Reproducible sampling seed. |
-| `context_window` | number | — | Context-window size reported to the runtime. |
-| `max_output_tokens` | number | — | Hard cap on output tokens. |
-| `default_tool_choice` | string | `auto` | `auto`, `none`, or `required`. |
-| `verify_model_on_init` | boolean | `false` | Probe `/v1/models` at boot to confirm the model is served. |
-| `name` | string | — | Display name for the provider. |
-| `extra_body` | object | — | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
+| Key                    | Type     | Default                   | Description                                                              |
+| ---------------------- | -------- | ------------------------- | ------------------------------------------------------------------------ |
+| `base_url`             | string   | **required**              | llama-server URL (`/v1` optional).                                       |
+| `model`                | string   | `default`                 | Served model id; `default` auto-discovers.                               |
+| `api_key`              | string   | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set).                                  |
+| `max_tokens`           | number   | `4096`                    | Maximum output tokens.                                                   |
+| `temperature`          | number   | `0.7`                     | Sampling temperature.                                                    |
+| `top_p`                | number   | `0.95`                    | Nucleus sampling.                                                        |
+| `top_k`                | number   | —                         | llama.cpp sampling extension.                                            |
+| `min_p`                | number   | —                         | llama.cpp sampling extension.                                            |
+| `presence_penalty`     | number   | —                         | Standard OpenAI penalty.                                                 |
+| `frequency_penalty`    | number   | —                         | Standard OpenAI penalty.                                                 |
+| `stop`                 | string[] | —                         | Stop sequences.                                                          |
+| `seed`                 | number   | —                         | Reproducible sampling seed.                                              |
+| `context_window`       | number   | —                         | Context-window size reported to the runtime.                             |
+| `max_output_tokens`    | number   | —                         | Hard cap on output tokens.                                               |
+| `default_tool_choice`  | string   | `auto`                    | `auto`, `none`, or `required`.                                           |
+| `verify_model_on_init` | boolean  | `false`                   | Probe `/v1/models` at boot to confirm the model is served.               |
+| `name`                 | string   | —                         | Display name for the provider.                                           |
+| `extra_body`           | object   | —                         | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
 
 ### claude-cli
 
@@ -356,17 +376,79 @@ Drives the local `claude` binary (Claude Code CLI) using the user's subscription
 ```yaml
 providers:
   claude-cli:
-    binary: claude            # path or name on PATH
-    model: claude-opus-4-7    # optional — defaults to whatever the CLI picks
+    binary: claude # path or name on PATH
+    model: claude-opus-4-7 # optional — defaults to whatever the CLI picks
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `binary` | string | `claude` | Path to the `claude` binary. |
-| `model` | string | — | Model alias to pass to the CLI. |
-| `extra_args` | string[] | `[]` | Additional CLI flags (advanced). |
+| Key          | Type     | Default  | Description                      |
+| ------------ | -------- | -------- | -------------------------------- |
+| `binary`     | string   | `claude` | Path to the `claude` binary.     |
+| `model`      | string   | —        | Model alias to pass to the CLI.  |
+| `extra_args` | string[] | `[]`     | Additional CLI flags (advanced). |
 
 **Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does.
+
+### opencode-cli
+
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode` by shelling `opencode run --format json`. Default `model` is `zai/glm-5.3-flash`. The installed CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol. Add `@rivetos/provider-opencode-cli` to `plugins`.
+
+```yaml
+providers:
+  opencode-cli:
+    binary: opencode # path or name on PATH
+    # model: zai/glm-5.3-flash  # RivetOS default --model; CLI owns backend
+```
+
+| Key      | Type   | Default             | Description                   |
+| -------- | ------ | ------------------- | ----------------------------- |
+| `binary` | string | `opencode`          | Path or name on PATH.         |
+| `model`  | string | `zai/glm-5.3-flash` | Model id passed as `--model`. |
+
+**Auth:** The installed OpenCode CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol and ships no OpenCode key or OAuth.
+
+### pi-cli
+
+Drives the local `pi` binary (`@earendil-works/pi-coding-agent`) headlessly — print/JSON or RPC. Harness id is `pi`; roster command is `pi`. Recommended default backend is z.ai GLM (reuse the coding-plan / Anthropic-compat key). Add `@rivetos/provider-pi-cli` to `plugins`.
+
+```yaml
+providers:
+  pi-cli:
+    binary: pi # path or name on PATH
+    # model: glm-4.6 # optional — omit for the CLI's configured model
+```
+
+| Key      | Type   | Default | Description                     |
+| -------- | ------ | ------- | ------------------------------- |
+| `binary` | string | `pi`    | Path to the `pi` binary.        |
+| `model`  | string | —       | Model alias to pass to the CLI. |
+
+**Auth:** whatever backend `pi` is configured to use (z.ai GLM recommended). RivetOS does not ship a dedicated `pi` API key; reuse the coding-plan credentials.
+
+### qwen-code
+
+Drives the local `qwen` binary (`@qwen-code/qwen-code`) headlessly — `-p` plus Claude-shaped stream-json. Harness id is `qwen-code`; roster command is `qwen`; provider id matches harness id. Add `@rivetos/provider-qwen-code` to `plugins`.
+
+```yaml
+providers:
+  qwen-code:
+    binary: qwen # path or name on PATH; $QWEN_BINARY when unset
+    # model: qwen3-coder-plus # optional — omit for the CLI's configured model
+    # home: ~/.qwen # accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's ~/.qwen; qwen itself always writes there)
+```
+
+| Key                 | Type   | Default   | Description                                                                                                                               |
+| ------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`            | string | `qwen`    | Path to the `qwen` binary. `$QWEN_BINARY` overrides when `binary` is unset (provider + setup script).                                     |
+| `model`             | string | —         | Model id passed via `-m`. Optional.                                                                                                       |
+| `home`              | string | `~/.qwen` | Accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's `~/.qwen`; qwen itself always writes there). |
+| `cwd`               | string | —         | Working directory for the spawn.                                                                                                          |
+| `name`              | string | —         | Display name for the provider.                                                                                                            |
+| `context_window`    | number | —         | Context-window size reported to the runtime.                                                                                              |
+| `max_output_tokens` | number | —         | Hard cap on output tokens.                                                                                                                |
+
+qwen-code 0.23.4 has no env or flag to relocate `~/.qwen`; qwen always writes there. `$QWEN_HOME` is the same RivetOS-side lookup override for `rivetos plugins install`, `rivetos doctor`, and the setup script.
+
+**Auth:** OpenAI-compatible / API-key only (Qwen OAuth free tier is discontinued). Configure `modelProviders` in `~/.qwen/settings.json`. Effort is per-model (`capabilities.reasoning.efforts`); there is no CLI `--effort` flag.
 
 ---
 
@@ -376,7 +458,54 @@ Messaging channel configuration. Each key is a channel type / plugin name.
 
 > **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
 > Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
-> Stale social-channel keys warn as unknown types (no crash-loop).
+> Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
+> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
+
+### grok-cli
+
+Drives the local Grok Build `grok` binary headlessly — one `grok -p <prompt> --output-format streaming-messages-json --include-partial-messages` call per turn — on the user's Grok Build subscription (OIDC login in `~/.grok`), not the metered xAI API. The CLI owns auth and its own tools/MCP servers. Default `session: resume` keeps one grok session per RivetOS conversation (`--session-id` on the first turn with the full transcript, `--resume` after with only the newest user turn). `session: replay` re-sends the whole conversation every turn. NDJSON `stream_event` deltas (reasoning, text) are emitted as they arrive; usage, `sessionId`, and cost come from the final `result` line. This is what lets `provider: grok-cli` agents answer mesh delegations, heartbeat tasks and chat.
+
+```yaml
+providers:
+  grok-cli:
+    binary: /home/rivet/.grok/bin/grok # default ~/.grok/bin/grok, then `grok` on PATH
+    # model: grok-4.5                    # optional; omit for the CLI's configured model
+    permission_mode: dontAsk # tools denied unless `allow` rules cover them
+    reasoning_effort: medium # low|medium|high; a turn's `thinking` overrides
+    max_turns: 1 # 1 = answer only, no tool loop
+    no_plan: true
+    system_prompt: prepend # prepend | override | off
+    session: resume # resume | replay
+    cwd: /home/rivet/.rivetos/workspace
+    # allow: [Read, Grep]                # --allow rules for tool-using turns
+```
+
+| Key                | Default                         | Notes                                                                                                                                                                                          |
+| ------------------ | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`           | `~/.grok/bin/grok`, else `grok` | Grok Build CLI. `isAvailable()` = `grok --version` exits 0.                                                                                                                                    |
+| `model`            | CLI default (optional)          | Passed as `-m` when set. Omit to use the CLI's configured model.                                                                                                                               |
+| `permission_mode`  | `dontAsk`                       | `--permission-mode`. `dontAsk` auto-denies tools not covered by `allow`.                                                                                                                       |
+| `reasoning_effort` | CLI default                     | `--reasoning-effort`. Per-turn `thinking` (`low`/`medium`/`high`+) overrides.                                                                                                                  |
+| `max_turns`        | `1`                             | `--max-turns`. Raise with `allow` rules for agentic turns.                                                                                                                                     |
+| `no_plan`          | `true`                          | `--no-plan` — plan mode would swallow a headless run.                                                                                                                                          |
+| `system_prompt`    | `prepend`                       | `prepend` = RivetOS system prompt at the top of the prompt, grok keeps its own; `override` = `--system-prompt-override`; `off` = dropped. Applies on first turn and on later `--resume` turns. |
+| `session`          | `resume`                        | `resume` = one grok session per RivetOS conversation (`~/.rivetos/grok-cli-sessions.json`). `replay` = full transcript every turn, no session flags.                                           |
+| `allow`            | —                               | List of `--allow` rules (Claude Code rule syntax).                                                                                                                                             |
+| `tools`            | —                               | `--tools` pass-through.                                                                                                                                                                        |
+| `cwd`              | —                               | Working directory for the spawned grok (`--cwd`).                                                                                                                                              |
+
+Limits: incremental streaming is live. `streaming-messages-json` prints NDJSON `stream_event` deltas as they arrive. The older `--output-format json` blob is only a fallback when a turn emits no NDJSON and exits 0. There is no RivetOS tool bridge (grok cannot call `delegate_task`/`memory_*` as RivetOS tools; it has its own MCP servers from `~/.grok/config.toml`). Session capture is the rivet-memory Grok hooks' job.
+
+---
+
+## `channels`
+
+Messaging channel configuration. Each key is a channel type / plugin name.
+
+> **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
+> Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
+> Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
+> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
 
 ### Agent (HTTP)
 
@@ -392,16 +521,15 @@ Inter-agent communication channel. Enables delegation between agents and mesh ne
 channels:
   agent:
     port: 3100
-    secret: ${AGENT_CHANNEL_SECRET}  # still enforced by this plugin when set
+    secret: ${AGENT_CHANNEL_SECRET} # still enforced by this plugin when set
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `port` | number | `3100` | HTTPS port for agent-to-agent messaging. |
-| `secret` | string | — | **Deprecated but enforced.** Bearer token checked by the standalone agent channel plugin when set. Mesh node-to-node auth uses mTLS via `mesh.tls` instead. |
+| Key      | Type   | Default | Description                                                                                                                                                 |
+| -------- | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port`   | number | `3100`  | HTTPS port for agent-to-agent messaging.                                                                                                                    |
+| `secret` | string | —       | **Deprecated but enforced.** Bearer token checked by the standalone agent channel plugin when set. Mesh node-to-node auth uses mTLS via `mesh.tls` instead. |
 
 ---
-
 
 ## `mesh`
 
@@ -411,34 +539,67 @@ to each other via mTLS. See [`docs/mesh.md`](/guides/mesh/) for full documentati
 ```yaml
 mesh:
   enabled: true
-  node_name: ct110        # must match the cert CN
-  tls: true               # use default cert paths derived from node_name
+  node_name: ct110 # must match the cert CN
+  tls: true # use default cert paths derived from node_name
   agent_channel_port: 3000
   storage_dir: /rivet-shared
   heartbeat_interval_ms: 30000
   stale_threshold_ms: 90000
   discovery:
     mode: seed
-    seed_host: ct110.mesh   # use .mesh DNS — matches cert SAN
+    seed_host: ct110.mesh # use .mesh DNS — matches cert SAN
     seed_port: 3000
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `mesh.enabled` | bool | `false` | Enable mesh networking. |
-| `mesh.node_name` | string | hostname | Node name — **must match cert CN**. |
-| `mesh.tls` | bool \| object | — | mTLS config. **Required** when `mesh.enabled: true`. |
-| `mesh.tls.ca_path` | string | `/rivet-shared/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. |
-| `mesh.tls.cert_path` | string | `/rivet-shared/rivet-ca/issued/<node_name>.crt` | Node cert PEM. |
-| `mesh.tls.key_path` | string | `/rivet-shared/rivet-ca/issued/<node_name>.key` | Node private key PEM. |
-| `mesh.agent_channel_port` | number | `3000` | HTTPS port for the agent channel. |
-| `mesh.storage_dir` | string | `/rivet-shared` | Directory containing `mesh.json`. |
-| `mesh.heartbeat_interval_ms` | number | `30000` | Heartbeat write interval. |
-| `mesh.stale_threshold_ms` | number | `90000` | Age before a node is marked stale. |
-| `mesh.discovery.mode` | string | — | `seed` \| `static` \| `mdns`. |
-| `mesh.discovery.seed_host` | string | — | Seed node hostname (use `<nodeName>.mesh`). |
-| `mesh.discovery.seed_port` | number | `3100` | Seed node port. |
-| `mesh.secret` | string | — | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
+| Key                          | Type           | Default                                            | Description                                                                                                              |
+| ---------------------------- | -------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `mesh.enabled`               | bool           | `false`                                            | Enable mesh networking.                                                                                                  |
+| `mesh.node_name`             | string         | hostname                                           | Node name — **must match cert CN**.                                                                                      |
+| `mesh.tls`                   | bool \| object | —                                                  | mTLS config. **Required** when `mesh.enabled: true`.                                                                     |
+| `mesh.tls.ca_path`           | string         | `/rivet-shared/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM.                                                                                                            |
+| `mesh.tls.cert_path`         | string         | `/rivet-shared/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                           |
+| `mesh.tls.key_path`          | string         | `/rivet-shared/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                    |
+| `mesh.agent_channel_port`    | number         | `3000`                                             | HTTPS port for the agent channel.                                                                                        |
+| `mesh.storage_dir`           | string         | `/rivet-shared`                                    | Directory containing `mesh.json`.                                                                                        |
+| `mesh.heartbeat_interval_ms` | number         | `30000`                                            | Heartbeat write interval.                                                                                                |
+| `mesh.stale_threshold_ms`    | number         | `90000`                                            | Age before a node is marked stale.                                                                                       |
+| `mesh.discovery.mode`        | string         | —                                                  | `seed` \| `static` \| `mdns`.                                                                                            |
+| `mesh.discovery.seed_host`   | string         | —                                                  | Seed node hostname (use `<nodeName>.mesh`).                                                                              |
+| `mesh.discovery.seed_port`   | number         | `3100`                                             | Seed node port.                                                                                                          |
+| `mesh.secret`                | string         | —                                                  | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
+
+---
+
+## `den`
+
+Embedded node gateway (den-server in-process). Off by default. See [`docs/DEN.md`](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md) and [`docs/GATEWAY-MTLS.md`](https://github.com/philbert440/rivetOS/blob/main/docs/GATEWAY-MTLS.md). Independent of `mesh.discovery.mode`.
+
+```yaml
+den:
+  enabled: true
+  host: 127.0.0.1
+  port: 5174
+  advertise_mdns: false
+  # Off-loopback (host: 0.0.0.0) will not boot without TLS:
+  # tls_cert: /rivet-shared/rivet-ca/issued/<node>.crt
+  # tls_key: /rivet-shared/rivet-ca/issued/<node>.key
+```
+
+| Key              | Type    | Default         | Description                                                                                                  |
+| ---------------- | ------- | --------------- | ------------------------------------------------------------------------------------------------------------ |
+| `enabled`        | boolean | `false`         | Embed the den gateway in this process.                                                                       |
+| `host`           | string  | `127.0.0.1`     | Bind address. Off-loopback requires TLS.                                                                     |
+| `port`           | number  | `5174`          | HTTP/WS (or HTTPS) port.                                                                                     |
+| `tls_cert`       | string  | —               | Node TLS cert PEM path. Required off-loopback. Env: `RIVETOS_DEN_TLS_CERT`.                                  |
+| `tls_key`        | string  | —               | Node TLS key PEM path. Env: `RIVETOS_DEN_TLS_KEY`.                                                           |
+| `token`          | string  | —               | Legacy; ignored. Gateway auth is device mTLS.                                                                |
+| `terminal`       | object  | —               | Local PTY terminals. Off by default. See `den.terminal.*`.                                                   |
+| `static_dir`     | string  | hub dist        | Override for the built hub app served at `/`.                                                                |
+| `root_redirect`  | string  | —               | 302 target for `GET /`.                                                                                      |
+| `files_root`     | string  | `/rivet-shared` | Shared filestore root for `/api/files/*`. Empty string disables the routes.                                  |
+| `files_open`     | boolean | —               | Opt-out of the files security gate. Defaults to `terminal.open` when unset.                                  |
+| `devices`        | object  | —               | Mesh device enrollment (Settings → Devices). Off unless `devices.enabled`.                                   |
+| `advertise_mdns` | boolean | `false`         | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started. |
 
 ---
 
@@ -457,15 +618,53 @@ memory:
     # delegation_tracking: true
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `connection_string` | string | `${RIVETOS_PG_URL}` | PostgreSQL connection URL. |
-| `embed_endpoint` | string | — | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default. |
-| `delegation_tracking` | boolean | `false` | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing. |
+| Key                   | Type    | Default             | Description                                                                                             |
+| --------------------- | ------- | ------------------- | ------------------------------------------------------------------------------------------------------- |
+| `connection_string`   | string  | `${RIVETOS_PG_URL}` | PostgreSQL connection URL.                                                                              |
+| `embed_endpoint`      | string  | —                   | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default.     |
+| `delegation_tracking` | boolean | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
+| `embedded`            | object  | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
 
 **Required extensions:** `pgvector` (for embedding storage and similarity search).
 
 The memory plugin handles schema creation and migration automatically on first boot.
+
+### Embedded PGlite
+
+Presence of `memory.postgres.embedded` starts Postgres-in-WASM inside `rivetos start` and exposes it on a loopback wire socket. Existing `pg` clients keep using `RIVETOS_PG_URL` (injected at boot). Do not set `connection_string` in the same block — that is a validation error.
+
+```yaml
+memory:
+  postgres:
+    embedded:
+      data_dir: ~/.rivetos/pglite
+      port: 5433
+      auto_migrate: true
+      max_connections: 96
+```
+
+Effective URL: `postgres://postgres:postgres@127.0.0.1:<port>/postgres`.
+
+| Key               | Type    | Default             | Description                                              |
+| ----------------- | ------- | ------------------- | -------------------------------------------------------- |
+| `data_dir`        | string  | `~/.rivetos/pglite` | File-backed PGlite directory (`~` expanded).             |
+| `port`            | integer | `5433`              | Loopback TCP port (5432 may already be a host Postgres). |
+| `auto_migrate`    | boolean | `true`              | Run memory migrations in-process after the owner starts. |
+| `max_connections` | integer | `96`                | Socket multiplexer cap. The library default is 1.        |
+
+Contract:
+
+- The socket exists only while the node process runs. A second process on the same `data_dir` attaches (does not open the directory twice) via `rivetos-owner.lock`.
+- Single owner. Stale lock (dead pid) is unlinked and replaced.
+- `LISTEN`/`NOTIFY` is not delivered across socket connections — task completion waiter and graphile-worker use polling.
+- Export with `pg_dump` ≥ 18 (this engine is PostgreSQL 18.3). RSS is about 650 MB per 170 MB on-disk database.
+- Without `RIVETOS_EMBED_URL` / `embed_endpoint` (lite mode), boot sets `rivet.defer_embed_enqueue=on` so capture INSERTs do not require the graphile schema. In lite mode nothing ever enqueues embed jobs: rows are stored un-embedded (full-text + trigram recall only). When you later configure an embedding endpoint, restart the node — the embedding worker's `enqueue-idle` cron backfills every un-embedded row.
+
+Day-2 commands (no extra daemon):
+
+- `rivetos start` / `rivetos start --role migrate` — foreground start now loads `~/.rivetos/.env` (same non-overriding merge as systemd `EnvironmentFile=`). Migrate acquires or attaches; in-process when this process owns the engine, async spawn when attaching.
+- `rivetos db migrate` / `rivetos db status` — same acquire-or-attach wrap. `--config <path>` selects the YAML (not forwarded to the migrator). `db migrate --url` bypasses the embedded engine and talks to that Postgres URL. `db status` on embedded prints data dir, size on disk, owner, socket port, and `_rivetos_migrations` count. If no node is running, `db status` boots the engine for the duration of the command and labels the owner `this command (no node running)`.
+- `rivetos doctor` — does not warn that `RIVETOS_PG_URL` is missing when `memory.postgres.embedded` is set; if the socket refuses, it says to start the node.
 
 ---
 
@@ -476,11 +675,15 @@ Postgres is configured and the `0002_ros_tasks` migration has been applied
 (`rivetos-memory-migrate`); on unmigrated nodes it logs a warning and stays
 inert instead of failing boot.
 
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | boolean | `true` | Start the embedded task runner. Inert while nothing creates tasks. |
+| Key       | Type    | Default | Description                                                        |
+| --------- | ------- | ------- | ------------------------------------------------------------------ |
+| `enabled` | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks. |
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
+
+Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
+
+---
 
 ## `transports`
 
@@ -490,8 +693,8 @@ Inbound surfaces that expose RivetOS tools to external clients. Currently: the M
 transports:
   mcp:
     port: 4321
-    bind: 127.0.0.1           # default localhost
-    tls:                      # optional mTLS
+    bind: 127.0.0.1 # default localhost
+    tls: # optional mTLS
       ca_path: /rivet-shared/rivet-ca/intermediate/ca-chain.pem
       cert_path: /rivet-shared/rivet-ca/issued/<node>.crt
       key_path: /rivet-shared/rivet-ca/issued/<node>.key
@@ -503,7 +706,7 @@ The transport is only activated when the matching `transports.<name>` slice is p
 
 ## `mcp`
 
-**Outbound** Model Context Protocol. RivetOS *connects to* external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
+**Outbound** Model Context Protocol. RivetOS _connects to_ external MCP servers and exposes their tools to agents (the inverse of the `transports.mcp` plugin above).
 
 ```yaml
 mcp:
@@ -511,9 +714,9 @@ mcp:
     memory:
       transport: stdio
       command: npx
-      args: ["-y", "@modelcontextprotocol/server-memory"]
+      args: ['-y', '@modelcontextprotocol/server-memory']
       toolPrefix: mcp_memory
-    
+
     github:
       transport: streamable-http
       url: http://localhost:8080/mcp
@@ -523,17 +726,17 @@ mcp:
 
 ### MCP server config
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `transport` | string | **required** | `stdio`, `streamable-http`, or `sse`. |
-| `command` | string | — | Command to launch (stdio transport). |
-| `args` | string[] | `[]` | Command arguments (stdio transport). |
-| `env` | object | `{}` | Environment variables for the spawned process. |
-| `cwd` | string | — | Working directory for the spawned process. |
-| `url` | string | — | Server URL (HTTP/SSE transport). |
-| `toolPrefix` | string | — | Prefix for tool names (prevents collisions between servers). |
-| `connectTimeout` | number | `10000` | Connection timeout in milliseconds. |
-| `autoReconnect` | boolean | `true` | Auto-reconnect on disconnect. |
+| Key              | Type     | Default      | Description                                                  |
+| ---------------- | -------- | ------------ | ------------------------------------------------------------ |
+| `transport`      | string   | **required** | `stdio`, `streamable-http`, or `sse`.                        |
+| `command`        | string   | —            | Command to launch (stdio transport).                         |
+| `args`           | string[] | `[]`         | Command arguments (stdio transport).                         |
+| `env`            | object   | `{}`         | Environment variables for the spawned process.               |
+| `cwd`            | string   | —            | Working directory for the spawned process.                   |
+| `url`            | string   | —            | Server URL (HTTP/SSE transport).                             |
+| `toolPrefix`     | string   | —            | Prefix for tool names (prevents collisions between servers). |
+| `connectTimeout` | number   | `10000`      | Connection timeout in milliseconds.                          |
+| `autoReconnect`  | boolean  | `true`       | Auto-reconnect on disconnect.                                |
 
 ---
 
@@ -551,8 +754,8 @@ deployment:
 
 ### Keys
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
+| Key      | Type   | Default      | Description                                     |
+| -------- | ------ | ------------ | ----------------------------------------------- |
 | `target` | string | **required** | `docker`, `proxmox`, `kubernetes`, or `manual`. |
 
 ---
@@ -561,18 +764,22 @@ deployment:
 
 These are typically set in `.env`:
 
-| Variable | Used By | Description |
-|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | provider-anthropic | Anthropic API key |
-| `XAI_API_KEY` | provider-xai | xAI API key |
-| `GOOGLE_API_KEY` | provider-google | Google AI API key |
-| `RIVETOS_PG_URL` | memory-postgres | PostgreSQL connection string |
-| `RIVETOS_AGENT_SECRET` | channel-agent | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS). |
-| `RIVETOS_LOG_LEVEL` | core | Log level: `error`, `warn`, `info`, `debug` |
-| `RIVETOS_LOG_FORMAT` | core | Log format: `pretty` (default) or `json` |
-| `GOOGLE_CSE_ID` | tool-web-search | Google Custom Search Engine ID |
-| `GOOGLE_CSE_KEY` | tool-web-search | Google CSE API key |
-| `OPENAI_API_KEY` | memory-postgres (embeddings) | OpenAI API key for embeddings |
+| Variable                | Used By                                 | Description                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`     | provider-anthropic                      | Anthropic API key                                                                                                                                                                                                                                                                                                                                                           |
+| `XAI_API_KEY`           | provider-xai                            | xAI API key                                                                                                                                                                                                                                                                                                                                                                 |
+| `GOOGLE_API_KEY`        | provider-google                         | Google AI API key                                                                                                                                                                                                                                                                                                                                                           |
+| `RIVETOS_PG_URL`        | memory-postgres                         | PostgreSQL connection string (node owner database)                                                                                                                                                                                                                                                                                                                          |
+| `RIVETOS_USERS_FILE`    | den, memory-postgres, claude-cli        | Optional explicit path to the tenancy registry (`users.json`). When unset, RivetOS loads `$RIVETOS_SHARED_DIR/rivetos/users.json`, then `~/.rivetos/users.json`. Per-user memory routing comes only from this file — a user is routable iff their record has a usable `pgUrl`. A present-but-invalid shared-dir file fails closed (does not fall through to the home file). |
+| `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `phil` (fleet compatibility); deployments override this env var. Forwarded to the embedded den.                                                                                                                                                                                      |
+| `RIVETOS_AGENT_SECRET`  | channel-agent                           | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS).                                                                                                                                                                                                                                                            |
+| `RIVETOS_LOG_LEVEL`     | core                                    | Log level: `error`, `warn`, `info`, `debug`                                                                                                                                                                                                                                                                                                                                 |
+| `RIVETOS_LOG_FORMAT`    | core                                    | Log format: `pretty` (default) or `json`                                                                                                                                                                                                                                                                                                                                    |
+| `GOOGLE_CSE_ID`         | tool-web-search                         | Google Custom Search Engine ID                                                                                                                                                                                                                                                                                                                                              |
+| `GOOGLE_CSE_KEY`        | tool-web-search                         | Google CSE API key                                                                                                                                                                                                                                                                                                                                                          |
+| `OPENAI_API_KEY`        | memory-postgres (embeddings)            | OpenAI API key for embeddings                                                                                                                                                                                                                                                                                                                                               |
+| `QWEN_BINARY`           | provider-qwen-code, setup script        | Override path/name of the `qwen` binary (default `qwen` on PATH). Honoured by the provider and the rivet-memory setup script.                                                                                                                                                                                                                                               |
+| `QWEN_HOME`             | plugins install, doctor, setup script   | Override where RivetOS looks for qwen's `settings.json` / `projects/` (default `~/.qwen`). Does not relocate where qwen itself writes — qwen-code 0.23.4 has no env/flag to move `~/.qwen`.                                                                                                                                                                                 |
 
 ---
 

@@ -14,6 +14,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from '
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
+import { upsertEnvVars } from '../lib/env-file.js'
 import {
   DEFAULT_EXTRA_DIRS,
   detectHarnesses,
@@ -53,6 +54,7 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   codex: { label: 'Codex', cmd: ['codex'], room: true },
   opencode: { label: 'OpenCode', cmd: ['opencode'], room: true },
   pi: { label: 'Pi', cmd: ['pi'], room: true },
+  qwen: { label: 'Qwen Code', cmd: ['qwen', '--approval-mode', 'yolo'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
@@ -77,6 +79,12 @@ export interface InstallAction {
   steps: string[]
 }
 
+export interface HarnessInstallEvent {
+  id: HarnessId
+  ok: boolean
+  detail: string
+}
+
 export interface PluginsInstallDeps {
   home?: string
   detect?: (opts: {
@@ -90,6 +98,18 @@ export interface PluginsInstallDeps {
   platform?: NodeJS.Platform
   /** Override `process.getuid()` for launchd `gui/$UID` (tests). */
   uid?: number
+  /** Optional per-harness reporter (`rivetos cloud connect` checklist). */
+  onHarness?: (event: HarnessInstallEvent) => void
+  /**
+   * When true (cloud connect only), rewrite RIVETOS_PG_URL / RIVETOS_EMBED_URL
+   * in ~/.hermes/.env. Ordinary `plugins install` leaves a nonempty URL alone.
+   */
+  overrideEnv?: boolean
+  /**
+   * Env file `cloud connect` just wrote. When set, source PG/embed URLs from
+   * this path instead of guessing `$RIVETOS_ENV_FILE` vs `~/.rivetos/.env`.
+   */
+  envFile?: string
 }
 
 /** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
@@ -114,6 +134,13 @@ const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
     'rivet-memory',
     'bin',
     'setup-opencode-rivet-memory.sh',
+  ),
+  'qwen-code': join(
+    'integrations',
+    'qwen-code',
+    'rivet-memory',
+    'bin',
+    'setup-qwen-rivet-memory.sh',
   ),
 }
 
@@ -224,13 +251,23 @@ function nonemptyEnv(value: string | undefined): string | undefined {
   return value && value.length > 0 ? value : undefined
 }
 
-/** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
-export function sourcePgUrl(home: string): string | undefined {
-  const envFile = process.env.RIVETOS_ENV_FILE || join(home, '.rivetos', '.env')
+/** Source env value: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
+export function sourceEnvValue(
+  home: string,
+  key: string,
+  envFilePath?: string,
+): string | undefined {
+  const envFile =
+    envFilePath?.trim() || process.env.RIVETOS_ENV_FILE?.trim() || join(home, '.rivetos', '.env')
   const fromFile = existsSync(envFile)
-    ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), 'RIVETOS_PG_URL'))
+    ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), key))
     : undefined
-  return fromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
+  return fromFile ?? nonemptyEnv(process.env[key])
+}
+
+/** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
+export function sourcePgUrl(home: string, envFilePath?: string): string | undefined {
+  return sourceEnvValue(home, 'RIVETOS_PG_URL', envFilePath)
 }
 
 export function planPluginsInstall(harnesses: DetectedHarness[], root: string): InstallAction[] {
@@ -272,6 +309,11 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       return [`run ${SETUP_SCRIPTS.opencode} --apply`, 'install OpenCode plugin']
     case 'pi':
       return [`run ${SETUP_SCRIPTS.pi} --apply`, 'install pi extension']
+    case 'qwen-code':
+      return [
+        `run ${SETUP_SCRIPTS['qwen-code']} --apply`,
+        'install qwen extension (hooks + MCP + skills)',
+      ]
   }
 }
 
@@ -608,7 +650,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
           ? process.env.PI_AGENT_HOME
           : id === 'opencode'
             ? process.env.OPENCODE_CONFIG_DIR
-            : undefined
+            : id === 'qwen-code'
+              ? process.env.QWEN_HOME
+              : undefined
     )?.trim(),
   )
   if (envHome) return [envHome]
@@ -621,7 +665,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
           ? [configHome, join(home, '.pi', 'agent')]
           : id === 'opencode'
             ? [configHome, join(home, '.config', 'opencode')]
-            : [configHome]
+            : id === 'qwen-code'
+              ? [configHome, join(home, '.qwen')]
+              : [configHome]
   return [...new Set(defaults.filter((d) => d.length > 0))]
 }
 
@@ -651,6 +697,42 @@ function uncommentedLineHasCodexCapture(text: string): boolean {
     if (commandHasCodexCapture(trimmed)) return true
   }
   return false
+}
+
+function commandHasQwenCapture(command: string): boolean {
+  return command.includes('qwen-memory-capture.sh') && command.includes('--hook')
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** True when `hooks.<Event>[]` groups contain a `type:command` capture marker. */
+function qwenHookGroupsHaveCapture(groups: unknown): boolean {
+  if (!Array.isArray(groups)) return false
+  return groups.some((group) => {
+    if (!isPlainObject(group) || !Array.isArray(group.hooks)) return false
+    return group.hooks.some((entry) => {
+      if (!isPlainObject(entry) || entry.type !== 'command') return false
+      return typeof entry.command === 'string' && commandHasQwenCapture(entry.command)
+    })
+  })
+}
+
+/**
+ * True when settings.json has a `type:command` marker under
+ * `hooks.Stop[].hooks[]` (`qwen-memory-capture.sh` + `--hook`). Capture
+ * ingests on Stop; a marker elsewhere (mcpServers, SessionStart-only, …)
+ * does not count as installed.
+ */
+export function qwenSettingsHasCaptureHooks(path: string): boolean {
+  try {
+    const settings: unknown = JSON.parse(readFileSync(path, 'utf-8'))
+    if (!isPlainObject(settings) || !isPlainObject(settings.hooks)) return false
+    return qwenHookGroupsHaveCapture(settings.hooks.Stop)
+  } catch {
+    return false
+  }
 }
 
 /** True when hooks.json has a command entry containing `codex-memory-capture.sh` and `--hook`. */
@@ -699,6 +781,22 @@ export function nativeCaptureArtefactMissing(
       const plugin = homes.some((dir) => existsSync(join(dir, 'plugins', 'rivet-memory.ts')))
       return plugin ? null : 'OpenCode plugin missing (plugins/rivet-memory.ts)'
     }
+    case 'qwen-code': {
+      const ext = homes.some((dir) => {
+        const hooks = join(dir, 'extensions', 'rivet-memory', 'hooks', 'hooks.json')
+        try {
+          return (
+            existsSync(hooks) && readFileSync(hooks, 'utf-8').includes('qwen-memory-capture.sh')
+          )
+        } catch {
+          return false
+        }
+      })
+      const settings = homes.some((dir) => qwenSettingsHasCaptureHooks(join(dir, 'settings.json')))
+      return ext || settings
+        ? null
+        : 'qwen extension missing (extensions/rivet-memory/hooks/hooks.json)'
+    }
     default:
       return null
   }
@@ -736,6 +834,8 @@ export function setupArtefactMissing(
       if (!mcp) return 'opencode.json / opencode.jsonc missing rivetos MCP block'
       return nativeCaptureArtefactMissing(id, home, configHome, opts)
     }
+    case 'qwen-code':
+      return nativeCaptureArtefactMissing(id, home, configHome, opts)
     default:
       return null
   }
@@ -1052,6 +1152,8 @@ async function installHermes(
   exec: typeof execFileAsync,
   dryRun: boolean,
   force: boolean,
+  overrideEnv = false,
+  envFile?: string,
 ): Promise<{ ok: boolean; detail: string }> {
   if (dryRun) {
     return {
@@ -1098,8 +1200,24 @@ async function installHermes(
   const before = existsSync(hermesEnv) ? readFileSync(hermesEnv, 'utf-8') : ''
   const existing = readEnvKey(before, 'RIVETOS_PG_URL')
   const destNonEmpty = existing && existing.length > 0 ? existing : undefined
-  const pgUrl = destNonEmpty ?? sourcePgUrl(home)
-  if (destNonEmpty) {
+  const pgUrl = overrideEnv
+    ? sourcePgUrl(home, envFile)
+    : (destNonEmpty ?? sourcePgUrl(home, envFile))
+  const embedUrl = sourceEnvValue(home, 'RIVETOS_EMBED_URL', envFile)
+  if (overrideEnv) {
+    if (pgUrl) {
+      const vars: Record<string, string> = { RIVETOS_PG_URL: pgUrl }
+      if (embedUrl) vars.RIVETOS_EMBED_URL = embedUrl
+      upsertEnvVars(hermesEnv, vars)
+      bits.push('overrode RIVETOS_PG_URL in ~/.hermes/.env')
+      if (embedUrl) bits.push('overrode RIVETOS_EMBED_URL in ~/.hermes/.env')
+    } else {
+      bits.push(
+        'RIVETOS_PG_URL missing (set in ~/.rivetos/.env or RIVETOS_ENV_FILE / RIVETOS_PG_URL)',
+      )
+      ok = false
+    }
+  } else if (destNonEmpty) {
     bits.push('RIVETOS_PG_URL already in ~/.hermes/.env')
   } else if (pgUrl) {
     const after = ensureNonEmptyEnvKey(before, 'RIVETOS_PG_URL', pgUrl)
@@ -1160,12 +1278,16 @@ export async function runPluginsInstall(
   const want = parsed.harnesses
   const selected = want.length === 0 ? detected : detected.filter((h) => want.includes(h.id))
   const platform = deps.platform ?? process.platform
+  const emit = (id: HarnessId, ok: boolean, detail: string): void => {
+    oneLine(id, ok, detail, parsed.dryRun)
+    deps.onHarness?.({ id, ok, detail })
+  }
 
   let failed = 0
   if (want.length > 0) {
     for (const id of want) {
       if (!detected.some((h) => h.id === id)) {
-        oneLine(id, false, 'not detected on PATH', parsed.dryRun)
+        emit(id, false, 'not detected on PATH')
         failed++
       }
     }
@@ -1187,7 +1309,7 @@ export async function runPluginsInstall(
 
   if (parsed.dryRun) {
     for (const action of planPluginsInstall(selected, root)) {
-      oneLine(action.id, true, action.steps.join('; '), true)
+      emit(action.id, true, action.steps.join('; '))
     }
     writeDenTerm(selected, home, parsed.force, true)
     return
@@ -1204,12 +1326,22 @@ export async function runPluginsInstall(
           result = await installGrok(h, root, home, false, exec)
           break
         case 'hermes':
-          result = await installHermes(h, root, home, exec, false, parsed.force)
+          result = await installHermes(
+            h,
+            root,
+            home,
+            exec,
+            false,
+            parsed.force,
+            deps.overrideEnv === true,
+            deps.envFile,
+          )
           break
         case 'opencode':
         case 'kimi-code':
         case 'codex':
         case 'pi':
+        case 'qwen-code':
           result = await runSetupScript(
             h.id,
             h,
@@ -1225,10 +1357,10 @@ export async function runPluginsInstall(
           )
           break
       }
-      oneLine(h.id, result.ok, result.detail, false)
+      emit(h.id, result.ok, result.detail)
       if (!result.ok) failed++
     } catch (err) {
-      oneLine(h.id, false, (err as Error).message, false)
+      emit(h.id, false, (err as Error).message)
       failed++
     }
   }

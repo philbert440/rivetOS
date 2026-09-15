@@ -33,7 +33,8 @@ import { parseSessionId, type HarnessId } from '@rivetos/types'
 import { normalizeSessionId } from './alias.js'
 
 /** The roster tokens whose on-disk stores `term/harness-sessions` can read. */
-export type StoreCommand = 'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi'
+export type StoreCommand =
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi' | 'qwen'
 
 /**
  * `HarnessId` → the roster token naming its store.
@@ -52,6 +53,7 @@ const STORE_COMMAND: Record<HarnessId, StoreCommand> = {
   codex: 'codex',
   opencode: 'opencode',
   pi: 'pi',
+  'qwen-code': 'qwen',
 }
 
 /** What an inbound session id says about where its session lives. */

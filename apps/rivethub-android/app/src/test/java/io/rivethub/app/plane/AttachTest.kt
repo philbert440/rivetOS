@@ -515,6 +515,8 @@ class AttachTest {
         assertTrue(isLiveTurnStore("pi"))
         assertTrue(isLiveTurnStore("codex"))
         assertTrue(isLiveTurnStore("opencode"))
+        assertTrue(isLiveTurnStore("qwen"))
+        assertTrue(isLiveTurnStore("qwen-code"))
     }
 
     @Test fun `hook deltas ignored on a live-turn store`() {

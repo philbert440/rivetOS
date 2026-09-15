@@ -2,21 +2,27 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: "How to configure LLM providers: Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli"
+description: "How to configure LLM providers: API and local plugins, plus harness CLIs under plugins/providers"
 ---
-
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
 
-RivetOS ships with six provider plugins:
+API and local plugins: Anthropic, xAI, Google, Ollama, vLLM, llama-server. Harness CLIs: claude-cli, opencode-cli, codex-cli, grok-cli, hermes-cli, kimi-code, pi-cli, and the rest under `plugins/providers/`.
 
-| Provider | Models | Thinking Support | Notes |
-|----------|--------|:---:|-------|
-| **Anthropic** | Claude Opus, Sonnet, Haiku | ✅ | Adaptive thinking, prompt caching |
-| **xAI** | Grok 3, Grok 4 | ✅ | Responses API, conversation caching, live search |
-| **Google** | Gemini 2.5 Pro, Flash | ✅ | Thought signatures for function calling |
-| **Ollama** | Any local model | — | Local inference, no API key needed |
-| **OpenAI-compat** | vLLM / TGI / llama.cpp `llama-server` / Groq / Together / Fireworks / LocalAI | ✅ (when `--reasoning-parser` set) | Folds mid-conversation system messages, consumes native `reasoning_content` |
-| **Claude CLI** | Anything `claude` supports | ✅ | Drives the local `claude` binary using your subscription OAuth — no API key |
+| Provider | Kind | Notes |
+|----------|------|-------|
+| **Anthropic** | API | Adaptive thinking, prompt caching |
+| **xAI** | API | Responses API, conversation caching, live search |
+| **Google** | API | Thought signatures for function calling |
+| **Ollama** | Local | Local inference, no API key needed |
+| **vLLM** | Local | Dedicated vLLM provider. Consumes native `reasoning_content` |
+| **llama-server** | Local | llama.cpp `llama-server`. Lean OpenAI knobs plus `top_k` / `min_p` |
+| **claude-cli** | Harness CLI | Drives the local `claude` binary using your subscription OAuth |
+| **opencode-cli** | Harness CLI | Drives `opencode run --format json`. Default `model` is `zai/glm-5.3-flash`. CLI owns backend and credentials |
+| **codex-cli** | Harness CLI | Drives `codex exec --json` with ChatGPT subscription login |
+| **grok-cli** | Harness CLI | Drives the Grok Build `grok` binary. Subscription login, not the xAI API |
+| **hermes-cli** | Harness CLI | Drives `hermes chat -q`. Hermes owns tools, memory, and model config |
+| **kimi-code** | Harness CLI | Drives `kimi -p --output-format stream-json` |
+| **pi-cli** | Harness CLI | Drives the local `pi` binary. Recommended default backend z.ai GLM |
 
 ---
 
@@ -356,25 +362,75 @@ server with `--api-key`.
 
 ---
 
+## opencode-cli
 
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode` by shelling `opencode run --format json`. Default `model` is `zai/glm-5.3-flash`. The installed CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol. Add `@rivetos/provider-opencode-cli` to `plugins`.
+
+```yaml
+providers:
+  opencode-cli:
+    binary: opencode # path or name on PATH
+    # model: zai/glm-5.3-flash  # RivetOS default --model; CLI owns backend
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `binary` | string | `opencode` | Path or name on PATH. |
+| `model` | string | `zai/glm-5.3-flash` | Model id passed as `--model`. |
+
+The installed OpenCode CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol and ships no OpenCode key or OAuth.
+
+---
+
+## Harness CLI stubs
+
+These plugins live under `plugins/providers/`. Full option tables are in the [Configuration Reference](/reference/config/). No model tables here. The CLI owns auth and its own tools.
+
+### codex-cli
+
+Drives `codex exec --json` using the same login as the Codex TUI. Install Codex, run `codex login`, and add `@rivetos/provider-codex-cli` to `plugins`. No `OPENAI_API_KEY` is required. `model: default` follows the CLI's configured model.
+
+### grok-cli
+
+Drives the local Grok Build `grok` binary on the Grok Build subscription (`~/.grok`), not the metered xAI API. The CLI owns auth and its own tools. See `grok-cli` in the Configuration Reference.
+
+### hermes-cli
+
+Drives the local Hermes Agent CLI (`hermes chat -q`). Hermes owns tools, memory, and model config. Path: `plugins/providers/hermes-cli/`.
+
+### kimi-code
+
+Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`). Path: `plugins/providers/kimi-code/`.
+
+### pi-cli
+
+Drives the local `pi` binary (`@earendil-works/pi-coding-agent`) headlessly. Harness id is `pi`. Recommended default backend is z.ai GLM. Add `@rivetos/provider-pi-cli` to `plugins`.
+
+---
 
 ## Checking provider health
 
+After a RivetHub install, `rivetos` is on your PATH. There is no npm package named `rivetos`.
+
 ```bash
 # Run provider connectivity checks
-npx rivetos doctor
+rivetos doctor
 
 # Smoke test — send a test message to each provider
-npx rivetos test
+rivetos test
 
 # Check which providers are loaded
-npx rivetos status
+rivetos status
 ```
+
+From a source checkout, run the same commands with `npx` only after `npm install` in that clone.
 
 ---
 
 ## Next steps
 
-- **[Channel Setup](/guides/channels/)**: Connect your agents to Discord, Telegram, voice
+- **[Hub Setup](/guides/hub-setup/)**: RivetHub is the human UX
+- **[Channels](/guides/channels/)**: social bots are gone. The remaining channel is agent mesh
+- **[Mesh Networking](/guides/mesh/)**: multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)**: full option tables for all config sections
 - **[Plugin Development](/guides/plugins/)**: Build your own provider plugin

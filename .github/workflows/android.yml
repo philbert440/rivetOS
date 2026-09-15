@@ -42,7 +42,11 @@ jobs:
           java-version: '21'
 
       # Accepts SDK licenses; AGP fetches the exact platform/build-tools it needs.
+      # The action's default `packages` includes the legacy `tools` package, which the SDK
+      # repository no longer serves (sdkmanager: "Failed to find package 'tools'", 2026-09-15).
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - uses: gradle/actions/setup-gradle@v4
         with:

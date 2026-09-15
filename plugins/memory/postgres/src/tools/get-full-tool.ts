@@ -433,6 +433,104 @@ function isPiCaptureMeta(meta?: Record<string, unknown> | null): boolean {
   return typeof event === 'string' && event.startsWith('message:')
 }
 
+/**
+ * Qwen Code gemini-style session jsonl
+ * `{type:'user'|'assistant'|'tool_result', message:{parts:[…]}}` →
+ * content + reasoning + toolResult.
+ * Returns null when the line is not a qwen transcript record.
+ *
+ * Keep in sync with integrations/qwen-code/rivet-memory/capture.
+ */
+export function extractQwenFromLine(j: unknown): ExtractedFull | null {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  const rec = j as Record<string, unknown>
+  const type = rec.type
+  if (type !== 'user' && type !== 'assistant' && type !== 'tool_result') return null
+  const message =
+    rec.message && typeof rec.message === 'object' && !Array.isArray(rec.message)
+      ? (rec.message as Record<string, unknown>)
+      : null
+  if (!message || !Array.isArray(message.parts)) return null
+  const parts = message.parts.filter(
+    (p): p is Record<string, unknown> => Boolean(p) && typeof p === 'object' && !Array.isArray(p),
+  )
+
+  const textFrom = (thought: boolean | null): string =>
+    parts
+      .map((p) => {
+        if (typeof p.text !== 'string' || !p.text) return ''
+        if (thought === true) return p.thought === true ? p.text : ''
+        if (thought === false) return p.thought === true ? '' : p.text
+        return p.text
+      })
+      .filter(Boolean)
+      .join('')
+
+  if (type === 'user') {
+    return { content: textFrom(null).trim(), toolResult: null, reasoning: null }
+  }
+
+  if (type === 'tool_result') {
+    let name = 'unknown'
+    let output: string | null = null
+    for (const p of parts) {
+      const fr =
+        p.functionResponse &&
+        typeof p.functionResponse === 'object' &&
+        !Array.isArray(p.functionResponse)
+          ? (p.functionResponse as Record<string, unknown>)
+          : null
+      if (!fr) continue
+      if (typeof fr.name === 'string' && fr.name) name = fr.name
+      const resp =
+        fr.response && typeof fr.response === 'object' && !Array.isArray(fr.response)
+          ? (fr.response as Record<string, unknown>)
+          : null
+      const out = resp?.output
+      if (typeof out === 'string') output = out
+      else if (out != null) {
+        try {
+          output = JSON.stringify(out)
+        } catch {
+          output = '[unserializable tool result]'
+        }
+      }
+    }
+    return { content: `[tool-result] ${name}`, toolResult: output, reasoning: null }
+  }
+
+  const thinking = textFrom(true)
+  const text = textFrom(false).trim()
+  const calls = parts
+    .map((p) =>
+      p.functionCall && typeof p.functionCall === 'object' && !Array.isArray(p.functionCall)
+        ? (p.functionCall as Record<string, unknown>)
+        : null,
+    )
+    .filter((c): c is Record<string, unknown> => c != null)
+  let toolResult: string | null = null
+  if (calls.length > 0) {
+    const first = calls[0] ?? {}
+    const name = typeof first.name === 'string' && first.name ? first.name : 'unknown'
+    const args = first.args ?? first.arguments
+    const argsStr = typeof args === 'string' ? args : args != null ? JSON.stringify(args) : null
+    if (!text && !thinking) {
+      return { content: `[tool] ${name}`, toolResult: argsStr, reasoning: null }
+    }
+    toolResult = argsStr
+    if (!text) {
+      return { content: `[tool] ${name}`, toolResult: argsStr, reasoning: thinking || null }
+    }
+  }
+  return { content: text, toolResult, reasoning: thinking || null }
+}
+
+/** Capture rows stamp `source: 'qwen-session'`. */
+function isQwenCaptureMeta(meta?: Record<string, unknown> | null): boolean {
+  if (!meta) return false
+  return meta.source === 'qwen-session'
+}
+
 function partTextFromData(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (part.text && typeof part.text === 'object' && !Array.isArray(part.text)) {
@@ -534,8 +632,8 @@ export function readOpencodePart(
 }
 
 /** Parse one updates.jsonl line and derive the full content + tool result.
- *  Exported for tests. Optional `meta` selects the pi extractor when the row
- *  was stamped with pi capture keys (`source` / `sourceEvent`). */
+ *  Exported for tests. Optional `meta` selects the pi / qwen extractor when
+ *  the row was stamped with those capture keys (`source` / `sourceEvent`). */
 export function extractFullFromLine(
   raw: string,
   meta?: Record<string, unknown> | null,
@@ -552,11 +650,19 @@ export function extractFullFromLine(
     if (pi) return pi
   }
 
+  if (isQwenCaptureMeta(meta)) {
+    const qwen = extractQwenFromLine(j)
+    if (qwen) return qwen
+  }
+
   // Codex rollout jsonl (`response_item` / payload.type message|reasoning|
   // custom_tool_call|custom_tool_call_output). Detect before dsh: Codex types
   // have no slash, dsh types do (`user/message`).
   const codex = extractCodexFromLine(j)
   if (codex) return codex
+
+  const qwen = extractQwenFromLine(j)
+  if (qwen) return qwen
 
   const pi = extractPiFromLine(j)
   if (pi) return pi

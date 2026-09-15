@@ -127,6 +127,9 @@ export interface TermManagerDeps {
   /** Does this harness already have an on-disk session with this id? Decides
    *  --resume vs --session-id on re-spawn (#318 review). Default: never. */
   sessionExists?: (command: string, id: string) => boolean
+  /** Recorded project cwd for a stored session. Qwen `--resume` is cwd-scoped
+   *  and must run in this directory, not homedir. Default: none. */
+  sessionCwd?: (command: string, id: string) => string | undefined
   /** Attach an existing protocol session through the harness native TUI. */
   harnessArgv?: (command: string, session: string, argv: string[]) => string[] | undefined
   /** tmux control seam (T1): injected by tests so unit tests never spawn a
@@ -278,6 +281,7 @@ export interface TermManager {
     routedUser?: string,
     model?: string,
     effort?: string,
+    cwdOverride?: string,
   ): PtyInfo | Promise<PtyInfo>
   /** Resolved mux after construct-time fallback (herdr→tmux→none). */
   mux(): 'tmux' | 'herdr' | 'none'
@@ -385,6 +389,10 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // pi 0.85.1: `--session-id <uuid>` pins a NEW session (creates if missing);
   // `--session <id>` resumes an existing one.
   pi: { sessionFlag: '--session-id', resumeFlag: '--session' },
+  // qwen-code 0.23.4 (verified): `--session-id <uuid>` pins a NEW session
+  // (transcript filename == id). `--resume <uuid>` resumes. Re-running
+  // `--session-id` with an existing id is not resume.
+  qwen: { sessionFlag: '--session-id', resumeFlag: '--resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:
@@ -1066,6 +1074,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       routedUser,
       model,
       effort,
+      cwdOverride,
     ): PtyInfo | Promise<PtyInfo> {
       // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
       // Re-entering Terminal (or chat inject) for a live conversation reuses
@@ -1138,13 +1147,24 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       const denSession = session ?? `den-${id}`
       // Harness sessions (room: true) spawn in the user's home. OpenCode is
       // the exception: its file picker refuses `$HOME`, so honour `entry.cwd`
-      // for the `opencode` roster command only. Other harnesses stay forced
-      // to home even if a stale cwd is sitting on the entry.
-      const cwd = entry.room
-        ? key === 'opencode' && entry.cwd
-          ? entry.cwd
-          : homedir()
-        : (entry.cwd ?? roster.cwd)
+      // for the `opencode` roster command only. Qwen sessions are cwd-scoped
+      // (`--resume` from another dir prints "No saved session found" and
+      // exits 0), so a resume uses the transcript's recorded cwd — via the
+      // driver's spawn override (`cwdOverride`) or `sessionCwd` for /term
+      // drawer spawns. New qwen sessions stay at homedir like pi.
+      const resumeNative =
+        resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
+      const recordedCwd =
+        key === 'qwen' && resumeNative ? deps.sessionCwd?.(key, resumeNative) : undefined
+      const explicitCwd = cwdOverride?.trim() || recordedCwd?.trim()
+      const cwd =
+        key === 'qwen' && explicitCwd
+          ? explicitCwd
+          : entry.room
+            ? key === 'opencode' && entry.cwd
+              ? entry.cwd
+              : homedir()
+            : (entry.cwd ?? roster.cwd)
 
       // tmux reattach path (T1): if a tmux session for this den session
       // already exists on our socket, the harness is STILL RUNNING (it

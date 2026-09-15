@@ -12,6 +12,8 @@ import {
   describeOpencodeSession,
   describeCodexSession,
   describePiSession,
+  describeQwenCodeSession,
+  qwenSessionCwd,
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
@@ -23,9 +25,11 @@ import {
   readOpencodeTranscript,
   readCodexTranscript,
   readPiTranscript,
+  readQwenCodeTranscript,
   resolveHarnessStore,
   newestOpencodeSessionAfter,
   setPiHomeForTest,
+  setQwenHomeForTest,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
 } from './harness-sessions.js'
@@ -44,6 +48,7 @@ afterEach(() => {
   delete process.env.XDG_DATA_HOME
   delete process.env.XDG_CONFIG_HOME
   setPiHomeForTest()
+  setQwenHomeForTest()
 })
 
 /**
@@ -514,6 +519,7 @@ describe('listHarnessSessions', () => {
     process.env.CODEX_HOME = join(tmpdir(), 'no-codex-' + String(process.pid))
     process.env.XDG_DATA_HOME = join(tmpdir(), 'no-opencode-' + String(process.pid))
     setPiHomeForTest(join(tmpdir(), 'no-pi-' + String(process.pid)))
+    setQwenHomeForTest(join(tmpdir(), 'no-qwen-' + String(process.pid)))
     expect(
       await listHarnessSessions([
         'claude',
@@ -523,6 +529,7 @@ describe('listHarnessSessions', () => {
         'codex',
         'opencode',
         'pi',
+        'qwen',
       ]),
     ).toEqual([])
     expect(await listHarnessSessions(['shell'])).toEqual([]) // no reader wired
@@ -532,7 +539,6 @@ describe('listHarnessSessions', () => {
     delete process.env.CODEX_HOME
     delete process.env.XDG_DATA_HOME
   })
-
 
   it('reads pi sessions from ~/.pi/agent/sessions/<cwd-bucket>/<ts>_<uuid>.jsonl', async () => {
     const home = mkdtempSync(join(tmpdir(), 'pi-store-'))
@@ -611,7 +617,12 @@ describe('listHarnessSessions', () => {
     mkdirSync(join(home, 'sessions', '--srv-work--'), { recursive: true })
     const older = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${id}.jsonl`)
     const newer = join(home, 'sessions', '--srv-work--', `2026-09-11T18-00-00-000Z_${id}.jsonl`)
-    const otherFile = join(home, 'sessions', '--srv-work--', `2026-09-11T12-00-00-000Z_${other}.jsonl`)
+    const otherFile = join(
+      home,
+      'sessions',
+      '--srv-work--',
+      `2026-09-11T12-00-00-000Z_${other}.jsonl`,
+    )
     writeFileSync(
       older,
       JSON.stringify({
@@ -670,8 +681,18 @@ describe('listHarnessSessions', () => {
     mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
     const older = '11111111-1111-4111-8111-111111111111'
     const newer = '22222222-2222-4222-8222-222222222222'
-    const olderFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T10-00-00-000Z_${older}.jsonl`)
-    const newerFile = join(home, 'sessions', '--home-rivet--', `2026-09-11T18-00-00-000Z_${newer}.jsonl`)
+    const olderFile = join(
+      home,
+      'sessions',
+      '--home-rivet--',
+      `2026-09-11T10-00-00-000Z_${older}.jsonl`,
+    )
+    const newerFile = join(
+      home,
+      'sessions',
+      '--home-rivet--',
+      `2026-09-11T18-00-00-000Z_${newer}.jsonl`,
+    )
     writeFileSync(
       olderFile,
       JSON.stringify({
@@ -702,6 +723,157 @@ describe('listHarnessSessions', () => {
     expect(harnessSessionExists('pi', id)).toBe(false)
     expect(await describePiSession(id)).toBeUndefined()
     expect(await readPiTranscript(id)).toEqual({ id, command: '', turns: [] })
+  })
+
+  it('reads qwen sessions from ~/.qwen/projects/<enc-cwd>/chats/<uuid>.jsonl', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'qwen-store-'))
+    dirs.push(home)
+    setQwenHomeForTest(home)
+    const id = '11111111-2222-4333-8444-555555555555'
+    const chats = join(home, 'projects', '-home-example-proj', 'chats')
+    mkdirSync(chats, { recursive: true })
+    const file = join(chats, `${id}.jsonl`)
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          uuid: '181c8cae-c294-4d77-b993-166db8e5788b',
+          sessionId: id,
+          type: 'user',
+          provenance: 'real_user',
+          cwd: '/home/example/proj',
+          message: { role: 'user', parts: [{ text: 'reply with the single word pong' }] },
+        }),
+        JSON.stringify({
+          type: 'system',
+          provenance: 'system',
+          subtype: 'attribution_snapshot',
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          provenance: 'assistant_output',
+          model: 'qwen-27b',
+          cwd: '/home/example/proj',
+          message: {
+            role: 'model',
+            parts: [{ text: 'The user asked for pong.', thought: true }, { text: '\n\npong' }],
+          },
+          usageMetadata: {
+            promptTokenCount: 26724,
+            candidatesTokenCount: 78,
+            thoughtsTokenCount: 78,
+            cachedContentTokenCount: 0,
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    writeFileSync(
+      join(chats, `${id}.runtime.json`),
+      JSON.stringify({
+        schema_version: 1,
+        pid: 1,
+        session_id: id,
+        work_dir: '/home/example/proj',
+      }),
+    )
+    const sessions = await listHarnessSessions(['qwen'])
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]).toMatchObject({
+      id,
+      command: 'qwen',
+      title: 'reply with the single word pong',
+      cwd: '/home/example/proj',
+    })
+    expect(qwenSessionCwd(id)).toBe('/home/example/proj')
+    expect(await describeQwenCodeSession(id)).toEqual(sessions[0])
+    expect(harnessSessionExists('qwen', id)).toBe(true)
+    expect(harnessSessionExists('qwen', 'deadbeef')).toBe(false)
+    expect(await describeQwenCodeSession('../../etc/passwd')).toBeUndefined()
+    expect(harnessSessionExists('qwen', '../x')).toBe(false)
+    const tx = await readQwenCodeTranscript(id)
+    expect(tx).toMatchObject({
+      id,
+      command: 'qwen',
+      turns: [
+        { role: 'user', text: 'reply with the single word pong' },
+        { role: 'assistant', text: 'pong', model: 'qwen-27b' },
+      ],
+    })
+    expect(tx.turns[1]?.usage).toEqual({
+      promptTokens: 26724,
+      completionTokens: 78,
+      cachedTokens: 0,
+    })
+    expect((await readHarnessTranscript(`qwen-code:${id}`)).command).toBe('qwen')
+    expect(await resolveHarnessStore(`qwen-code:${id}`)).toEqual({
+      command: 'qwen',
+      path: file,
+    })
+  })
+
+  it('walks every qwen project bucket and skips .runtime.json sidecars', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'qwen-buckets-'))
+    dirs.push(home)
+    setQwenHomeForTest(home)
+    const id = '22222222-2222-4222-8222-222222222222'
+    const other = '857b4b7d-3d13-4281-a648-11947cf530ed'
+    const a = join(home, 'projects', '-home-example-a', 'chats')
+    const b = join(home, 'projects', '-home-example-b', 'chats')
+    mkdirSync(a, { recursive: true })
+    mkdirSync(b, { recursive: true })
+    const older = join(a, `${id}.jsonl`)
+    const newer = join(b, `${id}.jsonl`)
+    const otherFile = join(b, `${other}.jsonl`)
+    writeFileSync(
+      older,
+      JSON.stringify({
+        type: 'user',
+        provenance: 'real_user',
+        cwd: '/home/example/a',
+        message: { role: 'user', parts: [{ text: 'old cwd' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      newer,
+      JSON.stringify({
+        type: 'user',
+        provenance: 'real_user',
+        cwd: '/home/example/b',
+        message: { role: 'user', parts: [{ text: 'new cwd' }] },
+      }) + '\n',
+    )
+    writeFileSync(
+      otherFile,
+      JSON.stringify({
+        type: 'user',
+        provenance: 'real_user',
+        cwd: '/home/example/b',
+        message: { role: 'user', parts: [{ text: 'other session' }] },
+      }) + '\n',
+    )
+    writeFileSync(join(a, `${id}.runtime.json`), JSON.stringify({ session_id: id }) + '\n')
+    utimesSync(older, 1_700_000_000, 1_700_000_000)
+    utimesSync(newer, 1_700_000_800, 1_700_000_800)
+    utimesSync(otherFile, 1_700_000_400, 1_700_000_400)
+    const sessions = await listHarnessSessions(['qwen'])
+    expect(sessions.map((s) => s.id).sort()).toEqual([other, id].sort())
+    expect(harnessSessionExists('qwen', id)).toBe(true)
+    expect((await readQwenCodeTranscript(id)).turns).toEqual([{ role: 'user', text: 'new cwd' }])
+    expect((await describeQwenCodeSession(id))?.cwd).toBe('/home/example/b')
+    expect(qwenSessionCwd(id)).toBe('/home/example/b')
+    expect(await resolveHarnessStore(`qwen-code:${id}`)).toEqual({ command: 'qwen', path: newer })
+  })
+
+  it('treats a missing qwen jsonl as absent', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'qwen-empty-'))
+    dirs.push(home)
+    setQwenHomeForTest(home)
+    mkdirSync(join(home, 'projects', '-home-example', 'chats'), { recursive: true })
+    const id = '15cb936c-3364-49d6-8769-21f0c635f160'
+    expect(harnessSessionExists('qwen', id)).toBe(false)
+    expect(await describeQwenCodeSession(id)).toBeUndefined()
+    expect(qwenSessionCwd(id)).toBeUndefined()
+    expect(await readQwenCodeTranscript(id)).toEqual({ id, command: '', turns: [] })
   })
 })
 

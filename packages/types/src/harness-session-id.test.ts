@@ -54,7 +54,9 @@ describe('parseSessionId', () => {
     expectInvalid(() => parseSessionId('cc:abc'))
     expectInvalid(() => parseSessionId('CLAUDE-CODE:abc'))
     expectInvalid(() => parseSessionId('task:t_123'))
-    expectInvalid(() => parseSessionId('deepseek-harness:session-86ffe759-cd7b-49a7-955d-c282631a935d'))
+    expectInvalid(() =>
+      parseSessionId('deepseek-harness:session-86ffe759-cd7b-49a7-955d-c282631a935d'),
+    )
   })
 
   it('rejects an empty native id, an empty harness id, and a bare native id', () => {
@@ -76,6 +78,7 @@ describe('formatSessionId', () => {
       ['codex', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
       ['opencode', 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'],
       ['pi', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
+      ['qwen-code', '857b4b7d-3d13-4281-a648-11947cf530ed'],
     ]
     for (const [harnessId, nativeSessionId] of cases) {
       const id = formatSessionId(harnessId, nativeSessionId)

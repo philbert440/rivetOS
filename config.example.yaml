@@ -21,12 +21,17 @@ providers:
 
   # opencode-cli:                         # harness id `opencode`; plugin @rivetos/provider-opencode-cli
   #   binary: opencode                    # path or name on PATH
-  #   # Default backend: z.ai GLM (openai-compatible).
+  #   # Default --model is zai/glm-5.3-flash. The CLI owns backend/endpoint/credentials.
   #   # model: zai/glm-5.3-flash
   # pi-cli:                            # @rivetos/provider-pi-cli; harness id `pi`
   #   binary: pi                       # @earendil-works/pi-coding-agent
   #   # model: glm-4.6                 # optional; recommended default backend is z.ai GLM
   #                                    # (reuse the coding-plan / Anthropic-compat key)
+  # qwen-code:                         # @rivetos/provider-qwen-code; harness id `qwen-code`
+  #   binary: qwen                     # path or name on PATH; $QWEN_BINARY also honoured
+  #   # model: qwen3-coder-plus
+  #   # home: ~/.qwen                  # accepted for parity with the other CLI providers; currently unused
+  #                                    # (RivetOS reads the node's ~/.qwen; qwen itself always writes there)
 
   anthropic:
     model: claude-opus-4-7
@@ -93,6 +98,7 @@ providers:
 #   - "@rivetos/provider-claude-cli"
 #   - "@rivetos/provider-opencode-cli"
 #   - "@rivetos/provider-pi-cli"
+#   - "@rivetos/provider-qwen-code"
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"
 #   - "@rivetos/provider-ollama"

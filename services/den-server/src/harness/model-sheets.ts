@@ -56,6 +56,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   codex: 'codex',
   opencode: 'opencode',
   pi: 'pi',
+  qwen: 'qwen-code',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -502,6 +503,90 @@ export function piSheet(
   }
 }
 
+/**
+ * Map qwen `capabilities.reasoning.efforts` (`low|medium|high|xhigh|max`)
+ * onto the RivetOS effort ids the other sheets use. Unknown tokens dropped.
+ * Qwen has no CLI effort flag (`Unknown argument: effort`) — effort lives
+ * on the model entry only.
+ */
+const QWEN_EFFORT_LABEL: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'X-High',
+  max: 'Max',
+}
+
+function qwenEffortsFromCapabilities(raw: unknown): EffortOption[] | undefined {
+  if (!isRecord(raw) || !isRecord(raw.reasoning) || !Array.isArray(raw.reasoning.efforts)) {
+    return undefined
+  }
+  const defaultEffort =
+    typeof raw.reasoning.defaultEffort === 'string' ? raw.reasoning.defaultEffort.trim() : ''
+  const out: EffortOption[] = []
+  const seen = new Set<string>()
+  for (const token of raw.reasoning.efforts) {
+    if (typeof token !== 'string') continue
+    const id = token.trim()
+    if (!QWEN_EFFORT_LABEL[id] || seen.has(id)) continue
+    seen.add(id)
+    const opt: EffortOption = { id, label: QWEN_EFFORT_LABEL[id] }
+    if (defaultEffort !== '' && id === defaultEffort) opt.default = true
+    out.push(opt)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * Qwen Code — models from `~/.qwen/settings.json` `modelProviders.<authType>[]`.
+ * Default is `model.name`. Efforts only on entries that declare
+ * `capabilities.reasoning.efforts`. Spawn flag is `-m`; there is no
+ * `effortFlag`. Missing settings → empty sheet (qwen's own default applies;
+ * we do not invent a `QWEN_CODE_DEFAULT_MODEL`).
+ */
+export function qwenCodeSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const empty: ModelSheet = { models: [], modelFlag: '-m' }
+  let raw: unknown
+  try {
+    raw = readJson(join(home, '.qwen', 'settings.json'))
+  } catch {
+    return empty
+  }
+  if (!isRecord(raw)) return empty
+  const providers = raw.modelProviders
+  if (!isRecord(providers)) return empty
+  const defaultId =
+    isRecord(raw.model) && typeof raw.model.name === 'string' ? raw.model.name.trim() : ''
+  const models: HarnessModelOption[] = []
+  const seen = new Set<string>()
+  for (const entries of Object.values(providers)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries) {
+      if (!isRecord(entry) || typeof entry.id !== 'string') continue
+      const id = entry.id.trim()
+      if (!id || !MODEL_TOKEN_RE.test(id) || seen.has(id)) continue
+      seen.add(id)
+      const label = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : id
+      const opt: HarnessModelOption = { id, label }
+      if (defaultId !== '' && id === defaultId) opt.default = true
+      const efforts = qwenEffortsFromCapabilities(entry.capabilities)
+      if (efforts) opt.efforts = efforts
+      models.push(opt)
+    }
+  }
+  if (defaultId && MODEL_TOKEN_RE.test(defaultId)) {
+    const marked = models.find((m) => m.id === defaultId)
+    if (marked) {
+      for (const m of models) delete m.default
+      marked.default = true
+    }
+  }
+  return { models, modelFlag: '-m' }
+}
+
 /** One models-store.json row: a model token or a loosely-shaped object. */
 type PiModelEntry = string | Record<string, unknown>
 
@@ -579,6 +664,8 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return opencodeSheet(readJson, home)
     case 'pi':
       return piSheet(readJson, home)
+    case 'qwen-code':
+      return qwenCodeSheet(readJson, home)
   }
 }
 

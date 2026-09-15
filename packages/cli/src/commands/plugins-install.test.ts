@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +32,7 @@ import {
   parseInstallArgs,
   parseTomlTableKeys,
   planPluginsInstall,
+  qwenSettingsHasCaptureHooks,
   readEnvKey,
   removeLegacyCaptureWatcher,
   runPluginsInstall,
@@ -93,6 +102,40 @@ function piHarness(home: string, binary = '/tmp/bin/pi'): DetectedHarness {
     providerKey: 'pi-cli',
     configHome: join(home, '.pi', 'agent'),
   }
+}
+
+function qwenHarness(home: string, binary = '/tmp/bin/qwen'): DetectedHarness {
+  return {
+    id: 'qwen-code',
+    command: 'qwen',
+    binary,
+    providerKey: 'qwen-code',
+    configHome: join(home, '.qwen'),
+  }
+}
+
+function writeQwenExtension(qwenHome: string): void {
+  const dir = join(qwenHome, 'extensions', 'rivet-memory', 'hooks')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'hooks.json'),
+    JSON.stringify({
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              {
+                type: 'command',
+                command:
+                  '/opt/rivetos/integrations/qwen-code/rivet-memory/bin/qwen-memory-capture.sh --hook',
+                timeout: 20,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  )
 }
 
 function opencodeHarness(home: string, binary = '/tmp/bin/opencode'): DetectedHarness {
@@ -508,6 +551,17 @@ describe('planPluginsInstall (dry-run plan)', () => {
     expect(plan).toHaveLength(1)
     expect(plan[0].steps.some((s) => s.includes('setup-pi-rivet-memory.sh'))).toBe(true)
     expect(plan[0].steps.some((s) => s.includes('install pi extension'))).toBe(true)
+    expect(plan[0].steps.some((s) => s.includes('capture watcher'))).toBe(false)
+  })
+
+  it('names the qwen-code setup script and extension', () => {
+    const plan = planPluginsInstall([qwenHarness('/home/u')], '/opt/rivetos')
+    expect(plan).toHaveLength(1)
+    expect(plan[0].id).toBe('qwen-code')
+    expect(plan[0].steps.some((s) => s.includes('setup-qwen-rivet-memory.sh'))).toBe(true)
+    expect(
+      plan[0].steps.some((s) => s.includes('install qwen extension (hooks + MCP + skills)')),
+    ).toBe(true)
     expect(plan[0].steps.some((s) => s.includes('capture watcher'))).toBe(false)
   })
 
@@ -1129,6 +1183,58 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     expect(logs()).toMatch(/✅/)
   })
 
+  it('qwen-code: install finds the extension hooks.json', async () => {
+    const scriptRel = join(
+      'integrations',
+      'qwen-code',
+      'rivet-memory',
+      'bin',
+      'setup-qwen-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    const exec = async (file: string): Promise<ExecResult> => {
+      if (file === 'bash') {
+        writeQwenExtension(join(home, '.qwen'))
+      }
+      return okResult()
+    }
+    await runPluginsInstall(
+      { dryRun: false, force: true, root, harnesses: [] },
+      { home, detect: async () => [qwenHarness(home)], exec, platform: 'linux' },
+    )
+    expect(
+      existsSync(join(home, '.qwen', 'extensions', 'rivet-memory', 'hooks', 'hooks.json')),
+    ).toBe(true)
+    expect(setupArtefactMissing('qwen-code', home, join(home, '.qwen'))).toBeNull()
+    expect(logs()).toMatch(/✅/)
+  })
+
+  it('qwen-code: missing extension reports a precise missing message', async () => {
+    const scriptRel = join(
+      'integrations',
+      'qwen-code',
+      'rivet-memory',
+      'bin',
+      'setup-qwen-rivet-memory.sh',
+    )
+    mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
+    writeFileSync(join(root, scriptRel), '#!/bin/sh\nexit 0\n')
+    await expect(
+      runPluginsInstall(
+        { dryRun: false, force: true, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [qwenHarness(home)],
+          exec: async () => okResult(),
+          platform: 'linux',
+        },
+      ),
+    ).rejects.toThrow(/failed/)
+    expect(logs()).toMatch(/❌/)
+    expect(logs()).toMatch(/qwen extension missing/)
+  })
+
   it('pi: MCP without extension reports a precise missing message', async () => {
     const scriptRel = join('integrations', 'pi', 'rivet-memory', 'bin', 'setup-pi-rivet-memory.sh')
     mkdirSync(dirname(join(root, scriptRel)), { recursive: true })
@@ -1648,6 +1754,73 @@ describe('runPluginsInstall install paths (injected exec)', () => {
       else process.env.RIVETOS_ENV_FILE = prevEnvFile
     }
   })
+
+  it('hermes: overrideEnv rewrites PG + embed URLs and keeps other lines (0600)', async () => {
+    const prevPg = process.env.RIVETOS_PG_URL
+    const prevEmbed = process.env.RIVETOS_EMBED_URL
+    const prevEnvFile = process.env.RIVETOS_ENV_FILE
+    delete process.env.RIVETOS_PG_URL
+    delete process.env.RIVETOS_EMBED_URL
+    delete process.env.RIVETOS_ENV_FILE
+    try {
+      mkdirSync(join(home, '.rivetos'), { recursive: true })
+      writeFileSync(
+        join(home, '.rivetos', '.env'),
+        'RIVETOS_PG_URL=postgres://203.0.113.10/cloud\nRIVETOS_EMBED_URL=https://rivetos.cloud/embed/tok\n',
+      )
+      mkdirSync(join(home, '.hermes'), { recursive: true })
+      writeFileSync(
+        join(home, '.hermes', '.env'),
+        'KEEP=yes\nRIVETOS_PG_URL=postgres://192.0.2.1/old\n',
+        { mode: 0o644 },
+      )
+      const venv = join(home, '.hermes', 'hermes-agent', 'venv')
+      mkdirSync(join(venv, 'bin'), { recursive: true })
+      writeFileSync(join(venv, 'bin', 'pip'), '#!/bin/sh\n')
+      const req = join(root, 'integrations', 'hermes', 'rivet-memory', 'requirements.txt')
+      mkdirSync(dirname(req), { recursive: true })
+      writeFileSync(req, 'psycopg[binary]>=3\n')
+      const exec = async (): Promise<ExecResult> => okResult()
+
+      await runPluginsInstall(
+        { dryRun: false, force: false, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [hermesHarness(home, '/tmp/bin/hermes', venv)],
+          exec,
+        },
+      )
+      expect(readFileSync(join(home, '.hermes', '.env'), 'utf-8')).toContain(
+        'postgres://192.0.2.1/old',
+      )
+      expect(readFileSync(join(home, '.hermes', '.env'), 'utf-8')).not.toContain(
+        'postgres://203.0.113.10/cloud',
+      )
+
+      await runPluginsInstall(
+        { dryRun: false, force: false, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [hermesHarness(home, '/tmp/bin/hermes', venv)],
+          exec,
+          overrideEnv: true,
+        },
+      )
+      const body = readFileSync(join(home, '.hermes', '.env'), 'utf-8')
+      expect(body).toContain('KEEP=yes')
+      expect(body).toContain('RIVETOS_PG_URL=postgres://203.0.113.10/cloud')
+      expect(body).toContain('RIVETOS_EMBED_URL=https://rivetos.cloud/embed/tok')
+      expect(body).not.toContain('postgres://192.0.2.1/old')
+      expect(statSync(join(home, '.hermes', '.env')).mode & 0o777).toBe(0o600)
+    } finally {
+      if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+      else process.env.RIVETOS_PG_URL = prevPg
+      if (prevEmbed === undefined) delete process.env.RIVETOS_EMBED_URL
+      else process.env.RIVETOS_EMBED_URL = prevEmbed
+      if (prevEnvFile === undefined) delete process.env.RIVETOS_ENV_FILE
+      else process.env.RIVETOS_ENV_FILE = prevEnvFile
+    }
+  })
 })
 
 describe('artefact validation + grok hook bake', () => {
@@ -1782,14 +1955,18 @@ describe('artefact validation + grok hook bake', () => {
   it('artefactConfigHomes uses only the env override when set', () => {
     const prevCodex = process.env.CODEX_HOME
     const prevKimi = process.env.KIMI_CODE_HOME
+    const prevQwen = process.env.QWEN_HOME
     const home = '/home/u'
     try {
       process.env.CODEX_HOME = '/custom/codex'
       process.env.KIMI_CODE_HOME = '/custom/kimi'
+      process.env.QWEN_HOME = '/custom/qwen'
       expect(artefactConfigHomes('codex', home, join(home, '.codex'))).toEqual(['/custom/codex'])
       expect(artefactConfigHomes('kimi-code', home, join(home, '.kimi'))).toEqual(['/custom/kimi'])
+      expect(artefactConfigHomes('qwen-code', home, join(home, '.qwen'))).toEqual(['/custom/qwen'])
       delete process.env.CODEX_HOME
       delete process.env.KIMI_CODE_HOME
+      delete process.env.QWEN_HOME
       expect(artefactConfigHomes('codex', home, join(home, '.codex'))).toEqual([
         join(home, '.codex'),
       ])
@@ -1797,11 +1974,93 @@ describe('artefact validation + grok hook bake', () => {
         join(home, '.kimi'),
         join(home, '.kimi-code'),
       ])
+      expect(artefactConfigHomes('qwen-code', home, join(home, '.qwen'))).toEqual([
+        join(home, '.qwen'),
+      ])
     } finally {
       if (prevCodex === undefined) delete process.env.CODEX_HOME
       else process.env.CODEX_HOME = prevCodex
       if (prevKimi === undefined) delete process.env.KIMI_CODE_HOME
       else process.env.KIMI_CODE_HOME = prevKimi
+      if (prevQwen === undefined) delete process.env.QWEN_HOME
+      else process.env.QWEN_HOME = prevQwen
     }
+  })
+
+  it('nativeCaptureArtefactMissing requires qwen-memory-capture.sh in the extension hooks', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toMatch(/qwen extension missing/)
+    mkdirSync(join(dir, 'extensions', 'rivet-memory', 'hooks'), { recursive: true })
+    writeFileSync(join(dir, 'extensions', 'rivet-memory', 'hooks', 'hooks.json'), '{}\n')
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toMatch(/qwen extension missing/)
+    writeQwenExtension(dir)
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toBeNull()
+  })
+
+  it('nativeCaptureArtefactMissing accepts settings-mode hooks with no extension dir', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    writeFileSync(
+      join(dir, 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    '/opt/rivetos/integrations/qwen-code/rivet-memory/bin/qwen-memory-capture.sh --hook',
+                  timeout: 20,
+                  name: 'rivet-memory',
+                },
+              ],
+            },
+          ],
+        },
+      }) + '\n',
+    )
+    expect(existsSync(join(dir, 'extensions'))).toBe(false)
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toBeNull()
+  })
+
+  it('qwenSettingsHasCaptureHooks is true for a Stop command hook', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const settings = join(dir, 'settings.json')
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command:
+                    '/opt/rivetos/integrations/qwen-code/rivet-memory/bin/qwen-memory-capture.sh --hook',
+                  timeout: 20,
+                  name: 'rivet-memory',
+                },
+              ],
+            },
+          ],
+        },
+      }) + '\n',
+    )
+    expect(qwenSettingsHasCaptureHooks(settings)).toBe(true)
+  })
+
+  it('qwenSettingsHasCaptureHooks is false when the marker is outside hooks', () => {
+    dir = mkdtempSync(join(tmpdir(), 'artefact-'))
+    const settings = join(dir, 'settings.json')
+    writeFileSync(
+      settings,
+      JSON.stringify({
+        mcpServers: {
+          capture: { command: 'bash qwen-memory-capture.sh --hook' },
+        },
+      }) + '\n',
+    )
+    expect(qwenSettingsHasCaptureHooks(settings)).toBe(false)
+    expect(nativeCaptureArtefactMissing('qwen-code', dir, dir)).toMatch(/qwen extension missing/)
   })
 })

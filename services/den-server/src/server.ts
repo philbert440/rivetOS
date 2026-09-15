@@ -77,6 +77,7 @@ import { handleAudioHttp } from './audio/http.js'
 import {
   listHarnessSessions,
   harnessSessionExists,
+  qwenSessionCwd,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
@@ -90,6 +91,7 @@ import { HermesDriver } from './harness/hermes-driver.js'
 import { KimiCodeDriver } from './harness/kimi-driver.js'
 import { OpencodeDriver } from './harness/opencode-driver.js'
 import { PiDriver } from './harness/pi-driver.js'
+import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -193,6 +195,14 @@ export {
   type PiPtyHost,
   type PiStoreHost,
 } from './harness/pi-driver.js'
+export {
+  QwenCodeDriver,
+  QWEN_CODE_HARNESS_ID,
+  QWEN_CODE_ROSTER_COMMAND,
+  type QwenCodeDriverDeps,
+  type QwenCodePtyHost,
+  type QwenCodeStoreHost,
+} from './harness/qwen-code-driver.js'
 export {
   CodexDriver,
   CODEX_HARNESS_ID,
@@ -585,6 +595,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
+        sessionCwd: (command, id) => (command === 'qwen' ? qwenSessionCwd(id) : undefined),
         harnessArgv: (command, session, argv) =>
           command === 'codex' ? codexProtocol?.terminalArgv(session, argv[0]) : undefined,
         tmuxCtl: opts.tmuxCtl,
@@ -746,6 +757,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('pi'),
         log: console.error,
         sheetOverride: config.harnesses?.pi,
+        transcript: opts.transcriptWatcher,
+        screen: screenFor,
+      }),
+      new QwenCodeDriver({
+        store: createHarnessStore('qwen-code'),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
+        cwd: rosterCwdFor('qwen'),
+        log: console.error,
+        sheetOverride: config.harnesses?.['qwen-code'],
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),

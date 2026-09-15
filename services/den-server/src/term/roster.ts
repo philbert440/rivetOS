@@ -97,6 +97,11 @@ export function defaultRoster(): TermRoster {
       // Pi 0.85.1: `--session-id` pins a new session, `--session` resumes
       // (HARNESS_FLAGS). No --yolo equivalent on the confirmed flag set.
       pi: { label: 'Pi', cmd: ['pi'], room: true },
+      // Qwen Code: `--approval-mode yolo` (or `-y`) auto-approves. Den drives
+      // the PTY non-interactively; the operator can trade up in den-term.json
+      // (same rationale as kimi `--yolo`). `--session-id` / `--resume` via
+      // HARNESS_FLAGS.
+      qwen: { label: 'Qwen Code', cmd: ['qwen', '--approval-mode', 'yolo'], room: true },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }

@@ -1,0 +1,9 @@
+{
+  "name": "rivet-memory",
+  "version": "0.1.0",
+  "mcpServers": {
+    "rivetos": {
+      "command": "<PLUGIN_PATH>/bin/rivet-memory-mcp.sh"
+    }
+  }
+}

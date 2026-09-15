@@ -19,6 +19,7 @@ const HARNESS_LABEL: Record<HarnessId | 'pi', string> = {
   hermes: 'Hermes',
   codex: 'Codex',
   pi: 'pi',
+  'qwen-code': 'Qwen Code',
 }
 
 /** Client-side Codex sheet — same lists as den `codexSheet()` (no spawn flags). */

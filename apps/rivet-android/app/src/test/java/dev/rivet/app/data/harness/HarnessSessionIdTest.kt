@@ -78,6 +78,9 @@ class HarnessSessionIdTest {
         val piId = HarnessSessionIds.format("pi", "sess-01")
         assertEquals("pi:sess-01", piId)
         assertEquals("sess-01", HarnessSessionIds.parse(piId).nativeSessionId)
+        val qwenId = HarnessSessionIds.format("qwen-code", "sess-01")
+        assertEquals("qwen-code:sess-01", qwenId)
+        assertEquals("sess-01", HarnessSessionIds.parse(qwenId).nativeSessionId)
         expectInvalid { HarnessSessionIds.format("claude", "abc") }
         expectInvalid { HarnessSessionIds.format("claude-code", "") }
     }
@@ -171,9 +174,26 @@ class HarnessSessionIdTest {
         assertEquals("kimi", HarnessIds.rosterCommand(HarnessIds.KIMI_CODE))
         assertEquals("opencode", HarnessIds.rosterCommand(HarnessIds.OPENCODE))
         assertEquals("hermes", HarnessIds.rosterCommand(HarnessIds.HERMES))
-        assertEquals(5, HarnessIds.ALL.size)
-        assertTrue(HarnessIds.isHarnessId("opencode"))
+        assertEquals("codex", HarnessIds.rosterCommand(HarnessIds.CODEX))
         assertEquals("pi", HarnessIds.rosterCommand(HarnessIds.PI))
-        assertEquals(5, HarnessIds.ALL.size)
+        assertEquals("qwen", HarnessIds.rosterCommand(HarnessIds.QWEN_CODE))
+        assertEquals(8, HarnessIds.ALL.size)
+        assertEquals(8, HarnessIds.ALL.toSet().size)
+        assertTrue(
+            HarnessIds.ALL.containsAll(
+                listOf(
+                    HarnessIds.CLAUDE_CODE,
+                    HarnessIds.GROK_BUILD,
+                    HarnessIds.KIMI_CODE,
+                    HarnessIds.HERMES,
+                    HarnessIds.CODEX,
+                    HarnessIds.OPENCODE,
+                    HarnessIds.PI,
+                    HarnessIds.QWEN_CODE,
+                ),
+            ),
+        )
+        assertTrue(HarnessIds.isHarnessId("opencode"))
+        assertTrue(HarnessIds.isHarnessId("qwen-code"))
     }
 }
