@@ -23,6 +23,8 @@
  *   rivetos skills list              — show all discovered skills
  *   rivetos plugins list             — show loaded plugins with status
  *   rivetos plugins sync             — refresh TUI plugin installs from source
+ *   rivetos cloud connect            — point this laptop at Rivet Cloud memory
+ *   rivetos cloud export|import      — HTTPS dump via /api/t/:slug/export|import
  *   rivetos version                  — show version
  *
  * `rivetos help` prints the full list.

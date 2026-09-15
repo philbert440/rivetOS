@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  existsSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1644,6 +1652,73 @@ describe('runPluginsInstall install paths (injected exec)', () => {
     } finally {
       if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
       else process.env.RIVETOS_PG_URL = prevPg
+      if (prevEnvFile === undefined) delete process.env.RIVETOS_ENV_FILE
+      else process.env.RIVETOS_ENV_FILE = prevEnvFile
+    }
+  })
+
+  it('hermes: overrideEnv rewrites PG + embed URLs and keeps other lines (0600)', async () => {
+    const prevPg = process.env.RIVETOS_PG_URL
+    const prevEmbed = process.env.RIVETOS_EMBED_URL
+    const prevEnvFile = process.env.RIVETOS_ENV_FILE
+    delete process.env.RIVETOS_PG_URL
+    delete process.env.RIVETOS_EMBED_URL
+    delete process.env.RIVETOS_ENV_FILE
+    try {
+      mkdirSync(join(home, '.rivetos'), { recursive: true })
+      writeFileSync(
+        join(home, '.rivetos', '.env'),
+        'RIVETOS_PG_URL=postgres://203.0.113.10/cloud\nRIVETOS_EMBED_URL=https://rivetos.cloud/embed/tok\n',
+      )
+      mkdirSync(join(home, '.hermes'), { recursive: true })
+      writeFileSync(
+        join(home, '.hermes', '.env'),
+        'KEEP=yes\nRIVETOS_PG_URL=postgres://192.0.2.1/old\n',
+        { mode: 0o644 },
+      )
+      const venv = join(home, '.hermes', 'hermes-agent', 'venv')
+      mkdirSync(join(venv, 'bin'), { recursive: true })
+      writeFileSync(join(venv, 'bin', 'pip'), '#!/bin/sh\n')
+      const req = join(root, 'integrations', 'hermes', 'rivet-memory', 'requirements.txt')
+      mkdirSync(dirname(req), { recursive: true })
+      writeFileSync(req, 'psycopg[binary]>=3\n')
+      const exec = async (): Promise<ExecResult> => okResult()
+
+      await runPluginsInstall(
+        { dryRun: false, force: false, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [hermesHarness(home, '/tmp/bin/hermes', venv)],
+          exec,
+        },
+      )
+      expect(readFileSync(join(home, '.hermes', '.env'), 'utf-8')).toContain(
+        'postgres://192.0.2.1/old',
+      )
+      expect(readFileSync(join(home, '.hermes', '.env'), 'utf-8')).not.toContain(
+        'postgres://203.0.113.10/cloud',
+      )
+
+      await runPluginsInstall(
+        { dryRun: false, force: false, root, harnesses: [] },
+        {
+          home,
+          detect: async () => [hermesHarness(home, '/tmp/bin/hermes', venv)],
+          exec,
+          overrideEnv: true,
+        },
+      )
+      const body = readFileSync(join(home, '.hermes', '.env'), 'utf-8')
+      expect(body).toContain('KEEP=yes')
+      expect(body).toContain('RIVETOS_PG_URL=postgres://203.0.113.10/cloud')
+      expect(body).toContain('RIVETOS_EMBED_URL=https://rivetos.cloud/embed/tok')
+      expect(body).not.toContain('postgres://192.0.2.1/old')
+      expect(statSync(join(home, '.hermes', '.env')).mode & 0o777).toBe(0o600)
+    } finally {
+      if (prevPg === undefined) delete process.env.RIVETOS_PG_URL
+      else process.env.RIVETOS_PG_URL = prevPg
+      if (prevEmbed === undefined) delete process.env.RIVETOS_EMBED_URL
+      else process.env.RIVETOS_EMBED_URL = prevEmbed
       if (prevEnvFile === undefined) delete process.env.RIVETOS_ENV_FILE
       else process.env.RIVETOS_ENV_FILE = prevEnvFile
     }

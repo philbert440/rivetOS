@@ -14,6 +14,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from '
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
+import { upsertEnvVars } from '../lib/env-file.js'
 import {
   DEFAULT_EXTRA_DIRS,
   detectHarnesses,
@@ -77,6 +78,12 @@ export interface InstallAction {
   steps: string[]
 }
 
+export interface HarnessInstallEvent {
+  id: HarnessId
+  ok: boolean
+  detail: string
+}
+
 export interface PluginsInstallDeps {
   home?: string
   detect?: (opts: {
@@ -90,6 +97,18 @@ export interface PluginsInstallDeps {
   platform?: NodeJS.Platform
   /** Override `process.getuid()` for launchd `gui/$UID` (tests). */
   uid?: number
+  /** Optional per-harness reporter (`rivetos cloud connect` checklist). */
+  onHarness?: (event: HarnessInstallEvent) => void
+  /**
+   * When true (cloud connect only), rewrite RIVETOS_PG_URL / RIVETOS_EMBED_URL
+   * in ~/.hermes/.env. Ordinary `plugins install` leaves a nonempty URL alone.
+   */
+  overrideEnv?: boolean
+  /**
+   * Env file `cloud connect` just wrote. When set, source PG/embed URLs from
+   * this path instead of guessing `$RIVETOS_ENV_FILE` vs `~/.rivetos/.env`.
+   */
+  envFile?: string
 }
 
 /** Legacy systemd/launchd names — used only to disable + delete leftover watchers. */
@@ -224,13 +243,23 @@ function nonemptyEnv(value: string | undefined): string | undefined {
   return value && value.length > 0 ? value : undefined
 }
 
-/** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
-export function sourcePgUrl(home: string): string | undefined {
-  const envFile = process.env.RIVETOS_ENV_FILE || join(home, '.rivetos', '.env')
+/** Source env value: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
+export function sourceEnvValue(
+  home: string,
+  key: string,
+  envFilePath?: string,
+): string | undefined {
+  const envFile =
+    envFilePath?.trim() || process.env.RIVETOS_ENV_FILE?.trim() || join(home, '.rivetos', '.env')
   const fromFile = existsSync(envFile)
-    ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), 'RIVETOS_PG_URL'))
+    ? nonemptyEnv(readEnvKey(readFileSync(envFile, 'utf-8'), key))
     : undefined
-  return fromFile ?? nonemptyEnv(process.env.RIVETOS_PG_URL)
+  return fromFile ?? nonemptyEnv(process.env[key])
+}
+
+/** Source PG URL: RIVETOS_ENV_FILE (or ~/.rivetos/.env), then process.env. */
+export function sourcePgUrl(home: string, envFilePath?: string): string | undefined {
+  return sourceEnvValue(home, 'RIVETOS_PG_URL', envFilePath)
 }
 
 export function planPluginsInstall(harnesses: DetectedHarness[], root: string): InstallAction[] {
@@ -1052,6 +1081,8 @@ async function installHermes(
   exec: typeof execFileAsync,
   dryRun: boolean,
   force: boolean,
+  overrideEnv = false,
+  envFile?: string,
 ): Promise<{ ok: boolean; detail: string }> {
   if (dryRun) {
     return {
@@ -1098,8 +1129,24 @@ async function installHermes(
   const before = existsSync(hermesEnv) ? readFileSync(hermesEnv, 'utf-8') : ''
   const existing = readEnvKey(before, 'RIVETOS_PG_URL')
   const destNonEmpty = existing && existing.length > 0 ? existing : undefined
-  const pgUrl = destNonEmpty ?? sourcePgUrl(home)
-  if (destNonEmpty) {
+  const pgUrl = overrideEnv
+    ? sourcePgUrl(home, envFile)
+    : (destNonEmpty ?? sourcePgUrl(home, envFile))
+  const embedUrl = sourceEnvValue(home, 'RIVETOS_EMBED_URL', envFile)
+  if (overrideEnv) {
+    if (pgUrl) {
+      const vars: Record<string, string> = { RIVETOS_PG_URL: pgUrl }
+      if (embedUrl) vars.RIVETOS_EMBED_URL = embedUrl
+      upsertEnvVars(hermesEnv, vars)
+      bits.push('overrode RIVETOS_PG_URL in ~/.hermes/.env')
+      if (embedUrl) bits.push('overrode RIVETOS_EMBED_URL in ~/.hermes/.env')
+    } else {
+      bits.push(
+        'RIVETOS_PG_URL missing (set in ~/.rivetos/.env or RIVETOS_ENV_FILE / RIVETOS_PG_URL)',
+      )
+      ok = false
+    }
+  } else if (destNonEmpty) {
     bits.push('RIVETOS_PG_URL already in ~/.hermes/.env')
   } else if (pgUrl) {
     const after = ensureNonEmptyEnvKey(before, 'RIVETOS_PG_URL', pgUrl)
@@ -1160,12 +1207,16 @@ export async function runPluginsInstall(
   const want = parsed.harnesses
   const selected = want.length === 0 ? detected : detected.filter((h) => want.includes(h.id))
   const platform = deps.platform ?? process.platform
+  const emit = (id: HarnessId, ok: boolean, detail: string): void => {
+    oneLine(id, ok, detail, parsed.dryRun)
+    deps.onHarness?.({ id, ok, detail })
+  }
 
   let failed = 0
   if (want.length > 0) {
     for (const id of want) {
       if (!detected.some((h) => h.id === id)) {
-        oneLine(id, false, 'not detected on PATH', parsed.dryRun)
+        emit(id, false, 'not detected on PATH')
         failed++
       }
     }
@@ -1187,7 +1238,7 @@ export async function runPluginsInstall(
 
   if (parsed.dryRun) {
     for (const action of planPluginsInstall(selected, root)) {
-      oneLine(action.id, true, action.steps.join('; '), true)
+      emit(action.id, true, action.steps.join('; '))
     }
     writeDenTerm(selected, home, parsed.force, true)
     return
@@ -1204,7 +1255,16 @@ export async function runPluginsInstall(
           result = await installGrok(h, root, home, false, exec)
           break
         case 'hermes':
-          result = await installHermes(h, root, home, exec, false, parsed.force)
+          result = await installHermes(
+            h,
+            root,
+            home,
+            exec,
+            false,
+            parsed.force,
+            deps.overrideEnv === true,
+            deps.envFile,
+          )
           break
         case 'opencode':
         case 'kimi-code':
@@ -1225,10 +1285,10 @@ export async function runPluginsInstall(
           )
           break
       }
-      oneLine(h.id, result.ok, result.detail, false)
+      emit(h.id, result.ok, result.detail)
       if (!result.ok) failed++
     } catch (err) {
-      oneLine(h.id, false, (err as Error).message, false)
+      emit(h.id, false, (err as Error).message)
       failed++
     }
   }
