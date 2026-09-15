@@ -280,6 +280,7 @@ class ChatItemsTest {
         assertEquals("opencode", rosterCommandFor("opencode"))
         assertEquals("pi", rosterCommandFor("pi"))
         assertEquals("codex", rosterCommandFor("codex"))
+        assertEquals("qwen", rosterCommandFor("qwen-code"))
     }
 
     @Test fun `findChatItem matches canonical then native`() {

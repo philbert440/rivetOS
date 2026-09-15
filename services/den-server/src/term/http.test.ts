@@ -207,6 +207,7 @@ describe('term endpoints', () => {
       'kimi',
       'opencode',
       'pi',
+      'qwen',
       'shell',
     ])
     expect(body.commands.find((c) => c.id === 'shell')).toEqual({

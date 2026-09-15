@@ -184,6 +184,7 @@ export const CLI_HARNESS_PROVIDERS = new Set([
   'codex-cli',
   'opencode-cli',
   'pi-cli',
+  'qwen-code',
 ])
 
 export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
@@ -237,6 +238,15 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'max_output_tokens',
   ]),
   'pi-cli': new Set([
+    'model',
+    'binary',
+    'home',
+    'cwd',
+    'name',
+    'context_window',
+    'max_output_tokens',
+  ]),
+  'qwen-code': new Set([
     'model',
     'binary',
     'home',

@@ -24,6 +24,7 @@ export const HARNESS_IDS = [
   'codex',
   'opencode',
   'pi',
+  'qwen-code',
 ] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 

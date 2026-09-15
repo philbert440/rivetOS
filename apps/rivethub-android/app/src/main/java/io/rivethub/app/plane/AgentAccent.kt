@@ -17,6 +17,7 @@ const val ACCENT_KIMI = "#8b7cf6"
 const val ACCENT_HERMES = "#e0a340"
 const val ACCENT_OPENCODE = "#2dd4bf"
 const val ACCENT_PI = "#f472b6"
+const val ACCENT_QWEN_CODE = "#a78bfa"
 const val ACCENT_LOCAL = "#34d399"
 
 /** String-keyed so opencode/pi compile before those ids land in HARNESS_IDS. */
@@ -31,6 +32,8 @@ private val HARNESS_ACCENTS: Map<String, String> = mapOf(
     "hermes" to ACCENT_HERMES,
     "opencode" to ACCENT_OPENCODE,
     "pi" to ACCENT_PI,
+    "qwen-code" to ACCENT_QWEN_CODE,
+    "qwen" to ACCENT_QWEN_CODE,
 )
 
 fun harnessAccentHex(harnessId: String?, command: String? = null): String {

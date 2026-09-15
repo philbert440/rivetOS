@@ -385,6 +385,10 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // pi 0.85.1: `--session-id <uuid>` pins a NEW session (creates if missing);
   // `--session <id>` resumes an existing one.
   pi: { sessionFlag: '--session-id', resumeFlag: '--session' },
+  // qwen-code 0.23.4 (verified): `--session-id <uuid>` pins a NEW session
+  // (transcript filename == id). `--resume <uuid>` resumes. Re-running
+  // `--session-id` with an existing id is not resume.
+  qwen: { sessionFlag: '--session-id', resumeFlag: '--resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:

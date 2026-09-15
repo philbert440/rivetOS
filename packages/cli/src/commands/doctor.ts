@@ -1592,6 +1592,7 @@ function pluginMarker(h: DetectedHarness, home: string, probe: HarnessDoctorProb
     case 'codex':
     case 'pi':
     case 'opencode':
+    case 'qwen-code':
       return (
         nativeCaptureArtefactMissing(h.id, home, h.configHome, {
           codexRequirementsPath: probe.codexRequirementsPath,
@@ -1613,8 +1614,10 @@ async function claudePluginListed(
   return /rivet-memory/i.test(result.stdout + result.stderr)
 }
 
-function isNativeCaptureHarness(id: DetectedHarness['id']): id is 'codex' | 'pi' | 'opencode' {
-  return id === 'codex' || id === 'pi' || id === 'opencode'
+function isNativeCaptureHarness(
+  id: DetectedHarness['id'],
+): id is 'codex' | 'pi' | 'opencode' | 'qwen-code' {
+  return id === 'codex' || id === 'pi' || id === 'opencode' || id === 'qwen-code'
 }
 
 export function formatRelativeCapture(value: string | number, nowMs = Date.now()): string | null {
@@ -1629,7 +1632,11 @@ export function formatRelativeCapture(value: string | number, nowMs = Date.now()
   return `${Math.round(hr / 24)}d ago`
 }
 
-function lastCaptureSuffix(home: string, id: 'codex' | 'pi' | 'opencode', nowMs: number): string {
+function lastCaptureSuffix(
+  home: string,
+  id: 'codex' | 'pi' | 'opencode' | 'qwen-code',
+  nowMs: number,
+): string {
   const path = join(home, '.rivetos', `${id}-capture-state.json`)
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { lastIngestAt?: unknown }

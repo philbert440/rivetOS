@@ -11,8 +11,9 @@
 // (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and OpenCode
 // (~/.local/share/opencode/opencode.db SQLite). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
-// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl) and Pi
-// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl). An unknown
+// (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl), Pi
+// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl) and Qwen Code
+// (~/.qwen/projects/<cwd with / → ->/chats/<uuid>.jsonl). An unknown
 // harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
@@ -30,6 +31,7 @@ import {
   codexTurnsFromLines,
   readOpencodeTurns,
   piTurnsFromLines,
+  qwenCodeTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
@@ -46,6 +48,7 @@ export {
   codexTurnsFromLines,
   readOpencodeTurns,
   piTurnsFromLines,
+  qwenCodeTurnsFromLines,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -902,6 +905,214 @@ export async function readPiTranscript(id: string): Promise<HarnessTranscript> {
   )
 }
 
+// ---- Qwen Code: ~/.qwen/projects/<enc-cwd>/chats/<uuid>.jsonl --------------
+// encoded-cwd replaces every `/` with `-` and keeps the leading dash
+// (`/home/rivet/x` → `-home-rivet-x`). No wrapping trailing dash (differs
+// from pi). Native id IS the filename (`<uuid>.jsonl`). Sidecar
+// `<uuid>.runtime.json` is a live-pid marker, not a transcript — skip it.
+// Listing walks ALL `projects/<enc-cwd>/chats/`. No `$QWEN_HOME` in this reader
+// (FACTS: data home is fixed `~/.qwen`; tests use setQwenHomeForTest).
+
+const QWEN_NATIVE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const QWEN_SESSION_FILE_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i
+
+let qwenHomeOverride: string | undefined
+
+/** Test-only: point the qwen store at a temp dir. Call with no args to reset. */
+export function setQwenHomeForTest(home?: string): void {
+  qwenHomeOverride = home
+}
+
+function qwenHome(): string {
+  return qwenHomeOverride ?? join(homedir(), '.qwen')
+}
+
+function qwenProjectsDir(): string {
+  return join(qwenHome(), 'projects')
+}
+
+/** `/home/rivet/x` → `-home-rivet-x`. Leading dash, no trailing dash. */
+export function encodeQwenCwd(cwd: string): string {
+  let encoded = cwd.replaceAll('/', '-')
+  if (!encoded.startsWith('-')) encoded = `-${encoded}`
+  if (encoded.length > 1 && encoded.endsWith('-')) encoded = encoded.slice(0, -1)
+  return encoded
+}
+
+function considerQwenFile(
+  best: { path: string; mtime: number } | undefined,
+  full: string,
+  name: string,
+  id: string,
+): { path: string; mtime: number } | undefined {
+  if (name.endsWith('.runtime.json')) return best
+  if (!QWEN_SESSION_FILE_RE.test(name)) return best
+  if (name.slice(0, -'.jsonl'.length).toLowerCase() !== id.toLowerCase()) return best
+  try {
+    const st = statSync(full)
+    if (!st.isFile()) return best
+    if (!best || st.mtimeMs > best.mtime) return { path: full, mtime: st.mtimeMs }
+  } catch {
+    /* skip */
+  }
+  return best
+}
+
+/** Walk every project bucket's chats/ for `<id>.jsonl` (newest mtime wins). */
+function qwenTranscriptPath(id: string): string | undefined {
+  if (!id || !QWEN_NATIVE_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
+  const root = qwenProjectsDir()
+  let buckets: string[]
+  try {
+    buckets = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number } | undefined
+  for (const bucket of buckets) {
+    if (bucket.startsWith('.')) continue
+    const chats = join(root, bucket, 'chats')
+    let names: string[]
+    try {
+      names = readdirSync(chats)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      best = considerQwenFile(best, join(chats, name), name, id)
+    }
+  }
+  return best?.path
+}
+
+async function qwenTitleFromTranscript(file: string): Promise<string> {
+  const parsed = await parseJsonlObjects(file)
+  for (const obj of parsed.objects) {
+    if (obj.type !== 'user' || obj.provenance !== 'real_user' || !isRecord(obj.message)) continue
+    const parts = Array.isArray(obj.message.parts) ? obj.message.parts : []
+    const text = parts
+      .filter(isRecord)
+      .map((p) => (typeof p.text === 'string' ? p.text : ''))
+      .join('\n')
+      .trim()
+    if (text) return text.slice(0, 120)
+  }
+  for (const turn of qwenCodeTurnsFromLines(parsed.objects)) {
+    if (turn.role === 'user' && turn.text.trim()) return turn.text.trim().slice(0, 120)
+  }
+  return ''
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+async function readQwenSession(id: string): Promise<HarnessSession | undefined> {
+  const transcript = qwenTranscriptPath(id)
+  if (!transcript) return undefined
+  let mtime: number
+  let birth: number
+  try {
+    const st = await stat(transcript)
+    mtime = st.mtimeMs
+    birth = st.birthtimeMs || st.ctimeMs || st.mtimeMs
+  } catch {
+    return undefined
+  }
+  const title = (await qwenTitleFromTranscript(transcript).catch(() => '')) || id
+  return {
+    id,
+    command: 'qwen',
+    title,
+    updatedAt: Math.floor(mtime),
+    createdAt: Math.floor(birth),
+  }
+}
+
+async function collectQwenSessionFiles(): Promise<
+  Array<{ id: string; path: string; mtime: number }>
+> {
+  const root = qwenProjectsDir()
+  const out: Array<{ id: string; path: string; mtime: number }> = []
+  let buckets: import('node:fs').Dirent[]
+  try {
+    buckets = await readdir(root, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const bucket of buckets) {
+    if (bucket.name.startsWith('.') || !bucket.isDirectory()) continue
+    const chats = join(root, bucket.name, 'chats')
+    let files: import('node:fs').Dirent[]
+    try {
+      files = await readdir(chats, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const f of files) {
+      if (!f.isFile()) continue
+      if (f.name.endsWith('.runtime.json')) continue
+      if (!QWEN_SESSION_FILE_RE.test(f.name)) continue
+      const id = f.name.slice(0, -'.jsonl'.length)
+      const full = join(chats, f.name)
+      try {
+        const st = await stat(full)
+        if (!st.isFile()) continue
+        out.push({ id, path: full, mtime: st.mtimeMs })
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return out
+}
+
+async function listQwenSessions(limit: number): Promise<HarnessSession[]> {
+  const found = await collectQwenSessionFiles()
+  const newest = new Map<string, { id: string; path: string; mtime: number }>()
+  for (const row of found) {
+    const prev = newest.get(row.id)
+    if (!prev || row.mtime >= prev.mtime) newest.set(row.id, row)
+  }
+  const ranked = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+  const out: HarnessSession[] = []
+  for (const row of ranked) {
+    const parsed = await readQwenSession(row.id)
+    if (parsed) out.push(parsed)
+  }
+  return out
+}
+
+/**
+ * Describe ONE qwen-code session by native id — the `qwen-code` driver's `getSession`.
+ */
+export async function describeQwenCodeSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  return readQwenSession(id)
+}
+
+function qwenSessionExists(id: string): boolean {
+  return qwenTranscriptPath(id) !== undefined
+}
+
+/**
+ * Qwen-only transcript read — the `qwen-code` driver's hard-resync source.
+ *
+ * Store-scoped: a qwen id whose file has been deleted reads as empty, never as
+ * another harness's transcript.
+ */
+export async function readQwenCodeTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = qwenTranscriptPath(id)
+  if (!path) return { id, command: '', turns: [] }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'qwen', turns: qwenCodeTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
+}
+
 // ---- Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl --------
 
 /** ~/.codex (respects CODEX_HOME, which the CLI itself reads). */
@@ -1353,6 +1564,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'codex') return codexSessionExists(id) // rollout jsonl under YYYY/MM/DD
   if (command === 'opencode') return opencodeSessionExists(id)
   if (command === 'pi') return piSessionExists(id)
+  if (command === 'qwen') return qwenSessionExists(id)
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -1394,6 +1606,7 @@ export async function listHarnessSessions(
   if (commands.includes('codex')) all.push(...(await listCodexSessions(limit)))
   if (commands.includes('opencode')) all.push(...listOpencodeSessions(limit))
   if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
+  if (commands.includes('qwen')) all.push(...(await listQwenSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1583,6 +1796,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (pi.turns.length > 0) return { ...pi, id }
   }
 
+  if (wants('qwen')) {
+    const qwen = await readQwenCodeTranscript(native)
+    if (qwen.turns.length > 0) return { ...qwen, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -1755,6 +1973,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const path = piTranscriptPath(native)
     if (path) return { command: 'pi', path }
   }
+  if (wants('qwen')) {
+    const path = qwenTranscriptPath(native)
+    if (path) return { command: 'qwen', path }
+  }
   return undefined
 }
 
@@ -1769,6 +1991,7 @@ export function harnessStoreDirs(): string[] {
     codexSessionsDir(),
     opencodeDataDir(),
     piSessionsDir(),
+    qwenProjectsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

@@ -286,6 +286,16 @@ describe('checkHarnesses', () => {
     }
   }
 
+  function qwenHarness(h: string): DetectedHarness {
+    return {
+      id: 'qwen-code',
+      command: 'qwen',
+      binary: '/bin/qwen',
+      providerKey: 'qwen-code',
+      configHome: join(h, '.qwen'),
+    }
+  }
+
   it('pi row warns when the extension file is absent', async () => {
     const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
       if (args[0] === '--version') return ok('0.85.1')
@@ -349,6 +359,66 @@ describe('checkHarnesses', () => {
     })
     expect(results[0].status).toBe('pass')
     expect(results[0].message).toMatch(/last capture: 1h ago/)
+  })
+
+  it('qwen-code row warns when the extension hooks.json is absent', async () => {
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.23.4')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [qwenHarness(home)],
+      exec,
+    })
+    expect(results[0].status).toBe('warn')
+    expect(results[0].message).toMatch(/Harness qwen-code: \/bin\/qwen/)
+    expect(results[0].message).toMatch(/memory plugin not installed/)
+    expect(results[0].message).toMatch(/never captured yet/)
+    expect(results[0].detail).toMatch(/rivetos plugins install/)
+  })
+
+  it('qwen-code row passes when hooks.json references qwen-memory-capture.sh', async () => {
+    mkdirSync(join(home, '.qwen', 'extensions', 'rivet-memory', 'hooks'), { recursive: true })
+    writeFileSync(
+      join(home, '.qwen', 'extensions', 'rivet-memory', 'hooks', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            {
+              hooks: [
+                {
+                  type: 'command',
+                  command: '/opt/rivetos/bin/qwen-memory-capture.sh --hook',
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    )
+    mkdirSync(join(home, '.rivetos'), { recursive: true })
+    writeFileSync(
+      join(home, '.rivetos', 'qwen-code-capture-state.json'),
+      JSON.stringify({ lastIngestAt: '2026-09-12T11:00:00.000Z' }),
+    )
+    const exec = vi.fn(async (_file: string, args: string[]): Promise<ExecResult> => {
+      if (args[0] === '--version') return ok('0.23.4')
+      return ok()
+    })
+    const results = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [qwenHarness(home)],
+      exec,
+      now: new Date('2026-09-12T12:00:00.000Z'),
+    })
+    expect(results[0].status).toBe('pass')
+    expect(results[0].message).toMatch(/Harness qwen-code: \/bin\/qwen 0.23.4/)
+    expect(results[0].message).toMatch(/memory plugin installed/)
+    expect(results[0].message).toMatch(/last capture: 1h ago/)
+    expect(results[0].message).not.toMatch(/capture watcher/)
   })
 
   it('a leftover systemd unit is not the installed marker', async () => {

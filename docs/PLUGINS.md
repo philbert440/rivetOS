@@ -137,6 +137,7 @@ interface LLMChunk {
 | kimi-code    | `plugins/providers/kimi-code/`    | Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`); session map for continuity                                                                                                             |
 | opencode-cli | `plugins/providers/opencode-cli/` | Drives the local OpenCode CLI (`opencode run`); harness id `opencode`; default backend z.ai GLM (Anthropic-compatible). Memory capture: `integrations/opencode/rivet-memory` (native plugin on `session.idle`) |
 | pi-cli       | `plugins/providers/pi-cli/`       | Drives the local pi CLI (`pi`, `@earendil-works/pi-coding-agent`) via print/JSON or RPC; recommended default backend z.ai GLM                                                                                  |
+| qwen-code    | `plugins/providers/qwen-code/`    | Drives the local Qwen Code CLI (`qwen -p`); harness id `qwen-code`; stream-json. Memory capture: `integrations/qwen-code/rivet-memory` (extension hooks on `UserPromptSubmit` / `Stop` / `SessionEnd`)         |
 
 ---
 

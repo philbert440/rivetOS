@@ -48,6 +48,8 @@ export function contextWindowFromModel(model: string | undefined, command?: stri
     cmd === 'kimi-code' ||
     cmd === 'opencode' ||
     cmd === 'pi' ||
+    cmd === 'qwen' ||
+    cmd === 'qwen-code' ||
     cmd === 'local'
 
   // 1M is a request-side flag, not a model family. Only this substring.

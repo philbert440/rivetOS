@@ -58,6 +58,8 @@ export function isLiveTurnCommand(command: string): boolean {
     c === 'kimi-code' ||
     c === 'opencode' ||
     c === 'pi' ||
+    c === 'qwen' ||
+    c === 'qwen-code' ||
     c === 'grok' ||
     c === 'grok-build' ||
     c === 'hermes' ||

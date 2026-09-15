@@ -97,6 +97,7 @@ export const ROSTER_COMMAND: Record<HarnessId | 'pi', string> = {
   hermes: 'hermes',
   codex: 'codex',
   pi: 'pi',
+  'qwen-code': 'qwen',
 }
 
 export function rosterCommandFor(harnessId: string | undefined): string | undefined {

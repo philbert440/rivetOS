@@ -27,6 +27,10 @@ providers:
   #   binary: pi                       # @earendil-works/pi-coding-agent
   #   # model: glm-4.6                 # optional; recommended default backend is z.ai GLM
   #                                    # (reuse the coding-plan / Anthropic-compat key)
+  # qwen-code:                         # @rivetos/provider-qwen-code; harness id `qwen-code`
+  #   binary: qwen
+  #   # model: qwen3-coder-plus
+  #   # home: ~/.qwen
 
   anthropic:
     model: claude-opus-4-7
@@ -93,6 +97,7 @@ providers:
 #   - "@rivetos/provider-claude-cli"
 #   - "@rivetos/provider-opencode-cli"
 #   - "@rivetos/provider-pi-cli"
+#   - "@rivetos/provider-qwen-code"
 #   - "@rivetos/provider-google"
 #   - "@rivetos/provider-xai"
 #   - "@rivetos/provider-ollama"

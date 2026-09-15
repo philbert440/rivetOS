@@ -1,0 +1,40 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '<PLUGIN_PATH>/bin/qwen-memory-capture.sh' --hook",
+            "timeout": 20,
+            "name": "rivet-memory"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '<PLUGIN_PATH>/bin/qwen-memory-capture.sh' --hook",
+            "timeout": 20,
+            "name": "rivet-memory"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash '<PLUGIN_PATH>/bin/qwen-memory-capture.sh' --hook",
+            "timeout": 20,
+            "name": "rivet-memory"
+          }
+        ]
+      }
+    ]
+  }
+}

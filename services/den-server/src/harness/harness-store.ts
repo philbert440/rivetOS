@@ -21,6 +21,7 @@ import {
   describeKimiSession,
   describeOpencodeSession,
   describePiSession,
+  describeQwenCodeSession,
   harnessSessionExists,
   listHarnessSessions,
   newestOpencodeSessionAfter,
@@ -31,6 +32,7 @@ import {
   readKimiTranscript,
   readOpencodeTranscript,
   readPiTranscript,
+  readQwenCodeTranscript,
   type HarnessSession,
   type HarnessTranscript,
 } from '../term/harness-sessions.js'
@@ -41,9 +43,11 @@ import { CODEX_ROSTER_COMMAND, type CodexStoreHost } from './codex-driver.js'
 import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
 import { OPENCODE_ROSTER_COMMAND, type OpencodeStoreHost } from './opencode-driver.js'
 import { PI_ROSTER_COMMAND, type PiStoreHost } from './pi-driver.js'
+import { QWEN_CODE_ROSTER_COMMAND, type QwenCodeStoreHost } from './qwen-code-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
-export type HarnessStoreName = 'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi'
+export type HarnessStoreName =
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi' | 'qwen-code'
 
 type StoreByName = {
   claude: ClaudeStoreHost
@@ -53,6 +57,7 @@ type StoreByName = {
   codex: CodexStoreHost
   opencode: OpencodeStoreHost
   pi: PiStoreHost
+  'qwen-code': QwenCodeStoreHost
 }
 
 type Adapter = {
@@ -96,6 +101,11 @@ const ADAPTERS: Record<HarnessStoreName, Adapter> = {
     roster: PI_ROSTER_COMMAND,
     describe: describePiSession,
     transcript: readPiTranscript,
+  },
+  'qwen-code': {
+    roster: QWEN_CODE_ROSTER_COMMAND,
+    describe: describeQwenCodeSession,
+    transcript: readQwenCodeTranscript,
   },
 }
 

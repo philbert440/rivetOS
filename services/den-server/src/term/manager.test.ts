@@ -99,14 +99,9 @@ function makeManager(
     tmuxCtl?: TmuxCtl
     herdrCtl?: HerdrCtl
     findHerdr?: () => string | null
-    onHerdrStatus?: (
-      denSession: string,
-      frame: import('@rivetos/types').HarnessStatusFrame,
-    ) => void
+    onHerdrStatus?: (denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void
     writeEnvFile?: (path: string, body: string) => void
-    modelSheetFor?: (
-      command: string,
-    ) =>
+    modelSheetFor?: (command: string) =>
       | {
           models?: { id: string; label: string }[]
           efforts?: { id: string; label: string }[]
@@ -392,6 +387,20 @@ describe('term manager', () => {
     const piResume = makeManager({}, { sessionExists: () => true })
     piResume.manager.spawn('pi', 80, 24, '', uuid)
     expect(piResume.spawns[0].argv).toEqual(['pi', '--session', uuid])
+
+    // qwen-code 0.23.4: `--session-id` pins a new session; `--resume` resumes.
+    const qwenNew = makeManager({}, { sessionExists: () => false })
+    qwenNew.manager.spawn('qwen', 80, 24, '', uuid)
+    expect(qwenNew.spawns[0].argv).toEqual([
+      'qwen',
+      '--approval-mode',
+      'yolo',
+      '--session-id',
+      uuid,
+    ])
+    const qwenResume = makeManager({}, { sessionExists: () => true })
+    qwenResume.manager.spawn('qwen', 80, 24, '', uuid)
+    expect(qwenResume.spawns[0].argv).toEqual(['qwen', '--approval-mode', 'yolo', '--resume', uuid])
 
     // a non-harness command gets no flags; a claude non-UUID that isn't in the
     // store gets no flag either (no --session-id on a non-UUID).
@@ -2408,9 +2417,9 @@ describe('term manager (herdr mux)', () => {
         { tmuxCtl: tmux, findHerdr: () => null },
       )
       const pty = manager.spawn('claude', 80, 24, '', uuid)
-      expect(logs.some((l) => l.includes("term.mux is 'herdr'") && l.includes('falling back to tmux'))).toBe(
-        true,
-      )
+      expect(
+        logs.some((l) => l.includes("term.mux is 'herdr'") && l.includes('falling back to tmux')),
+      ).toBe(true)
       expect(spawns[0].argv[0]).toBe('tmux')
       expect(pty.mux).toBe('tmux')
     } finally {

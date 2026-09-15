@@ -1,0 +1,33 @@
+{
+  "name": "rivet-memory",
+  "version": "0.1.0",
+  "description": "RivetOS persistent cross-agent memory for Qwen Code. Includes elite memory-recall discipline, MCP tools, and automatic capture via a qwen extension that ingests session jsonl.",
+  "keywords": [
+    "memory",
+    "recall",
+    "discipline",
+    "rivetos",
+    "mcp",
+    "cross-agent",
+    "qwen-code",
+    "capture"
+  ],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "MIT",
+  "author": {
+    "name": "RivetOS"
+  },
+  "harness": "qwen-code",
+  "minVersion": "0.23.4",
+  "provides": ["hooks", "mcp", "skills"],
+  "qwen-code": {
+    "minVersion": "0.23.4",
+    "provides": ["hooks", "mcp", "skills"],
+    "install": {
+      "skills": "extension/skills/",
+      "hooks": "extension/hooks/",
+      "mcp": "extension/qwen-extension.json"
+    }
+  }
+}

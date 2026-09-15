@@ -8,6 +8,7 @@ import {
   ACCENT_KIMI,
   ACCENT_OPENCODE,
   ACCENT_PI,
+  ACCENT_QWEN_CODE,
   harnessAccent,
 } from './harness-colors.js'
 
@@ -19,6 +20,7 @@ const KNOWN_IDS = [
   'hermes',
   'opencode',
   'pi',
+  'qwen-code',
 ] as const
 
 const EXPECTED: Record<(typeof KNOWN_IDS)[number], string> = {
@@ -29,6 +31,7 @@ const EXPECTED: Record<(typeof KNOWN_IDS)[number], string> = {
   hermes: ACCENT_HERMES,
   opencode: ACCENT_OPENCODE,
   pi: ACCENT_PI,
+  'qwen-code': ACCENT_QWEN_CODE,
 }
 
 describe('harnessAccent', () => {
@@ -75,5 +78,21 @@ describe('harnessAccent', () => {
   it('falls back to emerald for inherited object property names', () => {
     expect(harnessAccent('constructor')).toBe(ACCENT_FALLBACK)
     expect(harnessAccent('__proto__')).toBe(ACCENT_FALLBACK)
+  })
+
+  it('uses the Qwen Code accent for its id, command, and agent name', () => {
+    expect(ACCENT_QWEN_CODE).toBe('#a78bfa')
+    for (const name of ['qwen-code', 'qwen', 'rivet-qwen', 'QWEN']) {
+      expect(harnessAccent(name)).toBe(ACCENT_QWEN_CODE)
+      expect(harnessAccent(name)).not.toBe(ACCENT_PI)
+    }
+    expect(harnessAccent('pi')).toBe(ACCENT_PI)
+    expect(harnessAccent('pi-cli')).toBe(ACCENT_PI)
+  })
+
+  it('keeps Qwen matching bounded to at most two whole tokens', () => {
+    expect(harnessAccent('qwenbot')).toBe(ACCENT_FALLBACK)
+    expect(harnessAccent('rivet-qwen-helper')).toBe(ACCENT_FALLBACK)
+    expect(harnessAccent('qwen-code-helper')).toBe(ACCENT_FALLBACK)
   })
 })

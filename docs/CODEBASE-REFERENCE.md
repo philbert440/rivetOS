@@ -51,6 +51,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── gateway-client/          # Typed HTTP+WS client for the gateway API (RivetHub's bridge)
 │   ├── mcp/                     # MCP primitives shared by the sidecar and clients
 │   ├── mcp-v2/                  # Era-negotiating MCP surface built on `mcp`
+│   ├── harness-qwen-code/       # Headless Qwen Code task executor (`qwen -p`)
 │   └── nx-plugin/               # `@rivetos/nx` — Nx generators for scaffolding plugins
 │
 ├── plugins/                     # Extensions (19 plugins across 5 categories)
@@ -63,7 +64,8 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   │   ├── vllm/               # vLLM server (full vLLM surface)
 │   │   ├── llama-server/       # llama.cpp llama-server (lean)
 │   │   ├── claude-cli/          # Drives `claude` CLI via stream-json + embedded MCP bridge
-│   │   └── opencode-cli/        # Drives `opencode` CLI (`opencode run` / ACP); harness id `opencode`
+│   │   ├── opencode-cli/        # Drives `opencode` CLI (`opencode run` / ACP); harness id `opencode`
+│   │   └── qwen-code/           # Drives `qwen` CLI; harness id `qwen-code`
 │   │
 │   ├── channels/                # Messaging surface adapters
 │   │   └── agent/               # Agent-to-agent mesh (HTTPS/mTLS); social channels removed Phase 5
@@ -106,6 +108,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── grok-bot/                # Cursor Grok Bot: MCP recall + gated sidecar write tools (no auto-capture yet)
 │   ├── kimi/                    # Kimi Code CLI: TOML hooks, payload capture worker, backfill + rivet-den
 │   ├── pi/                      # pi CLI: extension on turn_end + MCP recall
+│   ├── qwen-code/               # Qwen Code CLI: extension hooks on Stop/SessionEnd + MCP recall
 │   ├── codex/                   # Codex CLI: hooks.json / managed requirements.toml + MCP recall
 │   ├── opencode/                # OpenCode CLI: plugin on session.idle + MCP recall
 │   ├── shared/                  # rivet-paths.sh — install-root discovery sourced by every bin/rivet-memory-mcp.sh
@@ -175,7 +178,7 @@ infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 `@rivetos/den-protocol`, which supplies the den event contract that the runtime types
 reference. Beyond that, if you need a class or function, it goes in `core`.
 
-**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps).
+**What `boot` declares in `package.json`.** Five workspace packages (beyond `types`/`core`) are listed as direct dependencies of `boot`: `@rivetos/provider-claude-cli`, `@rivetos/memory-postgres`, `@rivetos/den-server`, `@rivetos/workflows`, and `@rivetos/harness-kimi-code`. A default install therefore always materializes them. That declaration is about _installation_, not registration: `boot` imports specific symbols from them (the workflow engine, `WikiIndex`, the claude-cli task executor, the den server), while the claude-cli provider and the memory-postgres backend, which are also plugins, are still registered the same way as every other plugin, through discovery and `manifest.register()`. Headless `pi` is `@rivetos/harness-pi` + provider `pi-cli` (discovered, not one of boot's five pinned install deps). Headless `qwen-code` is `@rivetos/harness-qwen-code` + provider `qwen-code` (same discovery path).
 
 ---
 

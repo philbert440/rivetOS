@@ -1,4 +1,4 @@
-// Contract tests for the shared `PtyHarnessDriver` base, run against ALL SEVEN
+// Contract tests for the shared `PtyHarnessDriver` base, run against ALL EIGHT
 // real drivers rather than a stand-in subclass — the point is that every driver
 // inherits the behaviour, so every driver is asserted.
 //
@@ -22,8 +22,13 @@ import { KimiCodeDriver } from './kimi-driver.js'
 import { CodexDriver } from './codex-driver.js'
 import { OpencodeDriver } from './opencode-driver.js'
 import { PiDriver } from './pi-driver.js'
+import { QwenCodeDriver } from './qwen-code-driver.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
-import { composePromptText, type HarnessPtyHost, type PtyHarnessDriver } from './pty-harness-driver.js'
+import {
+  composePromptText,
+  type HarnessPtyHost,
+  type PtyHarnessDriver,
+} from './pty-harness-driver.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 /** hermes mints its own, and they are not uuids. */
@@ -35,6 +40,7 @@ const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
 /** OpenCode natives are `ses_` + alphanumerics. */
 const OPENCODE_NATIVE = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
 const PI_NATIVE = '15cb936c-3364-49d6-8769-21f0c635f160'
+const QWEN_NATIVE = '11111111-2222-4333-8444-555555555555'
 
 interface Injected {
   id: string
@@ -239,6 +245,26 @@ const subjects: [name: string, make: () => Subject][] = [
       }
     },
   ],
+  [
+    'qwen-code',
+    (): Subject => {
+      const pty = fakePty()
+      const store = fakeStore([{ id: QWEN_NATIVE, command: 'qwen', title: 't', updatedAt: 1 }])
+      const driver = new QwenCodeDriver({
+        store,
+        pty: () => Promise.resolve(pty.host),
+        turnQuietMs: 0,
+      })
+      return {
+        driver,
+        sessionId: QwenCodeDriver.sessionId(QWEN_NATIVE),
+        injects: pty.injects,
+        activate: async () => {
+          await driver.resumeSession(QwenCodeDriver.sessionId(QWEN_NATIVE))
+        },
+      }
+    },
+  ],
 ]
 
 describe.each(subjects)('%s: the in-flight turn lock is not racy', (_name, make) => {
@@ -355,6 +381,14 @@ const capabilitySubjects: [
         ...(pty ? { pty } : {}),
       }),
   ],
+  [
+    'qwen-code',
+    (pty) =>
+      new QwenCodeDriver({
+        store: fakeStore([{ id: QWEN_NATIVE, command: 'qwen', title: 't', updatedAt: 1 }]),
+        ...(pty ? { pty } : {}),
+      }),
+  ],
 ]
 
 /** A PTY dep that resolves null — den terminals enabled, `node-pty` absent. */
@@ -366,11 +400,11 @@ describe.each(capabilitySubjects)('%s: capabilities are runtime-truthed', (name,
       ? (`hermes:${HERMES_NATIVE}` as SessionId)
       : name === 'kimi-code'
         ? (`kimi-code:${KIMI_NATIVE}` as SessionId)
-          : name === 'codex'
-            ? (`codex:${CODEX_NATIVE}` as SessionId)
-            : name === 'opencode'
-              ? (`opencode:${OPENCODE_NATIVE}` as SessionId)
-              : (`${driver.harnessId}:${UUID}` as SessionId)
+        : name === 'codex'
+          ? (`codex:${CODEX_NATIVE}` as SessionId)
+          : name === 'opencode'
+            ? (`opencode:${OPENCODE_NATIVE}` as SessionId)
+            : (`${driver.harnessId}:${UUID}` as SessionId)
 
   it('advertises interrupt/resume false once the probe finds no PTY backend', async () => {
     const driver = make(failedPtyLoad())
@@ -701,13 +735,24 @@ describe('pty-harness-driver transcript tracker', () => {
       command: 'claude',
       turns: [
         { role: 'user', text: 'go' },
-        { role: 'assistant', text: 'done', lastBlock: 'text', stopReason: 'end_turn', complete: true },
+        {
+          role: 'assistant',
+          text: 'done',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
       ],
     })
     expect(first.some((e) => e.type === 'status' && e.status === 'idle')).toBe(true)
     const later: HarnessEvent[] = []
     driver.subscribe(sid, (e) => later.push(e))
-    expect(later[0]).toMatchObject({ type: 'status', sessionId: sid, status: 'idle', source: 'transcript' })
+    expect(later[0]).toMatchObject({
+      type: 'status',
+      sessionId: sid,
+      status: 'idle',
+      source: 'transcript',
+    })
     driver.close()
   })
 
@@ -895,9 +940,7 @@ describe('pty-harness-driver transcript tracker', () => {
             text: '',
             lastBlock: 'tool_use',
             stopReason: 'tool_use',
-            tools: [
-              { name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT },
-            ],
+            tools: [{ name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT }],
           },
         ],
       }),
@@ -967,9 +1010,7 @@ describe('pty-harness-driver transcript tracker', () => {
             text: '',
             lastBlock: 'tool_use',
             stopReason: 'tool_use',
-            tools: [
-              { name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT },
-            ],
+            tools: [{ name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT }],
           },
         ],
       }),
@@ -1042,9 +1083,7 @@ describe('pty-harness-driver transcript tracker', () => {
             text: '',
             lastBlock: 'tool_use',
             stopReason: 'tool_use',
-            tools: [
-              { name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT },
-            ],
+            tools: [{ name: 'AskUserQuestion', status: 'running', id: 'ask_1', input: ASK_INPUT }],
           },
         ],
       }),
@@ -1055,9 +1094,7 @@ describe('pty-harness-driver transcript tracker', () => {
       status: 'blocked',
       since: 1,
     })
-    expect(
-      seen.find((e) => e.type === 'status' && e.status === 'blocked'),
-    ).toMatchObject({
+    expect(seen.find((e) => e.type === 'status' && e.status === 'blocked')).toMatchObject({
       source: 'herdr',
       promptId: 'ask_1',
       phase: 'prompt',
@@ -1098,19 +1135,51 @@ describe('pty-harness-driver permission prompts', () => {
       text: '',
       lastBlock: 'tool_result' as const,
       stopReason: 'tool_use',
-      tools: [{ id, name: 'AskUserQuestion', status: 'done' as const, resultText: text, input: { questions: [] } }],
+      tools: [
+        {
+          id,
+          name: 'AskUserQuestion',
+          status: 'done' as const,
+          resultText: text,
+          input: { questions: [] },
+        },
+      ],
     })
-    tx.emit(sid, { kind: 'transcript', session: sid, rev: 1, from: 0, total: 2, command: 'claude', turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')] })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'claude',
+      turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')],
+    })
     driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
     await Promise.resolve()
     await Promise.resolve()
     const opened = seen.find((e) => e.type === 'prompt' && !e.resolved)
     expect(opened).toBeDefined()
     // a sync re-snapshot carrying the OLD answer again
-    tx.emit(sid, { kind: 'transcript', session: sid, rev: 2, from: 0, total: 2, command: 'claude', turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')] })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 2,
+      from: 0,
+      total: 2,
+      command: 'claude',
+      turns: [{ role: 'user', text: 'go' }, answered('q-old', 'Red')],
+    })
     expect(seen.some((e) => e.type === 'prompt' && e.resolved)).toBe(false)
     // the NEW question's answer lands
-    tx.emit(sid, { kind: 'transcript', session: sid, rev: 3, from: 2, total: 3, command: 'claude', turns: [answered('q-new', 'Green')] })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 3,
+      from: 2,
+      total: 3,
+      command: 'claude',
+      turns: [answered('q-new', 'Green')],
+    })
     const resolved = seen.find((e) => e.type === 'prompt' && e.resolved)
     expect(resolved && resolved.resolved?.answerText).toBe('Green')
     driver.close()
@@ -1133,7 +1202,11 @@ describe('pty-harness-driver permission prompts', () => {
     const later: HarnessEvent[] = []
     driver.subscribe(sid, (e) => later.push(e))
     expect(later[0]).toMatchObject({ type: 'status', status: 'blocked', phase: 'prompt' })
-    expect(later[1]).toMatchObject({ type: 'prompt', kind: 'ask-user', promptId: `screen:${UUID}:1` })
+    expect(later[1]).toMatchObject({
+      type: 'prompt',
+      kind: 'ask-user',
+      promptId: `screen:${UUID}:1`,
+    })
     driver.close()
   })
 
@@ -1157,7 +1230,9 @@ describe('pty-harness-driver permission prompts', () => {
     expect(p && p.screen).toEqual({ current: 0, total: 2 })
     await driver.answerPrompt(sid, `screen:${UUID}:1`, [{ question: 0, labels: ['Green'] }])
     expect(pty.injects.some((i) => i.text === '2' && i.submit === false)).toBe(true)
-    expect(seen.some((e) => e.type === 'prompt' && e.resolved && e.promptId === `screen:${UUID}:1`)).toBe(true)
+    expect(
+      seen.some((e) => e.type === 'prompt' && e.resolved && e.promptId === `screen:${UUID}:1`),
+    ).toBe(true)
     driver.close()
   })
 
@@ -1183,7 +1258,11 @@ describe('pty-harness-driver permission prompts', () => {
       requestId: `perm:${UUID}:1`,
       name: 'Bash',
       reason: expect.stringContaining('mkdir -p zz'),
-      options: [{ key: '1', label: 'Yes' }, { key: '2', label: expect.any(String) }, { key: '3', label: 'No' }],
+      options: [
+        { key: '1', label: 'Yes' },
+        { key: '2', label: expect.any(String) },
+        { key: '3', label: 'No' },
+      ],
     })
     driver.close()
   })
@@ -1267,9 +1346,11 @@ describe('pty-harness-driver permission prompts', () => {
     const reqId = `perm:${UUID}:1`
     await driver.resolveApproval(sid, reqId, 'allow')
     expect(pty.injects.some((i) => i.text === '1' && i.submit === false)).toBe(true)
-    expect(seen.some((e) => e.type === 'approval-resolved' && e.requestId === reqId && e.decision === 'allow')).toBe(
-      true,
-    )
+    expect(
+      seen.some(
+        (e) => e.type === 'approval-resolved' && e.requestId === reqId && e.decision === 'allow',
+      ),
+    ).toBe(true)
     await expect(driver.resolveApproval(sid, reqId, 'allow')).rejects.toMatchObject({
       code: 'unknown_approval',
     })
@@ -1715,4 +1796,3 @@ describe('composePromptText fallback', () => {
     ).toBe('API key')
   })
 })
-

@@ -8,6 +8,7 @@ import {
   extractCodexFromLine,
   extractFullFromLine,
   extractPiFromLine,
+  extractQwenFromLine,
   extractOpencodeFromPart,
   formatMissingJsonlMessage,
   isCaptureSqlitePath,
@@ -252,6 +253,74 @@ describe('extractFullFromLine', () => {
     expect(
       extractFullFromLine(user, { source: 'pi-session', sourceEvent: 'message:user' }).content,
     ).toBe('list the files')
+  })
+
+  it('extracts qwen-code gemini-style user/assistant/tool_result lines', () => {
+    const user = JSON.stringify({
+      uuid: '181c8cae-c294-4d77-b993-166db8e5788b',
+      sessionId: '11111111-2222-4333-8444-555555555555',
+      type: 'user',
+      provenance: 'real_user',
+      message: { role: 'user', parts: [{ text: 'reply with the single word pong' }] },
+    })
+    expect(extractFullFromLine(user).content).toBe('reply with the single word pong')
+    expect(extractQwenFromLine(JSON.parse(user))?.content).toBe('reply with the single word pong')
+
+    const assistant = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'model',
+        parts: [{ text: 'The user wants pong.', thought: true }, { text: '\n\npong' }],
+      },
+    })
+    const asst = extractFullFromLine(assistant)
+    expect(asst.content).toBe('pong')
+    expect(asst.reasoning).toBe('The user wants pong.')
+
+    const call = JSON.stringify({
+      type: 'assistant',
+      message: {
+        role: 'model',
+        parts: [
+          {
+            functionCall: {
+              id: 'call_6ef8c237955540faabb31812',
+              name: 'run_shell_command',
+              args: { command: 'echo tool-sample-ok' },
+            },
+          },
+        ],
+      },
+    })
+    expect(extractFullFromLine(call)).toEqual({
+      content: '[tool] run_shell_command',
+      toolResult: JSON.stringify({ command: 'echo tool-sample-ok' }),
+      reasoning: null,
+    })
+
+    const result = JSON.stringify({
+      type: 'tool_result',
+      message: {
+        role: 'user',
+        parts: [
+          {
+            functionResponse: {
+              id: 'call_6ef8c237955540faabb31812',
+              name: 'run_shell_command',
+              response: { output: 'tool-sample-ok' },
+            },
+          },
+        ],
+      },
+    })
+    expect(extractFullFromLine(result).content).toBe('[tool-result] run_shell_command')
+    expect(extractFullFromLine(result).toolResult).toBe('tool-sample-ok')
+
+    expect(extractQwenFromLine({ type: 'system' })).toBeNull()
+    expect(extractQwenFromLine({ type: 'message' })).toBeNull()
+    expect(
+      extractFullFromLine(user, { source: 'qwen-session', sourceEvent: 'hook:Stop' }).content,
+    ).toBe('reply with the single word pong')
   })
 })
 
