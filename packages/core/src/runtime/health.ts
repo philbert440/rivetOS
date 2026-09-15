@@ -4,7 +4,7 @@
  * GET /health      → full health check with metrics, providers, channels
  * GET /health/live → simple liveness check (200 OK)
  *
- * Port: RIVETOS_HEALTH_PORT env var (default: 3100)
+ * Bind: RIVETOS_HEALTH_HOST (default 127.0.0.1) and RIVETOS_HEALTH_PORT (default 3100).
  */
 
 import { createServer, type Server } from 'node:http'
@@ -29,8 +29,22 @@ export interface HealthStatus {
   metrics: MetricsSnapshot
 }
 
+export interface HealthBind {
+  host: string
+  port: number
+}
+
+/** Loopback unless RIVETOS_HEALTH_HOST / RIVETOS_HEALTH_PORT override. */
+export function resolveHealthBind(env: NodeJS.ProcessEnv = process.env): HealthBind {
+  const parsed = parseInt(env.RIVETOS_HEALTH_PORT ?? '3100', 10)
+  const port = Number.isFinite(parsed) && parsed > 0 ? parsed : 3100
+  const host = env.RIVETOS_HEALTH_HOST?.trim() || '127.0.0.1'
+  return { host, port }
+}
+
 export interface HealthConfig {
   port?: number
+  host?: string
   /** Functions to check runtime health */
   getAgents: () => string[]
   checkProviders: () => Promise<Record<string, boolean>>
@@ -47,10 +61,13 @@ export class HealthServer {
   private server: Server | null = null
   private config: HealthConfig
   private port: number
+  private host: string
 
   constructor(config: HealthConfig) {
     this.config = config
-    this.port = config.port ?? parseInt(process.env.RIVETOS_HEALTH_PORT ?? '3100', 10)
+    const bind = resolveHealthBind()
+    this.port = config.port ?? bind.port
+    this.host = config.host ?? bind.host
   }
 
   async start(): Promise<void> {
@@ -68,8 +85,8 @@ export class HealthServer {
         }
       })
 
-      this.server.listen(this.port, () => {
-        log.info(`Health endpoint on :${this.port}`)
+      this.server.listen(this.port, this.host, () => {
+        log.info(`Health endpoint on ${this.host}:${this.port}`)
         resolve()
       })
     })

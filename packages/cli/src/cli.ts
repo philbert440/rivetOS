@@ -151,8 +151,6 @@ export function helpText(): string {
     rivetos mesh status                 Show local mesh status
 
   Gateway:
-    rivetos gateway token               Print the per-node gateway token
-    rivetos gateway token --rotate      Mint a new gateway token
     rivetos gateway caps                Allow the gateway to bind :80/:443
 
   Memory:

@@ -92,7 +92,7 @@ describe('parseLocalArgs', () => {
       yes: false,
       port: 5174,
       pgPort: 5433,
-      exposeLan: true,
+      exposeLan: false,
       service: true,
       devices: [],
       memory: 'lite',
@@ -136,6 +136,13 @@ describe('parseLocalArgs', () => {
       memory: 'full',
       out: undefined,
       help: false,
+    })
+  })
+
+  it('parses --lan as an explicit LAN bind', () => {
+    expect(parseLocalArgs(['--lan'])).toMatchObject({
+      exposeLan: true,
+      lanExplicit: true,
     })
   })
 })
@@ -514,6 +521,34 @@ describe('formatBanner + readPersistedDen + waitHealthz', () => {
         ].join('\n'),
       )
       expect(readPersistedDen(configPath)).toEqual({ port: 6000, exposeLan: false })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('readPersistedDen treats 0.0.0.0 as LAN and missing host as loopback', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'local-den-'))
+    try {
+      const lanPath = join(dir, 'lan.yaml')
+      writeFileSync(
+        lanPath,
+        [
+          'memory:',
+          '  postgres:',
+          '    embedded:',
+          `      data_dir: ${dir}/pglite`,
+          '      port: 5433',
+          'den:',
+          '  host: 0.0.0.0',
+          '  port: 5174',
+          '',
+        ].join('\n'),
+      )
+      expect(readPersistedDen(lanPath)).toEqual({ port: 5174, exposeLan: true })
+      expect(readPersistedDen(join(dir, 'missing.yaml'))).toEqual({
+        port: 5174,
+        exposeLan: false,
+      })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -29,7 +29,9 @@ export async function reviewConfig(state: WizardState): Promise<boolean> {
 
   // Channels — social bots removed Phase 5; Hub is the human path
   lines.push('')
-  lines.push('Channels:  RivetHub / gateway (social bots removed Phase 5)')
+  lines.push(
+    'Channels:  RivetHub / gateway (loopback den; set den.host or rivetos local --lan for LAN)',
+  )
 
   if (state.meshJoin) {
     lines.push('')

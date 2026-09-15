@@ -313,7 +313,7 @@ Every `rivetos <command>` lives here. Lazy-loaded via dynamic import.
 | `model`              | `commands/model.ts`                         | Show/switch models                                                                               |
 | `build`              | `commands/build.ts`                         | Build container images                                                                           |
 | `mesh`               | `commands/mesh.ts`                          | Mesh management (list, ping, join, status)                                                       |
-| `gateway`            | `commands/gateway.ts`                       | Embedded-den gateway helpers (`gateway token`, `--rotate`)                                       |
+| `gateway`            | `commands/gateway.ts`                       | Embedded-den gateway helpers (`gateway caps`; leftover `token` exits)                            |
 | `memory`             | `commands/memory.ts`                        | Memory subsystem maintenance (backfill jobs, etc.)                                               |
 | `db`                 | `commands/db.ts`                            | Schema migration and inspection (`db migrate`, `db status`)                                      |
 | `keys`               | `commands/keys.ts`                          | SSH key management for the mesh (rotate, list, status)                                           |

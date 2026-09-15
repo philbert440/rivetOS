@@ -39,11 +39,12 @@ To stream a real session, install an adapter:
   `qwen-code`, provider `qwen-code`). Drive via `-p` + stream-json; native
   session store `~/.qwen/projects/<cwd>/chats/<uuid>.jsonl`. Pins via `--session-id`.
 
-The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
-ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple
-sessions, one server; the picker chooses which room drives the den.
+The server binds `127.0.0.1` by default. Set `RIVETOS_DEN_HOST=0.0.0.0` and
+configure den TLS plus a device client cert to serve a LAN. Multiple
+viewers, multiple sessions, one server; the picker chooses which room
+drives the den.
 
-Bearer tokens removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
+Bearer tokens are removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 ## The moving parts
 
@@ -121,9 +122,8 @@ from any node; each node's own config decides what it gets).
 ```yaml
 den:
   enabled: true # embed the gateway + advertise this node's den
-  host: 0.0.0.0 # default 127.0.0.1 (loopback fail-safe)
+  host: 0.0.0.0 # default 127.0.0.1 (loopback). Off-loopback needs TLS.
   port: 5174 # default
-  token: <bearer-token> # REQUIRED when terminal.enabled and host isn't loopback
   terminal:
     enabled: true # local PTY terminals — off by default
   # static_dir: /opt/rivetos/apps/rivethub-web/dist   # default: hub dist
@@ -168,16 +168,13 @@ behind HTTP, so the whole model in one place:
 
 - **Off by default.** `den.terminal.enabled: true` is a deliberate act, per
   node.
-- **Token gate.** Off loopback, a bearer token is mandatory. The config
-  validator refuses the config at deploy time, and den-server re-checks at
-  startup and force-disables terminals (loudly) if the state is ever reached
-  anyway.
-- **Trusted-network opt-out.** `den.terminal.open: true` explicitly waives the
-  token requirement, for private LANs where convenience wins. Understand what
-  it means: anything that can reach the port can spawn a shell as the service
-  user. den-server logs the open state at startup; it is never the default.
-  (`token:` can then be omitted entirely; the whole den runs unauthenticated,
-  like the pre-2.0 prototype did.)
+- **TLS gate.** Off loopback, den TLS (node leaf) is required. The config
+  validator refuses a LAN bind without it, and den-server refuses to listen
+  if the state is ever reached anyway.
+- **Trusted-network opt-out.** `den.terminal.open: true` is an explicit
+  waiver for private LANs where convenience wins. Understand what it means:
+  anything that can reach the port can spawn a shell as the service user.
+  den-server logs the open state at startup; it is never the default.
 - **Roster ownership.** The HTTP API accepts only command _keys_ from the
   operator-owned roster (`~/.rivetos/den-term.json`); argv/cwd/env never
   travel over the wire in either direction, and every command is spawned
@@ -225,8 +222,8 @@ aliases). Two G7 knobs:
 - **Binding :80/:443 directly** (no reverse proxy): run `rivetos gateway caps`
   once (installs a systemd drop-in granting `CAP_NET_BIND_SERVICE` as an
   ambient capability; note that processes the agent spawns, including den
-  terminals, inherit it), set `den.port: 443`, restart. `rivetos gateway token` prints the bearer token
-  for non-loopback clients when `den.token: gateway-token-file` is set.
+  terminals, inherit it), set `den.port: 443`, restart. Off-loopback clients
+  enroll with `rivet-ca.sh issue-client`. See [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 Owner-only Codex protocol sessions can be enabled with
 `RIVETOS_CODEX_APP_SERVER_URL=ws://127.0.0.1:5175`. See

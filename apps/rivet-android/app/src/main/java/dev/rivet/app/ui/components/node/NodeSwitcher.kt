@@ -598,10 +598,9 @@ private fun NodeSwitcherSheet(
 }
 
 /**
- * Paste-a-bearer, per node — the same affordance RivetHub web puts in Settings,
- * and the same trust model: the operator reads the value off the node itself
- * with `rivetos gateway token` and types it in here. The field starts empty
- * even when a token is stored; a credential is written, never read back out.
+ * Legacy paste-a-bearer field. Off-loopback nodes enroll a device cert.
+ * The field starts empty even when a token is stored; a credential is
+ * written, never read back out.
  */
 @Composable
 private fun NodeTokenDialog(
@@ -624,8 +623,8 @@ private fun NodeTokenDialog(
                             "A token is stored for this node. Pasting replaces it; " +
                                 "saving an empty field clears it."
                         } else {
-                            "Only needed when the node gates its gateway. Get it on " +
-                                "the node with `rivetos gateway token`."
+                            "Legacy field. Off-loopback nodes enroll a device cert " +
+                                "(`rivet-ca.sh issue-client`); they do not mint a gateway token."
                         },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (authState.needsAttention) {
@@ -671,7 +670,7 @@ private fun authNotice(state: NodeAuthState): String? = when (state) {
     NodeAuthState.STALE_TOKEN ->
         "Token no longer accepted — the node rotated it; paste the new one"
     NodeAuthState.TOKEN_REJECTED ->
-        "Token rejected by this node — check `rivetos gateway token`"
+        "Token rejected by this node — enroll a device cert instead"
     NodeAuthState.OK, NodeAuthState.UNKNOWN -> null
 }
 

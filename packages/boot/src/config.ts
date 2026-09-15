@@ -246,10 +246,8 @@ export interface DenSection {
   /** Den HTTP/WS port (default: 5174) */
   port?: number
   /**
-   * Bearer token required on every non-health endpoint when set.
-   * REQUIRED (validation error) when `terminal.enabled` and `host` is not
-   * loopback — mirrors den-server's own startup security gate so the
-   * misconfig fails at config-validate time, not at first click.
+   * Legacy key. Ignored. Off-loopback den requires TLS + a device client
+   * cert, not a bearer token. See docs/GATEWAY-MTLS.md.
    */
   token?: string
   /** Local PTY terminals — off by default (spawns shells as the service user) */

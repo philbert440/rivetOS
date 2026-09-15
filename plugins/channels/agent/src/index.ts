@@ -90,7 +90,7 @@ export class AgentChannel implements Channel {
     this.config = config
     this.id = `agent-${config.agentId}`
     this.port = config.port ?? 3100
-    this.host = config.host ?? '0.0.0.0'
+    this.host = config.host ?? '127.0.0.1'
   }
 
   // -----------------------------------------------------------------------

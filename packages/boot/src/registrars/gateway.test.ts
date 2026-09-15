@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 afterEach(() => vi.unstubAllEnvs())
-import { buildGatewayEnv, resolveDevicesRosterPath } from './gateway.js'
+import { buildGatewayEnv, ensureGatewayToken, resolveDevicesRosterPath } from './gateway.js'
 import type { RivetConfig } from '../config.js'
 
 const base = (den: NonNullable<RivetConfig['den']>, mesh?: RivetConfig['mesh']): RivetConfig =>
@@ -301,5 +301,11 @@ describe('buildGatewayEnv — voice proxy passthrough', () => {
     expect(env.RIVETOS_DEN_VOICE_STT_URL).toBeUndefined()
     expect(env.RIVETOS_DEN_VOICE_TTS_URL).toBeUndefined()
     expect(env.RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS).toBeUndefined()
+  })
+})
+
+describe('ensureGatewayToken', () => {
+  it('throws and does not mint a bearer', () => {
+    expect(() => ensureGatewayToken()).toThrow(/Gateway bearer tokens are removed/)
   })
 })

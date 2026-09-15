@@ -21,10 +21,11 @@ plugins for whatever coding harnesses are on PATH, and a user service that
 survives logout.
 
 Bare `rivetos local` is `init` then `up`. Flags: `--yes`, `--provider`,
-`--api-key`, `--port` (default 5174), `--pg-port` (default 5433), `--no-lan`,
-`--no-service`, `--device <name>`, `--memory lite|full`, `--out` (backup
-destination). `rivetos local up` waits on the persisted `den.port` unless
-`--port` is passed again.
+`--api-key`, `--port` (default 5174), `--pg-port` (default 5433), `--no-lan`
+(default loopback den), `--lan` (opt-in LAN bind + mDNS), `--no-service`,
+`--device <name>`, `--memory lite|full`, `--out` (backup destination).
+`rivetos local up` waits on the persisted `den.port` unless `--port` is
+passed again.
 
 ## Contract
 
@@ -42,15 +43,15 @@ in lite mode.
 false`) with one owner. Loopback traffic is the owner. Enrolled device certs
 must appear in the owner's `devices` array or den refuses them.
 
-**LAN TLS + enrollment.** Default bind is `0.0.0.0:5174` with a node leaf whose
-SANs cover loopback, `localhost`, the current LAN IPv4s, and `<hostname>.local`.
-The node cert is re-issued on every `init` because DHCP addresses move.
-`--no-lan` binds `127.0.0.1` instead (still HTTPS) and sets `advertise_mdns:
-false`. The desktop app gets a pre-minted client
-leaf under the RivetHub userData `mtls/` directory. `--device <name>` mints a
-PKCS#12 at `~/.rivetos/devices/<name>.p12` and prints the passphrase once
-(the QR flow in a later change replaces hand-minting). Off-loopback terminals
-require that TLS material; validation rejects a LAN bind without it.
+**Loopback den + enrollment.** Default bind is `127.0.0.1:5174` (still HTTPS)
+with `advertise_mdns: false`. `--lan` binds `0.0.0.0:5174` and turns mDNS on.
+The node leaf SANs cover loopback, `localhost`, the current LAN IPv4s, and
+`<hostname>.local`. The node cert is re-issued on every `init` because DHCP
+addresses move. The desktop app gets a pre-minted client leaf under the
+RivetHub userData `mtls/` directory. `--device <name>` mints a PKCS#12 at
+`~/.rivetos/devices/<name>.p12` and prints the passphrase once (the QR flow
+in a later change replaces hand-minting). Off-loopback terminals require that
+TLS material; validation rejects a LAN bind without it.
 
 **Lite vs full memory.** Default `--memory lite` is capture + FTS/trigram
 recall, no embed/compaction workers (`rivet.defer_embed_enqueue=on`). It

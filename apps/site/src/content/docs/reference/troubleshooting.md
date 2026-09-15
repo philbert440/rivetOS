@@ -134,7 +134,7 @@ sudo systemctl status postgresql
 **Fix connection string:** Verify `RIVETOS_PG_URL` in `.env`:
 ```bash
 # Docker
-RIVETOS_PG_URL=postgresql://rivetos:rivetos@datahub:5432/rivetos
+RIVETOS_PG_URL=postgresql://rivetos:${POSTGRES_PASSWORD}@datahub:5432/rivetos
 
 # Bare-metal
 RIVETOS_PG_URL=postgresql://localhost:5432/rivetos

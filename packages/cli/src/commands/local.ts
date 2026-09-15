@@ -98,7 +98,8 @@ Options:
   --api-key K           Provider API key (written to .env)
   --port 5174           Den listen port
   --pg-port 5433        Embedded Postgres loopback port
-  --no-lan              Bind den to 127.0.0.1 (still HTTPS)
+  --no-lan              Bind den to 127.0.0.1 (default, still HTTPS)
+  --lan                 Bind den on the LAN (0.0.0.0 + mDNS, still HTTPS)
   --no-service          Print \`rivetos start\` instead of installing a user service
   --device <name>       Extra PKCS#12 at ~/.rivetos/devices/<name>.p12 (repeatable)
   --memory lite|full    lite (default) = FTS/trigram; full requires RIVETOS_EMBED_URL
@@ -154,7 +155,7 @@ export function parseLocalArgs(args: string[]): LocalFlags {
     port: DEFAULT_PORT,
     portExplicit: false,
     pgPort: DEFAULT_PG_PORT,
-    exposeLan: true,
+    exposeLan: false,
     lanExplicit: false,
     service: true,
     devices: [],
@@ -169,6 +170,9 @@ export function parseLocalArgs(args: string[]): LocalFlags {
       flags.yes = true
     } else if (a === '--no-lan') {
       flags.exposeLan = false
+      flags.lanExplicit = true
+    } else if (a === '--lan') {
+      flags.exposeLan = true
       flags.lanExplicit = true
     } else if (a === '--no-service') {
       flags.service = false
@@ -509,13 +513,14 @@ function unitMissing(result: ExecResult): boolean {
 
 export function readPersistedDen(configPath: string): { port: number; exposeLan: boolean } {
   let port = DEFAULT_PORT
-  let exposeLan = true
+  let exposeLan = false
   try {
     const embedded = readEmbeddedConfig(configPath)
     const den = (embedded?.config as { den?: { port?: number; host?: string } } | undefined)?.den
     if (typeof den?.port === 'number') port = den.port
-    if (den?.host === '127.0.0.1' || den?.host === 'localhost' || den?.host === '::1') {
-      exposeLan = false
+    if (typeof den?.host === 'string' && den.host.trim() !== '') {
+      const host = den.host.trim()
+      exposeLan = host !== '127.0.0.1' && host !== 'localhost' && host !== '::1'
     }
   } catch {
     /* defaults */
