@@ -2,6 +2,9 @@
 
 > Living document. Updated as the codebase evolves. Read this before building anything.
 > Last updated: 2026-08-08 (docs staleness sweep: package tree, roles, CI, test inventory)
+>
+> Some package counts and the `apps/den/` tree entry below are out of date.
+> Prefer `docs/ARCHITECTURE.md` until this file is rewritten.
 
 ---
 
