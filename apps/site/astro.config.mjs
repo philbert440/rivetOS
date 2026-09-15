@@ -3,6 +3,7 @@ import starlight from '@astrojs/starlight';
 
 export default defineConfig({
   site: 'https://rivetos.dev',
+  redirects: { '/docs': '/guides/getting-started/' },
   integrations: [
     starlight({
       title: 'RivetOS',
@@ -16,11 +17,11 @@ export default defineConfig({
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/philbert440/rivetos',
+          href: 'https://github.com/philbert440/rivetOS',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/philbert440/rivetos/edit/main/apps/site/',
+        baseUrl: 'https://github.com/philbert440/rivetOS/edit/main/apps/site/',
       },
       customCss: ['./src/styles/custom.css'],
       components: {

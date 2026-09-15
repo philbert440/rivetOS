@@ -2,12 +2,12 @@
 title: Provider Setup
 sidebar:
   order: 6
-description: "How to configure LLM providers: Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli"
+description: "How to configure LLM providers: Anthropic, xAI, Google, Ollama, vLLM, llama-server, claude-cli, and opencode-cli"
 ---
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
 
-RivetOS ships with six provider plugins:
+RivetOS ships with eight provider plugins:
 
 | Provider | Models | Thinking Support | Notes |
 |----------|--------|:---:|-------|
@@ -15,8 +15,10 @@ RivetOS ships with six provider plugins:
 | **xAI** | Grok 3, Grok 4 | ✅ | Responses API, conversation caching, live search |
 | **Google** | Gemini 2.5 Pro, Flash | ✅ | Thought signatures for function calling |
 | **Ollama** | Any local model | — | Local inference, no API key needed |
-| **OpenAI-compat** | vLLM / TGI / llama.cpp `llama-server` / Groq / Together / Fireworks / LocalAI | ✅ (when `--reasoning-parser` set) | Folds mid-conversation system messages, consumes native `reasoning_content` |
-| **Claude CLI** | Anything `claude` supports | ✅ | Drives the local `claude` binary using your subscription OAuth — no API key |
+| **vLLM** | Served model (`default` auto-discovers) | ✅ (when `--reasoning-parser` set) | Dedicated vLLM provider. Consumes native `reasoning_content` |
+| **llama-server** | Served model (`default` auto-discovers) | ✅ (when `--reasoning-format` set) | llama.cpp `llama-server`. Lean OpenAI knobs plus `top_k` / `min_p` |
+| **claude-cli** | Anything `claude` supports | ✅ | Drives the local `claude` binary using your subscription OAuth — no API key |
+| **opencode-cli** | Default z.ai GLM | — | Drives the local `opencode` binary. Default backend z.ai GLM |
 
 ---
 
@@ -356,7 +358,25 @@ server with `--api-key`.
 
 ---
 
+## opencode-cli
 
+Drives the local OpenCode CLI (`opencode`) for harness id `opencode`. Headless path is `opencode run`. Interactive and ACP use nd-JSON over stdin/stdout. The default model backend is z.ai GLM via an openai-compatible endpoint. Add `@rivetos/provider-opencode-cli` to `plugins`.
+
+```yaml
+providers:
+  opencode-cli:
+    binary: opencode # path or name on PATH
+    # model: zai/glm-5.3-flash  # optional — defaults to the CLI / z.ai GLM backend
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `binary` | string | `opencode` | Path or name on PATH. |
+| `model` | string | `zai/glm-5.3-flash` | Model id as `provider/model`. |
+
+Auth is z.ai GLM (openai-compatible). There is no separate OpenCode OAuth. Keys stay in the CLI's own config.
+
+---
 
 ## Checking provider health
 
@@ -375,6 +395,7 @@ npx rivetos status
 
 ## Next steps
 
-- **[Channel Setup](/guides/channels/)**: Connect your agents to Discord, Telegram, voice
+- **[Hub Setup](/guides/hub-setup/)**: run a harness-first RivetOS node with the RivetHub clients
+- **[Mesh Networking](/guides/mesh/)**: multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)**: full option tables for all config sections
 - **[Plugin Development](/guides/plugins/)**: Build your own provider plugin

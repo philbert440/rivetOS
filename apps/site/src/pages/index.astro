@@ -3,7 +3,7 @@
 // DM Sans + JetBrains Mono, blueprint grid). Docs remain Starlight; this
 // replaces only the splash. Assets self-hosted except Google Fonts.
 import robot from '../assets/robot.png'
-const GH = 'https://github.com/philbert440/rivetos'
+const GH = 'https://github.com/philbert440/rivetOS'
 ---
 
 <!doctype html>
@@ -14,7 +14,7 @@ const GH = 'https://github.com/philbert440/rivetos'
     <title>RivetOS: run your own agents, watch them work</title>
     <meta
       name="description"
-      content="A lightweight agent runtime you self-host. Persistent memory, a multi-agent mesh, pluggable providers and channels, plus a live pixel diorama of your agent at work."
+      content="A lightweight agent runtime you self-host. Persistent memory, a multi-agent mesh, pluggable providers, RivetHub, plus a live pixel diorama of your agent at work."
     />
     <meta property="og:title" content="RivetOS" />
     <meta property="og:description" content="Run your own agents. Watch them work." />
@@ -44,11 +44,11 @@ const GH = 'https://github.com/philbert440/rivetos'
         <h1>Run your own agents.<br /><em>Watch them work.</em></h1>
         <p class="tagline">
           RivetOS is a lightweight agent runtime you self-host: a tiny stable core, everything
-          else a plugin. Persistent memory, a multi-agent mesh, seven LLM providers, and a live
+          else a plugin. Persistent memory, a multi-agent mesh, eight LLM providers, and a live
           diorama of what your agent is doing right now.
         </p>
         <div class="install">
-          <code><span class="prompt">$</span> npx rivetos init</code>
+          <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
         </div>
         <div class="ctas">
           <a class="btn primary" href="/guides/getting-started/">Get started</a>
@@ -68,12 +68,11 @@ const GH = 'https://github.com/philbert440/rivetos'
             llama.cpp. Your keys, your GPUs, your rules.
           </p>
         </div>
-        <div class="act-visual chips" aria-label="Providers and channels">
+        <div class="act-visual chips" aria-label="Providers, RivetHub, and mesh">
           <span class="chip">anthropic</span><span class="chip">xai</span>
           <span class="chip">google</span><span class="chip">ollama</span>
           <span class="chip">vllm</span><span class="chip">llama.cpp</span>
-          <span class="chip">claude-cli</span><span class="chip alt">discord</span>
-          <span class="chip alt">telegram</span><span class="chip alt">voice</span>
+          <span class="chip">claude-cli</span><span class="chip">opencode-cli</span>
           <span class="chip alt">mcp</span><span class="chip alt">agent-http</span>
         </div>
       </section>
@@ -128,10 +127,11 @@ const GH = 'https://github.com/philbert440/rivetos'
       <section class="closing">
         <h2>Five minutes to a running agent</h2>
         <div class="install big">
-          <code><span class="prompt">$</span> npx rivetos init</code>
+          <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
         </div>
         <p>
-          The wizard walks through providers, channels, and deployment.
+          That command is the laptop install. In a source checkout, <code>npx rivetos init</code>
+          walks through providers, RivetHub, and the mesh.
           <a href="/guides/getting-started/">Getting started →</a>
         </p>
       </section>

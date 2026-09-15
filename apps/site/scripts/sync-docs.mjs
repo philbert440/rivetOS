@@ -206,11 +206,11 @@ function rewriteLinks(body) {
   }
   // Site-friendly next-steps block for getting started
   out = out.replace(
-    /## Next Steps\n\n([\s\S]*?)\n\n---/,
+    /## Next [Ss]teps\n\n([\s\S]*?)\n\n---/,
     `## Next Steps
 
-- **[Channel Setup](/guides/channels/)** — Connect to Discord, Telegram, voice, and agent-to-agent messaging
-- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, and claude-cli
+- **[Hub Setup](/guides/hub-setup/)** — Run a harness-first RivetOS node with the RivetHub clients
+- **[Provider Setup](/guides/providers/)** — Configure Anthropic, xAI, Google, Ollama, vLLM, llama-server, claude-cli, and opencode-cli
 - **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
