@@ -23,14 +23,17 @@ Web / Desktop / Android
         ├── claude-code   (reference)
         ├── grok-build
         ├── kimi-code
-        └── hermes
+        ├── hermes
+        ├── codex
+        ├── opencode
+        └── pi
         │
    capture → memory     den events → hub dens / chat
 ```
 
-| Who                                                      | Owns                                                                                              |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
+| Who                                                                                      | Owns                                                                                              |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes, Codex, OpenCode, pi) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
 | **Rivet** (this node)                                    | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
 | **Clients** (Hub web, desktop, Android)                  | Full clients of the **same** gateway, not separate agent runtimes                                 |
 
@@ -78,8 +81,8 @@ Web / Desktop / Android
 │                               │ HarnessDriver registry                   │
 │       ┌───────────┬───────────┼───────────┬───────────┐                  │
 │       ▼           ▼           ▼           ▼           │                  │
-│  claude-code  grok-build  kimi-code    hermes        │                  │
-│  (reference)  PtyHarnessDriver subclasses            │                  │
+│  claude-code  grok-build  kimi-code  hermes          │                  │
+│  codex        opencode    pi         (seven drivers) │                  │
 │       │           │           │           │           │                  │
 │       └───────────┴─────┬─────┴───────────┘           │                  │
 │                         ▼                             │                  │
@@ -237,7 +240,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 │  sessions · identity · uploads · den · term · files    │
 ├────────────────────────────────────────────────────────┤
 │  Host harnesses (external processes)                   │
-│  claude · grok · kimi · hermes                         │
+│  claude · grok · kimi · hermes · codex · opencode · pi │
 ├────────────────────────────────────────────────────────┤
 │                    Plugins (Adapters)                  │
 │                                                        │
@@ -316,7 +319,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 ### Core concepts
 
 ```
-Harness      — external coding host (claude-code | grok-build | kimi-code | hermes)
+Harness      — external coding host (claude-code | grok-build | kimi-code | hermes | codex | opencode | pi)
 SessionId    — canonical <harness-id>:<native-session-id>
 Driver       — per-node HarnessDriver adapting store + den + term to the contract
 Agent        — named identity with provider/workspace (secondary path + mesh identity)
@@ -471,7 +474,8 @@ rivetOS/
       agent/                     ← mesh agent-to-agent (social channels removed Phase 5)
     providers/                   ← headless / AI-SDK interactive demotion
       anthropic/ google/ xai/ ollama/ vllm/ llama-server/
-      claude-cli/ codex-cli/     ← subscription-backed CLI providers
+      claude-cli/ codex-cli/ grok-cli/ hermes-cli/
+      kimi-code/ opencode-cli/ pi-cli/
     memory/postgres/
     tools/   shell/ file/ search/ web-search/ interaction/ mcp-client/
     transports/mcp-server/
@@ -487,7 +491,7 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks per harness (claude-code, grok, kimi, hermes)
+  integrations/                  ← capture + den hooks (claude-code, grok, kimi, hermes, opencode, pi, codex)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
@@ -505,7 +509,15 @@ Skills are not part of the source tree. They are user-managed and live under the
 ### HarnessDriver: control-plane contract (primary)
 
 ```typescript
-export const HARNESS_IDS = ['claude-code', 'grok-build', 'kimi-code', 'hermes'] as const
+export const HARNESS_IDS = [
+  'claude-code',
+  'grok-build',
+  'kimi-code',
+  'hermes',
+  'codex',
+  'opencode',
+  'pi',
+] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 export type SessionId = `${HarnessId}:${string}`
 
@@ -749,22 +761,29 @@ Composable async pipeline with priority ordering (0-99):
 - **Auto-actions**: Post-tool format/lint/test/git-check (opt-in)
 - **Session hooks**: Daily context loading, session summaries, auto-commit, pre/post-compact
 
-Harness-side hooks (claude/grok/kimi/hermes den + memory integrations) are
+Harness-side hooks (claude/grok/kimi/hermes/opencode/pi/codex den + memory integrations) are
 **outside** this pipeline; they feed den AgentEvents and capture, not the AI-SDK hook bus.
 
 ---
 
 ## Tasks
 
-The task engine's `harness-session` registry is keyed by **harness id**
-(`claude-code | grok-build | kimi-code | hermes`).
+All seven ids in `HARNESS_IDS` have a **driver** on the control plane. That is
+not the same as a **task executor**. `GET /api/catalog` exposes `harnessId` +
+`implemented` so UIs can offer a live session without offering a spawn-for-task
+trap.
 
-| Target        | Status                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------- |
-| `claude-code` | Implemented (headless `claude -p`); `claude-cli` accepted as **deprecated alias** for one deploy window |
-| `kimi-code`   | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile)                          |
-| `grok-build`  | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path               |
-| `hermes`      | Explicit rejecting executor (cannot pin session for spawn-for-task)                                     |
+The task engine's `harness-session` registry is keyed by the same harness ids.
+
+| Target        | Driver | Task executor                                                                                           |
+| ------------- | ------ | ------------------------------------------------------------------------------------------------------- |
+| `claude-code` | yes    | Implemented (headless `claude -p`); `claude-cli` accepted as **deprecated alias** for one deploy window |
+| `kimi-code`   | yes    | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile)                          |
+| `opencode`    | yes    | Implemented (`@rivetos/harness-opencode`, headless `opencode run`)                                      |
+| `pi`          | yes    | Implemented (`@rivetos/harness-pi`, headless `pi`)                                                      |
+| `grok-build`  | yes    | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path               |
+| `hermes`      | yes    | Explicit rejecting executor (cannot pin session for spawn-for-task)                                     |
+| `codex`       | yes    | Explicit rejecting executor (no `--session-id`; TUI adopt only)                                         |
 
 `GET /api/catalog` exposes `harnessId` + `implemented` so UIs grey traps.
 Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
@@ -795,9 +814,12 @@ session linkage, kimi tagging, hermes reasoning, and chat indicators.
 - Protocol: `packages/den-protocol`
 - Server: `services/den-server`
 
-Default bind is loopback; set host + token for LAN. Mesh discovery via
-`GET /mesh.json` projects den-enabled roster entries (`capabilities` includes
-`den`, or `metadata.denPort` / `metadata.denUrl`).
+Default bind is loopback. Off-loopback requires TLS plus an enrolled device
+client certificate (`rivet-ca.sh issue-client`). Bearer tokens (`den.token`,
+`RIVETOS_DEN_TOKEN`, `?token=`, `Authorization: Bearer`) are not accepted.
+See [HUB-SETUP.md](HUB-SETUP.md) and [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
+Mesh discovery via `GET /mesh.json` projects den-enabled roster entries
+(`capabilities` includes `den`, or `metadata.denPort` / `metadata.denUrl`).
 
 ---
 
@@ -853,9 +875,11 @@ deployment:
 `target` is the only key consumed at runtime under `deployment:`; provisioning
 is driven by Compose under `infra/docker/` and scripts under `infra/scripts/`.
 
-Den / gateway env (selection): `RIVETOS_DEN_HOST`, `RIVETOS_DEN_TOKEN`,
+Den / gateway env (selection): `RIVETOS_DEN_HOST`, `RIVETOS_DEN_TLS_CERT`,
+`RIVETOS_DEN_TLS_KEY`, `RIVETOS_DEN_TLS_CA`, `RIVETOS_DEN_TLS_REQUIRE_CLIENT`,
 `RIVETOS_DEN_STATIC_DIR` (hub-first when hub dist is built), upload caps/TTL.
-Bearer tokens removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
+Bearer tokens are not accepted. See [HUB-SETUP.md](HUB-SETUP.md) and
+[GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 ---
 
@@ -873,7 +897,7 @@ security boundary; agents can only touch what is inside their container.
 - `rivetos-shared` → shared storage (`/rivet-shared/`)
 - `.env` → API keys and secrets
 - `~/.rivetos/config.yaml` → runtime configuration
-- Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`) → native session stores
+- Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`, `~/.codex`, `~/.local/share/opencode`, `~/.pi`) → native session stores
 
 **Update model:** Pull source → rebuild containers from source tree → restart.
 Plugins live in the source tree and survive updates automatically.
