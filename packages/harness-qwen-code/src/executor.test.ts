@@ -278,11 +278,11 @@ describe('QwenCodeExecutor', () => {
     expect(events.some((e) => e.type === 'log' && e.message.includes('fresh session'))).toBe(false)
   })
 
-  it('retries a resume that exits 0 with no system/init even without the rejection string', async () => {
+  it('does not retry a resume that exits 0 with empty stdout and no rejection string', async () => {
     const fake = makeFakeQwen({
       lines: successLines('done', SESSION),
       sessionId: SESSION,
-      onResume: { stdout: '', exitCode: 0 },
+      onResume: { stdout: '', exitCode: 0, stderr: 'error: empty stream' },
     })
     const handle = makeExecutor(fake).start(makeConformanceSpec(), {
       signal: new AbortController().signal,
@@ -291,12 +291,13 @@ describe('QwenCodeExecutor', () => {
     const [events, result] = await Promise.all([drain(handle.events), handle.result])
 
     const invocations = fake.invocations()
-    expect(invocations).toHaveLength(3)
+    expect(invocations).toHaveLength(2)
     expect(invocations[1]).toContain('--resume')
-    expect(invocations[2]).toContain('--session-id')
-    expect(invocations[2]).not.toContain('--resume')
-    expect(result.verdict).toBe('completed')
-    expect(events.some((e) => e.type === 'log' && e.message.includes('fresh session'))).toBe(true)
+    expect(invocations[1]).not.toContain('--session-id')
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toMatch(/without a terminal event/)
+    expect(result.error).toContain('empty stream')
+    expect(events.some((e) => e.type === 'log' && e.message.includes('fresh session'))).toBe(false)
   })
 
   it('parses a fenced TASK_RESULT block out of the final assistant text', async () => {

@@ -676,7 +676,7 @@ inert instead of failing boot.
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
-Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `home` is accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's `~/.qwen`; qwen itself always writes there).
+Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
 
 ---
 

@@ -445,6 +445,66 @@ describe('sendUserTurn', () => {
     })
     await expect(driver.sendUserTurn(SID, { text: 'two' })).resolves.toBeUndefined()
   })
+
+  it('releases the lock when a coalesced snapshot is already complete', async () => {
+    // Real watcher debounce (250ms) can deliver previous + new final assistants
+    // both already complete. Tracker then emits neither a status change nor a
+    // completion edge; the send claim must still release.
+    const tx = fakeTranscript()
+    const { driver } = makeDriver({ transcript: tx })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(SID, (e) => seen.push(e))
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 1,
+      from: 0,
+      total: 2,
+      command: 'qwen',
+      turns: [
+        { role: 'user', text: 'one' },
+        {
+          role: 'assistant',
+          text: 'ok',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+      ],
+    })
+    await driver.sendUserTurn(SID, { text: 'two' })
+    tx.emit(SID, {
+      kind: 'transcript',
+      session: SID,
+      rev: 2,
+      from: 0,
+      total: 4,
+      command: 'qwen',
+      turns: [
+        { role: 'user', text: 'one' },
+        {
+          role: 'assistant',
+          text: 'ok',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+        { role: 'user', text: 'two' },
+        {
+          role: 'assistant',
+          text: 'ok2',
+          lastBlock: 'text',
+          stopReason: 'end_turn',
+          complete: true,
+        },
+      ],
+    })
+    const live = (driver as unknown as { live: Map<string, { turnInFlight: boolean }> }).live
+    expect(live.get(UUID)?.turnInFlight).toBe(false)
+    expect(seen).toContainEqual({ type: 'turn-complete', sessionId: SID, stopReason: 'end-turn' })
+    await expect(driver.sendUserTurn(SID, { text: 'three' })).resolves.toBeUndefined()
+  })
 })
 
 describe('interrupt', () => {

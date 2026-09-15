@@ -44,7 +44,7 @@ export interface FakeQwenOptions {
    * Behave differently when spawned with `--resume` (resume-rejection tests).
    * Prints the refuse string on stdout and exits 0 — matching real qwen.
    */
-  onResume?: { stdout: string; exitCode?: number }
+  onResume?: { stdout: string; exitCode?: number; stderr?: string }
   /** Hang until signalled instead of doing anything else. */
   slow?: boolean
 }
@@ -110,10 +110,15 @@ export function makeFakeQwen(opts: FakeQwenOptions = {}): FakeQwen {
     script.push('exec sleep 60')
   } else {
     if (opts.onResume) {
+      const resumeStderr =
+        opts.onResume.stderr !== undefined
+          ? `    printf '%s\\n' ${shellQuote(opts.onResume.stderr)} >&2`
+          : undefined
       script.push(
         'for a in "$@"; do',
         '  if [ "$a" = "--resume" ]; then',
         `    printf '%s\\n' ${shellQuote(opts.onResume.stdout)}`,
+        ...(resumeStderr !== undefined ? [resumeStderr] : []),
         `    exit ${String(opts.onResume.exitCode ?? 0)}`,
         '  fi',
         'done',

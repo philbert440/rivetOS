@@ -39,10 +39,10 @@ can register a real executor for harness id `qwen-code`. The provider-plugin id
    `parts`) and reports tokens from `usageMetadata`. A reconcile that finds
    nothing degrades to zero usage and a warning; it can never fail a turn.
 4. **Steer.** Follow-up turns spawn `--resume <native-id>` in the **same cwd**.
-   If qwen refuses the resume (`No saved session found with ID …` on stdout,
-   or a clean exit 0 with no `system/init` line), the turn retries once on a
-   fresh `--session-id` seeded with the task's rendered history. A nonzero
-   exit or signal with no init is a failed turn, not a retry.
+   If qwen refuses the resume (`No saved session found with ID …` on stdout),
+   the turn retries once on a fresh `--session-id` seeded with the task's
+   rendered history. A clean exit 0 with empty stdout and no `system/init`,
+   or a nonzero exit or signal with no init, is a failed turn, not a retry.
 
 ## What it does not do
 

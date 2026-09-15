@@ -653,20 +653,16 @@ export class QwenCodeExecutor implements HarnessExecutor {
       error ??= spawnFailure
       const stderrTail = spawned.stderrText().slice(0, 500)
       const stdoutTail = spawned.stdoutText()
-      const refused =
-        RESUME_REJECTED_RE.test(stdoutTail) || RESUME_REJECTED_RE.test(spawned.stderrText())
-      // Measured contract: retry only when the rejection string was seen, or
-      // the process exited 0 with no system/init. A nonzero exit / signal
-      // with no init is a plain failure, not a rejection.
+      // Measured contract: retry a fresh session only when stdout contained
+      // `No saved session found with ID`. Empty exit-0 with no system/init is
+      // a failed turn (stderr tail on the error), not a retry.
       const resumeRejected =
-        turn.resumeSessionId !== undefined && (refused || (exitCode === 0 && !sawInit))
+        turn.resumeSessionId !== undefined && RESUME_REJECTED_RE.test(stdoutTail)
 
       if (resumeRejected && !run.isKilled()) {
         return {
           text,
-          error: refused
-            ? `qwen refused to resume ${turn.resumeSessionId}`
-            : `qwen resume of ${turn.resumeSessionId} produced no system/init line`,
+          error: `qwen refused to resume ${turn.resumeSessionId}`,
           resumeRejected: true,
         }
       }
@@ -675,7 +671,9 @@ export class QwenCodeExecutor implements HarnessExecutor {
         error = `qwen CLI exited ${String(exitCode)}: ${stderrTail}`
       }
       if (!sawTerminal && error === undefined && !run.isKilled()) {
-        error = 'qwen CLI stream ended without a terminal event'
+        error = stderrTail
+          ? `qwen CLI stream ended without a terminal event: ${stderrTail}`
+          : 'qwen CLI stream ended without a terminal event'
       }
     } catch (err: unknown) {
       error ??= err instanceof Error ? err.message : String(err)

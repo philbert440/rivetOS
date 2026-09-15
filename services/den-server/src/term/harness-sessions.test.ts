@@ -30,7 +30,6 @@ import {
   newestOpencodeSessionAfter,
   setPiHomeForTest,
   setQwenHomeForTest,
-  encodeQwenCwd,
   setTranscriptMaxBytesForTest,
   kimiTurnsFromLines,
 } from './harness-sessions.js'
@@ -875,24 +874,6 @@ describe('listHarnessSessions', () => {
     expect(await describeQwenCodeSession(id)).toBeUndefined()
     expect(qwenSessionCwd(id)).toBeUndefined()
     expect(await readQwenCodeTranscript(id)).toEqual({ id, command: '', turns: [] })
-  })
-
-  it('encodes qwen cwd with a leading dash and no trailing dash', () => {
-    expect(encodeQwenCwd('/home/example/proj')).toBe('-home-example-proj')
-    expect(encodeQwenCwd('/home/example/proj/')).toBe('-home-example-proj')
-  })
-
-  it('encodeQwenCwd agrees with packages/harness-qwen-code encodeQwenCwd on the sample cwd', () => {
-    // Canonical algorithm from packages/harness-qwen-code/src/wire.ts
-    // encodeQwenCwd — inlined because den-server does not depend on
-    // @rivetos/harness-qwen-code.
-    const canonicalEncodeQwenCwd = (cwd: string): string => {
-      const trimmed = cwd.replace(/\/+$/, '') || '/'
-      return trimmed.replaceAll('/', '-')
-    }
-    const sample = '/home/example/proj'
-    expect(encodeQwenCwd(sample)).toBe(canonicalEncodeQwenCwd(sample))
-    expect(encodeQwenCwd(sample)).toBe('-home-example-proj')
   })
 })
 

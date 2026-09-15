@@ -935,18 +935,6 @@ function qwenProjectsDir(): string {
   return join(qwenHome(), 'projects')
 }
 
-/**
- * `/home/rivet/x` → `-home-rivet-x`. Leading dash, no trailing dash.
- * Local copy of `packages/harness-qwen-code/src/wire.ts` `encodeQwenCwd`
- * (den-server does not depend on `@rivetos/harness-qwen-code`).
- */
-export function encodeQwenCwd(cwd: string): string {
-  let encoded = cwd.replaceAll('/', '-')
-  if (!encoded.startsWith('-')) encoded = `-${encoded}`
-  if (encoded.length > 1 && encoded.endsWith('-')) encoded = encoded.slice(0, -1)
-  return encoded
-}
-
 function considerQwenFile(
   best: { path: string; mtime: number } | undefined,
   full: string,

@@ -921,6 +921,73 @@ describe('pty-harness-driver transcript tracker', () => {
     driver.close()
   })
 
+  it('releases an echoed claim when consecutive snapshots are both already complete', async () => {
+    // Debounce can coalesce the incomplete intermediate; tracker stays idle
+    // with wasComplete already true and emits no completion edge.
+    const tx = fakeTranscript()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      transcript: tx,
+      turnQuietMs: 0,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 2,
+        turns: [
+          { role: 'user', text: 'hi' },
+          {
+            role: 'assistant',
+            text: 'ok',
+            lastBlock: 'text',
+            stopReason: 'end_turn',
+            complete: true,
+          },
+        ],
+      }),
+    )
+    await driver.sendUserTurn(sid, { text: 'next' })
+    tx.emit(
+      sid,
+      frame({
+        from: 0,
+        total: 4,
+        rev: 2,
+        turns: [
+          { role: 'user', text: 'hi' },
+          {
+            role: 'assistant',
+            text: 'ok',
+            lastBlock: 'text',
+            stopReason: 'end_turn',
+            complete: true,
+          },
+          { role: 'user', text: 'next' },
+          {
+            role: 'assistant',
+            text: 'done',
+            lastBlock: 'text',
+            stopReason: 'end_turn',
+            complete: true,
+          },
+        ],
+      }),
+    )
+    const live = (driver as unknown as { live: Map<string, { turnInFlight: boolean }> }).live
+    expect(live.get(UUID)?.turnInFlight).toBe(false)
+    expect(seen.filter((e) => e.type === 'turn-complete')).toEqual([
+      { type: 'turn-complete', sessionId: sid, stopReason: 'end-turn' },
+    ])
+    await expect(driver.sendUserTurn(sid, { text: 'again' })).resolves.toBeUndefined()
+    driver.close()
+  })
+
   it('emits prompt open then resolve', () => {
     const tx = fakeTranscript()
     const driver = new ClaudeCodeDriver({ store: fakeStore([]), transcript: tx, turnQuietMs: 0 })
