@@ -22,12 +22,11 @@
  *     executors are explicit rejections, not absences. `kimi-code` has a real
  *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`),
  *     `opencode` has a real executor over headless `opencode run`
- *     (`@rivetos/harness-opencode`), and each registers a rejection only where
- *     boot's binary probe fails, carrying the probe's own reason.
- *     executor over headless `kimi -p` (`@rivetos/harness-kimi-code`), `pi`
- *     has a real executor over the `pi` binary (`@rivetos/harness-pi`), and
- *     each registers a rejection only where boot's binary probe fails, carrying
- *     the probe's own reason.
+ *     (`@rivetos/harness-opencode`), `pi` has a real executor over the `pi`
+ *     binary (`@rivetos/harness-pi`), and `qwen-code` has a real executor over
+ *     headless `qwen -p` (`@rivetos/harness-qwen-code`). Each registers a
+ *     rejection only where boot's binary probe fails, carrying the probe's
+ *     own reason.
  *     A task aimed at a rejection fails immediately with the typed
  *     `capability_unsupported` code and a message that says what is missing,
  *     rather than the registry's anonymous `executor_not_registered` miss, and
@@ -212,12 +211,9 @@ export function harnessExecutorCoverage(
  *
  * Not aspirational text: each line is what the repo actually has today. A
  * harness that GAINS an executor loses its entry — `claude-code`,
- * `kimi-code` and `opencode` all have one, so a rejection registered for any
- * of them can only come from boot's probe (binary not resolvable, package
- * would not load) and carries that reason instead.
- * `kimi-code` and `pi` all have one, so a rejection registered for any of
- * them can only come from boot's probe (binary not resolvable, package would
- * not load) and carries that reason instead.
+ * `kimi-code`, `opencode`, `pi` and `qwen-code` all have one, so a rejection
+ * registered for any of them can only come from boot's probe (binary not
+ * resolvable, package would not load) and carries that reason instead.
  */
 export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = Object.freeze({
   'grok-build':

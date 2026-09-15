@@ -36,6 +36,8 @@ describe('contextWindowFromModel', () => {
     expect(contextWindowFromModel(undefined, 'hermes')).toBe(262_144)
     expect(contextWindowFromModel(undefined, 'opencode')).toBe(262_144)
     expect(contextWindowFromModel(undefined, 'pi')).toBe(262_144)
+    expect(contextWindowFromModel(undefined, 'qwen')).toBe(262_144)
+    expect(contextWindowFromModel(undefined, 'qwen-code')).toBe(262_144)
     expect(contextWindowFromModel('local-vllm')).toBe(262_144)
   })
 

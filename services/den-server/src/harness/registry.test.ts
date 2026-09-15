@@ -92,6 +92,7 @@ describe('isHarnessId', () => {
         'codex',
         'opencode',
         'pi',
+        'qwen-code',
       ].every(isHarnessId),
     ).toBe(true)
     expect(isHarnessId('claude')).toBe(false)
@@ -205,7 +206,12 @@ describe('rotation bookkeeping', () => {
     registry.register(driver)
     const previous = `claude-code:${UUID}` as SessionId
     const next = 'claude-code:rotated-0001' as SessionId
-    driver.emit({ type: 'session-updated', sessionId: next, previousSessionId: previous, status: 'active' })
+    driver.emit({
+      type: 'session-updated',
+      sessionId: next,
+      previousSessionId: previous,
+      status: 'active',
+    })
 
     expect(registry.knows(previous)).toBe(true)
     const resolved = await registry.resolve(previous)

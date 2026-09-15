@@ -29,6 +29,7 @@ class AgentAccentTest {
             "hermes",
             "opencode",
             "pi",
+            "qwen-code",
         )
         val expected = mapOf(
             "claude-code" to ACCENT_CLAUDE,
@@ -38,6 +39,7 @@ class AgentAccentTest {
             "hermes" to ACCENT_HERMES,
             "opencode" to ACCENT_OPENCODE,
             "pi" to ACCENT_PI,
+            "qwen-code" to ACCENT_QWEN_CODE,
         )
         val colors = ids.map { harnessAccentHex(it, null) }
         assertEquals(ids.size, colors.toSet().size)
@@ -126,6 +128,10 @@ class AgentAccentTest {
         assertEquals(ACCENT_KIMI, harnessAccentHex("rivet-kimi", null))
         assertEquals(ACCENT_PI, harnessAccentHex(null, "pi-cli"))
         assertEquals(ACCENT_KIMI, harnessAccentHex(null, "rivet-kimi"))
+        assertEquals(ACCENT_QWEN_CODE, harnessAccentHex("qwen-code", null))
+        assertEquals(ACCENT_QWEN_CODE, harnessAccentHex("qwen", null))
+        assertEquals(ACCENT_QWEN_CODE, harnessAccentHex("rivet-qwen", null))
+        assertEquals(ACCENT_QWEN_CODE, harnessAccentHex(null, "qwen"))
     }
 
     @Test

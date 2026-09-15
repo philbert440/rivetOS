@@ -55,6 +55,7 @@ private val HARNESS_LABEL: Map<String, String> = mapOf(
     "hermes" to "Hermes",
     "codex" to "Codex",
     "pi" to "pi",
+    "qwen-code" to "Qwen Code",
 )
 
 /** Client-side Codex sheet — same lists as den `codexSheet()` (no spawn flags). */

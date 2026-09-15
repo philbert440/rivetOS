@@ -54,6 +54,7 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   codex: { label: 'Codex', cmd: ['codex'], room: true },
   opencode: { label: 'OpenCode', cmd: ['opencode'], room: true },
   pi: { label: 'Pi', cmd: ['pi'], room: true },
+  qwen: { label: 'Qwen Code', cmd: ['qwen', '--approval-mode', 'yolo'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
@@ -133,6 +134,13 @@ const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
     'rivet-memory',
     'bin',
     'setup-opencode-rivet-memory.sh',
+  ),
+  'qwen-code': join(
+    'integrations',
+    'qwen-code',
+    'rivet-memory',
+    'bin',
+    'setup-qwen-rivet-memory.sh',
   ),
 }
 
@@ -301,6 +309,11 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       return [`run ${SETUP_SCRIPTS.opencode} --apply`, 'install OpenCode plugin']
     case 'pi':
       return [`run ${SETUP_SCRIPTS.pi} --apply`, 'install pi extension']
+    case 'qwen-code':
+      return [
+        `run ${SETUP_SCRIPTS['qwen-code']} --apply`,
+        'install qwen extension (hooks + MCP + skills)',
+      ]
   }
 }
 
@@ -637,7 +650,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
           ? process.env.PI_AGENT_HOME
           : id === 'opencode'
             ? process.env.OPENCODE_CONFIG_DIR
-            : undefined
+            : id === 'qwen-code'
+              ? process.env.QWEN_HOME
+              : undefined
     )?.trim(),
   )
   if (envHome) return [envHome]
@@ -650,7 +665,9 @@ export function artefactConfigHomes(id: HarnessId, home: string, configHome: str
           ? [configHome, join(home, '.pi', 'agent')]
           : id === 'opencode'
             ? [configHome, join(home, '.config', 'opencode')]
-            : [configHome]
+            : id === 'qwen-code'
+              ? [configHome, join(home, '.qwen')]
+              : [configHome]
   return [...new Set(defaults.filter((d) => d.length > 0))]
 }
 
@@ -680,6 +697,42 @@ function uncommentedLineHasCodexCapture(text: string): boolean {
     if (commandHasCodexCapture(trimmed)) return true
   }
   return false
+}
+
+function commandHasQwenCapture(command: string): boolean {
+  return command.includes('qwen-memory-capture.sh') && command.includes('--hook')
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** True when `hooks.<Event>[]` groups contain a `type:command` capture marker. */
+function qwenHookGroupsHaveCapture(groups: unknown): boolean {
+  if (!Array.isArray(groups)) return false
+  return groups.some((group) => {
+    if (!isPlainObject(group) || !Array.isArray(group.hooks)) return false
+    return group.hooks.some((entry) => {
+      if (!isPlainObject(entry) || entry.type !== 'command') return false
+      return typeof entry.command === 'string' && commandHasQwenCapture(entry.command)
+    })
+  })
+}
+
+/**
+ * True when settings.json has a `type:command` marker under
+ * `hooks.Stop[].hooks[]` (`qwen-memory-capture.sh` + `--hook`). Capture
+ * ingests on Stop; a marker elsewhere (mcpServers, SessionStart-only, …)
+ * does not count as installed.
+ */
+export function qwenSettingsHasCaptureHooks(path: string): boolean {
+  try {
+    const settings: unknown = JSON.parse(readFileSync(path, 'utf-8'))
+    if (!isPlainObject(settings) || !isPlainObject(settings.hooks)) return false
+    return qwenHookGroupsHaveCapture(settings.hooks.Stop)
+  } catch {
+    return false
+  }
 }
 
 /** True when hooks.json has a command entry containing `codex-memory-capture.sh` and `--hook`. */
@@ -728,6 +781,22 @@ export function nativeCaptureArtefactMissing(
       const plugin = homes.some((dir) => existsSync(join(dir, 'plugins', 'rivet-memory.ts')))
       return plugin ? null : 'OpenCode plugin missing (plugins/rivet-memory.ts)'
     }
+    case 'qwen-code': {
+      const ext = homes.some((dir) => {
+        const hooks = join(dir, 'extensions', 'rivet-memory', 'hooks', 'hooks.json')
+        try {
+          return (
+            existsSync(hooks) && readFileSync(hooks, 'utf-8').includes('qwen-memory-capture.sh')
+          )
+        } catch {
+          return false
+        }
+      })
+      const settings = homes.some((dir) => qwenSettingsHasCaptureHooks(join(dir, 'settings.json')))
+      return ext || settings
+        ? null
+        : 'qwen extension missing (extensions/rivet-memory/hooks/hooks.json)'
+    }
     default:
       return null
   }
@@ -765,6 +834,8 @@ export function setupArtefactMissing(
       if (!mcp) return 'opencode.json / opencode.jsonc missing rivetos MCP block'
       return nativeCaptureArtefactMissing(id, home, configHome, opts)
     }
+    case 'qwen-code':
+      return nativeCaptureArtefactMissing(id, home, configHome, opts)
     default:
       return null
   }
@@ -1270,6 +1341,7 @@ export async function runPluginsInstall(
         case 'kimi-code':
         case 'codex':
         case 'pi':
+        case 'qwen-code':
           result = await runSetupScript(
             h.id,
             h,

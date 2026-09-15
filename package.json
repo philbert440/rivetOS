@@ -70,7 +70,8 @@
     "integrations/codex/rivet-memory/capture",
     "integrations/codex/rivet-memory/backfill",
     "integrations/pi/rivet-memory/capture",
-    "integrations/opencode/rivet-memory/capture"
+    "integrations/opencode/rivet-memory/capture",
+    "integrations/qwen-code/rivet-memory/capture"
   ],
   "bin": {
     "rivetos": "./packages/cli/dist/index.js"

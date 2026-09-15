@@ -1762,9 +1762,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     state.lastStoreChangeAt = this.now()
     state.staleIdle = false
     const edges = state.tracker?.apply(full, f.command)
+    // Snapshot the claim length before echo-clear: a coalesced complete
+    // frame (previous + new final assistants both already complete) emits
+    // neither a status change nor a completion edge, and we still need to
+    // know the new assistant is *after* this claim.
+    const claimTurnsAtFrame = state.claimTurns
+    const last = full[full.length - 1]
     // Un-echoed explicit claim: has the store advanced past it yet?
     if (state.turnInFlight && state.claimAt !== undefined) {
-      const last = full[full.length - 1]
       // Growth past the claim proves the injected turn landed. When the tail
       // window truncated (length can shrink), fall back to the content test.
       const echoed =
@@ -1777,6 +1782,18 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       }
     }
     const claimPending = state.turnInFlight && state.claimAt !== undefined
+    // Watcher debounce (250ms) can skip the incomplete intermediate. If the
+    // echoed claim is still in flight, the tracker is idle, and a complete
+    // assistant appeared after the claim, finish the turn anyway.
+    const coalescedComplete =
+      state.turnInFlight &&
+      !claimPending &&
+      state.tracker?.inFlight() === false &&
+      last?.role === 'assistant' &&
+      last.complete === true &&
+      claimTurnsAtFrame !== undefined &&
+      !f.truncatedBefore &&
+      full.slice(claimTurnsAtFrame).some((t) => t.role === 'assistant' && t.complete === true)
     if (edges?.status) {
       const statusEvent: HarnessStatusFrame = {
         type: 'status',
@@ -1800,6 +1817,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       }
     }
     if (edges?.turnCompleted && !claimPending) this.endTurn(native, 'end-turn', true)
+    else if (coalescedComplete) this.endTurn(native, 'end-turn', true)
     for (const p of edges?.promptsOpened ?? []) {
       state.pendingPrompts.set(p.promptId, { toolName: p.toolName, questions: p.questions })
       this.emit(native, {
@@ -1836,7 +1854,6 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }
     if (state.pendingApproval) {
       // The blocked tool finished (its result landed): the dialog is gone.
-      const last = full[full.length - 1]
       const tools = last?.role === 'assistant' ? last.tools : undefined
       if (tools && tools.length > 0 && !tools.some((t) => t.status === 'running')) {
         this.resolveExternalApproval(native)

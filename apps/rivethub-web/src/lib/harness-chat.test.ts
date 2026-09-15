@@ -369,6 +369,7 @@ describe('typed-error and id helpers', () => {
     expect(ROSTER_COMMAND['kimi-code']).toBe('kimi')
     expect(ROSTER_COMMAND.opencode).toBe('opencode')
     expect(ROSTER_COMMAND.pi).toBe('pi')
+    expect(ROSTER_COMMAND['qwen-code']).toBe('qwen')
     expect(ROSTER_COMMAND.codex).toBe('codex')
   })
 

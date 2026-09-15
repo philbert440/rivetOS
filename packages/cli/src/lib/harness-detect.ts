@@ -25,11 +25,19 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
   codex: 'codex',
   opencode: 'opencode',
   pi: 'pi',
+  'qwen-code': 'qwen',
 }
 
 /** `providers.<key>` in config.yaml. */
 export type HarnessProviderKey =
-  'claude-cli' | 'grok-cli' | 'kimi-code' | 'hermes-cli' | 'codex-cli' | 'opencode-cli' | 'pi-cli'
+  | 'claude-cli'
+  | 'grok-cli'
+  | 'kimi-code'
+  | 'hermes-cli'
+  | 'codex-cli'
+  | 'opencode-cli'
+  | 'pi-cli'
+  | 'qwen-code'
 
 export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undefined> = {
   'claude-code': 'claude-cli',
@@ -39,6 +47,7 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   codex: 'codex-cli',
   opencode: 'opencode-cli',
   pi: 'pi-cli',
+  'qwen-code': 'qwen-code',
 }
 
 export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
@@ -50,6 +59,7 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   // OpenCode is XDG: `$XDG_CONFIG_HOME/opencode` else `~/.config/opencode`.
   opencode: '.config/opencode',
   pi: '.pi/agent',
+  'qwen-code': '.qwen',
 }
 
 const HERMES_VENV_REL = join('hermes-agent', 'venv')

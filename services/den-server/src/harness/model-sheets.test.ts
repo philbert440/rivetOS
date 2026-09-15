@@ -14,6 +14,7 @@ import {
   opencodeSheet,
   parseOpencodeConfig,
   piSheet,
+  qwenCodeSheet,
   MODEL_TOKEN_RE,
   parseKimiToml,
   sanitizeEfforts,
@@ -196,8 +197,7 @@ describe('hermesSheet', () => {
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
   })
 
-  it('deepseek is empty', () => {
-  })
+  it('deepseek is empty', () => {})
 
   it('pi falls back to the fleet default and --thinking efforts when config is missing', () => {
     const sheet = piSheet(() => {
@@ -238,6 +238,71 @@ describe('hermesSheet', () => {
     expect(sheet.models?.map((m) => m.id)).toEqual(['deepseek/deepseek-v4-flash', 'openai/gpt-4'])
     expect(sheet.models?.[0]?.default).toBe(true)
     expect(sheet.models?.[0]?.label).toBe('DeepSeek V4 Flash')
+  })
+})
+
+describe('qwenCodeSheet', () => {
+  it('is empty with -m and no effort flag when settings.json is missing', () => {
+    const sheet = qwenCodeSheet(() => {
+      throw new Error('ENOENT')
+    }, '/no-such-home')
+    expect(sheet.modelFlag).toBe('-m')
+    expect(sheet.effortFlag).toBeUndefined()
+    expect(sheet.models).toEqual([])
+    expect(sheet.efforts).toBeUndefined()
+    expect(appendModelEffortArgv(['qwen'], sheet, 'qwen-27b')).toEqual(['qwen'])
+  })
+
+  it('reads modelProviders entries and only attaches efforts when declared', () => {
+    // Sample settings shape (baseUrl scrubbed to RFC5737) plus one reasoning entry.
+    const settings = {
+      modelProviders: {
+        openai: [
+          {
+            id: 'qwen-27b',
+            name: 'qwen-27b (local vLLM)',
+            baseUrl: 'http://192.0.2.10:8003/v1',
+            envKey: 'OPENAI_API_KEY',
+          },
+          {
+            id: 'qwen-think',
+            name: 'qwen-think',
+            capabilities: {
+              reasoning: {
+                profile: 'qwen-chat-template',
+                efforts: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+            },
+          },
+        ],
+      },
+      model: { name: 'qwen-27b' },
+    }
+    const sheet = qwenCodeSheet((p) => {
+      if (p === '/home/example/.qwen/settings.json') return settings
+      throw new Error('ENOENT')
+    }, '/home/example')
+    expect(sheet.modelFlag).toBe('-m')
+    expect(sheet.effortFlag).toBeUndefined()
+    expect(sheet.models?.map((m) => m.id)).toEqual(['qwen-27b', 'qwen-think'])
+    expect(sheet.models?.[0]).toMatchObject({
+      id: 'qwen-27b',
+      label: 'qwen-27b (local vLLM)',
+      default: true,
+    })
+    expect(sheet.models?.[0]?.efforts).toBeUndefined()
+    expect(sheet.models?.[1]?.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high'])
+    expect(sheet.models?.[1]?.efforts?.find((e) => e.default)?.id).toBe('medium')
+    expect(appendModelEffortArgv(['qwen'], sheet, 'qwen-27b')).toEqual(['qwen', '-m', 'qwen-27b'])
+    expect(appendModelEffortArgv(['qwen'], sheet, 'qwen-think', 'high')).toEqual([
+      'qwen',
+      '-m',
+      'qwen-think',
+    ])
+    expect(
+      sheetForHarness('qwen-code', { readJson: () => settings, home: '/home/example' }).modelFlag,
+    ).toBe('-m')
   })
 })
 
@@ -395,9 +460,7 @@ describe('appendModelEffortArgv', () => {
         'high',
       ),
     ).toEqual(['kimi'])
-    expect(appendModelEffortArgv(['codex'], sheetForHarness('codex'), 'x', 'y')).toEqual([
-      'codex',
-    ])
+    expect(appendModelEffortArgv(['codex'], sheetForHarness('codex'), 'x', 'y')).toEqual(['codex'])
   })
 
   it('kimi spawn is --model <slash-id> with no effort flag', () => {

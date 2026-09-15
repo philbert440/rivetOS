@@ -4,6 +4,7 @@ sidebar:
   order: 1
 description: Every configuration option for RivetOS
 ---
+
 RivetOS uses a single YAML config file for all settings. API keys and secrets go in `.env`, never in the config file.
 
 **Config file locations** (checked in order):
@@ -297,40 +298,40 @@ providers:
   vllm:
     name: GLM (Z.ai)
     base_url: https://api.z.ai/api/coding/paas/v4
-    api_prefix: ""
+    api_prefix: ''
     api_key: ${ZAI_API_KEY}
     model: glm-5.3-flash
 ```
 
 Use `models_url` only if the models listing lives somewhere other than `<base><api_prefix>/models`.
 
-| Key                    | Type     | Default           | Description                                                                          |
-| ---------------------- | -------- | ----------------- | ------------------------------------------------------------------------------------ |
-| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).         |
-| `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).      |
+| Key                    | Type     | Default           | Description                                                                                                |
+| ---------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).                               |
+| `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).                            |
 | `models_url`           | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
-| `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.   |
-| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                           |
-| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                              |
-| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                                               |
-| `temperature`          | number   | `0.7`             | Sampling temperature.                                                                |
-| `top_p`                | number   | `0.95`            | Nucleus sampling.                                                                    |
-| `top_k`                | number   | —                 | vLLM sampling extension.                                                             |
-| `min_p`                | number   | —                 | vLLM sampling extension.                                                             |
-| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                                             |
-| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                                             |
-| `repetition_penalty`   | number   | —                 | vLLM extension.                                                                      |
-| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                                               |
-| `stop`                 | string[] | —                 | Stop sequences.                                                                      |
-| `seed`                 | number   | —                 | Reproducible sampling seed.                                                          |
-| `context_window`       | number   | —                 | Context-window size reported to the runtime.                                         |
-| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                                           |
-| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                                       |
-| `verify_model_on_init` | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.        |
-| `name`                 | string   | —                 | Display name for the provider.                                                       |
-| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                      |
-| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                                             |
-| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                      |
+| `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.                         |
+| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                                                 |
+| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                                                    |
+| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                                                                     |
+| `temperature`          | number   | `0.7`             | Sampling temperature.                                                                                      |
+| `top_p`                | number   | `0.95`            | Nucleus sampling.                                                                                          |
+| `top_k`                | number   | —                 | vLLM sampling extension.                                                                                   |
+| `min_p`                | number   | —                 | vLLM sampling extension.                                                                                   |
+| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `repetition_penalty`   | number   | —                 | vLLM extension.                                                                                            |
+| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                                                                     |
+| `stop`                 | string[] | —                 | Stop sequences.                                                                                            |
+| `seed`                 | number   | —                 | Reproducible sampling seed.                                                                                |
+| `context_window`       | number   | —                 | Context-window size reported to the runtime.                                                               |
+| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                                                                 |
+| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                                                             |
+| `verify_model_on_init` | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.                              |
+| `name`                 | string   | —                 | Display name for the provider.                                                                             |
+| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                                            |
+| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                                                                   |
+| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                                            |
 
 ### llama-server
 
@@ -398,9 +399,9 @@ providers:
     # model: zai/glm-5.3-flash  # RivetOS default --model; CLI owns backend
 ```
 
-| Key      | Type   | Default    | Description                         |
-| -------- | ------ | ---------- | ----------------------------------- |
-| `binary` | string | `opencode` | Path or name on PATH.               |
+| Key      | Type   | Default             | Description                   |
+| -------- | ------ | ------------------- | ----------------------------- |
+| `binary` | string | `opencode`          | Path or name on PATH.         |
 | `model`  | string | `zai/glm-5.3-flash` | Model id passed as `--model`. |
 
 **Auth:** The installed OpenCode CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol and ships no OpenCode key or OAuth.
@@ -422,6 +423,43 @@ providers:
 | `model`  | string | —       | Model alias to pass to the CLI. |
 
 **Auth:** whatever backend `pi` is configured to use (z.ai GLM recommended). RivetOS does not ship a dedicated `pi` API key; reuse the coding-plan credentials.
+
+### qwen-code
+
+Drives the local `qwen` binary (`@qwen-code/qwen-code`) headlessly — `-p` plus Claude-shaped stream-json. Harness id is `qwen-code`; roster command is `qwen`; provider id matches harness id. Add `@rivetos/provider-qwen-code` to `plugins`.
+
+```yaml
+providers:
+  qwen-code:
+    binary: qwen # path or name on PATH; $QWEN_BINARY when unset
+    # model: qwen3-coder-plus # optional — omit for the CLI's configured model
+    # home: ~/.qwen # accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's ~/.qwen; qwen itself always writes there)
+```
+
+| Key                 | Type   | Default   | Description                                                                                                                               |
+| ------------------- | ------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`            | string | `qwen`    | Path to the `qwen` binary. `$QWEN_BINARY` overrides when `binary` is unset (provider + setup script).                                     |
+| `model`             | string | —         | Model id passed via `-m`. Optional.                                                                                                       |
+| `home`              | string | `~/.qwen` | Accepted for parity with the other CLI providers; currently unused (RivetOS reads the node's `~/.qwen`; qwen itself always writes there). |
+| `cwd`               | string | —         | Working directory for the spawn.                                                                                                          |
+| `name`              | string | —         | Display name for the provider.                                                                                                            |
+| `context_window`    | number | —         | Context-window size reported to the runtime.                                                                                              |
+| `max_output_tokens` | number | —         | Hard cap on output tokens.                                                                                                                |
+
+qwen-code 0.23.4 has no env or flag to relocate `~/.qwen`; qwen always writes there. `$QWEN_HOME` is the same RivetOS-side lookup override for `rivetos plugins install`, `rivetos doctor`, and the setup script.
+
+**Auth:** OpenAI-compatible / API-key only (Qwen OAuth free tier is discontinued). Configure `modelProviders` in `~/.qwen/settings.json`. Effort is per-model (`capabilities.reasoning.efforts`); there is no CLI `--effort` flag.
+
+---
+
+## `channels`
+
+Messaging channel configuration. Each key is a channel type / plugin name.
+
+> **Phase 5:** Telegram, Discord, and voice-discord channel plugins were **removed**.
+> Human UX is RivetHub. Optional remaining first-party channel: `channels.agent` (mesh).
+> Stale `channels.telegram:` / `channels.discord:` / `channels.voice*` in fleet config yields an
+> **unknown channel type warning** at boot; registration is skipped; nodes do not crash-loop.
 
 ### grok-cli
 
@@ -643,6 +681,10 @@ inert instead of failing boot.
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
+Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
+
+---
+
 ## `transports`
 
 Inbound surfaces that expose RivetOS tools to external clients. Currently: the MCP server transport (`@rivetos/mcp-server`), a StreamableHTTP MCP server that exposes `memory_*`, `web_*`, `skill_*`, and runtime tools to any MCP-speaking client (Claude Code, Cursor, etc.).
@@ -736,6 +778,8 @@ These are typically set in `.env`:
 | `GOOGLE_CSE_ID`         | tool-web-search                         | Google Custom Search Engine ID                                                                                                                                                                                                                                                                                                                                              |
 | `GOOGLE_CSE_KEY`        | tool-web-search                         | Google CSE API key                                                                                                                                                                                                                                                                                                                                                          |
 | `OPENAI_API_KEY`        | memory-postgres (embeddings)            | OpenAI API key for embeddings                                                                                                                                                                                                                                                                                                                                               |
+| `QWEN_BINARY`           | provider-qwen-code, setup script        | Override path/name of the `qwen` binary (default `qwen` on PATH). Honoured by the provider and the rivet-memory setup script.                                                                                                                                                                                                                                               |
+| `QWEN_HOME`             | plugins install, doctor, setup script   | Override where RivetOS looks for qwen's `settings.json` / `projects/` (default `~/.qwen`). Does not relocate where qwen itself writes — qwen-code 0.23.4 has no env/flag to move `~/.qwen`.                                                                                                                                                                                 |
 
 ---
 

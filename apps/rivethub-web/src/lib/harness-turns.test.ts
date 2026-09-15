@@ -142,7 +142,9 @@ describe('messagesFromHarnessTurns', () => {
   })
 
   it('leaves a normal assistant reply (no box) unchanged', () => {
-    const msgs = messagesFromHarnessTurns('s1', [turn('assistant', 'The parser is in src/parse.ts.')])
+    const msgs = messagesFromHarnessTurns('s1', [
+      turn('assistant', 'The parser is in src/parse.ts.'),
+    ])
     expect(msgs[0].text).toBe('The parser is in src/parse.ts.')
     expect(msgs[0].thinking).toBeUndefined()
   })
@@ -175,11 +177,15 @@ describe('foldHermesAssistant', () => {
 })
 
 describe('isLiveTurnCommand', () => {
-  it('treats claude/kimi/opencode/pi/grok/hermes/codex as live-turn stores', () => {
+  it('treats claude/kimi/opencode/pi/qwen/grok/hermes/codex as live-turn stores', () => {
     expect(isLiveTurnCommand('claude')).toBe(true)
     expect(isLiveTurnCommand('kimi-code')).toBe(true)
     expect(isLiveTurnCommand('opencode')).toBe(true)
     expect(isLiveTurnCommand('pi')).toBe(true)
+    expect(isLiveTurnCommand('qwen')).toBe(true)
+    expect(isLiveTurnCommand('qwen-code')).toBe(true)
+    expect(isLiveTurnCommand('QWEN')).toBe(true)
+    expect(isLiveTurnCommand('qwen-helper')).toBe(false)
     expect(isLiveTurnCommand('grok')).toBe(true)
     expect(isLiveTurnCommand('hermes')).toBe(true)
     expect(isLiveTurnCommand('codex')).toBe(true)
@@ -223,9 +229,7 @@ describe('liveFromTranscript', () => {
   it('returns undefined on idle, complete, or a trailing user turn', () => {
     const incomplete: HarnessTranscriptTurn = { role: 'assistant', text: 'partial' }
     expect(liveFromTranscript([incomplete], { ...working, status: 'idle' })).toBeUndefined()
-    expect(
-      liveFromTranscript([{ ...incomplete, complete: true }], working),
-    ).toBeUndefined()
+    expect(liveFromTranscript([{ ...incomplete, complete: true }], working)).toBeUndefined()
     expect(liveFromTranscript([turn('user', 'hi')], working)).toBeUndefined()
   })
 
@@ -268,16 +272,27 @@ describe('liveFromTranscript', () => {
 
 describe('agentStatusLine (the thinking window is never silent)', () => {
   const st = (extra: Record<string, unknown>) =>
-    ({ type: 'status', sessionId: 's', since: 1, ...extra }) as unknown as import('@rivetos/types').HarnessStatusFrame
+    ({
+      type: 'status',
+      sessionId: 's',
+      since: 1,
+      ...extra,
+    }) as unknown as import('@rivetos/types').HarnessStatusFrame
   it('shows the activity while working with no live bubble yet', () => {
-    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'thinking' }))?.text).toBe('thinking…')
-    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'tool', tool: { name: 'Bash' } }))).toMatchObject({
+    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'thinking' }))?.text).toBe(
+      'thinking…',
+    )
+    expect(
+      agentStatusLine(undefined, st({ status: 'working', phase: 'tool', tool: { name: 'Bash' } })),
+    ).toMatchObject({
       tool: 'Bash',
     })
   })
   it('says waiting for you when blocked or on a prompt; nothing when idle or a live bubble exists', () => {
     expect(agentStatusLine(undefined, st({ status: 'blocked' }))?.text).toBe('waiting for you')
-    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'prompt' }))?.text).toBe('waiting for you')
+    expect(agentStatusLine(undefined, st({ status: 'working', phase: 'prompt' }))?.text).toBe(
+      'waiting for you',
+    )
     expect(agentStatusLine(undefined, st({ status: 'idle' }))).toBeUndefined()
     const live = { text: 'x', reasoning: false, reasoningText: '', tools: [] }
     expect(agentStatusLine(live, st({ status: 'working' }))).toBeUndefined()

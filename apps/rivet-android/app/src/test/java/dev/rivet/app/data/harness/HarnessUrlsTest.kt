@@ -91,8 +91,14 @@ class HarnessUrlsTest {
         assertEquals(
             "ws://node.example:5174/api/harnesses/ws?harness=opencode",
             urls.harnessesWs("opencode"),
+        )
+        assertEquals(
             "ws://node.example:5174/api/harnesses/ws?harness=pi",
             urls.harnessesWs("pi"),
+        )
+        assertEquals(
+            "ws://node.example:5174/api/harnesses/ws?harness=qwen-code",
+            urls.harnessesWs("qwen-code"),
         )
         assertEquals("ws://node.example:5174/api/harnesses/ws", urls.harnessesWs(" "))
     }

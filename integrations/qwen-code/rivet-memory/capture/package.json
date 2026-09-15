@@ -1,0 +1,26 @@
+{
+  "name": "@rivetos/qwen-code-rivet-memory-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture worker for the Qwen Code CLI rivet-memory integration. Ingests ~/.qwen/projects/*/chats/*.jsonl from native Qwen hooks into the shared RivetOS memory store under agent='rivet-qwen'.",
+  "license": "Apache-2.0",
+  "main": "dist/qwen-memory-capture.js",
+  "bin": {
+    "qwen-code-rivet-memory-capture": "dist/qwen-memory-capture.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "test": "tsx test/smoke.test.ts && tsx test/hook.test.ts && tsx test/setup.test.ts && tsx test/state.test.ts",
+    "clean": "rm -rf dist",
+    "lint": "eslint src/ package.json"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3"
+  }
+}

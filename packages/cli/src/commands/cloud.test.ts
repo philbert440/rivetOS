@@ -203,6 +203,13 @@ describe('renderChecklist', () => {
       status: 'skipped',
       reason: 'not found',
     })
+    expect(
+      harnessLineFromEvent({ id: 'qwen-code', ok: false, detail: 'not detected on PATH' }),
+    ).toEqual({
+      id: 'qwen-code',
+      status: 'skipped',
+      reason: 'not found',
+    })
   })
 })
 

@@ -26,16 +26,17 @@ Web / Desktop / Android
         ├── hermes
         ├── codex
         ├── opencode
-        └── pi
+        ├── pi
+        └── qwen-code
         │
    capture → memory     den events → hub dens / chat
 ```
 
 | Who                                                                                      | Owns                                                                                              |
 | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes, Codex, OpenCode, pi) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
-| **Rivet** (this node)                                    | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
-| **Clients** (Hub web, desktop, Android)                  | Full clients of the **same** gateway, not separate agent runtimes                                 |
+| **Harness** (Claude Code, Grok Build, Kimi Code, Hermes, Codex, OpenCode, pi, Qwen Code) | Coding loop: tools, model turns, approvals UI inside the TUI, interrupt, native session store     |
+| **Rivet** (this node)                                                                    | Sessions identity, capture/memory, den, mesh, tasks, gateway HTTP+WS, Hub/Android/desktop clients |
+| **Clients** (Hub web, desktop, Android)                                                  | Full clients of the **same** gateway, not separate agent runtimes                                 |
 
 **Out of product scope (Phase 0 freeze):** social channels as first-class UX (Telegram, Discord, voice-discord, **removed** in Phase 5); AI-SDK chat as the interactive product loop (AI SDK remains for non-harness / headless / provider plugins only until an optional later ProviderPort extract).
 
@@ -46,7 +47,7 @@ Web / Desktop / Android
 ## Design principles
 
 1. **Harness owns the loop**: Interactive coding is the host harness. Rivet adapts, does not replace.
-2. **One SessionId, seven drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
+2. **One SessionId, eight drivers**: Canonical `<harness-id>:<native-session-id>` everywhere (capture, den, hub, tasks, gateway). No dual key schemes.
 3. **Honest capability flags**: Drivers advertise what is actually wired. Unsupported methods return typed `capability_unsupported` (HTTP 501). UIs gate on flags.
 4. **Domain-Driven Design**: Core domain is pure business logic. No framework dependencies, no I/O, no platform specifics. Plugins adapt the outside world to the domain.
 5. **Clean Architecture**: Dependencies point inward. Core knows nothing about Telegram, Discord, PostgreSQL, or Anthropic. Plugins know about core, never the reverse.
@@ -137,20 +138,21 @@ RivetHub (web + Tauri desktop) and Android are **remote faces of the node**. The
 Contract types live in `@rivetos/types` (`harness.ts`, `harness-session-id.ts`).
 Implementations live under `services/den-server/src/harness/`. Claude (`claude-code`)
 is the **reference** PTY driver; grok-build matches it on `PtyHarnessDriver`.
-kimi-code, hermes, opencode, and Codex PTY are **adopting** (no pin flag); pi pins via `--session-id`.
+kimi-code, hermes, opencode, and Codex PTY are **adopting** (no pin flag); pi and qwen-code pin via `--session-id`.
 Codex also has `CodexProtocolDriver` (app-server RPC).
 
-opencode and pi landed 2026-09-11 (#757/#758); deepseek-harness was removed (#764).
+opencode and pi landed 2026-09-11 (#757/#758); qwen-code is the eighth harness; deepseek-harness was removed (#764).
 
-| HarnessId     | Driver                                                     | Transcript store                                            | startSession                  | Approvals                                   | liveStream                          | Models / efforts                                                  |
-| ------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------- | ------------------------------------------- | ----------------------------------- | ----------------------------------------------------------------- |
-| `claude-code` | `ClaudeCodeDriver` (PTY)                                   | `~/.claude/projects/<slug>/<uuid>.jsonl`                    | yes (pins via `--session-id`) | yes when PTY + herdr + adapter              | yes                                 | static 7 / low..max                                               |
-| `grok-build`  | `GrokBuildDriver` (PTY)                                    | `~/.grok/sessions/.../chat_history.jsonl`                   | yes                           | yes                                         | yes                                 | `~/.grok/models_cache.json` / cache, fallback low..xhigh          |
-| `kimi-code`   | `KimiCodeDriver` (adopting)                                | `agents/main/wire.jsonl`                                    | **unsupported** (no pin flag) | yes (key map **unverified**)                | yes (deltas diffed from wire.jsonl) | kimi `config.toml` / none                                         |
-| `hermes`      | `HermesDriver` (adopting)                                  | `~/.hermes/state.db`                                        | **unsupported** (no pin flag) | **false** by design (`--yolo`)              | yes                                 | none / low/med/high (`--reasoning`)                               |
-| `codex`       | `CodexDriver` (adopting PTY) / `CodexProtocolDriver` (RPC) | rollout jsonl (`~/.codex/sessions`)                         | refused / n/a                 | PTY: **false** (no key map) / RPC: **true** | yes / yes                           | static default / RPC `model/list`; efforts low..xhigh             |
-| `opencode`    | `OpencodeDriver` (adopting)                                | `~/.local/share/opencode/opencode.db` (SQLite, WAL-watched) | **unsupported** (no pin flag) | false (opencode's own TUI prompts)          | yes                                 | `~/.config/opencode/opencode.json` / `--variant` low,med,high,max |
-| `pi`          | `PiDriver` (PTY)                                           | `~/.pi/agent/sessions/<cwd>/<ts>_<uuid>.jsonl`              | yes (pins via `--session-id`) | false (pi's own TUI prompts)                | yes                                 | `~/.pi/agent/settings.json` / `--thinking` low..max               |
+| HarnessId     | Driver                                                     | Transcript store                                            | startSession                  | Approvals                                   | liveStream                          | Models / efforts                                                     |
+| ------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------- | ------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `claude-code` | `ClaudeCodeDriver` (PTY)                                   | `~/.claude/projects/<slug>/<uuid>.jsonl`                    | yes (pins via `--session-id`) | yes when PTY + herdr + adapter              | yes                                 | static 7 / low..max                                                  |
+| `grok-build`  | `GrokBuildDriver` (PTY)                                    | `~/.grok/sessions/.../chat_history.jsonl`                   | yes                           | yes                                         | yes                                 | `~/.grok/models_cache.json` / cache, fallback low..xhigh             |
+| `kimi-code`   | `KimiCodeDriver` (adopting)                                | `agents/main/wire.jsonl`                                    | **unsupported** (no pin flag) | yes (key map **unverified**)                | yes (deltas diffed from wire.jsonl) | kimi `config.toml` / none                                            |
+| `hermes`      | `HermesDriver` (adopting)                                  | `~/.hermes/state.db`                                        | **unsupported** (no pin flag) | **false** by design (`--yolo`)              | yes                                 | none / low/med/high (`--reasoning`)                                  |
+| `codex`       | `CodexDriver` (adopting PTY) / `CodexProtocolDriver` (RPC) | rollout jsonl (`~/.codex/sessions`)                         | refused / n/a                 | PTY: **false** (no key map) / RPC: **true** | yes / yes                           | static default / RPC `model/list`; efforts low..xhigh                |
+| `opencode`    | `OpencodeDriver` (adopting)                                | `~/.local/share/opencode/opencode.db` (SQLite, WAL-watched) | **unsupported** (no pin flag) | false (opencode's own TUI prompts)          | yes                                 | `~/.config/opencode/opencode.json` / `--variant` low,med,high,max    |
+| `pi`          | `PiDriver` (PTY)                                           | `~/.pi/agent/sessions/<cwd>/<ts>_<uuid>.jsonl`              | yes (pins via `--session-id`) | false (pi's own TUI prompts)                | yes                                 | `~/.pi/agent/settings.json` / `--thinking` low..max                  |
+| `qwen-code`   | `QwenCodeDriver` (PTY)                                     | `~/.qwen/projects/<cwd>/chats/<uuid>.jsonl`                 | yes (pins via `--session-id`) | false                                       | yes                                 | `~/.qwen/settings.json` modelProviders / `-m`; effort per-model only |
 
 ### Capability flags (as wired)
 
@@ -158,13 +160,13 @@ Flags reflect what is actually available on the node, not aspirations. PTY
 drivers compute `interrupt` / `resume` / `approvals` at read time from the live
 PTY + herdr + adapter sheet (`PtyHarnessDriver.capabilities`).
 
-| Flag           | PTY drivers                                    | Notes                                                              |
-| -------------- | ---------------------------------------------- | ------------------------------------------------------------------ |
-| `interrupt`    | true if terminals enabled and PTY is available | Esc via term manager inject; Codex RPC: true                       |
-| `resume`       | true if terminals enabled and PTY is available | `--resume` / `--session` through spawn-or-get                      |
-| `approvals`    | PTY + herdr + adapter; not a constant false    | hermes/opencode/pi false; `claude-code` true when those gates pass |
-| `liveStream`   | true if den event tap present                  | kimi stream is thinner (see above); pi tap-only                    |
-| `listSessions` | true                                           | store scan                                                         |
+| Flag           | PTY drivers                                    | Notes                                                                        |
+| -------------- | ---------------------------------------------- | ---------------------------------------------------------------------------- |
+| `interrupt`    | true if terminals enabled and PTY is available | Esc via term manager inject; Codex RPC: true                                 |
+| `resume`       | true if terminals enabled and PTY is available | `--resume` / `--session` through spawn-or-get                                |
+| `approvals`    | PTY + herdr + adapter; not a constant false    | hermes/opencode/pi/qwen-code false; `claude-code` true when those gates pass |
+| `liveStream`   | true if den event tap present                  | kimi stream is thinner (see above); pi and qwen-code tap-only                |
+| `listSessions` | true                                           | store scan                                                                   |
 
 PTY drivers reject `cwd`/`model` on `startSession` (roster-owned) and attachments on
 `sendUserTurn` with `capability_unsupported`. A PTY paste cannot hand a file to
@@ -176,7 +178,7 @@ attachments.
 `startSession` is unsupported. Sessions enter the plane by roster/term spawn or
 `resume`, and the driver **adopts** them when hooks announce a native id
 (`harnessSession` on den events). That is a harness limitation, not a contract gap.
-`claude-code` and `grok-build` pin via `--session-id`.
+`claude-code`, `grok-build`, `pi`, and `qwen-code` pin via `--session-id`.
 
 ### Session identity
 
@@ -467,6 +469,7 @@ rivetOS/
     den-protocol/                ← harness event contract
     gateway-client/              ← typed HTTP+WS client (Hub)
     harness-kimi-code/           ← headless kimi-code task executor
+    harness-qwen-code/           ← headless qwen-code task executor
     mcp/ · mcp-v2/
     nx-plugin/
   plugins/
@@ -475,13 +478,13 @@ rivetOS/
     providers/                   ← headless / AI-SDK interactive demotion
       anthropic/ google/ xai/ ollama/ vllm/ llama-server/
       claude-cli/ codex-cli/ grok-cli/ hermes-cli/
-      kimi-code/ opencode-cli/ pi-cli/
+      kimi-code/ opencode-cli/ pi-cli/ qwen-code/
     memory/postgres/
     tools/   shell/ file/ search/ web-search/ interaction/ mcp-client/
     transports/mcp-server/
   services/
     den-server/
-      src/harness/               ← registry, PtyHarnessDriver, seven drivers, routes, uploads
+      src/harness/               ← registry, PtyHarnessDriver, eight drivers, routes, uploads
     embedding-worker/            ← graphile-worker daemon (GPU embeddings)
     compaction-worker/           ← graphile-worker daemon (summarization + wiki)
     mcp-sidecar/
@@ -491,7 +494,7 @@ rivetOS/
     rivet-android/               ← remote client
     den/                         ← den viewer SPA
     site/                        ← Astro docs site
-  integrations/                  ← capture + den hooks (claude-code, grok, kimi, hermes, opencode, pi, codex)
+  integrations/                  ← capture + den hooks (claude-code, grok, kimi, hermes, opencode, pi, codex); qwen-code capture-only (no den hook)
 ```
 
 Every plugin directory includes a README.md that serves as documentation AND a guide for writing your own. The reference plugins ARE the documentation.
@@ -517,6 +520,7 @@ export const HARNESS_IDS = [
   'codex',
   'opencode',
   'pi',
+  'qwen-code',
 ] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 export type SessionId = `${HarnessId}:${string}`
@@ -763,27 +767,31 @@ Composable async pipeline with priority ordering (0-99):
 
 Harness-side hooks (claude/grok/kimi/hermes/opencode/pi/codex den + memory integrations) are
 **outside** this pipeline; they feed den AgentEvents and capture, not the AI-SDK hook bus.
+qwen-code ships MEMORY hooks only (`UserPromptSubmit` / `Stop` / `SessionEnd` → capture
+via `integrations/qwen-code/rivet-memory`); there is no den hook. liveStream is tap-only,
+like pi.
 
 ---
 
 ## Tasks
 
-All seven ids in `HARNESS_IDS` have a **driver** on the control plane. That is
+All eight ids in `HARNESS_IDS` have a **driver** on the control plane. That is
 not the same as a **task executor**. `GET /api/catalog` exposes `harnessId` +
 `implemented` so UIs can offer a live session without offering a spawn-for-task
 trap.
 
 The task engine's `harness-session` registry is keyed by the same harness ids.
 
-| Target        | Driver | Task executor                                                                                           |
-| ------------- | ------ | ------------------------------------------------------------------------------------------------------- |
-| `claude-code` | yes    | Implemented (headless `claude -p`); `claude-cli` accepted as **deprecated alias** for one deploy window |
-| `kimi-code`   | yes    | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile)                          |
-| `opencode`    | yes    | Implemented (`@rivetos/harness-opencode`, headless `opencode run`)                                      |
-| `pi`          | yes    | Implemented (`@rivetos/harness-pi`, headless `pi`)                                                      |
-| `grok-build`  | yes    | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path               |
-| `hermes`      | yes    | Explicit rejecting executor (cannot pin session for spawn-for-task)                                     |
-| `codex`       | yes    | Explicit rejecting executor (no `--session-id`; TUI adopt only)                                         |
+| Target        | Driver | Task executor                                                                                               |
+| ------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
+| `claude-code` | yes    | Implemented (headless `claude -p`); `claude-cli` accepted as **deprecated alias** for one deploy window     |
+| `kimi-code`   | yes    | Implemented (`@rivetos/harness-kimi-code`, stream-json + wire usage reconcile)                              |
+| `opencode`    | yes    | Implemented (`@rivetos/harness-opencode`, headless `opencode run`)                                          |
+| `pi`          | yes    | Implemented (`@rivetos/harness-pi`, headless `pi`)                                                          |
+| `qwen-code`   | yes    | Implemented (`@rivetos/harness-qwen-code`, stream-json + `--session-id` / `--resume`; provider `qwen-code`) |
+| `grok-build`  | yes    | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path                   |
+| `hermes`      | yes    | Explicit rejecting executor (cannot pin session for spawn-for-task)                                         |
+| `codex`       | yes    | Explicit rejecting executor (no `--session-id`; TUI adopt only)                                             |
 
 `GET /api/catalog` exposes `harnessId` + `implemented` so UIs grey traps.
 Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
@@ -794,7 +802,7 @@ Env contract for real executors: `RIVETOS_TASK_ID` set, inherited
 ## Memory and capture
 
 - Capture plugins (under `integrations/*/rivet-memory`) write under canonical `SessionId` where possible.
-- OpenCode capture is a native plugin on `session.idle` (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a Codex hook (`hooks.json` / managed `requirements.toml`) over the rollout jsonl.
+- OpenCode capture is a native plugin on `session.idle` (`integrations/opencode/rivet-memory`) — `agent=rivet-glm`, `channel=opencode`, dedup `part.id`. Codex capture is a Codex hook (`hooks.json` / managed `requirements.toml`) over the rollout jsonl. qwen-code capture is native hooks via a qwen extension (`UserPromptSubmit` / `Stop` / `SessionEnd`) → `integrations/qwen-code/rivet-memory` (capture-only; no den hook).
 - Mesh-shared DB: disambiguate by `agent` column; native id entropy is the collision defense.
 - Hermes rotation: alias + breadcrumb (not close+new). Predecessor stays open until true session end.
 - Compaction / embedding: graphile-worker jobs from SQL triggers and crons in the worker packages, not LISTEN/NOTIFY.
@@ -947,7 +955,7 @@ When documenting mesh peers, use hostnames or documentation address space
 | `RIVETOS_SESSION_KEY=task:<id>` write override | Deprecated            | Use `RIVETOS_TASK_ID` + capture association                                         |
 | Provider plugins for Hub coding UX             | Demoted               | Harness drivers own interactive coding                                              |
 
-**Still first-class:** agent channel (mesh), memory, MCP, den, gateway, seven harness drivers, Hub/Android/desktop, tasks.
+**Still first-class:** agent channel (mesh), memory, MCP, den, gateway, eight harnesses, Hub/Android/desktop, tasks.
 
 ---
 

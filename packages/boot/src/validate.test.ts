@@ -364,6 +364,7 @@ describe('Config Validation', () => {
         'codex-cli',
         'opencode-cli',
         'pi-cli',
+        'qwen-code',
       ]) {
         const cfg = validConfig()
         ;(cfg.providers as Record<string, unknown>)[name] = {}

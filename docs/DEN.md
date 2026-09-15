@@ -35,6 +35,9 @@ To stream a real session, install an adapter:
 - **pi**: CLI `@earendil-works/pi-coding-agent` (roster command `pi`, harness id
   `pi`, provider `pi-cli`). Drive via print/JSON or RPC; native session store
   confirmed at driver wiring. Recommended default backend is z.ai GLM.
+- **qwen-code**: CLI `@qwen-code/qwen-code` (roster command `qwen`, harness id
+  `qwen-code`, provider `qwen-code`). Drive via `-p` + stream-json; native
+  session store `~/.qwen/projects/<cwd>/chats/<uuid>.jsonl`. Pins via `--session-id`.
 
 The server binds `127.0.0.1` by default; set `RIVETOS_DEN_HOST=0.0.0.0` (and
 ideally `RIVETOS_DEN_TOKEN`) to serve a LAN. Multiple viewers, multiple
