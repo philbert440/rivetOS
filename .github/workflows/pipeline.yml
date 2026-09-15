@@ -169,6 +169,13 @@ jobs:
           fi
 
       - name: Build
+        env:
+          # Public PostHog project key for marketing-site pageviews
+          # (rivetos.dev + rivethub.io). Empty in fork PRs and when unset —
+          # both sites no-op without a key. Same secret can be reused for
+          # both hosts; set a second pair only if the projects are split.
+          PUBLIC_POSTHOG_KEY: ${{ secrets.PUBLIC_POSTHOG_KEY }}
+          PUBLIC_POSTHOG_HOST: ${{ secrets.PUBLIC_POSTHOG_HOST }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             npx nx affected -t build --parallel=5 --exclude container-rivetos

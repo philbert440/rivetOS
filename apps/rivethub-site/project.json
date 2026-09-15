@@ -9,6 +9,10 @@
       "command": "node apps/rivethub-site/scripts/build.mjs",
       "inputs": ["{projectRoot}/public/**/*", "{projectRoot}/scripts/**/*"],
       "outputs": ["{projectRoot}/dist"]
+    },
+    "test": {
+      "command": "node --test apps/rivethub-site/scripts/*.test.mjs",
+      "inputs": ["{projectRoot}/scripts/**/*"]
     }
   }
 }

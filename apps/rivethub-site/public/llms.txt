@@ -25,6 +25,7 @@ Embedding and compaction endpoints and models can be configured on the server to
 - [Current release manifest](https://rivethub.io/releases/latest.json): consult this for current versions, checksums, and app download filenames instead of inferring versions from examples.
 - [Server setup](https://rivethub.io/server.html): server, VM, or system container setup, from datahub to agent node and verification.
 - [Support](https://rivethub.io/support.html): GitHub issues, email rivetphilbot@gmail.com, or @rivetphilbot on X.
+- [Privacy](https://rivethub.io/privacy.html): rivethub.io may record anonymous marketing-site pageviews. Self-hosted RivetHub / RivetOS do not phone home.
 - [Datahub setup](https://rivethub.io/install-datahub.html): dedicated hub.
 - [Add a node](https://rivethub.io/install-node.html): expand to another machine.
 - [Runtime documentation](https://rivetos.dev/): RivetOS documentation.
