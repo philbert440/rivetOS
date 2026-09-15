@@ -1,6 +1,12 @@
 # Getting started
 
-Get RivetOS running in under 5 minutes. The supported laptop path is one command on [rivethub.io](https://rivethub.io/). Clone-and-`rivetos init` is the development / mesh-node path.
+**First success is three steps.** Everything else on this page is a branch — take it only after the node answers and one session is recorded.
+
+1. Have a supported coding tool installed (Claude Code is the reference).
+2. `curl -fsSL https://get.rivethub.io/local.sh | bash`
+3. Open RivetHub (Linux AppImage, or `https://localhost:5174`) and use the tool as usual. Success = that turn appears in Hub and the tool can search it.
+
+Do **not** start with Docker, Proxmox, `rivetos init`, mesh enroll, or a Postgres URL. Those are day-2. Windows downloads the desktop app and talks to a Linux/mac node. Android pairs after the laptop is up (Settings → Devices QR). Developers clone this repo and run `npx rivetos local`, not `npx rivetos init`.
 
 ---
 
@@ -20,7 +26,7 @@ Day-2: `rivetos local status`, `rivetos local backup`, `rivetos local reset`. Fu
 
 | Requirement | Version | Check |
 |---|---|---|
-| Node.js | ≥ 22 (24 used in CI/containers) | `node --version` |
+| Node.js | ≥ 22 for `npm install` / `rivetos local`; **≥ 24 for `rivetos init`** (24 used in CI/containers) | `node --version` |
 | npm | ≥ 10 | `npm --version` |
 | Git | any | `git --version` |
 | Docker (optional) | ≥ 24 | `docker --version` |
@@ -120,10 +126,11 @@ npm install
 ### 2. Create your config
 
 ```bash
-cp config.example.yaml config.yaml
+mkdir -p ~/.rivetos
+cp config.example.yaml ~/.rivetos/config.yaml
 ```
 
-Edit `config.yaml` with your settings:
+The CLI, `rivetos doctor`, and Docker Compose bind-mount **`~/.rivetos/config.yaml`** (not a repo-root `config.yaml`). Edit that file:
 
 ```yaml
 runtime:
@@ -151,14 +158,15 @@ memory:
 ### 3. Set up secrets
 
 ```bash
-cp .env.example .env
+cp .env.example ~/.rivetos/.env
 ```
 
-Edit `.env`:
+Edit `~/.rivetos/.env`. Compose's datahub currently hardcodes user/password `rivetos`/`rivetos` and publishes **host 5433 → container 5432**. A repo-root `.env` is not what the agent container reads.
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
+# Inside Compose: host is `datahub`, port 5432. From the host machine: localhost:5433.
+RIVETOS_PG_URL=postgresql://rivetos:rivetos@datahub:5432/rivetos
 ```
 
 > **Security:** Never put API keys in `config.yaml`. Always use `.env` or environment variables.
@@ -230,11 +238,12 @@ psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ### 3. Create config and secrets
 
 ```bash
-cp config.example.yaml config.yaml
-cp .env.example .env
+mkdir -p ~/.rivetos
+cp config.example.yaml ~/.rivetos/config.yaml
+cp .env.example ~/.rivetos/.env
 ```
 
-Edit both files as described in Option B, steps 2-3.
+Edit both files as described in Option B, steps 2-3. `rivetos start` reads `~/.rivetos/config.yaml` by default.
 
 ### 4. Create workspace
 
@@ -242,15 +251,15 @@ Edit both files as described in Option B, steps 2-3.
 mkdir -p ~/.rivetos/workspace/memory
 ```
 
-Add your workspace files (templates ship under `workspace-templates/` in the repo; `rivetos init` copies them in for you):
+Add your workspace files (templates ship under `workspace-templates/` in the repo; `rivetos init` / `rivetos local` copy them in for you):
 
 | File | Purpose | Required? |
 |---|---|---|
-| `~/.rivetos/workspace/CORE.md` | Agent identity and personality | Yes |
-| `~/.rivetos/workspace/USER.md` | Who the agent is helping | Yes |
-| `~/.rivetos/workspace/WORKSPACE.md` | Operating rules and conventions | Yes |
-| `~/.rivetos/workspace/MEMORY.md` | Context index for the memory system | Optional |
-| `~/.rivetos/workspace/CAPABILITIES.md` | Extended tool/skill reference | Optional |
+| `~/.rivetos/workspace/AGENT.md` | Agent identity and personality | Yes (`rivetos doctor` fails without it) |
+| `~/.rivetos/workspace/MEMORY.md` | Context index for the memory system | Yes |
+| `~/.rivetos/workspace/users/` | Per-user notes (optional) | Optional |
+
+Legacy `CORE.md` / `USER.md` / `WORKSPACE.md` names are migration hints only — do not create those as the required trio.
 
 See the [Workspace Files](#workspace-files) section below for details.
 
@@ -385,7 +394,8 @@ rivetos ollama models                 # List local Ollama models
 
 # Mesh (multi-node)
 rivetos mesh list|ping|status
-rivetos mesh join <host>              # Join an existing mesh via a seed node
+rivetos mesh enroll <user@host> --name <node>   # Join a RivetHub mesh
+rivetos mesh join --manual <host>               # Legacy seed-node YAML only
 rivetos keys rotate|list|status       # Manage mesh keys
 
 # Memory & database
@@ -427,7 +437,7 @@ rivetos skills list
 
 **Docker containers won't start?**
 - Run `docker compose -f infra/docker/rivetos/docker-compose.yml logs datahub` to check PostgreSQL
-- Ensure port 5432 isn't already in use
+- Ensure host port **5433** (Compose maps 5433→5432) isn't already in use
 - Try `npx rivetos build` to rebuild images
 
 **Memory search returns nothing?**

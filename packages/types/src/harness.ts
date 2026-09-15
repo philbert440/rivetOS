@@ -10,7 +10,7 @@
  * Types only; the session-id runtime helpers live in `harness-session-id.ts`
  * (same split as `task.ts` / `task-result.ts`).
  *
- * Source of truth: docs/ARCHITECTURE.md.
+ * Source of truth: this file (`HARNESS_IDS`). Docs must match it.
  */
 
 import type { HarnessTranscriptTurn } from './gateway-api.js'

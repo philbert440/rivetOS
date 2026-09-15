@@ -251,17 +251,21 @@ export function buildLocalAnswers(opts: {
   apiKey?: string
   postgresUrl: string
 }): Record<string, unknown> {
+  const agent: Record<string, unknown> = {
+    name: 'rivet',
+    provider: opts.provider,
+    model: { default: true },
+    thinking: { default: true },
+    ...(opts.apiKey ? { apiKey: opts.apiKey } : {}),
+  }
+  // interpretAnswers requires baseUrl for local HTTP providers; a missing
+  // key is a hard error (no silent default). Opt into the prompt default.
+  if (opts.provider === 'ollama' || opts.provider === 'vllm' || opts.provider === 'llama-server') {
+    agent.baseUrl = { default: true }
+  }
   const answers: Record<string, unknown> = {
     deployment: 'manual',
-    agents: [
-      {
-        name: 'rivet',
-        provider: opts.provider,
-        model: { default: true },
-        thinking: { default: true },
-        ...(opts.apiKey ? { apiKey: opts.apiKey } : {}),
-      },
-    ],
+    agents: [agent],
     postgresUrl: opts.postgresUrl,
     joinMesh: false,
     ownerId: 'owner',
