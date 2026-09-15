@@ -1,5 +1,3 @@
-/* Pageview-only PostHog for rivethub.io. No-ops unless posthog-config.js
-   set a project key (baked at `nx build rivethub-site` from PUBLIC_POSTHOG_KEY). */
 (function () {
   var key = window.RIVET_POSTHOG_KEY || '';
   var host = window.RIVET_POSTHOG_HOST || 'https://us.i.posthog.com';

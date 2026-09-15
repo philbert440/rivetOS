@@ -1,10 +1,4 @@
 ---
-/**
- * Pageview-only PostHog for rivetos.dev. Init is gated on a public project
- * key so local/CI builds without secrets ship no analytics. Options match
- * the house pattern (manual $pageview, pageleave, identified_only profiles)
- * plus autocapture/session recording off — this slice is pageviews only.
- */
 const key = String(
   import.meta.env.PUBLIC_POSTHOG_KEY ||
     process.env.PUBLIC_POSTHOG_KEY ||

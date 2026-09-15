@@ -1,5 +1,3 @@
-/** Resolve public PostHog env for the rivethub.io static build. */
-
 const DEFAULT_HOST = 'https://us.i.posthog.com';
 
 export const ANALYTICS_URL_PROPS = [
