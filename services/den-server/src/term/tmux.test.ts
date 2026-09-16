@@ -379,7 +379,7 @@ describe.skipIf(!tmuxAvailable())(
       const argv = tmuxCreateArgv({
         socket,
         confPath: conf,
-        name: 'utf8',
+        name: 'utf8-u',
         cwd: dir,
         cols: 80,
         rows: 24,
@@ -400,8 +400,41 @@ describe.skipIf(!tmuxAvailable())(
         LANG: 'C',
       }
 
+      const waitServerGone = async (): Promise<void> => {
+        const deadline = Date.now() + 3000
+        while (Date.now() < deadline) {
+          try {
+            execFileSync('tmux', ['-L', socket, 'list-sessions'], {
+              timeout: 1000,
+              stdio: ['ignore', 'ignore', 'ignore'],
+            })
+          } catch {
+            try {
+              unlinkSync(socketPath)
+            } catch {
+              // socket already gone
+            }
+            return
+          }
+          await new Promise((r) => setTimeout(r, 50))
+        }
+        try {
+          execFileSync('tmux', ['-L', socket, 'kill-server'], {
+            timeout: 2000,
+            stdio: ['ignore', 'ignore', 'ignore'],
+          })
+        } catch {
+          // already gone
+        }
+        try {
+          unlinkSync(socketPath)
+        } catch {
+          // socket already gone
+        }
+      }
+
       const waitClientUtf8 = async (): Promise<string | null> => {
-        const deadline = Date.now() + 5000
+        const deadline = Date.now() + 8000
         while (Date.now() < deadline) {
           try {
             const out = execFileSync(
@@ -424,6 +457,7 @@ describe.skipIf(!tmuxAvailable())(
       }
 
       const run = async (clientArgv: string[]): Promise<string | null> => {
+        await waitServerGone()
         writeFileSync(envFile, '')
         const proc = ptySpawn(clientArgv[0], clientArgv.slice(1), {
           name: 'xterm-256color',
@@ -448,15 +482,30 @@ describe.skipIf(!tmuxAvailable())(
           } catch {
             // server already gone
           }
+          await waitServerGone()
         }
       }
 
       expect(await run(argv)).toBe('1')
-      const control = argv.slice()
+      const control = tmuxCreateArgv({
+        socket,
+        confPath: conf,
+        name: 'utf8-plain',
+        cwd: dir,
+        cols: 80,
+        rows: 24,
+        envPairs: [],
+        envFile,
+        harness: ['/bin/sh', '-c', 'sleep 60'],
+        command: 'claude',
+        user: 'owner',
+        unsetKeys: [],
+        detached: false,
+      })
       control.splice(control.indexOf('-u'), 1)
       expect(control.slice(0, 2)).toEqual(['tmux', '-L'])
       expect(await run(control)).toBe('0')
-    }, 15_000)
+    }, 25_000)
 
     it('loads mouse on and the WheelUpPane mouse_any_flag binding from conf', () => {
       const dir = mkdtempSync(join(tmpdir(), 'den-tmux-mouse-'))
