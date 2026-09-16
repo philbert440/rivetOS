@@ -4,7 +4,7 @@
 
 1. Have a supported coding tool installed (Claude Code is the reference).
 2. `curl -fsSL https://get.rivethub.io/local.sh | bash`
-3. Open RivetHub (Linux AppImage, or `https://localhost:5174`) and use the tool as usual. Success = that turn appears in Hub and the tool can search it.
+3. Start a **new session** in that tool so MCP recall loads (restart the tool, or on Grok run `/mcps reload`). Open RivetHub (Linux AppImage, or `https://localhost:5174`) and use the tool. Success = this new-session turn appears in Hub **and** a `memory_search` from the tool returns it. An already-open session will not see the new MCP server.
 
 Do **not** start with Docker, Proxmox, `rivetos init`, mesh enroll, or a Postgres URL. Those are day-2. Windows downloads the desktop app and talks to a Linux/mac node. Android pairs after the laptop is up (Settings → Devices QR). Developers clone this repo and run `npx rivetos local`, not `npx rivetos init`.
 
@@ -230,9 +230,10 @@ sudo apt install postgresql-16 postgresql-16-pgvector
 brew install postgresql@16
 brew install pgvector
 
-# Create database
-createdb rivetos
-psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
+# Create the database as the postgres OS user (this does not create a
+# `rivetos` / `rivetos` login — that pair exists only inside Compose).
+sudo -u postgres createdb rivetos
+sudo -u postgres psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
 ### 3. Create config and secrets
@@ -243,7 +244,14 @@ cp config.example.yaml ~/.rivetos/config.yaml
 cp .env.example ~/.rivetos/.env
 ```
 
-Edit both files as described in Option B, steps 2-3. `rivetos start` reads `~/.rivetos/config.yaml` by default.
+Edit `~/.rivetos/config.yaml` as in Option B, step 2. Do **not** copy Option B's `RIVETOS_PG_URL`. `datahub` only resolves inside Compose. Point the bare-metal node at localhost, matching the `createdb` above:
+
+```bash
+# Peer / trust as your OS user on the local server (same URL as docs/DEPLOYMENT.md).
+RIVETOS_PG_URL=postgresql://localhost:5432/rivetos
+```
+
+`rivetos start` reads `~/.rivetos/config.yaml` by default.
 
 ### 4. Create workspace
 
@@ -283,55 +291,34 @@ npx rivetos service start
 
 ## Workspace files
 
-Workspace files are markdown documents injected into the agent's system prompt. They define who the agent is and how it behaves.
+The loader (`packages/core/src/domain/workspace.ts`) injects two files into the system prompt. `rivetos doctor` fails if either is missing. Full templates ship in `workspace-templates/`.
 
 ### Required files
 
-**`CORE.md`**: agent identity, personality, values, and behavioral rules.
+**`AGENT.md`**: agent identity, operating contract, and owner / routed-user gate.
 ```markdown
-# CORE.md — Who You Are
+# AGENT.md — Rivet
 
-You are a helpful AI assistant named Rivet.
-
-## Working Style
-- Be direct and concise
-- Show your reasoning
-- Ask before making destructive changes
+You are Rivet, an engineering partner. Search memory before you re-derive a solved problem.
 ```
 
-**`USER.md`**: information about the person the agent is helping.
+**`MEMORY.md`**: a short index of where to look (search vs browse vs wiki).
 ```markdown
-# USER.md — About Your Human
+# MEMORY.md — where answers live
 
-- **Name:** Phil
-- **Timezone:** America/New_York
-- **Preferences:** TypeScript, Next.js, direct communication
+Use `memory_search` for decisions. Use `memory_browse` when you know the day.
+If memory and a workspace file disagree, memory wins. Update the file.
 ```
 
-**`WORKSPACE.md`**: operating rules, safety boundaries, and conventions.
-```markdown
-# WORKSPACE.md — Operating Rules
-
-## Safety
-- Don't delete files without asking
-- Don't send emails without approval
-- Keep secrets private
-
-## Every Session
-1. Read CORE.md, USER.md, WORKSPACE.md
-2. Check recent memory files
-3. Get to work
-```
+Legacy `CORE.md` / `USER.md` / `WORKSPACE.md` at the workspace root are not loaded. Doctor treats them as migration hints into `AGENT.md`.
 
 ### Optional files
 
-**`MEMORY.md`**: a lightweight index into the memory system. The agent uses this to know what to search for.
+**`users/<profile>.md`**: per-user notes. A matching profile is appended as `## USER.md (<profile>)`. The owner identity lives in `AGENT.md`.
 
-**`CAPABILITIES.md`**: extended reference for tools, skills, and infrastructure. Included in the system prompt for local models where token cost isn't a concern.
+**`HEARTBEAT.md`**: periodic background-task checklist. Injected on heartbeat turns only.
 
-**`HEARTBEAT.md`**: instructions for periodic background tasks. Only injected during heartbeat turns, not regular conversation.
-
-**`memory/YYYY-MM-DD.md`**: daily notes. The agent reads recent daily notes for context continuity between sessions.
+**`memory/YYYY-MM-DD.md`**: daily notes. The agent searches these through memory tools. They are not pinned into the system prompt.
 
 ---
 

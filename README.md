@@ -45,7 +45,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 curl -fsSL https://get.rivethub.io/local.sh | bash
 ```
 
-3. Open RivetHub: the Linux AppImage the installer launched, or `https://localhost:5174`. First win is the next turn in your coding tool showing up in Hub (and that tool being able to search it).
+3. Start a **new session** in that tool so MCP recall loads (restart the tool, or on Grok run `/mcps reload`). Open RivetHub: the Linux AppImage the installer launched, or `https://localhost:5174`. First win is that this new-session turn appears in Hub **and** a `memory_search` from the tool returns it. An already-open session will not see the new MCP server.
 
 Desktop / Windows / Android first downloads: [rivethub.io](https://rivethub.io/). Phone pairing and mesh are day-2 — [Getting Started](docs/GETTING-STARTED.md).
 
@@ -73,9 +73,9 @@ Desktop / Windows / Android first downloads: [rivethub.io](https://rivethub.io/)
 │  │ Response │<───│Workspace │    │     Memory           │     │
 │  │ sent to  │    │ (domain) │    │    (plugin)          │     │
 │  │ channel  │    │          │    │                      │     │
-│  │          │    │ CORE.md  │    │ append transcript    │     │
-│  │          │    │ USER.md  │    │ search context       │     │
-│  │          │    │ MEMORY.md│    │ hybrid FTS+vector    │     │
+│  │          │    │ AGENT.md │    │ append transcript    │     │
+│  │          │    │ MEMORY.md│    │ search context       │     │
+│  │          │    │          │    │ hybrid FTS+vector    │     │
 │  └──────────┘    └──────────┘    └──────────────────────┘     │
 │                                                               │
 │  ┌──────────────┐  ┌──────────┐  ┌────────────────────────┐   │
@@ -201,17 +201,14 @@ API keys always go in `.env`, never in config files. See [Config Reference](docs
 
 ## Workspace files
 
-Markdown files injected into the agent's system prompt:
+The loader injects two files into the system prompt (`rivetos doctor` requires both):
 
-| File                   | Purpose                                         |
-| ---------------------- | ----------------------------------------------- |
-| `CORE.md`              | Agent identity, personality, behavioral rules   |
-| `USER.md`              | Who the owner is                                |
-| `WORKSPACE.md`         | Operating rules, safety boundaries, conventions |
-| `MEMORY.md`            | Lightweight context index (query-based)         |
-| `CAPABILITIES.md`      | Extended tool/skill reference (local models)    |
-| `HEARTBEAT.md`         | Background task instructions                    |
-| `memory/YYYY-MM-DD.md` | Daily notes for continuity                      |
+| File | Purpose |
+| --- | --- |
+| `AGENT.md` | Agent identity, operating contract, owner / routed-user gate |
+| `MEMORY.md` | Lightweight context index (query-based) |
+
+Optional: `users/<profile>.md` (appended as `USER.md` for a matching profile), `HEARTBEAT.md` (heartbeat turns only), `memory/YYYY-MM-DD.md` (daily notes, searched not pinned). Legacy `CORE.md` / `USER.md` / `WORKSPACE.md` at the workspace root are not loaded.
 
 ## CLI reference
 
