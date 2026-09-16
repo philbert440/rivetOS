@@ -230,10 +230,21 @@ sudo apt install postgresql-16 postgresql-16-pgvector
 brew install postgresql@16
 brew install pgvector
 
-# Create the database as the postgres OS user (this does not create a
-# `rivetos` / `rivetos` login — that pair exists only inside Compose).
-sudo -u postgres createdb rivetos
-sudo -u postgres psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
+# Create a login that matches the URL in step 3. `createdb rivetos` alone
+# does not create user/password `rivetos` / `rivetos`.
+# Ubuntu/Debian
+sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
+CREATE USER rivetos WITH PASSWORD 'rivetos';
+CREATE DATABASE rivetos OWNER rivetos;
+SQL
+sudo -u postgres psql -d rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# macOS (Homebrew) — your account is the superuser
+psql postgres -v ON_ERROR_STOP=1 <<'SQL'
+CREATE USER rivetos WITH PASSWORD 'rivetos';
+CREATE DATABASE rivetos OWNER rivetos;
+SQL
+psql -d rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
 ### 3. Create config and secrets
@@ -244,11 +255,10 @@ cp config.example.yaml ~/.rivetos/config.yaml
 cp .env.example ~/.rivetos/.env
 ```
 
-Edit `~/.rivetos/config.yaml` as in Option B, step 2. Do **not** copy Option B's `RIVETOS_PG_URL`. `datahub` only resolves inside Compose. Point the bare-metal node at localhost, matching the `createdb` above:
+Edit `~/.rivetos/config.yaml` as in Option B, step 2. Do **not** copy Option B's `RIVETOS_PG_URL`. `datahub` only resolves inside Compose. Use the localhost login created above:
 
 ```bash
-# Peer / trust as your OS user on the local server (same URL as docs/DEPLOYMENT.md).
-RIVETOS_PG_URL=postgresql://localhost:5432/rivetos
+RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
 ```
 
 `rivetos start` reads `~/.rivetos/config.yaml` by default.
