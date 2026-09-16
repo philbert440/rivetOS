@@ -2,6 +2,7 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://rivethub.io/apps.html</loc></url>
   <url><loc>https://rivethub.io/</loc></url>
+  <url><loc>https://rivethub.io/llms.txt</loc></url>
   <url><loc>https://rivethub.io/install-datahub.html</loc></url>
   <url><loc>https://rivethub.io/install-local.html</loc></url>
   <url><loc>https://rivethub.io/install-node.html</loc></url>
