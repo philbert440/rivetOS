@@ -150,7 +150,6 @@ services:
     environment:
       RIVETOS_PG_URL: ${RIVETOS_PG_URL:?set RIVETOS_PG_URL in .env}
       RIVETOS_HEALTH_PORT: '3100'
-      RIVETOS_HEALTH_HOST: '127.0.0.1'
     volumes:
       # Bring in the user's config + secrets. Read-only by default; the
       # runtime writes only to /home/rivetos/.rivetos/workspace inside the

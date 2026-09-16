@@ -355,6 +355,11 @@ export function buildEnvFile(state: WizardState): EnvEntry[] {
       value: 'workspace',
       comment: 'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
     })
+    entries.push({
+      key: 'RIVETOS_HEALTH_HOST',
+      value: '127.0.0.1',
+      comment: 'local health listener; fleet default is 0.0.0.0',
+    })
     if (state.local.muxNone) {
       entries.push({
         key: 'RIVETOS_DEN_TERM_MUX',

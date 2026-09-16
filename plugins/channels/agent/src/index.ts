@@ -90,7 +90,7 @@ export class AgentChannel implements Channel {
     this.config = config
     this.id = `agent-${config.agentId}`
     this.port = config.port ?? 3100
-    this.host = config.host ?? '127.0.0.1'
+    this.host = resolveAgentChannelHost(config.host)
   }
 
   // -----------------------------------------------------------------------
@@ -581,6 +581,16 @@ interface AgentMessageResponse {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Omitted host is all interfaces. Local mode (`RIVETOS_MODE=workspace`) is loopback. */
+export function resolveAgentChannelHost(
+  host: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const explicit = host?.trim()
+  if (explicit) return explicit
+  return env.RIVETOS_MODE === 'workspace' ? '127.0.0.1' : '0.0.0.0'
+}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {

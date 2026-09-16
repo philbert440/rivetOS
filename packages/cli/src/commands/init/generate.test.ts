@@ -160,6 +160,7 @@ describe('buildConfigYaml / buildEnvFile local branch', () => {
     expect(yaml).not.toMatch(/^plugins:/m)
     const entries = buildEnvFile(baseState())
     expect(entries.some((e) => e.key === 'RIVETOS_MODE')).toBe(false)
+    expect(entries.some((e) => e.key === 'RIVETOS_HEALTH_HOST')).toBe(false)
   })
 
   it('emits RIVETOS_MODE=workspace next to RIVETOS_ROOT', () => {
@@ -167,6 +168,7 @@ describe('buildConfigYaml / buildEnvFile local branch', () => {
     const map = Object.fromEntries(entries.map((e) => [e.key, e.value]))
     expect(map.RIVETOS_ROOT).toBe('/opt/rivetos')
     expect(map.RIVETOS_MODE).toBe('workspace')
+    expect(map.RIVETOS_HEALTH_HOST).toBe('127.0.0.1')
     expect(entries.find((e) => e.key === 'RIVETOS_MODE')?.comment).toBe(
       'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
     )

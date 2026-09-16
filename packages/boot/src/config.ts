@@ -253,7 +253,7 @@ export interface DenSection {
   /** Local PTY terminals — off by default (spawns shells as the service user) */
   terminal?: {
     enabled?: boolean
-    /** Explicit opt-out of the tokenless security gate (trusted LAN only). */
+    /** Ignored. Off-loopback den requires TLS + a device client cert. */
     open?: boolean
     /** Auto-close a harness PTY after this many ms with no activity
      *  (output / inject / write) and no viewer attached. Maps to

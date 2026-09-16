@@ -168,13 +168,11 @@ behind HTTP, so the whole model in one place:
 
 - **Off by default.** `den.terminal.enabled: true` is a deliberate act, per
   node.
-- **TLS gate.** Off loopback, den TLS (node leaf) is required. The config
-  validator refuses a LAN bind without it, and den-server refuses to listen
-  if the state is ever reached anyway.
-- **Trusted-network opt-out.** `den.terminal.open: true` is an explicit
-  waiver for private LANs where convenience wins. Understand what it means:
-  anything that can reach the port can spawn a shell as the service user.
-  den-server logs the open state at startup; it is never the default.
+- **TLS + device-cert gate.** Off loopback, den TLS (node leaf) is required
+  and every remote request needs an authorized device client cert
+  (`rivet-ca.sh issue-client`). The config validator refuses a LAN bind
+  without TLS, and den-server refuses to listen if that state is reached.
+  `den.terminal.open` is ignored. It is not a trusted-LAN waiver.
 - **Roster ownership.** The HTTP API accepts only command _keys_ from the
   operator-owned roster (`~/.rivetos/den-term.json`); argv/cwd/env never
   travel over the wire in either direction, and every command is spawned

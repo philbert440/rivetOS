@@ -104,7 +104,6 @@ RUN addgroup -S rivetos && adduser -S rivetos -G rivetos \
 ENV NODE_ENV=production
 ENV RIVETOS_DATA_DIR=/home/rivetos/.rivetos
 ENV RIVETOS_HEALTH_PORT=3100
-ENV RIVETOS_HEALTH_HOST=127.0.0.1
 ENV RIVETOS_ROLE=agent
 
 EXPOSE 3100

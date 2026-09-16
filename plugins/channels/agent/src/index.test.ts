@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { AgentChannel, type AgentChannelConfig } from './index.js'
+import { AgentChannel, resolveAgentChannelHost, type AgentChannelConfig } from './index.js'
 import type { InboundMessage } from '@rivetos/types'
 
 // ---------------------------------------------------------------------------
@@ -60,6 +60,20 @@ async function sendRequest(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe('resolveAgentChannelHost', () => {
+  it('defaults omitted host to all interfaces', () => {
+    expect(resolveAgentChannelHost(undefined, {})).toBe('0.0.0.0')
+  })
+
+  it('binds loopback when RIVETOS_MODE is workspace', () => {
+    expect(resolveAgentChannelHost(undefined, { RIVETOS_MODE: 'workspace' })).toBe('127.0.0.1')
+  })
+
+  it('lets an explicit host win over local mode', () => {
+    expect(resolveAgentChannelHost('0.0.0.0', { RIVETOS_MODE: 'workspace' })).toBe('0.0.0.0')
+  })
+})
 
 describe('AgentChannel', () => {
   let channel: AgentChannel

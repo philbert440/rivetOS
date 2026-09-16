@@ -4,7 +4,10 @@
  * GET /health      → full health check with metrics, providers, channels
  * GET /health/live → simple liveness check (200 OK)
  *
- * Bind: RIVETOS_HEALTH_HOST (default 127.0.0.1) and RIVETOS_HEALTH_PORT (default 3100).
+ * Bind: RIVETOS_HEALTH_HOST and RIVETOS_HEALTH_PORT (default 3100).
+ * Omitted host is 0.0.0.0 so mesh nodes keep remote /health. Local mode
+ * (`RIVETOS_MODE=workspace`, or rivetos local writing RIVETOS_HEALTH_HOST)
+ * binds 127.0.0.1.
  */
 
 import { createServer, type Server } from 'node:http'
@@ -34,11 +37,19 @@ export interface HealthBind {
   port: number
 }
 
-/** Loopback unless RIVETOS_HEALTH_HOST / RIVETOS_HEALTH_PORT override. */
+const FLEET_HEALTH_HOST = '0.0.0.0'
+const LOCAL_HEALTH_HOST = '127.0.0.1'
+
+/** Fleet default is all interfaces. Local mode (`RIVETOS_MODE=workspace`) is loopback. */
 export function resolveHealthBind(env: NodeJS.ProcessEnv = process.env): HealthBind {
   const parsed = parseInt(env.RIVETOS_HEALTH_PORT ?? '3100', 10)
   const port = Number.isFinite(parsed) && parsed > 0 ? parsed : 3100
-  const host = env.RIVETOS_HEALTH_HOST?.trim() || '127.0.0.1'
+  const explicit = env.RIVETOS_HEALTH_HOST?.trim()
+  const host = explicit
+    ? explicit
+    : env.RIVETOS_MODE === 'workspace'
+      ? LOCAL_HEALTH_HOST
+      : FLEET_HEALTH_HOST
   return { host, port }
 }
 

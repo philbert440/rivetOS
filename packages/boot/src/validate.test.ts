@@ -1102,6 +1102,12 @@ describe('den', () => {
     }
   })
 
+  it('still requires tls_cert when den.terminal.open is true', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, host: '0.0.0.0', terminal: { enabled: true, open: true } }
+    assertError(validateConfig(cfg), 'den.tls_cert', /tls_cert.*required|required when/i)
+  })
+
   it('allows exposed terminals when tls_cert is set', () => {
     const cfg = validConfig()
     cfg.den = {

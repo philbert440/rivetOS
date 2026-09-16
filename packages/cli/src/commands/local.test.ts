@@ -280,6 +280,7 @@ describe('config/env emission lan vs no-lan', () => {
     expect(map.RIVETOS_SHARED_DIR).toBe('/tmp/rivetos-shared')
     expect(map.RIVETOS_ROOT).toBe('/opt/rivetos')
     expect(map.RIVETOS_MODE).toBe('workspace')
+    expect(map.RIVETOS_HEALTH_HOST).toBe('127.0.0.1')
     const mode = entries.find((e) => e.key === 'RIVETOS_MODE')
     expect(mode?.comment).toBe(
       'local mode runs from a source checkout; RIVETOS_ROOT is for the harness launchers',
@@ -707,6 +708,7 @@ describe('runInit / runUp / runBackup / runReset', () => {
       expect(yaml).toMatch(/advertise_mdns:\s*false/)
       const env = readFileSync(join(home, '.rivetos', '.env'), 'utf-8')
       expect(env).toContain('RIVETOS_MODE=workspace')
+      expect(env).toContain('RIVETOS_HEALTH_HOST=127.0.0.1')
       expect(statSync(join(home, '.rivetos', '.env')).mode & 0o777).toBe(0o600)
     } finally {
       rmSync(home, { recursive: true, force: true })

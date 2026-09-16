@@ -26,21 +26,40 @@ async function freeLoopbackPort(): Promise<number> {
 }
 
 describe('resolveHealthBind', () => {
-  it('defaults to loopback :3100', () => {
-    expect(resolveHealthBind({})).toEqual({ host: '127.0.0.1', port: 3100 })
+  it('defaults fleet nodes to all interfaces :3100', () => {
+    expect(resolveHealthBind({})).toEqual({ host: '0.0.0.0', port: 3100 })
+  })
+
+  it('binds loopback when RIVETOS_MODE is workspace', () => {
+    expect(resolveHealthBind({ RIVETOS_MODE: 'workspace' })).toEqual({
+      host: '127.0.0.1',
+      port: 3100,
+    })
   })
 
   it('reads host and port from env', () => {
     expect(
-      resolveHealthBind({ RIVETOS_HEALTH_HOST: '127.0.0.1', RIVETOS_HEALTH_PORT: '4100' }),
+      resolveHealthBind({ RIVETOS_HEALTH_HOST: '192.0.2.10', RIVETOS_HEALTH_PORT: '4100' }),
     ).toEqual({
-      host: '127.0.0.1',
+      host: '192.0.2.10',
       port: 4100,
     })
   })
 
-  it('treats blank host as loopback', () => {
-    expect(resolveHealthBind({ RIVETOS_HEALTH_HOST: '   ' }).host).toBe('127.0.0.1')
+  it('lets an explicit host win over local mode', () => {
+    expect(
+      resolveHealthBind({ RIVETOS_MODE: 'workspace', RIVETOS_HEALTH_HOST: '0.0.0.0' }).host,
+    ).toBe('0.0.0.0')
+  })
+
+  it('treats blank host as unset (fleet all-interfaces)', () => {
+    expect(resolveHealthBind({ RIVETOS_HEALTH_HOST: '   ' }).host).toBe('0.0.0.0')
+  })
+
+  it('treats blank host in local mode as loopback', () => {
+    expect(resolveHealthBind({ RIVETOS_MODE: 'workspace', RIVETOS_HEALTH_HOST: '   ' }).host).toBe(
+      '127.0.0.1',
+    )
   })
 })
 

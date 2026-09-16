@@ -754,7 +754,6 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
   }
 
   let terminalEnabled = false
-  let terminalOpen = false
   if (den.terminal !== undefined) {
     if (typeof den.terminal !== 'object' || Array.isArray(den.terminal) || den.terminal === null) {
       issues.push({
@@ -798,7 +797,6 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
         }
       }
       terminalEnabled = terminal.enabled === true
-      terminalOpen = terminal.open === true
     }
   }
 
@@ -899,21 +897,15 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
   const hasTls =
     typeof (den as { tls_cert?: string }).tls_cert === 'string' &&
     Boolean((den as { tls_cert?: string }).tls_cert?.trim())
-  if (
-    den.enabled === true &&
-    terminalEnabled &&
-    !terminalOpen &&
-    !DEN_LOOPBACK_HOSTS.has(host) &&
-    !hasTls
-  ) {
+  if (den.enabled === true && terminalEnabled && !DEN_LOOPBACK_HOSTS.has(host) && !hasTls) {
     issues.push({
       severity: 'error',
       path: `${path}.tls_cert`,
       message:
         '"den.tls_cert" (and den.tls_key) is required when den.terminal.enabled is true and den.host is not loopback ' +
         '(127.0.0.1/::1/localhost) — an exposed terminal without TLS would hang an unauthenticated ' +
-        'shell on the network. Set den.tls_cert/tls_key, bind den.host to loopback, disable terminals, ' +
-        'or set den.terminal.open: true on a trusted private network.',
+        'shell on the network. Set den.tls_cert/tls_key, bind den.host to loopback, or disable terminals. ' +
+        'den.terminal.open is ignored and is not a trusted-LAN waiver.',
     })
   }
 }
