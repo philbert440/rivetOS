@@ -463,7 +463,7 @@ Drives the local Grok Build `grok` binary headlessly — one `grok -p <prompt> -
 ```yaml
 providers:
   grok-cli:
-    binary: /home/rivet/.grok/bin/grok # default ~/.grok/bin/grok, then `grok` on PATH
+    binary: ~/.grok/bin/grok # default ~/.grok/bin/grok, then `grok` on PATH
     # model: grok-4.5                    # optional; omit for the CLI's configured model
     permission_mode: dontAsk # tools denied unless `allow` rules cover them
     reasoning_effort: medium # low|medium|high; a turn's `thinking` overrides
@@ -471,7 +471,7 @@ providers:
     no_plan: true
     system_prompt: prepend # prepend | override | off
     session: resume # resume | replay
-    cwd: /home/rivet/.rivetos/workspace
+    cwd: ~/.rivetos/workspace
     # allow: [Read, Grep]                # --allow rules for tool-using turns
 ```
 
@@ -534,15 +534,15 @@ to each other via mTLS. See [`docs/mesh.md`](mesh.md) for full documentation.
 ```yaml
 mesh:
   enabled: true
-  node_name: ct110 # must match the cert CN
-  tls: true # use default cert paths derived from node_name
+  node_name: <node_name> # must match the cert CN
+  tls: true # default cert paths derived from node_name and RIVETOS_SHARED_DIR
   agent_channel_port: 3000
-  storage_dir: /rivet-shared
+  # storage_dir omitted → $RIVETOS_SHARED_DIR (unset → product default shared root)
   heartbeat_interval_ms: 30000
   stale_threshold_ms: 90000
   discovery:
     mode: seed
-    seed_host: ct110.mesh # use .mesh DNS — matches cert SAN
+    seed_host: <node_name>.mesh # use .mesh DNS — matches cert SAN
     seed_port: 3000
 ```
 
@@ -551,11 +551,11 @@ mesh:
 | `mesh.enabled`               | bool           | `false`                                            | Enable mesh networking.                                                                                                  |
 | `mesh.node_name`             | string         | hostname                                           | Node name — **must match cert CN**.                                                                                      |
 | `mesh.tls`                   | bool \| object | —                                                  | mTLS config. **Required** when `mesh.enabled: true`.                                                                     |
-| `mesh.tls.ca_path`           | string         | `/rivet-shared/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM.                                                                                                            |
-| `mesh.tls.cert_path`         | string         | `/rivet-shared/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                           |
-| `mesh.tls.key_path`          | string         | `/rivet-shared/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                    |
+| `mesh.tls.ca_path`           | string         | `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. Unset `RIVETOS_SHARED_DIR` → product default.                                                          |
+| `mesh.tls.cert_path`         | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                       |
+| `mesh.tls.key_path`          | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                |
 | `mesh.agent_channel_port`    | number         | `3000`                                             | HTTPS port for the agent channel.                                                                                        |
-| `mesh.storage_dir`           | string         | `/rivet-shared`                                    | Directory containing `mesh.json`.                                                                                        |
+| `mesh.storage_dir`           | string         | `$RIVETOS_SHARED_DIR` (unset → product default)    | Directory containing `mesh.json`.                                                                                        |
 | `mesh.heartbeat_interval_ms` | number         | `30000`                                            | Heartbeat write interval.                                                                                                |
 | `mesh.stale_threshold_ms`    | number         | `90000`                                            | Age before a node is marked stale.                                                                                       |
 | `mesh.discovery.mode`        | string         | —                                                  | `seed` \| `static` \| `mdns`.                                                                                            |
@@ -576,8 +576,8 @@ den:
   port: 5174
   advertise_mdns: false
   # Off-loopback (host: 0.0.0.0) will not boot without TLS:
-  # tls_cert: /rivet-shared/rivet-ca/issued/<node>.crt
-  # tls_key: /rivet-shared/rivet-ca/issued/<node>.key
+  # tls_cert: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt
+  # tls_key: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key
 ```
 
 | Key              | Type    | Default         | Description                                                                                                  |
@@ -591,7 +591,7 @@ den:
 | `terminal`       | object  | —               | Local PTY terminals. Off by default. See `den.terminal.*`.                                                   |
 | `static_dir`     | string  | hub dist        | Override for the built hub app served at `/`.                                                                |
 | `root_redirect`  | string  | —               | 302 target for `GET /`.                                                                                      |
-| `files_root`     | string  | `/rivet-shared` | Shared filestore root for `/api/files/*`. Empty string disables the routes.                                  |
+| `files_root`     | string  | `$RIVETOS_SHARED_DIR` (unset → product default) | Shared filestore root for `/api/files/*`. Empty string disables the routes.                   |
 | `files_open`     | boolean | —               | Opt-out of the files security gate. Defaults to `terminal.open` when unset.                                  |
 | `devices`        | object  | —               | Mesh device enrollment (Settings → Devices). Off unless `devices.enabled`.                                   |
 | `advertise_mdns` | boolean | `false`         | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started. |
@@ -690,9 +690,9 @@ transports:
     port: 4321
     bind: 127.0.0.1 # default localhost
     tls: # optional mTLS
-      ca_path: /rivet-shared/rivet-ca/intermediate/ca-chain.pem
-      cert_path: /rivet-shared/rivet-ca/issued/<node>.crt
-      key_path: /rivet-shared/rivet-ca/issued/<node>.key
+      ca_path: $RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem
+      cert_path: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt
+      key_path: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key
 ```
 
 The transport is only activated when the matching `transports.<name>` slice is present. The MCP server can also run standalone via the `rivetos-mcp-server` bin shipped by `@rivetos/mcp-server`.

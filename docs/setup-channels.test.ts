@@ -1,6 +1,6 @@
 /**
  * Guards the published laptop install story: one-liner on prod, GitHub is not
- * the supported pin, mesh share is the in-app update feed.
+ * the supported pin, mesh update share is the in-app update feed.
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -22,7 +22,8 @@ describe('setup docs channels', () => {
       !/pin a tag from \[GitHub Releases\]/i.test(text),
       'GETTING-STARTED still tells readers to pin GitHub Releases',
     )
-    assert.match(text, /\/rivet-shared\/builds\/rivethub\//)
+    assert.match(text, /update share/)
+    assert.match(text, /in-app Updates/)
     assert.match(text, /production server/)
   })
 
@@ -36,7 +37,8 @@ describe('setup docs channels', () => {
       ['HUB-SETUP', hub],
     ] as const) {
       assert.ok(text.includes(ONE_LINER), `${name} missing one-liner`)
-      assert.match(text, /\/rivet-shared\/builds\/rivethub\//, `${name} missing mesh share`)
+      assert.match(text, /update share/, `${name} missing mesh update share`)
+      assert.match(text, /Updates/, `${name} missing in-app Updates`)
     }
     assert.match(releases, /## Channels/)
     assert.match(releases, /\*\*Stable\*\*/)

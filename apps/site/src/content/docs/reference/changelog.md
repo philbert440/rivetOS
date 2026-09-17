@@ -4,7 +4,6 @@ sidebar:
   order: 5
 description: Version history and release notes
 ---
-
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -44,7 +43,7 @@ First stable release. Everything since the 0.4.0 public beta: gateway + RivetHub
 - Gateway embedded in the rivetos process: `/api/tasks`, catalog, sessions, notifications WS, uploads, wiki, memory, workflows.
 - Workflows v1: journal-replay engine, step SDK, budget/`parallel`, gateway + RivetHub runs UI (#438, #441–#446).
 - MCP unification: core + sidecar split, era-negotiating stdio, MCP 2026-07-28 final / SDK 2.0 (#275, #276, #435, #451).
-- `RIVETOS_INSTALL_ROOT` and `RIVETOS_SHARED_DIR` replace hardcoded `/opt/rivetos` and `/rivet-shared` (#595, #590).
+- `RIVETOS_INSTALL_ROOT` and `RIVETOS_SHARED_DIR` replace hardcoded install-root and shared-dir defaults (#595, #590).
 - Identity contract in workspace templates — verify before assuming, maintain the user roster (#594).
 - Removed: Pulumi IaC, split container images, Telegram/Discord/voice-discord channels (Phase 5, #490), unused circuit-breaker/audit-rotation exports (#463), Rivet Team product (#530).
 

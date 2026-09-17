@@ -9,8 +9,8 @@ RivetOS separates its files across three root directories by concern:
 | Path | Purpose | Who writes it |
 |---|---|---|
 | `/opt/rivetos/` | System runtime (binaries, core, built-in plugins) | Install / update only |
-| `~/.rivetos/` (typically `/home/rivet/.rivetos/`) | Personal config + workspace for this instance | The agent + its human |
-| `/rivet-shared/` (or equivalent NFS mount) | Shared dev + multi-agent collaboration | Any agent, shared |
+| `~/.rivetos/` on the hub or agent host | Personal config + workspace for this instance | The agent + its human |
+| `$RIVETOS_SHARED_DIR` (unset → product default shared root) | Shared mesh data directory (often a network mount) | Any agent, shared |
 
 Agents should treat these boundaries as hard contracts. Never assume or hallucinate paths. If unsure, consult this file.
 
@@ -48,7 +48,7 @@ rivetos plugins list
 
 ## 2. Config & workspace: `~/.rivetos/`
 
-The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. The systemd service runs as the `rivet` user, so this resolves to `/home/rivet/.rivetos/`.
+The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos` plus a persistent workspace. On the hub or agent host this is `~/.rivetos/` for the account that runs the service.
 
 **What belongs:**
 
@@ -88,14 +88,13 @@ The per-instance home directory. Equivalent to a Unix user's `~/.config/rivetos`
 
 ---
 
-## 3. Shared collaboration: `/rivet-shared/`
+## 3. Shared mesh data directory
 
-Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent) shared by every agent on the mesh, typically also mounted on the human's workstation. Neutral territory, not tied to any single agent's config.
+Cross-agent, multi-instance collaborative workspace. This is the shared mesh data directory you configured (`$RIVETOS_SHARED_DIR`; unset → product default shared root). Deployments often mount it from the datahub host. Neutral territory, not tied to any single agent's config.
 
 **What belongs:**
 
 - `rivetos/users.json`: tenancy registry (user id → devices → database handle). Source of truth for per-user memory routing. Override path with `RIVETOS_USERS_FILE`.
-- `RivetOS/`: the shared clone of the source tree (development and PRs happen here; runtimes run from `/opt/rivetos/`)
 - Project plans, roadmaps, specifications (`*.md`, diagrams)
 - Shared repositories or project directories
 - Research notes, meeting summaries, decision logs
@@ -109,12 +108,12 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 - **Never** store personal config, runtime code, per-session ephemeral state, or secrets here.
 - Coordinate via channels or shared plans when modifying shared files to avoid conflicts.
 
-**Example safe paths:**
+**Example safe paths** (under `$RIVETOS_SHARED_DIR`):
 
 ```
-/rivet-shared/RivetOS/              # shared dev clone of the repo
-/rivet-shared/planning/roadmap.md
-/rivet-shared/projects/some-project/
+$RIVETOS_SHARED_DIR/planning/roadmap.md
+$RIVETOS_SHARED_DIR/projects/some-project/
+$RIVETOS_SHARED_DIR/meetings/
 ```
 
 ---
@@ -128,11 +127,10 @@ Cross-agent, multi-instance collaborative workspace. An NFS mount (or equivalent
 | Read / write daily notes | `~/.rivetos/workspace/memory/` | Personal memory |
 | Edit config or add a provider | `~/.rivetos/config.yaml` | Per-instance config |
 | Store API keys or secrets | `~/.rivetos/.env` | **Only place for secrets** |
-| Develop a RivetOS feature / open a PR | `/rivet-shared/RivetOS/` | Shared dev clone |
-| Collaborate on a shared plan | `/rivet-shared/planning/` | Shared dev |
-| Clone a repo for a team project | `/rivet-shared/projects/` | Shared dev |
+| Collaborate on a shared plan | `$RIVETOS_SHARED_DIR/planning/` | Shared mesh data |
+| Clone a repo for a team project | `$RIVETOS_SHARED_DIR/projects/` | Shared mesh data |
 | Temporary scratch for one turn | `/tmp/` or `~/.rivetos/workspace/scratch/` | Personal / ephemeral |
-| Multi-agent meeting notes | `/rivet-shared/meetings/` | Shared |
+| Multi-agent meeting notes | `$RIVETOS_SHARED_DIR/meetings/` | Shared mesh data |
 
 ---
 
