@@ -1,32 +1,46 @@
 # RivetHub
 
-> RivetHub is a self-hosted hub that records sessions, tool calls, and outputs from AI coding tools, and makes that history searchable — by you and by the tools themselves. It is a distribution of the open-source RivetOS runtime.
+> RivetHub is a self-hosted hub that records sessions, tool calls, and outputs from AI coding tools, and makes that history searchable by you and by the tools themselves. It is a distribution of the open-source RivetOS runtime.
 
-## Start here
+If a human asked you to set up RivetHub, follow these steps. The prompt they may have pasted is:
 
-- [Product and examples](https://rivethub.io/): the problem RivetHub solves, how capture and recall work, and which agent tools are shipped versus planned. Product screenshots show the real desktop app, including a memory search inside a live session and a terminal replay of a saved exchange.
-- [Quickstart](https://rivethub.io/install-local.html): Linux and macOS installation and first use.
-- [Omarchy setup](https://rivethub.io/omarchy.html): Linux desktop installation, Omarchy appearance, terminal palette sync, and first capture verification. Theme detection requires the desktop app; refocus it after changing themes.
-- [Supported integrations](https://rivethub.io/install-local.html#harnesses): Claude Code, Codex, Grok Build, Kimi Code, and Hermes are shipped. opencode and pi are planned; verify capture and recall for each configured integration.
-- [Applications](https://rivethub.io/apps.html): Linux and Windows desktop clients, Android app, and macOS browser use. There is no iPhone app yet; enrollment QR codes are for Android.
-- [Common questions](https://rivethub.io/#questions): current capabilities, local processing boundaries, and planned features.
+Read https://rivethub.io/llms.txt and set up RivetHub on this machine.
+
+## Set up on this machine
+
+1. Confirm the host is Linux or macOS. Windows cannot run the hub installer. A Windows desktop client talks to a hub running elsewhere.
+2. Fetch and run the laptop installer:
+
+   `curl -fsSL https://get.rivethub.io/local.sh | bash`
+
+   The installer can install Node.js 22+ if it is missing.
+3. Verify the node with `rivetos local status`. The node answers at https://localhost:5174. On Linux the desktop app installs and finds localhost. On macOS the browser is the app for now. A desktop app is planned.
+4. The installer wires capture and recall for supported tools it finds. If a tool is installed later, re-run the installer.
+5. Confirm capture and recall from the installer output, then open the node.
+
+Detail pages: [laptop quickstart](https://rivethub.io/install-local.html), [Omarchy](https://rivethub.io/omarchy.html), [server](https://rivethub.io/server.html).
 
 ## Availability and data boundaries
 
-The local hub installer supports Linux and macOS. Windows has a client, not a native local-hub installer. The macOS desktop app is planned; use the browser on macOS.
+The local hub installer supports Linux and macOS. Windows has a client, not a native local-hub installer. There is an Android app. There is no iPhone app. Enrollment QR codes are for Android. The macOS desktop app is planned. Use the browser on macOS.
+
+Shipped tools: Claude Code, Codex, Grok Build, Kimi Code, Hermes, OpenCode, and pi.
 
 Full-text and fuzzy search work without an embedding endpoint. Semantic search needs an optional embedding service. Collection is local, but configured agent, embedding, and compaction providers process the inputs sent to them. Do not infer that all processing is offline or that every integration is connected merely because it is supported.
 
-Embedding and compaction endpoints and models can be configured on the server today. Choosing or changing those options from Desktop Settings → Memory is planned. Guided dataset curation/training-ready export is also planned. Do not describe those desktop controls or export workflows as shipped features. RivetHub does not currently offer a one-click SFT training pipeline.
+Embedding and compaction endpoints and models can be configured on the server today. Choosing or changing those options from Desktop Settings → Memory is planned. Guided dataset curation and one-click SFT are planned and not shipped. Do not describe those desktop controls or export workflows as shipped features.
 
-## Server setup, support, and releases
+## Releases, support, and further reading
 
-- [Release explanation](https://rivethub.io/releases.html): runtime and app channels are distinct.
-- [Current release manifest](https://rivethub.io/releases/latest.json): consult this for current versions, checksums, and app download filenames instead of inferring versions from examples.
-- [Server setup](https://rivethub.io/server.html): server, VM, or system container setup, from datahub to agent node and verification.
+- [Current release manifest](https://rivethub.io/releases/latest.json): consult this for current versions, checksums, and app download filenames. Do not invent version numbers.
+- [Release explanation](https://rivethub.io/releases.html)
+- [Product and examples](https://rivethub.io/)
+- [Applications](https://rivethub.io/apps.html)
+- [Common questions](https://rivethub.io/#questions)
+- [Server setup](https://rivethub.io/server.html)
+- [Datahub setup](https://rivethub.io/install-datahub.html)
+- [Add a node](https://rivethub.io/install-node.html)
 - [Support](https://rivethub.io/support.html): GitHub issues, email rivetphilbot@gmail.com, or @rivetphilbot on X.
 - [Privacy](https://rivethub.io/privacy.html): rivethub.io may record anonymous marketing-site pageviews. Self-hosted RivetHub / RivetOS do not phone home.
-- [Datahub setup](https://rivethub.io/install-datahub.html): dedicated hub.
-- [Add a node](https://rivethub.io/install-node.html): expand to another machine.
-- [Runtime documentation](https://rivetos.dev/): RivetOS documentation.
-- [Runtime source](https://github.com/philbert440/rivetOS): open-source code.
+- [Runtime documentation](https://rivetos.dev/)
+- [Runtime source](https://github.com/philbert440/rivetOS)
