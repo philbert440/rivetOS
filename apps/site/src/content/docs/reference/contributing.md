@@ -10,7 +10,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ## Prerequisites
 
-- **Node.js ≥ 22** (24 is used in CI and containers) — [download](https://nodejs.org)
+- **Node.js ≥ 22** for `npm install` and `rivetos local` — **`rivetos init` requires Node ≥ 24** (24 is used in CI and containers) — [download](https://nodejs.org)
 - **npm** (comes with Node)
 - **Git**
 

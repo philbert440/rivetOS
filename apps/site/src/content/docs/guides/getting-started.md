@@ -4,7 +4,13 @@ sidebar:
   order: 2
 description: Get RivetOS running in under 5 minutes
 ---
-Get RivetOS running in under 5 minutes. The supported laptop path is one command on [rivethub.io](https://rivethub.io/). Clone-and-`rivetos init` is the development / mesh-node path.
+**First success is three steps.** Everything else on this page is a branch — take it only after the node answers and one session is recorded.
+
+1. Have a supported coding tool installed (Claude Code is the reference).
+2. `curl -fsSL https://get.rivethub.io/local.sh | bash`
+3. Start a **new session** in that tool so MCP recall loads (restart the tool, or on Grok run `/mcps reload`). Open RivetHub (Linux AppImage, or `https://localhost:5174`) and use the tool. Success = this new-session turn appears in Hub **and** a `memory_search` from the tool returns it. An already-open session will not see the new MCP server.
+
+Do **not** start with Docker, Proxmox, `rivetos init`, mesh enroll, or a Postgres URL. Those are day-2. Windows downloads the desktop app and talks to a Linux/mac node. Android pairs after the laptop is up (Settings → Devices QR). Developers clone this repo and run `npx rivetos local`, not `npx rivetos init`.
 
 ---
 
@@ -24,7 +30,7 @@ Day-2: `rivetos local status`, `rivetos local backup`, `rivetos local reset`. Fu
 
 | Requirement | Version | Check |
 |---|---|---|
-| Node.js | ≥ 22 (24 used in CI/containers) | `node --version` |
+| Node.js | ≥ 22 for `npm install` / `rivetos local`; **≥ 24 for `rivetos init`** (24 used in CI/containers) | `node --version` |
 | npm | ≥ 10 | `npm --version` |
 | Git | any | `git --version` |
 | Docker (optional) | ≥ 24 | `docker --version` |
@@ -124,10 +130,11 @@ npm install
 ### 2. Create your config
 
 ```bash
-cp config.example.yaml config.yaml
+mkdir -p ~/.rivetos
+cp config.example.yaml ~/.rivetos/config.yaml
 ```
 
-Edit `config.yaml` with your settings:
+The CLI, `rivetos doctor`, and Docker Compose bind-mount **`~/.rivetos/config.yaml`** (not a repo-root `config.yaml`). Edit that file:
 
 ```yaml
 runtime:
@@ -155,14 +162,15 @@ memory:
 ### 3. Set up secrets
 
 ```bash
-cp .env.example .env
+cp .env.example ~/.rivetos/.env
 ```
 
-Edit `.env`:
+Edit `~/.rivetos/.env`. Compose's datahub currently hardcodes user/password `rivetos`/`rivetos` and publishes **host 5433 → container 5432**. A repo-root `.env` is not what the agent container reads.
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
+# Inside Compose: host is `datahub`, port 5432. From the host machine: localhost:5433.
+RIVETOS_PG_URL=postgresql://rivetos:rivetos@datahub:5432/rivetos
 ```
 
 > **Security:** Never put API keys in `config.yaml`. Always use `.env` or environment variables.
@@ -226,19 +234,38 @@ sudo apt install postgresql-16 postgresql-16-pgvector
 brew install postgresql@16
 brew install pgvector
 
-# Create database
-createdb rivetos
-psql rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
+# Create a login that matches the URL in step 3. `createdb rivetos` alone
+# does not create user/password `rivetos` / `rivetos`.
+# Ubuntu/Debian
+sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
+CREATE USER rivetos WITH PASSWORD 'rivetos';
+CREATE DATABASE rivetos OWNER rivetos;
+SQL
+sudo -u postgres psql -d rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# macOS (Homebrew) — your account is the superuser
+psql postgres -v ON_ERROR_STOP=1 <<'SQL'
+CREATE USER rivetos WITH PASSWORD 'rivetos';
+CREATE DATABASE rivetos OWNER rivetos;
+SQL
+psql -d rivetos -c "CREATE EXTENSION IF NOT EXISTS vector;"
 ```
 
 ### 3. Create config and secrets
 
 ```bash
-cp config.example.yaml config.yaml
-cp .env.example .env
+mkdir -p ~/.rivetos
+cp config.example.yaml ~/.rivetos/config.yaml
+cp .env.example ~/.rivetos/.env
 ```
 
-Edit both files as described in Option B, steps 2-3.
+Edit `~/.rivetos/config.yaml` as in Option B, step 2. Do **not** copy Option B's `RIVETOS_PG_URL`. `datahub` only resolves inside Compose. Use the localhost login created above:
+
+```bash
+RIVETOS_PG_URL=postgresql://rivetos:rivetos@localhost:5432/rivetos
+```
+
+`rivetos start` reads `~/.rivetos/config.yaml` by default.
 
 ### 4. Create workspace
 
@@ -246,15 +273,15 @@ Edit both files as described in Option B, steps 2-3.
 mkdir -p ~/.rivetos/workspace/memory
 ```
 
-Add your workspace files (templates ship under `workspace-templates/` in the repo; `rivetos init` copies them in for you):
+Add your workspace files (templates ship under `workspace-templates/` in the repo; `rivetos init` / `rivetos local` copy them in for you):
 
 | File | Purpose | Required? |
 |---|---|---|
-| `~/.rivetos/workspace/CORE.md` | Agent identity and personality | Yes |
-| `~/.rivetos/workspace/USER.md` | Who the agent is helping | Yes |
-| `~/.rivetos/workspace/WORKSPACE.md` | Operating rules and conventions | Yes |
-| `~/.rivetos/workspace/MEMORY.md` | Context index for the memory system | Optional |
-| `~/.rivetos/workspace/CAPABILITIES.md` | Extended tool/skill reference | Optional |
+| `~/.rivetos/workspace/AGENT.md` | Agent identity and personality | Yes (`rivetos doctor` fails without it) |
+| `~/.rivetos/workspace/MEMORY.md` | Context index for the memory system | Yes |
+| `~/.rivetos/workspace/users/` | Per-user notes (optional) | Optional |
+
+Legacy `CORE.md` / `USER.md` / `WORKSPACE.md` names are migration hints only — do not create those as the required trio.
 
 See the [Workspace Files](#workspace-files) section below for details.
 
@@ -278,55 +305,34 @@ npx rivetos service start
 
 ## Workspace files
 
-Workspace files are markdown documents injected into the agent's system prompt. They define who the agent is and how it behaves.
+The loader (`packages/core/src/domain/workspace.ts`) injects two files into the system prompt. `rivetos doctor` fails if either is missing. Full templates ship in `workspace-templates/`.
 
 ### Required files
 
-**`CORE.md`**: agent identity, personality, values, and behavioral rules.
+**`AGENT.md`**: agent identity, operating contract, and owner / routed-user gate.
 ```markdown
-# CORE.md — Who You Are
+# AGENT.md — Rivet
 
-You are a helpful AI assistant named Rivet.
-
-## Working Style
-- Be direct and concise
-- Show your reasoning
-- Ask before making destructive changes
+You are Rivet, an engineering partner. Search memory before you re-derive a solved problem.
 ```
 
-**`USER.md`**: information about the person the agent is helping.
+**`MEMORY.md`**: a short index of where to look (search vs browse vs wiki).
 ```markdown
-# USER.md — About Your Human
+# MEMORY.md — where answers live
 
-- **Name:** Phil
-- **Timezone:** America/New_York
-- **Preferences:** TypeScript, Next.js, direct communication
+Use `memory_search` for decisions. Use `memory_browse` when you know the day.
+If memory and a workspace file disagree, memory wins. Update the file.
 ```
 
-**`WORKSPACE.md`**: operating rules, safety boundaries, and conventions.
-```markdown
-# WORKSPACE.md — Operating Rules
-
-## Safety
-- Don't delete files without asking
-- Don't send emails without approval
-- Keep secrets private
-
-## Every Session
-1. Read CORE.md, USER.md, WORKSPACE.md
-2. Check recent memory files
-3. Get to work
-```
+Legacy `CORE.md` / `USER.md` / `WORKSPACE.md` at the workspace root are not loaded. Doctor treats them as migration hints into `AGENT.md`.
 
 ### Optional files
 
-**`MEMORY.md`**: a lightweight index into the memory system. The agent uses this to know what to search for.
+**`users/<profile>.md`**: per-user notes. A matching profile is appended as `## USER.md (<profile>)`. The owner identity lives in `AGENT.md`.
 
-**`CAPABILITIES.md`**: extended reference for tools, skills, and infrastructure. Included in the system prompt for local models where token cost isn't a concern.
+**`HEARTBEAT.md`**: periodic background-task checklist. Injected on heartbeat turns only.
 
-**`HEARTBEAT.md`**: instructions for periodic background tasks. Only injected during heartbeat turns, not regular conversation.
-
-**`memory/YYYY-MM-DD.md`**: daily notes. The agent reads recent daily notes for context continuity between sessions.
+**`memory/YYYY-MM-DD.md`**: daily notes. The agent searches these through memory tools. They are not pinned into the system prompt.
 
 ---
 
@@ -389,7 +395,8 @@ rivetos ollama models                 # List local Ollama models
 
 # Mesh (multi-node)
 rivetos mesh list|ping|status
-rivetos mesh join <host>              # Join an existing mesh via a seed node
+rivetos mesh enroll <user@host> --name <node>   # Join a RivetHub mesh
+rivetos mesh join --manual <host>               # Legacy seed-node YAML only
 rivetos keys rotate|list|status       # Manage mesh keys
 
 # Memory & database
@@ -435,7 +442,7 @@ rivetos skills list
 
 **Docker containers won't start?**
 - Run `docker compose -f infra/docker/rivetos/docker-compose.yml logs datahub` to check PostgreSQL
-- Ensure port 5432 isn't already in use
+- Ensure host port **5433** (Compose maps 5433→5432) isn't already in use
 - Try `npx rivetos build` to rebuild images
 
 **Memory search returns nothing?**

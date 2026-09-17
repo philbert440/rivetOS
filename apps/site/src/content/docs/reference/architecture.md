@@ -88,7 +88,7 @@ Web / Desktop / Android
 │       ┌───────────┬───────────┼───────────┬───────────┐                  │
 │       ▼           ▼           ▼           ▼           │                  │
 │  claude-code  grok-build  kimi-code  hermes          │                  │
-│  codex        opencode    pi         (seven drivers) │                  │
+│  codex        opencode    pi         qwen-code       │                  │
 │       │           │           │           │           │                  │
 │       └───────────┴─────┬─────┴───────────┘           │                  │
 │                         ▼                             │                  │
@@ -134,7 +134,7 @@ Web / Desktop / Android
 
 ### What clients do
 
-RivetHub (web + Tauri desktop) and Android are **remote faces of the node**. They bind per session: if a registered driver claims the row, chat streams and sends through the harness control plane; otherwise a legacy path may still apply for unclaimed rows. No client runs an on-device agent loop for the product path.
+RivetHub (web + Electron desktop) and Android are **remote faces of the node**. They bind per session: if a registered driver claims the row, chat streams and sends through the harness control plane; otherwise a legacy path may still apply for unclaimed rows. No client runs an on-device agent loop for the product path.
 
 ---
 
@@ -229,7 +229,7 @@ den dispatches by literal path prefixes (no dynamic segments). Contract names ma
 ### Clients on the plane
 
 - **Hub chat** (`apps/rivethub-web`): per-session bind via `@rivetos/gateway-client`; harness rows stream on harness WS; unclaimed rows keep legacy gateway chat. Capability-gated Stop; approvals false today. See [HUB-SETUP.md](/guides/hub-setup/).
-- **Desktop**: Tauri v2 shell over the same Hub dist.
+- **Desktop**: Electron shell (`apps/rivethub-electron`) over the same Hub dist.
 - **Android**: Kotlin re-implementation of the same semantics (`HarnessControlPlaneClient`, etc.); no on-device agent loop. Uploads UI and `session-created` fast path deferred.
 
 ---
@@ -247,7 +247,8 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 │  sessions · identity · uploads · den · term · files    │
 ├────────────────────────────────────────────────────────┤
 │  Host harnesses (external processes)                   │
-│  claude · grok · kimi · hermes · codex · opencode · pi │
+│  claude · grok · kimi · hermes · codex · opencode ·    │
+│  pi · qwen                                             │
 ├────────────────────────────────────────────────────────┤
 │                    Plugins (Adapters)                  │
 │                                                        │
@@ -326,7 +327,7 @@ The plugin/domain split remains the internal structure of the runtime. The **pro
 ### Core concepts
 
 ```
-Harness      — external coding host (claude-code | grok-build | kimi-code | hermes | codex | opencode | pi)
+Harness      — external coding host (claude-code | grok-build | kimi-code | hermes | codex | opencode | pi | qwen-code)
 SessionId    — canonical <harness-id>:<native-session-id>
 Driver       — per-node HarnessDriver adapting store + den + term to the contract
 Agent        — named identity with provider/workspace (secondary path + mesh identity)
@@ -495,10 +496,11 @@ rivetOS/
     mcp-sidecar/
   apps/
     rivethub-web/                ← RivetHub (primary UI)
-    rivethub-electron/           ← Electron shell over hub dist
-    rivet-android/               ← remote client
-    den/                         ← den viewer SPA
-    site/                        ← Astro docs site
+    rivethub-electron/           ← Electron shell over hub dist (own lockfile)
+    rivethub-android/            ← thin Hub client (Apache-2.0)
+    rivet-android/               ← on-device node (AGPL); not the Hub client
+    rivethub-site/               ← rivethub.io (not an npm workspace member)
+    site/                        ← rivetos.dev Astro docs
   integrations/                  ← capture + den hooks (claude-code, grok, kimi, hermes, opencode, pi, codex); qwen-code capture-only (no den hook)
 ```
 
@@ -936,7 +938,7 @@ Multiple RivetOS instances form a mesh for cross-instance collaboration:
 - **Registry:** File-based `mesh.json` with heartbeat and pruning
 - **Discovery:** Seed nodes or mDNS-based auto-discovery
 - **Delegation:** transparent routing; `delegate_task` checks local agents first, then mesh peers
-- **Join flow:** `rivetos init --join <host>` discovers existing datahub and registers with the mesh
+- **Join flow:** `rivetos mesh enroll <user@host> --name <node>` (SSH to the datahub helper). `rivetos init --join` only pings a seed; `rivetos mesh join <host>` without `--manual` exits non-zero by design.
 - **Fleet updates:** `rivetos update --mesh` rolls updates across mesh nodes with health checks
 - **Den mesh:** den-enabled nodes advertise den port/url for multi-node dens
 

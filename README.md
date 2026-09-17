@@ -36,32 +36,20 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 ## Quick start
 
-Laptop (supported):
+**One happy path** — laptop node + first captured chat. Mesh, Docker, Proxmox, and `rivetos init` come later.
+
+1. Have a supported coding tool on PATH (Claude Code is the reference; Codex, Grok, Kimi, Hermes, opencode, pi, and qwen-code also wire in).
+2. Install the node:
 
 ```bash
 curl -fsSL https://get.rivethub.io/local.sh | bash
 ```
 
-Desktop and Android first downloads: [rivethub.io](https://rivethub.io/). In-app updates read the mesh share `/rivet-shared/builds/rivethub/`.
+3. Start a **new session** in that tool so MCP recall loads (restart the tool, or on Grok run `/mcps reload`). Open RivetHub: the Linux AppImage the installer launched, or `https://localhost:5174`. First win is that this new-session turn appears in Hub **and** a `memory_search` from the tool returns it. An already-open session will not see the new MCP server.
 
-Source checkout (development):
+Desktop / Windows / Android first downloads: [rivethub.io](https://rivethub.io/). Phone pairing and mesh are day-2 — [Getting Started](docs/GETTING-STARTED.md).
 
-```bash
-git clone https://github.com/philbert440/rivetOS.git
-cd rivetOS
-npm install
-
-# Interactive setup — configures everything
-npx rivetos init
-
-# Or manual setup:
-cp config.example.yaml config.yaml
-cp .env.example .env
-# Edit both files, then:
-npx rivetos start
-```
-
-See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
+**Developers** (this repo): `npm install` then `npx rivetos local` (Node ≥ 22). Do **not** start with `npx rivetos init` — that wizard is Node ≥ 24 and targets Docker / mesh / datahub.
 
 ## Architecture
 
@@ -85,9 +73,9 @@ See [Getting Started](docs/GETTING-STARTED.md) for the full guide.
 │  │ Response │<───│Workspace │    │     Memory           │     │
 │  │ sent to  │    │ (domain) │    │    (plugin)          │     │
 │  │ channel  │    │          │    │                      │     │
-│  │          │    │ CORE.md  │    │ append transcript    │     │
-│  │          │    │ USER.md  │    │ search context       │     │
-│  │          │    │ MEMORY.md│    │ hybrid FTS+vector    │     │
+│  │          │    │ AGENT.md │    │ append transcript    │     │
+│  │          │    │ MEMORY.md│    │ search context       │     │
+│  │          │    │          │    │ hybrid FTS+vector    │     │
 │  └──────────┘    └──────────┘    └──────────────────────┘     │
 │                                                               │
 │  ┌──────────────┐  ┌──────────┐  ┌────────────────────────┐   │
@@ -127,11 +115,12 @@ rivetOS/
 │   └── transports/     # mcp-server (expose RivetOS tools over MCP StreamableHTTP)
 ├── services/           # den-server, embedding-worker, compaction-worker, mcp-sidecar
 ├── apps/
-│   ├── den/            # rivet-den companion renderer
-│   ├── rivethub-web/   # RivetHub web client
-│   ├── rivethub-electron/ # RivetHub Electron desktop shell
-│   ├── rivet-android/  # RivetHub Android client (AGPL RikkaHub fork)
-│   └── site/           # Astro docs site
+│   ├── rivethub-web/      # RivetHub web client (gateway UI)
+│   ├── rivethub-electron/ # RivetHub Electron desktop shell (own lockfile; not an npm workspace member)
+│   ├── rivethub-android/  # RivetHub Android client (thin gateway client, Apache-2.0)
+│   ├── rivet-android/     # On-device RivetOS node (AGPL RikkaHub fork) — not the Hub client
+│   ├── rivethub-site/     # rivethub.io marketing / install pages (Nx only; not an npm workspace member)
+│   └── site/              # rivetos.dev Astro docs (synced from docs/ via apps/site/scripts/sync-docs.mjs)
 ├── infra/              # Container Dockerfiles, Compose files, provisioning scripts
 └── docs/               # Full documentation (incl. example configs under docs/examples/)
 ```
@@ -212,17 +201,14 @@ API keys always go in `.env`, never in config files. See [Config Reference](docs
 
 ## Workspace files
 
-Markdown files injected into the agent's system prompt:
+The loader injects two files into the system prompt (`rivetos doctor` requires both):
 
-| File                   | Purpose                                         |
-| ---------------------- | ----------------------------------------------- |
-| `CORE.md`              | Agent identity, personality, behavioral rules   |
-| `USER.md`              | Who the owner is                                |
-| `WORKSPACE.md`         | Operating rules, safety boundaries, conventions |
-| `MEMORY.md`            | Lightweight context index (query-based)         |
-| `CAPABILITIES.md`      | Extended tool/skill reference (local models)    |
-| `HEARTBEAT.md`         | Background task instructions                    |
-| `memory/YYYY-MM-DD.md` | Daily notes for continuity                      |
+| File | Purpose |
+| --- | --- |
+| `AGENT.md` | Agent identity, operating contract, owner / routed-user gate |
+| `MEMORY.md` | Lightweight context index (query-based) |
+
+Optional: `users/<profile>.md` (appended as `USER.md` for a matching profile), `HEARTBEAT.md` (heartbeat turns only), `memory/YYYY-MM-DD.md` (daily notes, searched not pinned). Legacy `CORE.md` / `USER.md` / `WORKSPACE.md` at the workspace root are not loaded.
 
 ## CLI reference
 
@@ -251,7 +237,8 @@ Containers & Service:
 
 Mesh:
   rivetos mesh list|ping|status   Mesh management
-  rivetos mesh join <host>        Join an existing mesh
+  rivetos mesh enroll <user@host> --name <node>   Join a RivetHub mesh
+  rivetos mesh join --manual <host>               Legacy seed-node YAML only
 
 Memory:
   rivetos memory backfill-tool-synth   Synthesize content for historical tool calls
