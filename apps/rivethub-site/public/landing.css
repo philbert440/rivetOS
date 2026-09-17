@@ -27,6 +27,7 @@
 .status-dot { display:inline-block; width:7px; height:7px; background:var(--green); border-radius:50%; flex-shrink:0; }
 .landing h1 { font-size:clamp(2.75rem,4.5vw,4rem); line-height:1.06; letter-spacing:-.06em; }
 .hero-description { font-size:17px; margin-top:25px !important; max-width:510px; }
+.landing .hero-lead { font-size:16px; margin-top:20px; max-width:510px; color:var(--ink); font-weight:500; }
 .actions { display:flex; align-items:center; gap:26px; flex-wrap:wrap; margin:29px 0 16px; }
 .landing .button { display:inline-flex; align-items:center; justify-content:center; min-height:52px; gap:25px; padding:13px 22px; border-radius:8px; font-size:14px; font-weight:700; letter-spacing:0; }
 .landing .button.primary { background:var(--green); color:white; box-shadow:0 3px 0 #005c45; }
@@ -88,6 +89,9 @@
 .setup-section { background:#eeeee5; border-block:1px solid var(--rule); }
 .setup-layout { display:grid; grid-template-columns:1.15fr 1fr; gap:65px; align-items:start; }
 .installer-card { background:#fffef9; border:1px solid #ced7c8; border-radius:12px; padding:25px; }
+.setup-manual { margin-top:42px; }
+.setup-manual > h3 { font-size:1.35rem; margin-bottom:8px; }
+.setup-manual > p { font-size:14px; }
 .platform-controls { display:flex; gap:6px; border-bottom:1px solid var(--rule); padding-bottom:18px; margin-bottom:25px; }
 .platform-controls button { padding:10px 18px; min-height:44px; background:none; border:0; border-radius:5px; color:var(--soft); font-size:13px; }
 .platform-controls button[aria-pressed=true] { color:var(--green); background:var(--mint); font-weight:700; }
@@ -146,6 +150,7 @@
 .settings-footnote { margin-top:15px !important; }
 .final-section { padding:72px 0 82px; border-top:1px solid var(--rule); text-align:center; background:radial-gradient(ellipse at bottom,#e0ead9,transparent 75%); }
 .final-section h2 { font-size:clamp(2rem,4vw,3rem); margin:20px 0 28px; }
+.final-section .term { max-width:580px; margin:28px auto 0; text-align:left; }
 .final-section p:last-child { margin-top:22px; font-size:13px; }
 .landing-footer { border-top:1px solid var(--rule); padding:32px 0; }
 .landing-footer>.landing-wrap { display:flex; gap:25px; justify-content:space-between; }
@@ -156,8 +161,8 @@
 @media(prefers-reduced-motion:no-preference) { .memory-window { transition:transform .3s ease; } .landing .button { transition:background .15s ease; } }
 @media(max-width:1000px) { .hero { gap:32px; } .wide-break { display:none; } .story-scene { gap:30px; } .setup-layout,.ownership-grid,.next-section { gap:35px; } .use-grid article,.now-grid article { padding:20px; } }
 @media(max-width:760px) { .landing-wrap { padding-inline:23px; } .header-inner { min-height:75px; gap:12px; } .header-inner nav { gap:12px; } .header-inner nav>a:not(.nav-start) { display:none; } .header-inner nav .nav-start { padding-inline:13px; gap:12px; font-size:12px; } .hero { grid-template-columns:1fr; gap:42px; padding-top:48px; padding-bottom:52px; } .landing h1 { font-size:clamp(2.6rem,9vw,3.8rem); } .hero-description { font-size:16px; } .memory-window { max-width:520px; width:calc(100% - 10px); transform:none; } .hero .eyebrow { font-size:10px; } .actions { gap:20px; } .section { padding-block:54px; } .story-controls { gap:5px; } .story-controls button { flex:1; display:block; padding:12px 7px; text-align:left; } .story-controls button span { display:block; font-size:11px; margin-top:5px; } .story-stage { padding:20px; } .story-scene { grid-template-columns:1fr; gap:25px; } .scene-copy h3 { font-size:29px; } .record-card { padding:17px; } .record-header { flex-wrap:wrap; } .setup-layout,.ownership-grid,.next-section,.use-grid,.now-grid { grid-template-columns:1fr; } .installer-card { padding:19px; } .setup-steps { margin-top:5px; } .setup-after { gap:14px; flex-direction:column; } .use-grid article { padding:25px; } .use-icon { margin-bottom:22px; } .ownership-grid { gap:38px; } .next-section { gap:28px; } .settings-heading { flex-wrap:wrap; } .landing-footer>.landing-wrap { flex-direction:column; gap:16px; } .landing-footer nav { gap:15px; } }
-/* Hero command block: the install command is the primary CTA. */
 .hero .term { max-width:580px; margin:28px 0 6px; }
+.hero .term + .term { margin-top:10px; }
 .hero .term pre { white-space:pre-wrap; overflow-wrap:anywhere; }
 .hero .actions { margin-top:16px; }
 
