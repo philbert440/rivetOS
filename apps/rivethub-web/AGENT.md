@@ -14,9 +14,9 @@
 
 ### Sidebar pages (2026-07-10)
 
-Rail: Conversations (`/`), Terminal — separator — Memory, Files, Tasks, Workflows — Settings. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat].
+Rail: Conversations (`/`), Sessions — Memory, Files — separator — Tasks, Workflows — Settings. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat]. The standalone Terminal page is gone; terminal is a per-session mode inside Chat.
 
-- **Terminal** (`/terminal`) lands on the node's open-PTY list (click to attach); the tab bar remains the quick switcher.
+- **Sessions** (`/sessions`, `/sessions/$sessionId`) — see **Session pages** below.
 - **Memory** (`/memory`, `/memory?tab=wiki|browse|stats`, `/memory/$slug`) = hub: **Search / Wiki / Browse / Stats**. Wiki tab is the existing encyclopedia over datahub `GET /api/wiki`. Search/Browse/Stats hit datahub `GET /api/memory/*` (same origin resolution). Hits deep-link Conversations via `/?session=`. Datahub origin in Settings (`rivethub.wikiUrl`); blank → mesh-discover datahub. Stored `http://lan-host` (no port) is rewritten to `https://lan-host:5174` — implicit `:443` made the desktop mTLS pipe connection-refused.
 - **Dropdowns** use `Select` (Radix Popover) — not native `<select>` (WebKitGTK paints OS menus). Matches Model/Effort/Node pickers.
 - **Tasks** (`/tasks`, `/tasks/$taskId`) = list/filter, detail (steer/kill), and **in-UI create** (goal + agent from catalog local+mesh + optional criteria lines → `POST /api/tasks`; navigates to detail). Create is no longer chat-only.
@@ -31,6 +31,29 @@ Rail: Conversations (`/`), Terminal — separator — Memory, Files, Tasks, Work
 - **Workflows IR v2** (`src/lib/workflows/v2/`) = nested DAG types + `validateWorkflowV2` (no reach-through, Map quorum, Loop maxIterations, gate predicates). Rules: `v2/VALIDATION.md`. Export: `workflowsV2` from `lib/workflows`. No executor yet.
 - **Files** (`/files`) = full browser for the node's files root (`/rivet-shared` default): list/filter/sort, multi-select, text/image preview, mkdir/rename/delete, copy path/URL, DnD upload (current dir or onto a folder), drag row onto folder to move. Server: den-server `src/files.ts` (`list|download|upload|mkdir|rename|delete`, path+symlink fenced, 1 GiB upload cap, no-clobber unless `overwrite=1`, recursive delete opt-in); config `den.files_root` / `RIVETOS_DEN_FILES_ROOT` ('' disables).
 - **Node-switch den trap fixed in boot**: default den static_dir is hub-first (`apps/rivethub-web/dist` when built, else den viewer) — peers without an explicit `static_dir` used to serve full-screen den at `/` with no way back.
+
+### Session pages (2026-09-18)
+
+Always-on view of every harness session on the connected node. Chat already
+attaches with `attachHarnessSession` and hard-resyncs the transcript on every
+socket `open`; these pages make that reconnect → restore step visible.
+
+- **Index** (`/sessions`): union of control-plane + legacy sessions via the
+  same `chatItems` / `fetchHarnessPlaneSessions` merge Chat uses (do not fork).
+  Live via `watchHarnesses`; **refetch the list on every socket reopen** (the
+  registry stream has no replay). Filters: harness `Select`, All/Live/Ended,
+  title/cwd text. Narrow (<768px) renders cards; desktop a table.
+- **Detail** (`/sessions/$sessionId`): `$sessionId` is
+  `encodeSessionIdSegment(canonical)`; bare native ids accepted;
+  `redirectedTo` → `navigate({ replace: true })`. Read-only transcript + live
+  tail through `Transcript` / `attachHarnessSession`. Sticky **connection
+  strip** (connecting / live / disconnected / reconnected / fatal) and a
+  collapsible **sync log** (`lib/session-sync-log.ts` reducer: attach,
+  reconnect, manual, rev-gap sync). Actions: Open in Chat (`/?session=`),
+  Resync now, Copy link. Pure helpers + vitest:
+  `lib/session-route-id.ts`, `lib/session-sync-log.ts`, `lib/session-list.ts`.
+- Rail entry sits after Conversations (History icon). No composer in this
+  slice; no server changes; Chat behaviour unchanged beyond the deep link.
 
 ### Harness control plane binding (2026-08-08)
 
@@ -150,6 +173,8 @@ cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 ## Key files
 
 - `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
+- `src/pages/sessions.tsx` — session index + read-only detail (connection strip)
+- `src/lib/session-route-id.ts`, `session-sync-log.ts`, `session-list.ts` — session page pure helpers
 - `src/memory/` — Search / Browse / Stats hub (TenPAL back-port)
 - `src/pages/memory.tsx` — wiki encyclopedia (Wiki tab + `/memory/$slug`)
 - `src/pages/tasks.tsx` — list + create form + detail

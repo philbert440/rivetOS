@@ -24,6 +24,7 @@ import { MemoryHubPage } from './memory/MemoryHubPage.js'
 import { MemoryTopicPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
+import { SessionDetailPage, SessionsPage } from './pages/sessions.js'
 import {
   WorkflowRunDetailPage,
   WorkflowsHubPage,
@@ -217,6 +218,18 @@ const filesRoute = createRoute({
   component: FilesPage,
 })
 
+const sessionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sessions',
+  component: SessionsPage,
+})
+
+const sessionDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/sessions/$sessionId',
+  component: SessionDetailPage,
+})
+
 const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tasks',
@@ -265,6 +278,8 @@ export const routeTree = rootRoute.addChildren([
   memoryRoute,
   memoryTopicRoute,
   filesRoute,
+  sessionsRoute,
+  sessionDetailRoute,
   tasksRoute,
   taskDetailRoute,
   // More specific workflow paths first so they win over $workflowId.

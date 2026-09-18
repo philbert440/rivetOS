@@ -9,6 +9,7 @@ export function railHeaderClass(collapsed: boolean): string {
 /** Mobile top-bar title — `/` is RivetHub; other routes match the rail labels. */
 export function hubPageTitle(pathname: string): string {
   if (pathname === '/') return 'RivetHub'
+  if (pathname.startsWith('/sessions')) return 'Sessions'
   if (pathname.startsWith('/memory')) return 'Memory'
   if (pathname.startsWith('/files')) return 'Files'
   if (pathname.startsWith('/tasks')) return 'Tasks'
