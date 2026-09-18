@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { HarnessTranscriptEvent, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
-import { applyTranscriptEvent, emptyTranscript, resyncTranscript } from './session-transcript.js'
+import {
+  GAP_RESYNC_MS,
+  applyTranscriptEvent,
+  emptyTranscript,
+  noteTranscriptGap,
+  resyncTranscript,
+} from './session-transcript.js'
 
 const SID = 'claude-code:abc' as SessionId
 
@@ -73,5 +79,30 @@ describe('applyTranscriptEvent', () => {
     expect(tail.offset).toBe(1)
     const next = applyTranscriptEvent(tail, frame(3, 2, [turn('d')], 3))
     expect(next?.turns.map((x) => x.text)).toEqual(['a', 'b', 'c', 'd'])
+  })
+})
+
+describe('noteTranscriptGap', () => {
+  it('asks for one sync per gap, not one per dropped frame', () => {
+    const http = resyncTranscript([turn('a')])
+    const first = noteTranscriptGap(http, 1_000)
+    expect(first.requestSync).toBe(true)
+    expect(first.next.gapSince).toBe(1_000)
+    const second = noteTranscriptGap(first.next, 1_200)
+    expect(second.requestSync).toBe(false)
+    expect(second.next).toBe(first.next)
+    // unanswered for long enough → ask again
+    expect(noteTranscriptGap(first.next, 1_000 + GAP_RESYNC_MS).requestSync).toBe(true)
+  })
+
+  it('a healing snapshot clears the pending gap', () => {
+    const gapped = noteTranscriptGap(resyncTranscript([turn('a')]), 1_000).next
+    const healed = applyTranscriptEvent(gapped, frame(4, 0, [turn('a'), turn('b')], 2))!
+    expect(healed.gapSince).toBeUndefined()
+    expect(noteTranscriptGap(healed, 1_100).requestSync).toBe(true)
+  })
+
+  it('HTTP resync clears a pending gap', () => {
+    expect(resyncTranscript([turn('a')]).gapSince).toBeUndefined()
   })
 })

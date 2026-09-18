@@ -20,7 +20,16 @@ export interface SessionTranscript {
   rev: number | undefined
   /** Turns pinned ahead of a truncated tail-window snapshot. */
   offset: number
+  /** epoch ms of the gap whose `sync` is still unanswered (no from:0 yet). */
+  gapSince?: number
 }
+
+/**
+ * While a gap's `sync` is outstanding, later deltas are dropped without asking
+ * again (the snapshot carries them); after this long, ask once more.
+ * attachHarnessSession already re-arms a dropped `sync` once at 3 s.
+ */
+export const GAP_RESYNC_MS = 5_000
 
 export function emptyTranscript(): SessionTranscript {
   return { turns: [], rev: undefined, offset: 0 }
@@ -33,6 +42,21 @@ export function emptyTranscript(): SessionTranscript {
  */
 export function resyncTranscript(turns: HarnessTranscriptTurn[]): SessionTranscript {
   return { turns, rev: undefined, offset: 0 }
+}
+
+/**
+ * A delta could not be applied. `requestSync` is true for the first gap (and
+ * again once GAP_RESYNC_MS passes unanswered); in between the caller drops the
+ * frame quietly, so one gap costs one `sync`, not one per streamed frame.
+ */
+export function noteTranscriptGap(
+  cur: SessionTranscript,
+  now: number,
+): { next: SessionTranscript; requestSync: boolean } {
+  if (cur.gapSince !== undefined && now - cur.gapSince < GAP_RESYNC_MS) {
+    return { next: cur, requestSync: false }
+  }
+  return { next: { ...cur, gapSince: now }, requestSync: true }
 }
 
 export function applyTranscriptEvent(

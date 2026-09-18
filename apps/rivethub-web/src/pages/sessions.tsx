@@ -30,10 +30,15 @@ import { attachHarnessSession, type SessionContextStamp } from '../lib/harness-a
 import {
   applyTranscriptEvent,
   emptyTranscript,
+  noteTranscriptGap,
   resyncTranscript,
   type SessionTranscript,
 } from '../lib/session-transcript.js'
-import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
+import {
+  isLiveTurnCommand,
+  liveFromTranscript,
+  messagesFromHarnessTurns,
+} from '../lib/harness-turns.js'
 import type { LiveTurn } from '../lib/fold-stream.js'
 import {
   cwdBasename,
@@ -396,6 +401,7 @@ type StripState =
   | { kind: 'live'; turnCount: number }
   | { kind: 'disconnected' }
   | { kind: 'reconnected'; turnCount: number; at: number }
+  | { kind: 'resync-failed'; message: string }
   | { kind: 'fatal'; message: string }
 
 export function SessionDetailPage(): JSX.Element {
@@ -405,6 +411,7 @@ export function SessionDetailPage(): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const transportEpoch = useConnection((s) => s.transportEpoch)
   const narrow = useIsNarrow()
+  const queryClient = useQueryClient()
 
   const resolved = useMemo(() => resolveSessionRouteParam(routeSegment), [routeSegment])
   const lookupId = sessionLookupId(resolved)
@@ -413,8 +420,11 @@ export function SessionDetailPage(): JSX.Element {
   const [syncOpen, setSyncOpen] = useState(!narrow)
   const [strip, setStrip] = useState<StripState>({ kind: 'connecting' })
   const [syncLog, dispatchSync] = useReducer(syncLogReducer, undefined, createSyncLog)
-  const [messages, setMessages] = useState<SessionMessage[]>([])
-  const [live, setLive] = useState<LiveTurn | undefined>()
+  const [turns, setTurns] = useState<HarnessTranscriptTurn[]>([])
+  /** Hook-folded live turn — only used while the transcript is not the live source. */
+  const [hookLive, setHookLive] = useState<LiveTurn | undefined>()
+  /** Chat's liveSource rule: live-turn harnesses carry the in-flight turn in the transcript. */
+  const [transcriptLive, setTranscriptLive] = useState(false)
   const [agentStatus, setAgentStatus] = useState<HarnessStatusFrame | undefined>()
   const [ctxStamp, setCtxStamp] = useState<SessionContextStamp | undefined>()
   const [copiedLink, setCopiedLink] = useState(false)
@@ -425,6 +435,8 @@ export function SessionDetailPage(): JSX.Element {
   const manualPendingRef = useRef(false)
   const attachmentRef = useRef<ReturnType<typeof attachHarnessSession> | undefined>(undefined)
   const transcriptRef = useRef<SessionTranscript>(emptyTranscript())
+  const transcriptLiveRef = useRef(false)
+  const messagesRef = useRef<SessionMessage[]>([])
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const summaryQuery = useQuery({
@@ -450,7 +462,11 @@ export function SessionDetailPage(): JSX.Element {
   const canonicalId =
     summaryQuery.data?.sessionId ?? (resolved.kind === 'canonical' ? resolved.sessionId : undefined)
   const chatKey = canonicalId ?? lookupId
-  const attachId = canonicalId ?? lookupId
+  // Attach on a stable canonical id only. A bare deep link waits for the
+  // summary instead of attaching bare and re-attaching when the canonical id
+  // lands (a second resync, log cleared, strip back to "Connecting…").
+  const attachId = resolved.kind === 'canonical' ? resolved.sessionId : summaryQuery.data?.sessionId
+  const summaryKey = useMemo(() => ['harness-session', baseUrl, lookupId], [baseUrl, lookupId])
 
   // Live attach — hard-resync on every open; clean up on unmount / id change.
   useEffect(() => {
@@ -460,22 +476,36 @@ export function SessionDetailPage(): JSX.Element {
     pendingCauseRef.current = 'attach'
     dispatchSync({ type: 'clear' })
     transcriptRef.current = emptyTranscript()
-    setMessages([])
-    setLive(undefined)
+    // Canonical ids are `<harness-id>:<native>` — seed the live source from
+    // the harness now; a live-turn `command` on any frame also flips it.
+    transcriptLiveRef.current = isLiveTurnCommand(attachId.slice(0, attachId.indexOf(':')))
+    setTranscriptLive(transcriptLiveRef.current)
+    setTurns([])
+    setHookLive(undefined)
     setAgentStatus(undefined)
     setCtxStamp(undefined)
     setStrip({ kind: 'connecting' })
+
+    const clearFade = (): void => {
+      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+      fadeTimerRef.current = undefined
+    }
+    const refreshSummary = (): void => {
+      void queryClient.invalidateQueries({ queryKey: summaryKey })
+    }
 
     const attachment = attachHarnessSession({
       gateway: useConnection.getState().gateway,
       sessionId: attachId,
       onStatus: (status) => {
         if (status === 'connecting') {
+          clearFade()
           setStrip({ kind: 'connecting' })
           return
         }
         if (status === 'closed') {
-          setLive(undefined)
+          clearFade()
+          setHookLive(undefined)
           setStrip({ kind: 'disconnected' })
           return
         }
@@ -483,6 +513,8 @@ export function SessionDetailPage(): JSX.Element {
         openCountRef.current += 1
         pendingCauseRef.current = openCountRef.current === 1 ? 'attach' : 'reconnect'
         resyncStartedRef.current = Date.now()
+        // Status may have moved while we were gone — the registry has no replay.
+        if (openCountRef.current > 1) refreshSummary()
       },
       onResync: (turns: HarnessTranscriptTurn[], ctx?: SessionContextStamp) => {
         const durationMs = Date.now() - (resyncStartedRef.current || Date.now())
@@ -491,35 +523,51 @@ export function SessionDetailPage(): JSX.Element {
         const turnCount = turns.length
         dispatchSync({ type: 'record', cause, turnCount, durationMs })
         transcriptRef.current = resyncTranscript(turns)
-        setMessages((prev) => messagesFromHarnessTurns(attachId, turns, prev))
+        setTurns(turns)
         setCtxStamp(ctx)
-        setLive(undefined)
-        if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+        setHookLive(undefined)
+        clearFade()
         if (cause === 'reconnect' || cause === 'manual') {
           const at = Date.now()
           setStrip({ kind: 'reconnected', turnCount, at })
           fadeTimerRef.current = setTimeout(() => {
-            setStrip({ kind: 'live', turnCount })
+            fadeTimerRef.current = undefined
+            // Only fade the banner we put up — never a later disconnect/fatal.
+            setStrip((cur) =>
+              cur.kind === 'reconnected' && cur.at === at ? { kind: 'live', turnCount } : cur,
+            )
           }, 4000)
         } else {
           setStrip({ kind: 'live', turnCount })
         }
       },
       onTranscript: (event) => {
-        const next = applyTranscriptEvent(transcriptRef.current, event)
+        if (!transcriptLiveRef.current && isLiveTurnCommand(event.command)) {
+          transcriptLiveRef.current = true
+          setTranscriptLive(true)
+          setHookLive(undefined)
+        }
+        const cur = transcriptRef.current
+        const next = applyTranscriptEvent(cur, event)
         if (!next) {
-          // Rev gap / splice mismatch — `false` asks the socket for a from:0
-          // snapshot. Only here: in-order deltas splice locally.
+          // Rev gap / splice mismatch. `false` asks the socket for a from:0
+          // snapshot — once per gap; frames until it lands are dropped (the
+          // snapshot carries them). In-order deltas splice locally.
+          const gap = noteTranscriptGap(cur, Date.now())
+          transcriptRef.current = gap.next
+          return !gap.requestSync
+        }
+        transcriptRef.current = next
+        if (cur.gapSince !== undefined) {
+          // Log the recovery, not the rejected frame: restored count + time to heal.
           dispatchSync({
             type: 'record',
             cause: 'rev-gap sync',
-            turnCount: event.total,
-            durationMs: 0,
+            turnCount: next.turns.length,
+            durationMs: Date.now() - cur.gapSince,
           })
-          return false
         }
-        transcriptRef.current = next
-        setMessages((prev) => messagesFromHarnessTurns(attachId, next.turns, prev))
+        setTurns(next.turns)
         if (event.from === 0 && event.contextWindow !== undefined) {
           setCtxStamp({
             contextWindow: event.contextWindow,
@@ -529,20 +577,48 @@ export function SessionDetailPage(): JSX.Element {
         }
         return true
       },
-      onLive: (turn) => setLive(turn),
+      // Hook deltas fold only while the transcript is not the live source —
+      // otherwise the same reply renders twice (live bubble + solid turn).
+      liveSource: () => (transcriptLiveRef.current ? 'transcript' : 'hooks'),
+      onLive: (turn) => setHookLive(turn),
       onAgentStatus: (frame) => setAgentStatus(frame),
+      onSessionUpdated: refreshSummary,
+      onError: (err) => {
+        manualPendingRef.current = false
+        clearFade()
+        setStrip({
+          kind: 'resync-failed',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      },
       onFatal: (message) => {
+        clearFade()
         setStrip({ kind: 'fatal', message })
-        setLive(undefined)
+        setHookLive(undefined)
       },
     })
     attachmentRef.current = attachment
     return () => {
       attachment.close()
       attachmentRef.current = undefined
-      if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
+      clearFade()
     }
-  }, [connected, attachId, baseUrl, transportEpoch])
+  }, [connected, attachId, baseUrl, transportEpoch, queryClient, summaryKey])
+
+  // Transcript-sourced live turn: the trailing incomplete assistant turn while
+  // working/blocked becomes the live bubble and leaves the solid list.
+  const transcriptLiveTurn = useMemo(
+    () => (transcriptLive ? liveFromTranscript(turns, agentStatus) : undefined),
+    [transcriptLive, turns, agentStatus],
+  )
+  const live = transcriptLive ? transcriptLiveTurn : hookLive
+  const trailingLive = transcriptLiveTurn !== undefined
+  const messages = useMemo(() => {
+    if (!attachId) return []
+    const next = messagesFromHarnessTurns(attachId, turns, messagesRef.current, trailingLive)
+    messagesRef.current = next
+    return next
+  }, [attachId, turns, trailingLive])
 
   const transcriptTexts = useMemo(() => messages.map((m) => m.text), [messages])
 
@@ -596,7 +672,10 @@ export function SessionDetailPage(): JSX.Element {
             </Link>
             <span className="text-ink-dim">/</span>
             <h1 className="min-w-0 truncate font-mono text-base font-semibold text-em">{title}</h1>
-            <StatusPill status={summary?.status} blocked={summary?.blocked} />
+            <StatusPill
+              status={summary?.status}
+              blocked={agentStatus ? agentStatus.status === 'blocked' : summary?.blocked}
+            />
           </div>
 
           {narrow ? (
@@ -678,7 +757,9 @@ export function SessionDetailPage(): JSX.Element {
         />
       </div>
 
-      <div className="min-h-0 flex-1">
+      {/* Transcript's root is flex-1: the wrapper must be a flex column so it
+          owns a bounded scroll container (follow-scroll, sticky strip). */}
+      <div className="flex min-h-0 flex-1 flex-col">
         {strip.kind === 'fatal' ? (
           <div className="flex flex-col gap-2 px-6 py-8">
             <p className="font-mono text-sm text-red">{strip.message}</p>
@@ -729,6 +810,10 @@ function ConnectionStrip(props: { strip: StripState }): JSX.Element {
     case 'reconnected':
       text = `Reconnected · transcript restored over HTTP (${String(strip.turnCount)} turns, ${formatClock(strip.at)})`
       tone = 'border-em/40 bg-em/15 text-em'
+      break
+    case 'resync-failed':
+      text = `Transcript resync failed: ${strip.message}. Resync now to retry.`
+      tone = 'border-warn/40 bg-warn/10 text-warn'
       break
     case 'fatal':
       text = strip.message
