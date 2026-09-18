@@ -27,6 +27,12 @@ import {
   shortNativeId,
 } from '../lib/harness-chat.js'
 import { attachHarnessSession, type SessionContextStamp } from '../lib/harness-attach.js'
+import {
+  applyTranscriptEvent,
+  emptyTranscript,
+  resyncTranscript,
+  type SessionTranscript,
+} from '../lib/session-transcript.js'
 import { messagesFromHarnessTurns } from '../lib/harness-turns.js'
 import type { LiveTurn } from '../lib/fold-stream.js'
 import {
@@ -41,7 +47,7 @@ import {
   resolveSessionRouteParam,
   sessionDetailPath,
   sessionLookupId,
-  sessionPathSegment,
+  sessionRouteParam,
 } from '../lib/session-route-id.js'
 import { createSyncLog, syncLogReducer, type SyncCause } from '../lib/session-sync-log.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
@@ -376,9 +382,9 @@ export function SessionsPage(): JSX.Element {
   )
 }
 
-/** Path param for the detail route — encoded canonical, or bare key. */
+/** Router param for the detail route — encoded canonical, or raw bare key. */
 function sessionPathParam(row: SessionListRow): string {
-  return sessionPathSegment(row.sessionId ?? row.key)
+  return sessionRouteParam(row.sessionId ?? row.key)
 }
 
 // ---------------------------------------------------------------------------
@@ -418,6 +424,7 @@ export function SessionDetailPage(): JSX.Element {
   const resyncStartedRef = useRef(0)
   const manualPendingRef = useRef(false)
   const attachmentRef = useRef<ReturnType<typeof attachHarnessSession> | undefined>(undefined)
+  const transcriptRef = useRef<SessionTranscript>(emptyTranscript())
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const summaryQuery = useQuery({
@@ -431,7 +438,7 @@ export function SessionDetailPage(): JSX.Element {
   useEffect(() => {
     const redirected = summaryQuery.data?.redirectedTo
     if (!redirected) return
-    const next = sessionPathSegment(redirected)
+    const next = sessionRouteParam(redirected)
     if (next === routeSegment) return
     void navigate({
       to: '/sessions/$sessionId',
@@ -452,6 +459,7 @@ export function SessionDetailPage(): JSX.Element {
     manualPendingRef.current = false
     pendingCauseRef.current = 'attach'
     dispatchSync({ type: 'clear' })
+    transcriptRef.current = emptyTranscript()
     setMessages([])
     setLive(undefined)
     setAgentStatus(undefined)
@@ -482,7 +490,8 @@ export function SessionDetailPage(): JSX.Element {
         manualPendingRef.current = false
         const turnCount = turns.length
         dispatchSync({ type: 'record', cause, turnCount, durationMs })
-        setMessages(messagesFromHarnessTurns(attachId, turns))
+        transcriptRef.current = resyncTranscript(turns)
+        setMessages((prev) => messagesFromHarnessTurns(attachId, turns, prev))
         setCtxStamp(ctx)
         setLive(undefined)
         if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current)
@@ -497,18 +506,28 @@ export function SessionDetailPage(): JSX.Element {
         }
       },
       onTranscript: (event) => {
-        if (event.from === 0) {
-          setMessages(messagesFromHarnessTurns(attachId, event.turns))
-          return true
+        const next = applyTranscriptEvent(transcriptRef.current, event)
+        if (!next) {
+          // Rev gap / splice mismatch — `false` asks the socket for a from:0
+          // snapshot. Only here: in-order deltas splice locally.
+          dispatchSync({
+            type: 'record',
+            cause: 'rev-gap sync',
+            turnCount: event.total,
+            durationMs: 0,
+          })
+          return false
         }
-        // Rev gap / splice mismatch — ask the socket for a from:0 snapshot.
-        dispatchSync({
-          type: 'record',
-          cause: 'rev-gap sync',
-          turnCount: event.total,
-          durationMs: 0,
-        })
-        return false
+        transcriptRef.current = next
+        setMessages((prev) => messagesFromHarnessTurns(attachId, next.turns, prev))
+        if (event.from === 0 && event.contextWindow !== undefined) {
+          setCtxStamp({
+            contextWindow: event.contextWindow,
+            compactAt: event.compactAt,
+            contextSource: event.contextSource,
+          })
+        }
+        return true
       },
       onLive: (turn) => setLive(turn),
       onAgentStatus: (frame) => setAgentStatus(frame),

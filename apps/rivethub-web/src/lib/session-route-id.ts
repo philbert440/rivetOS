@@ -39,17 +39,23 @@ export function sessionLookupId(resolved: ResolvedSessionRoute): string {
 }
 
 /**
- * Path segment for a session detail URL. Canonical ids are encoded; bare
- * native keys (legacy / draft) pass through encodeURIComponent so the router
- * keeps one segment.
+ * `$sessionId` value for `navigate({ params })` / `<Link params>`. Canonical
+ * ids become base64url (no `/`); bare native keys pass through RAW. The
+ * router runs encodeURIComponent on params itself and decodes on match, so
+ * pre-encoding here would double-encode (`%2F` → `%252F`) and the page would
+ * resolve the wrong id.
  */
-export function sessionPathSegment(sessionKey: string): string {
+export function sessionRouteParam(sessionKey: string): string {
   if (isSessionId(sessionKey)) return encodeSessionIdSegment(sessionKey)
-  return encodeURIComponent(sessionKey)
+  return sessionKey
 }
 
+/**
+ * Literal href for a session detail URL (copy link, `<a href>`). No router in
+ * between, so the bare key is percent-encoded here to stay one segment.
+ */
 export function sessionDetailPath(sessionKey: string): string {
-  return `/sessions/${sessionPathSegment(sessionKey)}`
+  return `/sessions/${encodeURIComponent(sessionRouteParam(sessionKey))}`
 }
 
 /** Chat deep link — `/?session=<chat key>` (canonical or bare). */

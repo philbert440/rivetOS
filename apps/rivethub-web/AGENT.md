@@ -51,7 +51,11 @@ socket `open`; these pages make that reconnect → restore step visible.
   collapsible **sync log** (`lib/session-sync-log.ts` reducer: attach,
   reconnect, manual, rev-gap sync). Actions: Open in Chat (`/?session=`),
   Resync now, Copy link. Pure helpers + vitest:
-  `lib/session-route-id.ts`, `lib/session-sync-log.ts`, `lib/session-list.ts`.
+  `lib/session-route-id.ts`, `lib/session-sync-log.ts`, `lib/session-list.ts`,
+  `lib/session-transcript.ts` (live-tail delta splice, mirrors the chat
+  store's `applyTranscriptFrame`; only a real rev gap asks for `sync`).
+  Router `params` take `sessionRouteParam` (raw bare key; TanStack encodes);
+  literal hrefs take `sessionDetailPath`.
 - Rail entry sits after Conversations (History icon). No composer in this
   slice; no server changes; Chat behaviour unchanged beyond the deep link.
 
@@ -174,7 +178,7 @@ cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 
 - `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
 - `src/pages/sessions.tsx` — session index + read-only detail (connection strip)
-- `src/lib/session-route-id.ts`, `session-sync-log.ts`, `session-list.ts` — session page pure helpers
+- `src/lib/session-route-id.ts`, `session-sync-log.ts`, `session-list.ts`, `session-transcript.ts` — session page pure helpers
 - `src/memory/` — Search / Browse / Stats hub (TenPAL back-port)
 - `src/pages/memory.tsx` — wiki encyclopedia (Wiki tab + `/memory/$slug`)
 - `src/pages/tasks.tsx` — list + create form + detail
