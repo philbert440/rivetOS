@@ -10,9 +10,12 @@
 
 import {
   mergeTranscriptWindow,
+  type HarnessStatusFrame,
   type HarnessTranscriptEvent,
   type HarnessTranscriptTurn,
 } from '@rivetos/types'
+import type { LiveTurn } from './fold-stream.js'
+import { liveFromTranscript } from './harness-turns.js'
 
 export interface SessionTranscript {
   turns: HarnessTranscriptTurn[]
@@ -84,4 +87,20 @@ export function applyTranscriptEvent(
   }
   if (turns.length - offset !== event.total) return null
   return { turns, rev: event.rev, offset }
+}
+
+/**
+ * Transcript-sourced live bubble, with Chat's `liveFloor` guard
+ * (stores/chat.ts overlayTranscriptLive): `floor` is the turn count when the
+ * last `idle` status frame arrived. A trailing turn below it was already
+ * settled as solid (an interrupted reply has no `complete: true`), so the next
+ * turn's `working` must not pull it back out of history as the live reply.
+ */
+export function transcriptLiveOverlay(
+  turns: HarnessTranscriptTurn[],
+  status: HarnessStatusFrame | undefined,
+  floor: number,
+): LiveTurn | undefined {
+  const candidate = liveFromTranscript(turns, status)
+  return candidate && turns.length - 1 >= floor ? candidate : undefined
 }

@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import type { HarnessTranscriptEvent, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
+import type {
+  HarnessStatusFrame,
+  HarnessTranscriptEvent,
+  HarnessTranscriptTurn,
+  SessionId,
+} from '@rivetos/types'
 import {
   GAP_RESYNC_MS,
   applyTranscriptEvent,
   emptyTranscript,
   noteTranscriptGap,
   resyncTranscript,
+  transcriptLiveOverlay,
 } from './session-transcript.js'
 
 const SID = 'claude-code:abc' as SessionId
@@ -104,5 +110,25 @@ describe('noteTranscriptGap', () => {
 
   it('HTTP resync clears a pending gap', () => {
     expect(resyncTranscript([turn('a')]).gapSince).toBeUndefined()
+  })
+})
+
+describe('transcriptLiveOverlay', () => {
+  const working = { type: 'status', sessionId: SID, status: 'working' } as HarnessStatusFrame
+  const idle = { type: 'status', sessionId: SID, status: 'idle' } as HarnessStatusFrame
+  const interrupted = [turn('q1'), turn('partial reply', 'assistant')]
+
+  it('lives the trailing incomplete assistant turn while working', () => {
+    expect(transcriptLiveOverlay(interrupted, working, 0)?.text).toBe('partial reply')
+    expect(transcriptLiveOverlay(interrupted, idle, 0)).toBeUndefined()
+  })
+
+  it('does not re-live a reply settled by an earlier idle (liveFloor)', () => {
+    // idle landed with 2 turns → floor 2; next turn's `working` arrives before
+    // its first transcript frame
+    expect(transcriptLiveOverlay(interrupted, working, 2)).toBeUndefined()
+    // the new turn's assistant frame lands at index 3 ≥ floor → live again
+    const next = [...interrupted, turn('q2'), turn('new reply', 'assistant')]
+    expect(transcriptLiveOverlay(next, working, 2)?.text).toBe('new reply')
   })
 })

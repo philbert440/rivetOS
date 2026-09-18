@@ -32,13 +32,10 @@ import {
   emptyTranscript,
   noteTranscriptGap,
   resyncTranscript,
+  transcriptLiveOverlay,
   type SessionTranscript,
 } from '../lib/session-transcript.js'
-import {
-  isLiveTurnCommand,
-  liveFromTranscript,
-  messagesFromHarnessTurns,
-} from '../lib/harness-turns.js'
+import { isLiveTurnCommand, messagesFromHarnessTurns } from '../lib/harness-turns.js'
 import type { LiveTurn } from '../lib/fold-stream.js'
 import {
   cwdBasename,
@@ -425,6 +422,8 @@ export function SessionDetailPage(): JSX.Element {
   const [hookLive, setHookLive] = useState<LiveTurn | undefined>()
   /** Chat's liveSource rule: live-turn harnesses carry the in-flight turn in the transcript. */
   const [transcriptLive, setTranscriptLive] = useState(false)
+  /** Turn count at the last incoming `idle` — turns below it never go live again. */
+  const [liveFloor, setLiveFloor] = useState(0)
   const [agentStatus, setAgentStatus] = useState<HarnessStatusFrame | undefined>()
   const [ctxStamp, setCtxStamp] = useState<SessionContextStamp | undefined>()
   const [copiedLink, setCopiedLink] = useState(false)
@@ -466,7 +465,10 @@ export function SessionDetailPage(): JSX.Element {
   // summary instead of attaching bare and re-attaching when the canonical id
   // lands (a second resync, log cleared, strip back to "Connecting…").
   const attachId = resolved.kind === 'canonical' ? resolved.sessionId : summaryQuery.data?.sessionId
-  const summaryKey = useMemo(() => ['harness-session', baseUrl, lookupId], [baseUrl, lookupId])
+  // Read through a ref: the bare → canonical redirect changes lookupId (and so
+  // the key) without changing attachId, and must not restart the attachment.
+  const summaryKeyRef = useRef<unknown[]>([])
+  summaryKeyRef.current = ['harness-session', baseUrl, lookupId]
 
   // Live attach — hard-resync on every open; clean up on unmount / id change.
   useEffect(() => {
@@ -481,6 +483,7 @@ export function SessionDetailPage(): JSX.Element {
     transcriptLiveRef.current = isLiveTurnCommand(attachId.slice(0, attachId.indexOf(':')))
     setTranscriptLive(transcriptLiveRef.current)
     setTurns([])
+    setLiveFloor(0)
     setHookLive(undefined)
     setAgentStatus(undefined)
     setCtxStamp(undefined)
@@ -491,7 +494,7 @@ export function SessionDetailPage(): JSX.Element {
       fadeTimerRef.current = undefined
     }
     const refreshSummary = (): void => {
-      void queryClient.invalidateQueries({ queryKey: summaryKey })
+      void queryClient.invalidateQueries({ queryKey: summaryKeyRef.current })
     }
 
     const attachment = attachHarnessSession({
@@ -506,6 +509,9 @@ export function SessionDetailPage(): JSX.Element {
         if (status === 'closed') {
           clearFade()
           setHookLive(undefined)
+          // Activity is unknown until the socket is back: without a status the
+          // transcript overlay (and status line) settle into plain history.
+          setAgentStatus(undefined)
           setStrip({ kind: 'disconnected' })
           return
         }
@@ -581,7 +587,11 @@ export function SessionDetailPage(): JSX.Element {
       // otherwise the same reply renders twice (live bubble + solid turn).
       liveSource: () => (transcriptLiveRef.current ? 'transcript' : 'hooks'),
       onLive: (turn) => setHookLive(turn),
-      onAgentStatus: (frame) => setAgentStatus(frame),
+      onAgentStatus: (frame) => {
+        // The INCOMING idle settles the floor (Chat's liveFloor rule).
+        if (frame.status === 'idle') setLiveFloor(transcriptRef.current.turns.length)
+        setAgentStatus(frame)
+      },
       onSessionUpdated: refreshSummary,
       onError: (err) => {
         manualPendingRef.current = false
@@ -603,13 +613,13 @@ export function SessionDetailPage(): JSX.Element {
       attachmentRef.current = undefined
       clearFade()
     }
-  }, [connected, attachId, baseUrl, transportEpoch, queryClient, summaryKey])
+  }, [connected, attachId, baseUrl, transportEpoch, queryClient])
 
   // Transcript-sourced live turn: the trailing incomplete assistant turn while
   // working/blocked becomes the live bubble and leaves the solid list.
   const transcriptLiveTurn = useMemo(
-    () => (transcriptLive ? liveFromTranscript(turns, agentStatus) : undefined),
-    [transcriptLive, turns, agentStatus],
+    () => (transcriptLive ? transcriptLiveOverlay(turns, agentStatus, liveFloor) : undefined),
+    [transcriptLive, turns, agentStatus, liveFloor],
   )
   const live = transcriptLive ? transcriptLiveTurn : hookLive
   const trailingLive = transcriptLiveTurn !== undefined
@@ -623,10 +633,14 @@ export function SessionDetailPage(): JSX.Element {
   const transcriptTexts = useMemo(() => messages.map((m) => m.text), [messages])
 
   const onResyncNow = (): void => {
+    // No attachment yet (bare link still resolving): a no-op resync would leave
+    // the manual flag set and mislabel the initial attach as `manual`.
+    const attachment = attachmentRef.current
+    if (!attachment) return
     manualPendingRef.current = true
     resyncStartedRef.current = Date.now()
     pendingCauseRef.current = 'manual'
-    attachmentRef.current?.resync()
+    attachment.resync()
   }
 
   const onCopyLink = (): void => {
@@ -731,6 +745,7 @@ export function SessionDetailPage(): JSX.Element {
               variant="ghost"
               size="sm"
               onClick={onResyncNow}
+              disabled={!attachId}
               className="gap-1.5 text-xs"
             >
               <RefreshCw className="size-3" />
