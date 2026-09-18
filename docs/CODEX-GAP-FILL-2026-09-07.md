@@ -2,8 +2,8 @@
 
 > Superseded 2026-09-12: capture now uses Codex hooks (`~/.codex/hooks.json` / managed `/etc/codex/requirements.toml` → `codex-memory-capture.sh --hook`). The user `codex-memory-capture.service` watcher described below is legacy.
 
-Companion to `/rivet-shared/plans/codex-node-parity-2026-09-07.md`.
-Implementation is in the local `/home/rivet/rivetos` checkout, uncommitted.
+Companion notes from the 2026-09-07 Codex parity pass.
+Implementation lived in the local checkout at the time and was uncommitted.
 
 ## Completed and verified
 
@@ -80,7 +80,7 @@ Implementation is in the local `/home/rivet/rivetos` checkout, uncommitted.
    search thresholds or fleet services were changed in this pass.
 5. **Memory queue health.** Live `memory_stats` reported 74 dead compaction jobs
    (truncated LLM output), 14 dead embedding jobs (null embeddings), 4 dead
-   tool-synthesis jobs (empty responses), and 1 dead ct117 task (DB connection
+   tool-synthesis jobs (empty responses), and 1 dead mesh task (DB connection)
    exhaustion). At that snapshot, 65 embeddings and 4,112 wiki extractions were
    pending; pending counts alone do not prove stalled workers. Repair causes,
    then selectively retry and verify drainage; no bulk retries were performed.

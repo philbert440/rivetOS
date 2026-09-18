@@ -15,7 +15,7 @@ The laptop one-liner:
 ```bash
 curl -fsSL https://get.rivethub.io/local.sh | bash
 ```
-| **Dev / nightly** | Mesh share `/rivet-shared/builds/rivethub/` (`latest.json` + binaries) | Already-installed desktop and Android (Settings → Updates over mTLS). Unsupported for production. |
+| **Dev / nightly** | Mesh update share your deployment publishes for in-app Updates (`latest.json` + binaries) | Already-installed desktop and Android (Settings → Updates over mTLS). Unsupported for production. |
 | **Source pin** | Annotated git tag `vX.Y.Z` on green `main` | What `local.sh` clones (`pins/stable.json` `local_ref`). **Not** the app update feed. GitHub Releases are not the supported install path. |
 
 Container images (`ghcr.io/philbert440/rivetos:…`) still follow the git tag. `main` also publishes `ghcr.io/philbert440/rivetos:main` after CI.

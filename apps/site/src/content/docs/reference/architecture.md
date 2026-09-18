@@ -4,7 +4,6 @@ sidebar:
   order: 2
 description: RivetOS as a harness-first per-node control plane
 ---
-
 > **Harness-first node OS.** RivetOS is a per-node control plane for coding harnesses.
 > The harness owns the coding loop. Rivet owns sessions, identity, capture/memory,
 > den, mesh, tasks, and the gateway contract.
@@ -909,7 +908,7 @@ security boundary; agents can only touch what is inside their container.
 
 - `./workspace/` or `~/.rivetos/workspace/` → agent workspace files
 - `rivetos-pgdata` → PostgreSQL data
-- `rivetos-shared` → shared storage (`/rivet-shared/`)
+- `rivetos-shared` → container shared storage (`$RIVETOS_SHARED_DIR`)
 - `.env` → API keys and secrets
 - `~/.rivetos/config.yaml` → runtime configuration
 - Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`, `~/.codex`, `~/.local/share/opencode`, `~/.pi`) → native session stores
@@ -979,12 +978,12 @@ When documenting mesh peers, use hostnames or documentation address space
 
 ## Related docs
 
-| Doc                                                                                                  | Role                                    |
-| ---------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| [HUB-SETUP.md](/guides/hub-setup/)                                                                   | Build and point RivetHub at a node      |
+| Doc                                            | Role                                    |
+| ---------------------------------------------- | --------------------------------------- |
+| [HUB-SETUP.md](/guides/hub-setup/)                   | Build and point RivetHub at a node      |
 | [CODEBASE-REFERENCE.md](https://github.com/philbert440/rivetOS/blob/main/docs/CODEBASE-REFERENCE.md) | File-level map (#453 accuracy baseline) |
 | [DEN.md](https://github.com/philbert440/rivetOS/blob/main/docs/DEN.md)                               | Den product / protocol entry            |
-| [GETTING-STARTED.md](/guides/getting-started/)                                                       | Install paths                           |
-| [DEPLOYMENT.md](/guides/deployment/)                                                                 | Docker / Proxmox / bare-metal           |
-| [MEMORY-DESIGN.md](/reference/memory-design/)                                                        | Memory system design                    |
-| [CONFIG-REFERENCE.md](/reference/config/)                                                            | Config keys                             |
+| [GETTING-STARTED.md](/guides/getting-started/)       | Install paths                           |
+| [DEPLOYMENT.md](/guides/deployment/)                 | Docker / Proxmox / bare-metal           |
+| [MEMORY-DESIGN.md](/reference/memory-design/)           | Memory system design                    |
+| [CONFIG-REFERENCE.md](/reference/config/)     | Config keys                             |

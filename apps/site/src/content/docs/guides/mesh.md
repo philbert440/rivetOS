@@ -26,18 +26,19 @@ match the mesh listener.
 
 ```
 ┌─────────────────────────────────┐     HTTPS/mTLS      ┌─────────────────────────────────┐
-│  ct110 — opus                   │  ──────────────────▶ │  ct111 — grok                   │
+│  <node_name> — opus             │  ──────────────────▶ │  <peer_name> — grok             │
 │                                 │  POST /api/message   │                                 │
 │  MeshDelegationEngine           │                      │  AgentChannelServer (port 3000) │
-│  mesh.json (NFS r/w)            │◀──────────────────── │  mesh.json (NFS r/w)            │
+│  mesh.json (shared r/w)         │◀──────────────────── │  mesh.json (shared r/w)         │
 └─────────────────────────────────┘    delegation result └─────────────────────────────────┘
 ```
 
 ### Shared registry
 
-All nodes read and write a single `mesh.json` file at `/rivet-shared/mesh.json`
-(NFS-mounted from the datahub CT). This is the source of truth; no extra
-coordination service needed.
+All nodes read and write a single `mesh.json` file in the shared mesh data
+directory (`$RIVETOS_SHARED_DIR/mesh.json`, unset → product default). The
+datahub host typically mounts that directory for the mesh. This is the source
+of truth; no extra coordination service needed.
 
 ### Discovery modes
 
@@ -58,25 +59,25 @@ at the TLS handshake level.
 
 ### How it works
 
-1. Each node has a certificate issued by the mesh CA (`/rivet-shared/rivet-ca/`).
+1. Each node has a certificate issued by the mesh CA (under the mesh cert directory you configured, typically `$RIVETOS_SHARED_DIR/rivet-ca/`).
 2. The agent channel server requires a client cert and verifies it against the CA chain.
 3. The delegation client builds an mTLS connection using the same cert pair.
-4. Connections to remote nodes use `<nodeName>.mesh` DNS names so the cert SANs match.
+4. Connections to remote nodes use `<node_name>.mesh` DNS names so the cert SANs match.
 
 ### Certificate layout
 
 ```
-/rivet-shared/rivet-ca/
+$RIVETOS_SHARED_DIR/rivet-ca/
   intermediate/
     ca-chain.pem          ← CA chain (validates all node certs)
   issued/
-    ct110.crt             ← ct110 node cert (CN=ct110, SAN=ct110.mesh + mesh IP)
-    ct110.key             ← ct110 node private key
-    ct111.crt / .key      ← same for ct111…ct114
+    <node_name>.crt       ← node cert (CN=<node_name>, SAN=<node_name>.mesh + mesh IP)
+    <node_name>.key       ← node private key
+    <peer_name>.crt / .key
     <agent>@<node>.crt    ← agent certs (reserved, unused on the wire in Phase 0.5)
 ```
 
-Permissions: `rivet:rivet`, NFS-visible on all nodes.
+Make the tree readable by the service user on every node that mounts the share.
 
 ---
 
@@ -87,28 +88,31 @@ Permissions: `rivet:rivet`, NFS-visible on all nodes.
 ```yaml
 mesh:
   enabled: true
-  node_name: ct110          # must match the cert CN
-  tls: true                 # use /rivet-shared/rivet-ca/issued/<node_name>.{crt,key}
+  node_name: <node_name>    # must match the cert CN
+  tls: true                 # default mesh.tls paths under $RIVETOS_SHARED_DIR/rivet-ca
   agent_channel_port: 3000
-  storage_dir: /rivet-shared
+  # storage_dir omitted → $RIVETOS_SHARED_DIR (unset → product default shared root)
   heartbeat_interval_ms: 30000
   stale_threshold_ms: 90000
   discovery:
     mode: seed
-    seed_host: ct110.mesh   # use .mesh hostname — matches cert SAN
+    seed_host: <node_name>.mesh   # use .mesh hostname — matches cert SAN
     seed_port: 3000
 ```
 
 ### Custom cert paths
 
+`tls: true` derives these from `$RIVETOS_SHARED_DIR` (unset → product default).
+Override `mesh.tls.*` only when your mesh cert directory lives elsewhere.
+
 ```yaml
 mesh:
   enabled: true
-  node_name: ct110
+  node_name: <node_name>
   tls:
-    ca_path: /rivet-shared/rivet-ca/intermediate/ca-chain.pem
-    cert_path: /rivet-shared/rivet-ca/issued/ct110.crt
-    key_path: /rivet-shared/rivet-ca/issued/ct110.key
+    ca_path: $RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem
+    cert_path: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt
+    key_path: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key
 ```
 
 ### Config reference
@@ -118,11 +122,11 @@ mesh:
 | `mesh.enabled` | bool | `false` | Enable mesh networking. |
 | `mesh.node_name` | string | hostname | Node identifier — **must match cert CN**. |
 | `mesh.tls` | bool \| object | — | mTLS config. **Required** — mesh refuses to start without it. |
-| `mesh.tls.ca_path` | string | `/rivet-shared/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM path. |
-| `mesh.tls.cert_path` | string | `/rivet-shared/rivet-ca/issued/<node_name>.crt` | Node cert PEM path. |
-| `mesh.tls.key_path` | string | `/rivet-shared/rivet-ca/issued/<node_name>.key` | Node private key PEM path. |
+| `mesh.tls.ca_path` | string | `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM path. Unset `RIVETOS_SHARED_DIR` → product default. |
+| `mesh.tls.cert_path` | string | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt` | Node cert PEM path. |
+| `mesh.tls.key_path` | string | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key` | Node private key PEM path. |
 | `mesh.agent_channel_port` | number | `3000` | HTTPS port for the agent channel. |
-| `mesh.storage_dir` | string | `/rivet-shared` | Directory containing `mesh.json`. |
+| `mesh.storage_dir` | string | `$RIVETOS_SHARED_DIR` (unset → product default) | Directory containing `mesh.json`. |
 | `mesh.heartbeat_interval_ms` | number | `30000` | How often to write a heartbeat. |
 | `mesh.stale_threshold_ms` | number | `90000` | Age before a node is considered stale. |
 | `mesh.discovery.mode` | string | — | `seed` \| `static` \| `mdns`. |
@@ -132,7 +136,7 @@ mesh:
 
 ### `.mesh` DNS names
 
-dnsmasq on every CT resolves `<nodeName>.mesh` to the node's mesh IP. **Always
+dnsmasq on every node resolves `<node_name>.mesh` to the node's mesh IP. **Always
 use `.mesh` names** for seed hosts and anywhere you reference a peer by URL.
 This ensures the cert SAN matches the connection hostname and TLS succeeds
 without `rejectUnauthorized: false`.
@@ -159,7 +163,7 @@ Every accepted request logs `peer.cn=<nodeName>`. You can grep for it in
 `journalctl -u rivetos` or wherever your log sink is:
 
 ```
-INFO [AgentChannel] Received mesh delegation peer.cn=ct110 from opus → grok: Summarise...
+INFO [AgentChannel] Received mesh delegation peer.cn=<node_name> from opus → grok: Summarise...
 ```
 
 TLS handshake failures log at `WARN`:

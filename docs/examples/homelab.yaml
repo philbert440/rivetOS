@@ -59,9 +59,9 @@ providers:
 mesh:
   enabled: true
   node_name: pve2              # must match this node's certificate CN
-  tls: true                    # default cert paths under /rivet-shared/rivet-ca
+  tls: true                    # default cert paths under $RIVETOS_SHARED_DIR/rivet-ca
   agent_channel_port: 3000
-  storage_dir: /rivet-shared
+  # storage_dir omitted → $RIVETOS_SHARED_DIR (unset → product default)
   discovery:
     mode: seed
     seed_host: pve1.mesh       # datahub node; use .mesh DNS (matches cert SAN)
@@ -82,7 +82,7 @@ deployment:
   datahub:
     postgres: true
     shared_storage: true
-    shared_mount_path: /rivet-shared
+    # shared_mount_path: the shared mount path you export (RIVETOS_SHARED_DIR)
 
   image:
     build_from_source: true

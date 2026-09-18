@@ -12,7 +12,7 @@ are **removed**.
 | Device | `rivet-ca.sh issue-client <device-id>` | `device:<device-id>` | `client` | TLS **client** (Hub desktop, Android, browser) |
 | Agent | `rivet-ca.sh issue-agent <a> <node>` | `<a>@<node>` | — | Mesh agent identity (not Hub) |
 
-Private keys under `/rivet-shared/rivet-ca/issued/*.key` are **operator secrets**.
+Private keys under the mesh CA `issued/` directory you configured (`$RIVETOS_SHARED_DIR/rivet-ca/issued/*.key`) are **operator secrets**.
 Never commit them. Device keys leave the CA host only via secure handoff to the device.
 
 ## Node config
@@ -23,10 +23,10 @@ den:
   host: 0.0.0.0
   port: 5174
   # Paths to the node leaf (same cert as mesh issue-node for this node_name)
-  tls_cert: /rivet-shared/rivet-ca/issued/ct112.crt
-  tls_key: /rivet-shared/rivet-ca/issued/ct112.key
+  tls_cert: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt
+  tls_key: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key
   # defaults to intermediate/chain.pem
-  # tls_ca: /rivet-shared/rivet-ca/intermediate/chain.pem
+  # tls_ca: $RIVETOS_SHARED_DIR/rivet-ca/intermediate/chain.pem
 ```
 
 Env equivalents: `RIVETOS_DEN_TLS_CERT`, `RIVETOS_DEN_TLS_KEY`, `RIVETOS_DEN_TLS_CA`,
@@ -37,7 +37,7 @@ local node processes (hooks, embed). **Off-loopback without TLS refuses to bind.
 
 ## Enroll a device (admin)
 
-On the CA host (typically datahub / CT110):
+On the CA host (typically the datahub host):
 
 ```bash
 /opt/rivetos/scripts/rivet-ca.sh issue-client pixel-phil
@@ -80,7 +80,7 @@ device client certificates.
 - **Node leaf SANs**: issue node certs with `IP:127.0.0.1` (plus the LAN IP)
   so loopback https, used by the deploy health probe, den hooks, and spawned harnesses,
   passes hostname verification:
-  `rivet-ca.sh issue-node ct112 DNS:ct112 IP:192.0.2.112 IP:127.0.0.1`
+  `rivet-ca.sh issue-node <node_name> DNS:<node_name> IP:192.0.2.10 IP:127.0.0.1`
   SANs must cover **both** `127.0.0.1` and whatever host the node advertises
   on the mesh (`mesh.advertise_host`, LAN or overlay IP): peers verify the
   advertised name, local probes verify loopback. **Re-issue every node leaf
@@ -91,7 +91,7 @@ device client certificates.
   `den.tls_*` or the issue-node auto path).
 - **Den hooks** (claude-code / hermes / kimi): default fan-out covers both
   loopback schemes; https posts verify against `RIVET_DEN_CA` (default
-  `/rivet-shared/rivet-ca/intermediate/chain.pem`). Explicit `RIVET_DEN_URL`
+  `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/chain.pem`). Explicit `RIVET_DEN_URL`
   values must name the right scheme themselves.
 - **Mesh view**: nodes with gateway TLS advertise `metadata.denUrl =
   https://<host>:<port>` in mesh.json; peer /healthz probes verify against

@@ -11,8 +11,8 @@ That fetches [get.rivethub.io/local.sh](https://get.rivethub.io/local.sh) and
 clones the `local_ref` pin from
 [pins/stable.json](https://get.rivethub.io/pins/stable.json). First-install
 desktop/Android bits are on [rivethub.io](https://rivethub.io/). Dev/nightly
-app builds stay on the mesh share `/rivet-shared/builds/rivethub/` (in-app
-Updates). GitHub tags are source pins, not the app update feed.
+app builds stay on the mesh update share your deployment publishes for
+in-app Updates. GitHub tags are source pins, not the app update feed.
 
 `rivetos local` (what the installer runs) stands up RivetOS on a single
 machine as both datahub and agent node: embedded PGlite, a locally minted
@@ -80,7 +80,8 @@ all interfaces). The node leaf is `issued/<hostname>.crt`, matching
 | `~/.rivetos/devices/<name>.p12` | Extra device bundles                                                                                  |
 
 `RIVETOS_SHARED_DIR` is set to `~/.rivetos/shared` before any `sharedPath()`
-call so this machine is a mesh of one, not a client of `/rivet-shared`.
+call so this machine is a mesh of one, not a client of another host's shared
+mesh data directory.
 
 ## macOS
 

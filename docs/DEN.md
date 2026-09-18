@@ -57,7 +57,7 @@ Bearer tokens removed; see [GATEWAY-MTLS.md](GATEWAY-MTLS.md).
 
 One den-server runs per node; `GET /mesh.json` (auth-gated like every other
 endpoint) is how a viewer sees them all. The server reads the mesh roster from `RIVETOS_DEN_MESH_FILE` if set, else
-`/rivet-shared/mesh.json`, else `~/.rivetos/mesh.json`, then projects the
+`$RIVETOS_SHARED_DIR/mesh.json`, else `~/.rivetos/mesh.json`, then projects the
 den-enabled nodes, probes each one's
 den `/healthz` in parallel (1.5s budget per peer), and answers:
 
@@ -192,7 +192,7 @@ Sample `~/.rivetos/den-term.json`:
 ```json
 {
   "default": "claude",
-  "cwd": "/home/rivet",
+  "cwd": "~",
   "commands": {
     "claude": { "label": "Claude Code", "cmd": ["claude"], "room": true },
     "grok": { "label": "Grok Build", "cmd": ["grok"], "room": true },

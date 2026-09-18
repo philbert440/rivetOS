@@ -904,7 +904,7 @@ security boundary; agents can only touch what is inside their container.
 
 - `./workspace/` or `~/.rivetos/workspace/` → agent workspace files
 - `rivetos-pgdata` → PostgreSQL data
-- `rivetos-shared` → shared storage (`/rivet-shared/`)
+- `rivetos-shared` → container shared storage (`$RIVETOS_SHARED_DIR`)
 - `.env` → API keys and secrets
 - `~/.rivetos/config.yaml` → runtime configuration
 - Host harness home dirs (`~/.claude`, `~/.grok`, `~/.hermes`, `~/.kimi-code`, `~/.codex`, `~/.local/share/opencode`, `~/.pi`) → native session stores

@@ -5,7 +5,6 @@ sidebar:
 description: Single-CA mTLS trust model for MCP and mesh
 ---
 **Status:** Design (Phase 0 of MCP overhaul)
-**Spec owner:** `/rivet-shared/plans/mcp-architecture-overhaul.md`
 **Last updated:** 2026-04-24
 
 ---
@@ -34,7 +33,7 @@ caller trusted?"* across the entire stack.
 ## Layout
 
 ```
-/shared/rivet-ca/                 (NFS-visible from CT110 during provisioning)
+$RIVETOS_SHARED_DIR/rivet-ca/     (mesh cert directory you configured)
 ├── root/
 │   ├── ca.crt                    self-signed root (offline in prod)
 │   └── ca.key                    → moved offline after intermediate is issued
@@ -57,13 +56,13 @@ caller trusted?"* across the entire stack.
 ```
 
 **Single server cert per node.** SANs cover every listener a node exposes:
-`ct111.mesh`, `ct111-mcp.mesh`, `ct111-runtime-rpc.mesh`, plus any service
+`<node_name>.mesh`, `<node_name>-mcp.mesh`, `<node_name>-runtime-rpc.mesh`, plus any service
 aliases. One cert, one rotation, every service on the node is covered.
 
 ## Identity
 
-- **Node server cert**: CN = `<node-id>.mesh` (e.g. `ct111.mesh`)
-- **Internal agent client cert**: CN = `<agent-id>@<node-id>` (e.g. `opus@ct111`)
+- **Node server cert**: CN = `<node_name>.mesh`
+- **Internal agent client cert**: CN = `<agent-id>@<node_name>` (e.g. `opus@<node_name>`)
 - **External user client cert**: CN = `<user>@external` (Phase 4 only)
 
 The MCP server's `rivetos/session.attach` handler validates the presented
@@ -76,8 +75,8 @@ Certs cannot be used to impersonate another agent.
 |---|---|---|
 | Root issued | Phil, manually | `scripts/rivet-ca.sh init` (once, ever) |
 | Intermediate issued | Phil, manually | `scripts/rivet-ca.sh issue-intermediate` |
-| Node enrolls | `provision-ct.sh` on new CT | posts CSR + `mesh.secret` bootstrap auth → CA signs → certs land in `/etc/rivetos/` |
-| Agent cert minted | boot-time registrar | if missing, CSR against local intermediate (CT110 only) |
+| Node enrolls | `provision-ct.sh` on a new node | posts CSR + `mesh.secret` bootstrap auth → CA signs → certs land in `/etc/rivetos/` |
+| Agent cert minted | boot-time registrar | if missing, CSR against local intermediate (CA host only) |
 | Renewal | systemd timer, 30 days before expiry | re-uses existing private key, rotates cert |
 | Revocation | `scripts/rivet-ca.sh revoke <cn>` | CRL rebuilt, pushed to all nodes |
 
@@ -107,7 +106,7 @@ gated to `datahub:/enroll` only; no other endpoint will accept it.
 | Phase | Action |
 |---|---|
 | 0.5 | `scripts/rivet-ca.sh` lands. Root + intermediate generated. Every existing node enrolls. Mesh agent-channel starts accepting mTLS alongside bearer (one-release compat). |
-| 1 | MCP server on CT110 listens on mTLS using the same CA. Runtime-RPC (Phase 2 prep) registered. |
+| 1 | MCP server on the CA host listens on mTLS using the same CA. Runtime-RPC (Phase 2 prep) registered. |
 | 2 | Runtime-RPC `:5701` on every runtime node. All calls mTLS-authenticated. |
 | Next release after 0.5 | Bearer path removed from agent-channel. `mesh.secret` demoted to bootstrap. |
 

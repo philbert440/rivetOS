@@ -4,7 +4,6 @@ sidebar:
   order: 3
 description: Build and point RivetHub at a RivetOS node gateway
 ---
-
 > Point Hub web (and desktop) at a RivetOS node gateway. Hub is the node's face,
 > not a separate agent runtime.
 >
@@ -12,9 +11,9 @@ description: Build and point RivetHub at a RivetOS node gateway
 >
 > **Laptop first-install:** `curl -fsSL https://get.rivethub.io/local.sh | bash`
 > (stable bits on [rivethub.io](https://rivethub.io/)). Published desktop and
-> Android downloads are on that site. Dev/nightly builds for in-app Updates
-> live on `/rivet-shared/builds/rivethub/`. GitHub tags are source pins, not
-> the app feed. This page is the source-build path.
+> Android downloads are on that site. Dev/nightly builds live on the mesh
+> update share your deployment publishes for in-app Updates. GitHub tags
+> are source pins, not the app feed. This page is the source-build path.
 
 ---
 
@@ -85,9 +84,10 @@ export RIVETOS_DEN_STATIC_DIR=apps/rivethub-web/dist
 
 # Bind (loopback by default; off-loopback requires TLS + device client cert)
 export RIVETOS_DEN_HOST=0.0.0.0
-export RIVETOS_DEN_TLS_CERT=/rivet-shared/rivet-ca/issued/<node>.crt
-export RIVETOS_DEN_TLS_KEY=/rivet-shared/rivet-ca/issued/<node>.key
-# RIVETOS_DEN_TLS_CA is the CA-chain path (default: Rivet intermediate chain).
+# From mesh.tls (or $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.{crt,key})
+export RIVETOS_DEN_TLS_CERT=$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt
+export RIVETOS_DEN_TLS_KEY=$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key
+# RIVETOS_DEN_TLS_CA is the CA-chain path from your mesh TLS config.
 # Client certs required off-loopback; set RIVETOS_DEN_TLS_REQUIRE_CLIENT=0 to allow encrypt-only (no device cert).
 
 # Then start via normal agent boot (embedded den) or:
@@ -167,7 +167,7 @@ drivers disabled or older nodes.
 | `/` Conversations | Chat \| Terminal per conversation                                   |
 | `/terminal`       | Open PTY list; attach                                               |
 | `/memory`         | Wikipedia-style wiki over datahub `GET /api/wiki`                   |
-| `/files`          | Browse node files root (`den.files_root` / `/rivet-shared` default) |
+| `/files`          | Browse node files root (`den.files_root`; unset → `$RIVETOS_SHARED_DIR`) |
 | `/tasks`          | List / create / steer / kill tasks                                  |
 | `/workflows`      | Local workflow IR editor (no runner yet)                            |
 | Settings          | Gateway URL, wiki/datahub origin (auth is a device client cert)     |
@@ -222,7 +222,7 @@ npx rivetos status
 
 # 3. Harnesses visible on the node
 curl -sS --cert /path/to/device.crt --key /path/to/device.key \
-  --cacert /rivet-shared/rivet-ca/intermediate/chain.pem \
+  --cacert "$RIVETOS_SHARED_DIR/rivet-ca/intermediate/chain.pem" \
   "$GATEWAY/api/harnesses" | jq .
 
 # Expect harness ids when all drivers registered:
