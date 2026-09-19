@@ -64,8 +64,8 @@ fi
 # Align .env check: ingest-session.mjs loads ~/.rivetos/.env itself, so check there
 # rather than requiring RIVETOS_PG_URL in process env
 RIVETOS_ENV_FILE="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
-if [[ ! -f "${RIVETOS_ENV_FILE}" ]] && [[ -z "${RIVETOS_PG_URL:-}" ]]; then
-    echo "WARN: No .env at ${RIVETOS_ENV_FILE} and RIVETOS_PG_URL not set, skipping ingest (fail closed)" >&2
+if [[ ! -f "${RIVETOS_ENV_FILE}" ]] && [[ -z "${RIVETOS_PG_URL:-}" ]] && [[ -z "${RIVETOS_DATAHUB_URL:-}" ]]; then
+    echo "WARN: No .env at ${RIVETOS_ENV_FILE} and neither RIVETOS_PG_URL nor RIVETOS_DATAHUB_URL is set, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
 
