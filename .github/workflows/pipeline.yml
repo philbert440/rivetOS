@@ -140,6 +140,9 @@ jobs:
             npx nx run-many -t lint --all --parallel=5
           fi
 
+      - name: Check publish closure
+        run: node scripts/check-publish-closure.mjs
+
       # Meta-test: assert the boundary walls themselves still hold (a config
       # regression violates nothing, so package lint alone won't catch it).
       # Only runs when the files that can weaken the wall change.
@@ -241,7 +244,13 @@ jobs:
 
           # All publishable packages (order matters — dependencies first)
           PACKAGES=(
+            packages/den-protocol
+            packages/wiki-core
             packages/types
+            packages/aisdk
+            packages/workflows
+            packages/mcp
+            packages/mcp-v2
             packages/core
             packages/boot
             plugins/channels/agent
@@ -262,6 +271,7 @@ jobs:
             plugins/tools/web-search
             packages/cli
             packages/nx-plugin
+            services/mcp-sidecar
           )
 
           TAG="beta"
