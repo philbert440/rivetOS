@@ -63,6 +63,10 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
   const current = roster.find((n) => n.baseUrl === baseUrl)
   const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
 
+  // Nothing to switch to with a single node — hide the switcher entirely.
+  // Additional nodes are added from Settings, then this appears.
+  if (roster.length <= 1) return <></>
+
   return (
     <div ref={rootRef} className="relative border-t border-line">
       <Tooltip label={currentName} disabled={!compact} block>
