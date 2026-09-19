@@ -2381,6 +2381,47 @@ describe('term manager (herdr mux)', () => {
     expect(ctl.subscribes).toBe(1)
   })
 
+  it('herdr agent-gone (exit to shell) marks the PTY harness-dead: inject refuses + spawn-or-get sees no pty', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    // Live harness: linked to its session and injectable.
+    expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
+    expect(manager.inject(pty.id, 'hi', true)).toBe(true)
+
+    // A real agent status was seen, then the agent is gone (herdr dropped the
+    // pane to a shell). Before the debounce elapses it must still be live.
+    ctl.emit!({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit!({ event: 'pane.agent_status_changed', data: { agent_status: 'unknown' } })
+    expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
+
+    // After the debounce: harness-dead. ptyForSession hides it (so `POST
+    // /term/inject` 409s and spawn-or-get respawns) and inject refuses rather
+    // than writing the turn into the leftover shell.
+    vi.advanceTimersByTime(2_000)
+    expect(manager.ptyForSession(pty.denSession)).toBeUndefined()
+    expect(manager.inject(pty.id, 'into the shell?', true)).toBe(false)
+    vi.useRealTimers()
+  })
+
+  it('a real agent status within the debounce cancels the reap (no false positive on a flicker)', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    ctl.emit!({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit!({ event: 'pane.agent_status_changed', data: { agent_status: 'unknown' } })
+    // A flicker: the agent reports a real status again before the debounce fires.
+    vi.advanceTimersByTime(1_000)
+    ctl.emit!({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    vi.advanceTimersByTime(2_000)
+    // Still a live harness — never reaped.
+    expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
+    expect(manager.inject(pty.id, 'still here', true)).toBe(true)
+    vi.useRealTimers()
+  })
+
   it('writes the chrome-off config.toml into the herdr config home at construct (like tmux.conf)', () => {
     const ctl = new FakeHerdrCtl()
     const { stateDir } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl, port: 4321 })

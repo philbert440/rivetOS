@@ -243,6 +243,15 @@ interface PtyRecord {
   idleTimer?: NodeJS.Timeout
   sigkillTimer?: NodeJS.Timeout
   reapTimer?: NodeJS.Timeout
+  /** herdr told us the pane's coding agent exited (fell back to a shell) while
+   *  the PTY client stays alive. The harness is dead: `ptyForSession` and
+   *  `inject` refuse, so `POST /term/inject` 409s and the client respawns
+   *  (--resume) instead of writing chat turns into a bash prompt. Cleared if a
+   *  real agent status returns. */
+  harnessGone?: boolean
+  /** Debounce for `harnessGone` — a herdr flicker (tab switch, transient
+   *  `unknown`) must not reap a live harness. */
+  harnessGoneTimer?: NodeJS.Timeout
   /** Ready-gate (seamless 5g): a chat inject that arrives before the harness
    *  TUI can accept stdin is dropped. We buffer injects until first output has
    *  settled, then flush — so the FIRST chat turn to a fresh harness lands. */
@@ -338,6 +347,11 @@ const DETACH_SIGKILL_MS = 1000
  *  off (gcMs 0): nothing is killed at that cadence, but a harness that dies
  *  while detached still ends its room within a minute. */
 const END_SWEEP_MS = 60_000
+
+/** How long a herdr "agent gone" signal must persist (no real agent status in
+ *  between) before the PTY is declared harness-dead. Bounds a flicker — a tab
+ *  switch or transient `unknown` — from reaping a live harness. */
+const HARNESS_GONE_DEBOUNCE_MS = 2_000
 
 /** Max chat injects buffered before a fresh harness is ready (#316 review) —
  *  a real turn is a handful; well beyond that is a client spamming. */
@@ -651,6 +665,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       'sigkillTimer',
       'reapTimer',
       'readyTimer',
+      'harnessGoneTimer',
     ] as const) {
       const t = r[key]
       if (t) clearTimeout(t)
@@ -895,12 +910,34 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (process.env.RIVETOS_HERDR_DEBUG === '1')
           console.error(`[herdr] frame session=${name} status=${frame.status}`)
         const rec = [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
-        if (rec && frame.status === 'working') touchActivity(rec)
+        if (rec) {
+          // A real agent status means the harness is alive — cancel a pending
+          // harness-gone reap and clear the flag (e.g. after a respawn).
+          if (rec.harnessGoneTimer) {
+            clearTimeout(rec.harnessGoneTimer)
+            rec.harnessGoneTimer = undefined
+          }
+          rec.harnessGone = false
+          if (frame.status === 'working') touchActivity(rec)
+        }
         const denSession = rec?.denSession ?? knownTmux.get(name)?.denSession ?? name
         deps.onHerdrStatus?.(denSession, {
           ...frame,
           sessionId: denSession as HarnessStatusFrame['sessionId'],
         })
+      },
+      onAgentGone: (name) => {
+        const rec = [...records.values()].find(
+          (r) => r.tmuxName === name && r.state === 'running' && !r.harnessGone,
+        )
+        if (!rec || rec.harnessGoneTimer) return
+        rec.harnessGoneTimer = setTimeout(() => {
+          rec.harnessGoneTimer = undefined
+          rec.harnessGone = true
+          if (process.env.RIVETOS_HERDR_DEBUG === '1')
+            console.error(`[herdr] harness gone session=${name} pty=${rec.id} (agent exited)`)
+        }, HARNESS_GONE_DEBOUNCE_MS)
+        rec.harnessGoneTimer.unref()
       },
     })
   }
@@ -1741,7 +1778,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         return undefined
       }
     },
-    ptyForSession: (denSession) => bySession.get(denSession),
+    ptyForSession: (denSession) => {
+      const id = bySession.get(denSession)
+      if (!id) return undefined
+      // A harness-gone PTY (agent exited to a shell) is not a live harness —
+      // hide it so `POST /term/inject` 409s and spawn-or-get respawns instead
+      // of reusing the leftover shell.
+      const r = records.get(id)
+      return r && !r.harnessGone ? id : undefined
+    },
 
     kill(id): boolean {
       const hit = resolveId(id)
@@ -1849,7 +1894,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
     inject(id, text, submit, interrupt = false): boolean {
       const r = records.get(id)
-      if (!r || r.state !== 'running') return false
+      if (!r || r.state !== 'running' || r.harnessGone) return false
       // Chat activity protects this pty from LRU eviction (#316 review): a
       // conversation being chatted is unattached (inject doesn't attach) but
       // must not be evicted between the send and the harness's reply. Also

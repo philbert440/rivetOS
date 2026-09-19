@@ -481,6 +481,39 @@ export function herdrStatusToFrame(
   }
 }
 
+/** herdr `agent_status` values that mean the pane no longer runs a coding
+ *  agent — it fell back to a shell because the harness process exited. */
+const AGENT_GONE_STATUSES = new Set(['unknown', 'none', 'gone', 'exited'])
+
+/** True when a herdr event says the pane's agent is gone (the harness process
+ *  exited and herdr dropped the pane to a shell). This is the signal
+ *  {@link herdrStatusToFrame} deliberately drops (no working/blocked/idle
+ *  frame). Callers MUST additionally require that an agent was previously seen
+ *  and debounce, since a transient/initial `unknown` is not a real exit. */
+export function isHerdrAgentGone(evt: unknown): boolean {
+  let rec = asRecord(evt)
+  if (!rec && typeof evt === 'string') {
+    try {
+      rec = asRecord(JSON.parse(evt))
+    } catch {
+      return false
+    }
+  }
+  if (!rec) return false
+  const name = eventName(rec)
+  if (name === 'pane.agent_detected' || name === 'pane_agent_detected') {
+    const data = asRecord(rec.data) ?? rec
+    if (data.detected === false) return true
+    if ('agent' in data && !data.agent) return true
+    return false
+  }
+  if (STATUS_EVENTS.has(name)) {
+    const raw = eventStatus(rec)
+    return typeof raw === 'string' && AGENT_GONE_STATUSES.has(raw.toLowerCase())
+  }
+  return false
+}
+
 export function parseWorkspaceCreate(stdout: string): { paneId: string } {
   try {
     return parseWorkspaceCreateValue(JSON.parse(stdout))
@@ -638,6 +671,9 @@ const HUB_STABLE_MS = 5_000
 export function createHerdrStatusHub(opts: {
   subscribe: (name: string, onEvent: (evt: unknown) => void, onClose: () => void) => () => void
   onFrame: (name: string, frame: HarnessStatusFrame) => void
+  /** The pane's agent exited to a shell (harness process gone) AFTER a real
+   *  agent status was seen. The manager debounces this before reaping. */
+  onAgentGone?: (name: string) => void
   now?: () => number
   backoffMs?: number[]
   setTimeout?: typeof setTimeout
@@ -657,6 +693,9 @@ export function createHerdrStatusHub(opts: {
     closed: boolean
     connectedAt?: number
     gotEvent?: boolean
+    /** A real agent status (working/blocked/idle) was seen on this slot — the
+     *  transition guard for onAgentGone (never fire before an agent existed). */
+    sawAgent?: boolean
   }
   const slots = new Map<string, Slot>()
 
@@ -685,11 +724,23 @@ export function createHerdrStatusHub(opts: {
       name,
       (evt) => {
         const frame = herdrStatusToFrame(evt, now)
-        if (!frame) return
-        s.gotEvent = true
-        // Always den's id — herdr events carry no den session key, and a
-        // herdr-native id would miss the registry subscription.
-        opts.onFrame(name, { ...frame, sessionId: s.sessionId as HarnessStatusFrame['sessionId'] })
+        if (frame) {
+          s.gotEvent = true
+          s.sawAgent = true
+          // Always den's id — herdr events carry no den session key, and a
+          // herdr-native id would miss the registry subscription.
+          opts.onFrame(name, {
+            ...frame,
+            sessionId: s.sessionId as HarnessStatusFrame['sessionId'],
+          })
+          return
+        }
+        // No status frame: an agent that WAS running and is now gone means the
+        // harness process exited (herdr dropped the pane to a shell). Only fire
+        // after a real agent status (transition guard); the manager debounces.
+        if (s.sawAgent && opts.onAgentGone && isHerdrAgentGone(evt)) {
+          opts.onAgentGone(name)
+        }
       },
       () => {
         if (closedOnce) return

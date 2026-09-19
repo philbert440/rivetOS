@@ -30,6 +30,7 @@ import {
   herdrVersion,
   herdrWorkspaceCreateArgv,
   isDenHerdrName,
+  isHerdrAgentGone,
   parseHerdrVersion,
   parsePaneSize,
   parseWorkspaceCreate,
@@ -257,6 +258,32 @@ describe('herdrStatusToFrame', () => {
   })
 })
 
+describe('isHerdrAgentGone', () => {
+  it('is true when agent_status leaves the agent set (exited to a shell)', () => {
+    for (const s of ['unknown', 'none', 'gone', 'exited']) {
+      expect(
+        isHerdrAgentGone({ event: 'pane.agent_status_changed', data: { agent_status: s } }),
+      ).toBe(true)
+    }
+  })
+
+  it('is true when pane.agent_detected reports no agent', () => {
+    expect(isHerdrAgentGone({ event: 'pane.agent_detected', data: { detected: false } })).toBe(true)
+    expect(isHerdrAgentGone({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
+  })
+
+  it('is false for a live agent status and unrelated events', () => {
+    for (const s of ['working', 'blocked', 'idle', 'done']) {
+      expect(
+        isHerdrAgentGone({ event: 'pane.agent_status_changed', data: { agent_status: s } }),
+      ).toBe(false)
+    }
+    expect(isHerdrAgentGone({ event: 'pane.agent_detected', data: { detected: true } })).toBe(false)
+    expect(isHerdrAgentGone({ event: 'pane.focused', data: { pane_id: 'w1:p1' } })).toBe(false)
+    expect(isHerdrAgentGone('not json')).toBe(false)
+  })
+})
+
 describe('createHerdrStatusHub', () => {
   it('starts one subscribe on first retain, stops on last release (no leaks)', () => {
     const unsubs: Array<() => void> = []
@@ -325,6 +352,35 @@ describe('createHerdrStatusHub', () => {
     vi.advanceTimersByTime(10_000)
     expect(live).toBe(0)
     vi.useRealTimers()
+  })
+
+  it('fires onAgentGone only after a real agent status was seen (transition guard)', () => {
+    let onEvent: ((evt: unknown) => void) | undefined
+    const subscribe = (
+      _name: string,
+      handler: (evt: unknown) => void,
+    ): (() => void) => {
+      onEvent = handler
+      return () => undefined
+    }
+    const gone: string[] = []
+    const hub = createHerdrStatusHub({
+      subscribe,
+      onFrame: () => undefined,
+      onAgentGone: (name) => gone.push(name),
+    })
+    hub.retain('n', 'sid')
+
+    // An `unknown` BEFORE any agent was seen is a transient/initial state — no reap.
+    onEvent!({ event: 'pane.agent_status_changed', data: { agent_status: 'unknown' } })
+    expect(gone).toEqual([])
+
+    // A real agent status, then gone → the transition fires exactly once.
+    onEvent!({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    onEvent!({ event: 'pane.agent_status_changed', data: { agent_status: 'unknown' } })
+    expect(gone).toEqual(['n'])
+
+    hub.close()
   })
 
   it('backoff escalates across two closes until an event or 5s uptime (N1)', () => {
