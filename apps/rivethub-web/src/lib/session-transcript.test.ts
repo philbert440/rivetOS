@@ -1,0 +1,134 @@
+import { describe, expect, it } from 'vitest'
+import type {
+  HarnessStatusFrame,
+  HarnessTranscriptEvent,
+  HarnessTranscriptTurn,
+  SessionId,
+} from '@rivetos/types'
+import {
+  GAP_RESYNC_MS,
+  applyTranscriptEvent,
+  emptyTranscript,
+  noteTranscriptGap,
+  resyncTranscript,
+  transcriptLiveOverlay,
+} from './session-transcript.js'
+
+const SID = 'claude-code:abc' as SessionId
+
+function turn(text: string, role: 'user' | 'assistant' = 'user'): HarnessTranscriptTurn {
+  return { role, text } as HarnessTranscriptTurn
+}
+
+function frame(
+  rev: number,
+  from: number,
+  turns: HarnessTranscriptTurn[],
+  total: number,
+  extra: Partial<HarnessTranscriptEvent> = {},
+): HarnessTranscriptEvent {
+  return {
+    type: 'transcript',
+    sessionId: SID,
+    rev,
+    from,
+    total,
+    turns,
+    command: 'claude',
+    ...extra,
+  }
+}
+
+describe('applyTranscriptEvent', () => {
+  it('applies a snapshot then consecutive deltas without asking for sync', () => {
+    let t = applyTranscriptEvent(
+      emptyTranscript(),
+      frame(1, 0, [turn('a'), turn('b', 'assistant')], 2),
+    )
+    expect(t).not.toBeNull()
+    t = applyTranscriptEvent(t!, frame(2, 2, [turn('c')], 3))
+    expect(t?.turns.map((x) => x.text)).toEqual(['a', 'b', 'c'])
+    // in-place rewrite of the trailing (streaming) turn
+    t = applyTranscriptEvent(t!, frame(3, 2, [turn('c+', 'assistant')], 3))
+    expect(t?.turns.map((x) => x.text)).toEqual(['a', 'b', 'c+'])
+    expect(t?.rev).toBe(3)
+  })
+
+  it('reports a rev gap', () => {
+    const t = applyTranscriptEvent(emptyTranscript(), frame(1, 0, [turn('a')], 1))!
+    expect(applyTranscriptEvent(t, frame(3, 1, [turn('b')], 2))).toBeNull()
+  })
+
+  it('reports a splice past the end and a total mismatch', () => {
+    const t = applyTranscriptEvent(emptyTranscript(), frame(1, 0, [turn('a')], 1))!
+    expect(applyTranscriptEvent(t, frame(2, 3, [turn('b')], 4))).toBeNull()
+    expect(applyTranscriptEvent(t, frame(2, 1, [turn('b')], 5))).toBeNull()
+  })
+
+  it('needs one sync after an HTTP resync, then the snapshot re-seeds rev', () => {
+    const http = resyncTranscript([turn('a')])
+    expect(applyTranscriptEvent(http, frame(7, 1, [turn('b')], 2))).toBeNull()
+    const snap = applyTranscriptEvent(http, frame(8, 0, [turn('a'), turn('b')], 2))!
+    expect(applyTranscriptEvent(snap, frame(9, 2, [turn('c')], 3))?.turns).toHaveLength(3)
+  })
+
+  it('pins earlier turns under a truncated tail snapshot and offsets deltas', () => {
+    const full = applyTranscriptEvent(
+      emptyTranscript(),
+      frame(1, 0, [turn('a'), turn('b'), turn('c')], 3),
+    )!
+    const tail = applyTranscriptEvent(
+      full,
+      frame(2, 0, [turn('b'), turn('c')], 2, { truncatedBefore: true }),
+    )!
+    expect(tail.turns.map((x) => x.text)).toEqual(['a', 'b', 'c'])
+    expect(tail.offset).toBe(1)
+    const next = applyTranscriptEvent(tail, frame(3, 2, [turn('d')], 3))
+    expect(next?.turns.map((x) => x.text)).toEqual(['a', 'b', 'c', 'd'])
+  })
+})
+
+describe('noteTranscriptGap', () => {
+  it('asks for one sync per gap, not one per dropped frame', () => {
+    const http = resyncTranscript([turn('a')])
+    const first = noteTranscriptGap(http, 1_000)
+    expect(first.requestSync).toBe(true)
+    expect(first.next.gapSince).toBe(1_000)
+    const second = noteTranscriptGap(first.next, 1_200)
+    expect(second.requestSync).toBe(false)
+    expect(second.next).toBe(first.next)
+    // unanswered for long enough → ask again
+    expect(noteTranscriptGap(first.next, 1_000 + GAP_RESYNC_MS).requestSync).toBe(true)
+  })
+
+  it('a healing snapshot clears the pending gap', () => {
+    const gapped = noteTranscriptGap(resyncTranscript([turn('a')]), 1_000).next
+    const healed = applyTranscriptEvent(gapped, frame(4, 0, [turn('a'), turn('b')], 2))!
+    expect(healed.gapSince).toBeUndefined()
+    expect(noteTranscriptGap(healed, 1_100).requestSync).toBe(true)
+  })
+
+  it('HTTP resync clears a pending gap', () => {
+    expect(resyncTranscript([turn('a')]).gapSince).toBeUndefined()
+  })
+})
+
+describe('transcriptLiveOverlay', () => {
+  const working = { type: 'status', sessionId: SID, status: 'working' } as HarnessStatusFrame
+  const idle = { type: 'status', sessionId: SID, status: 'idle' } as HarnessStatusFrame
+  const interrupted = [turn('q1'), turn('partial reply', 'assistant')]
+
+  it('lives the trailing incomplete assistant turn while working', () => {
+    expect(transcriptLiveOverlay(interrupted, working, 0)?.text).toBe('partial reply')
+    expect(transcriptLiveOverlay(interrupted, idle, 0)).toBeUndefined()
+  })
+
+  it('does not re-live a reply settled by an earlier idle (liveFloor)', () => {
+    // idle landed with 2 turns → floor 2; next turn's `working` arrives before
+    // its first transcript frame
+    expect(transcriptLiveOverlay(interrupted, working, 2)).toBeUndefined()
+    // the new turn's assistant frame lands at index 3 ≥ floor → live again
+    const next = [...interrupted, turn('q2'), turn('new reply', 'assistant')]
+    expect(transcriptLiveOverlay(next, working, 2)?.text).toBe('new reply')
+  })
+})

@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Bell,
   Folder,
+  History,
   Library,
   ListChecks,
   Menu,
@@ -24,11 +25,12 @@ import { AgentsSection } from './agents-section.js'
 import { Button } from './ui/button.js'
 import { Tooltip } from './ui/tooltip.js'
 
-/** Primary views after Conversations — Memory and Files as the day-to-day
- *  workspace. The standalone Terminal page is gone: chat embeds terminal as a
- *  per-session mode, which is the only entry. Lucide icons match the
+/** Primary views after Conversations. Sessions sits where Terminal used to
+ *  (standalone Terminal is gone — chat embeds it as a per-session mode).
+ *  Memory and Files are the day-to-day workspace. Lucide icons match the
  *  TenPAL rail. */
 const PRIMARY_NAV = [
+  { to: '/sessions', label: 'Sessions', icon: History },
   { to: '/memory', label: 'Memory', icon: Library },
   { to: '/files', label: 'Files', icon: Folder },
 ] as const
