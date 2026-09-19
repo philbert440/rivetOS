@@ -107,6 +107,14 @@ import { createMemoryTools } from './tools/index.js'
 import { ensureEmbedderSchema } from './embedder.js'
 import { BlockedMemory, RoutingMemory, userDbsFromRegistry } from './user-routing.js'
 
+function isPgPool(value: unknown): value is import('pg').Pool {
+  if (value == null || typeof value !== 'object') return false
+  const v = value as { query?: unknown; connect?: unknown; end?: unknown }
+  return (
+    typeof v.query === 'function' && typeof v.connect === 'function' && typeof v.end === 'function'
+  )
+}
+
 export const manifest: PluginManifest = {
   type: 'memory',
   name: 'postgres',
@@ -132,8 +140,15 @@ export const manifest: PluginManifest = {
     const hnswEfSearch =
       (cfg.hnsw_ef_search as number | string | undefined) ?? ctx.env.RIVETOS_HNSW_EF_SEARCH
 
+    const shared = ctx.sharedPg
+    const adopted =
+      shared && shared.connectionString === connectionString && isPgPool(shared.pool)
+        ? shared.pool
+        : undefined
+
     const memory = new PostgresMemory({
       connectionString,
+      ...(adopted ? { pool: adopted } : {}),
       embedEndpoint: embedEndpoint || undefined,
       embedModel,
       embedQueryInstruction,

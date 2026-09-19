@@ -63,12 +63,17 @@ function pluginConfigFor(
   }
 }
 
+async function defaultImportPlugin(specifier: string): Promise<{ manifest?: PluginManifest }> {
+  return import(specifier) as Promise<{ manifest?: PluginManifest }>
+}
+
 export async function registerPlugins(
   runtime: Runtime,
   config: RivetConfig,
   registry: PluginRegistry,
   hooks: HookPipeline,
   workspaceDir: string,
+  importPlugin: (specifier: string) => Promise<{ manifest?: PluginManifest }> = defaultImportPlugin,
 ): Promise<void> {
   const shutdowns: Array<() => Promise<void> | void> = []
   const completeCallbacks: Array<(snapshot: RegistrationCompleteSnapshot) => Promise<void> | void> =
@@ -79,7 +84,7 @@ export async function registerPlugins(
     if (!register) continue
 
     try {
-      const mod = (await import(plugin.packageName)) as { manifest?: PluginManifest }
+      const mod = await importPlugin(plugin.packageName)
       const manifest = mod.manifest
 
       if (!manifest) {
@@ -95,12 +100,15 @@ export async function registerPlugins(
       }
 
       const pluginLog = logger(`Plugin:${manifest.name}`)
+      const pgPool = runtime.getPgPool()
+      const pgUrl = runtime.getPgUrl()
       const ctx: RegistrationContext = {
         config,
         pluginConfig: slice,
         env: process.env,
         workspaceDir,
         logger: pluginLog,
+        sharedPg: pgPool && pgUrl ? { connectionString: pgUrl, pool: pgPool } : undefined,
         registerProvider: (p) => runtime.registerProvider(p),
         registerChannel: (c) => runtime.registerChannel(c),
         registerTool: (t) => runtime.registerTool(t),
