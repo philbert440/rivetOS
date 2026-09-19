@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  BOOT_FAILURE_STOP_TIMEOUT_MS,
   POOL_END_TIMEOUT_MS,
   cleanupAfterBootFailure,
   createEndSharedPool,
@@ -124,5 +125,110 @@ describe('cleanupAfterBootFailure', () => {
     expect(runtime.stop.mock.invocationCallOrder[0]).toBeLessThan(
       pool.end.mock.invocationCallOrder[0],
     )
+  })
+
+  it('bounds a never-settling stop, then ends the pool and rethrows the original error', async () => {
+    vi.useFakeTimers()
+    const runtime = {
+      stop: vi.fn(
+        () =>
+          new Promise<void>(() => {
+            /* never settles — a claimed graphile task */
+          }),
+      ),
+    }
+    const pool = {
+      end: vi.fn(async () => undefined),
+    }
+    const poolLog = { error: vi.fn(), warn: vi.fn() }
+    const endPool = createEndSharedPool(pool, poolLog)
+    const original = new Error('later boot step failed')
+    const pending = cleanupAfterBootFailure({ runtime, endPool, log: poolLog, err: original })
+    const assertion = expect(pending).rejects.toBe(original)
+    await vi.advanceTimersByTimeAsync(BOOT_FAILURE_STOP_TIMEOUT_MS - 1)
+    expect(pool.end).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await assertion
+    expect(pool.end).toHaveBeenCalledTimes(1)
+    expect(String(poolLog.warn.mock.calls[0]?.[0])).toContain('did not stop in time')
+  })
+
+  it('bounds a never-settling stop and a never-settling end, then rethrows the original error', async () => {
+    vi.useFakeTimers()
+    const runtime = {
+      stop: vi.fn(
+        () =>
+          new Promise<void>(() => {
+            /* never settles */
+          }),
+      ),
+    }
+    const pool = {
+      end: vi.fn(
+        () =>
+          new Promise<void>(() => {
+            /* never settles */
+          }),
+      ),
+    }
+    const poolLog = { error: vi.fn(), warn: vi.fn() }
+    const endPool = createEndSharedPool(pool, poolLog)
+    const original = new Error('later boot step failed')
+    const pending = cleanupAfterBootFailure({ runtime, endPool, log: poolLog, err: original })
+    const assertion = expect(pending).rejects.toBe(original)
+    await vi.advanceTimersByTimeAsync(BOOT_FAILURE_STOP_TIMEOUT_MS)
+    expect(pool.end).toHaveBeenCalledTimes(1)
+    let settled = false
+    void pending.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(POOL_END_TIMEOUT_MS)
+    await assertion
+    expect(poolLog.warn).toHaveBeenCalledTimes(2)
+  })
+
+  it('absorbs a late stop() rejection after the timeout and still throws the original error', async () => {
+    vi.useFakeTimers()
+    let rejectStop!: (reason: Error) => void
+    const runtime = {
+      stop: vi.fn(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectStop = reject
+          }),
+      ),
+    }
+    const pool = { end: vi.fn(async () => undefined) }
+    const poolLog = { error: vi.fn(), warn: vi.fn() }
+    const endPool = createEndSharedPool(pool, poolLog)
+    const original = new Error('later boot step failed')
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      const pending = cleanupAfterBootFailure({ runtime, endPool, log: poolLog, err: original })
+      const assertion = expect(pending).rejects.toBe(original)
+      await vi.advanceTimersByTimeAsync(BOOT_FAILURE_STOP_TIMEOUT_MS)
+      await assertion
+      expect(pool.end).toHaveBeenCalledTimes(1)
+      rejectStop(new Error('late stop failure'))
+      await Promise.resolve()
+      expect(
+        poolLog.error.mock.calls.some((call) => String(call[0]).includes('late stop failure')),
+      ).toBe(true)
+      vi.useRealTimers()
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0)
+      })
+      expect(unhandled).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
   })
 })

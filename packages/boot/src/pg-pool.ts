@@ -12,6 +12,8 @@ const log = logger('Boot:PgPool')
 
 /** Bound on `pool.end()` so cleanup cannot hang the rethrow or `process.exit`. */
 export const POOL_END_TIMEOUT_MS = 5_000
+/** Bound on `runtime.stop()` during boot-failure cleanup so a claimed task cannot hang the rethrow. */
+export const BOOT_FAILURE_STOP_TIMEOUT_MS = 10_000
 
 const DEFAULT_POOL_MAX = 8
 /** Two graphile LISTEN clients live in this pool permanently. */
@@ -92,28 +94,51 @@ export function createEndSharedPool(
   }
 }
 
-async function endPoolBounded(pool: EndablePool, poolLog: PoolLog): Promise<void> {
+/**
+ * Race `work` against `timeoutMs`. `onReject` is attached to `work` itself so a
+ * rejection after the timeout has already won cannot become unhandled. The
+ * timer is always cleared.
+ */
+async function awaitBounded(
+  work: Promise<void>,
+  timeoutMs: number,
+  onTimeout: () => void,
+  onReject: (err: unknown) => void,
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     const timeout = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), POOL_END_TIMEOUT_MS)
+      timer = setTimeout(() => resolve('timeout'), timeoutMs)
     })
-    const ended = pool.end().then(
-      () => 'ended' as const,
+    const settled = work.then(
+      () => 'done' as const,
       (err: unknown) => {
-        poolLog.error(
-          `Shared pg pool end failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
-        return 'ended' as const
+        onReject(err)
+        return 'done' as const
       },
     )
-    const winner = await Promise.race([ended, timeout])
+    const winner = await Promise.race([settled, timeout])
     if (winner === 'timeout') {
-      poolLog.warn(`Shared pg pool end timed out after ${String(POOL_END_TIMEOUT_MS)}ms`)
+      onTimeout()
     }
   } finally {
     if (timer !== undefined) clearTimeout(timer)
   }
+}
+
+async function endPoolBounded(pool: EndablePool, poolLog: PoolLog): Promise<void> {
+  await awaitBounded(
+    pool.end(),
+    POOL_END_TIMEOUT_MS,
+    () => {
+      poolLog.warn(`Shared pg pool end timed out after ${String(POOL_END_TIMEOUT_MS)}ms`)
+    },
+    (err: unknown) => {
+      poolLog.error(
+        `Shared pg pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    },
+  )
 }
 
 export interface BootFailureCleanup {
@@ -132,14 +157,31 @@ export interface BootFailureCleanup {
 export async function cleanupAfterBootFailure(opts: BootFailureCleanup): Promise<never> {
   const msg = opts.err instanceof Error ? opts.err.message : String(opts.err)
   opts.log.error(`Boot failed: ${msg}`)
-  try {
-    await opts.runtime?.stop()
-  } catch (stopErr: unknown) {
-    opts.log.error(
-      `Runtime stop during boot-failure cleanup failed: ${
-        stopErr instanceof Error ? stopErr.message : String(stopErr)
-      }`,
-    )
+  if (opts.runtime) {
+    try {
+      await awaitBounded(
+        opts.runtime.stop(),
+        BOOT_FAILURE_STOP_TIMEOUT_MS,
+        () => {
+          opts.log.warn(
+            `Runtime consumers did not stop in time after ${String(BOOT_FAILURE_STOP_TIMEOUT_MS)}ms; proceeding with cleanup`,
+          )
+        },
+        (stopErr: unknown) => {
+          opts.log.error(
+            `Runtime stop during boot-failure cleanup failed: ${
+              stopErr instanceof Error ? stopErr.message : String(stopErr)
+            }`,
+          )
+        },
+      )
+    } catch (stopErr: unknown) {
+      opts.log.error(
+        `Runtime stop during boot-failure cleanup failed: ${
+          stopErr instanceof Error ? stopErr.message : String(stopErr)
+        }`,
+      )
+    }
   }
   await opts.endPool()
   throw opts.err

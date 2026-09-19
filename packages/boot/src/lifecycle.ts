@@ -48,7 +48,11 @@ export function registerShutdownHandlers(
     if (shuttingDown) return shuttingDown
     shuttingDown = (async () => {
       log.info('Shutting down...')
-      await runtime.stop()
+      try {
+        await runtime.stop()
+      } catch (err: unknown) {
+        log.error(`Runtime stop failed: ${(err as Error).message}`)
+      }
       if (afterStop) {
         try {
           await afterStop()
