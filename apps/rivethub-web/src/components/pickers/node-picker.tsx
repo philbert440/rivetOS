@@ -100,6 +100,11 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
     setOpen(false)
   }
 
+  // With a single node there's nothing to switch to and no mesh peer to save
+  // — hide the picker. Discovered nodes surface again once a second is added
+  // (from Settings), and full add/remove lives there regardless.
+  if (roster.length <= 1) return <></>
+
   return (
     <Popover
       open={open}
