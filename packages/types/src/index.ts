@@ -161,7 +161,9 @@ export type {
 export type { SessionSummary as HarnessSessionSummary } from './harness.js'
 export {
   CATALOG_AGENT_TO_HARNESS,
+  PROVIDER_TO_HARNESS,
   catalogAgentToHarness,
+  providerToHarness,
   migrateAgentPreset,
 } from './agent-preset.js'
 export {

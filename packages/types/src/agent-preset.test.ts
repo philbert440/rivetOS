@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { catalogAgentToHarness, migrateAgentPreset } from './agent-preset.js'
+import { catalogAgentToHarness, migrateAgentPreset, providerToHarness } from './agent-preset.js'
 
 describe('catalogAgentToHarness', () => {
   it('maps catalog agent ids to harness ids', () => {
@@ -17,6 +17,22 @@ describe('catalogAgentToHarness', () => {
     expect(catalogAgentToHarness('grok-4.6')).toBeUndefined()
     expect(catalogAgentToHarness('deepseek')).toBeUndefined()
     expect(catalogAgentToHarness('dsh')).toBeUndefined()
+  })
+})
+
+describe('providerToHarness', () => {
+  it('maps provider plugin keys to harness ids', () => {
+    expect(providerToHarness('claude-cli')).toBe('claude-code')
+    expect(providerToHarness('grok-cli')).toBe('grok-build')
+    expect(providerToHarness('hermes-cli')).toBe('hermes')
+    expect(providerToHarness('codex-cli')).toBe('codex')
+    expect(providerToHarness('qwen-code')).toBe('qwen-code')
+  })
+
+  it('is undefined for an unknown or absent provider', () => {
+    expect(providerToHarness('anthropic')).toBeUndefined()
+    expect(providerToHarness(undefined)).toBeUndefined()
+    expect(providerToHarness('')).toBeUndefined()
   })
 })
 

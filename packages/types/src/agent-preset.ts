@@ -24,6 +24,28 @@ export function catalogAgentToHarness(id: string): HarnessId | undefined {
 }
 
 /**
+ * Provider plugin key (`providers.<key>` in config.yaml) → its harness id.
+ * Inverse of the CLI's HARNESS_PROVIDER_KEYS. Lets a catalog agent whose id
+ * isn't itself a harness (e.g. a config agent `rivet` on `claude-cli`) resolve
+ * the harness whose model sheet drives its picker.
+ */
+export const PROVIDER_TO_HARNESS: Record<string, HarnessId> = {
+  'claude-cli': 'claude-code',
+  'grok-cli': 'grok-build',
+  'kimi-code': 'kimi-code',
+  'hermes-cli': 'hermes',
+  'codex-cli': 'codex',
+  'opencode-cli': 'opencode',
+  'qwen-code': 'qwen-code',
+}
+
+/** Resolve a provider plugin key to its harness id, or undefined if unknown. */
+export function providerToHarness(provider: string | undefined): HarnessId | undefined {
+  if (!provider) return undefined
+  return PROVIDER_TO_HARNESS[provider]
+}
+
+/**
  * If `model` is a catalog agent id (or harness id) and `harnessId` is unset,
  * move it to `harnessId` and clear `model` to the harness default.
  */
