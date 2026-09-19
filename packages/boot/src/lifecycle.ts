@@ -9,6 +9,10 @@ import { logger } from '@rivetos/core'
 
 const log = logger('Boot:Lifecycle')
 
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 const DEFAULT_PID_DIR = resolve(process.env.HOME ?? '.', '.rivetos')
 
 /**
@@ -51,13 +55,13 @@ export function registerShutdownHandlers(
       try {
         await runtime.stop()
       } catch (err: unknown) {
-        log.error(`Runtime stop failed: ${(err as Error).message}`)
+        log.error(`Runtime stop failed: ${errMessage(err)}`)
       }
       if (afterStop) {
         try {
           await afterStop()
         } catch (err: unknown) {
-          log.error(`After-stop hook failed: ${(err as Error).message}`)
+          log.error(`After-stop hook failed: ${errMessage(err)}`)
         }
       }
       await removePidFile(pidDir)
