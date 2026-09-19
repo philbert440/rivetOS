@@ -246,6 +246,24 @@ describe('Runtime Integration', () => {
     await runtime.stop()
   })
 
+  it('exposes an injected pg pool and leaves it undefined otherwise', () => {
+    const pool = { options: { max: 8 } } as unknown as import('pg').Pool
+    const withPool = new Runtime({
+      workspaceDir,
+      defaultAgent: 'test-agent',
+      agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
+      pgPool: pool,
+    })
+    assert.equal(withPool.getPgPool(), pool)
+
+    const without = new Runtime({
+      workspaceDir,
+      defaultAgent: 'test-agent',
+      agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
+    })
+    assert.equal(without.getPgPool(), undefined)
+  })
+
   it('full turn — tool calling and response', async () => {
     const provider = makeToolThenTextProvider('test-provider')
     const channel = makeChannel('test-channel')

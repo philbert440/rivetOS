@@ -17,6 +17,7 @@
 
 import { parseCronItems, run, type Runner, type CronItem } from 'graphile-worker'
 import type { HeartbeatConfig } from '@rivetos/types'
+import type pg from 'pg'
 import { logger } from '../logger.js'
 
 const log = logger('Heartbeat')
@@ -34,6 +35,8 @@ export interface HeartbeatHandler {
 
 export interface HeartbeatSchedulerOptions {
   pgUrl: string
+  /** When set, passed to graphile as `pgPool` (connectionString omitted). */
+  pgPool?: pg.Pool
   configs: HeartbeatConfig[]
   handler: HeartbeatHandler
 }
@@ -120,7 +123,7 @@ export function createHeartbeatScheduler(opts: HeartbeatSchedulerOptions): Heart
           .join(', ')}`,
       )
       runner = await run({
-        connectionString: opts.pgUrl,
+        ...(opts.pgPool ? { pgPool: opts.pgPool } : { connectionString: opts.pgUrl }),
         concurrency: Math.max(1, opts.configs.length),
         noHandleSignals: true,
         pollInterval: 60_000,

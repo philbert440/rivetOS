@@ -21,6 +21,7 @@
  */
 
 import { run, type Runner } from 'graphile-worker'
+import type pg from 'pg'
 import type {
   HarnessExecutor,
   Memory,
@@ -38,6 +39,7 @@ import { TASK_JOB_NAME, taskJobName } from './store.js'
 import { buildRetryMessage } from './evaluation-coordinator.js'
 import { parseWikiPage } from '@rivetos/wiki-core'
 import { logger } from '../../logger.js'
+import { retryPreSendConnect } from './pg-transient.js'
 
 const log = logger('TaskRunner')
 
@@ -235,7 +237,15 @@ const ZERO_USAGE: TaskUsage = {
 
 export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) => Promise<void> {
   return async (taskId: string): Promise<void> => {
-    const task = await opts.store.claim(taskId, opts.nodeId)
+    // Retry only the claim, never the turn. heartbeat-task.ts sets
+    // maxAttempts: 1 on purpose (an agent turn must never double-run);
+    // a pre-send connect failure means nothing ran, so a retry is safe.
+    const task = await retryPreSendConnect(() => opts.store.claim(taskId, opts.nodeId), {
+      onRetry: (err, attempt) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        log.warn(`Task ${taskId} claim retry ${String(attempt)}: ${msg}`)
+      },
+    })
     if (!task) {
       // Stranding interim (Appendix E): a wrong-node worker consumed a
       // global-name job for a pinned row (mixed-version mesh window). Put
@@ -495,6 +505,8 @@ export interface TaskRunner {
 
 export interface TaskRunnerOptions extends TaskHandlerOptions {
   pgUrl: string
+  /** When set, passed to graphile as `pgPool` (connectionString omitted). */
+  pgPool?: pg.Pool
   concurrency?: number
   pollIntervalMs?: number
 }
@@ -554,7 +566,7 @@ export function createTaskRunner(opts: TaskRunnerOptions): TaskRunner {
       }
 
       runner = await run({
-        connectionString: opts.pgUrl,
+        ...(opts.pgPool ? { pgPool: opts.pgPool } : { connectionString: opts.pgUrl }),
         concurrency: opts.concurrency ?? envInt('RIVETOS_TASKS_CONCURRENCY', 4),
         pollInterval: opts.pollIntervalMs ?? envInt('RIVETOS_TASKS_POLL_MS', 2_000),
         noHandleSignals: true,

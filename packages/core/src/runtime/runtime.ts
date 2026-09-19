@@ -14,6 +14,7 @@
  * - Media         — attachment resolution and multimodal content
  */
 
+import type pg from 'pg'
 import type {
   Channel,
   Provider,
@@ -57,6 +58,8 @@ export interface RuntimeConfig {
   heartbeats?: import('@rivetos/types').HeartbeatConfig[]
   /** Postgres connection string — required when heartbeats are configured (graphile-worker crontab substrate) */
   pgUrl?: string
+  /** Host-owned Postgres pool. Runtime does not end it — boot does. */
+  pgPool?: pg.Pool
   /** Directories to scan for skills (default: ~/.rivetos/workspace/skills/) */
   skillDirs?: string[]
   /** Hook pipeline instance (created by boot, shared across runtime) */
@@ -177,6 +180,10 @@ export class Runtime {
   /** Postgres connection string if configured (or RIVETOS_PG_URL env var). */
   getPgUrl(): string | undefined {
     return this.config.pgUrl ?? process.env.RIVETOS_PG_URL
+  }
+  /** Host-owned Postgres pool if boot injected one. Runtime does not end it. */
+  getPgPool(): pg.Pool | undefined {
+    return this.config.pgPool
   }
   /** Registered memory adapter (undefined until a memory plugin registers). */
   /**
@@ -327,6 +334,7 @@ export class Runtime {
       }
       this.heartbeatScheduler = createHeartbeatScheduler({
         pgUrl,
+        pgPool: this.config.pgPool,
         configs: this.config.heartbeats,
         handler: async (hbConfig) => {
           const agentConfig = this.router.getAgents().find((a) => a.id === hbConfig.agent)

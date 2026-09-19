@@ -95,12 +95,15 @@ export async function registerPlugins(
       }
 
       const pluginLog = logger(`Plugin:${manifest.name}`)
+      const pgPool = runtime.getPgPool()
+      const pgUrl = runtime.getPgUrl()
       const ctx: RegistrationContext = {
         config,
         pluginConfig: slice,
         env: process.env,
         workspaceDir,
         logger: pluginLog,
+        sharedPg: pgPool && pgUrl ? { connectionString: pgUrl, pool: pgPool } : undefined,
         registerProvider: (p) => runtime.registerProvider(p),
         registerChannel: (c) => runtime.registerChannel(c),
         registerTool: (t) => runtime.registerTool(t),

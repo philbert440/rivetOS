@@ -1,6 +1,13 @@
-import { describe, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as assert from 'node:assert/strict'
-import { scheduleToCronMatch } from './heartbeat-scheduler.js'
+import type pg from 'pg'
+import { run } from 'graphile-worker'
+import { createHeartbeatScheduler, scheduleToCronMatch } from './heartbeat-scheduler.js'
+
+vi.mock('graphile-worker', () => ({
+  parseCronItems: (items: unknown) => items,
+  run: vi.fn(async () => ({ stop: async () => undefined })),
+}))
 
 describe('scheduleToCronMatch', () => {
   it('passes 5-field cron through unchanged', () => {
@@ -45,5 +52,44 @@ describe('scheduleToCronMatch', () => {
   it('rejects sub-1 minute numeric intervals', () => {
     assert.throws(() => scheduleToCronMatch(0))
     assert.throws(() => scheduleToCronMatch(-5))
+  })
+})
+
+describe('createHeartbeatScheduler graphile pool wiring', () => {
+  const hb = { agent: 'opus', schedule: '0 * * * *', prompt: 'heartbeat' }
+  const pgUrl = 'postgres://user:pass@localhost:5432/db'
+
+  beforeEach(() => {
+    vi.mocked(run).mockClear()
+  })
+
+  it('passes pgPool and omits connectionString when a pool is supplied', async () => {
+    const pgPool = { options: { max: 8 } } as unknown as pg.Pool
+    const scheduler = createHeartbeatScheduler({
+      pgUrl,
+      pgPool,
+      configs: [hb],
+      handler: async () => undefined,
+    })
+    await scheduler.start()
+    expect(run).toHaveBeenCalledTimes(1)
+    const opts = vi.mocked(run).mock.calls[0][0] as Record<string, unknown>
+    expect(opts.pgPool).toBe(pgPool)
+    expect(opts.connectionString).toBeUndefined()
+    await scheduler.stop()
+  })
+
+  it('passes connectionString and omits pgPool when no pool is supplied', async () => {
+    const scheduler = createHeartbeatScheduler({
+      pgUrl,
+      configs: [hb],
+      handler: async () => undefined,
+    })
+    await scheduler.start()
+    expect(run).toHaveBeenCalledTimes(1)
+    const opts = vi.mocked(run).mock.calls[0][0] as Record<string, unknown>
+    expect(opts.connectionString).toBe(pgUrl)
+    expect(opts.pgPool).toBeUndefined()
+    await scheduler.stop()
   })
 })

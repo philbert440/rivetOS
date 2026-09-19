@@ -26,6 +26,7 @@ import {
   resolveEmbeddedPg,
   type EmbeddedPgHandle,
 } from './embedded-pg.js'
+import { createSharedPgPool } from './pg-pool.js'
 
 // Re-export config types for consumers
 export {
@@ -217,71 +218,91 @@ async function bootWithConfig(
   // 1. Hooks (must come before runtime — runtime receives the pipeline)
   const pipeline = await registerHooks(config, workspaceDir)
 
-  // 2. Runtime
-  const runtime = new Runtime({
-    workspaceDir,
-    defaultAgent: config.runtime.default_agent,
-    turnTimeout: config.runtime.turn_timeout,
-    contextConfig: config.runtime.context
-      ? {
-          softNudgePct: config.runtime.context.soft_nudge_pct,
-          hardNudgePct: config.runtime.context.hard_nudge_pct,
-        }
-      : undefined,
-    agents: Object.entries(config.agents).map(([id, agent]) => ({
-      id,
-      name: id,
-      provider: agent.provider,
-      model: agent.model,
-      defaultThinking: (agent.default_thinking as ThinkingLevel | undefined) ?? 'medium',
-      local: agent.local ?? false,
-      tools: agent.tools,
-    })),
-    heartbeats: config.runtime.heartbeats,
-    pgUrl:
-      (config.memory?.postgres.connection_string as string | undefined) ??
-      process.env.RIVETOS_PG_URL,
-    skillDirs: config.runtime.skill_dirs,
-    hooks: pipeline,
-    configPath,
-  })
-
-  // 3. All discovered plugins (providers, channels, memory, tools) — each
-  //    plugin owns its config resolution and lifecycle via its `manifest`.
-  await registerPlugins(runtime, config, registry, pipeline, workspaceDir)
-
-  // 4. Agent tools (delegation, sub-agents, skills) — after plugins so they can reference them
-  const { gatewayRoutes, gatewayUpgrades } = await registerAgentTools(
-    runtime,
-    config,
-    workspaceDir,
-    rootDir,
-  )
-
-  // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
-  //      task-engine route families mounted behind its bearer gate.
-  const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
-
-  // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
-  // One shutdown hook: unpublish (goodbye) first, then den.close(). Hooks run
-  // FIFO; registerGateway no longer registers den.close itself.
-  if (gateway) {
-    const stopMdns = await registerMdnsAdvertiser(config, gateway.port, denTlsConfigured(config))
-    runtime.addShutdownHook(async () => {
-      try {
-        if (stopMdns) await stopMdns()
-      } finally {
-        await gateway.close()
-      }
-    })
+  // 2. Runtime — one host-owned pool, injected everywhere. Ended after
+  //    runtime.stop() and before embedded PG itself is stopped.
+  const pgUrl =
+    (config.memory?.postgres.connection_string as string | undefined) ?? process.env.RIVETOS_PG_URL
+  let sharedPool = pgUrl ? createSharedPgPool(pgUrl) : undefined
+  const endSharedPool = async (): Promise<void> => {
+    if (!sharedPool) return
+    const pool = sharedPool
+    sharedPool = undefined
+    try {
+      await pool.end()
+    } catch (err: unknown) {
+      log.error(`Shared pg pool end failed: ${(err as Error).message}`)
+    }
   }
 
-  // 5. Lifecycle — close embedded PG after runtime.stop (den/plugins first).
-  await writePidFile()
-  registerShutdownHandlers(runtime, undefined, async () => {
-    await embeddedHandle?.close()
-  })
+  try {
+    const runtime = new Runtime({
+      workspaceDir,
+      defaultAgent: config.runtime.default_agent,
+      turnTimeout: config.runtime.turn_timeout,
+      contextConfig: config.runtime.context
+        ? {
+            softNudgePct: config.runtime.context.soft_nudge_pct,
+            hardNudgePct: config.runtime.context.hard_nudge_pct,
+          }
+        : undefined,
+      agents: Object.entries(config.agents).map(([id, agent]) => ({
+        id,
+        name: id,
+        provider: agent.provider,
+        model: agent.model,
+        defaultThinking: (agent.default_thinking as ThinkingLevel | undefined) ?? 'medium',
+        local: agent.local ?? false,
+        tools: agent.tools,
+      })),
+      heartbeats: config.runtime.heartbeats,
+      pgUrl,
+      pgPool: sharedPool,
+      skillDirs: config.runtime.skill_dirs,
+      hooks: pipeline,
+      configPath,
+    })
 
-  // 6. Start
-  await runtime.start()
+    // 3. All discovered plugins (providers, channels, memory, tools) — each
+    //    plugin owns its config resolution and lifecycle via its `manifest`.
+    await registerPlugins(runtime, config, registry, pipeline, workspaceDir)
+
+    // 4. Agent tools (delegation, sub-agents, skills) — after plugins so they can reference them
+    const { gatewayRoutes, gatewayUpgrades } = await registerAgentTools(
+      runtime,
+      config,
+      workspaceDir,
+      rootDir,
+    )
+
+    // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
+    //      task-engine route families mounted behind its bearer gate.
+    const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+
+    // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
+    // One shutdown hook: unpublish (goodbye) first, then den.close(). Hooks run
+    // FIFO; registerGateway no longer registers den.close itself.
+    if (gateway) {
+      const stopMdns = await registerMdnsAdvertiser(config, gateway.port, denTlsConfigured(config))
+      runtime.addShutdownHook(async () => {
+        try {
+          if (stopMdns) await stopMdns()
+        } finally {
+          await gateway.close()
+        }
+      })
+    }
+
+    // 5. Lifecycle — end the shared pool after runtime.stop, then embedded PG.
+    await writePidFile()
+    registerShutdownHandlers(runtime, undefined, async () => {
+      await endSharedPool()
+      await embeddedHandle?.close()
+    })
+
+    // 6. Start
+    await runtime.start()
+  } catch (err) {
+    await endSharedPool()
+    throw err
+  }
 }

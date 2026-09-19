@@ -5,7 +5,8 @@
  * Skipped when the env var is not set (CI without a DB, etc.).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import type pg from 'pg'
 import { PostgresMemory } from './adapter.ts'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
@@ -95,6 +96,29 @@ describeIf('getContextForTurn wiki section (3f)', () => {
     // The same 300-char prefix must appear exactly once (dedup across sections).
     const occurrences = ctx.split('flurbnozzle protocol v9 lives here').length - 1
     expect(occurrences).toBe(1)
+  })
+})
+
+describe('PostgresMemory external pool', () => {
+  it('close() does not end a borrowed pool', async () => {
+    const end = vi.fn(async () => undefined)
+    const query = vi.fn(async () => ({ rows: [] }))
+    const on = vi.fn()
+    const fakePool = {
+      query,
+      connect: vi.fn(),
+      end,
+      on,
+    }
+    const memory = new PostgresMemory({
+      connectionString: 'postgres://user:pass@localhost:5432/db',
+      pool: fakePool as unknown as pg.Pool,
+    })
+    expect(on).not.toHaveBeenCalled()
+    await memory.close()
+    expect(end).not.toHaveBeenCalled()
+    await fakePool.query()
+    expect(query).toHaveBeenCalled()
   })
 })
 

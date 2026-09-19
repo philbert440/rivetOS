@@ -130,6 +130,38 @@ describe('memory-postgres manifest', () => {
   })
 })
 
+describe('sharedPg adoption', () => {
+  const OWNER_URL = 'postgres://user:pass@localhost:5432/db'
+
+  it('adopts sharedPg when connection strings match', async () => {
+    const pool = { query() {}, connect() {}, end() {} }
+    const ctx = fakeCtx({ connection_string: OWNER_URL })
+    Object.assign(ctx, { sharedPg: { connectionString: OWNER_URL, pool } })
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as { pool?: unknown }
+    expect(cfg.pool).toBe(pool)
+  })
+
+  it('ignores sharedPg when connection strings differ', async () => {
+    const pool = { query() {}, connect() {}, end() {} }
+    const ctx = fakeCtx({ connection_string: OWNER_URL })
+    Object.assign(ctx, {
+      sharedPg: { connectionString: 'postgres://other:pass@localhost:5432/other', pool },
+    })
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as { pool?: unknown }
+    expect(cfg.pool).toBeUndefined()
+  })
+
+  it('ignores a malformed sharedPg.pool', async () => {
+    const ctx = fakeCtx({ connection_string: OWNER_URL })
+    Object.assign(ctx, { sharedPg: { connectionString: OWNER_URL, pool: { query: 1 } } })
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as { pool?: unknown }
+    expect(cfg.pool).toBeUndefined()
+  })
+})
+
 describe('M1 env / config plumbing', () => {
   it('passes plugin config first, then env, matching embed_endpoint', async () => {
     const ctx = fakeCtx(
