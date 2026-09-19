@@ -7,18 +7,29 @@ import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
+function applyDatahubUrl() {
+  if (process.env.RIVETOS_PG_URL) return
+  const hub = process.env.RIVETOS_DATAHUB_URL || ''
+  if (/^postgres(ql)?:\/\//.test(hub)) process.env.RIVETOS_PG_URL = hub
+}
+
 function loadEnv() {
+  // Empty plugin-dashboard placeholders count as unset so ~/.rivetos/.env wins.
+  for (const [key, val] of Object.entries(process.env)) {
+    if (key.startsWith('RIVETOS_') && val === '') delete process.env[key]
+  }
   const p = process.env.RIVETOS_ENV_FILE || resolve(homedir(), '.rivetos/.env')
   try {
     for (const line of readFileSync(p, 'utf8').split('\n')) {
       const m = line.match(/^([A-Z0-9_]+)=(.*)$/)
-      if (m && process.env[m[1]] == null) {
+      if (m && (process.env[m[1]] == null || process.env[m[1]] === '')) {
         process.env[m[1]] = m[2].replace(/^['"]|['"]$/g, '')
       }
     }
   } catch {
     /* optional */
   }
+  applyDatahubUrl()
 }
 loadEnv()
 

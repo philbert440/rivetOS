@@ -7,8 +7,15 @@
   },
   "plugins": [
     {
+      "name": "rivethub-grokbot",
+      "description": "RivetHub member kit for Grok Bot: shared memory MCP, onboard (cloud vs local DataHub), status, mesh-delegate skill. Same plugin either mode. Install then run rivetos-onboard. House nodes can keep ~/.rivetos/.env.",
+      "source": "./integrations/grok-bot/rivethub-grokbot",
+      "category": "productivity",
+      "homepage": "https://github.com/philbert440/rivetOS"
+    },
+    {
       "name": "rivet-memory-grokbot",
-      "description": "RivetOS memory for Grok Bot. MCP recall (memory_search/browse/stats/get_full, wiki) plus gated write tools (memory_append, memory_ingest_session) against the same Postgres store every Rivet agent shares. Requires a built RivetOS checkout at /opt/rivetos (or RIVETOS_ROOT) and ~/.rivetos/.env with RIVETOS_PG_URL.",
+      "description": "RivetOS memory for Grok Bot (MCP sibling launched by rivethub-grokbot). Recall + gated write tools. Plugin vars first, then ~/.rivetos/.env. Requires a built RivetOS checkout at /opt/rivetos (or RIVETOS_ROOT).",
       "source": "./integrations/grok-bot/rivet-memory",
       "category": "productivity",
       "homepage": "https://github.com/philbert440/rivetOS"

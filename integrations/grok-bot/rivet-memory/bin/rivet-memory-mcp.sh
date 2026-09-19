@@ -47,9 +47,12 @@ fi
 unset _rivet_paths _rivet_candidate
 unset SCRIPT_DIR # don't leak a global into the sourced namespace
 
-# Load RIVETOS_PG_URL / RIVETOS_EMBED_URL (and a possible RIVETOS_ROOT
-# override) from ~/.rivetos/.env, then locate the install root.
+# Plugin dashboard vars first, then ~/.rivetos/.env (house / power-user).
+# Never print PG URLs or tokens.
 rivetos_load_env
+if [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
+  echo "rivet-memory-mcp: no DataHub/PG URL or cloud token — run rivetos-onboard or add ~/.rivetos/.env" >&2
+fi
 RIVETOS_ROOT="$(rivetos_find_root)"
 export RIVETOS_ROOT
 

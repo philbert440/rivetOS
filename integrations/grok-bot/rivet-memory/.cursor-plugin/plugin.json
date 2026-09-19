@@ -1,0 +1,42 @@
+{
+  "name": "rivet-memory-grokbot",
+  "displayName": "RivetOS memory for Grok Bot",
+  "version": "0.2.1",
+  "description": "RivetOS memory MCP for Cursor Grok Bot. Sibling launcher for rivethub-grokbot. Plugin vars first, then ~/.rivetos/.env.",
+  "author": { "name": "RivetOS", "email": "rivetphilbot@gmail.com" },
+  "license": "MIT",
+  "keywords": ["rivetos", "memory", "grokbot"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "mcpServers": "./.mcp.json",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "RIVETOS_MODE": {
+        "type": "string",
+        "title": "RivetOS mode",
+        "description": "cloud or local. Leave unset to fall back to ~/.rivetos/.env.",
+        "enum": ["cloud", "local"]
+      },
+      "RIVETOS_CLOUD_TOKEN": {
+        "type": "string",
+        "title": "RivetOS cloud token (secret)",
+        "description": "Tenant credential. Never commit."
+      },
+      "RIVETOS_CLOUD_URL": {
+        "type": "string",
+        "title": "RivetOS cloud URL",
+        "default": "https://rivetos.cloud"
+      },
+      "RIVETOS_DATAHUB_URL": {
+        "type": "string",
+        "title": "DataHub endpoint",
+        "description": "Stable public name; postgres URLs map to RIVETOS_PG_URL."
+      },
+      "RIVETOS_PG_URL": {
+        "type": "string",
+        "title": "Postgres URL (secret, legacy)"
+      }
+    }
+  }
+}

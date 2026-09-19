@@ -4,10 +4,20 @@
 #
 # Source this file; it only defines functions — nothing runs at source time:
 #
-#   rivetos_load_env           Source the credentials env file
-#                              ($RIVETOS_ENV_FILE or ~/.rivetos/.env), exporting
-#                              everything in it. Call BEFORE rivetos_find_root so
-#                              a RIVETOS_ROOT set in the env file is honored.
+#   rivetos_load_env           Load credentials. Plugin / process RIVETOS_*
+#                              vars win; empty plugin placeholders are treated
+#                              as unset. Then fill gaps from
+#                              $RIVETOS_ENV_FILE or ~/.rivetos/.env (house /
+#                              power-user fallback). Maps a postgres
+#                              RIVETOS_DATAHUB_URL onto RIVETOS_PG_URL when
+#                              PG is still unset. Call BEFORE
+#                              rivetos_find_root so a RIVETOS_ROOT set in the
+#                              env file is honored.
+#   rivetos_apply_datahub_url  If RIVETOS_PG_URL is empty and
+#                              RIVETOS_DATAHUB_URL is a postgres URL, export
+#                              it as RIVETOS_PG_URL. No-op for https den /
+#                              other schemes (v1 contract is one PG-shaped
+#                              DataHub endpoint).
 #   rivetos_find_root          Echo the install root:
 #                                1. RIVETOS_ROOT env (authoritative — set in
 #                                   the process env or by rivetos_load_env)
@@ -86,16 +96,82 @@ rivetos_abs_path() {
   return 0
 }
 
+# Names of currently exported RIVETOS_* variables (name only — never values).
+rivetos_exported_rivetos_names() {
+  printenv | awk -F= '$1 ~ /^RIVETOS_[A-Z0-9_]+$/ { print $1 }'
+}
+
+# Cursor / marketplace substitution can inject empty ${VAR} placeholders.
+# Treat those as unset so ~/.rivetos/.env can fill them.
+rivetos_unset_empty_rivetos_vars() {
+  local n
+  for n in $(rivetos_exported_rivetos_names); do
+    if [ -z "${!n}" ]; then
+      unset "$n"
+    fi
+  done
+}
+
+# Public name for the stranger DataHub field. v1 maps a postgres URL onto
+# RIVETOS_PG_URL (the sidecar still speaks Postgres). HTTPS den / MCP-bridge
+# endpoints stay on RIVETOS_DATAHUB_URL only — do not invent a conversion.
+rivetos_apply_datahub_url() {
+  if [ -n "${RIVETOS_PG_URL:-}" ]; then
+    return 0
+  fi
+  local hub="${RIVETOS_DATAHUB_URL:-}"
+  [ -n "$hub" ] || return 0
+  case "$hub" in
+    postgres://* | postgresql://*)
+      export RIVETOS_PG_URL="$hub"
+      ;;
+  esac
+}
+
+rivetos_apply_cloud_defaults() {
+  if [ "${RIVETOS_MODE:-}" = "cloud" ] && [ -z "${RIVETOS_CLOUD_URL:-}" ]; then
+    export RIVETOS_CLOUD_URL="https://rivetos.cloud"
+  fi
+}
+
 # Load DB + embedding credentials so the memory tools come up. Without them the
 # server still starts, but with echo + web tools only (memory disabled).
+#
+# Read order: already-set (non-empty) RIVETOS_* from the process / plugin
+# dashboard first, then ~/.rivetos/.env for anything still unset. House nodes
+# keep working with only the env file.
 rivetos_load_env() {
   local env_file="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
+  local restore="" n
+
+  rivetos_unset_empty_rivetos_vars
+
+  # Save plugin/process values as `export NAME=quoted`. Do not use
+  # `declare -p` here: `declare` inside a function is local (bash 3.2 has
+  # no `declare -g`), so a sourced declare would vanish on return.
+  restore="$(mktemp "${TMPDIR:-/tmp}/rivetos-env.XXXXXX" 2>/dev/null || true)"
+  if [ -n "$restore" ]; then
+    : >"$restore"
+    for n in $(rivetos_exported_rivetos_names); do
+      printf 'export %s=%q\n' "$n" "${!n}" >>"$restore"
+    done
+  fi
+
   if [ -f "$env_file" ]; then
     set -a
     # shellcheck disable=SC1090
     . "$env_file" 2>/dev/null || true
     set +a
   fi
+
+  if [ -n "$restore" ]; then
+    # shellcheck disable=SC1090
+    . "$restore" 2>/dev/null || true
+    rm -f "$restore"
+  fi
+
+  rivetos_apply_datahub_url
+  rivetos_apply_cloud_defaults
 }
 
 rivetos_find_root() {

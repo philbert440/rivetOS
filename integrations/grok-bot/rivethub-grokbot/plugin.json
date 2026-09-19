@@ -1,0 +1,6 @@
+{
+  "name": "rivethub-grokbot",
+  "version": "0.2.0",
+  "description": "RivetHub mesh member kit for Grok Bot: memory MCP/skills, mesh delegation, host transcript capture, stranger onboarding (cloud vs local). No Grok Bot app patches.",
+  "license": "MIT"
+}

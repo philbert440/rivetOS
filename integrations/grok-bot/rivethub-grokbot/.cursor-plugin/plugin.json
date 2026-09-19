@@ -1,0 +1,47 @@
+{
+  "name": "rivethub-grokbot",
+  "displayName": "RivetHub for Grok Bot",
+  "version": "0.2.0",
+  "description": "RivetHub mesh member kit for Grok Bot: shared memory MCP/skills, mesh delegation helpers, and stranger onboarding (cloud vs local DataHub).",
+  "author": { "name": "RivetOS", "email": "rivetphilbot@gmail.com" },
+  "license": "MIT",
+  "keywords": ["rivetos", "rivethub", "memory", "mesh", "grokbot"],
+  "category": "productivity",
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "skills": ["./skills/"],
+  "rules": ["./rules/"],
+  "mcpServers": "./mcp.json",
+  "variables": {
+    "type": "object",
+    "properties": {
+      "RIVETOS_MODE": {
+        "type": "string",
+        "title": "RivetOS mode",
+        "description": "Where memory/mesh traffic goes. cloud = RivetOS cloud account. local = Tailscale + your DataHub. Leave unset to fall back to ~/.rivetos/.env (house nodes).",
+        "enum": ["cloud", "local"]
+      },
+      "RIVETOS_CLOUD_TOKEN": {
+        "type": "string",
+        "title": "RivetOS cloud token (secret)",
+        "description": "Tenant / account credential from Rivet Cloud. Never commit or paste into chat. Browser OAuth is not in this kit yet — paste the token from the cloud dashboard or `rivetos cloud connect --token`."
+      },
+      "RIVETOS_CLOUD_URL": {
+        "type": "string",
+        "title": "RivetOS cloud URL",
+        "description": "Optional override of the default cloud API (https://rivetos.cloud).",
+        "default": "https://rivetos.cloud"
+      },
+      "RIVETOS_DATAHUB_URL": {
+        "type": "string",
+        "title": "DataHub endpoint",
+        "description": "Local-mode one-field endpoint (MagicDNS or postgres URL). Mapped to RIVETOS_PG_URL when the value is postgres:// or postgresql://."
+      },
+      "RIVETOS_PG_URL": {
+        "type": "string",
+        "title": "Postgres URL (secret, legacy)",
+        "description": "Direct Postgres URL only if DataHub URL is not enough. Prefer RIVETOS_DATAHUB_URL. Never commit."
+      }
+    }
+  }
+}

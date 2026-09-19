@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Unit tests for rivetos_load_env read order (plugin vars → .env fallback).
+# Never prints secret values; failures mention key names only.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+# shellcheck source=./rivet-paths.sh
+. "$ROOT/rivet-paths.sh"
+
+failed=0
+pass() { echo "ok - $1"; }
+fail() { echo "not ok - $1" >&2; failed=$((failed + 1)); }
+
+with_envfile() {
+  local body="$1"
+  ENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-paths.XXXXXX")"
+  export RIVETOS_ENV_FILE="$ENV_DIR/.env"
+  printf '%s\n' "$body" >"$RIVETOS_ENV_FILE"
+  chmod 600 "$RIVETOS_ENV_FILE"
+}
+
+cleanup_env() {
+  unset RIVETOS_MODE RIVETOS_PG_URL RIVETOS_DATAHUB_URL RIVETOS_CLOUD_TOKEN RIVETOS_CLOUD_URL RIVETOS_ENV_FILE
+  if [ -n "${ENV_DIR:-}" ]; then
+    rm -rf "$ENV_DIR"
+    unset ENV_DIR
+  fi
+}
+
+# 1. Plugin / process var wins over .env
+cleanup_env
+with_envfile 'RIVETOS_PG_URL=postgres://env-file.example/db
+RIVETOS_MODE=local'
+export RIVETOS_PG_URL='postgres://plugin.example/db'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://plugin.example/db' ]; then
+  pass "plugin PG URL wins over .env"
+else
+  fail "plugin PG URL should win over .env"
+fi
+cleanup_env
+
+# 2. Empty plugin placeholder falls back to .env
+with_envfile 'RIVETOS_PG_URL=postgres://from-env.example/db'
+export RIVETOS_PG_URL=''
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://from-env.example/db' ]; then
+  pass "empty plugin placeholder falls back to .env"
+else
+  fail "empty plugin placeholder should fall back to .env"
+fi
+cleanup_env
+
+# 3. House .env only (no plugin vars)
+with_envfile 'RIVETOS_PG_URL=postgres://house.example/db'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://house.example/db' ]; then
+  pass "house .env fallback still works"
+else
+  fail "house .env fallback broken"
+fi
+cleanup_env
+
+# 4. DATAHUB postgres maps to PG_URL when PG unset
+with_envfile ''
+export RIVETOS_DATAHUB_URL='postgres://datahub.example:5432/mem'
+rivetos_load_env
+if [ "${RIVETOS_PG_URL:-}" = 'postgres://datahub.example:5432/mem' ]; then
+  pass "DATAHUB postgres URL maps to PG_URL"
+else
+  fail "DATAHUB postgres URL should map to PG_URL"
+fi
+cleanup_env
+
+# 5. Existing PG_URL not overwritten by DATAHUB
+with_envfile ''
+export RIVETOS_PG_URL='postgres://keep.example/db'
+export RIVETOS_DATAHUB_URL='postgres://other.example/db'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://keep.example/db' ]; then
+  pass "existing PG_URL not overwritten by DATAHUB"
+else
+  fail "DATAHUB must not overwrite existing PG_URL"
+fi
+cleanup_env
+
+# 6. HTTPS DATAHUB does not become PG_URL
+with_envfile ''
+export RIVETOS_DATAHUB_URL='https://den.example.ts.net'
+rivetos_load_env
+if [ -z "${RIVETOS_PG_URL:-}" ] && [ "$RIVETOS_DATAHUB_URL" = 'https://den.example.ts.net' ]; then
+  pass "HTTPS DATAHUB is not converted to PG_URL"
+else
+  fail "HTTPS DATAHUB must not become PG_URL"
+fi
+cleanup_env
+
+# 7. cloud mode default URL
+with_envfile ''
+export RIVETOS_MODE=cloud
+rivetos_load_env
+if [ "${RIVETOS_CLOUD_URL:-}" = 'https://rivetos.cloud' ]; then
+  pass "cloud mode default CLOUD_URL"
+else
+  fail "cloud mode should default CLOUD_URL"
+fi
+cleanup_env
+
+# 8. plugin cloud URL wins over default
+with_envfile ''
+export RIVETOS_MODE=cloud
+export RIVETOS_CLOUD_URL='https://cloud.example'
+rivetos_load_env
+if [ "$RIVETOS_CLOUD_URL" = 'https://cloud.example' ]; then
+  pass "explicit CLOUD_URL preserved"
+else
+  fail "explicit CLOUD_URL should be preserved"
+fi
+cleanup_env
+
+if [ "$failed" -ne 0 ]; then
+  echo "$failed rivet-paths test(s) failed" >&2
+  exit 1
+fi
+echo "rivet-paths.test.sh: all ok"
