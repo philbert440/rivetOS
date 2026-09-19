@@ -473,7 +473,11 @@ export function Composer(props: {
             — Claude-app style, in the input shell, persisted per-conversation. */}
         <div className="flex max-md:flex-wrap items-center gap-1">
           <NodePicker />
-          {!props.nativeControls && (
+          {/* Agent picker — only when there's a real choice (>1 local agent),
+              mirroring the node picker's hide-on-single. With one agent it adds
+              only a confusing "default agent vs <that agent>" (and the legacy
+              component labels itself "model", colliding with the model picker). */}
+          {!props.nativeControls && localAgents.length > 1 && (
             <ModelPicker
               value={props.agent ?? ''}
               options={models}
