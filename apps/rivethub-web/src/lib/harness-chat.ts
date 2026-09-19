@@ -296,6 +296,26 @@ export function harnessGate(
   }
 }
 
+/**
+ * Should this session open on the terminal instead of chat? Only a genuinely
+ * driver-less TUI row does. A "legacy" row is an on-disk PTY the control-plane
+ * list hasn't caught up to yet — it stays in chat when its harness has a
+ * chat-capable (liveStream) driver registered, keyed off the row's roster
+ * `command`. Undefined descriptors (registry still loading) → chat, so a fresh
+ * chat never flashes into the terminal before capabilities resolve. Non-legacy
+ * rows (harness/draft) are always chat.
+ */
+export function sessionOpensOnTerminal(
+  item: Pick<ChatItem, 'kind' | 'command'> | undefined,
+  descriptors: HarnessDescriptor[] | undefined,
+): boolean {
+  if (item?.kind !== 'legacy' || descriptors === undefined) return false
+  const chatCapable = descriptors.some(
+    (d) => rosterCommandFor(d.harnessId) === item.command && d.capabilities.liveStream,
+  )
+  return !chatCapable
+}
+
 /** Harnesses whose sessions the hub should ask for (`listSessions` gated). */
 export function listableHarnesses(descriptors: HarnessDescriptor[] | undefined): HarnessId[] {
   return (descriptors ?? []).filter((d) => d.capabilities.listSessions).map((d) => d.harnessId)

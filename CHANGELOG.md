@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
 - feat(harness): add qwen-code — Qwen Code CLI as the eighth first-class harness (driver, provider, executor, hooks-driven memory capture via a qwen extension, web + Android).
 
+### RivetHub
+
+- Chat: a new conversation (and any chat-capable harness session) now opens in the **Chat** view, not the terminal. A session the on-disk PTY scan sees before the control-plane list catches up was classified `legacy` and force-opened the terminal — even for claude/grok, which stream a transcript. It now only falls back to the terminal for a genuinely driver-less TUI session (no `liveStream` driver for the row's roster command), and defaults to chat while the registry is still loading so a fresh chat never flashes into the terminal.
+
 ### Breaking
 
 - Per-user memory routing reads only the users.json registry (`RIVETOS_USERS_FILE`, else `$RIVETOS_SHARED_DIR/rivetos/users.json`, else `~/.rivetos/users.json`). The `RIVETOS_USER_DBS` and `RIVETOS_DEN_DEVICE_USERS` env maps are removed — leftover values do not route.

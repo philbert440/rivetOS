@@ -18,6 +18,7 @@ import {
   mergeSessionCreated,
   nativeIdOf,
   patchSessionUpdated,
+  sessionOpensOnTerminal,
   shortNativeId,
   chatItemFromSummary,
   ROSTER_COMMAND,
@@ -307,6 +308,41 @@ describe('harnessGate', () => {
       canApprove: false,
       canResume: false,
     })
+  })
+})
+
+describe('sessionOpensOnTerminal', () => {
+  const bareClaude: HarnessDescriptor = {
+    harnessId: 'claude-code',
+    capabilities: {
+      interrupt: false,
+      resume: false,
+      approvals: false,
+      liveStream: false,
+      listSessions: true,
+    },
+  }
+
+  it('keeps a chat-capable legacy row (liveStream driver) in chat', () => {
+    // ROSTER_COMMAND['claude-code'] === 'claude', matching the on-disk row.
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, [CLAUDE])).toBe(false)
+  })
+
+  it('opens on terminal only for a genuinely driver-less legacy row', () => {
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, [])).toBe(true)
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'shell' }, [CLAUDE])).toBe(true)
+    // Driver present but not chat-capable (no liveStream) → terminal.
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, [bareClaude])).toBe(true)
+  })
+
+  it('defaults to chat while the registry is still loading (undefined descriptors)', () => {
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, undefined)).toBe(false)
+  })
+
+  it('never sends a harness/draft/absent row to the terminal', () => {
+    expect(sessionOpensOnTerminal({ kind: 'harness', command: 'claude' }, [CLAUDE])).toBe(false)
+    expect(sessionOpensOnTerminal({ kind: 'draft' }, [CLAUDE])).toBe(false)
+    expect(sessionOpensOnTerminal(undefined, [CLAUDE])).toBe(false)
   })
 })
 

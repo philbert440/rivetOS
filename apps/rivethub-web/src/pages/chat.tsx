@@ -97,6 +97,7 @@ import {
   isTurnInFlight,
   nativeIdOf,
   rosterCommandFor,
+  sessionOpensOnTerminal,
   shortNativeId,
   sortByRecency,
   type ChatItem,
@@ -1172,13 +1173,19 @@ function ActiveSession(props: {
 
   /** Canonical `<harness-id>:<native>` when the control plane owns this row. */
   const canonicalId = gate.bound ? item?.sessionId : undefined
-  // Chat is the starting place for anything the composer can drive; a
-  // legacy TUI-only row (no registered driver) falls back to terminal so it
-  // doesn't open on an empty pane. The last-used view is remembered per
-  // thread. Remounts per session, so the lazy initializer re-reads on every
-  // switch; the effect below re-reads if baseUrl shifts under the mount
-  // (node switch with the same thread selected).
-  const fallbackMode: SessionViewMode = item?.kind === 'legacy' ? 'terminal' : 'chat'
+  // Chat is the starting place for anything the composer can drive; only a
+  // genuinely driver-less TUI row falls back to terminal so it doesn't open on
+  // an empty pane. A "legacy" row is just an on-disk PTY the control-plane list
+  // hasn't caught up to yet — it is still chat-capable when its harness driver
+  // streams a transcript (liveStream). Without this a fresh claude/grok chat
+  // lands in the terminal for the window where the on-disk scan sees the PTY
+  // before the control-plane summary does. Default to chat while capabilities
+  // are still loading so a new chat never flashes into the terminal. The
+  // last-used view is remembered per thread; remounts per session, so the lazy
+  // initializer re-reads on every switch and the effect below re-reads if
+  // baseUrl shifts under the mount (node switch with the same thread selected).
+  const opensOnTerminal = sessionOpensOnTerminal(item, remoteRegistry.data?.harnesses)
+  const fallbackMode: SessionViewMode = opensOnTerminal ? 'terminal' : 'chat'
   const [mode, setModeState] = useState<SessionViewMode>(() =>
     getSessionMode(storageKey(sessionBase, props.sessionId), fallbackMode),
   )
@@ -1192,15 +1199,15 @@ function ActiveSession(props: {
     setModeState(m)
     setSessionMode(storageKey(sessionBase, props.sessionId), m)
   }
-  // A cross-node row's kind arrives with the remote summary — after mount.
-  // A TUI-only (legacy) row must still land in terminal, unless the user
-  // ever chose a view for this thread.
-  const itemKind = item?.kind
+  // A cross-node row's kind + capabilities arrive with the remote summary /
+  // registry — after mount. A genuinely driver-less TUI row must still land in
+  // terminal, unless the user ever chose a view for this thread. A chat-capable
+  // "legacy" row (its harness streams a transcript) stays in chat.
   useEffect(() => {
-    if (itemKind !== 'legacy') return
+    if (!opensOnTerminal) return
     if (hasSessionMode(storageKey(sessionBase, props.sessionId))) return
     setModeState('terminal')
-  }, [itemKind, sessionBase, props.sessionId])
+  }, [opensOnTerminal, sessionBase, props.sessionId])
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
