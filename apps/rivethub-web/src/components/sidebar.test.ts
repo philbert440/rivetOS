@@ -5,6 +5,8 @@ import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
 describe('hubPageTitle', () => {
   it('labels the mobile top bar from the pathname', () => {
     expect(hubPageTitle('/')).toBe('RivetHub')
+    expect(hubPageTitle('/sessions')).toBe('Sessions')
+    expect(hubPageTitle('/sessions/abc')).toBe('Sessions')
     expect(hubPageTitle('/memory')).toBe('Memory')
     expect(hubPageTitle('/memory/foo')).toBe('Memory')
     expect(hubPageTitle('/files')).toBe('Files')
