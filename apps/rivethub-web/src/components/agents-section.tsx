@@ -127,26 +127,38 @@ function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Ele
 
 interface AgentEditorProps {
   agent?: AgentPreset
+  /** Create-mode initial values — e.g. duplicating a stranded agent onto a
+   *  reachable node. Ignored when `agent` is set (an edit seeds from it). */
+  seed?: Partial<AgentPreset>
   onSave: (agent: AgentPatch) => void
   onCancel: () => void
+  /** Offered when the agent's node can't be reached to load harnesses. A
+   *  preset's node is immutable (the den forbids repointing — it lives in that
+   *  node's agents.json), so the escape hatch is to recreate it elsewhere. */
+  onDuplicate?: () => void
   disabled?: boolean
   errorText?: string
 }
 
 function AgentEditor({
   agent,
+  seed,
   onSave,
   onCancel,
+  onDuplicate,
   disabled,
   errorText,
 }: AgentEditorProps): JSX.Element {
   const { baseUrl, transportEpoch } = useConnection()
-  const [name, setName] = useState(agent?.name ?? '')
-  const [color, setColor] = useState(agent?.color ?? '')
-  const [harnessId, setHarnessId] = useState(agent?.harnessId ?? '')
-  const [model, setModel] = useState(agent?.model ?? '')
-  const [effort, setEffort] = useState(agent?.effort ?? '')
-  const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
+  const init = agent ?? seed
+  const [name, setName] = useState(init?.name ?? '')
+  const [color, setColor] = useState(init?.color ?? '')
+  const [harnessId, setHarnessId] = useState(init?.harnessId ?? '')
+  const [model, setModel] = useState(init?.model ?? '')
+  const [effort, setEffort] = useState(init?.effort ?? '')
+  const [systemPrompt, setSystemPrompt] = useState(init?.systemPrompt ?? '')
+  // A duplicate defaults to the current (reachable) connection, never the
+  // source agent's node — that node is the one we likely couldn't reach.
   const [nodeBaseUrl, setNodeBaseUrl] = useState(agent?.nodeBaseUrl ?? baseUrl)
   const nodeLocked = Boolean(agent)
   const formRef = useRef<HTMLFormElement | null>(null)
@@ -336,7 +348,23 @@ function AgentEditor({
             className="w-full"
           />
           {harnessesQuery.isError && (
-            <span className="text-[10px] text-red">harnesses unavailable on this node</span>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] text-red">
+                Couldn't reach this agent's node to load harnesses — it may be offline or
+                unreachable from here. The other fields still edit and save. A preset's node can't
+                be changed; to move it, duplicate it onto a reachable node.
+              </span>
+              {onDuplicate && (
+                <button
+                  type="button"
+                  onClick={onDuplicate}
+                  disabled={disabled}
+                  className="self-start rounded border border-line px-2 py-1 text-[10px] text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+                >
+                  Duplicate to another node…
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -598,6 +626,10 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const [collapsed, setCollapsed] = useState(false)
   const [editing, setEditing] = useState<RosterAgent | null>(null)
   const [creating, setCreating] = useState(false)
+  // Recreate-elsewhere escape hatch: the create editor, seeded from a stranded
+  // agent whose node we couldn't reach (its node is immutable, so editing it in
+  // place can't move it). Cleared alongside `creating`.
+  const [duplicating, setDuplicating] = useState<RosterAgent | null>(null)
   const dialog = useConfirmDialog()
 
   const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
@@ -652,6 +684,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setCreating(false)
+      setDuplicating(null)
     },
   })
 
@@ -691,6 +724,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const { reset: resetUpdate } = updateMutation
   const cancelCreate = useCallback(() => {
     setCreating(false)
+    setDuplicating(null)
     resetCreate()
   }, [resetCreate])
   const cancelEdit = useCallback(() => {
@@ -970,12 +1004,30 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             })
           }
           onCancel={cancelEdit}
+          onDuplicate={() => {
+            const src = editing
+            setEditing(null)
+            resetUpdate()
+            setDuplicating(src)
+          }}
           disabled={updateMutation.isPending}
           errorText={updateMutation.error ? mutationError(updateMutation.error) : undefined}
         />
       )}
-      {creating && (
+      {(creating || duplicating) && (
         <AgentEditor
+          seed={
+            duplicating
+              ? {
+                  name: `${duplicating.name} (copy)`,
+                  color: duplicating.color,
+                  harnessId: duplicating.harnessId,
+                  model: duplicating.model,
+                  effort: duplicating.effort,
+                  systemPrompt: duplicating.systemPrompt,
+                }
+              : undefined
+          }
           onSave={(agent) => createMutation.mutate(agent)}
           onCancel={cancelCreate}
           disabled={createMutation.isPending}
