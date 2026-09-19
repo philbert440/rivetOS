@@ -236,23 +236,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${NPM_TRUSTED_PUBLISHING_READY:-}" != "true" ]]; then
-            echo "::warning title=npm publish SKIPPED::NPM_TRUSTED_PUBLISHING_READY is not 'true' — packages are NOT being published. Configure npm Trusted Publishing for the @rivetos packages (repo philbert440/rivetOS, workflow pipeline.yml), then: gh variable set NPM_TRUSTED_PUBLISHING_READY --body true"
-            echo "⚠️  npm publish gated off — registry-side Trusted Publishing not configured yet."
-            exit 0
-          fi
-
           # All publishable packages (order matters — dependencies first)
           PACKAGES=(
+            # order (deps first)
             packages/den-protocol
             packages/wiki-core
             packages/types
+            packages/harness-kimi-code
+            packages/harness-opencode
+            packages/harness-pi
+            packages/harness-qwen-code
             packages/aisdk
             packages/workflows
             packages/mcp
             packages/mcp-v2
             packages/core
-            packages/boot
             plugins/channels/agent
             plugins/memory/postgres
             plugins/providers/codex-cli
@@ -269,10 +267,30 @@ jobs:
             plugins/tools/search
             plugins/tools/shell
             plugins/tools/web-search
-            packages/cli
             packages/nx-plugin
             services/mcp-sidecar
           )
+
+          # not publishable: @rivetos/boot depends on private @rivetos/den-server — owner decision pending
+          BLOCKED_PACKAGES=(
+            packages/boot
+            packages/cli
+          )
+
+          for pkg_dir in "${BLOCKED_PACKAGES[@]}"; do
+            if [ ! -f "$pkg_dir/package.json" ]; then
+              echo "::warning title=npm publish BLOCKED::$pkg_dir is not publishable: @rivetos/boot depends on private @rivetos/den-server — owner decision pending"
+              continue
+            fi
+            PKG_NAME=$(node -p "require('./$pkg_dir/package.json').name")
+            echo "::warning title=npm publish BLOCKED::$PKG_NAME ($pkg_dir) is not publishable: @rivetos/boot depends on private @rivetos/den-server — owner decision pending"
+          done
+
+          if [[ "${NPM_TRUSTED_PUBLISHING_READY:-}" != "true" ]]; then
+            echo "::warning title=npm publish SKIPPED::NPM_TRUSTED_PUBLISHING_READY is not 'true' — packages are NOT being published. Configure npm Trusted Publishing for the @rivetos packages (repo philbert440/rivetOS, workflow pipeline.yml), then: gh variable set NPM_TRUSTED_PUBLISHING_READY --body true"
+            echo "⚠️  npm publish gated off — registry-side Trusted Publishing not configured yet."
+            exit 0
+          fi
 
           TAG="beta"
           if [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

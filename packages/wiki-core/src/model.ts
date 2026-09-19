@@ -3,14 +3,12 @@
  *
  * Shared contract between the extraction worker (writes), the gateway wiki
  * API (reads), and the MCP tools. One markdown file per durable topic under
- * /rivet-shared/wiki/topics/: YAML frontmatter, ## Summary (lead), optional
+ * the wiki topics directory: YAML frontmatter, ## Summary (lead), optional
  * ## Article (structured body), ## See also, append-only ## History, and
  * ## Citations (leaf summary refs).
  *
- * Design: /rivet-shared/plans/phase-3-memory-wiki-design.md (§1),
- *         /rivet-shared/plans/memory-v6-durable-topics.md,
- *         /rivet-shared/plans/memory-v7-wikipedia-articles.md
- * Auto-merge everywhere (Phil 2026-07-07): prior Summary — human or
+ * Design: memory-wiki (phase 3), durable topics, and article-structure docs.
+ * Auto-merge everywhere: prior Summary — human or
  * automated — archives to History on full rewrite; nothing is frozen.
  * v7: prefer summaryDelta + articlePatches so standing knowledge compounds.
  */

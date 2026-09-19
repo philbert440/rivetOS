@@ -1,12 +1,12 @@
 /**
  * Memory data-plane tools — `memory_search`, `memory_browse`,
- * `memory_stats`, `memory_get_full`, plus Grok Bot write tools.
+ * `memory_stats`, `memory_get_full`, plus optional write tools.
  *
  * Wraps the in-process tools exported by `@rivetos/memory-postgres` so external
- * MCP clients (claude-cli, MCP Inspector, Grok Build, etc.) can hit the same
- * surface a local agent has. All four tools share a single `PostgresMemory`
- * instance (and its pg pool) for the server's lifetime; callers must invoke
- * the returned `close()` during shutdown to drain the pool.
+ * MCP clients can hit the same surface a local agent has. All four tools share
+ * a single `PostgresMemory` instance (and its pg pool) for the server's
+ * lifetime; callers must invoke the returned `close()` during shutdown to
+ * drain the pool.
  *
  * `memory_get_full` is required for parity: search/browse append
  * `→ memory_get_full id=<uuid>` on capture-truncated rows. Without this
