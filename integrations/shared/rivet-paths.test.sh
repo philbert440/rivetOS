@@ -20,28 +20,41 @@ with_envfile() {
 }
 
 cleanup_env() {
-  unset RIVETOS_MODE RIVETOS_PG_URL RIVETOS_DATAHUB_URL RIVETOS_CLOUD_TOKEN RIVETOS_CLOUD_URL RIVETOS_ENV_FILE
+  unset RIVETOS_MODE RIVETOS_PG_URL RIVETOS_DATAHUB_URL RIVETOS_CLOUD_TOKEN RIVETOS_CLOUD_URL RIVETOS_ENV_FILE RIVETOS_PLUGIN_ENV RIVETOS_ROOT
   if [ -n "${ENV_DIR:-}" ]; then
     rm -rf "$ENV_DIR"
     unset ENV_DIR
   fi
 }
 
-# 1. Plugin / process var wins over .env
+# 1. Plugin / process var wins over .env only when flagged
 cleanup_env
 with_envfile 'RIVETOS_PG_URL=postgres://env-file.example/db
 RIVETOS_MODE=local'
+export RIVETOS_PLUGIN_ENV=1
 export RIVETOS_PG_URL='postgres://plugin.example/db'
 rivetos_load_env
 if [ "$RIVETOS_PG_URL" = 'postgres://plugin.example/db' ]; then
-  pass "plugin PG URL wins over .env"
+  pass "plugin PG URL wins over .env when RIVETOS_PLUGIN_ENV=1"
 else
-  fail "plugin PG URL should win over .env"
+  fail "plugin PG URL should win over .env when RIVETOS_PLUGIN_ENV=1"
+fi
+cleanup_env
+
+# 1b. Flag unset → env file wins (identical to main)
+with_envfile 'RIVETOS_PG_URL=postgres://env-file.example/db'
+export RIVETOS_PG_URL='postgres://process.example/db'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://env-file.example/db' ]; then
+  pass "env file wins when RIVETOS_PLUGIN_ENV is unset"
+else
+  fail "env file should win when RIVETOS_PLUGIN_ENV is unset"
 fi
 cleanup_env
 
 # 2. Empty plugin placeholder falls back to .env
 with_envfile 'RIVETOS_PG_URL=postgres://from-env.example/db'
+export RIVETOS_PLUGIN_ENV=1
 export RIVETOS_PG_URL=''
 rivetos_load_env
 if [ "$RIVETOS_PG_URL" = 'postgres://from-env.example/db' ]; then
@@ -120,6 +133,7 @@ cleanup_env
 
 # 9. literal unsubstituted ${VAR} counts as unset
 with_envfile 'RIVETOS_PG_URL=postgres://from-env.example/db'
+export RIVETOS_PLUGIN_ENV=1
 export RIVETOS_PG_URL='${RIVETOS_PG_URL}'
 rivetos_load_env
 if [ "$RIVETOS_PG_URL" = 'postgres://from-env.example/db' ]; then
@@ -152,6 +166,7 @@ cleanup_env
 
 # 12. plugin DATAHUB postgres wins over legacy file PG_URL
 with_envfile 'RIVETOS_PG_URL=postgres://old.example/db'
+export RIVETOS_PLUGIN_ENV=1
 export RIVETOS_DATAHUB_URL='postgres://new.example/db'
 rivetos_load_env
 if [ "${RIVETOS_PG_URL:-}" = 'postgres://new.example/db' ]; then
@@ -199,6 +214,20 @@ if [ "$v6" = 'tcp ::1 5432' ]; then
 else
   fail "bracketed IPv6 should parse"
 fi
+cleanup_env
+
+# 16. unquoted $HOME expands (house files, same as source on main)
+_saved_home="$HOME"
+with_envfile 'RIVETOS_ROOT=$HOME/rivetos'
+export HOME=/tmp/rivetos-home-probe
+rivetos_load_env
+if [ "${RIVETOS_ROOT:-}" = '/tmp/rivetos-home-probe/rivetos' ]; then
+  pass "unquoted \$HOME expands"
+else
+  fail "RIVETOS_ROOT=\$HOME/rivetos should expand"
+fi
+HOME="$_saved_home"
+unset _saved_home
 cleanup_env
 
 if [ "$failed" -ne 0 ]; then

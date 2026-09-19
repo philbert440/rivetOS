@@ -8,6 +8,7 @@
 #
 # stdout is reserved for the JSON-RPC channel. Never print secrets.
 set -euo pipefail
+export RIVETOS_PLUGIN_ENV=1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SIBLING=""
 if sibling_dir="$(cd "$ROOT/../rivet-memory/bin" 2>/dev/null && pwd)"; then

@@ -34,7 +34,7 @@ Declared so marketplace / Cursor can show a form (`Plugins → Configure`):
 | `RIVETOS_DATAHUB_URL` | B | One local DataHub endpoint |
 | `RIVETOS_PG_URL` | B | Legacy / only if DataHub is not enough |
 
-Launcher read order: **plugin variables first**, then `~/.rivetos/.env`. Empty form placeholders and unsubstituted `${VAR}` tokens do not block the env-file fallback. Every harness launcher that sources `integrations/shared/rivet-paths.sh` shares this order (same as `packages/cli` `loadRivetEnv`: process wins).
+When this kit launches MCP (`RIVETOS_PLUGIN_ENV=1`), plugin variables win over `~/.rivetos/.env`. Empty form placeholders and unsubstituted `${VAR}` tokens do not block the env-file fallback. Other harness launchers keep the historical behaviour: the env file wins. Unquoted `$HOME` in the env file still expands.
 
 ### Power-user fallback
 

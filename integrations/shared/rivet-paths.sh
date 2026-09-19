@@ -4,18 +4,21 @@
 #
 # Source this file; it only defines functions — nothing runs at source time:
 #
-#   rivetos_load_env           Load credentials. Plugin / process RIVETOS_*
-#                              vars win (same as packages/cli loadRivetEnv);
-#                              empty values and unsubstituted ${VAR}
-#                              placeholders count as unset. Then fill gaps
-#                              from $RIVETOS_ENV_FILE or ~/.rivetos/.env by
-#                              parsing KEY=VALUE (export prefix, quotes,
-#                              last-wins). Never sources the file. A plugin
-#                              postgres RIVETOS_DATAHUB_URL maps onto
-#                              RIVETOS_PG_URL even when the env file still
-#                              has a legacy PG URL. Call BEFORE
-#                              rivetos_find_root so a RIVETOS_ROOT set in
-#                              the env file is honored.
+#   rivetos_load_env           Load credentials by parsing KEY=VALUE
+#                              (export prefix, quotes, last-wins). Never
+#                              sources the file. Default (main): the env
+#                              file wins, matching historical harness
+#                              launchers. Unquoted / double-quoted $VAR
+#                              and ${VAR} expand (so $HOME/rivetos still
+#                              works); $( ) and backticks do not.
+#                              When RIVETOS_PLUGIN_ENV=1, already-set
+#                              (non-empty, non-placeholder) process /
+#                              plugin vars win, and a plugin postgres
+#                              RIVETOS_DATAHUB_URL maps onto
+#                              RIVETOS_PG_URL even when the env file
+#                              still has a legacy PG URL. Call BEFORE
+#                              rivetos_find_root so a RIVETOS_ROOT set
+#                              in the env file is honored.
 #   rivetos_apply_datahub_url  If RIVETOS_PG_URL is empty and
 #                              RIVETOS_DATAHUB_URL is a postgres URL, export
 #                              it as RIVETOS_PG_URL. No-op for https den /
@@ -129,13 +132,61 @@ rivetos_trim() {
 # Match packages/cli parseEnvLine / unquoteEnvValue (export prefix, quotes,
 # last-wins). Sets _rivetos_env_key and _rivetos_env_val. Returns 1 if the
 # line is a comment, blank, or malformed.
+rivetos_has_non_ascii() {
+  local LC_ALL=C LANG=C
+  local s="$1" i=0 c
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"
+    case "$c" in
+      [[:print:]] | [[:cntrl:]]) ;;
+      *) return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# $VAR / ${VAR} from the environment. No command substitution.
+rivetos_expand_params() {
+  local s="$1" out="" i=0 c n name rest
+  while [ "$i" -lt "${#s}" ]; do
+    c="${s:i:1}"
+    if [ "$c" = '$' ] && [ "$((i + 1))" -lt "${#s}" ]; then
+      n="${s:$((i + 1)):1}"
+      if [ "$n" = '{' ]; then
+        rest="${s:$((i + 2))}"
+        name="${rest%%\}*}"
+        if [ "$name" != "$rest" ] && [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          out+="${!name-}"
+          i=$((i + 3 + ${#name}))
+          continue
+        fi
+      elif [[ "$n" =~ [A-Za-z_] ]]; then
+        rest="${s:$((i + 1))}"
+        name="$(printf '%s' "$rest" | sed 's/[^A-Za-z0-9_].*//')"
+        out+="${!name-}"
+        i=$((i + 1 + ${#name}))
+        continue
+      fi
+    fi
+    out+="$c"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
 rivetos_parse_env_line() {
   local raw="$1"
-  local line rest key val
+  local line rest key val bom
+  bom="$(printf '\357\273\277')"
+  case "$raw" in
+    "$bom"*) raw="${raw#"$bom"}" ;;
+  esac
   line="${raw%$'\r'}"
   line="$(rivetos_trim "$line")"
   [ -n "$line" ] || return 1
   [ "${line:0:1}" = "#" ] && return 1
+  _rivetos_env_quote=none
 
   if [ "${line#export}" != "$line" ]; then
     rest="${line#export}"
@@ -150,7 +201,13 @@ rivetos_parse_env_line() {
   esac
   key="$(rivetos_trim "${line%%=*}")"
   [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  val="$(rivetos_unquote_env_value "${line#*=}")"
+  val="$(rivetos_trim "${line#*=}")"
+  case "$val" in
+    \'*) _rivetos_env_quote=single ;;
+    \"*) _rivetos_env_quote=double ;;
+    *) _rivetos_env_quote=none ;;
+  esac
+  val="$(rivetos_unquote_env_value "$val")"
   _rivetos_env_key="$key"
   _rivetos_env_val="$val"
   return 0
@@ -217,19 +274,57 @@ rivetos_env_file_value() {
 # Export every parsed assignment. Later lines overwrite earlier ones.
 rivetos_apply_env_file() {
   local file="$1"
-  local line
+  local line val
   [ -f "$file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     if rivetos_parse_env_line "$line"; then
-      export "${_rivetos_env_key}=${_rivetos_env_val}"
+      val="$_rivetos_env_val"
+      if [ "${_rivetos_env_quote:-none}" != "single" ]; then
+        val="$(rivetos_expand_params "$val")"
+      fi
+      export "${_rivetos_env_key}=${val}"
     fi
   done <"$file"
 }
 
-# Single-quote with '\'' escaping so a sourced file cannot expand $ or `.
-rivetos_quote_env_value() {
-  local s="$1"
-  printf "'%s'" "${s//\'/\'\\\'\'}"
+# Encode so bash source, this parser, and packages/cli parseEnvLine
+# recover the same bytes. Unquoted allowlist, else single quotes, else
+# double quotes with \ " $ ` escaped (when the value contains ').
+# Returns 1 for newline or unsubstituted ${IDENT}.
+rivetos_encode_env_value() {
+  local val="$1" nl=$'\n' i=0 c out
+  case "$val" in
+    *"$nl"*) return 1 ;;
+  esac
+  if rivetos_is_effective_unset "$val" && [ -n "$val" ]; then
+    return 1
+  fi
+  if [ -n "$val" ] && [ "${val#\~}" != "$val" ]; then
+    :
+  elif [[ "$val" =~ ^[A-Za-z0-9_@%+=:,./-]+$ ]]; then
+    printf '%s' "$val"
+    return 0
+  fi
+  case "$val" in
+    *"'"*)
+      out='"'
+      while [ "$i" -lt "${#val}" ]; do
+        c="${val:i:1}"
+        case "$c" in
+          \\) out+='\\' ;;
+          \") out+='\"' ;;
+          \$) out+='\$' ;;
+          \`) out+='\`' ;;
+          *) out+="$c" ;;
+        esac
+        i=$((i + 1))
+      done
+      printf '%s' "$out\""
+      ;;
+    *)
+      printf "'%s'" "$val"
+      ;;
+  esac
 }
 
 # URL on stdin. Prints "scheme host port" or nothing. Never echoes userinfo.
@@ -326,36 +421,32 @@ rivetos_apply_cloud_defaults() {
 # Load DB + embedding credentials so the memory tools come up. Without them the
 # server still starts, but with echo + web tools only (memory disabled).
 #
-# Read order: already-set (non-empty, non-placeholder) RIVETOS_* from the
-# process / plugin dashboard first, then ~/.rivetos/.env for anything still
-# unset. Every harness launcher that sources this file shares that order.
-# It matches packages/cli loadRivetEnv (process wins). A stale shell export
-# therefore beats the env file, same as a plugin var.
+# Default: env file wins (same as main / historical harness launchers).
+# RIVETOS_PLUGIN_ENV=1: process / plugin values win after stripping
+# placeholders, and a plugin postgres DataHub overwrites a file-only PG URL.
 rivetos_load_env() {
   local env_file="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
-  local restore="" n plugin_datahub plugin_pg
+  local restore="" n plugin_datahub plugin_pg plugin_mode=0
 
-  rivetos_unset_empty_rivetos_vars
-  plugin_datahub="${RIVETOS_DATAHUB_URL:-}"
-  plugin_pg="${RIVETOS_PG_URL:-}"
-
-  # Keep the restore string in memory. Do not use declare -p: declare
-  # inside a function is local (bash 3.2 has no declare -g).
-  for n in $(rivetos_exported_rivetos_names); do
-    restore="${restore}$(printf 'export %s=%q\n' "$n" "${!n}")"$'\n'
-  done
+  if [ "${RIVETOS_PLUGIN_ENV:-}" = "1" ]; then
+    plugin_mode=1
+    rivetos_unset_empty_rivetos_vars
+    plugin_datahub="${RIVETOS_DATAHUB_URL:-}"
+    plugin_pg="${RIVETOS_PG_URL:-}"
+    for n in $(rivetos_exported_rivetos_names); do
+      restore="${restore}$(printf 'export %s=%q\n' "$n" "${!n}")"$'\n'
+    done
+  fi
 
   if [ -f "$env_file" ]; then
     rivetos_apply_env_file "$env_file"
   fi
 
-  if [ -n "$restore" ]; then
+  if [ "$plugin_mode" -eq 1 ] && [ -n "$restore" ]; then
     eval "$restore"
   fi
 
-  # Plugin DataHub wins over a leftover file PG URL. A process PG URL
-  # still wins when both were set in the plugin / shell.
-  if rivetos_is_postgres_url "$plugin_datahub" && rivetos_is_effective_unset "$plugin_pg"; then
+  if [ "$plugin_mode" -eq 1 ] && rivetos_is_postgres_url "$plugin_datahub" && rivetos_is_effective_unset "$plugin_pg"; then
     rivetos_apply_datahub_url force
   else
     rivetos_apply_datahub_url

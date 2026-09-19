@@ -6,9 +6,14 @@
 #
 # Does not clobber RIVETOS_MODE=workspace|production (boot/CLI local-dev).
 # Parses the existing file with the same rules as packages/cli (export
-# prefix, quotes, last-wins). Writes single-quoted values. Writes through
-# a symlink instead of replacing it with a regular file.
+# prefix, quotes, last-wins, BOM). Encodes so bash source, this parser,
+# and the CLI recover the same bytes. Writes through a symlink.
+# Unsubstituted ${VAR} and newline values refuse the write (rc 2).
 set -euo pipefail
+
+case "$-" in
+  *x*) set +x ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _rivet_paths=""
@@ -41,6 +46,24 @@ if [ "$MODE" = "local" ] && rivetos_is_effective_unset "${RIVETOS_DATAHUB_URL:-}
   exit 2
 fi
 
+_refuse() {
+  echo "rivetos-onboard-persist: $1" >&2
+  exit 2
+}
+
+_encode_or_refuse() {
+  local key="$1"
+  local val="$2"
+  local enc
+  if ! enc="$(rivetos_encode_env_value "$val")"; then
+    if rivetos_is_effective_unset "$val" && [ -n "$val" ]; then
+      _refuse "refusing unsubstituted placeholder for $key (file not written)"
+    fi
+    _refuse "refusing value with newline or NUL for $key (file not written)"
+  fi
+  printf '%s' "$enc"
+}
+
 mkdir -p "$(dirname "$ENV_FILE")"
 if [ ! -e "$ENV_FILE" ]; then
   umask 077
@@ -59,20 +82,10 @@ _rivetos_install_env() {
   fi
 }
 
-upsert() {
+upsert_encoded() {
   local key="$1"
-  local val="$2"
-  local tmp quoted line replaced prefix
-  if rivetos_is_effective_unset "$val"; then
-    return 0
-  fi
-  case "$val" in
-    *$'\n'*)
-      echo "rivetos-onboard-persist: $key value must be a single line" >&2
-      exit 2
-      ;;
-  esac
-  quoted="$(rivetos_quote_env_value "$val")"
+  local encoded="$2"
+  local tmp line replaced prefix
   tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
   replaced=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -82,7 +95,7 @@ upsert() {
         if [[ "$line" =~ ^[[:space:]]*export[[:space:]] ]]; then
           prefix="export "
         fi
-        printf '%s%s=%s\n' "$prefix" "$key" "$quoted"
+        printf '%s%s=%s\n' "$prefix" "$key" "$encoded"
         replaced=1
       fi
       continue
@@ -90,34 +103,73 @@ upsert() {
     printf '%s\n' "$line"
   done <"$ENV_FILE" >"$tmp"
   if [ "$replaced" -eq 0 ]; then
-    printf '%s=%s\n' "$key" "$quoted" >>"$tmp"
+    printf '%s=%s\n' "$key" "$encoded" >>"$tmp"
   fi
   _rivetos_install_env "$tmp"
 }
 
-existing_mode="$(rivetos_env_file_value "$ENV_FILE" RIVETOS_MODE)"
-case "$existing_mode" in
-  workspace | production)
-    echo "rivetos-onboard-persist: left RIVETOS_MODE=$existing_mode (boot/CLI); plugin mode stays in process env" >&2
-    ;;
-  *)
-    upsert RIVETOS_MODE "$MODE"
-    ;;
-esac
+mode_ambiguous=0
+if [ -f "$ENV_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *RIVETOS_MODE*)
+        if rivetos_has_non_ascii "$line"; then
+          mode_ambiguous=1
+          break
+        fi
+        ;;
+    esac
+  done <"$ENV_FILE"
+fi
 
-if ! rivetos_is_effective_unset "${RIVETOS_CLOUD_URL:-}"; then
-  upsert RIVETOS_CLOUD_URL "$RIVETOS_CLOUD_URL"
+want_mode=0
+enc_mode=""
+if [ "$mode_ambiguous" -eq 1 ]; then
+  echo "rivetos-onboard-persist: left RIVETOS_MODE (line is ambiguous); plugin mode stays in process env" >&2
+else
+  existing_mode="$(rivetos_env_file_value "$ENV_FILE" RIVETOS_MODE)"
+  case "$existing_mode" in
+    workspace | production)
+      echo "rivetos-onboard-persist: left RIVETOS_MODE=$existing_mode (boot/CLI); plugin mode stays in process env" >&2
+      ;;
+    *)
+      want_mode=1
+      enc_mode="$(_encode_or_refuse RIVETOS_MODE "$MODE")"
+      ;;
+  esac
 fi
-if ! rivetos_is_effective_unset "${RIVETOS_DATAHUB_URL:-}"; then
-  upsert RIVETOS_DATAHUB_URL "$RIVETOS_DATAHUB_URL"
+
+enc_cloud=""
+enc_datahub=""
+enc_token=""
+enc_pg=""
+if [ -n "${RIVETOS_CLOUD_URL:-}" ]; then
+  enc_cloud="$(_encode_or_refuse RIVETOS_CLOUD_URL "$RIVETOS_CLOUD_URL")"
 fi
-# Token / PG URL: persist only when already in env (user or plugin form set them).
-# Still never print the values.
-if ! rivetos_is_effective_unset "${RIVETOS_CLOUD_TOKEN:-}"; then
-  upsert RIVETOS_CLOUD_TOKEN "$RIVETOS_CLOUD_TOKEN"
+if [ -n "${RIVETOS_DATAHUB_URL:-}" ]; then
+  enc_datahub="$(_encode_or_refuse RIVETOS_DATAHUB_URL "$RIVETOS_DATAHUB_URL")"
 fi
-if ! rivetos_is_effective_unset "${RIVETOS_PG_URL:-}"; then
-  upsert RIVETOS_PG_URL "$RIVETOS_PG_URL"
+if [ -n "${RIVETOS_CLOUD_TOKEN:-}" ]; then
+  enc_token="$(_encode_or_refuse RIVETOS_CLOUD_TOKEN "$RIVETOS_CLOUD_TOKEN")"
+fi
+if [ -n "${RIVETOS_PG_URL:-}" ]; then
+  enc_pg="$(_encode_or_refuse RIVETOS_PG_URL "$RIVETOS_PG_URL")"
+fi
+
+if [ "$want_mode" -eq 1 ]; then
+  upsert_encoded RIVETOS_MODE "$enc_mode"
+fi
+if [ -n "$enc_cloud" ]; then
+  upsert_encoded RIVETOS_CLOUD_URL "$enc_cloud"
+fi
+if [ -n "$enc_datahub" ]; then
+  upsert_encoded RIVETOS_DATAHUB_URL "$enc_datahub"
+fi
+if [ -n "$enc_token" ]; then
+  upsert_encoded RIVETOS_CLOUD_TOKEN "$enc_token"
+fi
+if [ -n "$enc_pg" ]; then
+  upsert_encoded RIVETOS_PG_URL "$enc_pg"
 fi
 
 echo "rivetos-onboard-persist: wrote mode=$MODE to env file (secrets not printed)"

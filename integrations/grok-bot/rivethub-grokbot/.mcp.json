@@ -4,6 +4,7 @@
       "command": "${CURSOR_PLUGIN_ROOT}/bin/rivetos-memory-mcp.sh",
       "env": {
         "RIVETOS_MCP_ENABLE_MEMORY_WRITE": "1",
+        "RIVETOS_PLUGIN_ENV": "1",
         "RIVETOS_MEMORY_SOURCE": "grokbot",
         "RIVETOS_MEMORY_CHANNEL": "grokbot",
         "RIVETOS_MODE": "${RIVETOS_MODE}",

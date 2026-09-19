@@ -23,6 +23,11 @@ fi
 . "$_rivet_paths"
 unset _rivet_paths _rivet_candidate
 
+case "$-" in
+  *x*) set +x ;;
+esac
+
+export RIVETOS_PLUGIN_ENV=1
 rivetos_load_env
 
 _rivetos_status_flag() {

@@ -88,10 +88,10 @@ export RIVETOS_MODE=local
 export RIVETOS_DATAHUB_URL="$SPECIAL"
 : >"$RIVETOS_ENV_FILE"
 "$PERSIST" >/dev/null
-if grep -q "RIVETOS_DATAHUB_URL='" "$RIVETOS_ENV_FILE"; then
-  pass "persist shell-quotes values"
+if grep -q "RIVETOS_DATAHUB_URL=" "$RIVETOS_ENV_FILE"; then
+  pass "persist writes DATAHUB assignment"
 else
-  fail "persist should single-quote written values"
+  fail "persist should write DATAHUB"
 fi
 unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL
 # shellcheck source=../../../shared/rivet-paths.sh
@@ -135,18 +135,19 @@ else
   pass "local persist requires DataHub or PG URL"
 fi
 
-# Placeholder process values are not persisted
+# Unsubstituted placeholder is refused (file untouched)
 : >"$RIVETOS_ENV_FILE"
 export RIVETOS_MODE=cloud
 export RIVETOS_CLOUD_URL='${RIVETOS_CLOUD_URL}'
-if "$PERSIST" >/dev/null; then
-  if grep -q 'RIVETOS_CLOUD_URL' "$RIVETOS_ENV_FILE"; then
-    fail "persist should skip unsubstituted \${VAR}"
-  else
-    pass "persist skips unsubstituted \${VAR}"
-  fi
+if "$PERSIST" >/dev/null 2>&1; then
+  fail "persist should refuse unsubstituted placeholders"
 else
-  fail "cloud persist with placeholder URL should still succeed"
+  pass "persist refuses unsubstituted placeholders"
+fi
+if [ ! -s "$RIVETOS_ENV_FILE" ]; then
+  pass "placeholder refuse writes nothing"
+else
+  fail "placeholder refuse mutated the env file"
 fi
 unset RIVETOS_CLOUD_URL
 
@@ -213,6 +214,64 @@ else
   fail "persist should write through a symlinked env file"
 fi
 export RIVETOS_ENV_FILE="$HOME_TMP/.rivetos/.env"
+
+# Mixed quotes round-trip through persist + load_env
+unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_URL RIVETOS_CLOUD_TOKEN
+MIXED='p'"'"'ass"word'
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL="postgres://u:${MIXED}@datahub.example/db"
+: >"$RIVETOS_ENV_FILE"
+"$PERSIST" >/dev/null
+unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+rivetos_load_env
+if [ "${RIVETOS_DATAHUB_URL:-}" = "postgres://u:${MIXED}@datahub.example/db" ]; then
+  pass "mixed quotes round-trip through persist + load_env"
+else
+  fail "value with both single and double quotes should round-trip"
+fi
+
+# BOM-prefixed workspace is kept (no second MODE line)
+bom="$(printf '\357\273\277')"
+printf '%sRIVETOS_MODE=workspace\n' "$bom" >"$RIVETOS_ENV_FILE"
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+"$PERSIST" >/dev/null
+got="$(rivetos_env_file_value "$RIVETOS_ENV_FILE" RIVETOS_MODE)"
+if [ "$got" = workspace ]; then
+  pass "persist does not clobber BOM-prefixed workspace"
+else
+  fail "BOM-prefixed workspace should be kept (got ${got:-empty})"
+fi
+mode_n="$(grep -c RIVETOS_MODE "$RIVETOS_ENV_FILE" || true)"
+if [ "$mode_n" -eq 1 ]; then
+  pass "BOM workspace not followed by a second MODE"
+else
+  fail "BOM workspace clobber appended another MODE ($mode_n lines)"
+fi
+
+# NBSP on a MODE line is ambiguous — do not append local
+nbsp="$(printf '\302\240')"
+printf 'RIVETOS_MODE=%sproduction\n' "$nbsp" >"$RIVETOS_ENV_FILE"
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+"$PERSIST" >/dev/null
+if grep -q 'RIVETOS_MODE=local' "$RIVETOS_ENV_FILE"; then
+  fail "NBSP MODE line should not gain a local assignment"
+else
+  pass "persist leaves NBSP MODE line alone"
+fi
+
+# bash -x must not leak cloud userinfo or query tokens
+unset RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+export RIVETOS_MODE=cloud
+export RIVETOS_CLOUD_URL='https://alice:s3cret-cloud@cloud.example:8443/v1?token=tok_live_do_not_print'
+xout="$(bash -x "$STATUS" 2>&1)" || true
+if printf '%s' "$xout" | grep -q 's3cret-cloud\|tok_live_do_not_print'; then
+  fail "status leaked a secret under bash -x"
+else
+  pass "status bash -x does not leak cloud userinfo"
+fi
+unset RIVETOS_CLOUD_URL
 
 # Isolated wrapper: missing sibling must reach the fallback message
 ISO="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-wrapper.XXXXXX")"
