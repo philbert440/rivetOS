@@ -1403,10 +1403,12 @@ function ActiveSession(props: {
   // is cleaned up by XtermAttach's detach (WS close → detached TTL) and the
   // manager's LRU pool at maxPtys, not by a kill-on-leave.
 
-  // Model change invalidates a running terminal (it's the wrong harness now):
-  // kill it so the next Terminal entry / chat send respawns with the chosen
-  // model.
-  const agentSel = settings?.agent ?? ''
+  // Agent/harness/model change invalidates a running PTY (--model and the
+  // command are spawn-time flags): kill it so the next Terminal entry / chat
+  // send respawns with the chosen model. Keyed on all three — a bare `agent`
+  // key misses a model swap on the same agent, which then silently injects
+  // into the old harness (the reply keeps the previous model).
+  const spawnSel = `${settings?.agent ?? ''}\u0000${settings?.harnessId ?? ''}\u0000${settings?.model ?? ''}`
   useEffect(() => {
     const id = termPtyRef.current
     if (id) {
@@ -1421,7 +1423,7 @@ function ActiveSession(props: {
       termPtyRef.current = undefined
       setTermPtyId(undefined)
     }
-  }, [agentSel])
+  }, [spawnSel])
 
   // Ensure THE harness for this conversation exists (seamless join key):
   // spawn-or-get a PTY whose denSession IS props.sessionId, so chat (inject +
@@ -1956,6 +1958,7 @@ function ActiveSession(props: {
             gatewayBase={isRemote ? sessionBase : undefined}
             agent={settings?.agent || undefined}
             effort={settings?.effort ?? 'medium'}
+            model={settings?.model}
             systemPrompt={settings?.systemPrompt}
             onSetting={(patch) => setSetting(settingsKey, patch)}
             onSend={sendToHarness}
