@@ -29,9 +29,11 @@ export default defineConfig({
     }),
   },
   optimizeDeps: {
-    // Workspace-linked CJS package: prebundle for named-export interop in
-    // dev (the production rollup build handles CJS on its own).
-    include: ['@rivetos/gateway-client'],
+    // Workspace-linked CJS packages: prebundle for named-export interop in
+    // dev (the production rollup build handles CJS on its own). @rivetos/types
+    // is CJS with defineProperty re-exports (e.g. parseSessionId) that Vite's
+    // on-the-fly interop can't see when the package is served raw from source.
+    include: ['@rivetos/gateway-client', '@rivetos/types'],
   },
   server: {
     // Dev-only: proxy gateway calls to a live node so `vite` against ct115
@@ -40,9 +42,12 @@ export default defineConfig({
       '/api': {
         target: process.env.RIVETHUB_DEV_GATEWAY ?? 'http://127.0.0.1:5174',
         ws: true,
+        // A live node serves TLS with a self-signed CA cert; don't reject it.
+        secure: false,
       },
       '/healthz': {
         target: process.env.RIVETHUB_DEV_GATEWAY ?? 'http://127.0.0.1:5174',
+        secure: false,
       },
     },
   },
