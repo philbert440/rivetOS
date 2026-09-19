@@ -1,14 +1,14 @@
 ---
 name: rivethub-mesh-delegate
 description: >-
-  Use when handing work to another Rivet mesh node (Claude/Kimi/grok CTs, or
-  grokbot mesh agents) from Grok Bot without patching the app.
+  Use when handing work to another Rivet mesh node from Grok Bot without
+  patching the app.
 ---
 # RivetHub mesh delegation (Grok Bot)
 
 ## What works today
-- **Outbound** to other RivetOS nodes via the house den/mesh task API (or local RivetOS when this computer is a mesh member).
-- **Inbound** to this computer’s RivetOS agents (`rivet`/`bob`/`gary`/`maggie` over grok-cli) — separate from Grok Bot UI threads.
+- **Outbound** to other RivetOS nodes via the den/mesh task API (or local RivetOS when this computer is a mesh member).
+- **Inbound** to RivetOS agents on this computer (CLI harnesses). That path is separate from Grok Bot UI threads.
 
 ## What does not
 - Injecting into or resuming a **Grok Bot chat thread** from mesh. No public app API for that yet.

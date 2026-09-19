@@ -18,13 +18,13 @@
       "RIVETOS_MODE": {
         "type": "string",
         "title": "RivetOS mode",
-        "description": "Where memory/mesh traffic goes. cloud = RivetOS cloud account. local = Tailscale + your DataHub. Leave unset to fall back to ~/.rivetos/.env (house nodes).",
+        "description": "Where memory/mesh traffic goes. cloud = RivetOS cloud account. local = Tailscale + your DataHub. Leave unset to fall back to ~/.rivetos/.env.",
         "enum": ["cloud", "local"]
       },
       "RIVETOS_CLOUD_TOKEN": {
         "type": "string",
         "title": "RivetOS cloud token (secret)",
-        "description": "Tenant / account credential from Rivet Cloud. Never commit or paste into chat. Browser OAuth is not in this kit yet — paste the token from the cloud dashboard or `rivetos cloud connect --token`."
+        "description": "Tenant / account credential from Rivet Cloud. Stored for later cloud HTTP; the memory launcher does not read it yet. Never commit or paste into chat."
       },
       "RIVETOS_CLOUD_URL": {
         "type": "string",

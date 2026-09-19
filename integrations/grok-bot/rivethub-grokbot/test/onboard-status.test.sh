@@ -68,7 +68,7 @@ else
 fi
 
 # House .env fallback: clear process plugin vars, status still sees file
-unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_TOKEN
+unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_TOKEN RIVETOS_CLOUD_URL
 status_house="$("$STATUS")"
 if [[ "$status_house" == *"house .env fallback"* ]] || [[ "$status_house" == *"mode: local"* ]]; then
   pass "status sees house .env after unsetting process vars"
@@ -81,17 +81,50 @@ else
   pass "house-fallback status does not dump secrets"
 fi
 
-# Must not clobber workspace mode
-printf 'RIVETOS_MODE=workspace\nRIVETOS_PG_URL=postgres://keep.example/db\n' >"$RIVETOS_ENV_FILE"
-chmod 600 "$RIVETOS_ENV_FILE"
+# Quoted persist: spaces, hash, dollar survive the next load
+unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_URL RIVETOS_CLOUD_TOKEN
+SPECIAL='postgres://u:p@ss word#hash$tick@datahub.example/db'
 export RIVETOS_MODE=local
-export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+export RIVETOS_DATAHUB_URL="$SPECIAL"
+: >"$RIVETOS_ENV_FILE"
 "$PERSIST" >/dev/null
-if grep -q '^RIVETOS_MODE=workspace$' "$RIVETOS_ENV_FILE"; then
-  pass "persist does not clobber workspace mode"
+if grep -q "RIVETOS_DATAHUB_URL='" "$RIVETOS_ENV_FILE"; then
+  pass "persist shell-quotes values"
 else
-  fail "persist clobbered workspace mode"
+  fail "persist should single-quote written values"
 fi
+unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+# shellcheck source=../../../shared/rivet-paths.sh
+. "$KIT/../../shared/rivet-paths.sh"
+rivetos_load_env
+if [ "${RIVETOS_DATAHUB_URL:-}" = "$SPECIAL" ]; then
+  pass "quoted persist round-trips through load_env"
+else
+  fail "load_env should recover quoted special chars"
+fi
+
+assert_mode_kept() {
+  local label="$1"
+  local body="$2"
+  local expect="$3"
+  printf '%s\n' "$body" >"$RIVETOS_ENV_FILE"
+  chmod 600 "$RIVETOS_ENV_FILE"
+  export RIVETOS_MODE=local
+  export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+  "$PERSIST" >/dev/null
+  got="$(rivetos_env_file_value "$RIVETOS_ENV_FILE" RIVETOS_MODE)"
+  if [ "$got" = "$expect" ]; then
+    pass "persist does not clobber $label"
+  else
+    fail "persist clobbered $label (got ${got:-empty})"
+  fi
+}
+
+assert_mode_kept "bare workspace" "RIVETOS_MODE=workspace" workspace
+assert_mode_kept "export production" "export RIVETOS_MODE=production" production
+assert_mode_kept "quoted workspace" 'RIVETOS_MODE="workspace"' workspace
+assert_mode_kept "CRLF production" $'RIVETOS_MODE=production\r' production
+assert_mode_kept "last-wins workspace" $'RIVETOS_MODE=local\nRIVETOS_MODE=workspace' workspace
 
 # Persist without required local endpoint fails
 unset RIVETOS_DATAHUB_URL RIVETOS_PG_URL
@@ -102,6 +135,21 @@ else
   pass "local persist requires DataHub or PG URL"
 fi
 
+# Placeholder process values are not persisted
+: >"$RIVETOS_ENV_FILE"
+export RIVETOS_MODE=cloud
+export RIVETOS_CLOUD_URL='${RIVETOS_CLOUD_URL}'
+if "$PERSIST" >/dev/null; then
+  if grep -q 'RIVETOS_CLOUD_URL' "$RIVETOS_ENV_FILE"; then
+    fail "persist should skip unsubstituted \${VAR}"
+  else
+    pass "persist skips unsubstituted \${VAR}"
+  fi
+else
+  fail "cloud persist with placeholder URL should still succeed"
+fi
+unset RIVETOS_CLOUD_URL
+
 # Cloud persist without token is allowed (token may stay in plugin form only)
 export RIVETOS_MODE=cloud
 unset RIVETOS_CLOUD_TOKEN
@@ -111,7 +159,77 @@ else
   fail "cloud persist should not require token in .env"
 fi
 
-# Wrapper missing sibling in an isolated copy — skip if sibling exists (it does in-tree)
+# Status redacts cloud_url userinfo
+unset RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+export RIVETOS_MODE=cloud
+export RIVETOS_CLOUD_URL='https://alice:s3cret-cloud@cloud.example:8443/v1'
+cloud_out="$("$STATUS")"
+if [[ "$cloud_out" == *"s3cret-cloud"* ]] || [[ "$cloud_out" == *"alice:"* ]]; then
+  fail "status leaked cloud_url userinfo"
+else
+  pass "status redacts cloud_url userinfo"
+fi
+if [[ "$cloud_out" == *"https cloud.example:8443"* ]]; then
+  pass "status prints redacted cloud host:port"
+else
+  fail "status should print redacted cloud scheme host:port"
+fi
+unset RIVETOS_CLOUD_URL
+
+# Bare host[:port] and IPv6 in status endpoint line
+: >"$RIVETOS_ENV_FILE"
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL='datahub.example:6543'
+bare_out="$("$STATUS")"
+if [[ "$bare_out" == *"datahub.example:6543"* ]]; then
+  pass "status parses bare host:port"
+else
+  fail "status should parse bare host:port"
+fi
+export RIVETOS_DATAHUB_URL='[::1]:5432'
+v6_out="$("$STATUS")"
+if [[ "$v6_out" == *"::1:5432"* ]]; then
+  pass "status parses IPv6 literal"
+else
+  fail "status should parse bracketed IPv6"
+fi
+if [[ "$v6_out" == *'['* ]]; then
+  fail "status IPv6 line should not include brackets as userinfo"
+fi
+unset RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+
+# Write through a symlinked env file
+REAL_ENV="$HOME_TMP/.rivetos/real.env"
+LINK_ENV="$HOME_TMP/.rivetos/link.env"
+printf 'RIVETOS_MODE=local\n' >"$REAL_ENV"
+ln -s "$REAL_ENV" "$LINK_ENV"
+export RIVETOS_ENV_FILE="$LINK_ENV"
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL='postgres://symlink.example/db'
+"$PERSIST" >/dev/null
+if [ -L "$LINK_ENV" ] && grep -q "symlink.example" "$REAL_ENV"; then
+  pass "persist writes through symlink"
+else
+  fail "persist should write through a symlinked env file"
+fi
+export RIVETOS_ENV_FILE="$HOME_TMP/.rivetos/.env"
+
+# Isolated wrapper: missing sibling must reach the fallback message
+ISO="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-wrapper.XXXXXX")"
+cp "$WRAPPER" "$ISO/rivetos-memory-mcp.sh"
+chmod +x "$ISO/rivetos-memory-mcp.sh"
+set +e
+wrap_out="$(env -u RIVETOS_ROOT bash "$ISO/rivetos-memory-mcp.sh" 2>&1)"
+wrap_rc=$?
+set -e
+if [ "$wrap_rc" -eq 1 ] && [[ "$wrap_out" == *"launcher not found"* ]]; then
+  pass "wrapper missing sibling reaches fallback message"
+else
+  fail "wrapper should not exit before the not-found message (rc=$wrap_rc)"
+fi
+rm -rf "$ISO"
+
+# In-tree sibling still present
 if [[ -x "$KIT/../rivet-memory/bin/rivet-memory-mcp.sh" ]]; then
   pass "sibling MCP launcher present"
 else

@@ -2,4 +2,4 @@
 
 Portable copies of discover + watch will land here for public installs.
 
-Until then, use the node’s `~/.rivetos/capture/` implementation (dynamic discovery + supervisord `grokbot-capture`).
+Until then, use the host capture helpers from a RivetOS checkout (`integrations/grok-bot/rivet-memory/capture/`, or a node-local `~/.rivetos/capture/` copy).

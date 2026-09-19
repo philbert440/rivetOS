@@ -2,7 +2,7 @@
 
 **Status:** approved for implementation (2026-09-19)  
 **Date:** 2026-09-19  
-**Owner (draft):** tinkabot · **Requester:** Philip  
+**Owner (draft):** rivethub-grokbot maintainers  
 **Related:** `rivethub-grokbot` expansion plan (Capture → Delegation → Den). This doc is the **Later** item “per-user datahub onboarding for strangers,” pulled forward as its own plan. Does **not** reorder 1→2→3.
 
 In-tree path: `integrations/grok-bot/rivethub-grokbot/PLAN-STRANGER-ONBOARDING.md`

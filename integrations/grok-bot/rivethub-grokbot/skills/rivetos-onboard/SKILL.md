@@ -27,7 +27,12 @@ Same plugin either way. Mode chooses **where** memory/mesh traffic goes.
    connection strings. **Never** ask the user to paste a Tailscale auth key
    into chat or plugin settings — Tailscale login stays in the Tailscale app/CLI.
 
-House nodes already on `~/.rivetos/.env` do not need this wizard. If they run
+This kit is not self-contained. Persist and status source
+`integrations/shared/rivet-paths.sh`; the MCP wrapper execs the sibling
+`rivet-memory` launcher. A marketplace copy of this directory alone will
+not find those files. Use a RivetOS checkout or set `RIVETOS_ROOT`.
+
+Nodes already on `~/.rivetos/.env` do not need this wizard. If they run
 it anyway, prefer Path B and leave existing `.env` secrets in place.
 
 ---
@@ -40,13 +45,16 @@ it anyway, prefer Path B and leave existing `.env` secrets in place.
 
 This kit does **not** ship a browser OAuth loop yet. Rivet Cloud today is a
 tenant bundle plus `rivetos cloud connect` (see `docs/cloud.md`). Memory tools
-still talk Postgres (same MCP names as local).
+still talk Postgres via that bundle (same MCP names as local). The launcher
+does not read `RIVETOS_CLOUD_TOKEN`.
 
 User steps:
 
 1. Confirm they have a Rivet Cloud account / tenant bundle.
 2. Set `RIVETOS_MODE=cloud`.
-3. Set secret `RIVETOS_CLOUD_TOKEN` in the plugin form (or `rivetos cloud connect --token`, never in chat).
+3. Optional: set secret `RIVETOS_CLOUD_TOKEN` in the plugin form (or
+   `rivetos cloud connect --token`, never in chat) for later cloud HTTP.
+   The memory launcher does not consume it yet.
 4. Optional: `RIVETOS_CLOUD_URL` (default `https://rivetos.cloud`).
 5. Until a dedicated cloud memory HTTP API exists, they also need the cloud
    **Postgres + embed** URLs from the tenant bundle (`rivetos cloud connect`).

@@ -4,12 +4,19 @@ First-class **RivetHub** plugin for **Grok Bot** (and Cursor-compatible install)
 
 Goal: get as close as possible to a full Rivet mesh member **without hacking the Grok Bot application**.
 
-## Install (stranger path)
+## Install
+
+This kit is not self-contained yet. The helpers resolve
+`integrations/shared/rivet-paths.sh` and the sibling
+`integrations/grok-bot/rivet-memory` launcher. A marketplace copy of this
+directory alone will not find those files. Use a RivetOS checkout, or set
+`RIVETOS_ROOT` to a built tree that contains both paths. Self-contained
+marketplace install is later work.
 
 1. Add the RivetOS marketplace (`philbert440/rivetOS` — repo `.cursor-plugin/marketplace.json`) in Grok Bot / Cursor.
-2. Install **rivethub-grokbot**.
+2. Install **rivethub-grokbot** (or copy this kit next to `rivet-memory` in a checkout).
 3. Run the **`rivetos-onboard`** skill. One fork:
-   - **A. RivetOS cloud** — connect a RivetOS / Rivet Cloud account (token via plugin form; browser OAuth is not in this kit yet).
+   - **A. RivetOS cloud** — today this is still Postgres via the tenant bundle from `rivetos cloud connect` (or a pasted DataHub / PG URL). The launcher does not read `RIVETOS_CLOUD_TOKEN`. Browser OAuth is not in this kit yet.
    - **B. RivetOS local** — Tailscale + one DataHub endpoint (`RIVETOS_DATAHUB_URL`).
 4. Prove with **`rivetos-status`**, then `memory_stats`.
 
@@ -22,16 +29,16 @@ Declared so marketplace / Cursor can show a form (`Plugins → Configure`):
 | Variable | Path | Purpose |
 | --- | --- | --- |
 | `RIVETOS_MODE` | both | `cloud` \| `local` |
-| `RIVETOS_CLOUD_TOKEN` | A | Secret account credential |
+| `RIVETOS_CLOUD_TOKEN` | A | Secret account credential. Stored in the plugin form / `~/.rivetos/.env` for later cloud HTTP. The memory launcher does not read it yet. |
 | `RIVETOS_CLOUD_URL` | A | Optional; default `https://rivetos.cloud` |
 | `RIVETOS_DATAHUB_URL` | B | One local DataHub endpoint |
 | `RIVETOS_PG_URL` | B | Legacy / only if DataHub is not enough |
 
-Launcher read order: **plugin variables first**, then `~/.rivetos/.env`. Empty form placeholders do not block the env-file fallback.
+Launcher read order: **plugin variables first**, then `~/.rivetos/.env`. Empty form placeholders and unsubstituted `${VAR}` tokens do not block the env-file fallback. Every harness launcher that sources `integrations/shared/rivet-paths.sh` shares this order (same as `packages/cli` `loadRivetEnv`: process wins).
 
-### Power-user / house fallback
+### Power-user fallback
 
-House nodes keep working with only `~/.rivetos/.env` (`RIVETOS_PG_URL`). You do not need the onboard wizard. Editing `.env` by hand is **not** the primary stranger path.
+Existing nodes keep working with only `~/.rivetos/.env` (`RIVETOS_PG_URL`). You do not need the onboard wizard. Editing `.env` by hand is **not** the primary stranger path.
 
 Never commit secrets. Status and persist scripts never print PG URLs or tokens.
 

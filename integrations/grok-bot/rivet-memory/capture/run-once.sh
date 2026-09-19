@@ -61,11 +61,32 @@ if [[ ! -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]; then
     SKIP_INGEST=1
 fi
 
-# Align .env check: ingest-session.mjs loads ~/.rivetos/.env itself, so check there
-# rather than requiring RIVETOS_PG_URL in process env
+# Align .env check: ingest-session.mjs loads ~/.rivetos/.env itself, so check
+# there rather than requiring RIVETOS_PG_URL in process env. Ingest only maps
+# postgres:// / postgresql:// DataHub URLs.
 RIVETOS_ENV_FILE="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
-if [[ ! -f "${RIVETOS_ENV_FILE}" ]] && [[ -z "${RIVETOS_PG_URL:-}" ]] && [[ -z "${RIVETOS_DATAHUB_URL:-}" ]]; then
-    echo "WARN: No .env at ${RIVETOS_ENV_FILE} and neither RIVETOS_PG_URL nor RIVETOS_DATAHUB_URL is set, skipping ingest (fail closed)" >&2
+_rivetos_is_pg_url() {
+    case "${1-}" in
+        postgres://* | postgresql://*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+_rivetos_pg_ready=0
+if _rivetos_is_pg_url "${RIVETOS_PG_URL:-}" || _rivetos_is_pg_url "${RIVETOS_DATAHUB_URL:-}"; then
+    _rivetos_pg_ready=1
+elif [[ -f "${RIVETOS_ENV_FILE}" ]]; then
+    if grep -Eq '^(export[[:space:]]+)?(RIVETOS_PG_URL|RIVETOS_DATAHUB_URL)=.*(postgres|postgresql)://' "${RIVETOS_ENV_FILE}"; then
+        _rivetos_pg_ready=1
+    fi
+fi
+if [[ "${_rivetos_pg_ready}" -eq 0 ]]; then
+    if [[ -n "${RIVETOS_DATAHUB_URL:-}" ]]; then
+        echo "WARN: RIVETOS_DATAHUB_URL is set but is not postgres:// or postgresql://; ingest needs a Postgres DataHub (RIVETOS_PG_URL). Skipping ingest." >&2
+    elif [[ ! -f "${RIVETOS_ENV_FILE}" ]]; then
+        echo "WARN: No .env at ${RIVETOS_ENV_FILE} and neither RIVETOS_PG_URL nor a postgres RIVETOS_DATAHUB_URL is set, skipping ingest (fail closed)" >&2
+    else
+        echo "WARN: ${RIVETOS_ENV_FILE} has no postgres:// / postgresql:// RIVETOS_PG_URL or RIVETOS_DATAHUB_URL, skipping ingest (fail closed)" >&2
+    fi
     SKIP_INGEST=1
 fi
 

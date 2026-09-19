@@ -118,6 +118,89 @@ else
 fi
 cleanup_env
 
+# 9. literal unsubstituted ${VAR} counts as unset
+with_envfile 'RIVETOS_PG_URL=postgres://from-env.example/db'
+export RIVETOS_PG_URL='${RIVETOS_PG_URL}'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://from-env.example/db' ]; then
+  pass "literal \${RIVETOS_PG_URL} placeholder falls back to .env"
+else
+  fail "literal \${RIVETOS_PG_URL} should count as unset"
+fi
+cleanup_env
+
+# 10. quoted special chars parse without sourcing
+with_envfile "RIVETOS_PG_URL='postgres://u:p@ss word#hash\$tick@h/db'"
+rivetos_load_env
+if [ "${RIVETOS_PG_URL:-}" = 'postgres://u:p@ss word#hash$tick@h/db' ]; then
+  pass "quoted special chars round-trip via parse"
+else
+  fail "quoted special chars should parse without source"
+fi
+cleanup_env
+
+# 11. export prefix + last-wins
+with_envfile 'export RIVETOS_MODE=local
+RIVETOS_MODE="cloud"'
+rivetos_load_env
+if [ "${RIVETOS_MODE:-}" = 'cloud' ]; then
+  pass "export prefix + last-wins"
+else
+  fail "last RIVETOS_MODE assignment should win"
+fi
+cleanup_env
+
+# 12. plugin DATAHUB postgres wins over legacy file PG_URL
+with_envfile 'RIVETOS_PG_URL=postgres://old.example/db'
+export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+rivetos_load_env
+if [ "${RIVETOS_PG_URL:-}" = 'postgres://new.example/db' ]; then
+  pass "plugin DATAHUB overwrites file PG_URL"
+else
+  fail "plugin DATAHUB should overwrite legacy file PG_URL"
+fi
+cleanup_env
+
+# 13. parse helpers: export / quotes / CRLF
+line=$'export RIVETOS_MODE="production"\r'
+if rivetos_parse_env_line "$line" && [ "$_rivetos_env_key" = RIVETOS_MODE ] && [ "$_rivetos_env_val" = production ]; then
+  pass "parse export + quotes + CRLF"
+else
+  fail "parse should handle export, quotes, CRLF"
+fi
+
+# 14. redact via stdin, never userinfo
+redacted="$(printf '%s' 'https://alice:s3cret-cloud@cloud.example:8443/v1' | rivetos_redact_endpoint 443)"
+if [ "$redacted" = 'https cloud.example 8443' ]; then
+  pass "redact drops userinfo"
+else
+  fail "redact should print scheme host port without userinfo"
+fi
+if printf '%s' "$redacted" | grep -q s3cret; then
+  fail "redact leaked userinfo"
+fi
+
+# 15. bare host and IPv6
+bare="$(printf '%s' 'datahub.example' | rivetos_redact_endpoint 5432)"
+if [ "$bare" = 'tcp datahub.example 5432' ]; then
+  pass "bare host parses"
+else
+  fail "bare host should be host + default port"
+fi
+bare_port="$(printf '%s' 'datahub.example:6543' | rivetos_redact_endpoint 5432)"
+if [ "$bare_port" = 'tcp datahub.example 6543' ]; then
+  pass "bare host:port parses"
+else
+  fail "bare host:port should keep the port"
+fi
+v6="$(printf '%s' '[::1]:5432' | rivetos_redact_endpoint 5432)"
+if [ "$v6" = 'tcp ::1 5432' ]; then
+  pass "IPv6 literal parses"
+else
+  fail "bracketed IPv6 should parse"
+fi
+cleanup_env
+
 if [ "$failed" -ne 0 ]; then
   echo "$failed rivet-paths test(s) failed" >&2
   exit 1

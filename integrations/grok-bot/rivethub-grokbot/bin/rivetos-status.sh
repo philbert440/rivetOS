@@ -25,9 +25,34 @@ unset _rivet_paths _rivet_candidate
 
 rivetos_load_env
 
+_rivetos_status_flag() {
+  if rivetos_is_effective_unset "${1-}"; then
+    echo unset
+  else
+    echo set
+  fi
+}
+
+# Redact to "scheme host:port", or "set" / "unset". URL arrives on stdin.
+_rivetos_status_redact() {
+  local raw="${1-}"
+  local default_port="${2:-5432}"
+  local probe
+  if rivetos_is_effective_unset "$raw"; then
+    echo unset
+    return 0
+  fi
+  probe="$(printf '%s' "$raw" | rivetos_redact_endpoint "$default_port" 2>/dev/null || true)"
+  if [ -z "$probe" ]; then
+    echo set
+    return 0
+  fi
+  printf '%s %s:%s\n' "$(printf '%s' "$probe" | awk '{print $1}')" "$(printf '%s' "$probe" | awk '{print $2}')" "$(printf '%s' "$probe" | awk '{print $3}')"
+}
+
 mode="${RIVETOS_MODE:-}"
-if [ -z "$mode" ]; then
-  if [ -n "${RIVETOS_PG_URL:-}" ] || [ -n "${RIVETOS_DATAHUB_URL:-}" ]; then
+if rivetos_is_effective_unset "$mode"; then
+  if ! rivetos_is_effective_unset "${RIVETOS_PG_URL:-}" || ! rivetos_is_effective_unset "${RIVETOS_DATAHUB_URL:-}"; then
     mode="unset (house .env fallback)"
   else
     mode="unset — run rivetos-onboard"
@@ -36,10 +61,10 @@ fi
 
 echo "rivetos-status"
 echo "mode: $mode"
-echo "cloud_url: ${RIVETOS_CLOUD_URL:-}"
-echo "cloud_token: $([ -n "${RIVETOS_CLOUD_TOKEN:-}" ] && echo set || echo unset)"
-echo "datahub: $([ -n "${RIVETOS_DATAHUB_URL:-}" ] && echo set || echo unset)"
-echo "pg_url: $([ -n "${RIVETOS_PG_URL:-}" ] && echo set || echo unset)"
+echo "cloud_url: $(_rivetos_status_redact "${RIVETOS_CLOUD_URL:-}" 443)"
+echo "cloud_token: $(_rivetos_status_flag "${RIVETOS_CLOUD_TOKEN:-}")"
+echo "datahub: $(_rivetos_status_flag "${RIVETOS_DATAHUB_URL:-}")"
+echo "pg_url: $(_rivetos_status_flag "${RIVETOS_PG_URL:-}")"
 
 if command -v tailscale >/dev/null 2>&1; then
   ts_json="$(tailscale status --json 2>/dev/null || true)"
@@ -64,34 +89,18 @@ fi
 
 # Reachability: host:port only. Never echo the URL (may contain userinfo).
 endpoint="${RIVETOS_DATAHUB_URL:-${RIVETOS_PG_URL:-${RIVETOS_CLOUD_URL:-}}}"
-if [ -z "$endpoint" ]; then
+if rivetos_is_effective_unset "$endpoint"; then
   echo "endpoint: not configured"
   exit 0
 fi
 
-probe="$(ENDPOINT="$endpoint" python3 - <<'PY' 2>/dev/null || true
-import os
-from urllib.parse import urlparse
-raw = os.environ.get("ENDPOINT", "")
-u = urlparse(raw)
-host = u.hostname or ""
-if not host:
-    print("")
-    raise SystemExit(0)
-scheme = (u.scheme or "").lower()
-if u.port:
-    port = u.port
-elif scheme.startswith("postgres"):
-    port = 5432
-elif scheme == "https":
-    port = 443
-elif scheme == "http":
-    port = 80
-else:
-    port = 443
-print(f"{scheme or 'tcp'} {host} {port}")
-PY
-)"
+default_port=5432
+case "$endpoint" in
+  https://*) default_port=443 ;;
+  http://*) default_port=80 ;;
+esac
+
+probe="$(printf '%s' "$endpoint" | rivetos_redact_endpoint "$default_port" 2>/dev/null || true)"
 
 if [ -z "$probe" ]; then
   echo "endpoint: set (could not parse host — not probed)"
