@@ -240,6 +240,8 @@ export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) =>
     // Retry only the claim, never the turn. heartbeat-task.ts sets
     // maxAttempts: 1 on purpose (an agent turn must never double-run);
     // a pre-send connect failure means nothing ran, so a retry is safe.
+    // Worst-case exhaustion is 4 × checkout timeout + ~4.25s (≈2 minutes
+    // at 30s); this holds a worker slot, not a pool connection.
     const task = await retryPreSendConnect(() => opts.store.claim(taskId, opts.nodeId), {
       onRetry: (err, attempt) => {
         const msg = err instanceof Error ? err.message : String(err)

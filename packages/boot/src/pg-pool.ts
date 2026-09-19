@@ -6,9 +6,12 @@
  */
 
 import pg from 'pg'
-import { logger } from '@rivetos/core'
+import { logger, type Logger } from '@rivetos/core'
 
 const log = logger('Boot:PgPool')
+
+/** Bound on `pool.end()` so cleanup cannot hang the rethrow or `process.exit`. */
+export const POOL_END_TIMEOUT_MS = 5_000
 
 const DEFAULT_POOL_MAX = 8
 /** Two graphile LISTEN clients live in this pool permanently. */
@@ -44,7 +47,11 @@ export function createSharedPgPool(pgUrl: string, env: NodeJS.ProcessEnv = proce
     connectionString: pgUrl,
     max,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
+    // Also the queue-wait timeout when the pool is full. graphile's private
+    // pools used to wait indefinitely; graphile's job bookkeeping is
+    // fire-and-forget, so a short queue timeout turns contention into a
+    // process exit.
+    connectionTimeoutMillis: 30_000,
   })
   pool.on('error', (err) => {
     log.error(`Shared pg pool error: ${err.message}`)
@@ -55,4 +62,85 @@ export function createSharedPgPool(pgUrl: string, env: NodeJS.ProcessEnv = proce
     })
   })
   return pool
+}
+
+type PoolLog = Pick<Logger, 'error' | 'warn'>
+
+export interface EndablePool {
+  end: () => Promise<void>
+}
+
+/**
+ * Memoize one `pool.end()`: every caller awaits the same drain. Races the
+ * end against {@link POOL_END_TIMEOUT_MS} and warns on timeout so a stuck
+ * checkout cannot swallow a rethrow or block process.exit.
+ */
+export function createEndSharedPool(
+  pool: EndablePool | undefined,
+  poolLog: PoolLog = log,
+): () => Promise<void> {
+  let inflight: Promise<void> | undefined
+  return (): Promise<void> => {
+    if (inflight) return inflight
+    if (!pool) {
+      inflight = Promise.resolve()
+      return inflight
+    }
+    const target = pool
+    inflight = endPoolBounded(target, poolLog)
+    return inflight
+  }
+}
+
+async function endPoolBounded(pool: EndablePool, poolLog: PoolLog): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), POOL_END_TIMEOUT_MS)
+    })
+    const ended = pool.end().then(
+      () => 'ended' as const,
+      (err: unknown) => {
+        poolLog.error(
+          `Shared pg pool end failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        return 'ended' as const
+      },
+    )
+    const winner = await Promise.race([ended, timeout])
+    if (winner === 'timeout') {
+      poolLog.warn(`Shared pg pool end timed out after ${String(POOL_END_TIMEOUT_MS)}ms`)
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+export interface BootFailureCleanup {
+  runtime?: { stop: () => Promise<void> }
+  endPool: () => Promise<void>
+  log: PoolLog
+  err: unknown
+}
+
+/**
+ * Partial-boot catch path: log the original error, stop started consumers
+ * (task runner / waiter / gateway / heartbeat), then end the shared pool,
+ * then rethrow. Extracted so the hang-forever path is unit-testable without
+ * driving the full `bootWithConfig` graph.
+ */
+export async function cleanupAfterBootFailure(opts: BootFailureCleanup): Promise<never> {
+  const msg = opts.err instanceof Error ? opts.err.message : String(opts.err)
+  opts.log.error(`Boot failed: ${msg}`)
+  try {
+    await opts.runtime?.stop()
+  } catch (stopErr: unknown) {
+    opts.log.error(
+      `Runtime stop during boot-failure cleanup failed: ${
+        stopErr instanceof Error ? stopErr.message : String(stopErr)
+      }`,
+    )
+  }
+  await opts.endPool()
+  throw opts.err
 }

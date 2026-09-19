@@ -115,10 +115,11 @@ describe('PostgresMemory external pool', () => {
       pool: fakePool as unknown as pg.Pool,
     })
     expect(on).not.toHaveBeenCalled()
+    expect(memory.getPool()).toBe(fakePool)
     await memory.close()
     expect(end).not.toHaveBeenCalled()
-    await fakePool.query()
-    expect(query).toHaveBeenCalled()
+    await memory.isHealthy()
+    expect(query).toHaveBeenCalledWith('SELECT 1')
   })
 })
 

@@ -26,7 +26,7 @@ import {
   resolveEmbeddedPg,
   type EmbeddedPgHandle,
 } from './embedded-pg.js'
-import { createSharedPgPool } from './pg-pool.js'
+import { cleanupAfterBootFailure, createEndSharedPool, createSharedPgPool } from './pg-pool.js'
 
 // Re-export config types for consumers
 export {
@@ -222,20 +222,12 @@ async function bootWithConfig(
   //    runtime.stop() and before embedded PG itself is stopped.
   const pgUrl =
     (config.memory?.postgres.connection_string as string | undefined) ?? process.env.RIVETOS_PG_URL
-  let sharedPool = pgUrl ? createSharedPgPool(pgUrl) : undefined
-  const endSharedPool = async (): Promise<void> => {
-    if (!sharedPool) return
-    const pool = sharedPool
-    sharedPool = undefined
-    try {
-      await pool.end()
-    } catch (err: unknown) {
-      log.error(`Shared pg pool end failed: ${(err as Error).message}`)
-    }
-  }
+  const sharedPool = pgUrl ? createSharedPgPool(pgUrl) : undefined
+  const endSharedPool = createEndSharedPool(sharedPool, log)
 
+  let runtime: Runtime | undefined
   try {
-    const runtime = new Runtime({
+    runtime = new Runtime({
       workspaceDir,
       defaultAgent: config.runtime.default_agent,
       turnTimeout: config.runtime.turn_timeout,
@@ -302,7 +294,6 @@ async function bootWithConfig(
     // 6. Start
     await runtime.start()
   } catch (err) {
-    await endSharedPool()
-    throw err
+    await cleanupAfterBootFailure({ runtime, endPool: endSharedPool, log, err })
   }
 }

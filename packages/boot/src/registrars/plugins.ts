@@ -63,12 +63,17 @@ function pluginConfigFor(
   }
 }
 
+async function defaultImportPlugin(specifier: string): Promise<{ manifest?: PluginManifest }> {
+  return import(specifier) as Promise<{ manifest?: PluginManifest }>
+}
+
 export async function registerPlugins(
   runtime: Runtime,
   config: RivetConfig,
   registry: PluginRegistry,
   hooks: HookPipeline,
   workspaceDir: string,
+  importPlugin: (specifier: string) => Promise<{ manifest?: PluginManifest }> = defaultImportPlugin,
 ): Promise<void> {
   const shutdowns: Array<() => Promise<void> | void> = []
   const completeCallbacks: Array<(snapshot: RegistrationCompleteSnapshot) => Promise<void> | void> =
@@ -79,7 +84,7 @@ export async function registerPlugins(
     if (!register) continue
 
     try {
-      const mod = (await import(plugin.packageName)) as { manifest?: PluginManifest }
+      const mod = await importPlugin(plugin.packageName)
       const manifest = mod.manifest
 
       if (!manifest) {

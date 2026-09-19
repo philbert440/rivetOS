@@ -98,6 +98,7 @@ export class PostgresMemory implements Memory {
   /** Set false after the first missing-table error — 0005 not applied. */
   private wikiAvailable = true
   private expander: Expander
+  /** Borrowed pool: refreshed only by isHealthy()/append; no production reader. */
   private connected = false
   private lastHealthCheck = 0
   /**

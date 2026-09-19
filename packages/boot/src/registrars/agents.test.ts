@@ -1,8 +1,85 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { makeWikiFor, memoryApiEmbedFromEnv, resolveAdvertiseHost } from './agents.js'
+import type { Runtime } from '@rivetos/core'
+import type { RivetConfig } from '../config.js'
+import {
+  makeWikiFor,
+  memoryApiEmbedFromEnv,
+  registerAgentTools,
+  resolveAdvertiseHost,
+} from './agents.js'
+
+const coreMocks = vi.hoisted(() => {
+  const pgTaskStores: unknown[] = []
+  class PgTaskStore {
+    pool: unknown
+    constructor(pool: unknown) {
+      this.pool = pool
+      pgTaskStores.push(pool)
+    }
+    async isReady(): Promise<boolean> {
+      return true
+    }
+  }
+  const createTaskRunner = vi.fn((opts: { pgPool?: unknown }) => ({
+    opts,
+    handler: vi.fn(),
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+  }))
+  const createTaskCompletionWaiter = vi.fn(() => ({
+    stop: vi.fn(async () => undefined),
+  }))
+  return { PgTaskStore, pgTaskStores, createTaskRunner, createTaskCompletionWaiter }
+})
+
+const pgMocks = vi.hoisted(() => {
+  class Pool {
+    static instances: Pool[] = []
+    options: { connectionString?: string; max?: number }
+    end = vi.fn(async () => undefined)
+    query = vi.fn(async () => ({ rows: [] }))
+    constructor(options: { connectionString?: string; max?: number }) {
+      this.options = options
+      Pool.instances.push(this)
+    }
+  }
+  return { Pool }
+})
+
+vi.mock('@rivetos/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@rivetos/core')>()
+  return {
+    ...actual,
+    PgTaskStore: coreMocks.PgTaskStore,
+    createTaskRunner: coreMocks.createTaskRunner,
+    createTaskCompletionWaiter: coreMocks.createTaskCompletionWaiter,
+  }
+})
+
+vi.mock('pg', () => ({
+  default: { Pool: pgMocks.Pool },
+}))
+
+vi.mock('node:child_process', () => ({
+  spawn: vi.fn(() => {
+    const proc = {
+      stdout: { on: vi.fn() },
+      kill: vi.fn(),
+      on: vi.fn((event: string, cb: (err?: Error) => void) => {
+        if (event === 'error') queueMicrotask(() => cb(new Error('ENOENT')))
+        return proc
+      }),
+    }
+    return proc
+  }),
+}))
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  coreMocks.pgTaskStores.splice(0)
+  coreMocks.createTaskRunner.mockClear()
+  coreMocks.createTaskCompletionWaiter.mockClear()
+  pgMocks.Pool.instances.splice(0)
 })
 
 describe('resolveAdvertiseHost', () => {
@@ -90,5 +167,66 @@ describe('makeWikiFor (#584 audit: refusal order is the pin)', () => {
     expect(first?.wikiDir).toBe('/root/users/coco')
     expect(wikiFor('coco')).toBe(first) // cached
     expect(buildIndex).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('registerAgentTools shared pool wiring', () => {
+  const pgUrl = 'postgres://user:pass@localhost:5432/db'
+
+  function config(): RivetConfig {
+    return {
+      runtime: { workspace: '/tmp', default_agent: 'test-agent', skill_dirs: [] },
+      agents: { 'test-agent': { provider: 'p', model: 'm' } },
+      workflows: { enabled: false },
+    } as RivetConfig
+  }
+
+  function stubRuntime(opts: { pgPool?: { end: ReturnType<typeof vi.fn> } }): {
+    runtime: Runtime
+    hooks: Array<() => Promise<void>>
+  } {
+    const hooks: Array<() => Promise<void>> = []
+    const runtime = {
+      getPgUrl: () => pgUrl,
+      getPgPool: () => opts.pgPool,
+      addShutdownHook: (hook: () => Promise<void>) => {
+        hooks.push(hook)
+      },
+      getRouter: () => ({ getAgents: () => [], getProviders: () => [] }),
+      getWorkspace: () => ({}),
+      getTools: () => [],
+      getHooks: () => undefined,
+      getMemory: () => undefined,
+      registerTool: () => undefined,
+      registerSkillCatalog: () => undefined,
+      setHeartbeatTaskStore: () => undefined,
+    } as unknown as Runtime
+    return { runtime, hooks }
+  }
+
+  it('passes the host pool to PgTaskStore and createTaskRunner and does not end it', async () => {
+    const hostPool = { end: vi.fn(async () => undefined) }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await registerAgentTools(runtime, config(), '/tmp')
+    expect(coreMocks.pgTaskStores[0]).toBe(hostPool)
+    expect(coreMocks.createTaskRunner).toHaveBeenCalledWith(
+      expect.objectContaining({ pgPool: hostPool }),
+    )
+    for (const hook of hooks) await hook()
+    expect(hostPool.end).not.toHaveBeenCalled()
+  })
+
+  it('creates a registrar-owned pool and registers an end() hook when no host pool', async () => {
+    const { runtime, hooks } = stubRuntime({})
+    await registerAgentTools(runtime, config(), '/tmp')
+    const created = pgMocks.Pool.instances.find((p) => p.options.max === 4)
+    expect(created).toBeDefined()
+    expect(coreMocks.pgTaskStores[0]).toBe(created)
+    expect(coreMocks.createTaskRunner).toHaveBeenCalledWith(
+      expect.objectContaining({ pgPool: created }),
+    )
+    expect(created?.end).not.toHaveBeenCalled()
+    for (const hook of hooks) await hook()
+    expect(created?.end).toHaveBeenCalledTimes(1)
   })
 })

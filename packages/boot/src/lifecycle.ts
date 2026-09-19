@@ -43,18 +43,23 @@ export function registerShutdownHandlers(
   pidDir: string = DEFAULT_PID_DIR,
   afterStop?: () => Promise<void>,
 ): void {
-  const shutdown = async () => {
-    log.info('Shutting down...')
-    await runtime.stop()
-    if (afterStop) {
-      try {
-        await afterStop()
-      } catch (err: unknown) {
-        log.error(`After-stop hook failed: ${(err as Error).message}`)
+  let shuttingDown: Promise<void> | undefined
+  const shutdown = (): Promise<void> => {
+    if (shuttingDown) return shuttingDown
+    shuttingDown = (async () => {
+      log.info('Shutting down...')
+      await runtime.stop()
+      if (afterStop) {
+        try {
+          await afterStop()
+        } catch (err: unknown) {
+          log.error(`After-stop hook failed: ${(err as Error).message}`)
+        }
       }
-    }
-    await removePidFile(pidDir)
-    process.exit(0)
+      await removePidFile(pidDir)
+      process.exit(0)
+    })()
+    return shuttingDown
   }
 
   process.on('SIGINT', () => {

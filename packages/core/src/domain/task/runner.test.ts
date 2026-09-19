@@ -351,6 +351,30 @@ describe('createTaskRunner graphile pool wiring', () => {
     expect(opts.pgPool).toBeUndefined()
     await runner.stop()
   })
+
+  it('passes pgPool and noPreparedStatements when RIVETOS_PG_EMBEDDED=1', async () => {
+    const prev = process.env.RIVETOS_PG_EMBEDDED
+    process.env.RIVETOS_PG_EMBEDDED = '1'
+    try {
+      const pgPool = { options: { max: 8 } } as unknown as pg.Pool
+      const runner = createTaskRunner({
+        pgUrl,
+        pgPool,
+        store: new InMemoryTaskStore(),
+        executors: createExecutorRegistry(),
+        nodeId: 'test-node',
+      })
+      await runner.start()
+      expect(run).toHaveBeenCalledTimes(1)
+      const opts = vi.mocked(run).mock.calls[0][0] as Record<string, unknown>
+      expect(opts.pgPool).toBe(pgPool)
+      expect(opts.noPreparedStatements).toBe(true)
+      await runner.stop()
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_PG_EMBEDDED')
+      else process.env.RIVETOS_PG_EMBEDDED = prev
+    }
+  })
 })
 
 describe('createTaskRunner start() guards (P1)', () => {

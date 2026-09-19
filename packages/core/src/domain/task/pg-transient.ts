@@ -1,10 +1,11 @@
 /**
- * Pre-send Postgres connect failures — the query never reached the server.
+ * Signals that occur at connection establishment / pool checkout.
  *
- * Used to retry `TaskStore.claim` only. Errors that can follow a committed
- * UPDATE (`ECONNRESET`, `ETIMEDOUT`, query timeouts) are NOT retried: a
- * retried claim would then see `status='running'`, return undefined, and
- * strand the row.
+ * Used to retry `TaskStore.claim` only. For that caller the statement is a
+ * single UPDATE that a server-side error rolls back, so a retry cannot
+ * double-claim. Errors that can follow a committed UPDATE (`ECONNRESET`,
+ * `ETIMEDOUT`, query timeouts) are NOT retried: a retried claim would then
+ * see `status='running'`, return undefined, and strand the row.
  */
 
 const PRE_SEND_CODES = new Set(['53300', '57P03', 'ECONNREFUSED'])
@@ -40,6 +41,9 @@ export interface RetryPreSendConnectOptions {
  * Retry `fn` on {@link isPreSendConnectError} only. Default delays
  * `[250, 1000, 3000]` with ±20% jitter (3 retries → 4 calls). Non-matching
  * errors rethrow immediately; after the last delay the final error rethrows.
+ * Worst-case exhaustion is 4 × checkout timeout + ~4.25s (≈2 minutes at the
+ * shared pool's 30s `connectionTimeoutMillis`). That wait holds a worker
+ * slot, not a pool connection.
  */
 export async function retryPreSendConnect<T>(
   fn: () => Promise<T>,

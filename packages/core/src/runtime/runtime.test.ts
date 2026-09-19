@@ -8,7 +8,15 @@
  * Uses mock implementations of Provider, Channel, Memory, and Tool.
  */
 
-import { describe, it, beforeAll, afterAll } from 'vitest'
+import { describe, it, beforeAll, afterAll, vi } from 'vitest'
+import { createHeartbeatScheduler } from '../domain/heartbeat-scheduler.js'
+
+vi.mock('../domain/heartbeat-scheduler.js', () => ({
+  createHeartbeatScheduler: vi.fn(() => ({
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+  })),
+}))
 import * as assert from 'node:assert/strict'
 import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -262,6 +270,26 @@ describe('Runtime Integration', () => {
       agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
     })
     assert.equal(without.getPgPool(), undefined)
+  })
+
+  it('passes pgPool through to createHeartbeatScheduler', async () => {
+    const pool = { options: { max: 8 } } as unknown as import('pg').Pool
+    vi.mocked(createHeartbeatScheduler).mockClear()
+    const runtime = new Runtime({
+      workspaceDir,
+      defaultAgent: 'test-agent',
+      agents: [{ id: 'test-agent', name: 'Test Agent', provider: 'test-provider' }],
+      heartbeats: [{ agent: 'test-agent', schedule: '0 * * * *', prompt: 'hb' }],
+      pgUrl: 'postgres://user:pass@localhost:5432/db',
+      pgPool: pool,
+    })
+    await runtime.start()
+    assert.equal(vi.mocked(createHeartbeatScheduler).mock.calls.length, 1)
+    const opts = vi.mocked(createHeartbeatScheduler).mock.calls[0]?.[0] as {
+      pgPool?: unknown
+    }
+    assert.equal(opts.pgPool, pool)
+    await runtime.stop()
   })
 
   it('full turn — tool calling and response', async () => {
