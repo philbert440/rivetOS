@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
 - feat(harness): add qwen-code — Qwen Code CLI as the eighth first-class harness (driver, provider, executor, hooks-driven memory capture via a qwen extension, web + Android).
 
+### RivetHub
+
+- Composer **model picker**: pick a real model (e.g. Sonnet 5 / Opus 5 / Haiku 4.5, with the `[1m]` context variants under "more models") from the selected agent's harness capability sheet, instead of only choosing an agent. The choice persists per conversation and respawns the harness with `--model`. A config agent (e.g. `rivet` on `claude-cli`) resolves its harness via the new `providerToHarness` map.
+- Composer **agent picker** now hides when only one local agent is configured, mirroring the node picker's hide-on-single-node behaviour (no "default agent vs the one agent" non-choice).
+
 ### Breaking
 
 - Per-user memory routing reads only the users.json registry (`RIVETOS_USERS_FILE`, else `$RIVETOS_SHARED_DIR/rivetos/users.json`, else `~/.rivetos/users.json`). The `RIVETOS_USER_DBS` and `RIVETOS_DEN_DEVICE_USERS` env maps are removed — leftover values do not route.

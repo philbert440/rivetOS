@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Mic, Paperclip, Volume2, VolumeX, X } from 'lucide-react'
-import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
-import type { SelectOption } from './select.js'
+import { catalogAgentToHarness, providerToHarness } from '@rivetos/types'
+import type { CatalogAgent, HarnessId, ThinkingLevel } from '@rivetos/types'
+import { Select, type SelectOption } from './select.js'
+import { modelOptionsFor } from '../lib/harness-options.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion, AskScreen } from '../lib/ask-user.js'
@@ -67,6 +69,9 @@ export function Composer(props: {
   settingsKey: string
   agent?: string
   effort: ThinkingLevel
+  /** Real model id for this thread (harness sheet id, e.g. 'opus'); '' = the
+   *  harness default. Chosen from the agent's harness model list. */
+  model?: string
   /** Agent-preset system prompt; sent on the chat-loop POST path. */
   systemPrompt?: string
   onSetting: (patch: Partial<ChatSettings>) => void
@@ -182,6 +187,33 @@ export function Composer(props: {
     staleTime: 300_000,
   })
   const models = catalogAgentOptions(catalog.data?.agents ?? [])
+
+  // Real model picker: the models the selected agent's harness can run
+  // (Sonnet 5 / Opus 5 / Haiku 4.5 / …), from that harness's capability sheet.
+  // The agent id is resolved to a harness — directly for a harness-named agent
+  // (claude/grok/…), else via its provider (a config agent like `rivet` on
+  // `claude-cli`). '' (default agent) resolves to the first local agent.
+  const harnesses = useQuery({
+    queryKey: ['harnesses', catalogBase],
+    queryFn: async ({ signal }) =>
+      props.gatewayBase
+        ? (await gatewayFor(props.gatewayBase)).harnesses(signal)
+        : useConnection.getState().gateway.harnesses(signal),
+    staleTime: 300_000,
+  })
+  const agentList = catalog.data?.agents ?? []
+  const localAgents = agentList.filter((a) => a.local)
+  const chosenAgent = props.agent ? agentList.find((a) => a.id === props.agent) : localAgents[0]
+  const modelHarnessId: HarnessId | undefined =
+    catalogAgentToHarness(props.agent ?? chosenAgent?.id ?? '') ??
+    providerToHarness(chosenAgent?.provider)
+  const modelSheet = harnesses.data?.harnesses.find(
+    (h) => h.harnessId === modelHarnessId,
+  )?.capabilities
+  // `[1m]` (1M-context) and any non-primary variants fall under "more models".
+  const modelOptions: SelectOption[] = modelOptionsFor(modelSheet).map((o) =>
+    o.value.includes('[1m]') ? { ...o, group: 'more models' } : o,
+  )
 
   const composerGateway = props.gatewayBase
     ? () => gatewayFor(props.gatewayBase as string)
@@ -437,17 +469,40 @@ export function Composer(props: {
           disabled={!connected || sending}
           className="px-2 pt-1"
         />
-        {/* Picker row (node · model · effort) + attach/mic/speak + send —
-            Claude-app style, in the input shell, persisted per-conversation. */}
+        {/* Picker row (node · agent · model · effort) + attach/mic/speak + send
+            — Claude-app style, in the input shell, persisted per-conversation. */}
         <div className="flex max-md:flex-wrap items-center gap-1">
           <NodePicker />
-          {!props.nativeControls && (
+          {/* Agent picker — only when there's a real choice (>1 local agent),
+              mirroring the node picker's hide-on-single. With one agent it adds
+              only a confusing "default agent vs <that agent>" (and the legacy
+              component labels itself "model", colliding with the model picker). */}
+          {!props.nativeControls && localAgents.length > 1 && (
             <ModelPicker
               value={props.agent ?? ''}
               options={models}
               onChange={(v) => props.onSetting({ agent: v })}
               disabled={catalog.isError}
               unavailable={catalog.isError}
+            />
+          )}
+          {!props.nativeControls && modelOptions.length > 0 && (
+            <Select
+              value={props.model ?? ''}
+              options={modelOptions}
+              // Selecting a model pins the agent's harness so the spawn runs
+              // `<roster command> --model <id>` (chat.tsx resolves the rest).
+              onChange={(v) =>
+                props.onSetting(
+                  modelHarnessId ? { model: v, harnessId: modelHarnessId } : { model: v },
+                )
+              }
+              // Empty = harness default (mirrors the agent picker's "default
+              // agent"); a bare "model" reads like an unlabeled/broken control.
+              title="default model"
+              label="Model"
+              align="end"
+              className="h-8 min-w-[6rem]"
             />
           )}
           {!props.nativeControls && (
