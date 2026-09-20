@@ -54,7 +54,7 @@ export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
 /** User turn waiting to be injected into the harness (or mid-inject). */
-export type OutboundStatus = 'queued' | 'sending'
+export type OutboundStatus = 'queued' | 'sending' | 'failed'
 
 export interface OutboundItem {
   /** Same id as the optimistic SessionMessage (`optim:…`). */
@@ -101,7 +101,10 @@ interface ChatState {
    *  when the turn ends (done / assistant commit), shown as the composer's
    *  ask card until the user answers or dismisses it */
   ask: Record<string, AskQuestion[] | undefined>
-  /** outbound send queue per session — shown in the transcript as queued/sending */
+  /** Successful record moves only; flattened and never persisted. */
+  sessionAliases: Record<string, string>
+  resolveSessionKey: (sessionId: string) => string
+  /** Queued turns live in the strip; sending/failed turns also have bubbles. */
   outbound: Record<string, OutboundItem[] | undefined>
   /**
    * Sessions a registered HarnessDriver owns. Their transcript and live turn
@@ -206,9 +209,9 @@ interface ChatState {
   requeueOutbound: (sessionId: string, id: string) => void
   /** Drop from queue after inject accepted (bubble stays until WS echo). */
   dequeueOutbound: (sessionId: string, id: string) => void
-  /** Inject failed / user cancel — remove queue entry + optimistic bubble. */
+  /** Keep failed sends visible and available for manual retry. */
   failOutbound: (sessionId: string, id: string) => void
-  /** User cancel alias for a queued/sending item. */
+  /** Remove the queue entry and optimistic bubble when recalled by the user. */
   cancelOutbound: (sessionId: string, id: string) => void
   /**
    * Start (or keep) a live turn so the UI shows a typing/processing indicator
@@ -458,6 +461,8 @@ export const useChat = create<ChatState>()(
       live: {},
       liveTs: {},
       ask: {},
+      sessionAliases: {},
+      resolveSessionKey: (id) => get().sessionAliases[id] ?? id,
       outbound: {},
       harnessBound: {},
       approvals: {},
@@ -594,6 +599,14 @@ export const useChat = create<ChatState>()(
           }
           return {
             ...retarget,
+            sessionAliases: {
+              ...Object.fromEntries(
+                Object.entries(s.sessionAliases)
+                  .filter(([key]) => key !== to)
+                  .map(([key, target]) => [key, target === from ? to : target]),
+              ),
+              [from]: to,
+            },
             messages: move(s.messages),
             transcripts: move(s.transcripts),
             live: move(s.live),
@@ -728,15 +741,21 @@ export const useChat = create<ChatState>()(
         set((s) => ({
           outbound: {
             ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+            [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+              o.id === id ? { ...o, status: 'failed' as const } : o,
+            ),
           },
+        })),
+
+      cancelOutbound: (sessionId, id) => {
+        get().dequeueOutbound(sessionId, id)
+        set((s) => ({
           messages: {
             ...s.messages,
             [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
           },
-        })),
-
-      cancelOutbound: (sessionId, id) => get().failOutbound(sessionId, id),
+        }))
+      },
 
       beginLive: (sessionId, activity = 'processing…') =>
         set((s) => {
@@ -1000,6 +1019,7 @@ export const useChat = create<ChatState>()(
             liveTs: {},
             ask: {},
             outbound: {},
+            sessionAliases: {},
             harnessBound: {},
             approvals: {},
             agentStatus: {},

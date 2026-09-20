@@ -257,7 +257,7 @@ const Bubble = memo(function Bubble(props: {
   /** Deep-history row: allowed to skip offscreen layout/paint. */
   offscreenSkip?: boolean
   /** Outbound status for optimistic user turns — sending only (queued lives in QueuedStrip). */
-  outboundStatus?: 'sending'
+  outboundStatus?: 'sending' | 'failed'
 }): JSX.Element {
   const mine = props.msg.role === 'user'
   const tools = useMemo(
@@ -282,9 +282,11 @@ const Bubble = memo(function Bubble(props: {
             {props.msg.text}
           </div>
           {props.msg.text && <CopyMessage text={props.msg.text} />}
-          {props.outboundStatus === 'sending' && (
+          {props.outboundStatus && (
             <div className="mt-1 flex items-center justify-end gap-2 px-1 font-mono text-[10px] text-ink-dim">
-              <span>sending…</span>
+              <span>
+                {props.outboundStatus === 'failed' ? 'send failed — retry below' : 'sending…'}
+              </span>
             </div>
           )}
         </div>
@@ -382,7 +384,7 @@ export function Transcript(props: {
   messages: SessionMessage[]
   live?: LiveTurn
   /** optim message id → outbound sending badge */
-  outbound?: Record<string, 'sending'>
+  outbound?: Record<string, 'sending' | 'failed'>
   /** Blocked/prompt with no live turn — small line under the last message. */
   statusLine?: { text: string; tool?: string }
   /** per-harness bot accent (claude clay / grok grey / local emerald) */

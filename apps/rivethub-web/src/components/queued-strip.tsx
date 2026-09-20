@@ -11,7 +11,7 @@ export function QueuedStrip(props: {
   onInject: (id: string) => void
   onCancel: (id: string) => void
 }): JSX.Element | null {
-  const queued = props.items.filter((o) => o.status === 'queued')
+  const queued = props.items.filter((o) => o.status !== 'sending')
   if (queued.length === 0) return null
   return (
     <div className="border-t border-line bg-panel-2/40 px-4 py-1.5">
@@ -27,7 +27,7 @@ export function QueuedStrip(props: {
               className="shrink-0 text-em hover:underline"
               title="Inject this message into the harness now"
             >
-              inject
+              {item.status === 'failed' ? 'retry' : 'inject'}
             </button>
             <button
               type="button"

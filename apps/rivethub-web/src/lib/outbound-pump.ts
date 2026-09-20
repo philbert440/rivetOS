@@ -38,6 +38,7 @@ export const TURN_RETRY_ATTEMPTS = 6
 
 /** The slice of the chat store the pump drives (also the test seam). */
 export interface OutboundPumpStore {
+  resolveSessionKey?(sessionId: string): string
   queue(sessionId: string): OutboundItem[] | undefined
   liveIsBusy(sessionId: string): boolean
   live(sessionId: string): LiveTurn | undefined
@@ -94,7 +95,9 @@ export interface OutboundPump {
 }
 
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
-  const { sessionId, store } = opts
+  const { store } = opts
+  // Resolve at every read/write, including after latch waits and chained rekeys.
+  const sessionId = (): string => store.resolveSessionKey?.(opts.sessionId) ?? opts.sessionId
   let pumping = false
   /** Id of the send between markSending and inject resolution — the only
    *  item `reset(id)` will free the latch for. Undefined during the latch
@@ -113,10 +116,10 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
 
   const pump = async (pumpOpts?: { forceId?: string; interrupt?: boolean }): Promise<void> => {
     if (disposed || pumping) return
-    const q = store.queue(sessionId) ?? []
+    const q = store.queue(sessionId()) ?? []
     if (!pumpOpts?.forceId && q.some((o) => o.status === 'sending')) return
     // Real stream in flight → wait (unless user force-injects a specific id).
-    if (!pumpOpts?.forceId && store.liveIsBusy(sessionId)) return
+    if (!pumpOpts?.forceId && store.liveIsBusy(sessionId())) return
     const next = pumpOpts?.forceId
       ? q.find((o) => o.id === pumpOpts.forceId)
       : q.find((o) => o.status === 'queued')
@@ -126,22 +129,22 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     inFlight = next.id
     const gen = generation
     const superseded = (): boolean => gen !== generation
-    store.markSending(sessionId, next.id)
-    store.beginLive(sessionId, 'working…')
+    store.markSending(sessionId(), next.id)
+    store.beginLive(sessionId(), 'working…')
     try {
       await opts.inject(next.text, pumpOpts?.interrupt === true, next.attachments)
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
       if (superseded()) return
-      store.dequeue(sessionId, next.id)
+      store.dequeue(sessionId(), next.id)
       turnRetries.delete(next.id)
       inFlight = undefined
       awaitingIdle = false
       // Hold the pump until the harness's stream latches busy (see header).
-      await store.awaitBusy(sessionId, INJECT_LATCH_MS)
+      await store.awaitBusy(sessionId(), INJECT_LATCH_MS)
       if (superseded()) return
-      if (!store.liveIsBusy(sessionId)) {
-        store.clearLive(sessionId)
+      if (!store.liveIsBusy(sessionId())) {
+        store.clearLive(sessionId())
       }
     } catch (err) {
       // Superseded first: `pumping` / `inFlight` may be a newer pump()'s.
@@ -151,11 +154,11 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       if (opts.isTurnInFlight(err)) {
         // Not a failure: put the turn back in the queue and retry on the
         // next idle / turn-complete edge.
-        store.requeue(sessionId, next.id)
+        store.requeue(sessionId(), next.id)
         // Only the pre-inject placeholder goes: a real streaming turn is
         // exactly WHY the driver said no, and dropping its bubble would blank
         // the reply the user is watching.
-        if (!store.liveIsBusy(sessionId)) store.clearLive(sessionId)
+        if (!store.liveIsBusy(sessionId())) store.clearLive(sessionId())
         const attempts = (turnRetries.get(next.id) ?? 0) + 1
         turnRetries.set(next.id, attempts)
         awaitingIdle = attempts <= TURN_RETRY_ATTEMPTS
@@ -163,15 +166,15 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       }
       turnRetries.delete(next.id)
       awaitingIdle = false
-      store.fail(sessionId, next.id)
-      store.clearLive(sessionId)
+      store.fail(sessionId(), next.id)
+      store.clearLive(sessionId())
       // Try the next queued message after a failure.
       void pump().catch(() => undefined)
       throw err
     }
     pumping = false
     // Drain further queued turns when not blocked by a real stream.
-    if (!store.liveIsBusy(sessionId)) {
+    if (!store.liveIsBusy(sessionId())) {
       void pump().catch(() => undefined)
     }
   }
@@ -200,5 +203,40 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       awaitingIdle = false
       void pump().catch(() => undefined)
     },
+  }
+}
+
+/** Preserve the inject latch, retry budget and rebound sink across record moves. */
+export function createOutboundPumpRegistry(
+  store: OutboundPumpStore,
+  isTurnInFlight: OutboundPumpOptions['isTurnInFlight'],
+): (sessionId: string) => { pump: OutboundPump; sink: { current: OutboundPumpOptions['inject'] } } {
+  const entries = new Map<
+    string,
+    {
+      pump: OutboundPump
+      sink: { current: OutboundPumpOptions['inject'] }
+    }
+  >()
+  return (sessionId) => {
+    const key = store.resolveSessionKey?.(sessionId) ?? sessionId
+    for (const [original, entry] of entries) {
+      if ((store.resolveSessionKey?.(original) ?? original) === key) return entry
+    }
+    const sink = {
+      current: (() =>
+        Promise.reject(new Error('no mounted session view'))) as OutboundPumpOptions['inject'],
+    }
+    const entry = {
+      sink,
+      pump: createOutboundPump({
+        sessionId: key,
+        store,
+        inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
+        isTurnInFlight,
+      }),
+    }
+    entries.set(key, entry)
+    return entry
   }
 }

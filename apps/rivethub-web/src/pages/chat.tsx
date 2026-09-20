@@ -81,11 +81,7 @@ import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
 import { agentStatusLine } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
-import {
-  createOutboundPump,
-  type OutboundPump,
-  type OutboundPumpStore,
-} from '../lib/outbound-pump.js'
+import { createOutboundPumpRegistry, type OutboundPumpStore } from '../lib/outbound-pump.js'
 import {
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
@@ -141,8 +137,9 @@ const INTERRUPT_SETTLE_MS = 400
  *  slice it drives — reads go through getState() so the pump always sees the
  *  latest queue/live state. */
 const pumpStore: OutboundPumpStore = {
+  resolveSessionKey: (sid) => useChat.getState().resolveSessionKey(sid),
   queue: (sid) => useChat.getState().outbound[sid],
-  liveIsBusy: (sid) => useChat.getState().liveIsBusy(sid),
+  liveIsBusy: (sid) => useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid)),
   live: (sid) => useChat.getState().live[sid],
   liveTs: (sid) => useChat.getState().liveTs[sid],
   markSending: (sid, id) => useChat.getState().markOutboundSending(sid, id),
@@ -153,7 +150,7 @@ const pumpStore: OutboundPumpStore = {
   clearLive: (sid) => useChat.getState().clearLive(sid),
   awaitBusy: (sid, ms) =>
     new Promise((resolve) => {
-      if (useChat.getState().liveIsBusy(sid)) {
+      if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid))) {
         resolve()
         return
       }
@@ -166,56 +163,15 @@ const pumpStore: OutboundPumpStore = {
         resolve()
       }
       const unsub = useChat.subscribe(() => {
-        if (useChat.getState().liveIsBusy(sid)) finish()
+        if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid))) finish()
       })
       const timer = setTimeout(finish, ms)
     }),
 }
 
-type InjectSink = (
-  text: string,
-  interrupt: boolean,
-  attachments?: import('@rivetos/types').UserTurn['attachments'],
-) => Promise<void>
-
-/**
- * One outbound pump per conversation, for the app lifetime. ActiveSession
- * remounts on every session switch (it is keyed by session id), and a
- * per-mount pump drops the single-flight/inject latch — the only
- * double-inject guard — exactly in the window it exists to protect: the old
- * pump keeps latching (its trailing clearLive nukes whatever the new pump
- * started) while the new pump sees a non-busy placeholder and injects.
- * The view rebinds the inject sink on every (re)mount;
- * nothing disposes these (dispose is the terminal teardown, exercised by the
- * pump tests).
- */
-const outboundPumps = new Map<string, { pump: OutboundPump; sink: { current: InjectSink } }>()
-
-function outboundPumpFor(sessionId: string): {
-  pump: OutboundPump
-  sink: { current: InjectSink }
-} {
-  let entry = outboundPumps.get(sessionId)
-  if (!entry) {
-    // Rejects until a mounted view binds its inject: a pump firing with no
-    // view (a retry timer outliving the component) must fail the bubble
-    // visibly, never report a silent success and drop the message.
-    const sink: { current: InjectSink } = {
-      current: () => Promise.reject(new Error('no mounted session view')),
-    }
-    entry = {
-      sink,
-      pump: createOutboundPump({
-        sessionId,
-        store: pumpStore,
-        inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
-        isTurnInFlight,
-      }),
-    }
-    outboundPumps.set(sessionId, entry)
-  }
-  return entry
-}
+// The registry follows successful store rekeys and keeps the old pump's latch.
+// ActiveSession remounts only rebind its sink to the new session view.
+const outboundPumpFor = createOutboundPumpRegistry(pumpStore, isTurnInFlight)
 
 // A draft id IS a UUID so it can become the harness's native session id
 // (claude --session-id requires a UUID). It stays bare until the control plane
@@ -1735,7 +1691,9 @@ function ActiveSession(props: {
   const outboundStatus = useMemo(
     () =>
       Object.fromEntries(
-        outbound.filter((o) => o.status === 'sending').map((o) => [o.id, 'sending' as const]),
+        outbound
+          .filter((o) => o.status !== 'queued')
+          .map((o) => [o.id, o.status as 'sending' | 'failed']),
       ),
     [outbound],
   )
