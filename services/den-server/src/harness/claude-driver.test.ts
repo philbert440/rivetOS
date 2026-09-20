@@ -134,6 +134,12 @@ describe('capability flags are honest', () => {
     expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
 
+  it('advertises launchModel (spawn-time model choice) but not turnOptions (#814)', () => {
+    const caps = makeDriver().driver.capabilities
+    expect(caps.launchModel).toBe(true)
+    expect(caps.turnOptions ?? false).toBe(false)
+  })
+
   it('drops interrupt/resume when den terminals are off', () => {
     const { driver } = makeDriver({ withPty: false })
     expect(driver.capabilities.interrupt).toBe(false)

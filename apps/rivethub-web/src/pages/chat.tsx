@@ -1,6 +1,7 @@
 import {
   conversationModelOptions,
   conversationProtocolOwnership,
+  spawnModelOptions,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
@@ -1172,6 +1173,16 @@ function ActiveSession(props: {
     protocolOwned,
     item?.model,
   )
+  // Spawn-time model (#814): before the conversation binds, a harness that
+  // applies `--model` at launch (`launchModel`, e.g. claude-code) gets a model
+  // picker sourced from its own sheet; the pick rides `settings.model` into
+  // `termSpawn` (already server-validated). Once bound, the model is fixed.
+  const spawnOptions = spawnModelOptions(
+    nativeHarnessId,
+    remoteRegistry.data?.harnesses,
+    settings?.model,
+    gate.bound,
+  )
   const setSetting = useChatSettings((s) => s.set)
   const retainedModel = turnOptions.retainedPick?.model
   const retainedEffort = turnOptions.retainedPick?.effort
@@ -1844,6 +1855,8 @@ function ActiveSession(props: {
                     setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
                 : undefined
             }
+            spawnOptions={spawnOptions}
+            onSpawnPick={(model) => setSetting(settingsKey, { model })}
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}

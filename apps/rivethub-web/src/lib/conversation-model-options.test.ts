@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   conversationModelOptions as resolveOptions,
   conversationProtocolOwnership,
+  spawnModelOptions,
   type ConversationTurnPick,
 } from './conversation-model-options.js'
 import { spawnModelEffort } from './harness-options.js'
@@ -111,6 +112,15 @@ describe('per-conversation settings', () => {
     expect(mergeChatSettings(current, { harnessId: 'grok-build' }).turnPick).toBeUndefined()
     expect(mergeChatSettings(current, { agent: 'codex' }).turnPick).toEqual(pick)
     expect(mergeChatSettings(current, { effort: 'high' }).turnPick).toEqual(pick)
+  })
+  it('a harness/agent change drops a stale spawn model, but a co-set model wins (#814)', () => {
+    // Switch harness alone → the previous harness's --model is dropped.
+    expect(mergeChatSettings(launch, { harnessId: 'grok-build' }).model).toBeUndefined()
+    expect(mergeChatSettings(launch, { agent: 'grok' }).model).toBeUndefined()
+    // A patch that stamps harnessId + model together (opening a preset) keeps the new model.
+    expect(mergeChatSettings(launch, { harnessId: 'claude-code', model: 'opus' }).model).toBe('opus')
+    // An unrelated change leaves the model in place.
+    expect(mergeChatSettings(launch, { effort: 'high' }).model).toBe('launch-model')
   })
 })
 
@@ -271,5 +281,51 @@ describe('ownership query lifecycle', () => {
     expect(current.turnPick).toEqual(pick)
     expect(mergeChatSettings(current, { agent: 'grok' }).turnPick).toBeUndefined()
     expect(mergeChatSettings(current, { harnessId: 'grok-build' }).turnPick).toBeUndefined()
+  })
+})
+
+describe('spawnModelOptions (#814)', () => {
+  const spawnRegistry = [
+    {
+      harnessId: 'claude-code' as const,
+      capabilities: {
+        launchModel: true,
+        models: [
+          { id: 'fable', label: 'Fable 5.1', default: true },
+          { id: 'opus', label: 'Opus 5' },
+          { id: 'sonnet', label: 'Sonnet 5' },
+        ],
+      },
+    },
+    // A turn-switching harness with models but NOT launchModel: no spawn picker.
+    {
+      harnessId: 'codex' as const,
+      capabilities: { turnOptions: true, models: [{ id: 'a', label: 'Model A' }] },
+    },
+  ]
+
+  it('lists the harness sheet before bind, with the default labelled', () => {
+    const r = spawnModelOptions('claude-code', spawnRegistry, undefined, false)
+    expect(r.models).toEqual([
+      { value: 'fable', label: 'Fable 5.1' },
+      { value: 'opus', label: 'Opus 5' },
+      { value: 'sonnet', label: 'Sonnet 5' },
+    ])
+    expect(r.value).toBe('')
+    expect(r.defaultModelLabel).toBe('Harness default (Fable 5.1)')
+    // A stored on-sheet model is reflected as the selected value.
+    expect(spawnModelOptions('claude-code', spawnRegistry, 'opus', false).value).toBe('opus')
+  })
+
+  it('hides once bound, without launchModel, or for another/absent harness', () => {
+    expect(spawnModelOptions('claude-code', spawnRegistry, 'opus', true).models).toEqual([])
+    expect(spawnModelOptions('codex', spawnRegistry, 'a', false).models).toEqual([])
+    expect(spawnModelOptions(undefined, spawnRegistry, 'opus', false).models).toEqual([])
+    expect(spawnModelOptions('claude-code', undefined, 'opus', false).models).toEqual([])
+  })
+
+  it('falls back to the default when the stored model is off this sheet', () => {
+    // e.g. a value left over from another harness — never shown as selected.
+    expect(spawnModelOptions('claude-code', spawnRegistry, 'grok-4.6', false).value).toBe('')
   })
 })

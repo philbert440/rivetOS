@@ -68,6 +68,17 @@ export type HarnessCapabilities = {
   listSessions: boolean
   /** Native per-turn model/effort settings (not CLI spawn flags). */
   turnOptions?: boolean
+  /**
+   * The harness honors a model chosen at SPAWN — its `modelFlag` (`--model`)
+   * is appended from `models` at launch and fixed for the session's life.
+   * Distinct from `turnOptions` (live per-turn switching); a harness may
+   * declare both, one, or neither. An explicit capability, set by the driver —
+   * NOT inferred from `models` + `modelFlag` — so a UI shows a spawn-time model
+   * picker only for a harness that actually applies the choice (e.g.
+   * `claude-code`, whose `turnOptions` is absent). See den `POST /term { model }`,
+   * which already validates the id against this sheet.
+   */
+  launchModel?: boolean
   /** Structured staged image inputs. */
   imageAttachments?: boolean
   /**

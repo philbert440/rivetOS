@@ -82,6 +82,14 @@ describe('claudeSheet', () => {
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
     expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
+
+  it('declares launchModel — the model is chosen at spawn (#814)', () => {
+    // claude-code takes --model at launch and has no per-turn switch, so a
+    // spawn-time picker (not turnOptions) is the right surface.
+    expect(claudeSheet().launchModel).toBe(true)
+    // A fixed-model sheet does not: codex has no model choice at all.
+    expect(codexSheet().launchModel).toBeUndefined()
+  })
 })
 
 describe('grokSheet', () => {

@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /term/inject` writes only into sessions whose roster entry is an agent harness (`room: true`). Terminal-only sessions (`room: false`) answer 409 `session is not an agent harness` and nothing is written to the PTY (#810). Custom harness entries must set `room: true` to receive chat; terminal-only entries are typed through the terminal. Typing into a shell remains the terminal websocket.
 - When a herdr-backed coding agent exits, den reaps the PTY and mux session after a short grace so chat inject 409s instead of writing into the leftover shell (#791). Adopted harness panes stay closed to inject until a pane-scoped `pane list`/`agent list` probe (or a working|idle|blocked frame, or `pane.agent_detected` with a live agent) proves a live agent; a fresh create stays not-ready and re-probes instead of killing a still-booting harness; `POST /term` during the grace mints a new pty immediately.
 - Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay). The first buffered inject on an agent pane is confirmed only by a herdr `working` frame; unconfirmed turns are recorded on the pty and never retried (#796).
+- Harness capability `launchModel`: a harness that applies its `modelFlag` (`--model`) at spawn declares it explicitly (claude-code sets it; it has no per-turn `turnOptions`). Distinct from `turnOptions`; the spawn model id is still validated against the harness sheet by `POST /term { model }` (#814).
 
 ### RivetHub client
 
 - Composer model picker for conversations whose harness supports choosing a model per turn.
+- `apps/rivethub-web`: spawn-time model picker for a not-yet-bound conversation whose harness declares `launchModel` (e.g. claude-code) — sourced only from that harness's own sheet, riding `termSpawn.model`, and hidden once the session binds. A harness/agent change drops a stale spawn model so it can't launch the next harness (#814).
 - `apps/rivethub-web`: prevent sidebar and composer node pickers flashing while discovery is pending or failed with one saved node; keep multiple saved nodes available immediately (#809).
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
 

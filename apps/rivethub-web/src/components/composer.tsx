@@ -66,6 +66,10 @@ export function Composer(props: {
   nativeControls?: boolean
   turnOptions?: ReturnType<typeof conversationModelOptions>
   onTurnPick?: (pick: { model?: string; effort?: string }) => void
+  /** Spawn-time model picker (#814): a not-yet-bound conversation whose harness
+   *  applies `--model` at launch (`launchModel`). Empty models = hidden. */
+  spawnOptions?: { models: SelectOption[]; value: string; defaultModelLabel: string }
+  onSpawnPick?: (model: string | undefined) => void
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
@@ -455,6 +459,20 @@ export function Composer(props: {
           )}
           {!props.nativeControls && (
             <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          )}
+          {!!props.spawnOptions?.models.length && (
+            <Select
+              value={props.spawnOptions.value}
+              options={[
+                { value: '', label: props.spawnOptions.defaultModelLabel },
+                ...props.spawnOptions.models,
+              ]}
+              onChange={(model) => props.onSpawnPick?.(model || undefined)}
+              label="Model"
+              title={`Model: ${props.spawnOptions.models.find((m) => m.value === props.spawnOptions?.value)?.label ?? props.spawnOptions.defaultModelLabel}`}
+              aria-label="Model"
+              className="max-w-[12rem] min-w-0 rounded-full"
+            />
           )}
           {!!props.turnOptions?.models.length && (
             <Select

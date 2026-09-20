@@ -8,7 +8,38 @@ export interface ConversationTurnPick {
   effort?: string
 }
 
-type Sheet = Pick<HarnessCapabilities, 'turnOptions' | 'models' | 'efforts'>
+type Sheet = Pick<HarnessCapabilities, 'turnOptions' | 'launchModel' | 'models' | 'efforts'>
+
+/**
+ * Spawn-time model options for a conversation not yet bound to a harness
+ * session (#814). Distinct from {@link conversationModelOptions}, which is the
+ * per-turn (`turnOptions`) surface: this is the model chosen ONCE, at launch,
+ * for a harness that declares `launchModel` (e.g. claude-code, whose
+ * `turnOptions` is absent). Sourced only from the conversation's own resolved
+ * harness sheet, so it can never list another harness's models.
+ *
+ * The picker is live only while `!bound` — once the session exists its `--model`
+ * is fixed. The selected `value` falls back to the harness default when the
+ * stored `currentModel` is not on this sheet (e.g. left over from another
+ * harness); the den independently omits an off-sheet id at spawn, so a stale
+ * value can never launch the wrong model.
+ */
+export function spawnModelOptions(
+  harnessId: HarnessId | undefined,
+  registry: readonly { harnessId: HarnessId; capabilities: Sheet }[] | undefined,
+  currentModel: string | undefined,
+  bound: boolean,
+): { models: SelectOption[]; value: string; defaultModelLabel: string } {
+  const sheet = registry?.find((row) => row.harnessId === harnessId)?.capabilities
+  const models = !bound && sheet?.launchModel ? (sheet.models ?? []) : []
+  const value = currentModel && models.some((m) => m.id === currentModel) ? currentModel : ''
+  const def = models.find((m) => m.default) ?? models[0]
+  return {
+    models: models.map((m) => ({ value: m.id, label: m.label })),
+    value,
+    defaultModelLabel: def ? `Harness default (${def.label})` : 'Harness default',
+  }
+}
 
 /** Query readiness comes from the caller, never from absent row fields. */
 export function conversationProtocolOwnership({

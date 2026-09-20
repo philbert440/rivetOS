@@ -35,7 +35,18 @@ export function mergeChatSettings(
     current !== undefined &&
     (('agent' in patch && patch.agent !== current.agent) ||
       ('harnessId' in patch && patch.harnessId !== current.harnessId))
-  return { ...DEFAULT, ...current, ...patch, ...(changed ? { turnPick: undefined } : {}) }
+  // A harness/agent change also drops a stale spawn-time model (#814) so it
+  // can't launch the next harness with the previous one's `--model` — unless
+  // this same patch sets a model (e.g. opening a preset stamps harnessId + model
+  // together), which must win.
+  const clearModel = changed && !('model' in patch)
+  return {
+    ...DEFAULT,
+    ...current,
+    ...patch,
+    ...(changed ? { turnPick: undefined } : {}),
+    ...(clearModel ? { model: undefined } : {}),
+  }
 }
 
 const KEY = 'rivethub.chatSettings'

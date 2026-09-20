@@ -448,6 +448,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     else delete this.declared.modelFlag
     if (sheet.effortFlag) this.declared.effortFlag = sheet.effortFlag
     else delete this.declared.effortFlag
+    if (sheet.launchModel) this.declared.launchModel = true
+    else delete this.declared.launchModel
   }
 
   // -- capabilities (runtime-truthed) -----------------------------------------

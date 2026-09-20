@@ -37,6 +37,12 @@ export interface ModelSheet {
   modelFlag?: string
   effortFlag?: string
   /**
+   * The harness applies a `modelFlag` model chosen at spawn (fixed for the
+   * session). Set explicitly per sheet — not inferred from `models` +
+   * `modelFlag` — and surfaced as `HarnessCapabilities.launchModel`.
+   */
+  launchModel?: boolean
+  /**
    * Effort id → CLI flag value. Present + empty string omits the flag
    * (opencode medium → no `--variant`). Absent key → use the effort id.
    */
@@ -198,6 +204,9 @@ export function claudeSheet(): ModelSheet {
     efforts: CLAUDE_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--effort',
+    // Claude Code takes `--model <id>` at launch and has no per-turn switch
+    // (`turnOptions` absent), so the model is chosen once, at spawn.
+    launchModel: true,
   }
 }
 
