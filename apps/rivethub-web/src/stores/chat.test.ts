@@ -98,6 +98,26 @@ describe('lastActive reducer', () => {
     expect(useChat.getState().lastActive?.sessionId).toBe('claude-code:abc')
   })
 
+  it('rekey drops an in-flight sending item but moves queued ones (first-turn "stuck sending" fix)', () => {
+    // The bare draft is mid-send when the control plane claims it: the inject
+    // already went to the resolvable session, but the pump dequeues under the
+    // retired key and the new key's pump ignores a `sending` item — so without
+    // dropping it, the first message hangs at "sending" forever.
+    useChat.setState({
+      opened: ['bare-uuid'],
+      outbound: {
+        'bare-uuid': [
+          { id: 'optim:1', text: 'first', status: 'sending' },
+          { id: 'optim:2', text: 'next', status: 'queued' },
+        ],
+      },
+    })
+    useChat.getState().rekey('bare-uuid', 'claude-code:bare-uuid')
+    const out = useChat.getState().outbound
+    expect(out['bare-uuid']).toBeUndefined()
+    expect(out['claude-code:bare-uuid']).toEqual([{ id: 'optim:2', text: 'next', status: 'queued' }])
+  })
+
   it('removeDraft drops a pointer at the discarded draft', () => {
     useChat.getState().addDraft('draft-1')
     useChat.getState().setActive('draft-1')

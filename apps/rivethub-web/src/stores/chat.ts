@@ -592,6 +592,22 @@ export const useChat = create<ChatState>()(
             const { [from]: value, ...rest } = m
             return { ...rest, [to]: value }
           }
+          // Outbound is special during a rekey: an in-flight `sending` item's
+          // inject already went to the resolvable (bare) session, so its message
+          // reaches the harness even though the key rekeyed under it mid-send.
+          // But the pump that fired it dequeues under the RETIRED key (a no-op
+          // now), and the new key's pump refuses to touch a `sending` item — so
+          // it hangs at "sending" forever (the first turn of every fresh chat).
+          // Drop it: the committed turn supersedes its optimistic bubble. Queued
+          // items must still move so the new pump sends them.
+          const moveOutbound = (
+            m: Record<string, OutboundItem[] | undefined>,
+          ): Record<string, OutboundItem[] | undefined> => {
+            if (!(from in m)) return m
+            const { [from]: value, ...rest } = m
+            const kept = (value ?? []).filter((o) => o.status !== 'sending')
+            return { ...rest, [to]: kept }
+          }
           return {
             ...retarget,
             messages: move(s.messages),
@@ -599,7 +615,7 @@ export const useChat = create<ChatState>()(
             live: move(s.live),
             liveTs: move(s.liveTs),
             ask: move(s.ask),
-            outbound: move(s.outbound),
+            outbound: moveOutbound(s.outbound),
             harnessBound: move(s.harnessBound),
             approvals: move(s.approvals),
             agentStatus: move(s.agentStatus),
