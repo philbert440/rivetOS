@@ -66,7 +66,7 @@ const peer: MeshOverview = {
   updatedAt: 2,
   nodes: [{ id: 'beta', name: B.name, denUrl: B.baseUrl, online: true, sessions: 0 }],
 }
-let useConnection: typeof import('../stores/connection.js')['useConnection']
+let useConnection: (typeof import('../stores/connection.js'))['useConnection']
 const controls: Record<string, ComponentType> = {}
 let client: QueryClient
 
@@ -101,7 +101,9 @@ for (const name of ['switcher', 'picker']) {
       client.setQueryData(['mesh', useConnection.getState().baseUrl], data)
     }
     function expectVisible(): void {
-      expect(render()).toContain(name === 'switcher' ? 'aria-label="Current node:' : 'aria-label="node:')
+      expect(render()).toContain(
+        name === 'switcher' ? 'aria-label="Current node:' : 'aria-label="node:',
+      )
     }
 
     it('hides for the sole saved active node after successful discovery', () => {
@@ -144,20 +146,45 @@ for (const name of ['switcher', 'picker']) {
       expectVisible()
     })
 
-    it('stays visible while discovery is loading, then hides on success', () => {
-      expectVisible()
-      discover()
+    it('stays hidden while discovery is pending with one saved node', async () => {
+      let resolve!: (data: MeshOverview) => void
+      const request = vi.spyOn(useConnection.getState().gateway, 'meshOverview').mockReturnValue(
+        new Promise<MeshOverview>((done) => {
+          resolve = done
+        }),
+      )
       expect(render()).toBe('')
+      const observer = new QueryObserver(client, captured.options!)
+      const unsubscribe = observer.subscribe(() => {})
+      try {
+        await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+        expect(client.getQueryState(['mesh', A.baseUrl])?.status).toBe('pending')
+        expect(render()).toBe('')
+        resolve(peer)
+        await vi.waitFor(() =>
+          expect(client.getQueryState(['mesh', A.baseUrl])?.status).toBe('success'),
+        )
+        expectVisible()
+      } finally {
+        unsubscribe()
+      }
     })
 
-    it('stays visible when discovery fails', async () => {
+    it('shows two saved nodes immediately while discovery is pending', () => {
+      useConnection.setState({ roster: [A, B] })
+      expectVisible()
+    })
+
+    it.each([1, 2])('handles discovery failure with %i saved nodes', async (count) => {
+      useConnection.setState({ roster: [A, B].slice(0, count) })
       await client
         .fetchQuery({
           queryKey: ['mesh', A.baseUrl],
           queryFn: () => Promise.reject(new Error('unavailable')),
         })
         .catch(() => undefined)
-      expectVisible()
+      if (count === 1) expect(render()).toBe('')
+      else expectVisible()
     })
 
     it('hides an empty roster only on the app origin', () => {
