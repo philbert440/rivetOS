@@ -21,10 +21,47 @@ import pg from 'pg'
 
 const { Client } = pg
 
+/** Session-local; a blocked ALTER/CREATE fails fast instead of queueing the fleet. */
+export const MIGRATION_LOCK_TIMEOUT = '3s'
+
+/** Five attempts, sleeps of 0+5+10+20+25s ≈ 1 min of backoff. */
+const MIGRATION_LOCK_BACKOFF_MS: readonly number[] = [0, 5_000, 10_000, 20_000, 25_000]
+
 export interface Migration {
   name: string
   path: string
   sql: string
+}
+
+function isLockNotAvailable(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false
+  return err.code === '55P03'
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+/** Postgres interval literal only — interpolated into SET lock_timeout. */
+export function assertLockTimeout(value: string): string {
+  if (!/^\d+(\.\d+)?(us|ms|s|min|h|d)$/i.test(value)) {
+    throw new Error(`invalid lock_timeout: ${value}`)
+  }
+  return value
+}
+
+export async function applySessionGuards(
+  client: pg.Client,
+  timeout: string = MIGRATION_LOCK_TIMEOUT,
+): Promise<void> {
+  const lockTimeout = assertLockTimeout(timeout)
+  await client.query(`SET lock_timeout = '${lockTimeout}'`)
+}
+
+export async function resetSessionGuards(client: pg.Client): Promise<void> {
+  await client.query('RESET lock_timeout')
 }
 
 export function listMigrations(migrationsDir: string): Migration[] {
@@ -39,7 +76,12 @@ export function listMigrations(migrationsDir: string): Migration[] {
     })
 }
 
-async function ensureMigrationsTable(client: pg.Client): Promise<void> {
+export async function ensureMigrationsTable(client: pg.Client): Promise<void> {
+  // Existence check first — CREATE TABLE IF NOT EXISTS still takes a lock.
+  const existing = await client.query<{ t: string | null }>(
+    `SELECT to_regclass('_rivetos_migrations') AS t`,
+  )
+  if (existing.rows[0]?.t) return
   await client.query(`
     CREATE TABLE IF NOT EXISTS _rivetos_migrations (
       name        TEXT PRIMARY KEY,
@@ -56,22 +98,43 @@ async function getApplied(client: pg.Client): Promise<Set<string>> {
   return new Set(res.rows.map((r) => r.name))
 }
 
-async function apply(client: pg.Client, migration: Migration): Promise<void> {
+export async function applyMigration(
+  client: pg.Client,
+  migration: Migration,
+  opts: { sleep?: (ms: number) => Promise<void>; backoffMs?: readonly number[] } = {},
+): Promise<void> {
   console.log(`[migrate] applying ${migration.name}`)
-  // DDL inside an explicit transaction; if a migration ever needs
-  // non-transactional execution, split it into a separate file.
-  await client.query('BEGIN')
-  try {
-    await client.query(migration.sql)
-    await client.query('INSERT INTO _rivetos_migrations (name) VALUES ($1)', [migration.name])
-    await client.query('COMMIT')
-    console.log(`[migrate]   ✓ ${migration.name} applied`)
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined)
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(`[migrate]   ✗ ${migration.name} failed: ${msg}`)
-    throw err
+  const sleep = opts.sleep ?? defaultSleep
+  const backoffMs = opts.backoffMs ?? MIGRATION_LOCK_BACKOFF_MS
+  let lastErr: unknown
+  for (let attempt = 0; attempt < backoffMs.length; attempt++) {
+    const delay = backoffMs[attempt] ?? 0
+    if (delay > 0) await sleep(delay)
+    // DDL inside an explicit transaction; if a migration ever needs
+    // non-transactional execution, split it into a separate file.
+    await client.query('BEGIN')
+    try {
+      await client.query(migration.sql)
+      await client.query('INSERT INTO _rivetos_migrations (name) VALUES ($1)', [migration.name])
+      await client.query('COMMIT')
+      console.log(`[migrate]   ✓ ${migration.name} applied`)
+      return
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      lastErr = err
+      if (isLockNotAvailable(err) && attempt < backoffMs.length - 1) {
+        console.warn(
+          `[migrate]   lock_timeout on ${migration.name} ` +
+            `(attempt ${attempt + 1}/${backoffMs.length}); retrying with backoff`,
+        )
+        continue
+      }
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[migrate]   ✗ ${migration.name} failed: ${msg}`)
+      throw err
+    }
   }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
 }
 
 export interface RunOptions {
@@ -91,6 +154,7 @@ export async function run(opts: RunOptions): Promise<void> {
   await client.connect()
 
   try {
+    await applySessionGuards(client)
     await ensureMigrationsTable(client)
     const applied = await getApplied(client)
 
@@ -119,11 +183,12 @@ export async function run(opts: RunOptions): Promise<void> {
     console.log(`[migrate] ${applied.size} applied, ${pending.length} pending`)
 
     for (const m of pending) {
-      await apply(client, m)
+      await applyMigration(client, m)
     }
 
     console.log(`[migrate] done — ${pending.length} migration(s) applied`)
   } finally {
+    await resetSessionGuards(client).catch(() => undefined)
     await client.end()
   }
 }
