@@ -102,12 +102,23 @@ export async function withCaptureClient<T>(
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
   const pool = createCapturePool(pgUrl)
-  const client = await pool.connect()
+  let client: PoolClient | undefined
+  let releaseErr: Error | undefined
   try {
+    client = await pool.connect()
     await applyCaptureGuards(client)
     return await fn(client)
+  } catch (err) {
+    releaseErr = err instanceof Error ? err : new Error(String(err))
+    throw err
   } finally {
-    client.release()
+    if (client) {
+      try {
+        client.release(releaseErr)
+      } catch {
+        /* ignore — pool.end still runs */
+      }
+    }
     livePools.delete(pool)
     await pool.end().catch(() => undefined)
   }
@@ -926,6 +937,12 @@ export interface HookEventOptions {
   pgUrl?: string
   /** herdr pane identity — see IngestOptions.herdr. */
   herdr?: HerdrPaneContext
+  /**
+   * Stable per-spool key (basename stem). A retried hook event after COMMIT
+   * but before spool delete, or a double-claimed leftover, must not insert
+   * another ros_messages row — ingestHookEvent has no uuid/multiset dedup.
+   */
+  idempotencyKey?: string
 }
 
 export interface HookEventResult {
@@ -1033,13 +1050,41 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
         taskId: opts.taskId,
       })
 
+      if (opts.idempotencyKey) {
+        const dup = await client.query(
+          `SELECT 1 FROM ros_messages
+            WHERE conversation_id = $1 AND metadata->>'ingest_key' = $2
+            LIMIT 1`,
+          [conv.id, opts.idempotencyKey],
+        )
+        if (dup.rows.length > 0) {
+          await client.query(
+            `UPDATE ros_conversations SET updated_at = now(), settings = $2 WHERE id = $1`,
+            [conv.id, JSON.stringify(settings)],
+          )
+          await client.query('COMMIT')
+          return {
+            sessionKey,
+            conversationId: conv.id,
+            created: conv.created,
+            inserted: 0,
+            skipped: 'duplicate ingest_key',
+          }
+        }
+      }
+
       await insertMessage(client, conv.id, {
         role: row.role,
         content: row.content,
         toolName: row.toolName,
         toolArgs: row.toolArgs,
         toolResult: row.toolResult,
-        metadata: { source: 'claude-code-hook', hook_event: event, ...herdrMeta(opts.herdr) },
+        metadata: {
+          source: 'claude-code-hook',
+          hook_event: event,
+          ...(opts.idempotencyKey ? { ingest_key: opts.idempotencyKey } : {}),
+          ...herdrMeta(opts.herdr),
+        },
       })
 
       await client.query(

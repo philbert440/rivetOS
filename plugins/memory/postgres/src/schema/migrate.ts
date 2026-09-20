@@ -44,11 +44,20 @@ function defaultSleep(ms: number): Promise<void> {
   })
 }
 
+/** Postgres interval literal only — interpolated into SET lock_timeout. */
+export function assertLockTimeout(value: string): string {
+  if (!/^\d+(\.\d+)?(us|ms|s|min|h|d)$/i.test(value)) {
+    throw new Error(`invalid lock_timeout: ${value}`)
+  }
+  return value
+}
+
 export async function applySessionGuards(
   client: pg.Client,
   timeout: string = MIGRATION_LOCK_TIMEOUT,
 ): Promise<void> {
-  await client.query(`SET lock_timeout = '${timeout}'`)
+  const lockTimeout = assertLockTimeout(timeout)
+  await client.query(`SET lock_timeout = '${lockTimeout}'`)
 }
 
 export async function resetSessionGuards(client: pg.Client): Promise<void> {

@@ -2,17 +2,31 @@
  * Hook worker: deadline, spool retain/retry/drop. Ingest is injected — no DB.
  */
 
-import { mkdtempSync, rmSync, writeFileSync, existsSync, utimesSync, readdirSync } from 'node:fs'
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  utimesSync,
+  readdirSync,
+  symlinkSync,
+  statSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   armWorkerDeadline,
+  claimSpool,
   ingestSpoolFile,
+  isDirectCli,
+  main,
   runWorker,
   spoolAttempt,
   sweepStaleSpools,
   withSpoolAttempt,
+  writeSpoolPayload,
   DEFAULT_WORKER_DEADLINE_MS,
 } from './hooks.js'
 
@@ -46,6 +60,11 @@ describe('spoolAttempt / withSpoolAttempt', () => {
     expect(spoolAttempt('/tmp/x.a3.json')).toBe(3)
     expect(spoolAttempt('/tmp/legacy.json')).toBe(1)
     expect(withSpoolAttempt('/tmp/x.a1.json', 2)).toBe('/tmp/x.a2.json')
+  })
+
+  it('strips a claim suffix before reading or bumping the attempt', () => {
+    expect(spoolAttempt('/tmp/x.a1.json.claim.12.ab9x')).toBe(1)
+    expect(withSpoolAttempt('/tmp/x.a1.json.claim.12.ab9x', 2)).toBe('/tmp/x.a2.json')
   })
 })
 
@@ -204,3 +223,121 @@ describe('runWorker', () => {
     expect(existsSync(stale)).toBe(false)
   })
 })
+
+describe('claimSpool', () => {
+  it('renames the file; a second claim loses the race', () => {
+    const dir = tempDir()
+    const file = writeSpool(dir, 'x.a1.json', promptPayload)
+    const claimed = claimSpool(file)
+    expect(claimed).not.toBeNull()
+    expect(existsSync(file)).toBe(false)
+    expect(existsSync(claimed!)).toBe(true)
+    expect(claimSpool(file)).toBeNull()
+    expect(claimSpool(claimed!)).toBe(claimed)
+  })
+})
+
+describe('ingestSpoolFile claim', () => {
+  it('does not ingest when another worker already claimed the file', async () => {
+    const dir = tempDir()
+    const file = writeSpool(dir, 'x.a1.json', promptPayload)
+    const claimed = claimSpool(file)
+    let calls = 0
+    await ingestSpoolFile(file, {
+      ingestHookEvent: async () => {
+        calls++
+        return { sessionKey: 'k', conversationId: 'c', created: true, inserted: 1 }
+      },
+      log: () => undefined,
+    })
+    expect(calls).toBe(0)
+    expect(existsSync(claimed!)).toBe(true)
+  })
+
+  it('passes a stable spool-stem idempotency key to ingestHookEvent', async () => {
+    const dir = tempDir()
+    const file = writeSpool(dir, 'abc123.a1.json', promptPayload)
+    let key: string | undefined
+    await ingestSpoolFile(file, {
+      ingestHookEvent: async (opts) => {
+        key = opts.idempotencyKey
+        return { sessionKey: 'k', conversationId: 'c', created: true, inserted: 1 }
+      },
+      log: () => undefined,
+    })
+    expect(key).toBe('abc123')
+  })
+})
+
+describe('writeSpoolPayload permissions', () => {
+  it('creates the directory 0700 and the file 0600', () => {
+    const dir = tempDir()
+    const file = writeSpoolPayload(promptPayload, dir)
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    expect(existsSync(file)).toBe(true)
+  })
+})
+
+describe('isDirectCli', () => {
+  const hooksEntry = fileURLToPath(new URL('./hooks.ts', import.meta.url))
+
+  it('is true for a symlink to the entry (published bin layout)', () => {
+    const dir = tempDir()
+    const link = join(dir, 'rivetos-claude-capture')
+    symlinkSync(hooksEntry, link)
+    expect(isDirectCli(link, hooksEntry)).toBe(true)
+    expect(isDirectCli(link)).toBe(true)
+  })
+
+  it('is true for the direct path', () => {
+    expect(isDirectCli(hooksEntry, hooksEntry)).toBe(true)
+    expect(isDirectCli(hooksEntry)).toBe(true)
+  })
+
+  it('is false when argv[1] is absent', () => {
+    expect(isDirectCli(undefined, hooksEntry)).toBe(false)
+  })
+
+  it('is false for a different path', () => {
+    const dir = tempDir()
+    const other = join(dir, 'other.js')
+    writeFileSync(other, '')
+    expect(isDirectCli(other, hooksEntry)).toBe(false)
+  })
+
+  it('falls back to literal comparison when realpath throws', () => {
+    const missing = join(tempDir(), 'gone.js')
+    expect(isDirectCli(missing, missing)).toBe(true)
+    expect(isDirectCli(missing, hooksEntry)).toBe(false)
+  })
+})
+
+describe('main', () => {
+  it('importing the module does not run main', () => {
+    // This file imported ./hooks.js at load. If main() had run it would have
+    // consumed stdin or called process.exit. Vitest argv[1] is not this module.
+    expect(typeof main).toBe('function')
+    expect(isDirectCli(process.argv[1])).toBe(false)
+  })
+
+  it('--status (direct path) prints a non-silent result', async () => {
+    const prev = process.argv
+    process.argv = [prev[0] ?? 'node', prev[1] ?? hooksArgv(), '--status']
+    const logs: string[] = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg: unknown) => {
+      logs.push(String(msg))
+    })
+    try {
+      await main()
+    } finally {
+      spy.mockRestore()
+      process.argv = prev
+    }
+    expect(logs.join('\n')).toMatch(/installed|Capture/i)
+  })
+})
+
+function hooksArgv(): string {
+  return fileURLToPath(new URL('./hooks.ts', import.meta.url))
+}

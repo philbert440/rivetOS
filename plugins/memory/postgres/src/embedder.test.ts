@@ -4,7 +4,12 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { EMBEDDER_LOCK_BACKOFF_MS, ensureEmbedderSchema, isLockNotAvailable } from './embedder.js'
+import {
+  assertLockTimeout,
+  EMBEDDER_LOCK_BACKOFF_MS,
+  ensureEmbedderSchema,
+  isLockNotAvailable,
+} from './embedder.js'
 
 type QueryFn = (sql: string) => Promise<{ rows: unknown[] }>
 
@@ -112,8 +117,8 @@ describe('ensureEmbedderSchema', () => {
       }),
     ).resolves.toBeUndefined()
     const alters = clientSql.filter((s) => /ALTER TABLE/i.test(s))
-    // 6 columns × 5 attempts
-    expect(alters.length).toBe(6 * EMBEDDER_LOCK_BACKOFF_MS.length)
+    // First ALTER per table fails → skip the rest of that table. 2 tables × 5 attempts.
+    expect(alters.length).toBe(2 * EMBEDDER_LOCK_BACKOFF_MS.length)
     expect(sleeps).toEqual([...EMBEDDER_LOCK_BACKOFF_MS.slice(1)])
   })
 
@@ -124,8 +129,8 @@ describe('ensureEmbedderSchema', () => {
       clientQuery: async (sql) => {
         if (/ALTER TABLE/i.test(sql)) {
           alterCalls++
-          // Fail the first full pass (6 ALTERs), succeed after that.
-          if (alterCalls <= 6) throw lockTimeoutError()
+          // Fail the first pass (one ALTER per table, rest skipped), succeed after that.
+          if (alterCalls <= 2) throw lockTimeoutError()
         }
         return { rows: [] }
       },
@@ -134,7 +139,68 @@ describe('ensureEmbedderSchema', () => {
       ensureEmbedderSchema(pool, { sleep: async () => undefined, log: () => undefined }),
     ).resolves.toBeUndefined()
     const alters = clientSql.filter((s) => /ALTER TABLE/i.test(s))
-    expect(alters.length).toBe(12)
-    expect(alterCalls).toBe(12)
+    expect(alters.length).toBe(8)
+    expect(alterCalls).toBe(8)
+  })
+
+  it('on 55P03 skips remaining ALTERs for the same table in that attempt', async () => {
+    const { pool, clientSql } = fakePool({
+      catalogRows: [],
+      clientQuery: async (sql) => {
+        if (/ALTER TABLE ros_messages/i.test(sql)) throw lockTimeoutError()
+        return { rows: [] }
+      },
+    })
+    await ensureEmbedderSchema(pool, {
+      sleep: async () => undefined,
+      log: () => undefined,
+      backoffMs: [0],
+    })
+    const alters = clientSql.filter((s) => /ALTER TABLE/i.test(s))
+    expect(alters.filter((s) => /ros_messages/.test(s)).length).toBe(1)
+    expect(alters.filter((s) => /ros_summaries/.test(s)).length).toBe(3)
+  })
+
+  it('resets lock_timeout, releases, and rethrows a non-55P03 error without retrying', async () => {
+    const boom = new Error('undefined_column') as Error & { code: string }
+    boom.code = '42703'
+    let alters = 0
+    const { pool, client, clientSql } = fakePool({
+      catalogRows: [],
+      clientQuery: async (sql) => {
+        if (/ALTER TABLE/i.test(sql)) {
+          alters++
+          throw boom
+        }
+        return { rows: [] }
+      },
+    })
+    await expect(
+      ensureEmbedderSchema(pool, { sleep: async () => undefined, log: () => undefined }),
+    ).rejects.toThrow('undefined_column')
+    expect(alters).toBe(1)
+    expect(clientSql.some((s) => /RESET lock_timeout/i.test(s))).toBe(true)
+    expect(client.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('releases the pooled client with the error when RESET fails', async () => {
+    const { pool, client } = fakePool({
+      catalogRows: [],
+      clientQuery: async (sql) => {
+        if (/RESET lock_timeout/i.test(sql)) throw new Error('reset failed')
+        return { rows: [] }
+      },
+    })
+    await expect(
+      ensureEmbedderSchema(pool, { sleep: async () => undefined, log: () => undefined }),
+    ).resolves.toBeUndefined()
+    expect(client.release).toHaveBeenCalledWith(expect.any(Error))
+  })
+
+  it('rejects a lockTimeout that is not a Postgres interval literal', async () => {
+    expect(() => assertLockTimeout(`3s'; DROP TABLE ros_messages; --`)).toThrow(
+      /invalid lock_timeout/,
+    )
+    expect(assertLockTimeout('3s')).toBe('3s')
   })
 })

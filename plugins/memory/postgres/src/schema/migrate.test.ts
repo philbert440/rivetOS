@@ -138,4 +138,39 @@ describe('startup DDL guards', () => {
     expect(begins).toBe(2)
     expect(sqls.filter((s) => s === 'COMMIT').length).toBe(1)
   })
+
+  it('applyMigration does not retry a non-55P03 error', async () => {
+    let begins = 0
+    const client = {
+      query: vi.fn(async (sql: unknown) => {
+        const text = sqlText(sql)
+        if (text === 'BEGIN') {
+          begins++
+          return { rows: [] }
+        }
+        if (text === 'some ddl') {
+          const err = new Error('syntax') as Error & { code: string }
+          err.code = '42601'
+          throw err
+        }
+        return { rows: [] }
+      }),
+    }
+    await expect(
+      applyMigration(
+        client as never,
+        { name: '0001_x.sql', path: '/x', sql: 'some ddl' },
+        { sleep: async () => undefined, backoffMs: [0, 1] },
+      ),
+    ).rejects.toThrow('syntax')
+    expect(begins).toBe(1)
+  })
+
+  it('applySessionGuards rejects a lock timeout that is not an interval literal', async () => {
+    const client = { query: vi.fn(async () => ({ rows: [] })) }
+    await expect(applySessionGuards(client as never, `3s'; DROP TABLE x; --`)).rejects.toThrow(
+      /invalid lock_timeout/,
+    )
+    expect(client.query).not.toHaveBeenCalled()
+  })
 })

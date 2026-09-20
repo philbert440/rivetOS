@@ -73,16 +73,74 @@ export function spoolMaxAttempts(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SPOOL_MAX_ATTEMPTS
 }
 
+/** Leftover claim suffix from an in-flight or deadline-killed worker. */
+const CLAIM_SUFFIX = /\.claim\.\d+\.[a-z0-9]+$/i
+
+export function stripSpoolClaim(filePath: string): string {
+  const dir = path.dirname(filePath)
+  const base = path.basename(filePath).replace(CLAIM_SUFFIX, '')
+  return path.join(dir, base)
+}
+
 export function spoolAttempt(filePath: string): number {
-  const m = /\.a(\d+)\.json$/i.exec(path.basename(filePath))
+  const m = /\.a(\d+)\.json$/i.exec(path.basename(stripSpoolClaim(filePath)))
   return m ? Number(m[1]) : 1
 }
 
 export function withSpoolAttempt(filePath: string, attempt: number): string {
   const dir = path.dirname(filePath)
-  const base = path.basename(filePath)
+  const base = path.basename(stripSpoolClaim(filePath))
   const stem = base.replace(/\.a\d+\.json$/i, '').replace(/\.json$/i, '')
   return path.join(dir, `${stem}.a${attempt}.json`)
+}
+
+export function spoolStem(filePath: string): string {
+  const base = path.basename(stripSpoolClaim(filePath))
+  return base.replace(/\.a\d+\.json$/i, '').replace(/\.json$/i, '')
+}
+
+/**
+ * Atomically claim a spool before reading it. Two workers racing a stale
+ * sweep both `readFileSync` the same path otherwise. Rename is atomic on the
+ * same filesystem; the loser gets null and must not ingest.
+ *
+ * Already-claimed leftovers (deadline kill) are returned as-is so a later
+ * sweep can finish them.
+ */
+export function claimSpool(spoolFile: string): string | null {
+  if (CLAIM_SUFFIX.test(path.basename(spoolFile))) return spoolFile
+  const dest = `${spoolFile}.claim.${process.pid}.${Math.random().toString(36).slice(2, 8)}`
+  try {
+    fs.renameSync(spoolFile, dest)
+    return dest
+  } catch {
+    return null
+  }
+}
+
+function isSpoolName(name: string): boolean {
+  return name.endsWith('.json') || CLAIM_SUFFIX.test(name)
+}
+
+/** Prompt/tool payloads under /tmp must not be world-readable. */
+export function writeSpoolPayload(payload: unknown, spoolDir: string): string {
+  fs.mkdirSync(spoolDir, { recursive: true, mode: 0o700 })
+  try {
+    fs.chmodSync(spoolDir, 0o700)
+  } catch {
+    /* best-effort — umask / existing dir */
+  }
+  const spoolFile = path.join(
+    spoolDir,
+    `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.a1.json`,
+  )
+  fs.writeFileSync(spoolFile, JSON.stringify(payload), { mode: 0o600 })
+  try {
+    fs.chmodSync(spoolFile, 0o600)
+  } catch {
+    /* best-effort */
+  }
+  return spoolFile
 }
 
 /**
@@ -280,13 +338,7 @@ async function runHook(): Promise<void> {
   }
 
   try {
-    const spoolDir = getSpoolDir()
-    fs.mkdirSync(spoolDir, { recursive: true })
-    const spoolFile = path.join(
-      spoolDir,
-      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.a1.json`,
-    )
-    fs.writeFileSync(spoolFile, JSON.stringify(payload))
+    const spoolFile = writeSpoolPayload(payload, getSpoolDir())
     const child = spawn(process.execPath, [SELF, '--worker', spoolFile], {
       detached: true,
       stdio: 'ignore',
@@ -301,7 +353,11 @@ async function runHook(): Promise<void> {
 // Worker mode — ingest the spooled payload out of band
 // ---------------------------------------------------------------------------
 
-async function dispatchIngest(payload: HookPayload, deps: WorkerDeps): Promise<void> {
+async function dispatchIngest(
+  payload: HookPayload,
+  deps: WorkerDeps,
+  idempotencyKey?: string,
+): Promise<void> {
   const logFn = deps.log ?? log
   const event = payload.hook_event_name ?? 'unknown'
   const ingestHook = deps.ingestHookEvent ?? ingestHookEvent
@@ -337,6 +393,7 @@ async function dispatchIngest(payload: HookPayload, deps: WorkerDeps): Promise<v
       sessionKeyOverride: payload.rivetos_session_key,
       taskId: payload.rivetos_task_id,
       herdr,
+      idempotencyKey,
     })
     if (res.skipped) {
       logFn(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
@@ -376,26 +433,33 @@ async function dispatchIngest(payload: HookPayload, deps: WorkerDeps): Promise<v
 /** Ingest one spool file. Delete only after success; retain/rename on failure. */
 export async function ingestSpoolFile(spoolFile: string, deps: WorkerDeps = {}): Promise<void> {
   const logFn = deps.log ?? log
+  const claimed = claimSpool(spoolFile)
+  if (!claimed) {
+    logFn(`worker: spool already claimed ${spoolFile}`)
+    return
+  }
+  deps.skipFiles?.add(claimed)
+
   let payload: HookPayload
   try {
-    payload = JSON.parse(fs.readFileSync(spoolFile, 'utf8')) as HookPayload
+    payload = JSON.parse(fs.readFileSync(claimed, 'utf8')) as HookPayload
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    logFn(`worker: unreadable spool ${spoolFile}: ${detail}`)
-    failSpool(spoolFile, deps)
+    logFn(`worker: unreadable spool ${claimed}: ${detail}`)
+    failSpool(claimed, deps)
     return
   }
 
   try {
-    await dispatchIngest(payload, deps)
-    removeSpool(spoolFile)
+    await dispatchIngest(payload, deps, spoolStem(claimed))
+    removeSpool(claimed)
   } catch (err) {
     const event = payload.hook_event_name ?? 'unknown'
     const detail = err instanceof Error ? err.message : String(err)
     logFn(
       `${event} ${payload.session_id ?? payload.transcript_path ?? '?'}: INGEST FAILED — ${detail}`,
     )
-    failSpool(spoolFile, deps)
+    failSpool(claimed, deps)
   }
 }
 
@@ -414,7 +478,7 @@ export async function sweepStaleSpools(deps: WorkerDeps = {}): Promise<void> {
   const skip = deps.skipFiles ?? new Set<string>()
   let n = 0
   for (const name of names) {
-    if (!name.endsWith('.json')) continue
+    if (!isSpoolName(name)) continue
     const full = path.join(dir, name)
     if (skip.has(full)) continue
     let mtimeMs: number
@@ -432,9 +496,9 @@ export async function sweepStaleSpools(deps: WorkerDeps = {}): Promise<void> {
 }
 
 export async function runWorker(spoolFile: string, deps: WorkerDeps = {}): Promise<void> {
-  await ingestSpoolFile(spoolFile, deps)
   const skip = new Set(deps.skipFiles ?? [])
   skip.add(spoolFile)
+  await ingestSpoolFile(spoolFile, { ...deps, skipFiles: skip })
   await sweepStaleSpools({ ...deps, skipFiles: skip })
 }
 
@@ -548,13 +612,31 @@ export async function main(): Promise<void> {
   await runHook()
 }
 
-function isDirectCli(): boolean {
-  const entry = process.argv[1]
-  if (!entry) return false
+/**
+ * True when this process was invoked as the capture CLI (bin, `node dist/hooks.js`,
+ * or a symlink to either). `import.meta.url` is Node's realpath; `argv[1]` is
+ * the literal path — a `node_modules/.bin` symlink or a `/opt/rivetos → versioned`
+ * install root makes a naive `resolve()` comparison false, `main()` never runs,
+ * and the process exits 0 with no output.
+ *
+ * Kept in this file (rather than a split bin entry) because the published bin
+ * and every in-tree exec target are `dist/hooks.js`; splitting would still
+ * need this file to invoke `main()`. Tests import the module and must not
+ * run `main()`.
+ */
+export function isDirectCli(
+  argv1: string | undefined = process.argv[1],
+  selfPath: string = SELF,
+): boolean {
+  if (!argv1) return false
   try {
-    return path.resolve(entry) === SELF
+    return fs.realpathSync(argv1) === fs.realpathSync(selfPath)
   } catch {
-    return false
+    try {
+      return path.resolve(argv1) === path.resolve(selfPath)
+    } catch {
+      return false
+    }
   }
 }
 

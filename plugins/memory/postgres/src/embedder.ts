@@ -82,6 +82,14 @@ function defaultSleep(ms: number): Promise<void> {
   })
 }
 
+/** Postgres interval literal only — `lockTimeout` is interpolated into SET. */
+export function assertLockTimeout(value: string): string {
+  if (!/^\d+(\.\d+)?(us|ms|s|min|h|d)$/i.test(value)) {
+    throw new Error(`invalid lock_timeout: ${value}`)
+  }
+  return value
+}
+
 export function isLockNotAvailable(err: unknown): boolean {
   if (typeof err !== 'object' || err === null || !('code' in err)) return false
   return err.code === '55P03'
@@ -106,11 +114,13 @@ async function listExistingColumns(pool: pg.Pool): Promise<Set<string>> {
  * zero DDL — no ACCESS EXCLUSIVE on a hot table at every process start.
  *
  * When DDL is needed it runs on a dedicated client with lock_timeout. On
- * 55P03 (lock_not_available) we warn, back off, and retry a bounded number of
- * times, then give up WITHOUT throwing: the process must stay up. Search,
- * append, and compaction do not read these columns. What degrades until a
- * later start: embedding-worker terminal bookkeeping (unembeddable/failed)
- * and health.sql embed_status counters.
+ * 55P03 (lock_not_available) we warn, skip the rest of that table for the
+ * attempt, back off, and retry a bounded number of times, then give up
+ * WITHOUT throwing: the process must stay up. Search, append, and compaction
+ * do not read these columns. Until a later start that gets the lock:
+ * embedding-worker enqueue (`embed_status IS NULL`) and embed-target jobs
+ * fail closed, and health.sql `EMBEDDING_HEALTH_SQL` raises 42703
+ * (undefined_column) — not just terminal bookkeeping counters.
  *
  * embed_status:
  *   - NULL (default): row is eligible for embedding
@@ -130,7 +140,7 @@ export async function ensureEmbedderSchema(
   let remaining = REQUIRED_COLUMNS.filter((col) => !existing.has(columnKey(col.table, col.column)))
   if (remaining.length === 0) return
 
-  const lockTimeout = options.lockTimeout ?? EMBEDDER_LOCK_TIMEOUT
+  const lockTimeout = assertLockTimeout(options.lockTimeout ?? EMBEDDER_LOCK_TIMEOUT)
   const backoffMs = options.backoffMs ?? EMBEDDER_LOCK_BACKOFF_MS
   const sleep = options.sleep ?? defaultSleep
   const log = options.log ?? ((msg: string) => console.warn(msg))
@@ -143,16 +153,23 @@ export async function ensureEmbedderSchema(
       if (delay > 0) await sleep(delay)
 
       const stillMissing: RequiredColumn[] = []
+      const skipTables = new Set<string>()
       for (const col of remaining) {
+        if (skipTables.has(col.table)) {
+          stillMissing.push(col)
+          continue
+        }
         try {
           await client.query(col.sql)
         } catch (err) {
           if (isLockNotAvailable(err)) {
             log(
               `[memory-postgres] ensureEmbedderSchema: lock_timeout on ${col.sql} ` +
-                `(attempt ${attempt + 1}/${backoffMs.length}); will retry with backoff`,
+                `(attempt ${attempt + 1}/${backoffMs.length}); skipping remaining ALTERs ` +
+                `on ${col.table} this attempt`,
             )
             stillMissing.push(col)
+            skipTables.add(col.table)
             continue
           }
           throw err
@@ -165,15 +182,17 @@ export async function ensureEmbedderSchema(
     log(
       `[memory-postgres] ensureEmbedderSchema: giving up after ${String(backoffMs.length)} ` +
         `attempts; ${remaining.map((c) => `${c.table}.${c.column}`).join(', ')} still missing. ` +
-        `Embedding bookkeeping (embed_status/embed_error/embed_failures) is degraded until a ` +
-        `later start; search/append/compaction do not require these columns.`,
+        `Embedding-worker enqueue/embed-target and health.sql counters that read ` +
+        `embed_status are degraded until a later start; search/append/compaction do ` +
+        `not require these columns.`,
     )
   } finally {
+    let resetErr: Error | undefined
     try {
       await client.query('RESET lock_timeout')
-    } catch {
-      /* release even if RESET fails */
+    } catch (err) {
+      resetErr = err instanceof Error ? err : new Error(String(err))
     }
-    client.release()
+    client.release(resetErr)
   }
 }
