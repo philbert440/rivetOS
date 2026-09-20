@@ -13,6 +13,12 @@ import {
 
 const BASE = 'http://gateway.test'
 
+/** Captured all-sessions socket — the store's only outside dependency, so a
+ *  test can drive the WS echo path the composer's sends are confirmed on. */
+const socket = vi.hoisted(() => ({
+  onFrame: undefined as ((frame: unknown) => void) | undefined,
+}))
+
 // createJSONStorage(() => localStorage) runs at store-module evaluation.
 // Stub before that import (vi.hoisted runs before ESM imports).
 vi.hoisted(() => {
@@ -35,7 +41,11 @@ vi.mock('./connection.js', () => ({
     getState: () => ({
       baseUrl: BASE,
       gateway: {
-        watchSessions: () => ({ close: () => undefined, send: () => true }),
+        // Capture the frame handler so the WS echo path is reachable from here.
+        watchSessions: (onFrame: (frame: unknown) => void) => {
+          socket.onFrame = onFrame
+          return { close: () => undefined, send: () => true }
+        },
       },
     }),
   },
@@ -597,5 +607,112 @@ describe('Round 3 store boundaries', () => {
     expect(useChat.getState().harnessBound.A).toBeUndefined()
     chat.unbindHarness('A')
     expect(useChat.getState().harnessBound.B).toBeUndefined()
+  })
+})
+
+// A committed user turn retires exactly ONE optimistic bubble. When the text
+// repeats, the bubble that retires must be the send that actually committed —
+// never an older failed twin (rekey-followup to #799).
+describe('committed-turn reconciliation', () => {
+  const KEY = 'dup-session'
+  const state = () => useChat.getState()
+  const user = (text: string) => ({ role: 'user' as const, text })
+
+  /** A send that failed: an entry-ful `failed` item plus its optimistic bubble. */
+  const failedSend = (text: string): string => {
+    const id = state().enqueueOutbound(KEY, text)
+    state().markOutboundSending(KEY, id)
+    state().failOutbound(KEY, id)
+    return id
+  }
+
+  it('same text twice — the accepted second send retires, the failed twin stays', () => {
+    state().addDraft(KEY)
+    state().bindHarness(KEY, 'claude-code')
+    const first = failedSend('ping')
+    const second = state().enqueueOutbound(KEY, 'ping')
+    state().markOutboundSending(KEY, second)
+    state().dequeueOutbound(KEY, second) // HTTP accepted: the bubble waits for its echo
+
+    state().syncHarnessTranscript(KEY, [user('ping')])
+
+    expect(state().messages[KEY]?.some((m) => m.id === second)).toBe(false)
+    expect(state().messages[KEY]?.some((m) => m.id === first)).toBe(true)
+    expect(state().outbound[KEY]).toEqual([{ id: first, text: 'ping', status: 'failed' }])
+  })
+
+  it('a failed twin cannot spend the commit of a still-sending send', () => {
+    state().addDraft(KEY)
+    state().bindHarness(KEY, 'claude-code')
+    const sending = state().enqueueOutbound(KEY, 'again')
+    state().markOutboundSending(KEY, sending)
+    const failed = failedSend('again')
+
+    state().syncHarnessTranscript(KEY, [user('again')])
+
+    expect(state().messages[KEY]?.some((m) => m.id === failed)).toBe(true)
+    expect(state().outbound[KEY]).toEqual([
+      { id: sending, text: 'again', status: 'sending' },
+      { id: failed, text: 'again', status: 'failed' },
+    ])
+  })
+
+  it('single send is unchanged: sending keeps its bubble, accepted retires', () => {
+    state().addDraft(KEY)
+    state().bindHarness(KEY, 'claude-code')
+    const sending = state().enqueueOutbound(KEY, 'one')
+    state().markOutboundSending(KEY, sending)
+    state().syncHarnessTranscript(KEY, [user('one')])
+    expect(state().messages[KEY]?.some((m) => m.id === sending)).toBe(true)
+    expect(state().outbound[KEY]).toEqual([{ id: sending, text: 'one', status: 'sending' }])
+
+    const accepted = state().enqueueOutbound(KEY, 'two')
+    state().markOutboundSending(KEY, accepted)
+    state().dequeueOutbound(KEY, accepted)
+    state().syncHarnessTranscript(KEY, [user('one'), user('two')])
+    expect(state().messages[KEY]?.some((m) => m.id === accepted)).toBe(false)
+    expect(state().messages[KEY]?.some((m) => m.id === sending)).toBe(true)
+  })
+
+  it('a lone failed bubble is retired by its committed turn', () => {
+    state().addDraft(KEY)
+    state().bindHarness(KEY, 'claude-code')
+    const failed = failedSend('boom')
+    state().syncHarnessTranscript(KEY, [user('boom')])
+    expect(state().messages[KEY]?.some((m) => m.id === failed)).toBe(false)
+    expect(state().outbound[KEY]).toEqual([])
+  })
+
+  it('the WS echo retires exactly the item it carries an id for', () => {
+    state().addDraft(KEY)
+    // Store-backed slice without a binding: the echo must not append its own
+    // copy, so the retired bubble's absence is unambiguous.
+    state().bindHarness(KEY, 'claude-code')
+    state().unbindHarness(KEY)
+    const first = failedSend('same')
+    const second = state().enqueueOutbound(KEY, 'other')
+    state().markOutboundSending(KEY, second)
+    state().connect('http://gateway.test|')
+
+    // The echo's text matches `first`, but its id names `second`.
+    socket.onFrame?.({
+      kind: 'message',
+      id: second,
+      sessionId: KEY,
+      role: 'user',
+      text: 'same',
+      ts: 1,
+    })
+
+    expect(state().messages[KEY]?.map((m) => m.id)).toEqual([first])
+    expect(state().outbound[KEY]).toEqual([{ id: first, text: 'same', status: 'failed' }])
+  })
+
+  it('seed() with a retired key writes to the current key', () => {
+    state().addDraft('A')
+    state().rekey('A', 'B')
+    state().seed('A', [{ id: 'm1', sessionId: 'A', role: 'user', text: 'backfill', ts: 1 }])
+    expect(state().messages.A).toBeUndefined()
+    expect(state().messages.B?.map((m) => m.id)).toEqual(['m1'])
   })
 })
