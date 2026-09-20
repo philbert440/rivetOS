@@ -1,8 +1,65 @@
 {
   "name": "rivet-memory",
-  "version": "0.2.0",
-  "description": "Persistent memory for Claude Code — RivetOS MCP recall tools plus lifecycle capture of prompts and tool calls into the RivetOS memory DB. Ships a recall-discipline skill, slash command shortcuts, and a memory-researcher subagent.",
-  "keywords": ["memory", "mcp", "capture", "recall", "rivetos", "skill", "agent", "discipline"],
+  "version": "0.3.0",
+  "description": "Persistent RivetOS memory for Claude Code: recall MCP tools, lifecycle capture, and agent-driven onboard (cloud vs your own hub).",
+  "userConfig": {
+    "RIVETOS_MODE": {
+      "type": "string",
+      "title": "RivetOS mode",
+      "description": "cloud or local. Leave empty to use ~/.rivetos/.env (house nodes). Never set workspace or production here.",
+      "required": false
+    },
+    "RIVETOS_DATAHUB_URL": {
+      "type": "string",
+      "title": "DataHub URL",
+      "description": "Local-mode endpoint. postgres:// or postgresql:// maps to RIVETOS_PG_URL; https:// is stored as-is and not converted.",
+      "sensitive": true,
+      "required": false
+    },
+    "RIVETOS_EMBED_URL": {
+      "type": "string",
+      "title": "Embed URL",
+      "description": "Optional embedding endpoint used with a Postgres DataHub.",
+      "sensitive": true,
+      "required": false
+    },
+    "RIVETOS_EMBED_MODEL": {
+      "type": "string",
+      "title": "Embed model",
+      "description": "Required when an Embed URL is set, for example text-embedding-3-small.",
+      "required": false
+    },
+    "RIVETOS_CLOUD_URL": {
+      "type": "string",
+      "title": "Cloud URL",
+      "description": "Cloud-mode API base. Default https://rivetos.cloud when mode is cloud and this is empty.",
+      "required": false,
+      "sensitive": true
+    },
+    "RIVETOS_CLOUD_TOKEN": {
+      "type": "string",
+      "title": "Cloud token",
+      "description": "Secret from the Rivet Cloud dashboard. Never paste it into chat.",
+      "sensitive": true,
+      "required": false
+    },
+    "RIVETOS_MCP_ENABLE_MEMORY_WRITE": {
+      "type": "string",
+      "title": "Enable memory write tools",
+      "description": "Set to 1 only if you opt in during onboard. Default off. Shell/file/search write tools are not available in this kit.",
+      "required": false
+    }
+  },
+  "keywords": [
+    "memory",
+    "mcp",
+    "capture",
+    "recall",
+    "rivetos",
+    "skill",
+    "agent",
+    "discipline"
+  ],
   "homepage": "https://github.com/philbert440/rivetOS",
   "repository": "https://github.com/philbert440/rivetOS",
   "license": "MIT",

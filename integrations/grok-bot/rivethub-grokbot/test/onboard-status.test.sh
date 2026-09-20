@@ -27,6 +27,9 @@ TOKEN='tok_live_do_not_print'
 # Persist local mode
 export RIVETOS_MODE=local
 export RIVETOS_DATAHUB_URL="$SECRET"
+export RIVETOS_EMBED_URL='https://fixture:s3cret-embed@embed.example/v1'
+export RIVETOS_EMBED_MODEL=text-embedding-3-small
+export RIVETOS_MCP_ENABLE_MEMORY_WRITE=1
 out="$("$PERSIST")"
 if [[ "$out" == *"mode=local"* ]]; then
   pass "persist reports mode"
@@ -65,6 +68,23 @@ else
   else
     fail "status should mention endpoint host"
   fi
+fi
+
+# Additive shared-helper contract: persist both settings and report them safely.
+if grep -q '^RIVETOS_EMBED_MODEL=' "$RIVETOS_ENV_FILE" &&
+   grep -q '^RIVETOS_EMBED_URL=' "$RIVETOS_ENV_FILE" &&
+   grep -q '^RIVETOS_MCP_ENABLE_MEMORY_WRITE=' "$RIVETOS_ENV_FILE"; then
+  pass "persist writes embed and memory-write settings"
+else
+  fail "persist must write embed and memory-write settings"
+fi
+unset RIVETOS_EMBED_URL RIVETOS_EMBED_MODEL RIVETOS_MCP_ENABLE_MEMORY_WRITE
+additive_out="$("$STATUS")"
+if [[ "$additive_out" == *"embed_model: set"* ]] && [[ "$additive_out" == *"embed_url: set"* ]] && [[ "$additive_out" == *"memory_write: set"* ]] &&
+   [[ "$additive_out" != *s3cret-embed* ]] && [[ "$additive_out" != *fixture:* ]]; then
+  pass "status reports persisted embed and memory-write settings without userinfo"
+else
+  fail "status additive fields must be present and redacted"
 fi
 
 # House .env fallback: clear process plugin vars, status still sees file
@@ -421,6 +441,87 @@ if [[ -x "$KIT/../rivet-memory/bin/rivet-memory-mcp.sh" ]]; then
 else
   fail "sibling MCP launcher missing"
 fi
+
+# Grok status keeps legacy process-over-file precedence and ignores Claude channels.
+printf 'RIVETOS_MODE=cloud\n' >"$HOME_TMP/precedence.env"
+if env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$HOME_TMP/precedence.env" \
+    RIVETOS_MODE=local CLAUDE_PLUGIN_OPTION_RIVETOS_MODE=cloud \
+    "$STATUS" >"$HOME_TMP/precedence.out" &&
+   grep -qx 'mode: local' "$HOME_TMP/precedence.out"; then
+  pass "grok status retains inherited-over-file precedence"
+else
+  fail "grok status precedence changed"
+fi
+
+# Embed pair validation happens before writes, including when values come from disk.
+for scenario in new existing file_url placeholder; do
+  pair_file="$HOME_TMP/pair.env"
+  rm -f "$pair_file"
+  case "$scenario" in
+    existing) printf 'RIVETOS_MODE=cloud\n' >"$pair_file" ;;
+    file_url) printf 'RIVETOS_EMBED_URL=https://fixture:embed-secret@embed.example\n' >"$pair_file" ;;
+    placeholder) printf '%s\n' 'RIVETOS_EMBED_MODEL=${user_config.RIVETOS_EMBED_MODEL}' >"$pair_file" ;;
+  esac
+  if [ -f "$pair_file" ]; then cp "$pair_file" "$HOME_TMP/pair.before"; fi
+  embed=https://fixture:embed-secret@embed.example
+  [ "$scenario" != file_url ] || embed=''
+  rc=0
+  env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$pair_file" \
+    RIVETOS_MODE=cloud RIVETOS_PG_URL=postgres://db.example/db RIVETOS_EMBED_URL="$embed" \
+    "$PERSIST" >"$HOME_TMP/pair.out" 2>&1 || rc=$?
+  if [ "$rc" -eq 2 ] && grep -q RIVETOS_EMBED_MODEL "$HOME_TMP/pair.out" &&
+     ! grep -q embed-secret "$HOME_TMP/pair.out" &&
+     { { [ "$scenario" = new ] && [ ! -e "$pair_file" ]; } ||
+       { [ "$scenario" != new ] && cmp -s "$pair_file" "$HOME_TMP/pair.before"; }; }; then
+    pass "embed URL without model refuses without writes: $scenario"
+  else
+    fail "embed pair refusal: $scenario"
+  fi
+done
+for scenario in arguments file_model file_url; do
+  pair_file="$HOME_TMP/pair.env"
+  : >"$pair_file"
+  embed=https://fixture:embed-secret@embed.example
+  model="text-embedding-3-small"
+  case "$scenario" in
+    file_model) printf 'export RIVETOS_EMBED_MODEL="text-embedding-3-small"\n' >"$pair_file"; model='' ;;
+    file_url) printf 'RIVETOS_EMBED_URL=https://fixture:embed-secret@embed.example\n' >"$pair_file"; embed='' ;;
+  esac
+  if env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$pair_file" \
+    RIVETOS_MODE=cloud RIVETOS_EMBED_URL="$embed" RIVETOS_EMBED_MODEL="$model" \
+    "$PERSIST" >"$HOME_TMP/pair.out" 2>&1 &&
+    [ "$(rivetos_env_file_value "$pair_file" RIVETOS_EMBED_MODEL)" = text-embedding-3-small ] &&
+    [ "$(rivetos_env_file_value "$pair_file" RIVETOS_EMBED_URL)" = https://fixture:embed-secret@embed.example ]; then
+    pass "embed pair persists: $scenario"
+  else
+    fail "embed pair persists: $scenario"
+  fi
+done
+# Status reports problems without changing its successful exit contract or leaking values.
+for scenario in pg datahub https model no_database no_embed placeholder; do
+  pg='' hub='' embed=https://fixture:embed-secret@embed.example model=''
+  case "$scenario" in
+    pg|no_embed|placeholder) pg='postgres://fixture:pg-secret@' ;;
+    datahub) hub='postgres://fixture:hub-secret@' ;;
+    https|model) hub='https://fixture:hub-secret@' ;;
+  esac
+  [ "$scenario" != model ] || model=text-embedding-3-small
+  [ "$scenario" != no_embed ] || embed=''
+  [ "$scenario" != placeholder ] || model='${user_config.RIVETOS_EMBED_MODEL}'
+  rc=0
+  env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$HOME_TMP/absent.env" \
+    RIVETOS_PG_URL="$pg" RIVETOS_DATAHUB_URL="$hub" RIVETOS_EMBED_URL="$embed" \
+    RIVETOS_EMBED_MODEL="$model" bash -x "$STATUS" >"$HOME_TMP/pair.out" 2>&1 || rc=$?
+  expected=0 flag=unset
+  case "$scenario" in pg|datahub|placeholder) expected=1 ;; model) flag=set ;; esac
+  if [ "$rc" -eq 0 ] && grep -qx "embed_model: $flag" "$HOME_TMP/pair.out" &&
+     [ "$(grep -c '^problem:.*RIVETOS_EMBED_MODEL' "$HOME_TMP/pair.out" || true)" -eq "$expected" ] &&
+     ! grep -Eq 'embed-secret|pg-secret|hub-secret|text-embedding-3-small' "$HOME_TMP/pair.out"; then
+    pass "status embed model diagnostic and exit contract: $scenario"
+  else
+    fail "status embed model diagnostic: $scenario"
+  fi
+done
 
 rm -rf "$HOME_TMP"
 
