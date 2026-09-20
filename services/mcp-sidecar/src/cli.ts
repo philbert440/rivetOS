@@ -60,8 +60,7 @@
  *   RIVETOS_MCP_ENABLE_MEMORY_WRITE=1
  *                                  — enables `memory_append` and
  *                                    `memory_ingest_session` (write surface,
- *                                    off by default). The Grok Bot launcher
- *                                    sets this.
+ *                                    off by default).
  *
  * Runtime-plane tools (delegate_task, subagent_*, ask_user, todo,
  * compact_context) and the claude-cli MCP bridge land in later slices.
@@ -69,6 +68,7 @@
 
 import { defaultEchoTool, type ToolRegistration } from '@rivetos/mcp'
 import { createV2McpServer, createV2StdioMcpServer } from '@rivetos/mcp-v2'
+import { USAGE, wantsHelp } from './cli-usage.js'
 import { memoryEmbedGuardError } from './embed-guard.js'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
@@ -79,6 +79,11 @@ import { createSkillTools, type SkillToolsHandle } from './skills.js'
 import { createWebTools, type WebToolsHandle } from './web.js'
 
 async function main(): Promise<void> {
+  if (wantsHelp(process.argv.slice(2))) {
+    process.stdout.write(USAGE.endsWith('\n') ? USAGE : `${USAGE}\n`)
+    process.exit(0)
+  }
+
   const stdioMode = process.env.RIVETOS_MCP_STDIO === '1' || process.argv.includes('--stdio')
 
   // In stdio mode stdout IS the JSON-RPC channel — a single stray line of
@@ -110,7 +115,7 @@ async function main(): Promise<void> {
       process.env.RIVETOS_EMBED_MODEL,
     )
     if (embedErr) {
-      console.error(`[rivetos-mcp-server] ${embedErr}`)
+      console.error(`[rivetos-mcp-sidecar] ${embedErr}`)
       process.exit(1)
     }
     try {
@@ -123,15 +128,15 @@ async function main(): Promise<void> {
       tools.push(...handle.tools)
       cleanups.push(() => handle.close())
       console.log(
-        `[rivetos-mcp-server] memory tools enabled (${String(handle.tools.length)}: ${handle.tools.map((t) => t.name).join(', ')})`,
+        `[rivetos-mcp-sidecar] memory tools enabled (${String(handle.tools.length)}: ${handle.tools.map((t) => t.name).join(', ')})`,
       )
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`[rivetos-mcp-server] failed to enable memory tools: ${message}`)
+      console.error(`[rivetos-mcp-sidecar] failed to enable memory tools: ${message}`)
     }
   } else {
     console.log(
-      '[rivetos-mcp-server] RIVETOS_PG_URL not set — memory tools disabled (echo + web only)',
+      '[rivetos-mcp-sidecar] RIVETOS_PG_URL not set — memory tools disabled (echo + web only)',
     )
   }
 
@@ -147,11 +152,11 @@ async function main(): Promise<void> {
       tools.push(...handle.tools)
       cleanups.push(() => handle.close())
       console.log(
-        `[rivetos-mcp-server] wiki tools enabled (${handle.tools.map((t) => t.name).join(', ')})`,
+        `[rivetos-mcp-sidecar] wiki tools enabled (${handle.tools.map((t) => t.name).join(', ')})`,
       )
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`[rivetos-mcp-server] failed to enable wiki tools: ${message}`)
+      console.error(`[rivetos-mcp-sidecar] failed to enable wiki tools: ${message}`)
     }
   }
 
@@ -166,11 +171,11 @@ async function main(): Promise<void> {
     const dirs = handle.manager.getSkillDirs()
     const count = handle.manager.list().length
     console.log(
-      `[rivetos-mcp-server] skill tools enabled (${handle.tools.map((t) => t.name).join(', ')}) — ${String(count)} skills discovered from ${String(dirs.length)} dir(s): ${dirs.join(', ')}`,
+      `[rivetos-mcp-sidecar] skill tools enabled (${handle.tools.map((t) => t.name).join(', ')}) — ${String(count)} skills discovered from ${String(dirs.length)} dir(s): ${dirs.join(', ')}`,
     )
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error(`[rivetos-mcp-server] failed to enable skill tools: ${message}`)
+    console.error(`[rivetos-mcp-sidecar] failed to enable skill tools: ${message}`)
   }
 
   // --- Utility tools (opt-in — write surfaces) -----------------------------
@@ -184,11 +189,11 @@ async function main(): Promise<void> {
       tools.push(...handle.tools)
       cleanups.push(() => handle.close())
       console.log(
-        `[rivetos-mcp-server] shell tool enabled (${handle.tools.map((t) => t.name).join(', ')}) [WRITE SURFACE]`,
+        `[rivetos-mcp-sidecar] shell tool enabled (${handle.tools.map((t) => t.name).join(', ')}) [WRITE SURFACE]`,
       )
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`[rivetos-mcp-server] failed to enable shell tool: ${message}`)
+      console.error(`[rivetos-mcp-sidecar] failed to enable shell tool: ${message}`)
     }
   }
 
@@ -198,11 +203,11 @@ async function main(): Promise<void> {
       tools.push(...handle.tools)
       cleanups.push(() => handle.close())
       console.log(
-        `[rivetos-mcp-server] file tools enabled (${handle.tools.map((t) => t.name).join(', ')}) [WRITE SURFACE]`,
+        `[rivetos-mcp-sidecar] file tools enabled (${handle.tools.map((t) => t.name).join(', ')}) [WRITE SURFACE]`,
       )
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`[rivetos-mcp-server] failed to enable file tools: ${message}`)
+      console.error(`[rivetos-mcp-sidecar] failed to enable file tools: ${message}`)
     }
   }
 
@@ -212,11 +217,11 @@ async function main(): Promise<void> {
       tools.push(...handle.tools)
       cleanups.push(() => handle.close())
       console.log(
-        `[rivetos-mcp-server] search tools enabled (${handle.tools.map((t) => t.name).join(', ')})`,
+        `[rivetos-mcp-sidecar] search tools enabled (${handle.tools.map((t) => t.name).join(', ')})`,
       )
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      console.error(`[rivetos-mcp-server] failed to enable search tools: ${message}`)
+      console.error(`[rivetos-mcp-sidecar] failed to enable search tools: ${message}`)
     }
   }
 
@@ -229,14 +234,14 @@ async function main(): Promise<void> {
       (process.env.GOOGLE_CSE_API_KEY ?? process.env.GOOGLE_API_KEY) && process.env.GOOGLE_CSE_ID,
     )
     console.log(
-      `[rivetos-mcp-server] web tools enabled (${handle.tools.map((t) => t.name).join(', ')})` +
+      `[rivetos-mcp-sidecar] web tools enabled (${handle.tools.map((t) => t.name).join(', ')})` +
         (hasGoogle
           ? ' [search backend: Google CSE → DuckDuckGo fallback]'
           : ' [search backend: DuckDuckGo only — set GOOGLE_CSE_API_KEY + GOOGLE_CSE_ID for Google]'),
     )
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error(`[rivetos-mcp-server] failed to enable web tools: ${message}`)
+    console.error(`[rivetos-mcp-sidecar] failed to enable web tools: ${message}`)
   }
 
   // `server` exposes a `stop()` either way — that is all the shutdown path
@@ -248,14 +253,14 @@ async function main(): Promise<void> {
       tools,
       serverDescription: 'RivetOS MCP sidecar (2026-07-28 final)',
       onerror: (err) => {
-        console.error('[rivetos-mcp-server] stdio transport error', err)
+        console.error('[rivetos-mcp-sidecar] stdio transport error', err)
       },
     })
     await stdioServer.start()
     server = stdioServer
     // Diagnostic only — `console.log` is already redirected to stderr above.
     console.log(
-      `[rivetos-mcp-server] speaking MCP over stdio (era-negotiating: 2026-07-28 final, 2025-era served for legacy clients) — ${String(tools.length)} tool(s)`,
+      `[rivetos-mcp-sidecar] speaking MCP over stdio (era-negotiating: 2026-07-28 final, 2025-era served for legacy clients) — ${String(tools.length)} tool(s)`,
     )
   } else {
     const auth = socketPath && !requireBearerOnSocket ? undefined : authToken
@@ -272,14 +277,14 @@ async function main(): Promise<void> {
 
     if (socketPath) {
       console.log(
-        `[rivetos-mcp-server] protocol=v2 bound to unix socket ${socketPath} (mode 0600)` +
+        `[rivetos-mcp-sidecar] protocol=v2 bound to unix socket ${socketPath} (mode 0600)` +
           (authToken && requireBearerOnSocket
             ? ' [bearer required]'
             : ' [bearer skipped — fs perms are the auth boundary]'),
       )
     } else {
       console.log(
-        `[rivetos-mcp-server] protocol=v2 bound to ${host}:${String(httpServer.port || port)}` +
+        `[rivetos-mcp-sidecar] protocol=v2 bound to ${host}:${String(httpServer.port || port)}` +
           (auth
             ? ' [bearer required]'
             : ' [WARNING: no RIVETOS_MCP_TOKEN — bind is unauthenticated, localhost-only OK for dev]'),
@@ -291,14 +296,14 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     if (shuttingDown) return
     shuttingDown = true
-    console.log(`[rivetos-mcp-server] received ${signal}, shutting down`)
+    console.log(`[rivetos-mcp-sidecar] received ${signal}, shutting down`)
     Promise.allSettled(cleanups.map((fn) => fn()))
       .then(() => server.stop())
       .then(() => {
         process.exit(0)
       })
       .catch((err: unknown) => {
-        console.error('[rivetos-mcp-server] shutdown error', err)
+        console.error('[rivetos-mcp-sidecar] shutdown error', err)
         process.exit(1)
       })
   }
@@ -323,6 +328,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err: unknown) => {
-  console.error('[rivetos-mcp-server] fatal', err)
+  console.error('[rivetos-mcp-sidecar] fatal', err)
   process.exit(1)
 })

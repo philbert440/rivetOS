@@ -175,6 +175,9 @@ services/mcp-sidecar    ← mcp, mcp-v2, core, types, wiki-core,
 infra/                  ← Build artifacts only — no @rivetos/* runtime deps
 ```
 
+Marketplace kits still launch the memory MCP server from a checkout (`integrations/*/rivet-memory/bin/rivet-memory-mcp.sh`). Once a release ≥ 0.5.0 is published to npm, the same stdio server is also installable without a checkout via `npx -y @rivetos/mcp-sidecar --stdio`.
+
+
 **No plugin depends on `@rivetos/core`.** Providers reach the shared AI SDK adapter through `@rivetos/aisdk`; anything else a plugin needs comes from `@rivetos/types`.
 
 **Rule: `@rivetos/types` is (almost) interfaces only.** Its one workspace dependency is
