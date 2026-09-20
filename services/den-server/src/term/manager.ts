@@ -91,9 +91,12 @@ import {
   herdrConfigContent,
   herdrConfigHome,
   herdrConfigPath,
+  herdrAgentPresent,
+  herdrAgentReleased,
   herdrKindForCommand,
   herdrSessionName,
   herdrSupported,
+  herdrUseAgent,
   HerdrCommandError,
   HerdrUnavailableError,
   type HerdrCreateOpts,
@@ -198,6 +201,12 @@ export interface PtyInfo {
   compactAt?: number
   /** Provenance of contextWindow/compactAt. */
   contextSource?: ContextSource
+  /** Set when a buffered first-turn inject on an agent pane was written
+   *  but no `working` frame arrived within injectConfirmMs (or the ready
+   *  ceiling fired while the agent was ended). Timestamp + turn ordinal,
+   *  never the text. Cleared on the next confirmed turn. Surfaced on
+   *  GET /term/list — POST /term/inject stays 202 at accept time. */
+  injectUnconfirmed?: { ts: number; turn: number }
 }
 
 type DataSubscriber = (data: string | Buffer) => void
@@ -243,12 +252,28 @@ interface PtyRecord {
   idleTimer?: NodeJS.Timeout
   sigkillTimer?: NodeJS.Timeout
   reapTimer?: NodeJS.Timeout
-  /** Ready-gate (seamless 5g): a chat inject that arrives before the harness
-   *  TUI can accept stdin is dropped. We buffer injects until first output has
-   *  settled, then flush — so the FIRST chat turn to a fresh harness lands. */
+  /** Ready-gate: a chat inject that arrives before the harness TUI can accept
+   *  stdin is dropped. We buffer injects until a readiness *signal* (herdr
+   *  agent-idle, else output quiescence of injectReadyMs, else injectReadyMaxMs
+   *  ceiling), then flush — so the FIRST chat turn to a fresh harness lands. */
   ready: boolean
   injectBuffer: { text: string; submit: boolean }[]
   readyTimer?: NodeJS.Timeout
+  readyCeilingTimer?: NodeJS.Timeout
+  confirmTimer?: NodeJS.Timeout
+  lastAgentStatus?: 'working' | 'blocked' | 'idle'
+  /** herdr `create()` actually called `agent.start` (argv[0] === kind, no
+   *  slash). Wrapper / absolute-path rosters are plain panes — no status. */
+  agentPane?: boolean
+  /** Last protocol signal said the agent is gone (`pane.agent_detected`
+   *  with a null/released agent). Cleared on re-detect or working|idle|blocked. */
+  agentEnded?: boolean
+  injectRest?: { text: string; submit: boolean }[]
+  /** Ordinal of the in-flight first-flush turn waiting for a `working` frame. */
+  confirmTurn?: number
+  /** Monotonic ordinal of flushed/dropped inject turns (never the text). */
+  injectSeq?: number
+  injectUnconfirmed?: { ts: number; turn: number }
   /** Pending delayed inject writes (paste/CR). Tracked so kill/close cancels
    *  them — an untracked CR could otherwise fire into a shutting-down PTY. */
   injectTimers: NodeJS.Timeout[]
@@ -305,11 +330,12 @@ export interface TermManager {
   scrollback(id: string): Buffer | undefined
   write(id: string, data: string | Buffer): boolean
   /** Like write, but for chat injects: buffered until the harness TUI is
-   *  ready (first output settled) so the first turn isn't dropped (5g). When
-   *  `submit`, the text and its CR are written as two separate PTY writes
-   *  (bracketed paste + delayed CR) so the harness actually sends the turn.
-   *  `interrupt` first sends Esc to cancel the harness's in-flight turn, then
-   *  pastes after a settle — RivetHub's "inject now" on a queued message. */
+   *  ready (herdr agent-idle, else output quiescence) so the first turn isn't
+   *  dropped (5g). When `submit`, the text and its CR are written as two
+   *  separate PTY writes (bracketed paste + delayed CR) so the harness actually
+   *  sends the turn. `interrupt` first sends Esc to cancel the harness's
+   *  in-flight turn, then pastes after a settle — RivetHub's "inject now" on a
+   *  queued message. */
   inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
   /**
    * herdr `agent read` / `pane read` via `HerdrCtl.capture`. Empty string when
@@ -351,6 +377,10 @@ const PASTE_START = '\x1b[200~'
 const PASTE_END = '\x1b[201~'
 const SUBMIT_CR = '\r'
 const DEFAULT_INJECT_SUBMIT_DELAY_MS = 80
+const DEFAULT_INJECT_READY_MAX_MS = 15_000
+/** Window after flushing the first buffered submit on an agent pane to wait
+ *  for a herdr `working` frame. No pane scrape, no retry. Default 5000. */
+const DEFAULT_INJECT_CONFIRM_MS = 5000
 
 /** Interrupt-inject: a lone Esc cancels the harness's in-flight turn
  *  (Claude/grok TUIs), then the paste waits out the TUI's cancel/teardown
@@ -651,6 +681,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       'sigkillTimer',
       'reapTimer',
       'readyTimer',
+      'readyCeilingTimer',
+      'confirmTimer',
     ] as const) {
       const t = r[key]
       if (t) clearTimeout(t)
@@ -658,6 +690,27 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
     // Cancel pending inject writes too — a delayed CR must not fire into a
     // killed/closing PTY (close() SIGHUPs but leaves state 'running').
+    for (const t of r.injectTimers) clearTimeout(t)
+    r.injectTimers = []
+  }
+
+  /** Cancel ready-gate / confirm / pending paste-CR without touching the
+   *  SIGHUP→SIGKILL backstop. kill/detach/re-attach must not let a confirm
+   *  timer fire into a replaced proc. */
+  const cancelInjectAndReady = (r: PtyRecord): void => {
+    if (r.readyTimer) {
+      clearTimeout(r.readyTimer)
+      r.readyTimer = undefined
+    }
+    if (r.readyCeilingTimer) {
+      clearTimeout(r.readyCeilingTimer)
+      r.readyCeilingTimer = undefined
+    }
+    if (r.confirmTimer) {
+      clearTimeout(r.confirmTimer)
+      r.confirmTimer = undefined
+    }
+    r.confirmTurn = undefined
     for (const t of r.injectTimers) clearTimeout(t)
     r.injectTimers = []
   }
@@ -674,6 +727,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const escalate = (r: PtyRecord): void => {
     if (r.state !== 'running') return
+    cancelInjectAndReady(r)
     r.proc.kill('SIGHUP')
     r.sigkillTimer = setTimeout(() => {
       r.sigkillTimer = undefined
@@ -689,6 +743,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
    *  only ever hits a STUCK client process — never the session. */
   const detachClient = (r: PtyRecord, reason: string): void => {
     if (r.state !== 'running') return
+    cancelInjectAndReady(r)
     audit('detach', r, { reason })
     r.proc.kill('SIGHUP')
     r.sigkillTimer = setTimeout(() => {
@@ -886,16 +941,192 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     armIdleTtl(r)
   }
 
+  const injectReadyMaxMs = config.term.injectReadyMaxMs ?? DEFAULT_INJECT_READY_MAX_MS
+  const injectConfirmMs = config.term.injectConfirmMs ?? DEFAULT_INJECT_CONFIRM_MS
+
+  /** Idle-signal / confirm only when herdr actually started an agent pane.
+   *  Roster key alone is not enough: wrappers and absolute-path argv run as
+   *  plain panes and never emit status. */
+  const usesHerdrIdleSignal = (r: PtyRecord): boolean =>
+    r.muxKind === 'herdr' && Boolean(r.agentPane)
+
+  const canConfirmInject = (r: PtyRecord): boolean => usesHerdrIdleSignal(r)
+
+  const agentGone = (r: PtyRecord): boolean => Boolean(r.agentPane && r.agentEnded)
+
+  const clearReadyTimers = (r: PtyRecord): void => {
+    if (r.readyTimer) {
+      clearTimeout(r.readyTimer)
+      r.readyTimer = undefined
+    }
+    if (r.readyCeilingTimer) {
+      clearTimeout(r.readyCeilingTimer)
+      r.readyCeilingTimer = undefined
+    }
+  }
+
+  const restStartMs = (r: PtyRecord): number => Math.max(0, r.injectNextAtMs - now())
+
+  const nextInjectTurn = (r: PtyRecord): number => {
+    r.injectSeq = (r.injectSeq ?? 0) + 1
+    return r.injectSeq
+  }
+
+  const flushRest = (r: PtyRecord): void => {
+    const rest = r.injectRest
+    r.injectRest = undefined
+    if (!rest || rest.length === 0) return
+    const startMs = restStartMs(r)
+    rest.forEach((d, i) => submitWrite(r, d.text, d.submit, startMs + i * submitDelayMs * 2))
+    r.injectNextAtMs = now() + startMs + rest.length * submitDelayMs * 2
+  }
+
+  const recordUnconfirmed = (r: PtyRecord, turn: number, reason: string): void => {
+    r.injectUnconfirmed = { ts: now(), turn }
+    deps.log(`[den-server] term: ${reason}`)
+  }
+
+  const dropBufferedInjects = (r: PtyRecord): void => {
+    r.injectRest = undefined
+    r.injectBuffer = []
+    r.confirmTurn = undefined
+  }
+
+  const confirmInjectIfPending = (r: PtyRecord): void => {
+    if (r.confirmTurn === undefined) {
+      r.injectUnconfirmed = undefined
+      return
+    }
+    if (r.confirmTimer) {
+      clearTimeout(r.confirmTimer)
+      r.confirmTimer = undefined
+    }
+    r.confirmTurn = undefined
+    r.injectUnconfirmed = undefined
+    flushRest(r)
+  }
+
+  const scheduleConfirm = (r: PtyRecord): void => {
+    if (r.confirmTimer) clearTimeout(r.confirmTimer)
+    r.confirmTimer = setTimeout(() => {
+      r.confirmTimer = undefined
+      const turn = r.confirmTurn
+      if (turn === undefined || r.state !== 'running') {
+        r.confirmTurn = undefined
+        return
+      }
+      r.confirmTurn = undefined
+      recordUnconfirmed(
+        r,
+        turn,
+        `inject unconfirmed (turn ${turn}, no working frame within ${injectConfirmMs}ms)`,
+      )
+      if (agentGone(r)) {
+        dropBufferedInjects(r)
+        return
+      }
+      flushRest(r)
+    }, injectConfirmMs)
+    r.confirmTimer.unref()
+  }
+
+  const markReadyAndFlush = (r: PtyRecord): void => {
+    if (r.ready) return
+    if (r.state !== 'running') {
+      clearReadyTimers(r)
+      r.injectBuffer = []
+      return
+    }
+    if (agentGone(r)) {
+      // Keep the buffer and the ceiling. A later re-detect / idle can still
+      // flush; only the ceiling-while-ended path records failure.
+      return
+    }
+    clearReadyTimers(r)
+    r.ready = true
+    const pending = r.injectBuffer
+    r.injectBuffer = []
+    if (pending.length === 0) return
+    if (!canConfirmInject(r)) {
+      pending.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
+      r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
+      return
+    }
+    const [first, ...rest] = pending
+    r.injectRest = rest
+    submitWrite(r, first.text, first.submit, 0)
+    r.injectNextAtMs = now() + (first.submit ? submitDelayMs * 2 : submitDelayMs)
+    if (!first.submit) {
+      flushRest(r)
+      return
+    }
+    r.confirmTurn = nextInjectTurn(r)
+    scheduleConfirm(r)
+  }
+
+  const armCeiling = (r: PtyRecord): void => {
+    if (r.ready || r.readyCeilingTimer) return
+    r.readyCeilingTimer = setTimeout(() => {
+      r.readyCeilingTimer = undefined
+      if (r.ready || r.state !== 'running') return
+      if (agentGone(r)) {
+        const had =
+          r.injectBuffer.length > 0 || (r.injectRest !== undefined && r.injectRest.length > 0)
+        if (had) {
+          const turn = nextInjectTurn(r)
+          recordUnconfirmed(r, turn, 'agent ended before inject — dropping buffered turns')
+          dropBufferedInjects(r)
+        }
+        return
+      }
+      deps.log(
+        `[den-server] term: inject ready-gate hit injectReadyMaxMs (${injectReadyMaxMs}ms) — flushing buffered turns anyway`,
+      )
+      markReadyAndFlush(r)
+    }, injectReadyMaxMs)
+    r.readyCeilingTimer.unref()
+  }
+
+  const armQuiescence = (r: PtyRecord): void => {
+    if (r.ready || usesHerdrIdleSignal(r)) return
+    if (r.readyTimer) clearTimeout(r.readyTimer)
+    r.readyTimer = setTimeout(() => {
+      r.readyTimer = undefined
+      markReadyAndFlush(r)
+    }, config.term.injectReadyMs)
+    r.readyTimer.unref()
+  }
+
   if (herdr) {
     const ctl = herdr
+    const recFor = (name: string): PtyRecord | undefined =>
+      [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
     statusHub = createHerdrStatusHub({
       subscribe: (name, onEvent, onClose) =>
         ctl.subscribeEvents?.(name, onEvent, onClose) ?? ((): void => undefined),
+      onEvent: (name, evt) => {
+        const rec = recFor(name)
+        if (!rec) return
+        if (herdrAgentReleased(evt)) rec.agentEnded = true
+        else if (herdrAgentPresent(evt)) rec.agentEnded = false
+      },
       onFrame: (name, frame) => {
         if (process.env.RIVETOS_HERDR_DEBUG === '1')
           console.error(`[herdr] frame session=${name} status=${frame.status}`)
-        const rec = [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
-        if (rec && frame.status === 'working') touchActivity(rec)
+        const rec = recFor(name)
+        if (rec) {
+          rec.lastAgentStatus = frame.status
+          // working|idle|blocked prove the agent is alive — clear a prior
+          // release latch so it never sticks for the record's lifetime.
+          rec.agentEnded = false
+          if (frame.status === 'working') {
+            touchActivity(rec)
+            confirmInjectIfPending(rec)
+          }
+          if (!rec.ready && frame.status === 'idle' && usesHerdrIdleSignal(rec)) {
+            markReadyAndFlush(rec)
+          }
+        }
         const denSession = rec?.denSession ?? knownTmux.get(name)?.denSession ?? name
         deps.onHerdrStatus?.(denSession, {
           ...frame,
@@ -956,6 +1187,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     if (r.contextWindow !== undefined) out.contextWindow = r.contextWindow
     if (r.compactAt !== undefined) out.compactAt = r.compactAt
     if (r.contextSource !== undefined) out.contextSource = r.contextSource
+    if (r.injectUnconfirmed !== undefined) out.injectUnconfirmed = r.injectUnconfirmed
     return out
   }
 
@@ -1589,7 +1821,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           })
           if (
             herdr &&
-            herdrKindForCommand(key) &&
+            herdrUseAgent(herdrKindForCommand(key), argv[0] ?? '') &&
             (firstSeen || (statusHub?.refs(tmuxName) ?? 0) === 0)
           ) {
             statusHub?.retain(tmuxName, denSession)
@@ -1621,6 +1853,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           routedUser,
           tmuxName,
           muxKind: tmuxName ? (herdr ? 'herdr' : tmux ? 'tmux' : undefined) : undefined,
+          agentPane: Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? ''),
           persisted,
           attached: new Set(),
           exitWatchers: new Set(),
@@ -1646,27 +1879,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         proc.onData((data) => {
           r.lastOutputTs = now()
           touchActivity(r)
-          // Ready-gate: on the FIRST output, wait a short settle for the TUI to
-          // finish its initial render, then flush any buffered chat injects.
-          if (!r.ready && !r.readyTimer) {
-            r.readyTimer = setTimeout(() => {
-              r.readyTimer = undefined
-              // the proc may have died during the settle window (#316 review)
-              if (r.state !== 'running') {
-                r.injectBuffer = []
-                return
-              }
-              r.ready = true
-              // Stagger so a multi-turn buffer flushes text→CR→text→CR in order
-              // (each turn's paste + its own CR before the next turn's paste).
-              const pending = r.injectBuffer
-              r.injectBuffer = []
-              pending.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
-              // Continue the chain: a ready-path inject arriving right after the
-              // flush must queue behind the last staggered turn, not race it.
-              r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
-            }, config.term.injectReadyMs)
-            r.readyTimer.unref()
+          // Ready-gate: quiescence re-arms on every chunk; herdr known kinds
+          // wait for agent-idle instead. Ceiling is armed once.
+          if (!r.ready) {
+            armCeiling(r)
+            armQuiescence(r)
           }
           appendScrollback(r, data)
           for (const cb of r.attached) cb(data)
@@ -1856,8 +2073,16 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // re-arms idle-TTL so a live chat turn keeps the harness alive.
       touchActivity(r)
       // Ready-gate (5g): before the harness TUI is up, buffer instead of
-      // writing into the void; the onData settle timer flushes it.
+      // writing into the void; quiescence / herdr idle / ceiling flushes it.
       if (r.ready) {
+        // A first-turn confirm is still in flight: hold later turns so they
+        // cannot land before turn 1's paste+submit has been written.
+        if (r.confirmTurn !== undefined) {
+          r.injectRest = r.injectRest ?? []
+          if (r.injectRest.length >= INJECT_BUFFER_MAX) return false
+          r.injectRest.push({ text, submit })
+          return true
+        }
         // Serialize against any in-flight turn so paste/CR pairs never
         // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
         // one submit delay — parallel API clients or a UI without a send lock.
@@ -1878,6 +2103,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // the harness is ready (#316 review).
       if (r.injectBuffer.length >= INJECT_BUFFER_MAX) return false
       r.injectBuffer.push({ text, submit })
+      armCeiling(r)
       return true
     },
 

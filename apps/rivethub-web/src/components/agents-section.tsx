@@ -27,6 +27,7 @@ import { useConnection } from '../stores/connection.js'
 import { useNodeName, urlLabel } from '../lib/node-name.js'
 import { useConfirmDialog } from './confirm-dialog.js'
 import { Select } from './select.js'
+import { agentCopySeed, canOfferAgentCopy, copyName, type AgentDraft } from '../lib/agent-copy.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import {
   defaultEffort,
@@ -100,9 +101,15 @@ interface NodeSelectorProps {
   value: string
   onChange: (baseUrl: string) => void
   disabled?: boolean
+  excludedNodes?: string[]
 }
 
-function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Element {
+function NodeSelector({
+  value,
+  onChange,
+  disabled,
+  excludedNodes = [],
+}: NodeSelectorProps): JSX.Element {
   const { roster, baseUrl: currentBaseUrl } = useConnection()
   const rosterNodes = uniqueRosterNodes(roster, currentBaseUrl)
   const uniqueNodes =
@@ -115,7 +122,9 @@ function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Ele
       <label className="text-xs text-ink-dim">Node</label>
       <Select
         value={value}
-        options={uniqueNodes.map((n) => ({ value: n.baseUrl, label: n.name }))}
+        options={uniqueNodes
+          .filter((n) => !excludedNodes.includes(n.baseUrl))
+          .map((n) => ({ value: n.baseUrl, label: n.name }))}
         onChange={onChange}
         disabled={disabled}
         label="Node"
@@ -126,28 +135,42 @@ function NodeSelector({ value, onChange, disabled }: NodeSelectorProps): JSX.Ele
 }
 
 interface AgentEditorProps {
-  agent?: AgentPreset
+  agent?: RosterAgent
+  duplicate?: { source: RosterAgent; draft: AgentDraft }
   onSave: (agent: AgentPatch) => void
   onCancel: () => void
+  onDuplicate?: (draft: AgentDraft) => void
   disabled?: boolean
   errorText?: string
 }
 
 function AgentEditor({
   agent,
+  duplicate,
   onSave,
   onCancel,
+  onDuplicate,
   disabled,
   errorText,
 }: AgentEditorProps): JSX.Element {
-  const { baseUrl, transportEpoch } = useConnection()
-  const [name, setName] = useState(agent?.name ?? '')
-  const [color, setColor] = useState(agent?.color ?? '')
-  const [harnessId, setHarnessId] = useState(agent?.harnessId ?? '')
-  const [model, setModel] = useState(agent?.model ?? '')
-  const [effort, setEffort] = useState(agent?.effort ?? '')
-  const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '')
-  const [nodeBaseUrl, setNodeBaseUrl] = useState(agent?.nodeBaseUrl ?? baseUrl)
+  const { baseUrl, roster, transportEpoch } = useConnection()
+  const init = agent ?? duplicate?.draft
+  const [name, setName] = useState(duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''))
+  const [color, setColor] = useState(init?.color ?? '')
+  const [rawHarnessId, setHarnessId] = useState(init?.harnessId ?? '')
+  const [rawModel, setModel] = useState(init?.model ?? '')
+  const [rawEffort, setEffort] = useState(init?.effort ?? '')
+  const [systemPrompt, setSystemPrompt] = useState(init?.systemPrompt ?? '')
+  const excludedNodes = duplicate
+    ? [duplicate.source.nodeBaseUrl, duplicate.source.sourceNodeBaseUrl]
+    : []
+  const [nodeBaseUrl, setNodeBaseUrl] = useState(
+    agent?.sourceNodeBaseUrl ??
+      (duplicate
+        ? (uniqueRosterNodes(roster, baseUrl).find((n) => !excludedNodes.includes(n.baseUrl))
+            ?.baseUrl ?? '')
+        : baseUrl),
+  )
   const nodeLocked = Boolean(agent)
   const formRef = useRef<HTMLFormElement | null>(null)
   // A picker's Radix popper still being mounted means that popover owns the
@@ -162,35 +185,58 @@ function AgentEditor({
   const harnessesQuery = useQuery({
     queryKey: ['harnesses', nodeBaseUrl, transportEpoch],
     queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).harnesses(signal),
-    staleTime: 60_000,
+    staleTime: duplicate ? 0 : 60_000,
+    enabled: Boolean(nodeBaseUrl),
   })
   const harnesses = harnessesQuery.data?.harnesses ?? []
+  const copy =
+    duplicate && nodeBaseUrl && !excludedNodes.includes(nodeBaseUrl)
+      ? agentCopySeed(
+          {
+            name,
+            color,
+            systemPrompt,
+            harnessId: rawHarnessId,
+            model: rawModel,
+            effort: rawEffort,
+          },
+          duplicate.source,
+          { nodeBaseUrl, harnesses },
+        )
+      : undefined
+  const harnessId = duplicate ? (copy?.seed.harnessId ?? '') : rawHarnessId
+  const model = duplicate ? (copy?.seed.model ?? '') : rawModel
+  const effort = duplicate ? (copy?.seed.effort ?? '') : rawEffort
+  const copyReady =
+    !duplicate ||
+    Boolean(copy && harnessesQuery.isSuccess && !harnessesQuery.isFetching && harnessId)
+  const offerCopy = canOfferAgentCopy(agent, nodeBaseUrl, harnessesQuery.isError)
   const sheet = harnesses.find((h) => h.harnessId === harnessId)?.capabilities
   const models = modelOptionsFor(sheet)
-  if (model && !models.some((o) => o.value === model)) {
+  if (!duplicate && model && !models.some((o) => o.value === model)) {
     models.unshift({ value: model, label: model })
   }
   const efforts = effortOptionsFor(sheet, model)
-  if (effort && !efforts.some((o) => o.value === effort)) {
+  if (!duplicate && effort && !efforts.some((o) => o.value === effort)) {
     efforts.unshift({ value: effort, label: effort })
   }
   const harnessOptions: { value: string; label: string }[] = harnesses.map((h) => ({
     value: h.harnessId,
     label: harnessLabel(h.harnessId),
   }))
-  if (harnessId && !harnessOptions.some((o) => o.value === harnessId)) {
+  if (!duplicate && harnessId && !harnessOptions.some((o) => o.value === harnessId)) {
     harnessOptions.unshift({ value: harnessId, label: harnessLabel(harnessId) })
   }
 
   useEffect(() => {
-    if (agent || harnessId || harnesses.length === 0) return
+    if (agent || duplicate || harnessId || harnesses.length === 0) return
     const first = harnesses[0].harnessId
     setHarnessId(first)
     const firstSheet = harnesses[0].capabilities
     const m = defaultModel(firstSheet)
     setModel(m)
     setEffort(defaultEffort(firstSheet, m))
-  }, [agent, harnessId, harnesses])
+  }, [agent, duplicate, harnessId, harnesses])
 
   // Restore focus to the opener (Plus / Pencil) when the dialog closes.
   useEffect(() => {
@@ -231,6 +277,7 @@ function AgentEditor({
 
   const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
+    if (!copyReady) return
     const patch: AgentPatch = {
       name,
       color,
@@ -259,14 +306,14 @@ function AgentEditor({
         ref={formRef}
         role="dialog"
         aria-modal="true"
-        aria-label={agent ? 'Edit agent' : 'New agent'}
+        aria-label={agent ? 'Edit agent' : duplicate ? 'Copy agent' : 'New agent'}
         onClick={(e) => e.stopPropagation()}
         onSubmit={handleSubmit}
         className="flex max-h-[85vh] w-96 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-lg"
       >
         <div className="flex items-center justify-between">
           <span className="text-sm font-semibold text-em">
-            {agent ? 'Edit Agent' : 'New Agent'}
+            {agent ? 'Edit Agent' : duplicate ? 'Copy Agent' : 'New Agent'}
           </span>
           <button
             type="button"
@@ -313,6 +360,7 @@ function AgentEditor({
         </div>
 
         <NodeSelector
+          excludedNodes={excludedNodes}
           value={nodeBaseUrl}
           onChange={setNodeBaseUrl}
           disabled={disabled || nodeLocked}
@@ -331,12 +379,50 @@ function AgentEditor({
               setEffort(defaultEffort(next, m))
             }}
             disabled={disabled || harnessesQuery.isError}
-            title={harnessesQuery.isError ? 'harnesses unavailable' : undefined}
+            title={
+              harnessesQuery.isError ? `Couldn't load harnesses from ${nodeBaseUrl}` : undefined
+            }
             label="Harness"
             className="w-full"
           />
           {harnessesQuery.isError && (
-            <span className="text-[10px] text-red">harnesses unavailable on this node</span>
+            <div role="status" className="flex flex-col gap-1.5">
+              <span className="text-xs text-red">
+                Couldn't load harnesses from {nodeBaseUrl}.
+                {offerCopy
+                  ? " Saving also needs a successful connection to this node. A preset's node cannot be changed. You can create a copy on another reachable node; the original stays on its node and can be deleted when that node is reachable again."
+                  : agent
+                    ? ' Saving requires a connection to the preset’s node.'
+                    : ' Pick another node or retry when this node is reachable.'}
+              </span>
+              {offerCopy && onDuplicate && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onDuplicate({ name, color, harnessId, model, effort, systemPrompt })
+                  }
+                  disabled={disabled}
+                  className="self-start rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+                >
+                  Copy to another node…
+                </button>
+              )}
+            </div>
+          )}
+          {duplicate && (
+            <div role="status" className="text-xs text-ink-dim">
+              Create a copy on a reachable node. The original preset and its history stay on the
+              original node; delete that preset when its node is reachable again.
+              {!nodeBaseUrl && <p>Add another node to the roster to create a copy.</p>}
+              {harnessesQuery.isSuccess && !harnessesQuery.isFetching && (
+                <>
+                  {copy?.notes.map((note) => (
+                    <p key={note}>{note}</p>
+                  ))}
+                  {!harnessId && <p>This target offers no harnesses. Choose another node.</p>}
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -347,6 +433,7 @@ function AgentEditor({
               value={model}
               options={models}
               onChange={(id) => {
+                setHarnessId(harnessId)
                 setModel(id)
                 setEffort(defaultEffort(sheet, id))
               }}
@@ -363,7 +450,11 @@ function AgentEditor({
             <Select
               value={effort}
               options={efforts}
-              onChange={setEffort}
+              onChange={(id) => {
+                setHarnessId(harnessId)
+                setModel(model)
+                setEffort(id)
+              }}
               disabled={disabled}
               label="Effort"
               className="w-full"
@@ -383,19 +474,24 @@ function AgentEditor({
           />
         </div>
 
-        {errorText && <div className="text-xs text-red">{errorText}</div>}
+        {errorText && (
+          <div role="alert" className="text-xs text-red">
+            {errorText}
+          </div>
+        )}
 
         <div className="flex gap-2">
           <button
             type="submit"
             disabled={
+              !copyReady ||
               !name.trim() ||
               disabled ||
               (color.trim() !== '' && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
             }
             className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
           >
-            {agent ? 'Update' : 'Create'}
+            {agent ? 'Update' : duplicate ? 'Create copy' : 'Create'}
           </button>
           <button
             type="button"
@@ -598,6 +694,9 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const [collapsed, setCollapsed] = useState(false)
   const [editing, setEditing] = useState<RosterAgent | null>(null)
   const [creating, setCreating] = useState(false)
+  const [duplicating, setDuplicating] = useState<{ source: RosterAgent; draft: AgentDraft } | null>(
+    null,
+  )
   const dialog = useConfirmDialog()
 
   const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
@@ -652,6 +751,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setCreating(false)
+      setDuplicating(null)
     },
   })
 
@@ -682,7 +782,10 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const deleteMutation = useMutation({
     mutationFn: async ({ id, targetNode }: { id: string; targetNode: string }) =>
       (await gatewayFor(targetNode)).agentDelete(id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] }),
+    onSuccess: (_result, { id }) => {
+      clearAgentLastSession(id)
+      void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
+    },
   })
 
   // Stable cancel handlers — the editor's document keydown effect depends on
@@ -691,6 +794,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const { reset: resetUpdate } = updateMutation
   const cancelCreate = useCallback(() => {
     setCreating(false)
+    setDuplicating(null)
     resetCreate()
   }, [resetCreate])
   const cancelEdit = useCallback(() => {
@@ -910,6 +1014,8 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             type="button"
             onClick={() => {
               setEditing(null)
+              setDuplicating(null)
+              resetCreate()
               setCreating(true)
             }}
             className="text-ink-dim hover:text-em"
@@ -924,7 +1030,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       {!collapsed && (
         <div className="mt-1 flex flex-col gap-1">
           {isLoading && !compact && <div className="px-2 text-xs text-ink-dim">loading…</div>}
-          {!isLoading && agents.length === 0 && !creating && !compact && (
+          {!isLoading && agents.length === 0 && !creating && !duplicating && !compact && (
             <div className="px-2 text-xs text-ink-dim">no agents yet</div>
           )}
           {agents.map((agent) => (
@@ -937,6 +1043,8 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               onStartOver={() => handleStartOver(agent)}
               onEdit={() => {
                 setCreating(false)
+                setDuplicating(null)
+                resetUpdate()
                 setEditing(agent)
               }}
               onDelete={() => {
@@ -946,7 +1054,6 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                       danger: true,
                     })
                   ) {
-                    clearAgentLastSession(agent.id)
                     deleteMutation.mutate({
                       id: agent.id,
                       targetNode: agent.sourceNodeBaseUrl,
@@ -956,6 +1063,12 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               }}
             />
           ))}
+        </div>
+      )}
+
+      {deleteMutation.error && (
+        <div role="alert" className="px-2 text-xs text-red">
+          Could not delete preset: {mutationError(deleteMutation.error)}
         </div>
       )}
 
@@ -970,12 +1083,20 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             })
           }
           onCancel={cancelEdit}
+          onDuplicate={(draft) => {
+            const source = editing
+            setEditing(null)
+            resetUpdate()
+            resetCreate()
+            setDuplicating({ source, draft })
+          }}
           disabled={updateMutation.isPending}
           errorText={updateMutation.error ? mutationError(updateMutation.error) : undefined}
         />
       )}
-      {creating && (
+      {(creating || duplicating) && (
         <AgentEditor
+          duplicate={duplicating ?? undefined}
           onSave={(agent) => createMutation.mutate(agent)}
           onCancel={cancelCreate}
           disabled={createMutation.isPending}
