@@ -82,11 +82,7 @@ import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
 import { agentStatusLine } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
-import {
-  createOutboundPump,
-  type OutboundPump,
-  type OutboundPumpStore,
-} from '../lib/outbound-pump.js'
+import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
@@ -95,7 +91,6 @@ import {
   fetchHarnessPlaneSessions,
   findChatItem,
   harnessGate,
-  isTurnInFlight,
   nativeIdOf,
   rosterCommandFor,
   shortNativeId,
@@ -132,86 +127,6 @@ const EMPTY_TOOLS: LiveToolEntry[] = []
 
 /** Pause between a control-plane interrupt and the turn that displaced it. */
 const INTERRUPT_SETTLE_MS = 400
-
-/** Adapter handing the extracted pump (lib/outbound-pump.ts) the chat-store
- *  slice it drives — reads go through getState() so the pump always sees the
- *  latest queue/live state. */
-const pumpStore: OutboundPumpStore = {
-  queue: (sid) => useChat.getState().outbound[sid],
-  liveIsBusy: (sid) => useChat.getState().liveIsBusy(sid),
-  live: (sid) => useChat.getState().live[sid],
-  liveTs: (sid) => useChat.getState().liveTs[sid],
-  markSending: (sid, id) => useChat.getState().markOutboundSending(sid, id),
-  dequeue: (sid, id) => useChat.getState().dequeueOutbound(sid, id),
-  requeue: (sid, id) => useChat.getState().requeueOutbound(sid, id),
-  fail: (sid, id) => useChat.getState().failOutbound(sid, id),
-  beginLive: (sid, activity) => useChat.getState().beginLive(sid, activity),
-  clearLive: (sid) => useChat.getState().clearLive(sid),
-  awaitBusy: (sid, ms) =>
-    new Promise((resolve) => {
-      if (useChat.getState().liveIsBusy(sid)) {
-        resolve()
-        return
-      }
-      let settled = false
-      const finish = (): void => {
-        if (settled) return
-        settled = true
-        unsub()
-        clearTimeout(timer)
-        resolve()
-      }
-      const unsub = useChat.subscribe(() => {
-        if (useChat.getState().liveIsBusy(sid)) finish()
-      })
-      const timer = setTimeout(finish, ms)
-    }),
-}
-
-type InjectSink = (
-  text: string,
-  interrupt: boolean,
-  attachments?: import('@rivetos/types').UserTurn['attachments'],
-) => Promise<void>
-
-/**
- * One outbound pump per conversation, for the app lifetime. ActiveSession
- * remounts on every session switch (it is keyed by session id), and a
- * per-mount pump drops the single-flight/inject latch — the only
- * double-inject guard — exactly in the window it exists to protect: the old
- * pump keeps latching (its trailing clearLive nukes whatever the new pump
- * started) while the new pump sees a non-busy placeholder and injects.
- * The view rebinds the inject sink on every (re)mount;
- * nothing disposes these (dispose is the terminal teardown, exercised by the
- * pump tests).
- */
-const outboundPumps = new Map<string, { pump: OutboundPump; sink: { current: InjectSink } }>()
-
-function outboundPumpFor(sessionId: string): {
-  pump: OutboundPump
-  sink: { current: InjectSink }
-} {
-  let entry = outboundPumps.get(sessionId)
-  if (!entry) {
-    // Rejects until a mounted view binds its inject: a pump firing with no
-    // view (a retry timer outliving the component) must fail the bubble
-    // visibly, never report a silent success and drop the message.
-    const sink: { current: InjectSink } = {
-      current: () => Promise.reject(new Error('no mounted session view')),
-    }
-    entry = {
-      sink,
-      pump: createOutboundPump({
-        sessionId,
-        store: pumpStore,
-        inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
-        isTurnInFlight,
-      }),
-    }
-    outboundPumps.set(sessionId, entry)
-  }
-  return entry
-}
 
 // A draft id IS a UUID so it can become the harness's native session id
 // (claude --session-id requires a UUID). It stays bare until the control plane
@@ -1188,27 +1103,22 @@ function ActiveSession(props: {
   const termPtyRef = useRef<string | undefined>(undefined)
   termPtyRef.current = termPtyId
   // Selectors must return stable references when empty (see EMPTY_* above).
-  const messages = useChat((s) => s.messages[props.sessionId] ?? EMPTY_MESSAGES)
-  const agentStatus = useChat((s) => s.agentStatus[props.sessionId])
+  const messages = useChat((s) => s.messagesFor(props.sessionId) ?? EMPTY_MESSAGES)
+  const agentStatus = useChat((s) => s.agentStatus[s.resolveSessionKey(props.sessionId)])
   // The live turn changes identity on every streaming tick. Subscribe to the
   // full object only while it is actually rendered (chat mode); terminal
   // rides the boolean selectors below, so a busy stream doesn't repaint the
   // whole session view (header, xterm) per token.
-  const liveRaw = useChat((s) => (mode === 'chat' ? s.live[props.sessionId] : undefined))
+  const liveRaw = useChat((s) =>
+    mode === 'chat' ? s.live[s.resolveSessionKey(props.sessionId)] : undefined,
+  )
   const live = useMemo(() => {
     if (!liveRaw) return undefined
     if (!agentStatus) return liveRaw
     const activity = statusActivity(agentStatus)
     return activity !== undefined ? { ...liveRaw, activity } : liveRaw
   }, [liveRaw, agentStatus])
-  const liveBusy = useChat((s) => {
-    if (s.liveSource[props.sessionId] === 'transcript') {
-      const st = s.agentStatus[props.sessionId]?.status
-      return st === 'working' || st === 'blocked'
-    }
-    const L = s.live[props.sessionId]
-    return !!(L && (L.text || L.tools.length > 0 || L.reasoningText))
-  })
+  const liveBusy = useChat((s) => s.liveIsBusy(props.sessionId))
   // Context-fill: prefer the newest assistant turn that still carries usage
   // (Claude live path + harness resync). Fall back to the latest assistant
   // for model id; ContextBar estimates tokens when usage is absent.
@@ -1225,7 +1135,7 @@ function ActiveSession(props: {
     if (lastWithUsage) break
   }
   const contextSource = lastWithUsage ?? lastAssistant
-  const transcriptCtx = useChat((s) => s.transcripts[props.sessionId])
+  const transcriptCtx = useChat((s) => s.transcripts[s.resolveSessionKey(props.sessionId)])
   const wsStatus = useChat((s) => s.wsStatus)
   const wsEpoch = useChat((s) => s.wsEpoch)
   const seed = useChat((s) => s.seed)
@@ -1299,7 +1209,8 @@ function ActiveSession(props: {
             queryKey: ['remote-session', sessionBase, props.sessionId],
           })
         },
-        liveSource: () => useChat.getState().liveSource[props.sessionId],
+        liveSource: () =>
+          useChat.getState().liveSource[useChat.getState().resolveSessionKey(props.sessionId)],
         onError: (err) => setStreamError(err instanceof Error ? err.message : String(err)),
         // Terminal: the attachment has already stopped itself, so say so plainly
         // instead of leaving a banner that looks like it might clear.
@@ -1329,7 +1240,7 @@ function ActiveSession(props: {
     sessionBase,
     queryClient,
   ])
-  const transcript = useChat((s) => s.transcripts[props.sessionId])
+  const transcript = useChat((s) => s.transcripts[s.resolveSessionKey(props.sessionId)])
   const storeHasTurns = (transcript?.turns.length ?? 0) > 0
   // Backfill gate: bindHarness seeds rev 0; the first transcript frame bumps
   // it. Empty after that (API-only / fresh draft) → HTTP ring. Socket closed
@@ -1494,9 +1405,9 @@ function ActiveSession(props: {
   // (gate/canonicalId change between renders AND between mounts).
   const enqueueOutbound = useChat((s) => s.enqueueOutbound)
   const clearLive = useChat((s) => s.clearLive)
-  const outbound = useChat((s) => s.outbound[props.sessionId] ?? EMPTY_OUTBOUND)
-  const pendingAsk = useChat((s) => s.ask[props.sessionId])
-  const boundPrompt = useChat((s) => s.prompts[props.sessionId]?.[0])
+  const outbound = useChat((s) => s.queueFor(props.sessionId) ?? EMPTY_OUTBOUND)
+  const pendingAsk = useChat((s) => s.ask[s.resolveSessionKey(props.sessionId)])
+  const boundPrompt = useChat((s) => s.prompts[s.resolveSessionKey(props.sessionId)]?.[0])
   const dismissAsk = useChat((s) => s.dismissAsk)
   const composerRef = useRef<ComposerHandle | null>(null)
   const pumpEntry = outboundPumpFor(props.sessionId)
@@ -1513,7 +1424,7 @@ function ActiveSession(props: {
   // dismiss-reset below has to see it arrive. Stable EMPTY_TOOLS keeps this
   // from re-rendering terminal mode per tick when no ask tool is present.
   const liveAskTools = useChat((s) => {
-    const tools = s.live[props.sessionId]?.tools
+    const tools = s.live[s.resolveSessionKey(props.sessionId)]?.tools
     return tools && tools.some((t) => isAskUserTool(t.name)) ? tools : EMPTY_TOOLS
   })
   const liveAsk = questionsFromLiveTools(liveAskTools)
@@ -1542,8 +1453,9 @@ function ActiveSession(props: {
   const peekSystemPrompt = (): string | undefined => {
     if (wasSystemPromptSent(props.sessionId)) return undefined
     const chat = useChat.getState()
-    if ((chat.messages[props.sessionId] ?? EMPTY_MESSAGES).length > 0) return undefined
-    if ((chat.transcripts[props.sessionId]?.turns.length ?? 0) > 0) return undefined
+    if ((chat.messagesFor(props.sessionId) ?? EMPTY_MESSAGES).length > 0) return undefined
+    if ((chat.transcripts[chat.resolveSessionKey(props.sessionId)]?.turns.length ?? 0) > 0)
+      return undefined
     const prompt = persisted(
       useChatSettings.getState().byKey,
       sessionBase,
@@ -1681,8 +1593,11 @@ function ActiveSession(props: {
   const onInjectOutbound = useCallback(
     (id: string): void => {
       // Inject NOW means now: Esc the in-flight turn so the harness drops what
-      // it's doing and picks this message up (idle harness: the Esc is a no-op).
-      const interrupt = useChat.getState().liveIsBusy(props.sessionId)
+      // it's doing and picks this message up. A failed turn's retry does not interrupt.
+      const state = useChat.getState()
+      const key = state.resolveSessionKey(props.sessionId)
+      const failed = state.queueFor(props.sessionId)?.find((o) => o.id === id)?.status === 'failed'
+      const interrupt = !failed && state.liveIsBusy(key)
       void pumpEntry.pump.pump({ forceId: id, interrupt }).catch(() => undefined)
     },
     [props.sessionId, pumpEntry],
@@ -1692,7 +1607,10 @@ function ActiveSession(props: {
     (id: string): void => {
       // Recall, don't discard: the text goes back into the composer so it can
       // be edited and re-sent (prepended above any draft already in progress).
-      const item = useChat.getState().outbound[props.sessionId]?.find((o) => o.id === id)
+      const item = useChat
+        .getState()
+        .queueFor(props.sessionId)
+        ?.find((o) => o.id === id)
       useChat.getState().cancelOutbound(props.sessionId, id)
       if (item?.text) composerRef.current?.prepend(item.text)
       // Free the pump only when the cancelled id IS the in-flight send — the
@@ -1714,7 +1632,9 @@ function ActiveSession(props: {
   const outboundStatus = useMemo(
     () =>
       Object.fromEntries(
-        outbound.filter((o) => o.status === 'sending').map((o) => [o.id, 'sending' as const]),
+        outbound
+          .filter((o) => o.status !== 'queued')
+          .map((o) => [o.id, o.status as 'sending' | 'failed']),
       ),
     [outbound],
   )
@@ -1734,7 +1654,7 @@ function ActiveSession(props: {
 
   // Approvals only exist for drivers that surface their permission gate on the
   // wire; `claude-code` reports `approvals: true` when PTY+herdr are up.
-  const pendingApprovals = useChat((s) => s.approvals[props.sessionId])
+  const pendingApprovals = useChat((s) => s.approvals[s.resolveSessionKey(props.sessionId)])
   const onDecideApproval = (requestId: string, decision: ApprovalDecision): void => {
     if (!canonicalId) return
     // Optimistic: the driver broadcasts approval-resolved to every subscriber,
@@ -1743,7 +1663,9 @@ function ActiveSession(props: {
     // vanished card would leave the session wedged with nothing to click.
     const request = useChat
       .getState()
-      .approvals[props.sessionId]?.find((p) => p.requestId === requestId)
+      .approvals[useChat.getState().resolveSessionKey(props.sessionId)]?.find(
+        (p) => p.requestId === requestId,
+      )
     useChat.getState().clearApproval(props.sessionId, requestId)
     void sessionGateway()
       .then((gw) => gw.resolveHarnessApproval(canonicalId, requestId, decision))
@@ -1946,7 +1868,10 @@ function ActiveSession(props: {
             onAnswerAsk={
               canonicalId
                 ? async (answers) => {
-                    const prompt = useChat.getState().prompts[props.sessionId]?.[0]
+                    const prompt =
+                      useChat.getState().prompts[
+                        useChat.getState().resolveSessionKey(props.sessionId)
+                      ]?.[0]
                     if (!prompt) throw new Error('no open prompt')
                     const gw = await sessionGateway()
                     await gw.answerHarnessPrompt(canonicalId, prompt.promptId, { answers })
