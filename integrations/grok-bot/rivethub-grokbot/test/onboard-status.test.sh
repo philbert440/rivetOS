@@ -395,6 +395,10 @@ assert_status_no_secret 'user:pass@host.example' 'user:pass' datahub 'scheme-les
 assert_status_no_secret 'user:pass@cloud.example' 'user:pass' cloud 'scheme-less cloud_url userinfo'
 assert_status_no_secret 'user:p@ss:w0rd@host.example:5432/db' 'p@ss:w0rd' datahub 'scheme-less password with @ and :'
 assert_status_no_secret 'u:p@[::1]:5432' 'u:p@' datahub 'scheme-less IPv6 with userinfo'
+assert_status_no_secret 'datahub.example/db?password=p@sswor' 'sswor' datahub 'scheme-less @ in query'
+assert_status_no_secret 'datahub.example/db@user:pass' 'user:pass' datahub 'scheme-less @ in path'
+assert_status_no_secret 'postgres://datahub.example/db?password=p@sswor' 'sswor' datahub 'scheme @ in query'
+assert_status_no_secret 'postgres://datahub.example/db@user:pass' 'user:pass' datahub 'scheme @ in path'
 
 # Isolated wrapper: missing sibling must reach the fallback message
 ISO="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-wrapper.XXXXXX")"

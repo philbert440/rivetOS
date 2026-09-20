@@ -1,12 +1,12 @@
 {
-  "_comment": "Example only — enable when Grok Bot loads plugin hooks like Grok Build / Claude Code.",
+  "_comment": "Example only — enable when Grok Bot loads plugin hooks like Grok Build / Claude Code. There is no rivet-memory-hook.sh in this package; Stop should call the sibling capture ingest until a dedicated hook ships.",
   "hooks": {
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "${CURSOR_PLUGIN_ROOT}/../rivet-memory/bin/rivet-memory-hook.sh",
+            "command": "${CURSOR_PLUGIN_ROOT}/../rivet-memory/capture/run-once.sh",
             "timeout": 60
           }
         ]

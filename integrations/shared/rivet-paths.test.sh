@@ -274,6 +274,10 @@ assert_redact 'user:pass@cloud.example' 'tcp cloud.example 443' 'user:pass' 'bar
 assert_redact 'user:p@ss:w0rd@host.example:5432/db' 'tcp host.example 5432' 'p@ss:w0rd' 'password with @ and :'
 assert_redact 'u:p@[::1]:5432' 'tcp ::1 5432' 'u:p@' 'IPv6 literal with userinfo'
 assert_redact 'user:pass@' 'unparseable' 'user:pass' 'empty host after @ is unparseable'
+assert_redact 'datahub.example/db?password=p@sswor' 'tcp datahub.example 5432' 'sswor' 'bare @ in query'
+assert_redact 'datahub.example/db@user:pass' 'tcp datahub.example 5432' 'user:pass' 'bare @ in path'
+assert_redact 'postgres://datahub.example/db?password=p@sswor' 'postgres datahub.example 5432' 'sswor' 'scheme @ in query'
+assert_redact 'postgres://datahub.example/db@user:pass' 'postgres datahub.example 5432' 'user:pass' 'scheme @ in path'
 
 # 18. supported shapes match bash source
 assert_matches_source() {
@@ -325,6 +329,10 @@ assert_matches_source 'RIVETOS_ROOT="${MISSING:-fallback}"' RIVETOS_ROOT 'double
 assert_matches_source 'RIVETOS_ROOT=#c0ffee' RIVETOS_ROOT 'unquoted #value is not a comment'
 assert_matches_source 'RIVETOS_ROOT=a#b' RIVETOS_ROOT 'unquoted mid-word hash'
 assert_matches_source 'RIVETOS_ROOT=a #b' RIVETOS_ROOT 'unquoted whitespace-hash is a comment'
+assert_matches_source 'RIVETOS_ROOT= #c' RIVETOS_ROOT 'unquoted space-hash is a comment'
+assert_matches_source $'RIVETOS_ROOT=\t#c' RIVETOS_ROOT 'unquoted tab-hash is a comment'
+assert_matches_source 'RIVETOS_ROOT=' RIVETOS_ROOT 'empty value'
+assert_matches_source 'RIVETOS_ROOT= ' RIVETOS_ROOT 'whitespace-only value'
 
 # 19. full-line # … is a comment (not an assignment)
 _saved_home="$HOME"
@@ -345,6 +353,26 @@ else
 fi
 HOME="$_saved_home"
 unset _saved_home
+cleanup_env
+
+# 19b. KEY= #comment is empty (effective unset), matching bash source
+with_envfile 'RIVETOS_PG_URL= # disabled'
+rivetos_load_env 2>"$ENV_DIR/load.err"
+if rivetos_is_effective_unset "${RIVETOS_PG_URL:-}"; then
+  pass 'KEY= #comment is effective unset'
+else
+  fail 'KEY= #comment should be empty'
+fi
+cleanup_env
+
+# 19c. launcher-style load under bash -x must not trace env-file secrets
+with_envfile 'RIVETOS_PG_URL=s3cret-xtrace-load'
+xout="$( { set -x; rivetos_load_env; } 2>&1 )"
+if printf '%s' "$xout" | grep -qF 's3cret-xtrace-load'; then
+  fail 'load_env leaked secret under bash -x'
+else
+  pass 'load_env does not leak under bash -x'
+fi
 cleanup_env
 
 # 20. unsupported shapes warn with the key, never the value

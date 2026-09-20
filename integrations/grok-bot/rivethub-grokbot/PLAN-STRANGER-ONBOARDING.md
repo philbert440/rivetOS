@@ -29,7 +29,7 @@ Same plugin either way. Mode chooses *where* memory/mesh traffic goes, not a dif
 - Reordering Capture → Delegation → Den
 - Patching the Grok Bot app
 - Baking secrets into the plugin package
-- Marketplace submit (still gated on house proofs + Philip yes)
+- Marketplace submit (still gated on house proofs + maintainer approval)
 
 ---
 
@@ -135,7 +135,7 @@ No Tailscale auth key in plugin settings (too easy to leak). Local path uses Tai
 
 ## Mapping to house reality (today)
 
-| Piece | House (Philip) | Stranger cloud | Stranger local |
+| Piece | Existing node | Stranger cloud | Stranger local |
 | --- | --- | --- | --- |
 | Plugin install | marketplace (needed) | marketplace | marketplace |
 | Network | Tailscale node `grokbot` | none | user’s Tailscale |

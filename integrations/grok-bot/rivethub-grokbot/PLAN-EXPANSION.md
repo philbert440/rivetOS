@@ -1,19 +1,19 @@
 # rivethub-grokbot expansion plan (narrowed + prioritized)
 
-**Status:** plan only — hold for Philip’s yes before any implementation  
+**Status:** plan only — hold for maintainer approval before any implementation  
 **Scope:** expand `rivethub-grokbot` to mesh-agent parity with Claude Code (`rivet-memory` + `rivet-den`) and Grok Build (`rivet-memory`).  
-**Priority order (Philip, 2026-09-12 — do not reorder):**  
+**Priority order (locked 2026-09-12 — do not reorder):**  
 1. **Capture**  
 2. **Delegation**  
 3. **Den** (live session stream for RivetHub / native apps)  
-**Owner (draft):** tinkabot · **Requester:** Rivet / Philip  
-**Current kit:** `integrations/grok-bot/rivethub-grokbot` **0.1.0** (local prove PASS 2026-09-05)
+**Owner (draft):** rivethub-grokbot maintainers · **Requester:** Rivet  
+**Current kit:** `integrations/grok-bot/rivethub-grokbot` **0.2.0** (local prove PASS 2026-09-05)
 
 ---
 
 ## Goal
 
-Same loop other mesh agents have — delivered in Philip’s order:
+Same loop other mesh agents have — delivered in priority order:
 
 | Priority | Piece | Today | Target |
 | --- | --- | --- | --- |
@@ -95,7 +95,7 @@ Create + poll a mesh task via MCP.
 
 A Grok Bot / Cursor session appears in RivetHub / den viewers like Claude’s does.
 
-**Depends on:** hooks surface or approved interim; ship after Priority 1–2 unless Philip says otherwise.
+**Depends on:** hooks surface or approved interim; ship after Priority 1–2 unless re-approved.
 
 ---
 
@@ -108,7 +108,7 @@ A Grok Bot / Cursor session appears in RivetHub / den viewers like Claude’s do
 | memory-researcher | Port `agents/memory-researcher.md` |
 | Member rule | Strengthen browse-first / no invented memories / redact |
 
-These fill out “full parity” but **Philip’s sequence is Capture → Delegation → Den.**
+These fill out “full parity” but **the sequence is Capture → Delegation → Den.**
 
 ---
 
@@ -128,7 +128,7 @@ Then: discipline / researcher / member-rule polish as needed
 - Grok Bot app patches  
 - Second store / new agent tags / third capture path  
 - Collapsing Claude Code or Grok Build plugins into this kit  
-- Building before Philip’s yes  
+- Building before maintainer approval  
 
 ---
 
@@ -142,4 +142,4 @@ Then: discipline / researcher / member-rule polish as needed
 
 ## Hold
 
-No implementation until Philip says yes.
+No implementation until approved.

@@ -3,6 +3,7 @@
     "rivetos": {
       "command": "${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh",
       "env": {
+        "RIVETOS_PLUGIN_ENV": "1",
         "RIVETOS_MODE": "${RIVETOS_MODE}",
         "RIVETOS_CLOUD_TOKEN": "${RIVETOS_CLOUD_TOKEN}",
         "RIVETOS_CLOUD_URL": "${RIVETOS_CLOUD_URL}",

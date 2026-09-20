@@ -16,8 +16,11 @@
 #                              forms expand inside double quotes (bash);
 #                              \$ is a literal dollar (persist). a~b and
 #                              "~/x" stay literal. Unquoted # is a comment
-#                              only after whitespace or at line start
-#                              (KEY=#x and KEY=a#b keep the hash).
+#                              after whitespace (KEY= #c and KEY=a #b drop
+#                              the rest; KEY=#x and KEY=a#b keep the hash)
+#                              or at line start. This parser never sources
+#                              the file; other harness hook/capture scripts
+#                              may still source ~/.rivetos/.env.
 #                              Double-quoted escapes match bash: only
 #                              \\ \" \$ \` lose their backslash.
 #                              $( ) and backticks do not expand. Other
@@ -296,14 +299,17 @@ rivetos_parse_env_line() {
   esac
   key="$(rivetos_trim "${line%%=*}")"
   [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || return 1
-  val="$(rivetos_trim "${line#*=}")"
-  case "$val" in
+  # Comment-ness is decided on the untrimmed remainder (bash). Trim only
+  # for quote-kind detection: `KEY= #c` is empty, `KEY=#c` is `#c`.
+  val="${line#*=}"
+  rest="$(rivetos_trim "$val")"
+  case "$rest" in
     \'*) _rivetos_env_quote=single ;;
     \"*) _rivetos_env_quote=double ;;
     *) _rivetos_env_quote=none ;;
   esac
   if [ "$_rivetos_env_quote" = none ]; then
-    case "$val" in
+    case "$rest" in
       *\\) _rivetos_env_unsupported="trailing-backslash continuation" ;;
     esac
   fi
@@ -315,15 +321,18 @@ rivetos_parse_env_line() {
 }
 
 rivetos_unquote_env_value() {
-  local s i c n out rest
-  s="$(rivetos_trim "$1")"
+  local s i c n out rest trimmed
+  s="$1"
   _rivetos_unquote_out=""
-  # bash: # starts a comment at line start or after whitespace, not at
-  # the first character of an unquoted value (KEY=#x stays #x).
-  if [ -z "$s" ]; then
+  # bash: on the untrimmed remainder, # starts a comment when preceded
+  # by whitespace (KEY= #c → empty, KEY=a #b → a). KEY=#c and KEY=a#b
+  # keep the hash. Trim only to detect quotes / empty.
+  trimmed="$(rivetos_trim "$s")"
+  if [ -z "$trimmed" ]; then
     return 0
   fi
-  if [ "${s:0:1}" = "'" ]; then
+  if [ "${trimmed:0:1}" = "'" ]; then
+    s="$trimmed"
     s="${s:1}"
     case "$s" in
       *"'"*)
@@ -338,8 +347,8 @@ rivetos_unquote_env_value() {
     esac
     return 0
   fi
-  if [ "${s:0:1}" = '"' ]; then
-    s="${s:1}"
+  if [ "${trimmed:0:1}" = '"' ]; then
+    s="${trimmed:1}"
     out=""
     i=0
     while [ "$i" -lt "${#s}" ]; do
@@ -379,6 +388,7 @@ rivetos_unquote_env_value() {
     return 0
   fi
   _rivetos_unquote_out="$(printf '%s' "$s" | sed 's/[[:space:]]\{1,\}#.*$//')"
+  _rivetos_unquote_out="$(rivetos_trim "$_rivetos_unquote_out")"
 }
 
 # Last assignment of KEY wins (systemd / CLI semantics).
@@ -398,8 +408,13 @@ rivetos_env_file_value() {
 # Export every parsed assignment. Later lines overwrite earlier ones.
 rivetos_apply_env_file() {
   local file="$1"
-  local line val construct
-  [ -f "$file" ] || return 0
+  local line val construct xtrace_on=0
+  case "$-" in *x*) xtrace_on=1 ;; esac
+  set +x
+  if [ ! -f "$file" ]; then
+    if [ "$xtrace_on" -eq 1 ]; then set -x; fi
+    return 0
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     _rivetos_env_unsupported=""
     _rivetos_expand_unsupported=""
@@ -432,6 +447,7 @@ rivetos_apply_env_file() {
       export "${_rivetos_env_key}=${val}"
     fi
   done <"$file"
+  if [ "$xtrace_on" -eq 1 ]; then set -x; fi
 }
 
 # Encode so bash source, this parser, and packages/cli parseEnvLine
@@ -476,8 +492,9 @@ rivetos_encode_env_value() {
 
 # URL on stdin. Prints "scheme host port" or "unparseable". Never echoes
 # userinfo or the raw value. $1 is the default port for a bare host[:port]
-# (no ://). Bare values drop userinfo at the last @, then /path ?query
-# #fragment, then parse host[:port] / [v6]:port.
+# (no ://). Bare values drop /path ?query #fragment first (so an @ in a
+# path or query is not userinfo), then userinfo at the last @, then parse
+# host[:port] / [v6]:port.
 rivetos_redact_endpoint() {
   local default_port="${1:-5432}"
   python3 -c '
@@ -499,8 +516,6 @@ def emit(scheme, host, port):
     print(f"{scheme} {host} {port}")
 
 def authority_only(s):
-    if "@" in s:
-        s = s.rsplit("@", 1)[-1]
     out = []
     in_br = False
     for ch in s:
@@ -514,7 +529,10 @@ def authority_only(s):
             break
         else:
             out.append(ch)
-    return "".join(out)
+    s = "".join(out)
+    if "@" in s:
+        s = s.rsplit("@", 1)[-1]
+    return s
 
 try:
     if "://" in raw:
@@ -608,6 +626,9 @@ rivetos_apply_cloud_defaults() {
 # RIVETOS_PLUGIN_ENV=1: process / plugin values win after stripping
 # placeholders, and a plugin postgres DataHub overwrites a file-only PG URL.
 rivetos_load_env() {
+  local xtrace_on=0
+  case "$-" in *x*) xtrace_on=1 ;; esac
+  set +x
   local env_file="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
   local restore="" n plugin_datahub plugin_pg plugin_mode=0
 
@@ -635,6 +656,7 @@ rivetos_load_env() {
     rivetos_apply_datahub_url
   fi
   rivetos_apply_cloud_defaults
+  if [ "$xtrace_on" -eq 1 ]; then set -x; fi
 }
 
 rivetos_find_root() {
