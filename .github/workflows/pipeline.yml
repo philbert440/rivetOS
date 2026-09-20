@@ -171,6 +171,11 @@ jobs:
             npx nx run-many -t test --all --parallel=5
           fi
 
+      # Shell helpers are not an nx workspace member. Always run them: they
+      # are the no-secret-output contract for onboard / status / rivet-paths.
+      - name: Integration helper tests
+        run: npm run test:integration-helpers
+
       - name: Build
         env:
           PUBLIC_POSTHOG_KEY: ${{ secrets.PUBLIC_POSTHOG_KEY }}

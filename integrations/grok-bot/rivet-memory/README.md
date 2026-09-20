@@ -21,14 +21,23 @@ Full mesh mTLS join is out of scope.
 
 ## Install
 
-**Version:** 0.2.0 (added capture/ for grokbot node automated transcript ingestion)
+**Version:** 0.2.1 (plugin-var / DataHub launcher alignment; capture/ unchanged)
 
-Preferred: as a Grok Bot plugin. Add the marketplace `philbert440/rivetOS` in Grok Bot
+**Strangers** should install the member kit **`rivethub-grokbot`** and run
+`rivetos-onboard` (cloud vs local). This package is the MCP sibling that kit
+launches.
+
+Preferred (house / power user): as a Grok Bot plugin. Add the marketplace `philbert440/rivetOS` in Grok Bot
 (it reads `.cursor-plugin/marketplace.json`) and install `rivet-memory-grokbot`. The plugin
 carries the MCP server (`.mcp.json` via `${CURSOR_PLUGIN_ROOT}`), the memory-recall skill,
 and the reflex rule (`rules/memory-reflex.md`) in one shot. The host still needs a built
-RivetOS checkout (default `/opt/rivetos`, override `RIVETOS_ROOT`) and `~/.rivetos/.env`
-with `RIVETOS_PG_URL` for the user Grok Bot runs as.
+RivetOS checkout (default `/opt/rivetos`, override `RIVETOS_ROOT`).
+
+Launcher read order: **plugin variables first** (`RIVETOS_MODE`, `RIVETOS_DATAHUB_URL`,
+cloud token/URL, optional `RIVETOS_PG_URL`), then `~/.rivetos/.env`. House nodes keep
+working with only the env file. `RIVETOS_DATAHUB_URL` maps onto `RIVETOS_PG_URL` when
+the value is `postgres://` / `postgresql://`. Never commit secrets; launchers never
+print PG URLs or tokens.
 
 Manual alternative: drop a `.cursor/mcp.json` in the project folder you open in Grok Bot:
 
