@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Sidebar Agents: pre-fill the existing create form from unsaved edits when a preset’s node fails to load harnesses, validate settings against another reachable node, and create a copy; the original stays on its node and can be deleted when it is reachable again. Surface save and delete failures.
 
+### RivetHub client
+
+- Chat: preserve in-flight sends, ordering, and visible failure/retry across draft adoption and native-id rotation (#795).
+
 ### Breaking
 
 - Per-user memory routing reads only the users.json registry (`RIVETOS_USERS_FILE`, else `$RIVETOS_SHARED_DIR/rivetos/users.json`, else `~/.rivetos/users.json`). The `RIVETOS_USER_DBS` and `RIVETOS_DEN_DEVICE_USERS` env maps are removed — leftover values do not route.

@@ -46,6 +46,7 @@ import {
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 import type { HarnessApprovalEvent } from '../lib/harness-fold.js'
 import { denRoomKey } from '../lib/harness-chat.js'
+import type { ThreadLifecycleEvent } from '../lib/outbound-pump.js'
 
 export type LiveSource = 'transcript' | 'hooks'
 
@@ -53,8 +54,9 @@ export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
-/** User turn waiting to be injected into the harness (or mid-inject). */
-export type OutboundStatus = 'queued' | 'sending'
+/** User turn waiting to be injected into the harness (or mid-inject).
+ * Accepted: remove queue row, keep bubble. Failed: keep both. Cancel: remove both. */
+export type OutboundStatus = 'queued' | 'sending' | 'failed'
 
 export interface OutboundItem {
   /** Same id as the optimistic SessionMessage (`optim:…`). */
@@ -101,7 +103,13 @@ interface ChatState {
    *  when the turn ends (done / assistant commit), shown as the composer's
    *  ask card until the user answers or dismisses it */
   ask: Record<string, AskQuestion[] | undefined>
-  /** outbound send queue per session — shown in the transcript as queued/sending */
+  /** Successful moves only; flattened, bounded, cycle-guarded and never persisted.
+   * Removing/clearing a thread must prune all its predecessors too. */
+  sessionAliases: Record<string, string>
+  resolveSessionKey: (sessionId: string) => string
+  queueFor: (sessionId: string) => OutboundItem[] | undefined
+  messagesFor: (sessionId: string) => SessionMessage[] | undefined
+  /** Queued turns live in the strip; sending/failed turns also have bubbles. */
   outbound: Record<string, OutboundItem[] | undefined>
   /**
    * Sessions a registered HarnessDriver owns. Their transcript and live turn
@@ -150,7 +158,8 @@ interface ChatState {
   /** Hard-resync: replace the session transcript wholesale and clear live
    *  turn state (Android resyncTranscriptToConversation). Does not merge.
    *  `preserveOutbound` keeps the inject queue + its optimistic bubbles
-   *  (auto-sync from TUI must not wipe messages the user just queued). */
+   *  (auto-sync from TUI must not wipe messages the user just queued).
+   *  Empty resyncs always preserve outbound state; removeDraft removes threads. */
   replace: (
     sessionId: string,
     messages: SessionMessage[],
@@ -206,9 +215,9 @@ interface ChatState {
   requeueOutbound: (sessionId: string, id: string) => void
   /** Drop from queue after inject accepted (bubble stays until WS echo). */
   dequeueOutbound: (sessionId: string, id: string) => void
-  /** Inject failed / user cancel — remove queue entry + optimistic bubble. */
+  /** Keep failed sends visible and available for manual retry. */
   failOutbound: (sessionId: string, id: string) => void
-  /** User cancel alias for a queued/sending item. */
+  /** Remove the queue entry and optimistic bubble when recalled by the user. */
   cancelOutbound: (sessionId: string, id: string) => void
   /**
    * Start (or keep) a live turn so the UI shows a typing/processing indicator
@@ -290,7 +299,7 @@ function releaseWatch(sessionId: string): void {
  * Rebuild a session's solid messages from a full turn array and reconcile the
  * optimistic outbound bubbles: a user turn the store now carries supersedes
  * its optimistic copy — first match only, so two identical queued turns don't
- * collapse. Only bubbles with NO outbound entry are eligible — queued means
+ * collapse. Bubbles with no outbound entry or a failed entry are eligible — queued means
  * not injected yet (a matching store turn is a TUI-typed twin), and sending
  * means the pump hasn't observed success/failure, so eating the bubble early
  * could leave a failed inject with no retry cue (grok review).
@@ -321,14 +330,16 @@ function transcriptPatch(
   const outbound = s.outbound[sid] ?? []
   const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
   const keptBubbles: SessionMessage[] = []
+  const retired = new Set<string>()
   for (const bubble of optimBubbles) {
     // Newest match, not oldest: a bubble the user just sent is the tail of the
     // conversation, and pairing it with an identical turn from an hour ago
     // would retire the wrong one (and flicker the new turn in behind it).
     const hit = newUserTexts.lastIndexOf(bubble.text)
-    const inQueue = outbound.some((o) => o.id === bubble.id)
+    const inQueue = outbound.some((o) => o.id === bubble.id && o.status !== 'failed')
     if (hit >= 0 && !inQueue) {
       newUserTexts.splice(hit, 1)
+      retired.add(bubble.id)
     } else {
       keptBubbles.push(bubble)
     }
@@ -348,6 +359,10 @@ function transcriptPatch(
       },
     },
     messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
+    outbound:
+      retired.size > 0
+        ? { ...s.outbound, [sid]: outbound.filter((o) => !retired.has(o.id)) }
+        : s.outbound,
   }
 }
 
@@ -449,6 +464,60 @@ function overlayTranscriptLive(
   }
 }
 
+// Lifecycle events keep pump ownership independent of alias retention/capping.
+const threadListeners = new Set<(event: ThreadLifecycleEvent) => void>()
+export function subscribeChatThreads(listener: (event: ThreadLifecycleEvent) => void): () => void {
+  threadListeners.add(listener)
+  return () => {
+    threadListeners.delete(listener)
+  }
+}
+function notifyThread(event: ThreadLifecycleEvent): void {
+  for (const listener of threadListeners) listener(event)
+}
+
+const MAX_SESSION_ALIASES = 256
+// Weak ownership avoids retaining old maps just to suppress repeated diagnostics.
+const warnedAliasMaps = new WeakSet<Record<string, string>>()
+function resolveAlias(aliases: Record<string, string>, id: string): string {
+  const visited = new Set<string>([id])
+  while (Object.hasOwn(aliases, id)) {
+    const next = aliases[id]
+    if (visited.has(next)) {
+      if (!warnedAliasMaps.has(aliases)) {
+        warnedAliasMaps.add(aliases)
+        console.warn('Chat session alias cycle detected')
+      }
+      return id
+    }
+    visited.add(next)
+    id = next
+  }
+  return id
+}
+
+/** Include every predecessor, even if an unexpected cycle reached the store. */
+function threadKeys(aliases: Record<string, string>, id: string): Set<string> {
+  const keys = new Set([id])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [from, to] of Object.entries(aliases)) {
+      if (keys.has(from) || keys.has(to)) {
+        if (!keys.has(from) || !keys.has(to)) changed = true
+        keys.add(from)
+        keys.add(to)
+      }
+    }
+  }
+  return keys
+}
+
+/** All session lookups share the same alias boundary. */
+function keyOf(sessionId: string): string {
+  return resolveAlias(useChat.getState().sessionAliases, sessionId)
+}
+
 export const useChat = create<ChatState>()(
   persist(
     (set, get) => ({
@@ -458,6 +527,10 @@ export const useChat = create<ChatState>()(
       live: {},
       liveTs: {},
       ask: {},
+      sessionAliases: {},
+      resolveSessionKey: keyOf,
+      queueFor: (sessionId) => get().outbound[keyOf(sessionId)],
+      messagesFor: (sessionId) => get().messages[keyOf(sessionId)],
       outbound: {},
       harnessBound: {},
       approvals: {},
@@ -471,8 +544,9 @@ export const useChat = create<ChatState>()(
       drafts: [],
       draftCreatedAt: {},
 
-      seed: (sessionId, msgs) =>
-        set((s) => {
+      seed: (sessionId, msgs) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const existing = s.messages[sessionId] ?? []
           // Keep WS frames that raced ahead of the HTTP backfill. Safe to merge
           // unconditionally: state is reset on endpoint change, so everything
@@ -481,11 +555,13 @@ export const useChat = create<ChatState>()(
           for (const m of existing) if (!merged.some((x) => x.id === m.id)) merged.push(m)
           merged.sort((a, b) => a.ts - b.ts)
           return { messages: { ...s.messages, [sessionId]: merged } }
-        }),
+        })
+      },
 
-      replace: (sessionId, msgs, opts) =>
+      replace: (sessionId, msgs, opts) => {
+        sessionId = keyOf(sessionId)
         set((s) => {
-          const preserve = opts?.preserveOutbound === true
+          const preserve = opts?.preserveOutbound === true || msgs.length === 0
           const outbound = s.outbound[sessionId] ?? []
           let next = [...msgs]
           if (preserve && outbound.length > 0) {
@@ -512,10 +588,12 @@ export const useChat = create<ChatState>()(
             // hard resync rebuilds from disk — a stale ask card must not survive it
             ask: preserve ? s.ask : { ...s.ask, [sessionId]: undefined },
           }
-        }),
+        })
+      },
 
-      addDraft: (sessionId) =>
-        set((s) => {
+      addDraft: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const already = s.drafts.includes(sessionId)
           return {
             drafts: already ? s.drafts : [sessionId, ...s.drafts],
@@ -524,28 +602,37 @@ export const useChat = create<ChatState>()(
               ? s.draftCreatedAt
               : { ...s.draftCreatedAt, [sessionId]: Date.now() },
           }
-        }),
+        })
+      },
 
       removeDraft: (sessionId) => {
-        releaseWatch(sessionId)
+        sessionId = keyOf(sessionId)
+        const keys = threadKeys(get().sessionAliases, sessionId)
+        notifyThread({ type: 'remove', keys })
+        for (const key of keys) releaseWatch(key)
         set((s) => {
           const drop = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-            if (!(sessionId in m)) return m
-            const { [sessionId]: _gone, ...rest } = m
-            return rest
+            return Object.fromEntries(Object.entries(m).filter(([key]) => !keys.has(key)))
           }
           return {
-            drafts: s.drafts.filter((id) => id !== sessionId),
-            opened: s.opened.filter((id) => id !== sessionId),
-            active: s.active === sessionId ? undefined : s.active,
+            sessionAliases: Object.fromEntries(
+              Object.entries(s.sessionAliases).filter(
+                ([key, target]) => !keys.has(key) && !keys.has(target),
+              ),
+            ),
+            drafts: s.drafts.filter((id) => !keys.has(id)),
+            opened: s.opened.filter((id) => !keys.has(id)),
+            active: s.active !== undefined && keys.has(s.active) ? undefined : s.active,
             // A discarded draft must not be resumed on the next launch.
-            lastActive: s.lastActive?.sessionId === sessionId ? undefined : s.lastActive,
+            lastActive: s.lastActive && keys.has(s.lastActive.sessionId) ? undefined : s.lastActive,
             messages: drop(s.messages),
             transcripts: drop(s.transcripts),
             live: drop(s.live),
             liveTs: drop(s.liveTs),
             ask: drop(s.ask),
             outbound: drop(s.outbound),
+            harnessBound: drop(s.harnessBound),
+            approvals: drop(s.approvals),
             agentStatus: drop(s.agentStatus),
             prompts: drop(s.prompts),
             liveSource: drop(s.liveSource),
@@ -556,13 +643,23 @@ export const useChat = create<ChatState>()(
       },
 
       rekey: (from, to) => {
+        from = keyOf(from)
+        // `to` is a newly assigned identity, not a lookup. Keep it literal so
+        // a native id can rotate back to a formerly retired key.
         if (from === to) return false
         // Decide before mutating, so the updater below stays a pure reducer.
         // Destination already live: keep its records rather than clobber a real
         // transcript with the one we were about to fold in — but still move the
         // selection, or the composer keeps queueing turns onto the retired key
         // (the effect that called us does not re-fire).
-        const moved = get().messages[to] === undefined && get().transcripts[to] === undefined
+        const destination = get()
+        const moved = !(
+          destination.messages[to]?.length ||
+          destination.transcripts[to]?.turns.length ||
+          destination.outbound[to]?.length ||
+          destination.live[to] ||
+          destination.liveIsBusy(to)
+        )
         // The retired key keeps no subscription either way — the selection has
         // left it, so its frames would be dropped client-side while the server
         // kept parsing the store for it. We do NOT auto-watch `to`: the view owns
@@ -588,12 +685,24 @@ export const useChat = create<ChatState>()(
           }
           if (!moved) return retarget
           const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-            if (!(from in m)) return m
+            // A turnless destination may already own a binding, prompts or status.
+            // Preserve its value when this source has no value for that slice.
             const { [from]: value, ...rest } = m
-            return { ...rest, [to]: value }
+            return value === undefined ? rest : { ...rest, [to]: value }
           }
           return {
             ...retarget,
+            sessionAliases: Object.fromEntries<string>(
+              [
+                ...Object.entries(s.sessionAliases)
+                  .filter(([key]) => key !== to && key !== from)
+                  .map(([key, target]) => {
+                    const resolved = resolveAlias(s.sessionAliases, target)
+                    return [key, resolved === from ? to : resolved] as const
+                  }),
+                [from, to] as const,
+              ].slice(-MAX_SESSION_ALIASES),
+            ),
             messages: move(s.messages),
             transcripts: move(s.transcripts),
             live: move(s.live),
@@ -608,10 +717,13 @@ export const useChat = create<ChatState>()(
             liveFloor: move(s.liveFloor),
           }
         })
+        if (moved) notifyThread({ type: 'move', from, to })
         return moved
       },
 
       adoptSessionKey: (canonical, previous) => {
+        // Like rekey's destination, canonical names the new identity literally.
+        if (previous !== undefined) previous = keyOf(previous)
         const tracked = (id: string): boolean => {
           const s = get()
           return (
@@ -648,6 +760,7 @@ export const useChat = create<ChatState>()(
       },
 
       addOptimisticUser: (sessionId, text, id) => {
+        sessionId = keyOf(sessionId)
         const msgId = id ?? `optim:${uuidv4()}`
         set((s) => {
           const msg: SessionMessage = {
@@ -665,6 +778,7 @@ export const useChat = create<ChatState>()(
       },
 
       enqueueOutbound: (sessionId, text, attachments) => {
+        sessionId = keyOf(sessionId)
         const id = `optim:${uuidv4()}`
         set((s) => ({
           outbound: {
@@ -681,16 +795,16 @@ export const useChat = create<ChatState>()(
       },
 
       markOutboundSending: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
         const item = get().outbound[sessionId]?.find((o) => o.id === id)
-        if (item) {
-          const text =
-            item.text ||
-            (item.attachments ?? [])
-              .filter((a) => a.mime.startsWith('image/'))
-              .map(() => '[Image]')
-              .join('\n')
-          get().addOptimisticUser(sessionId, text, id)
-        }
+        if (!item) return
+        const text =
+          item.text ||
+          (item.attachments ?? [])
+            .filter((a) => a.mime.startsWith('image/'))
+            .map(() => '[Image]')
+            .join('\n')
+        get().addOptimisticUser(sessionId, text, id)
         set((s) => ({
           outbound: {
             ...s.outbound,
@@ -701,45 +815,75 @@ export const useChat = create<ChatState>()(
         }))
       },
 
-      requeueOutbound: (sessionId, id) =>
+      requeueOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
+          if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+                o.id === id ? { ...o, status: 'queued' as const } : o,
+              ),
+            },
+            // Refusal means not accepted: show only the queue strip until retry.
+            // Hard failure keeps its bubble to show the failure cue instead.
+            messages: {
+              ...s.messages,
+              [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
+            },
+          }
+        })
+      },
+
+      dequeueOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
+          if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+            },
+          }
+        })
+      },
+
+      // Failed turns do not block later queued turns. Manual retry deliberately
+      // injects after any later turns already sent, using the original item id.
+      failOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
+          if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+                o.id === id ? { ...o, status: 'failed' as const } : o,
+              ),
+            },
+          }
+        })
+      },
+
+      cancelOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        if (!get().outbound[sessionId]?.some((o) => o.id === id)) return
+        get().dequeueOutbound(sessionId, id)
         set((s) => ({
-          outbound: {
-            ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-              o.id === id ? { ...o, status: 'queued' as const } : o,
-            ),
-          },
-          // Queue is not history: a requeued turn waits in the strip, not as a bubble.
-          messages: {
-            ...s.messages,
-            [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
-          },
-        })),
+          messages:
+            s.messages[sessionId] === undefined
+              ? s.messages
+              : {
+                  ...s.messages,
+                  [sessionId]: s.messages[sessionId]!.filter((m) => m.id !== id),
+                },
+        }))
+      },
 
-      dequeueOutbound: (sessionId, id) =>
-        set((s) => ({
-          outbound: {
-            ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
-          },
-        })),
-
-      failOutbound: (sessionId, id) =>
-        set((s) => ({
-          outbound: {
-            ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
-          },
-          messages: {
-            ...s.messages,
-            [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
-          },
-        })),
-
-      cancelOutbound: (sessionId, id) => get().failOutbound(sessionId, id),
-
-      beginLive: (sessionId, activity = 'processing…') =>
-        set((s) => {
+      beginLive: (sessionId, activity = 'processing…') => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           // Don't clobber an already-streaming turn (tool stack / partial text).
           const existing = s.live[sessionId]
           if (existing && (existing.text || existing.tools.length > 0 || existing.reasoningText)) {
@@ -753,10 +897,12 @@ export const useChat = create<ChatState>()(
                 : { text: '', reasoning: false, reasoningText: '', tools: [], activity },
             },
           }
-        }),
+        })
+      },
 
-      setLive: (sessionId, turn) =>
-        set((s) => {
+      setLive: (sessionId, turn) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           // Transcript-sourced sessions get ask cards from `prompts`, not a
           // tool-stack stash. Hook-sourced (and legacy) still stash.
           if (s.liveSource[sessionId] === 'transcript') {
@@ -777,14 +923,18 @@ export const useChat = create<ChatState>()(
             liveTs: { ...s.liveTs, [sessionId]: Date.now() },
             ask: stashed.length > 0 ? { ...s.ask, [sessionId]: stashed } : s.ask,
           }
-        }),
+        })
+      },
 
-      clearLive: (sessionId) =>
-        set((s) => ({
+      clearLive: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({
           live: { ...s.live, [sessionId]: undefined },
-        })),
+        }))
+      },
 
       liveIsBusy: (sessionId) => {
+        sessionId = keyOf(sessionId)
         if (get().liveSource[sessionId] === 'transcript') {
           const st = get().agentStatus[sessionId]?.status
           return st === 'working' || st === 'blocked'
@@ -796,11 +946,15 @@ export const useChat = create<ChatState>()(
         return !!(L.text || L.tools.length > 0 || L.reasoningText)
       },
 
-      dismissAsk: (sessionId) => set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } })),
+      dismissAsk: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } }))
+      },
 
       setActive: (sessionId) =>
         set((s) => {
           if (sessionId === undefined) return { active: undefined }
+          sessionId = keyOf(sessionId)
           return {
             active: sessionId,
             // Instant-resume pointer (narrow launch reopens the last thread
@@ -814,6 +968,7 @@ export const useChat = create<ChatState>()(
       clearLastActive: () => set({ lastActive: undefined }),
 
       watchTranscript: (sessionId) => {
+        sessionId = keyOf(sessionId)
         set((s) => ({
           opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
         }))
@@ -828,26 +983,38 @@ export const useChat = create<ChatState>()(
         // not-open sends are fine — the onStatus('open') hook re-sends the set
       },
 
-      unwatchTranscript: (sessionId) => releaseWatch(sessionId),
+      unwatchTranscript: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return releaseWatch(sessionId)
+      },
 
-      bindHarness: (sessionId, harnessId) =>
-        set((s) => ({
-          harnessBound: { ...s.harnessBound, [sessionId]: true },
-          // A fresh binding starts with no settled floor; the first idle sets it.
-          liveFloor: { ...s.liveFloor, [sessionId]: undefined },
-          opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-          // Mark the session store-backed straight away: the transcript is the
-          // source of truth for solid messages, so nothing else may append.
-          transcripts: s.transcripts[sessionId]
-            ? { ...s.transcripts, [sessionId]: { ...s.transcripts[sessionId], command: harnessId } }
-            : {
-                ...s.transcripts,
-                [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 },
-              },
-        })),
+      bindHarness: (sessionId, harnessId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
+          const transcript = s.transcripts[sessionId]
+          return {
+            harnessBound: { ...s.harnessBound, [sessionId]: true },
+            // A fresh binding starts with no settled floor; the first idle sets it.
+            liveFloor: { ...s.liveFloor, [sessionId]: undefined },
+            opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+            // Mark the session store-backed straight away: the transcript is the
+            // source of truth for solid messages, so nothing else may append.
+            transcripts: transcript
+              ? {
+                  ...s.transcripts,
+                  [sessionId]: { ...transcript, command: harnessId },
+                }
+              : {
+                  ...s.transcripts,
+                  [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 },
+                },
+          }
+        })
+      },
 
-      unbindHarness: (sessionId) =>
-        set((s) => {
+      unbindHarness: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const { [sessionId]: _bound, ...harnessBound } = s.harnessBound
           return {
             harnessBound,
@@ -856,10 +1023,12 @@ export const useChat = create<ChatState>()(
             agentStatus: { ...s.agentStatus, [sessionId]: undefined },
             liveSource: { ...s.liveSource, [sessionId]: undefined },
           }
-        }),
+        })
+      },
 
-      syncHarnessTranscript: (sessionId, turns, ctx) =>
-        set((s) => {
+      syncHarnessTranscript: (sessionId, turns, ctx) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           // A resync carries no "what changed", so derive it: everything past the
           // common prefix with what we already hold. That keeps bubble
           // reconciliation pointed at the tail instead of the whole history, where
@@ -890,10 +1059,12 @@ export const useChat = create<ChatState>()(
           return turns.at(-1)?.role === 'user'
             ? { ...patch, ask: { ...s.ask, [sessionId]: undefined } }
             : patch
-        }),
+        })
+      },
 
-      applyApprovalEvent: (sessionId, event) =>
-        set((s) => {
+      applyApprovalEvent: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const pending = s.approvals[sessionId] ?? []
           if (event.type === 'approval-resolved') {
             return {
@@ -905,9 +1076,11 @@ export const useChat = create<ChatState>()(
           }
           if (pending.some((p) => p.requestId === event.requestId)) return s
           return { approvals: { ...s.approvals, [sessionId]: [...pending, event] } }
-        }),
+        })
+      },
 
       applyHarnessTranscriptEvent: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
         const frame: TranscriptWsFrame = {
           kind: 'transcript',
           session: sessionId,
@@ -941,8 +1114,9 @@ export const useChat = create<ChatState>()(
         return true
       },
 
-      applyPromptEvent: (sessionId, event) =>
-        set((s) => {
+      applyPromptEvent: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const pending = s.prompts[sessionId] ?? []
           if (event.resolved) {
             return {
@@ -955,16 +1129,20 @@ export const useChat = create<ChatState>()(
           // Idempotent by promptId — replay of an already-open card is a no-op.
           if (pending.some((p) => p.promptId === event.promptId)) return s
           return { prompts: { ...s.prompts, [sessionId]: [...pending, event] } }
-        }),
+        })
+      },
 
-      clearHarnessPrompts: (sessionId) =>
-        set((s) => ({
+      clearHarnessPrompts: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({
           prompts: { ...s.prompts, [sessionId]: undefined },
           approvals: { ...s.approvals, [sessionId]: undefined },
-        })),
+        }))
+      },
 
-      applyAgentStatus: (sessionId, event) =>
-        set((s) =>
+      applyAgentStatus: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
+        return set((s) =>
           overlayTranscriptLive(s, sessionId, {
             agentStatus: { ...s.agentStatus, [sessionId]: event },
             // The INCOMING idle settles the floor — not the cached status, which
@@ -979,19 +1157,23 @@ export const useChat = create<ChatState>()(
                 }
               : {}),
           }),
-        ),
+        )
+      },
 
-      clearApproval: (sessionId, requestId) =>
-        set((s) => ({
+      clearApproval: (sessionId, requestId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({
           approvals: {
             ...s.approvals,
             [sessionId]: (s.approvals[sessionId] ?? []).filter((p) => p.requestId !== requestId),
           },
-        })),
+        }))
+      },
 
       connect: (endpointKey) => {
         subscription?.close()
         if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
+          notifyThread({ type: 'clear' })
           watchedSessions.clear() // session ids are only meaningful per gateway
           set({
             messages: {},
@@ -1000,6 +1182,7 @@ export const useChat = create<ChatState>()(
             liveTs: {},
             ask: {},
             outbound: {},
+            sessionAliases: {},
             harnessBound: {},
             approvals: {},
             agentStatus: {},

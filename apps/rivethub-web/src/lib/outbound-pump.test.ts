@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveTurn, OutboundItem } from '../stores/chat.js'
 import {
   createOutboundPump,
+  createOutboundPumpRegistry,
   INJECT_LATCH_MS,
   TURN_RETRY_ATTEMPTS,
   type OutboundPumpStore,
@@ -27,8 +28,6 @@ function fakeStore(): FakeStore {
     calls: [],
     queue: () => s.items,
     liveIsBusy: () => s.busy,
-    live: () => s.liveTurn,
-    liveTs: () => s.lastFrame,
     markSending: (_sid, id) => {
       s.calls.push(`mark:${id}`)
       const it = s.items.find((o) => o.id === id)
@@ -45,7 +44,8 @@ function fakeStore(): FakeStore {
     },
     fail: (_sid, id) => {
       s.calls.push(`fail:${id}`)
-      s.items = s.items.filter((o) => o.id !== id)
+      const item = s.items.find((o) => o.id === id)
+      if (item) item.status = 'failed'
     },
     beginLive: () => {
       s.calls.push('beginLive')
@@ -287,4 +287,78 @@ describe('createOutboundPump', () => {
     expect(injects).toBe(1)
     expect(s.items).toEqual([queued('a')])
   })
+})
+
+describe('pump registry rekey ownership', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it.each(['resolved', 'failed', 'turn_in_flight'])(
+    'settles %s at the current key and reuses the pump',
+    async (outcome) => {
+      const s = fakeStore()
+      let key = SID
+      s.resolveSessionKey = () => key
+      s.items = [queued('first'), queued('second')]
+      const dequeue = vi.spyOn(s, 'dequeue')
+      const fail = vi.spyOn(s, 'fail')
+      const requeue = vi.spyOn(s, 'requeue')
+      const clearLive = vi.spyOn(s, 'clearLive')
+      const beginLive = vi.spyOn(s, 'beginLive')
+      const registry = createOutboundPumpRegistry(s, (err) => err === TURN_IN_FLIGHT)
+      const old = registry(SID)
+      let resolve!: () => void
+      let reject!: (err: Error) => void
+      old.sink.current = () =>
+        new Promise<void>((res, rej) => {
+          resolve = res
+          reject = rej
+        })
+      const pending = old.pump.pump()
+      expect(beginLive).toHaveBeenCalledWith(SID, 'working…')
+      key = 'claude-code:rotated'
+      const adopted = registry(key)
+      expect(adopted).toBe(old)
+      const next = vi.fn((_text: string) => Promise.resolve())
+      adopted.sink.current = next
+      await adopted.pump.pump()
+      expect(next).not.toHaveBeenCalled()
+      if (outcome === 'resolved') {
+        resolve()
+        await vi.advanceTimersByTimeAsync(1)
+        expect(dequeue).toHaveBeenCalledWith(key, 'first')
+        await adopted.pump.pump()
+        expect(next).not.toHaveBeenCalled()
+      } else if (outcome === 'failed') {
+        const failure = expect(pending).rejects.toThrow('offline')
+        reject(new Error('offline'))
+        await failure
+        expect(fail).toHaveBeenCalledWith(key, 'first')
+        expect(s.items.find((o) => o.id === 'first')?.status).toBe('failed')
+      } else {
+        reject(TURN_IN_FLIGHT)
+        await pending
+        expect(requeue).toHaveBeenCalledWith(key, 'first')
+        expect(next).not.toHaveBeenCalled()
+        adopted.pump.onIdle()
+      }
+      await vi.advanceTimersByTimeAsync(3 * INJECT_LATCH_MS)
+      if (outcome !== 'failed') await pending
+      expect(clearLive).toHaveBeenCalledWith(key)
+      expect(clearLive).not.toHaveBeenCalledWith(SID)
+      expect(next.mock.calls.map((call) => call[0])).toEqual(
+        outcome === 'turn_in_flight' ? ['first', 'second'] : ['second'],
+      )
+      expect(s.items).toEqual(
+        outcome === 'failed' ? [{ ...queued('first'), status: 'failed' }] : [],
+      )
+      if (outcome === 'failed') {
+        const retried = adopted.pump.pump({ forceId: 'first' })
+        await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+        await retried
+        expect(next.mock.calls.map((call) => call[0])).toEqual(['second', 'first'])
+        expect(s.items).toEqual([])
+      }
+    },
+  )
 })

@@ -79,6 +79,7 @@ beforeEach(() => {
     liveTs: {},
     ask: {},
     outbound: {},
+    sessionAliases: {},
     harnessBound: {},
     approvals: {},
     agentStatus: {},
@@ -1050,4 +1051,43 @@ describe('transcript live overlay — settled turns stay solid; bubbles survive 
     useChat.getState().applyAgentStatus(KEY, status('working', { phase: 'thinking' }))
     expect(useChat.getState().messages[KEY]?.some((m) => m.id === id)).toBe(true)
   })
+})
+
+describe('Round 3 failed-send reconciliation', () => {
+  it.each(['sync', 'frame'] as const)(
+    'retires only a matching failed send on bound transcript %s',
+    (source) => {
+      const chat = useChat.getState()
+      chat.bindHarness(KEY, 'claude-code')
+      const failed = chat.enqueueOutbound(KEY, 'accepted before network failure')
+      chat.markOutboundSending(KEY, failed)
+      chat.failOutbound(KEY, failed)
+      const sending = chat.enqueueOutbound(KEY, 'still sending')
+      chat.markOutboundSending(KEY, sending)
+      const queued = chat.enqueueOutbound(KEY, 'still queued')
+      const other = chat.enqueueOutbound(KEY, 'unmatched failure')
+      chat.markOutboundSending(KEY, other)
+      chat.failOutbound(KEY, other)
+      const turns = [
+        turn('user', 'accepted before network failure'),
+        turn('user', 'still sending'),
+        turn('user', 'still queued'),
+      ]
+      if (source === 'sync') chat.syncHarnessTranscript(KEY, turns)
+      else
+        chat.applyHarnessTranscriptEvent(KEY, {
+          rev: 1,
+          from: 0,
+          total: turns.length,
+          turns,
+          command: 'claude-code',
+        } as HarnessTranscriptEvent)
+      const state = useChat.getState()
+      expect(state.outbound[KEY]?.map((o) => o.id)).toEqual([sending, queued, other])
+      expect(state.messages[KEY]?.filter((m) => m.text === turns[0].text)).toHaveLength(1)
+      expect(state.messages[KEY]?.some((m) => m.id === failed)).toBe(false)
+      expect(state.messages[KEY]?.some((m) => m.id === sending)).toBe(true)
+      expect(state.messages[KEY]?.some((m) => m.id === other)).toBe(true)
+    },
+  )
 })
