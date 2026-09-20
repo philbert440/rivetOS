@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   conversationModelOptions as resolveOptions,
+  conversationProtocolOwnership,
   type ConversationTurnPick,
 } from './conversation-model-options.js'
 import { spawnModelEffort } from './harness-options.js'
@@ -203,5 +204,72 @@ describe('model and effort validation', () => {
     expect(
       conversationModelOptions('codex', registry, undefined, true, 'unlisted').efforts,
     ).toEqual([])
+  })
+})
+
+describe('ownership query lifecycle', () => {
+  // A loaded protocol summary can precede the registry on a remote cold load.
+  const resolve = (registryReady: boolean, bound = false, summaryReady = true, cached = false) =>
+    resolveOptions(
+      'codex',
+      registryReady || cached ? registry : undefined,
+      pick,
+      conversationProtocolOwnership({ registryReady, summaryReady, bound, transport: 'protocol' }),
+    )
+  const persist = (result: ReturnType<typeof resolveOptions>, stored = pick) =>
+    result.clearPick
+      ? mergeChatSettings(
+          { agent: 'codex', effort: 'medium', turnPick: stored },
+          {
+            turnPick: result.retainedPick,
+          },
+        ).turnPick
+      : stored
+
+  it('preserves a saved pick with the summary loaded and registry pending; sends plain text', () => {
+    const result = resolve(false)
+    expect(result.models).toEqual([])
+    expect(result.efforts).toEqual([])
+    expect(result.clearPick).toBe(false)
+    expect(persist(result)).toEqual(pick)
+    expect({ text: 'hello', ...result.effective }).toEqual({ text: 'hello' })
+  })
+  it('offers and applies the same saved pick when the registry settles owned', () => {
+    const stored = persist(resolve(false))
+    expect(stored).toEqual(pick)
+    const settled = resolve(true, true)
+    expect(settled.models).toHaveLength(2)
+    expect(settled.effective).toEqual({ model: 'a', effort: 'high' })
+    expect(persist(settled, stored)).toEqual(pick)
+  })
+  it('clears only after the registry settles not owned', () => {
+    expect(persist(resolve(false))).toEqual(pick)
+    const settled = resolve(true)
+    expect(settled.clearPick).toBe(true)
+    expect(persist(settled)).toBeUndefined()
+  })
+  it('does not clear on registry error, even with cached descriptor data', () => {
+    const result = resolve(false, true, true, true)
+    expect(result.clearPick).toBe(false)
+    expect(result.models).toEqual([])
+    expect(result.effective).toEqual({})
+    expect(persist(result)).toEqual(pick)
+  })
+  it('keeps ownership unknown while the summary is pending or errored', () => {
+    const result = resolve(true, true, false)
+    expect(result.clearPick).toBe(false)
+    expect(result.effective).toEqual({})
+    expect(persist(result)).toEqual(pick)
+  })
+  it('still clears immediately on agent or harness changes while queries are unresolved', () => {
+    const current: ChatSettings = {
+      agent: 'codex',
+      effort: 'medium',
+      harnessId: 'codex',
+      turnPick: persist(resolve(false)),
+    }
+    expect(current.turnPick).toEqual(pick)
+    expect(mergeChatSettings(current, { agent: 'grok' }).turnPick).toBeUndefined()
+    expect(mergeChatSettings(current, { harnessId: 'grok-build' }).turnPick).toBeUndefined()
   })
 })

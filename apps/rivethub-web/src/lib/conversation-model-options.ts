@@ -10,6 +10,22 @@ export interface ConversationTurnPick {
 
 type Sheet = Pick<HarnessCapabilities, 'turnOptions' | 'models' | 'efforts'>
 
+/** Query readiness comes from the caller, never from absent row fields. */
+export function conversationProtocolOwnership({
+  summaryReady,
+  registryReady,
+  bound,
+  transport,
+}: {
+  summaryReady: boolean
+  registryReady: boolean
+  bound: boolean
+  transport?: string
+}): boolean | undefined {
+  if (!summaryReady || !registryReady) return undefined
+  return bound && transport === 'protocol'
+}
+
 /** Resolve only the conversation's harness, never an agent catalog default. */
 export function conversationModelOptions(
   harnessId: HarnessId | undefined,
@@ -48,13 +64,15 @@ export function conversationModelOptions(
     models: models.map((row) => ({ value: row.id, label: row.label })),
     efforts: efforts.map((row) => ({ value: row.id, label: row.label })),
     effective,
-    // Pending session/registry queries must not erase a persisted choice.
+    // A harness change clears immediately; otherwise unknown ownership preserves the pick.
     clearPick:
-      protocolOwned === false
-        ? !!pick
-        : protocolOwned === true &&
-          harnessId !== undefined &&
-          registry !== undefined &&
-          (stale || (!!pick?.effort && !effort)),
+      pick && harnessId !== undefined && pick.harnessId !== harnessId
+        ? true
+        : protocolOwned === false
+          ? !!pick
+          : protocolOwned === true &&
+            harnessId !== undefined &&
+            registry !== undefined &&
+            (stale || (!!pick?.effort && !effort)),
   }
 }

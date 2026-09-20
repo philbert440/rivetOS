@@ -1,4 +1,7 @@
-import { conversationModelOptions } from '../lib/conversation-model-options.js'
+import {
+  conversationModelOptions,
+  conversationProtocolOwnership,
+} from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
@@ -584,6 +587,13 @@ export function ChatPage(): JSX.Element {
             sessionId={active}
             item={activeItem}
             gate={gate}
+            summaryReady={
+              !harnessQuery.isPending &&
+              !harnessQuery.isError &&
+              harnessQuery.data !== undefined &&
+              (!descriptors?.length ||
+                (!planeQuery.isPending && !planeQuery.isError && planeQuery.data !== undefined))
+            }
             harnessCommand={activeItem?.command}
           />
         </SessionErrorBoundary>
@@ -946,6 +956,7 @@ function ActiveSession(props: {
   item?: ChatItem
   /** Which control-plane affordances this session's driver actually has. */
   gate: HarnessGate
+  summaryReady: boolean
   harnessCommand?: string
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -1145,18 +1156,20 @@ function ActiveSession(props: {
   const settingsKey = storageKey(sessionBase, props.sessionId)
   const settings = useChatSettings((s) => persisted(s.byKey, sessionBase, props.sessionId))
   const nativeHarnessId = item?.harnessId ?? settings?.harnessId
+  const protocolOwned = conversationProtocolOwnership({
+    registryReady:
+      !remoteRegistry.isPending && !remoteRegistry.isError && remoteRegistry.data !== undefined,
+    summaryReady: isRemote
+      ? !remoteSummary.isPending && !remoteSummary.isError && remoteSummary.data !== undefined
+      : props.summaryReady && item !== undefined,
+    bound: gate.bound,
+    transport: item?.transport,
+  })
   const turnOptions = conversationModelOptions(
     nativeHarnessId,
     remoteRegistry.data?.harnesses,
     settings?.turnPick,
-    protocolSessionRef.current !== undefined &&
-      protocolSessionRef.current === (canonicalId ?? protocolSessionRef.current)
-      ? true
-      : item
-        ? !!canonicalId && item.transport === 'protocol'
-        : isDraft
-          ? false
-          : undefined,
+    protocolOwned,
     item?.model,
   )
   const setSetting = useChatSettings((s) => s.set)
@@ -1325,6 +1338,7 @@ function ActiveSession(props: {
       // dead PTY → 409. Mode stays put — the terminal spawn effect respawns
       // with the newly chosen model if terminal is showing.
       termPtyRef.current = undefined
+      protocolSessionRef.current = undefined
       setTermPtyId(undefined)
     }
   }, [agentSel])
@@ -1503,43 +1517,36 @@ function ActiveSession(props: {
     )
     const sendProtocol = async (sid: string): Promise<void> => {
       const harnessId = sid.split(':')[0] as import('@rivetos/types').HarnessId
-      const capabilities =
-        remoteRegistry.data?.harnesses.find((h) => h.harnessId === harnessId)?.capabilities ??
-        (await gw.harnessCapabilities(harnessId)).capabilities
-      const knownProtocolOwned =
-        protocolSessionRef.current === sid ||
-        (canonicalId === sid && item?.transport === 'protocol')
-      const summary = knownProtocolOwned ? item : await gw.getHarnessSession(sid)
-      const protocolOwned = knownProtocolOwned || summary?.transport === 'protocol'
+      const capabilities = remoteRegistry.data?.harnesses.find(
+        (h) => h.harnessId === harnessId,
+      )?.capabilities
+      // Use the rendered ownership and options. Pending/error queries must
+      // neither delay a send nor apply a pick that the composer cannot offer.
       const nativeAttachments =
         protocolOwned &&
-        capabilities.imageAttachments &&
+        capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
       await gw.sendHarnessTurn(sid, {
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
-        ...conversationModelOptions(
-          harnessId,
-          [{ harnessId, capabilities }],
-          settings?.turnPick,
-          protocolOwned,
-          summary?.model,
-        ).effective,
+        ...(harnessId === nativeHarnessId ? turnOptions.effective : {}),
         ...(prompt ? { systemPrompt: prompt } : {}),
       })
     }
-    if (canonicalId) {
+    // A loaded harness summary can route a plain turn before descriptors arrive.
+    const sendSessionId = canonicalId ?? (item?.kind === 'harness' ? item.sessionId : undefined)
+    if (sendSessionId) {
       // Control plane: the driver owns spawn-or-resume, so there is no PTY to
       // ensure here. "Inject now" is interrupt-then-send, and only when the
       // driver actually has an interrupt (a false flag answers 501).
       if (interrupt && gate.canInterrupt) {
-        await gw.interruptHarnessSession(canonicalId).catch(() => undefined)
+        await gw.interruptHarnessSession(sendSessionId).catch(() => undefined)
         // Same beat the legacy interrupt-inject waits: the TUI needs a moment
         // to draw its cancel before the next paste, or the turn swallows it.
         await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
       }
       try {
-        await sendProtocol(canonicalId)
+        await sendProtocol(sendSessionId)
         if (prompt) markSystemPromptSent(props.sessionId)
       } catch (err) {
         clearSystemPromptSent(props.sessionId)
@@ -1569,6 +1576,7 @@ function ActiveSession(props: {
         // context is kept), and retry once. A fresh harness has no turn to
         // interrupt, so the retry never sends Esc.
         termPtyRef.current = undefined
+        protocolSessionRef.current = undefined
         setTermPtyId(undefined)
         await ensurePty()
         await gw.termInject({ session: props.sessionId, text: injectText })
@@ -1830,11 +1838,12 @@ function ActiveSession(props: {
           <Composer
             nativeControls={turnOptions.models.length > 0}
             turnOptions={turnOptions}
-            onTurnPick={(pick) => {
-              if (nativeHarnessId) {
-                setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
-              }
-            }}
+            onTurnPick={
+              nativeHarnessId
+                ? (pick) =>
+                    setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
+                : undefined
+            }
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}
