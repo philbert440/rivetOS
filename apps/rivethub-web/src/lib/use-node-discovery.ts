@@ -28,7 +28,8 @@ export function useNodeDiscovery(): {
       roster,
       baseUrl,
       typeof window === 'undefined' ? undefined : window.location.origin,
-      mesh.isSuccess ? mesh.data : undefined,
+      mesh.data,
+      mesh.status,
     ),
   }
 }
