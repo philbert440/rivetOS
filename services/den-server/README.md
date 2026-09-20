@@ -90,8 +90,22 @@ Knobs: `RIVETOS_DEN_TERM_MAX` (4 concurrent PTYs),
 are SIGHUP'd, but never while a viewer is attached — the window restarts on the
 last detach; activity is stdout, chat inject, or terminal write; `0` disables),
 `RIVETOS_DEN_TERM_EXIT_LINGER_MS` (60000 — exited records linger for
-inspection). `node-pty` is an optional dependency; when it failed to
-install, term endpoints answer 503 and everything else works.
+inspection),
+`RIVETOS_DEN_TERM_INJECT_READY_MS` (500 — quiet period with no PTY output
+before a fresh harness is treated as ready for a buffered chat inject;
+re-armed on every chunk. A herdr agent-idle event readies the pane only when
+it was created as an agent pane — roster argv[0] is the herdr kind, not a
+wrapper or absolute path — even while output is still trickling; otherwise
+the quiet period applies),
+`RIVETOS_DEN_TERM_INJECT_READY_MAX_MS` (15000 — hard ceiling: flush buffered
+injects anyway and log a warning),
+`RIVETOS_DEN_TERM_INJECT_CONFIRM_MS` (5000 — after the first buffered submit
+on an agent pane, wait this long for a herdr `working` frame; that is the
+only confirmation. No pane scrape, no re-paste, no extra submit. If none
+arrives the pane is left alone and `injectUnconfirmed` is recorded on the
+pty). `node-pty` is an optional
+dependency; when it failed to install, term endpoints answer 503 and
+everything else works.
 
 ## Deploy
 

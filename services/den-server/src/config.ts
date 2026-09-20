@@ -53,9 +53,18 @@ export interface DenTermConfig {
   /** How long an exited PTY record lingers (scrollback inspectable) before
    *  it is reaped (ms). */
   exitLingerMs: number
-  /** Grace after a fresh PTY's first output before buffered chat injects are
-   *  flushed — lets the harness TUI settle so the first turn isn't dropped. */
+  /** Quiet period (ms) with no PTY output before a fresh harness is treated
+   *  as ready to accept a buffered chat inject. Re-armed on every output
+   *  chunk (quiescence), not "first byte + delay". Ignored on the herdr
+   *  agent-idle path (agent panes become ready on idle). */
   injectReadyMs: number
+  /** Hard ceiling (ms) on the ready-gate. Buffered turns flush anyway and a
+   *  warning is logged. Default 15000. */
+  injectReadyMaxMs?: number
+  /** Window (ms) after flushing the first buffered submit on an agent pane
+   *  to wait for a herdr `working` frame. Confirmation is positive evidence
+   *  only — no pane scrape, no retry. Default 5000. */
+  injectConfirmMs?: number
   /** Delay between writing a chat inject's text and its submit CR. The two
    *  must be separate PTY writes: harness TUIs (claude/grok) run paste
    *  detection, and a CR fused onto multi-line/long text is absorbed as a
@@ -307,6 +316,8 @@ export function loadConfig(
       idleTtlMs: intEnv(env, 'RIVETOS_DEN_TERM_IDLE_TTL_MS', 1_800_000),
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
+      injectReadyMaxMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MAX_MS', 15_000),
+      injectConfirmMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_CONFIRM_MS', 5000),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
       mux: ((): 'tmux' | 'herdr' | 'none' | undefined => {
         const raw = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()

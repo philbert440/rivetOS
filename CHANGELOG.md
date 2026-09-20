@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Den
+
+- Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay). The first buffered inject on an agent pane is confirmed only by a herdr `working` frame; unconfirmed turns are recorded on the pty and never retried (#796).
+
 ### RivetHub client
 
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
@@ -20,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
 - feat(harness): add qwen-code — Qwen Code CLI as the eighth first-class harness (driver, provider, executor, hooks-driven memory capture via a qwen extension, web + Android).
+
+### RivetHub client
+
+- Sidebar Agents: pre-fill the existing create form from unsaved edits when a preset’s node fails to load harnesses, validate settings against another reachable node, and create a copy; the original stays on its node and can be deleted when it is reachable again. Surface save and delete failures.
 
 ### Breaking
 
