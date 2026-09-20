@@ -90,8 +90,17 @@ Knobs: `RIVETOS_DEN_TERM_MAX` (4 concurrent PTYs),
 are SIGHUP'd, but never while a viewer is attached — the window restarts on the
 last detach; activity is stdout, chat inject, or terminal write; `0` disables),
 `RIVETOS_DEN_TERM_EXIT_LINGER_MS` (60000 — exited records linger for
-inspection). `node-pty` is an optional dependency; when it failed to
-install, term endpoints answer 503 and everything else works.
+inspection),
+`RIVETOS_DEN_TERM_INJECT_READY_MS` (500 — quiet period with no PTY output
+before a fresh harness is treated as ready for a buffered chat inject;
+re-armed on every chunk. A herdr agent-idle event readies a known harness
+immediately, even while output is still trickling),
+`RIVETOS_DEN_TERM_INJECT_READY_MAX_MS` (15000 — hard ceiling: flush buffered
+injects anyway and log a warning),
+`RIVETOS_DEN_TERM_INJECT_RETRY_MAX` (2 — herdr retries of an unconfirmed first
+buffered inject; unverifiable muxes never retry). `node-pty` is an optional
+dependency; when it failed to install, term endpoints answer 503 and
+everything else works.
 
 ## Deploy
 

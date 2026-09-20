@@ -678,6 +678,63 @@ describe('term manager', () => {
     expect(procs[0].writes).toEqual(['\x1b[200~one\x1b[201~', '\r', '\x1b[200~two\x1b[201~', '\r'])
   })
 
+  it('quiescence: three bursts 200ms apart with injectReadyMs=300 do not flush after burst 1 + 300ms', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 300, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-quiet')
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('burst1')
+    vi.advanceTimersByTime(200)
+    procs[0].emitData('burst2')
+    vi.advanceTimersByTime(200)
+    procs[0].emitData('burst3')
+    // t=400: old first-chunk+delay gate would already have flushed at t=300
+    expect(procs[0].writes).toEqual([])
+    vi.advanceTimersByTime(300)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
+  it('ceiling: endless output and no status flushes at injectReadyMaxMs with a warning', () => {
+    vi.useFakeTimers()
+    const { manager, procs, logs } = makeManager({
+      injectReadyMs: 300,
+      injectReadyMaxMs: 1000,
+      injectSubmitDelayMs: 80,
+    })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-ceil')
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    for (let i = 0; i < 18; i++) {
+      procs[0].emitData('x')
+      vi.advanceTimersByTime(50)
+    }
+    // 900ms of continuous output: quiescence never fires; old gate would have
+    // flushed at 300ms. Ceiling is 1000ms.
+    expect(procs[0].writes).toEqual([])
+    procs[0].emitData('x')
+    vi.advanceTimersByTime(50)
+    procs[0].emitData('x')
+    vi.advanceTimersByTime(50)
+    expect(procs[0].writes[0]).toBe('\x1b[200~hello\x1b[201~')
+    expect(logs.some((l) => l.includes('injectReadyMaxMs'))).toBe(true)
+  })
+
+  it('unverifiable mux: first flush is not retried', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({
+      injectReadyMs: 300,
+      injectRetryMax: 2,
+      injectSubmitDelayMs: 80,
+    })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-uv')
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('welcome')
+    vi.advanceTimersByTime(300)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+    vi.advanceTimersByTime(2000)
+    expect(procs[0].writes.filter((w) => w === '\x1b[200~hello\x1b[201~')).toHaveLength(1)
+    expect(manager.get(pty.id)?.injectError).toBeUndefined()
+  })
+
   it('caps scrollback at the byte limit, dropping the oldest bytes', () => {
     const { manager, procs } = makeManager({ scrollbackBytes: 16 })
     const pty = manager.spawn('shell', 80, 24, '')
@@ -2487,6 +2544,64 @@ describe('term manager (herdr mux)', () => {
     manager.spawn('claude', 80, 24, '', uuid)
     ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
     expect(frames).toEqual([{ denSession: uuid, status: 'working' }])
+  })
+
+  it('herdr status path: flush on agent-idle even while output trickles, not before', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectReadyMaxMs: 15_000, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('draw-1')
+    vi.advanceTimersByTime(200)
+    procs[0].emitData('draw-2')
+    vi.advanceTimersByTime(200)
+    procs[0].emitData('draw-3')
+    vi.advanceTimersByTime(300) // past a quiescence window — must still wait for idle
+    expect(procs[0].writes).toEqual([])
+    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
+  it('herdr verify: unconfirmed flush retries exactly N times then sets injectError', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectRetryMax: 2, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    const pastes = (): number =>
+      procs[0].writes.filter((w) => w === '\x1b[200~hello\x1b[201~').length
+    expect(pastes()).toBe(1)
+    vi.advanceTimersByTime(80 + 400) // CR + verify window — still idle → retry 1
+    expect(pastes()).toBe(2)
+    vi.advanceTimersByTime(80 + 400) // retry 2
+    expect(pastes()).toBe(3)
+    vi.advanceTimersByTime(80 + 400) // give up
+    expect(pastes()).toBe(3)
+    expect(manager.get(pty.id)?.injectError).toBe('first inject not confirmed')
+  })
+
+  it('herdr verify: confirmed on the first try performs zero retries', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectRetryMax: 2, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    vi.advanceTimersByTime(2000)
+    expect(procs[0].writes.filter((w) => w === '\x1b[200~hello\x1b[201~')).toHaveLength(1)
+    expect(manager.get(pty.id)?.injectError).toBeUndefined()
   })
 })
 

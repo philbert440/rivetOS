@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Den
+
+- Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay) and verifies the first buffered inject, retrying on herdr when it did not land (#796).
+
 ### Harness integrations
 
 - `opencode` harness (id `opencode`, provider `opencode-cli`, roster `opencode`) surfaced in RivetHub web, Android, and docs. Default `model` is `zai/glm-5.3-flash`. The installed OpenCode CLI owns backend, endpoint, and credentials.
