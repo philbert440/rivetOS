@@ -95,7 +95,7 @@ LAUNCH="$ROOT/../claude-code/rivet-memory/bin/rivet-memory-mcp.sh"
 bash -n "$LAUNCH" && pass "claude mcp launcher bash -n" || fail "claude mcp launcher bash -n"
 
 if [ -f "$REPO/services/mcp-sidecar/dist/cli.js" ]; then
-  out="$(RIVETOS_ROOT="$REPO" RIVETOS_MCP_LAUNCH_PRINT=1 bash "$LAUNCH" 2>/dev/null)"
+  out="$(RIVETOS_ROOT="$REPO" RIVETOS_ENV_FILE="$DUMMY/no.env" RIVETOS_PG_URL=postgres://fixture.example/db RIVETOS_MCP_LAUNCH_PRINT=1 bash "$LAUNCH" 2>&1 >"$DUMMY/stdout")"
   case "$out" in
     checkout\ *)
       pass "claude launcher print: checkout when tree is built"
@@ -106,14 +106,20 @@ if [ -f "$REPO/services/mcp-sidecar/dist/cli.js" ]; then
   esac
 fi
 
-out="$(RIVETOS_ROOT="$DUMMY" RIVETOS_MCP_LAUNCH_PRINT=1 bash "$LAUNCH" 2>/dev/null)"
+out="$(RIVETOS_ROOT="$DUMMY" RIVETOS_ENV_FILE="$DUMMY/no.env" RIVETOS_PG_URL=postgres://fixture.example/db RIVETOS_MCP_LAUNCH_PRINT=1 bash "$LAUNCH" 2>&1 >"$DUMMY/stdout")"
 if [ "$out" = npx ]; then
   pass "claude launcher print: npx without a checkout"
 else
   fail "claude launcher print should be npx without a checkout"
 fi
 
-# stdout of print mode is only the kind line — no secrets.
+if [ ! -s "$DUMMY/stdout" ]; then
+  pass "launcher print mode leaves JSON-RPC stdout empty"
+else
+  fail "launcher print mode wrote to stdout"
+fi
+
+# Print mode never includes secrets.
 SECRET='postgres://tenant:s3cret-launch@datahub.example/db'
 mix="$(RIVETOS_ROOT="$DUMMY" RIVETOS_MCP_LAUNCH_PRINT=1 RIVETOS_PG_URL="$SECRET" bash "$LAUNCH" 2>&1)" || true
 if printf '%s' "$mix" | grep -q s3cret-launch; then
@@ -121,6 +127,50 @@ if printf '%s' "$mix" | grep -q s3cret-launch; then
 else
   pass "launcher print mode does not dump secrets"
 fi
+
+# Exercise the real exec path with a local stub: diagnostic never owns exit status.
+mkdir -p "$TREE/services/mcp-sidecar/dist" "$DUMMY/bin"
+: >"$TREE/services/mcp-sidecar/dist/cli.js"
+cat >"$DUMMY/bin/node" <<'SH'
+#!/usr/bin/env bash
+[ "${RIVETOS_EMBED_MODEL:-}" = "$EXPECT_MODEL" ] || exit 91
+printf '%s\n' server-stdout
+exit 23
+SH
+chmod 755 "$DUMMY/bin/node"
+for scenario in pg datahub model no_database no_embed placeholder file_model; do
+  for prefix in RIVETOS_PLUGIN_OPT_ CLAUDE_PLUGIN_OPTION_; do
+    pg='' hub='' embed=https://fixture:embed-secret@embed.example model='' expected_model=''
+    : >"$DUMMY/launch.env"
+    case "$scenario" in
+      pg|no_embed|placeholder|file_model) pg=postgres://fixture:pg-secret@db.example/db ;;
+      datahub|model) hub=https://fixture:hub-secret@hub.example ;;
+    esac
+    [ "$scenario" != no_embed ] || embed=''
+    [ "$scenario" != model ] || { model=text-embedding-3-small; expected_model="$model"; }
+    [ "$scenario" != placeholder ] || model='${user_config.RIVETOS_EMBED_MODEL}'
+    if [ "$scenario" = file_model ]; then
+      printf 'RIVETOS_EMBED_MODEL=file-model\n' >"$DUMMY/launch.env"
+      model='${user_config.RIVETOS_EMBED_MODEL}' expected_model=file-model
+    fi
+    rc=0
+    env -i PATH="$DUMMY/bin:$PATH" HOME="$DUMMY" RIVETOS_ROOT="$TREE" \
+      RIVETOS_ENV_FILE="$DUMMY/launch.env" RIVETOS_PG_URL="$pg" RIVETOS_CLOUD_TOKEN=fixture \
+      EXPECT_MODEL="$expected_model" "${prefix}RIVETOS_DATAHUB_URL=$hub" \
+      "${prefix}RIVETOS_EMBED_URL=$embed" "${prefix}RIVETOS_EMBED_MODEL=$model" \
+      bash "$LAUNCH" >"$DUMMY/out" 2>"$DUMMY/err" || rc=$?
+    expected=0
+    case "$scenario" in pg|datahub|placeholder) expected=1 ;; esac
+    if [ "$rc" -eq 23 ] && [ "$(cat "$DUMMY/out")" = server-stdout ] &&
+       [ "$(wc -l <"$DUMMY/err")" -eq "$expected" ] &&
+       [ "$(grep -c RIVETOS_EMBED_MODEL "$DUMMY/err" || true)" -eq "$expected" ] &&
+       ! grep -Eq 'embed-secret|pg-secret|hub-secret' "$DUMMY/err"; then
+      pass "launcher embed diagnostic preserves exec: $scenario $prefix"
+    else
+      fail "launcher embed diagnostic: $scenario $prefix"
+    fi
+  done
+done
 
 rm -rf "$DUMMY" "$TREE"
 

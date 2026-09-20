@@ -76,3 +76,8 @@ This package is the wider **member kit**. Phase 1 reuses that MCP launcher. We m
 ## Version
 
 0.2.0 — stranger onboarding scaffold. Not marketplace-published.
+
+Shared onboard/status helpers also persist `RIVETOS_EMBED_URL` and
+`RIVETOS_MCP_ENABLE_MEMORY_WRITE`. Status includes additive `embed_url:` and
+`memory_write:` lines; endpoint credentials remain redacted. Grok-bot keeps
+its existing plugin/process-over-file configuration precedence.

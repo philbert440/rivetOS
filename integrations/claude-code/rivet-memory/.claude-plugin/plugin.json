@@ -23,11 +23,18 @@
       "sensitive": true,
       "required": false
     },
+    "RIVETOS_EMBED_MODEL": {
+      "type": "string",
+      "title": "Embed model",
+      "description": "Required when an Embed URL is set, for example text-embedding-3-small.",
+      "required": false
+    },
     "RIVETOS_CLOUD_URL": {
       "type": "string",
       "title": "Cloud URL",
       "description": "Cloud-mode API base. Default https://rivetos.cloud when mode is cloud and this is empty.",
-      "required": false
+      "required": false,
+      "sensitive": true
     },
     "RIVETOS_CLOUD_TOKEN": {
       "type": "string",
@@ -42,5 +49,21 @@
       "description": "Set to 1 only if you opt in during onboard. Default off. Shell/file/search write tools are not available in this kit.",
       "required": false
     }
+  },
+  "keywords": [
+    "memory",
+    "mcp",
+    "capture",
+    "recall",
+    "rivetos",
+    "skill",
+    "agent",
+    "discipline"
+  ],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "MIT",
+  "author": {
+    "name": "RivetOS"
   }
 }

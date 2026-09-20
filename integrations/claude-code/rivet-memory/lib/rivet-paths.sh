@@ -627,21 +627,28 @@ rivetos_apply_cloud_defaults() {
 # server still starts, but with echo + web tools only (memory disabled).
 #
 # Default: env file wins (same as main / historical harness launchers).
-# RIVETOS_PLUGIN_ENV=1: process / plugin values win after stripping
-# placeholders, and a plugin postgres DataHub overwrites a file-only PG URL.
+# RIVETOS_PLUGIN_ENV=1: only RIVETOS_PLUGIN_KEYS values win over the file.
+# An unset key list retains historical grok-bot process/plugin precedence.
+# A plugin postgres DataHub overwrites a PG URL not supplied by the plugin.
 rivetos_load_env() {
   local xtrace_on=0
   case "$-" in *x*) xtrace_on=1 ;; esac
   set +x
   local env_file="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"
-  local restore="" n plugin_datahub plugin_pg plugin_mode=0
+  local restore="" n names plugin_datahub="" plugin_pg="" plugin_mode=0
 
   if [ "${RIVETOS_PLUGIN_ENV:-}" = "1" ]; then
     plugin_mode=1
+    # Unset (not empty) preserves grok-bot's existing precedence unchanged.
+    names="${RIVETOS_PLUGIN_KEYS-$(rivetos_exported_rivetos_names)}"
     rivetos_unset_empty_rivetos_vars
-    plugin_datahub="${RIVETOS_DATAHUB_URL:-}"
-    plugin_pg="${RIVETOS_PG_URL:-}"
-    for n in $(rivetos_exported_rivetos_names); do
+    for n in $names; do
+      [[ "$n" =~ ^RIVETOS_[A-Za-z0-9_]+$ ]] || continue
+      rivetos_is_effective_unset "${!n-}" && continue
+      case "$n" in
+        RIVETOS_DATAHUB_URL) plugin_datahub="${!n}" ;;
+        RIVETOS_PG_URL) plugin_pg="${!n}" ;;
+      esac
       restore="${restore}$(printf 'export %s=%q\n' "$n" "${!n}")"$'\n'
     done
   fi

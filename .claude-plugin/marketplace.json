@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "rivet-memory",
-      "description": "Persistent memory for Claude Code. Adds the RivetOS MCP server (memory_search, memory_browse, skills, web) for recall, plus lifecycle hooks that capture every prompt and tool call into the RivetOS memory DB \u2014 so weeks later you can find the exact command that fixed something.",
+      "description": "Persistent RivetOS memory for Claude Code: recall MCP tools, lifecycle capture, and agent-driven onboard (cloud vs your own hub).",
       "source": "./integrations/claude-code/rivet-memory",
       "category": "productivity",
       "homepage": "https://github.com/philbert440/rivetOS"

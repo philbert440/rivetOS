@@ -68,12 +68,6 @@ _encode_or_refuse() {
   printf '%s' "$enc"
 }
 
-mkdir -p "$(dirname "$ENV_FILE")"
-if [ ! -e "$ENV_FILE" ]; then
-  umask 077
-  : >"$ENV_FILE"
-fi
-chmod 600 "$ENV_FILE"
 
 _rivetos_install_env() {
   local tmp="$1"
@@ -147,6 +141,7 @@ enc_datahub=""
 enc_token=""
 enc_pg=""
 enc_embed=""
+enc_embed_model=""
 enc_memwrite=""
 if [ -n "${RIVETOS_CLOUD_URL:-}" ]; then
   enc_cloud="$(_encode_or_refuse RIVETOS_CLOUD_URL "$RIVETOS_CLOUD_URL")"
@@ -163,9 +158,26 @@ fi
 if [ -n "${RIVETOS_EMBED_URL:-}" ]; then
   enc_embed="$(_encode_or_refuse RIVETOS_EMBED_URL "$RIVETOS_EMBED_URL")"
 fi
+if [ -n "${RIVETOS_EMBED_MODEL:-}" ]; then
+  enc_embed_model="$(_encode_or_refuse RIVETOS_EMBED_MODEL "$RIVETOS_EMBED_MODEL")"
+fi
 if [ -n "${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-}" ]; then
   enc_memwrite="$(_encode_or_refuse RIVETOS_MCP_ENABLE_MEMORY_WRITE "$RIVETOS_MCP_ENABLE_MEMORY_WRITE")"
 fi
+
+# Validate the resulting pair before creating or changing any file.
+effective_embed="${RIVETOS_EMBED_URL:-$(rivetos_env_file_value "$ENV_FILE" RIVETOS_EMBED_URL)}"
+effective_model="${RIVETOS_EMBED_MODEL:-$(rivetos_env_file_value "$ENV_FILE" RIVETOS_EMBED_MODEL)}"
+if ! rivetos_is_effective_unset "$effective_embed" && rivetos_is_effective_unset "$effective_model"; then
+  _refuse "RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL is set (file not written)"
+fi
+
+mkdir -p "$(dirname "$ENV_FILE")"
+if [ ! -e "$ENV_FILE" ]; then
+  umask 077
+  : >"$ENV_FILE"
+fi
+chmod 600 "$ENV_FILE"
 
 if [ "$want_mode" -eq 1 ]; then
   upsert_encoded RIVETOS_MODE "$enc_mode"
@@ -184,6 +196,9 @@ if [ -n "$enc_pg" ]; then
 fi
 if [ -n "$enc_embed" ]; then
   upsert_encoded RIVETOS_EMBED_URL "$enc_embed"
+fi
+if [ -n "$enc_embed_model" ]; then
+  upsert_encoded RIVETOS_EMBED_MODEL "$enc_embed_model"
 fi
 if [ -n "$enc_memwrite" ]; then
   upsert_encoded RIVETOS_MCP_ENABLE_MEMORY_WRITE "$enc_memwrite"

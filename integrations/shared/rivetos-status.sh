@@ -77,7 +77,15 @@ echo "cloud_token: $(_rivetos_status_flag "${RIVETOS_CLOUD_TOKEN:-}")"
 echo "datahub: $(_rivetos_status_flag "${RIVETOS_DATAHUB_URL:-}")"
 echo "pg_url: $(_rivetos_status_flag "${RIVETOS_PG_URL:-}")"
 echo "embed_url: $(_rivetos_status_flag "${RIVETOS_EMBED_URL:-}")"
+echo "embed_model: $(_rivetos_status_flag "${RIVETOS_EMBED_MODEL:-}")"
 echo "memory_write: $(_rivetos_status_flag "${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-}")"
+
+# Configuration problems are informational; preserve the reachability exit contract.
+if ! rivetos_is_effective_unset "${RIVETOS_EMBED_URL:-}" &&
+   { ! rivetos_is_effective_unset "${RIVETOS_PG_URL:-}" || ! rivetos_is_effective_unset "${RIVETOS_DATAHUB_URL:-}"; } &&
+   rivetos_is_effective_unset "${RIVETOS_EMBED_MODEL:-}"; then
+  echo "problem: RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL and a Postgres/DataHub URL are set"
+fi
 
 if command -v tailscale >/dev/null 2>&1; then
   ts_json="$(tailscale status --json 2>/dev/null || true)"

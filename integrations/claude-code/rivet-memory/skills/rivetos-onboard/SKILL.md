@@ -61,7 +61,8 @@ User steps:
 5. Until a dedicated cloud memory HTTP API exists, they also need the cloud
    **Postgres + embed** URLs from the tenant bundle (`rivetos cloud connect`).
    Those go in the plugin form / `~/.rivetos/.env` — not in this chat.
-6. Persist, then prove.
+6. Whenever an embed URL is given, ask for `RIVETOS_EMBED_MODEL` as well
+   (for example `text-embedding-3-small`) and persist both before proving.
 
 If they have no cloud account yet, say so and offer Path B. Do not invent a
 sign-in URL or pretend OAuth completed.
@@ -90,7 +91,8 @@ User steps:
    - Prefer a MagicDNS / `postgres://` URL for their DataHub / PG gateway.
    - The launcher maps `postgres://` / `postgresql://` onto `RIVETOS_PG_URL`.
    - HTTPS values are stored, not converted.
-   - Optional `RIVETOS_EMBED_URL` if their hub needs it.
+   - Optional `RIVETOS_EMBED_URL` if their hub needs it. Whenever given, ask
+     for `RIVETOS_EMBED_MODEL` too (for example `text-embedding-3-small`).
    - `RIVETOS_PG_URL` is legacy, only if DataHub URL is not enough.
 4. Persist, then prove.
 
@@ -106,3 +108,6 @@ User steps:
   Without a checkout, the hook logs and skips capture.
 - If prove fails: say what is missing (mode, Tailscale, reachable host, token
   set/unset). Do not print the URL.
+
+- Server exits at start: if an embed URL and Postgres/DataHub URL are set,
+  check `RIVETOS_EMBED_MODEL`; ask for the model and persist it if missing.

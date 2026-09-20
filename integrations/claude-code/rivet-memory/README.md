@@ -29,12 +29,15 @@ Then ask the agent to run the **`rivetos-onboard`** skill. One fork:
 - **Local** — Tailscale + one DataHub URL (`postgres://` maps to the memory
   store; `https://` is stored as-is).
 
+Whenever an embed URL is given, onboard asks for the embedding model
+(`RIVETOS_EMBED_MODEL`) and persists both.
+
 Prove with **`rivetos-status`**, then `memory_stats`. Secrets are never echoed.
 
 The no-checkout MCP path is `npx -y @rivetos/mcp-sidecar@0.5.0 --stdio`. That
 package is not on npm yet; the path works once 0.5.0 is published. Until then,
 a built RivetOS tree (`RIVETOS_ROOT` or `/opt/rivetos`) still launches as
-before.
+before. Until the pinned release is on npm, the no-checkout path reports npm’s not-found error.
 
 Local marketplace from a checkout you already have:
 
@@ -69,7 +72,7 @@ DataHub / PG URL is configured.
 `0.2` added the discipline layer. `0.3` makes the kit installable by a
 stranger with no RivetOS checkout:
 
-- MCP launcher: built checkout if present, otherwise `npx @rivetos/mcp-sidecar`.
+- MCP launcher: built checkout if present, otherwise `npx -y @rivetos/mcp-sidecar@0.5.0 --stdio`.
 - Capture hook: uses the checkout handler when available; otherwise logs
   one secret-free line to stderr, skips capture, and exits 0.
 - `userConfig` for mode, DataHub, embed, cloud URL, cloud token.
@@ -96,17 +99,25 @@ helpers use Python 3 for endpoint checks. Plugin settings or
 `~/.rivetos/.env` supply the DataHub. Capture logs and skips; it requires
 a built checkout handler.
 
-## Configuration
+## Configuration precedence
 
-Read order: plugin `userConfig` first → `~/.rivetos/.env` fallback. Empty or
-unsubstituted `${…}` / `${user_config.…}` placeholders do not shadow the env
-file. Persist never clobbers `RIVETOS_MODE=workspace|production`.
+Plugin settings → `~/.rivetos/.env` → inherited environment, per key.
+The file wins over inherited `RIVETOS_*` values; when the file or key is
+absent, the inherited value survives. Empty or unsubstituted plugin values
+(`${…}` / `${user_config.…}`) fall through to the file and then the environment.
+`.mcp.json` passes settings as `RIVETOS_PLUGIN_OPT_<full userConfig key>`
+(for example, `RIVETOS_PLUGIN_OPT_RIVETOS_MODE`). The launcher also accepts
+`CLAUDE_PLUGIN_OPTION_<full userConfig key>`, which wins if both channels
+supply a value. Only effective plugin settings enter `RIVETOS_PLUGIN_KEYS`.
+A plugin-supplied Postgres DataHub also overrides the fallback PG URL.
+Persist never clobbers `RIVETOS_MODE=workspace|production`.
 
 | Var | Default | Purpose |
 |---|---|---|
 | `RIVETOS_MODE` | unset | `cloud` or `local` |
 | `RIVETOS_DATAHUB_URL` | unset | Local DataHub. `postgres://` / `postgresql://` maps to `RIVETOS_PG_URL`; HTTPS is stored, not converted |
 | `RIVETOS_EMBED_URL` | unset | Optional embedding endpoint |
+| `RIVETOS_EMBED_MODEL` | unset | Required with an embed URL; for example `text-embedding-3-small` |
 | `RIVETOS_CLOUD_URL` | `https://rivetos.cloud` when mode is cloud | Cloud API base |
 | `RIVETOS_CLOUD_TOKEN` | unset | Secret (set/unset in status; never printed) |
 | `RIVETOS_ROOT` | `/opt/rivetos` | RivetOS install root when a checkout exists |
@@ -114,6 +125,10 @@ file. Persist never clobbers `RIVETOS_MODE=workspace|production`.
 
 Without `RIVETOS_PG_URL` the MCP server still starts, but with `echo` + web
 tools only — the memory tools are disabled.
+
+Server exits at start: with an embed URL and Postgres/DataHub URL set, check
+`RIVETOS_EMBED_MODEL`. Set the missing model in plugin settings or rerun onboard.
+`rivetos-status` reports `embed_model: set|unset` and names this configuration problem.
 
 ## Capture is best-effort
 
