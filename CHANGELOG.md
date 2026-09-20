@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### RivetHub client
 
+- Composer model picker for conversations whose harness supports choosing a model per turn.
+
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
 
 ### Harness integrations

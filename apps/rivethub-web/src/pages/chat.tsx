@@ -1,3 +1,7 @@
+import {
+  conversationModelOptions,
+  conversationProtocolOwnership,
+} from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
@@ -583,6 +587,13 @@ export function ChatPage(): JSX.Element {
             sessionId={active}
             item={activeItem}
             gate={gate}
+            summaryReady={
+              !harnessQuery.isPending &&
+              !harnessQuery.isError &&
+              harnessQuery.data !== undefined &&
+              (!descriptors?.length ||
+                (!planeQuery.isPending && !planeQuery.isError && planeQuery.data !== undefined))
+            }
             harnessCommand={activeItem?.command}
           />
         </SessionErrorBoundary>
@@ -945,6 +956,7 @@ function ActiveSession(props: {
   item?: ChatItem
   /** Which control-plane affordances this session's driver actually has. */
   gate: HarnessGate
+  summaryReady: boolean
   harnessCommand?: string
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -1087,7 +1099,7 @@ function ActiveSession(props: {
   const gate = isRemote ? harnessGate(remoteItem, remoteRegistry.data?.harnesses) : props.gate
   const harnessCommand = isRemote ? remoteItem?.command : props.harnessCommand
 
-  /** Canonical `<harness-id>:<native>` when the control plane owns this row. */
+  /** Canonical `<harness-id>:<native>` for a harness row (including legacy PTY rows). */
   const canonicalId = gate.bound ? item?.sessionId : undefined
   const { mode, setMode } = useSessionView(
     storageKey(sessionBase, props.sessionId),
@@ -1144,23 +1156,42 @@ function ActiveSession(props: {
   const settingsKey = storageKey(sessionBase, props.sessionId)
   const settings = useChatSettings((s) => persisted(s.byKey, sessionBase, props.sessionId))
   const nativeHarnessId = item?.harnessId ?? settings?.harnessId
-  const nativeSheet = remoteRegistry.data?.harnesses.find(
-    (h) => h.harnessId === nativeHarnessId,
-  )?.capabilities
-  const nativeModels =
-    nativeSheet?.turnOptions && item?.transport === 'protocol' ? (nativeSheet.models ?? []) : []
-  const nativeModel =
-    nativeModels.find((m) => m.id === settings?.model) ??
-    nativeModels.find((m) => m.id === item?.model) ??
-    nativeModels.find((m) => m.default) ??
-    nativeModels[0]
-  const nativeEfforts = nativeModel?.efforts ?? []
-  const nativeEffort =
-    nativeEfforts.find((e) => e.id === settings?.harnessEffort) ??
-    nativeEfforts.find((e) => e.id === item?.effort) ??
-    nativeEfforts.find((e) => e.default) ??
-    nativeEfforts[0]
+  const protocolOwned = conversationProtocolOwnership({
+    registryReady:
+      !remoteRegistry.isPending && !remoteRegistry.isError && remoteRegistry.data !== undefined,
+    summaryReady: isRemote
+      ? !remoteSummary.isPending && !remoteSummary.isError && remoteSummary.data !== undefined
+      : props.summaryReady && item !== undefined,
+    bound: gate.bound,
+    transport: item?.transport,
+  })
+  const turnOptions = conversationModelOptions(
+    nativeHarnessId,
+    remoteRegistry.data?.harnesses,
+    settings?.turnPick,
+    protocolOwned,
+    item?.model,
+  )
   const setSetting = useChatSettings((s) => s.set)
+  const retainedModel = turnOptions.retainedPick?.model
+  const retainedEffort = turnOptions.retainedPick?.effort
+  useEffect(() => {
+    if (turnOptions.clearPick) {
+      setSetting(settingsKey, {
+        turnPick:
+          nativeHarnessId && (retainedModel || retainedEffort)
+            ? { harnessId: nativeHarnessId, model: retainedModel, effort: retainedEffort }
+            : undefined,
+      })
+    }
+  }, [
+    turnOptions.clearPick,
+    nativeHarnessId,
+    retainedModel,
+    retainedEffort,
+    settingsKey,
+    setSetting,
+  ])
 
   // ---- Transcript binding ---------------------------------------------------
   //
@@ -1293,9 +1324,7 @@ function ActiveSession(props: {
   // is cleaned up by XtermAttach's detach (WS close → detached TTL) and the
   // manager's LRU pool at maxPtys, not by a kill-on-leave.
 
-  // Model change invalidates a running terminal (it's the wrong harness now):
-  // kill it so the next Terminal entry / chat send respawns with the chosen
-  // model.
+  // Agent changes invalidate the running terminal. Per-turn picks do not.
   const agentSel = settings?.agent ?? ''
   useEffect(() => {
     const id = termPtyRef.current
@@ -1309,6 +1338,7 @@ function ActiveSession(props: {
       // dead PTY → 409. Mode stays put — the terminal spawn effect respawns
       // with the newly chosen model if terminal is showing.
       termPtyRef.current = undefined
+      protocolSessionRef.current = undefined
       setTermPtyId(undefined)
     }
   }, [agentSel])
@@ -1487,41 +1517,36 @@ function ActiveSession(props: {
     )
     const sendProtocol = async (sid: string): Promise<void> => {
       const harnessId = sid.split(':')[0] as import('@rivetos/types').HarnessId
-      const capabilities =
-        remoteRegistry.data?.harnesses.find((h) => h.harnessId === harnessId)?.capabilities ??
-        (await gw.harnessCapabilities(harnessId)).capabilities
-      const protocolOwned =
-        protocolSessionRef.current === sid ||
-        (canonicalId === sid && item?.transport === 'protocol') ||
-        (await gw.getHarnessSession(sid)).transport === 'protocol'
+      const capabilities = remoteRegistry.data?.harnesses.find(
+        (h) => h.harnessId === harnessId,
+      )?.capabilities
+      // Use the rendered ownership and options. Pending/error queries must
+      // neither delay a send nor apply a pick that the composer cannot offer.
       const nativeAttachments =
         protocolOwned &&
-        capabilities.imageAttachments &&
+        capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
       await gw.sendHarnessTurn(sid, {
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
-        ...(capabilities.turnOptions && protocolOwned
-          ? {
-              ...(nativeModel ? { model: nativeModel.id } : {}),
-              ...(nativeEffort ? { effort: nativeEffort.id } : {}),
-            }
-          : {}),
+        ...(harnessId === nativeHarnessId ? turnOptions.effective : {}),
         ...(prompt ? { systemPrompt: prompt } : {}),
       })
     }
-    if (canonicalId) {
+    // A loaded harness summary can route a plain turn before descriptors arrive.
+    const sendSessionId = canonicalId ?? (item?.kind === 'harness' ? item.sessionId : undefined)
+    if (sendSessionId) {
       // Control plane: the driver owns spawn-or-resume, so there is no PTY to
       // ensure here. "Inject now" is interrupt-then-send, and only when the
       // driver actually has an interrupt (a false flag answers 501).
       if (interrupt && gate.canInterrupt) {
-        await gw.interruptHarnessSession(canonicalId).catch(() => undefined)
+        await gw.interruptHarnessSession(sendSessionId).catch(() => undefined)
         // Same beat the legacy interrupt-inject waits: the TUI needs a moment
         // to draw its cancel before the next paste, or the turn swallows it.
         await new Promise((r) => setTimeout(r, INTERRUPT_SETTLE_MS))
       }
       try {
-        await sendProtocol(canonicalId)
+        await sendProtocol(sendSessionId)
         if (prompt) markSystemPromptSent(props.sessionId)
       } catch (err) {
         clearSystemPromptSent(props.sessionId)
@@ -1551,6 +1576,7 @@ function ActiveSession(props: {
         // context is kept), and retry once. A fresh harness has no turn to
         // interrupt, so the retry never sends Esc.
         termPtyRef.current = undefined
+        protocolSessionRef.current = undefined
         setTermPtyId(undefined)
         await ensurePty()
         await gw.termInject({ session: props.sessionId, text: injectText })
@@ -1809,48 +1835,15 @@ function ActiveSession(props: {
               <HarnessApprovalCard pending={pendingApprovals} onDecide={onDecideApproval} />
             </div>
           )}
-          {nativeModels.length > 0 && (
-            <div className="flex gap-3 px-4 pt-2 text-xs text-ink-dim">
-              <label>
-                Model{' '}
-                <select
-                  aria-label="Codex model"
-                  value={nativeModel?.id ?? ''}
-                  className="rounded border border-line bg-panel px-2 py-1 text-ink"
-                  onChange={(event) =>
-                    setSetting(settingsKey, { model: event.target.value, harnessEffort: undefined })
-                  }
-                >
-                  {nativeModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {nativeEfforts.length > 0 && (
-                <label>
-                  Effort{' '}
-                  <select
-                    aria-label="Codex reasoning effort"
-                    value={nativeEffort?.id ?? ''}
-                    className="rounded border border-line bg-panel px-2 py-1 text-ink"
-                    onChange={(event) =>
-                      setSetting(settingsKey, { harnessEffort: event.target.value })
-                    }
-                  >
-                    {nativeEfforts.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </div>
-          )}
           <Composer
-            nativeControls={nativeModels.length > 0}
+            nativeControls={turnOptions.models.length > 0}
+            turnOptions={turnOptions}
+            onTurnPick={
+              nativeHarnessId
+                ? (pick) =>
+                    setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
+                : undefined
+            }
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}
