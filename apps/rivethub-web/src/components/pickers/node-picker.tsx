@@ -1,10 +1,11 @@
 import { useState, type JSX } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, Plus, Server } from 'lucide-react'
 import { cn } from '../../lib/utils.js'
 import { useConnection } from '../../stores/connection.js'
 import { prettifyNodeName, urlLabel, useNodeName } from '../../lib/node-name.js'
 import { performNodeSwitch } from '../../lib/switch-mode.js'
+import { useNodeDiscovery } from '../../lib/use-node-discovery.js'
 import { Button } from '../ui/button.js'
 import {
   Popover,
@@ -69,26 +70,16 @@ function DiscoveredNodeRow(props: {
  * stays put. Full node management (remove / token) still lives in the
  * sidebar switcher. Labels: hostname via /healthz.
  */
-export function NodePicker(props: { disabled?: boolean }): JSX.Element {
+export function NodePicker(props: { disabled?: boolean }): JSX.Element | null {
   const { baseUrl, roster, switchTo, addNode } = useConnection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const [switchError, setSwitchError] = useState<string | undefined>()
 
-  const mesh = useQuery({
-    queryKey: ['mesh', baseUrl],
-    queryFn: ({ signal }) => useConnection.getState().gateway.meshOverview(signal),
-    enabled: open,
-    staleTime: 30_000,
-    retry: 0,
-  })
+  const { mesh, discovered, hidden } = useNodeDiscovery()
 
   const current = roster.find((n) => n.baseUrl === baseUrl)
   const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
-  const known = new Set(roster.map((n) => n.baseUrl))
-  const discovered = (mesh.data?.nodes ?? []).filter(
-    (n) => n.online && n.denUrl && !known.has(n.denUrl.replace(/\/+$/, '')),
-  )
 
   const doSwitch = (url: string): void => {
     if (!performNodeSwitch(url, switchTo)) {
@@ -99,6 +90,8 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
     void queryClient.invalidateQueries()
     setOpen(false)
   }
+
+  if (hidden) return null
 
   return (
     <Popover
@@ -140,9 +133,6 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element {
               onSwitch={doSwitch}
             />
           ))}
-          {roster.length === 0 && (
-            <div className="px-2.5 py-2 text-xs text-ink-dim">no saved nodes</div>
-          )}
 
           {discovered.length > 0 && (
             <>
