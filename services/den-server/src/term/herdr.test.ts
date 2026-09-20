@@ -25,6 +25,8 @@ import {
   herdrAgentReleased,
   herdrEventNamedAgent,
   herdrEventPaneId,
+  herdrEventTimestamp,
+  resolveHerdrPaneId,
   herdrMetaPath,
   herdrPaneAgentLive,
   parsePaneAgent,
@@ -408,6 +410,33 @@ describe('parseWorkspaceCreate / parsePaneSize', () => {
       }),
     ).toBeUndefined()
   })
+
+  it('resolveHerdrPaneId prefers list over meta and fails closed when both empty', () => {
+    expect(resolveHerdrPaneId('w1:p2', 'w1:p1')).toBe('w1:p2')
+    expect(resolveHerdrPaneId(undefined, 'w1:p1')).toBe('w1:p1')
+    expect(resolveHerdrPaneId('', 'w1:p1')).toBe('w1:p1')
+    expect(resolveHerdrPaneId(undefined, undefined)).toBeUndefined()
+    expect(resolveHerdrPaneId('', '')).toBeUndefined()
+  })
+
+  it('herdrEventTimestamp reads ts/timestamp off the envelope', () => {
+    expect(
+      herdrEventTimestamp({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', ts: 42 },
+      }),
+    ).toBe(42)
+    expect(
+      herdrEventTimestamp({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude' },
+        timestamp: 99,
+      }),
+    ).toBe(99)
+    expect(
+      herdrEventTimestamp({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1' } }),
+    ).toBeUndefined()
+  })
 })
 
 describe('herdrStatusToFrame', () => {
@@ -787,7 +816,7 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     const unsub = ctl.subscribeEvents!('chat-f', () => undefined)
     sock.emit('connect')
     expect(written).toEqual([])
-    unsub()
+    expect(unsub).toBeUndefined()
   })
 })
 

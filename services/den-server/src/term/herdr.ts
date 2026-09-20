@@ -144,9 +144,18 @@ export interface HerdrCtl {
     name: string,
     paneId?: string,
   ): Promise<{ agent: string | null; status?: string } | undefined>
-  /** One newline-JSON `events.subscribe` socket. Returns unsubscribe.
+  /** List first, then session meta. Same function paneAgent / subscribeEvents /
+   *  the manager use so a record never takes evidence from a pane id the
+   *  event stream is not subscribed to. */
+  resolvePaneId?(name: string): string | undefined
+  /** One newline-JSON `events.subscribe` socket. Returns unsubscribe, or
+   *  `undefined` when no pane id is resolvable (do not guess `w1:p1`).
    *  `onClose` fires when the socket ends (hub reconnects). */
-  subscribeEvents?(name: string, onEvent: (evt: unknown) => void, onClose?: () => void): () => void
+  subscribeEvents?(
+    name: string,
+    onEvent: (evt: unknown) => void,
+    onClose?: () => void,
+  ): (() => void) | undefined
 }
 
 export interface HerdrCreateOpts {
@@ -486,6 +495,28 @@ function detectedAgent(rec: Record<string, unknown>): unknown {
   return data.agent ?? data.agent_name ?? rec.agent
 }
 
+/** List-then-meta pane id. Empty / missing on both sides → undefined. */
+export function resolveHerdrPaneId(
+  listed: string | undefined,
+  meta: string | undefined,
+): string | undefined {
+  if (typeof listed === 'string' && listed.length > 0) return listed
+  if (typeof meta === 'string' && meta.length > 0) return meta
+  return undefined
+}
+
+/** Wire timestamp on a herdr event envelope, if present. */
+export function herdrEventTimestamp(evt: unknown): number | undefined {
+  const rec = asEventRecord(evt)
+  if (!rec) return undefined
+  const data = asRecord(rec.data) ?? rec
+  for (const v of [data.ts, data.timestamp, rec.ts, rec.timestamp]) {
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return undefined
+}
+
 /** Pane id on a herdr event envelope (`data.pane_id`). Absent/empty → undefined. */
 export function herdrEventPaneId(evt: unknown): string | undefined {
   const rec = asEventRecord(evt)
@@ -821,6 +852,12 @@ export interface HerdrStatusHub {
   release(name: string): void
   /** Live subscribe count for tests. */
   refs(name: string): number
+  /** True when the child subscribe returned an unsubscribe (socket is up). */
+  listening(name: string): boolean
+  /** Re-start the child for a session that already has refs (pane id
+   *  resolved after the first retain no-op'd). False if not retained or
+   *  subscribe still cannot establish. */
+  resubscribe(name: string): boolean
   close(): void
 }
 
@@ -830,7 +867,11 @@ const DEFAULT_BACKOFF_MS = [250, 500, 1000, 2000, 5000]
 const HUB_STABLE_MS = 5_000
 
 export function createHerdrStatusHub(opts: {
-  subscribe: (name: string, onEvent: (evt: unknown) => void, onClose: () => void) => () => void
+  subscribe: (
+    name: string,
+    onEvent: (evt: unknown) => void,
+    onClose: () => void,
+  ) => (() => void) | undefined
   onFrame: (name: string, frame: HarnessStatusFrame) => void
   /** Every subscribe event, including ones that do not map to a status frame
    *  (`pane.agent_detected`, `done`). Optional — existing callers ignore it. */
@@ -938,6 +979,15 @@ export function createHerdrStatusHub(opts: {
     },
     refs(name) {
       return slots.get(name)?.refs ?? 0
+    },
+    listening(name) {
+      return typeof slots.get(name)?.unsub === 'function'
+    },
+    resubscribe(name) {
+      const s = slots.get(name)
+      if (!s || s.closed || s.refs <= 0) return false
+      start(name, s)
+      return typeof s.unsub === 'function'
     },
     close() {
       for (const [name, s] of slots) {
@@ -1290,6 +1340,11 @@ export function createRealHerdrCtl(
     return out
   }
 
+  const resolvePaneId = (name: string): string | undefined => {
+    const listed = listFresh().find((s) => s.name === name)?.paneId
+    return resolveHerdrPaneId(listed, readMeta(configHome, name).paneId)
+  }
+
   return {
     hasSession(name) {
       return isLive(name)
@@ -1506,9 +1561,9 @@ export function createRealHerdrCtl(
           : runAsync(herdrPaneReadArgv(name, meta.paneId ?? HERDR_DEFAULT_PANE, lines).slice(1)),
       )
     },
+    resolvePaneId,
     async paneAgent(name, paneId) {
-      const pane =
-        typeof paneId === 'string' && paneId.length > 0 ? paneId : readMeta(configHome, name).paneId
+      const pane = typeof paneId === 'string' && paneId.length > 0 ? paneId : resolvePaneId(name)
       if (!pane) return undefined
       const runAsync = (args: string[]): Promise<string | null> =>
         new Promise((resolve) => {
@@ -1530,11 +1585,13 @@ export function createRealHerdrCtl(
       }
     },
     subscribeEvents(name, onEvent, onClose) {
-      const paneId = readMeta(configHome, name).paneId
+      const paneId = resolvePaneId(name)
       if (!paneId) {
         // No guessed pane: an adopted session with no pane id must not
         // subscribe to `w1:p1` and treat that pane's events as evidence.
-        return () => undefined
+        // `undefined` (not a no-op unsub) so the hub does not believe the
+        // child is up — manager re-subscribes once the id resolves.
+        return undefined
       }
       const sockPath = herdrSocketPath(configHome, name)
       const sock = connectFn(sockPath)

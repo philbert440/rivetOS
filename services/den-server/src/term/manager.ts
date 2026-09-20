@@ -96,6 +96,7 @@ import {
   herdrAgentReleased,
   herdrEventNamedAgent,
   herdrEventPaneId,
+  herdrEventTimestamp,
   herdrKindForCommand,
   herdrPaneAgentLive,
   herdrStatusToFrame,
@@ -290,6 +291,17 @@ interface PtyRecord {
   lastAgentSeenAt?: number
   /** herdr pane this record writes to. Probe and event evidence are scoped to it. */
   paneId?: string
+  /** `now()` when agentEnded or releaseUnconfirmed was last set. */
+  latchSetAt?: number
+  /** Monotonic seq when the latch was set. Probe evidence captured at a
+   *  lower seq (started before the latch) must not clear it. */
+  latchSeq?: number
+  /** Pane id the current event subscription is scoped to. */
+  eventsPaneId?: string
+  /** `now()` when that subscription started. */
+  eventsSubscribedAt?: number
+  /** First inject-refusal already fired an immediate re-probe. */
+  injectReprobed?: boolean
   /** Bare-null / final_status whose confirm probe was unavailable. Inject
    *  refuses; bounded backoff re-probes until alive (clear) or dead (end). */
   releaseUnconfirmed?: boolean
@@ -1020,11 +1032,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
   }
 
-  const noteAgentSeen = (r: PtyRecord): void => {
+  let evidenceSeq = 0
+
+  const noteAgentSeen = (r: PtyRecord, probeSeq?: number): boolean => {
+    if (r.latchSeq !== undefined && probeSeq !== undefined && probeSeq < r.latchSeq) return false
     r.lastAgentSeenAt = now()
     r.releaseUnconfirmed = false
+    r.latchSetAt = undefined
+    r.latchSeq = undefined
+    r.injectReprobed = false
     clearAgentEnded(r)
     clearProbeBackoff(r)
+    return true
   }
 
   /** Assigned after onExit exists. Release-signal grace calls this to reap. */
@@ -1045,6 +1064,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const latchReleaseUnconfirmed = (r: PtyRecord): void => {
     if (!r.agentPane) return
     r.releaseUnconfirmed = true
+    r.latchSetAt = now()
+    r.latchSeq = ++evidenceSeq
+    r.injectReprobed = false
     cancelPendingWrites(r)
     r.probeBackoffMs = PROBE_BACKOFF_START_MS
   }
@@ -1059,6 +1081,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const latchAgentEnded = (r: PtyRecord): void => {
     if (!r.agentPane) return
     r.agentEnded = true
+    r.latchSetAt = now()
+    r.latchSeq = ++evidenceSeq
+    r.injectReprobed = false
     // Drop in-flight paste/CR so they cannot land in the fallback shell.
     // Keep injectBuffer: a re-detect during grace can still flush.
     cancelPendingWrites(r)
@@ -1222,6 +1247,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           r.agentPane &&
           r.state === 'running'
         ) {
+          if (had) {
+            const turn = nextInjectTurn(r)
+            recordUnconfirmed(r, turn, 'harness failed to start — dropping buffered turns')
+            dropBufferedInjects(r)
+          }
           deps.log(
             `[den-server] term: harness failed to start — no agent seen within injectReadyMaxMs (${injectReadyMaxMs}ms)`,
           )
@@ -1251,6 +1281,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const failStartNoAgent = (r: PtyRecord): void => {
     if (!r.agentPane || r.persisted || r.state !== 'running' || r.agentEnded) return
     if (r.lastAgentSeenAt !== undefined) return
+    const had = r.injectBuffer.length > 0 || (r.injectRest !== undefined && r.injectRest.length > 0)
+    if (had) {
+      const turn = nextInjectTurn(r)
+      recordUnconfirmed(r, turn, 'harness failed to start — dropping buffered turns')
+    }
     deps.log(
       `[den-server] term: harness failed to start — no agent seen within injectReadyMaxMs (${injectReadyMaxMs}ms)`,
     )
@@ -1295,8 +1330,20 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const refreshPaneId = (r: PtyRecord): void => {
     if (r.paneId || !herdr || !r.tmuxName) return
-    const listed = herdr.listSessions().find((s) => s.name === r.tmuxName)?.paneId
-    if (listed) r.paneId = listed
+    const resolved =
+      herdr.resolvePaneId?.(r.tmuxName) ??
+      herdr.listSessions().find((s) => s.name === r.tmuxName)?.paneId
+    if (resolved) r.paneId = resolved
+  }
+
+  /** Evidence requires a pane id AND a live pane-scoped event subscription. */
+  const ensurePaneSubscription = (r: PtyRecord): boolean => {
+    if (!r.paneId || !r.tmuxName || !statusHub) return false
+    if (r.eventsPaneId === r.paneId) return true
+    if (!statusHub.resubscribe(r.tmuxName)) return false
+    r.eventsPaneId = r.paneId
+    r.eventsSubscribedAt = now()
+    return true
   }
 
   applyAgentProbe = async (r: PtyRecord): Promise<void> => {
@@ -1307,8 +1354,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const probeFn = ctl.paneAgent.bind(ctl)
     if (r.probeInflight) return
     refreshPaneId(r)
+    if (!r.paneId || !ensurePaneSubscription(r)) {
+      scheduleSpawnBackoff(r)
+      return
+    }
     r.probeInflight = true
     r.lastProbeAt = now()
+    const probeSeq = evidenceSeq
     const paneId = r.paneId
     let probed: { agent: string | null; status?: string } | undefined
     try {
@@ -1323,10 +1375,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return
     }
     if (herdrPaneAgentLive(probed)) {
+      if (!r.paneId || r.eventsPaneId !== r.paneId) {
+        scheduleSpawnBackoff(r)
+        return
+      }
       if (probed.status === 'working' || probed.status === 'idle' || probed.status === 'blocked') {
         r.lastAgentStatus = probed.status
       }
-      noteAgentSeen(r)
+      if (!noteAgentSeen(r, probeSeq)) {
+        scheduleSpawnBackoff(r)
+        return
+      }
       if (r.persisted) r.ready = true
       else if (probed.status === 'idle') markReadyAndFlush(r)
       return
@@ -1357,12 +1416,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     latchReleaseUnconfirmed(r)
     const probeFn = ctl.paneAgent.bind(ctl)
     refreshPaneId(r)
+    if (!r.paneId || !ensurePaneSubscription(r)) {
+      scheduleSpawnBackoff(r)
+      return
+    }
     if (r.probeInflight) {
       scheduleSpawnBackoff(r)
       return
     }
     r.probeInflight = true
     r.lastProbeAt = now()
+    const probeSeq = evidenceSeq
     const paneId = r.paneId
     let probed: { agent: string | null; status?: string } | undefined
     try {
@@ -1377,7 +1441,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return
     }
     if (herdrPaneAgentLive(probed)) {
-      noteAgentSeen(r)
+      if (!noteAgentSeen(r, probeSeq)) {
+        scheduleSpawnBackoff(r)
+        return
+      }
       return
     }
     r.releaseUnconfirmed = false
@@ -1391,7 +1458,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   scheduleInjectReprobe = (r: PtyRecord): void => {
     if (!r.agentPane || r.state !== 'running') return
     if (r.lastAgentSeenAt !== undefined && !r.releaseUnconfirmed) return
-    if (r.probeInflight || r.probeBackoffTimer) return
+    if (r.probeInflight) return
+    if (!r.injectReprobed) {
+      r.injectReprobed = true
+      if (r.probeBackoffTimer) {
+        clearTimeout(r.probeBackoffTimer)
+        r.probeBackoffTimer = undefined
+      }
+      void applyAgentProbe(r)
+      return
+    }
+    if (r.probeBackoffTimer) return
     const since = r.lastProbeAt !== undefined ? now() - r.lastProbeAt : PROBE_INJECT_MIN_MS
     const wait = Math.max(0, PROBE_INJECT_MIN_MS - since)
     scheduleProbeRetry(r, wait)
@@ -1402,8 +1479,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const recFor = (name: string): PtyRecord | undefined =>
       [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
     statusHub = createHerdrStatusHub({
-      subscribe: (name, onEvent, onClose) =>
-        ctl.subscribeEvents?.(name, onEvent, onClose) ?? ((): void => undefined),
+      subscribe: (name, onEvent, onClose) => ctl.subscribeEvents?.(name, onEvent, onClose),
       onEvent: (name, evt) => {
         const rec = recFor(name)
         if (!rec) return
@@ -1412,12 +1488,39 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // once the id is resolved (create writes it after workspace.create;
         // adopt reads it from session meta).
         if (!rec.paneId || herdrEventPaneId(evt) !== rec.paneId) return
+        const evtTs = herdrEventTimestamp(evt)
+        if (
+          evtTs !== undefined &&
+          rec.eventsSubscribedAt !== undefined &&
+          evtTs < rec.eventsSubscribedAt
+        ) {
+          return
+        }
         if (herdrAgentReleased(evt)) {
           latchAgentEnded(rec)
           return
         }
+        const eventClearsLatch = (): boolean => {
+          if (rec.latchSetAt === undefined) return true
+          // Arrival order: an event may clear a latch only if it arrives after.
+          if (now() < rec.latchSetAt) return false
+          if (
+            evtTs === undefined &&
+            rec.eventsSubscribedAt !== undefined &&
+            rec.eventsSubscribedAt > rec.latchSetAt
+          ) {
+            // Resubscribe replay with no wire timestamp: confirm with a probe.
+            scheduleSpawnBackoff(rec)
+            return false
+          }
+          return true
+        }
         if (herdrAgentPresent(evt)) {
-          noteAgentSeen(rec)
+          if (!eventClearsLatch()) return
+          if (!noteAgentSeen(rec)) {
+            scheduleSpawnBackoff(rec)
+            return
+          }
           if (rec.persisted) rec.ready = true
           return
         }
@@ -1430,7 +1533,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         rec.lastAgentStatus = frame.status
         const named = herdrEventNamedAgent(evt)
         if (named) {
-          noteAgentSeen(rec)
+          if (!eventClearsLatch()) return
+          if (!noteAgentSeen(rec)) {
+            scheduleSpawnBackoff(rec)
+            return
+          }
           if (rec.persisted) rec.ready = true
         } else if (rec.lastAgentSeenAt === undefined || rec.agentEnded || rec.releaseUnconfirmed) {
           // Status may refine named-agent evidence, never substitute, and
@@ -2221,7 +2328,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           agentPane: Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? ''),
           paneId:
             herdr && tmuxName
-              ? herdr.listSessions().find((s) => s.name === tmuxName)?.paneId
+              ? (herdr.resolvePaneId?.(tmuxName) ??
+                herdr.listSessions().find((s) => s.name === tmuxName)?.paneId)
               : undefined,
           persisted,
           attached: new Set(),
@@ -2245,6 +2353,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           injectTimers: [],
           injectNextAtMs: 0,
           lastActivityTs: now(),
+        }
+        if (r.paneId && r.tmuxName && statusHub?.listening(r.tmuxName)) {
+          r.eventsPaneId = r.paneId
+          r.eventsSubscribedAt = now()
         }
         records.set(id, r)
         bySession.set(denSession, id)

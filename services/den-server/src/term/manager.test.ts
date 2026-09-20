@@ -2361,6 +2361,11 @@ class FakeHerdrCtl implements HerdrCtl {
   unsubscribes = 0
   emit?: (evt: unknown) => void
   failWith?: Error
+  /** Meta-only pane id (listSessions omitted it). */
+  metaPaneId?: string
+  /** Force subscribeEvents to fail even when a pane id is known. */
+  subscribeFail = false
+  subscribedPaneId?: string
   hasSession(name: string): boolean {
     if (this.failWith) throw this.failWith
     return this.sessions.has(name)
@@ -2409,12 +2414,22 @@ class FakeHerdrCtl implements HerdrCtl {
     return this.captureText
   }
   paneAgent?: HerdrCtl['paneAgent']
+  resolvePaneId(name: string): string | undefined {
+    const listed = this.sessions.get(name)?.paneId
+    if (typeof listed === 'string' && listed.length > 0) return listed
+    if (typeof this.metaPaneId === 'string' && this.metaPaneId.length > 0) return this.metaPaneId
+    return undefined
+  }
   subscribeEvents(
-    _name: string,
+    name: string,
     _onEvent: (evt: unknown) => void,
     _onClose?: () => void,
-  ): () => void {
+  ): (() => void) | undefined {
+    if (this.subscribeFail) return undefined
+    const paneId = this.resolvePaneId(name)
+    if (!paneId) return undefined
     this.subscribes += 1
+    this.subscribedPaneId = paneId
     this.emit = _onEvent
     return () => {
       this.unsubscribes += 1
@@ -3053,6 +3068,7 @@ describe('term manager (herdr mux)', () => {
       created: 1,
       command: 'claude',
       user: 'owner',
+      paneId: 'w1:p1',
     })
     ctl.paneAgent = async () => ({ agent: null })
     const { manager } = makeManager(
@@ -3104,6 +3120,7 @@ describe('term manager (herdr mux)', () => {
       created: 1,
       command: 'claude',
       user: 'owner',
+      paneId: 'w1:p1',
     })
     ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
     const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
@@ -3325,12 +3342,9 @@ describe('term manager (herdr mux)', () => {
     const pty = await manager.spawn('claude', 80, 24, '', uuid)
     expect(calls).toBe(1)
     expect(manager.inject(pty.id, 'a', true)).toBe(false)
-    expect(manager.inject(pty.id, 'b', true)).toBe(false)
-    expect(calls).toBe(1)
-    await vi.advanceTimersByTimeAsync(500)
     expect(calls).toBe(2)
-    expect(manager.inject(pty.id, 'c', true)).toBe(false)
-    expect(manager.inject(pty.id, 'd', true)).toBe(false)
+    expect(manager.inject(pty.id, 'b', true)).toBe(false)
+    expect(calls).toBe(2)
     await vi.advanceTimersByTimeAsync(999)
     expect(calls).toBe(2)
     await vi.advanceTimersByTimeAsync(1)
@@ -3578,7 +3592,7 @@ describe('term manager (herdr mux)', () => {
     expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
     expect(ctl.kills).toEqual([])
     mode = 'live'
-    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(2000)
     expect(manager.inject(pty.id, 'after alive', true)).toBe(true)
     mode = 'dead'
     ctl.emit?.({
@@ -3592,6 +3606,135 @@ describe('term manager (herdr mux)', () => {
     vi.advanceTimersByTime(3000)
     expect(ctl.kills).toEqual([herdrSessionName(uuid)])
     expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+  })
+
+  it('meta-only pane id: probe writes id, subscribes, then evidence; later release ends (no write)', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+    })
+    ctl.metaPaneId = 'w1:p1'
+    const seen: Array<string | undefined> = []
+    ctl.paneAgent = async (_n, paneId) => {
+      seen.push(paneId)
+      return { agent: 'claude', status: 'idle' }
+    }
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(seen).toEqual(['w1:p1'])
+    expect(ctl.subscribedPaneId).toBe('w1:p1')
+    expect(ctl.subscribes).toBeGreaterThanOrEqual(1)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    ctl.emit?.(goneEvt)
+    expect(manager.inject(pty.id, 'after release', true)).toBe(false)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    expect(manager.get(pty.id)?.agentEnded).toBe(true)
+  })
+
+  it('probe live but subscription cannot be established: stays fail-closed', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.subscribeFail = true
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'nope', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    expect(ctl.kills).toEqual([])
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.noAgentEvidence).toBe(true)
+  })
+
+  it('probe started before a release and resolving after it does not clear the latch', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    let resolveFirst!: (v: { agent: string | null; status?: string }) => void
+    let calls = 0
+    ctl.paneAgent = () => {
+      calls += 1
+      if (calls === 1) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+      }
+      return Promise.resolve({ agent: null })
+    }
+    const { manager } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pending = manager.spawn('claude', 80, 24, '', uuid)
+    const id = manager.ptyForSession(uuid)
+    expect(id).toBeDefined()
+    ctl.emit?.(goneEvt)
+    resolveFirst({ agent: 'claude', status: 'idle' })
+    await pending
+    expect(manager.get(id!)?.agentEnded).toBe(true)
+    expect(manager.inject(id!, 'stale probe', true)).toBe(false)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(ctl.kills).toEqual([name])
+  })
+
+  it('pane id resolving late on an adopted healthy session subscribes and unlocks', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+    })
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'blocked', true)).toBe(false)
+    expect(ctl.subscribes).toBe(0)
+    expect(procs[0].writes).toEqual([])
+    ctl.metaPaneId = 'w1:p1'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(ctl.subscribes).toBe(1)
+    expect(ctl.subscribedPaneId).toBe('w1:p1')
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
   })
 })
 
