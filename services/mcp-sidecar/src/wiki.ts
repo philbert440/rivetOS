@@ -29,7 +29,7 @@ export interface WikiToolsOptions {
   pgUrl: string
   embedEndpoint?: string
   embedModel?: string
-  /** Wiki repo root (default /rivet-shared/wiki). */
+  /** Wiki repo root (default: shared wiki directory). */
   wikiDir?: string
   prefix?: string
 }
