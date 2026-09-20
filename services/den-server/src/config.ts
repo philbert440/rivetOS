@@ -61,14 +61,10 @@ export interface DenTermConfig {
   /** Hard ceiling (ms) on the ready-gate. Buffered turns flush anyway and a
    *  warning is logged. Default 15000. */
   injectReadyMaxMs?: number
-  /** After flushing the first buffered submit, herdr may retry this many
-   *  times if a pane capture shows the turn did not land. Default 2.
-   *  Capture-unavailable / ambiguous never retry. Unverifiable muxes never retry. */
-  injectRetryMax?: number
-  /** Window (ms) after flushing the first buffered submit to wait for a
-   *  herdr `working` frame or a pane capture that decides landed / retry.
-   *  Default 1500 — long enough for a slow harness to leave idle. */
-  injectVerifyMs?: number
+  /** Window (ms) after flushing the first buffered submit on an agent pane
+   *  to wait for a herdr `working` frame. Confirmation is positive evidence
+   *  only — no pane scrape, no retry. Default 5000. */
+  injectConfirmMs?: number
   /** Delay between writing a chat inject's text and its submit CR. The two
    *  must be separate PTY writes: harness TUIs (claude/grok) run paste
    *  detection, and a CR fused onto multi-line/long text is absorbed as a
@@ -321,8 +317,7 @@ export function loadConfig(
       exitLingerMs: intEnv(env, 'RIVETOS_DEN_TERM_EXIT_LINGER_MS', 60_000),
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectReadyMaxMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MAX_MS', 15_000),
-      injectRetryMax: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_RETRY_MAX', 2),
-      injectVerifyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_VERIFY_MS', 1500),
+      injectConfirmMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_CONFIRM_MS', 5000),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
       mux: ((): 'tmux' | 'herdr' | 'none' | undefined => {
         const raw = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()

@@ -20,6 +20,7 @@ import {
   herdrClientSocketPath,
   herdrConfigHome,
   herdrEventsSubscribeRequest,
+  herdrAgentPresent,
   herdrAgentReleased,
   herdrKindForCommand,
   herdrUseAgent,
@@ -132,14 +133,15 @@ describe('herdr argv builders', () => {
     expect(herdrUseAgent(undefined, 'claude')).toBe(false)
   })
 
-  it('herdrAgentReleased is true for done status or null/released agent', () => {
+  it('herdrAgentReleased is true for null/released agent, not done', () => {
     expect(
       herdrAgentReleased({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } }),
-    ).toBe(true)
+    ).toBe(false)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
       true,
     )
+    expect(herdrAgentReleased({ event: 'pane_agent_detected', data: { released: true } })).toBe(true)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
       false,
     )
@@ -148,6 +150,18 @@ describe('herdr argv builders', () => {
         event: 'pane.agent_status_changed',
         data: { agent_status: 'idle' },
       }),
+    ).toBe(false)
+  })
+
+  it('herdrAgentPresent is true only for a live detected agent', () => {
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(true)
+    expect(herdrAgentPresent({ event: 'pane_agent_detected', data: { agent: 'grok' } })).toBe(true)
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: null } })).toBe(false)
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
+      false,
+    )
+    expect(
+      herdrAgentPresent({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } }),
     ).toBe(false)
   })
 

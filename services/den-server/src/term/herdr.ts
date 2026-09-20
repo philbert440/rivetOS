@@ -461,29 +461,50 @@ function eventSince(evt: Record<string, unknown>, fallback: number): number {
 const STATUS_EVENTS = new Set(['pane.agent_status_changed', 'pane_agent_status_changed'])
 const DETECTED_EVENTS = new Set(['pane.agent_detected', 'pane_agent_detected'])
 
-/** True when a herdr event says the agent in this pane is gone: a `done`
- *  status, or `pane.agent_detected` with a null agent / `released`. Used to
- *  refuse inject writes into the fallback shell (#791). */
-export function herdrAgentReleased(evt: unknown): boolean {
+function asEventRecord(evt: unknown): Record<string, unknown> | undefined {
   let rec = asRecord(evt)
   if (!rec && typeof evt === 'string') {
     try {
       rec = asRecord(JSON.parse(evt))
     } catch {
-      return false
+      return undefined
     }
   }
+  return rec
+}
+
+function detectedAgent(rec: Record<string, unknown>): unknown {
+  const data = asRecord(rec.data) ?? rec
+  return data.agent ?? data.agent_name ?? rec.agent
+}
+
+/** True when a herdr event says the agent in this pane is gone:
+ *  `pane.agent_detected` / `pane_agent_detected` with a null/empty agent or
+ *  `released`. `done` is idle (see herdrStatusToFrame), not release. Used to
+ *  refuse inject writes into the fallback shell (#791). */
+export function herdrAgentReleased(evt: unknown): boolean {
+  const rec = asEventRecord(evt)
   if (!rec) return false
   const name = eventName(rec)
-  if (eventStatus(rec) === 'done') return true
   if (!DETECTED_EVENTS.has(name)) return false
   const data = asRecord(rec.data) ?? rec
   if (data.released === true || rec.released === true) return true
   if (data.status === 'released' || data.agent_status === 'released') return true
   const hasAgent = 'agent' in data || 'agent_name' in data || 'agent' in rec
   if (!hasAgent) return false
-  const agent = data.agent ?? data.agent_name ?? rec.agent
+  const agent = detectedAgent(rec)
   return agent == null || agent === '' || agent === 'released'
+}
+
+/** True when `pane.agent_detected` reports a live agent (clears a prior
+ *  release latch). */
+export function herdrAgentPresent(evt: unknown): boolean {
+  const rec = asEventRecord(evt)
+  if (!rec) return false
+  if (!DETECTED_EVENTS.has(eventName(rec))) return false
+  if (herdrAgentReleased(rec)) return false
+  const agent = detectedAgent(rec)
+  return typeof agent === 'string' && agent.length > 0
 }
 
 /** Map a herdr events-subscribe line (object or JSON string) onto the den
