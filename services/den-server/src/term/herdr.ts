@@ -486,8 +486,26 @@ function detectedAgent(rec: Record<string, unknown>): unknown {
   return data.agent ?? data.agent_name ?? rec.agent
 }
 
+/** Pane id on a herdr event envelope (`data.pane_id`). Absent/empty → undefined. */
+export function herdrEventPaneId(evt: unknown): string | undefined {
+  const rec = asEventRecord(evt)
+  if (!rec) return undefined
+  const data = asRecord(rec.data) ?? rec
+  for (const v of [data.pane_id, data.paneId, rec.pane_id, rec.paneId]) {
+    if (typeof v === 'string' && v.length > 0) return v
+  }
+  return undefined
+}
+
+/** Non-empty agent name on a detection or status event, if present. */
+export function herdrEventNamedAgent(evt: unknown): string | undefined {
+  const rec = asEventRecord(evt)
+  if (!rec) return undefined
+  const agent = detectedAgent(rec)
+  return typeof agent === 'string' && agent.length > 0 ? agent : undefined
+}
+
 const AGENT_STATUSES = new Set(['idle', 'working', 'blocked', 'done', 'unknown'])
-const LIVE_AGENT_STATUSES = new Set(['working', 'idle', 'blocked'])
 
 function eventFinalStatus(rec: Record<string, unknown>): string | undefined {
   const data = asRecord(rec.data) ?? rec
@@ -669,16 +687,17 @@ function rowPaneId(row: unknown): string | undefined {
   return undefined
 }
 
-function collectPaneAgentRows(raw: unknown): unknown[] {
-  if (Array.isArray(raw)) return raw
+function collectPaneAgentRows(raw: unknown): { rows: unknown[]; recognizedList: boolean } {
+  if (Array.isArray(raw)) return { rows: raw, recognizedList: true }
   const rec = asRecord(raw)
-  if (!rec) return []
+  if (!rec) return { rows: [], recognizedList: false }
   const result = asRecord(rec.result) ?? rec
-  if (Array.isArray(result.panes)) return result.panes as unknown[]
-  if (Array.isArray(result.agents)) return result.agents as unknown[]
-  if (Array.isArray(rec.panes)) return rec.panes as unknown[]
-  if (Array.isArray(rec.agents)) return rec.agents as unknown[]
-  return [raw]
+  if (Array.isArray(result.panes)) return { rows: result.panes as unknown[], recognizedList: true }
+  if (Array.isArray(result.agents))
+    return { rows: result.agents as unknown[], recognizedList: true }
+  if (Array.isArray(rec.panes)) return { rows: rec.panes as unknown[], recognizedList: true }
+  if (Array.isArray(rec.agents)) return { rows: rec.agents as unknown[], recognizedList: true }
+  return { rows: [raw], recognizedList: false }
 }
 
 /** Defensive parse of `pane list` / `agent list` JSON against PaneInfo /
@@ -686,7 +705,10 @@ function collectPaneAgentRows(raw: unknown): unknown[] {
  *  Unparseable output → undefined (probe unavailable). An empty but valid
  *  list is `{ agent: null }` (positively no agent). When `paneId` is set,
  *  only that row counts: missing/unknown pane → undefined (fail closed),
- *  never "any row is live". */
+ *  never "any row is live". An empty `paneId` is fail-closed (undefined).
+ *  A row for this pane whose agent fields are unrecognised is unavailable,
+ *  not `{ agent: null }` — "positively no agent" needs an explicit null/empty
+ *  agent on a recognised row. */
 export function parsePaneAgent(stdout: string, paneId?: string): PaneAgentInfo | undefined {
   let raw: unknown
   try {
@@ -694,30 +716,35 @@ export function parsePaneAgent(stdout: string, paneId?: string): PaneAgentInfo |
   } catch {
     return undefined
   }
-  const rows = collectPaneAgentRows(raw)
+  if (typeof paneId === 'string' && paneId.length === 0) return undefined
+  const { rows, recognizedList } = collectPaneAgentRows(raw)
   const scoped =
     typeof paneId === 'string' && paneId.length > 0
       ? rows.filter((row) => rowPaneId(row) === paneId)
       : rows
   if (typeof paneId === 'string' && paneId.length > 0 && scoped.length === 0) return undefined
-  if (scoped.length === 0) return { agent: null }
+  let empty: PaneAgentInfo | undefined
+  let unrecognised = false
   for (const row of scoped) {
     const got = paneAgentFromRow(row)
-    if (!got) continue
+    if (!got) {
+      unrecognised = true
+      continue
+    }
     if (typeof got.agent === 'string' && got.agent.length > 0) return got
-    if (got.status && LIVE_AGENT_STATUSES.has(got.status)) return got
+    empty = got
   }
-  for (const row of scoped) {
-    const got = paneAgentFromRow(row)
-    if (got) return got
-  }
+  if (empty) return empty
+  if (unrecognised) return undefined
+  if (recognizedList && scoped.length === 0) return { agent: null }
+  if (scoped.length === 0) return undefined
   return { agent: null }
 }
 
-/** Probe said a live agent (non-empty name, or working|idle|blocked). */
+/** Probe said a live agent: a non-empty agent name on this pane's row.
+ *  `agent_status` may refine, never substitute. */
 export function herdrPaneAgentLive(p: PaneAgentInfo): boolean {
-  if (typeof p.agent === 'string' && p.agent.length > 0) return true
-  return typeof p.status === 'string' && LIVE_AGENT_STATUSES.has(p.status)
+  return typeof p.agent === 'string' && p.agent.length > 0
 }
 
 /** Exact x.y.z only. `0.8.2-preview.N` must not match the pin. */
@@ -1503,7 +1530,12 @@ export function createRealHerdrCtl(
       }
     },
     subscribeEvents(name, onEvent, onClose) {
-      const paneId = readMeta(configHome, name).paneId ?? 'w1:p1'
+      const paneId = readMeta(configHome, name).paneId
+      if (!paneId) {
+        // No guessed pane: an adopted session with no pane id must not
+        // subscribe to `w1:p1` and treat that pane's events as evidence.
+        return () => undefined
+      }
       const sockPath = herdrSocketPath(configHome, name)
       const sock = connectFn(sockPath)
       let buf = ''

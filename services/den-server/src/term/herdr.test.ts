@@ -23,6 +23,9 @@ import {
   herdrAgentNull,
   herdrAgentPresent,
   herdrAgentReleased,
+  herdrEventNamedAgent,
+  herdrEventPaneId,
+  herdrMetaPath,
   herdrPaneAgentLive,
   parsePaneAgent,
   herdrKindForCommand,
@@ -333,7 +336,7 @@ describe('parseWorkspaceCreate / parsePaneSize', () => {
     expect(parsePaneAgent(JSON.stringify({ result: { panes: [] } }))).toEqual({ agent: null })
     expect(parsePaneAgent('not-json')).toBeUndefined()
     expect(herdrPaneAgentLive({ agent: 'claude', status: 'idle' })).toBe(true)
-    expect(herdrPaneAgentLive({ agent: null, status: 'idle' })).toBe(true)
+    expect(herdrPaneAgentLive({ agent: null, status: 'idle' })).toBe(false)
     expect(herdrPaneAgentLive({ agent: null })).toBe(false)
     expect(herdrPaneAgentLive({ agent: null, status: 'unknown' })).toBe(false)
   })
@@ -352,7 +355,58 @@ describe('parseWorkspaceCreate / parsePaneSize', () => {
     expect(parsePaneAgent(two, 'w1:p2')).toEqual({ agent: 'claude', status: 'idle' })
     expect(herdrPaneAgentLive(parsePaneAgent(two, 'w1:p2')!)).toBe(true)
     expect(parsePaneAgent(two, 'w1:p9')).toBeUndefined()
-    expect(parsePaneAgent(two, '')).toEqual({ agent: 'claude', status: 'idle' })
+    expect(parsePaneAgent(two, '')).toBeUndefined()
+  })
+
+  it('parsePaneAgent: unknown row shape for this pane is unavailable, not positively no agent', () => {
+    const unknown = JSON.stringify({
+      result: {
+        panes: [{ pane_id: 'w1:p1', widget: 1, mystery: true }],
+      },
+    })
+    expect(parsePaneAgent(unknown, 'w1:p1')).toBeUndefined()
+    expect(
+      parsePaneAgent(
+        JSON.stringify({
+          result: { panes: [{ pane_id: 'w1:p1', agent: null, agent_status: 'idle' }] },
+        }),
+        'w1:p1',
+      ),
+    ).toEqual({ agent: null, status: 'idle' })
+    expect(
+      herdrPaneAgentLive(
+        parsePaneAgent(
+          JSON.stringify({
+            result: { panes: [{ pane_id: 'w1:p1', agent: null, agent_status: 'idle' }] },
+          }),
+          'w1:p1',
+        )!,
+      ),
+    ).toBe(false)
+  })
+
+  it('herdrEventPaneId / herdrEventNamedAgent read the wire fields', () => {
+    expect(
+      herdrEventPaneId({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p2', agent: 'claude' },
+      }),
+    ).toBe('w1:p2')
+    expect(
+      herdrEventPaneId({ event: 'pane.agent_detected', data: { agent: 'claude' } }),
+    ).toBeUndefined()
+    expect(
+      herdrEventNamedAgent({
+        event: 'pane.agent_status_changed',
+        data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+      }),
+    ).toBe('claude')
+    expect(
+      herdrEventNamedAgent({
+        event: 'pane.agent_status_changed',
+        data: { pane_id: 'w1:p1', agent_status: 'idle' },
+      }),
+    ).toBeUndefined()
   })
 })
 
@@ -670,9 +724,15 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     ;(sock as unknown as { destroy: () => void }).destroy = () => {
       destroyed = true
     }
+    const home = '/tmp/herdr-cfg'
+    mkdirSync(join(home, 'herdr', 'sessions', 'chat-f'), { recursive: true })
+    writeFileSync(
+      herdrMetaPath(home, 'chat-f'),
+      JSON.stringify({ command: '', user: '', paneId: 'w1:p1' }) + '\n',
+    )
     const ctl = createRealHerdrCtl(
       '/usr/bin/herdr',
-      '/tmp/herdr-cfg',
+      home,
       () => '',
       undefined,
       () => true,
@@ -706,6 +766,28 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     sock.emit('close')
     expect(closes).toBe(0)
     void orig
+  })
+
+  it('subscribeEvents without a pane id does not guess w1:p1', async () => {
+    const { PassThrough } = await import('node:stream')
+    const written: string[] = []
+    const sock = new PassThrough()
+    ;(sock as unknown as { write: (c: string) => boolean }).write = (c: string) => {
+      written.push(String(c))
+      return true
+    }
+    const ctl = createRealHerdrCtl(
+      '/usr/bin/herdr',
+      '/tmp/herdr-cfg-nopane',
+      () => '',
+      undefined,
+      () => true,
+      () => sock as never,
+    )
+    const unsub = ctl.subscribeEvents!('chat-f', () => undefined)
+    sock.emit('connect')
+    expect(written).toEqual([])
+    unsub()
   })
 })
 

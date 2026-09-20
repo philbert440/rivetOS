@@ -2545,7 +2545,10 @@ describe('term manager (herdr mux)', () => {
       },
     )
     manager.spawn('claude', 80, 24, '', uuid)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     expect(frames).toEqual([{ denSession: uuid, status: 'working' }])
   })
 
@@ -2565,7 +2568,10 @@ describe('term manager (herdr mux)', () => {
     procs[0].emitData('draw-3')
     vi.advanceTimersByTime(300) // past a quiescence window — must still wait for idle
     expect(procs[0].writes).toEqual([])
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
   })
 
@@ -2599,7 +2605,10 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     const text = 'hello\nworld\nagain'
     expect(manager.inject(pty.id, text, true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     vi.advanceTimersByTime(5000)
     expect(procs[0].writes.filter((w) => w === pasteOf(text))).toHaveLength(1)
@@ -2613,7 +2622,10 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     const text = 'x'.repeat(600)
     expect(manager.inject(pty.id, text, true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     vi.advanceTimersByTime(5000)
     expect(procs[0].writes.filter((w) => w === pasteOf(text))).toHaveLength(1)
@@ -2626,9 +2638,15 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject()
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(3000)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     vi.advanceTimersByTime(3000)
     expect(procs[0].writes.filter((w) => w === pasteOf('hello'))).toHaveLength(1)
     expect(procs[0].writes.filter((w) => w === '\r')).toHaveLength(1)
@@ -2640,7 +2658,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl, logs } = herdrInject({ injectConfirmMs: 500 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     expect(procs[0].writes).toEqual([pasteOf('hello'), '\r'])
     vi.advanceTimersByTime(500)
@@ -2650,7 +2671,10 @@ describe('term manager (herdr mux)', () => {
     expect(manager.inject(pty.id, 'next', true)).toBe(true)
     vi.advanceTimersByTime(200)
     expect(procs[0].writes.filter((w) => w === pasteOf('hello'))).toHaveLength(1)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     expect(manager.get(pty.id)?.injectUnconfirmed).toBeUndefined()
   })
 
@@ -2659,7 +2683,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject()
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'done' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('hello')])
     expect(manager.get(pty.id)?.injectUnconfirmed).toBeUndefined()
   })
@@ -2669,7 +2696,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject({ injectReadyMaxMs: 2000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: null, released: true } })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true },
+    })
     vi.advanceTimersByTime(500)
     expect(procs[0].writes).toEqual([])
     expect(manager.get(pty.id)?.injectUnconfirmed).toBeUndefined()
@@ -2684,11 +2714,17 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject({ injectReadyMaxMs: 2000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: null, released: true } })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true },
+    })
     vi.advanceTimersByTime(200)
     expect(procs[0].writes).toEqual([])
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: 'claude' } })
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('hello')])
   })
 
@@ -2697,7 +2733,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl, logs } = herdrInject({ injectReadyMaxMs: 1000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: null, released: true } })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true },
+    })
     vi.advanceTimersByTime(1000)
     expect(procs[0].writes).toEqual([])
     expect(manager.get(pty.id)?.injectUnconfirmed).toEqual({ ts: expect.any(Number), turn: 1 })
@@ -2709,7 +2748,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject({ injectConfirmMs: 5000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes.filter((w) => w === pasteOf('hello'))).toHaveLength(1)
     expect(manager.kill(pty.id)).toBe(true)
     vi.advanceTimersByTime(8000)
@@ -2749,7 +2791,10 @@ describe('term manager (herdr mux)', () => {
     )
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([])
     procs[0].emitData('burst1')
     vi.advanceTimersByTime(200)
@@ -2767,9 +2812,15 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('one')])
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     vi.advanceTimersByTime(400)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r', pasteOf('two'), '\r'])
   })
@@ -2779,10 +2830,16 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject()
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
     expect(procs[0].writes).toEqual([pasteOf('one')])
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     vi.advanceTimersByTime(400)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r', pasteOf('two'), '\r'])
   })
@@ -2793,7 +2850,10 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('one')])
     vi.advanceTimersByTime(500)
     vi.advanceTimersByTime(400)
@@ -2822,7 +2882,10 @@ describe('term manager (herdr mux)', () => {
     expect(manager.inject(pty.id, 'do not run as shell', true)).toBe(true)
     expect(procs[0].writes).toEqual([])
 
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     ctl.emit?.(goneEvt)
 
     expect(procs[0].writes).toEqual([])
@@ -2879,9 +2942,15 @@ describe('term manager (herdr mux)', () => {
       { herdrCtl: ctl },
     )
     const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'unknown' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'unknown' },
+    })
     expect(manager.ptyForSession(uuid)).toBe(pty.id)
     expect(manager.inject(pty.id, 'still here', true)).toBe(true)
     expect(manager.get(pty.id)?.state).toBe('running')
@@ -2919,8 +2988,11 @@ describe('term manager (herdr mux)', () => {
     ctl.emit?.(goneEvt)
     expect(manager.inject(pty.id, 'nope', true)).toBe(false)
     vi.advanceTimersByTime(200)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: 'claude' } })
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('hello')])
     vi.advanceTimersByTime(5000)
     expect(manager.get(pty.id)?.state).toBe('running')
@@ -2937,7 +3009,10 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r'])
     ctl.emit?.(goneEvt)
@@ -3004,12 +3079,16 @@ describe('term manager (herdr mux)', () => {
       created: 1,
       command: 'claude',
       user: 'owner',
+      paneId: 'w1:p1',
     })
     const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(pty.reattached).toBe(true)
     expect(manager.inject(pty.id, 'no evidence yet', true)).toBe(false)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
     expect(procs[0].writes).toEqual([pasteOf('hello')])
   })
@@ -3074,7 +3153,10 @@ describe('term manager (herdr mux)', () => {
       harnessEndedGraceMs: 3000,
     })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
     expect(procs[0].writes).toEqual([pasteOf('hello')])
     ctl.emit?.(goneEvt)
@@ -3090,7 +3172,10 @@ describe('term manager (herdr mux)', () => {
       { herdrCtl: ctl },
     )
     const pty = manager.spawn('claude', 80, 24, '', uuid)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
     ctl.emit?.(goneEvt)
     expect(() => manager.close()).not.toThrow()
@@ -3114,7 +3199,10 @@ describe('term manager (herdr mux)', () => {
     )
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
     ctl.emit?.(goneEvt)
     vi.advanceTimersByTime(3000)
@@ -3161,7 +3249,10 @@ describe('term manager (herdr mux)', () => {
     expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
     expect(ctl.kills).toEqual([])
     ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes.filter((w) => w === pasteOf('first'))).toHaveLength(1)
   })
 
@@ -3318,6 +3409,189 @@ describe('term manager (herdr mux)', () => {
     expect(manager.get(pty.id)?.state).toBe('running')
     expect(manager.get(pty.id)?.agentEnded).toBeUndefined()
     expect(ctl.kills).toEqual([])
+  })
+
+  it('detection event for pane B does not unlock pane A', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => undefined
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'blocked', true)).toBe(false)
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p2', agent: 'claude' } })
+    expect(manager.inject(pty.id, 'still blocked', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('status frame for pane B neither unlocks nor ends pane A', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p2', agent: 'claude', agent_status: 'idle' },
+    })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p2', agent: null, released: true },
+    })
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
+    expect(manager.inject(pty.id, 'still', true)).toBe(true)
+    expect(ctl.kills).toEqual([])
+  })
+
+  it('adopt row agent:null agent_status idle is not live: ended, nothing written', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => ({ agent: null, status: 'idle' })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'into the leftover shell', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    expect(ctl.kills).toEqual([name])
+    expect(manager.ptyForSession(uuid)).toBeUndefined()
+  })
+
+  it('unknown row shape for this pane is unavailable: not killed, not injectable', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => undefined
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'nope', true)).toBe(false)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'status-only still nope', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    expect(ctl.kills).toEqual([])
+    expect(manager.get(pty.id)?.state).toBe('running')
+  })
+
+  it('adopted backoff settles to a 30s floor', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    let calls = 0
+    ctl.paneAgent = async () => {
+      calls += 1
+      return undefined
+    }
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(calls).toBe(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(calls).toBe(3)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(calls).toBe(4)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(calls).toBe(4)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(calls).toBe(5)
+    expect(manager.inject(pty.id, 'still closed', true)).toBe(false)
+  })
+
+  it('final_status + unavailable probe refuses inject; later alive unlocks; later dead ends once', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    let mode: 'live' | 'unavail' | 'dead' = 'live'
+    ctl.paneAgent = async () => {
+      if (mode === 'live') return { agent: 'claude', status: 'idle' }
+      if (mode === 'dead') return { agent: null }
+      return undefined
+    }
+    const { manager, ingested } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    mode = 'unavail'
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.inject(pty.id, 'while unconfirmed', true)).toBe(false)
+    expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
+    expect(ctl.kills).toEqual([])
+    mode = 'live'
+    await vi.advanceTimersByTimeAsync(500)
+    expect(manager.inject(pty.id, 'after alive', true)).toBe(true)
+    mode = 'dead'
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.inject(pty.id, 'after dead', true)).toBe(false)
+    expect(manager.get(pty.id)?.agentEnded).toBe(true)
+    vi.advanceTimersByTime(3000)
+    expect(ctl.kills).toEqual([herdrSessionName(uuid)])
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
   })
 })
 
