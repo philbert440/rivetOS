@@ -14,6 +14,12 @@ import { createDenServer, type DenServer, type DenServerOptions } from '../serve
 import type { DenConfig, DenTermConfig } from '../config.js'
 import type { PtyProc, PtySpawn, PtySpawnOpts } from './pty.js'
 import { encodeTmuxName, tmuxSocketName, type TmuxCtl, type TmuxSessionInfo } from './tmux.js'
+import {
+  herdrSessionName,
+  type HerdrCtl,
+  type HerdrCreateOpts,
+  type HerdrSessionInfo,
+} from './herdr.js'
 
 class FakeProc extends EventEmitter implements PtyProc {
   kills: (string | undefined)[] = []
@@ -657,5 +663,162 @@ describe('term endpoints', () => {
     const missing = await fetch(`${base}/term?id=chat-nope`, { method: 'DELETE' })
     expect(missing.status).toBe(404)
     expect(ctl.kills).toEqual([])
+  })
+
+  it('herdr agent end: POST /term/inject 409s and list drops the harness', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const kills: string[] = []
+    let emit: ((evt: unknown) => void) | undefined
+    const ctl: HerdrCtl = {
+      hasSession(name) {
+        return sessions.has(name)
+      },
+      killSession(name) {
+        kills.push(name)
+        sessions.delete(name)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(name) {
+        return ['herdr', '--session', name]
+      },
+      subscribeEvents(_name, onEvent) {
+        emit = onEvent
+        return () => undefined
+      },
+    }
+    const { base } = await start({}, { mux: 'herdr', harnessEndedGraceMs: 0 }, { herdrCtl: ctl })
+    const spawn = await post(base, '/term', { command: 'claude', session: 'chat-791' })
+    expect(spawn.status).toBe(201)
+    const first = (await spawn.json()) as SpawnedPty
+    emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true, final_status: 'idle' },
+    })
+    const inj = await post(base, '/term/inject', { session: 'chat-791', text: 'rm -rf /' })
+    expect(inj.status).toBe(409)
+    const listed = (await (await fetch(`${base}/term/list`)).json()) as { ptys: SpawnedPty[] }
+    expect(listed.ptys.filter((p) => p.denSession === first.denSession)).toEqual([])
+    expect(kills).toEqual([herdrSessionName('chat-791')])
+    const again = await post(base, '/term', { command: 'claude', session: 'chat-791' })
+    expect(again.status).toBe(201)
+    const second = (await again.json()) as SpawnedPty
+    expect(second.id).not.toBe(first.id)
+  })
+
+  it('herdr agent end: POST /term/inject during grace is 409 harness not writable', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const kills: string[] = []
+    let emit: ((evt: unknown) => void) | undefined
+    const ctl: HerdrCtl = {
+      hasSession(name) {
+        return sessions.has(name)
+      },
+      killSession(name) {
+        kills.push(name)
+        sessions.delete(name)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(name) {
+        return ['herdr', '--session', name]
+      },
+      subscribeEvents(_name, onEvent) {
+        emit = onEvent
+        return () => undefined
+      },
+    }
+    const { base } = await start({}, { mux: 'herdr', harnessEndedGraceMs: 3000 }, { herdrCtl: ctl })
+    const spawn = await post(base, '/term', { command: 'claude', session: 'chat-791-grace' })
+    expect(spawn.status).toBe(201)
+    emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true, final_status: 'idle' },
+    })
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-791-grace',
+      text: 'rm -rf /',
+    })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'harness not writable' })
+    const listed = (await (await fetch(`${base}/term/list`)).json()) as {
+      ptys: Array<SpawnedPty & { agentEnded?: boolean }>
+    }
+    const row = listed.ptys.find((p) => p.denSession === 'chat-791-grace')
+    expect(row?.agentEnded).toBe(true)
+    expect(kills).toEqual([])
+  })
+
+  it('herdr adopt with no agent evidence: POST /term/inject is 409 no agent evidence yet', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const name = herdrSessionName('chat-791-ev')
+    sessions.set(name, {
+      name,
+      denKey: 'chat-791-ev',
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    const ctl: HerdrCtl = {
+      hasSession(n) {
+        return sessions.has(n)
+      },
+      killSession(n) {
+        sessions.delete(n)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(n) {
+        return ['herdr', '--session', n]
+      },
+      paneAgent: async () => undefined,
+    }
+    const { base } = await start({}, { mux: 'herdr' }, { herdrCtl: ctl })
+    const spawn = await post(base, '/term', { command: 'claude', session: 'chat-791-ev' })
+    expect(spawn.status).toBe(201)
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-791-ev',
+      text: 'hello',
+    })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'no agent evidence yet' })
   })
 })

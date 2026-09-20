@@ -1611,8 +1611,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
-          if (!manager.inject(ptyId, p.text, submit, interrupt))
+          if (!manager.inject(ptyId, p.text, submit, interrupt)) {
+            const inf = manager.get(ptyId)
+            // Keep HTTP 409. Distinguish "not seen yet" (client can retry)
+            // from "harness ended" (`harness not writable` / after reap
+            // `no live harness for session`) — the web client's respawn-
+            // and-retry still treats any 409 as retry-once.
+            if (inf?.state === 'running' && !inf.agentEnded && inf.noAgentEvidence)
+              return json(res, 409, { error: 'no agent evidence yet' })
             return json(res, 409, { error: 'harness not writable' })
+          }
           return json(res, 202, { ok: true, ptyId })
         }
       }

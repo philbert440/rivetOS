@@ -20,8 +20,16 @@ import {
   herdrClientSocketPath,
   herdrConfigHome,
   herdrEventsSubscribeRequest,
+  herdrAgentNull,
   herdrAgentPresent,
   herdrAgentReleased,
+  herdrEventNamedAgent,
+  herdrEventPaneId,
+  herdrEventTimestamp,
+  resolveHerdrPaneId,
+  herdrMetaPath,
+  herdrPaneAgentLive,
+  parsePaneAgent,
   herdrKindForCommand,
   herdrUseAgent,
   herdrRuntimeHash,
@@ -133,15 +141,41 @@ describe('herdr argv builders', () => {
     expect(herdrUseAgent(undefined, 'claude')).toBe(false)
   })
 
-  it('herdrAgentReleased is true for null/released agent, not done', () => {
+  it('herdrAgentReleased keys on released/final_status, not a bare agent:null', () => {
     expect(
       herdrAgentReleased({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } }),
     ).toBe(false)
-    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
+    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: null } })).toBe(false)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
+      false,
+    )
+    expect(
+      herdrAgentReleased({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: null, released: true },
+      }),
+    ).toBe(true)
+    expect(herdrAgentReleased({ event: 'pane_agent_detected', data: { released: true } })).toBe(
       true,
     )
-    expect(herdrAgentReleased({ event: 'pane_agent_detected', data: { released: true } })).toBe(true)
+    expect(
+      herdrAgentReleased({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+      }),
+    ).toBe(false)
+    expect(
+      herdrAgentNull({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+      }),
+    ).toBe(true)
+    expect(
+      herdrAgentPresent({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+      }),
+    ).toBe(false)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
       false,
     )
@@ -151,15 +185,27 @@ describe('herdr argv builders', () => {
         data: { agent_status: 'idle' },
       }),
     ).toBe(false)
+    expect(herdrAgentNull({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
+    expect(
+      herdrAgentNull({
+        event: 'pane.agent_detected',
+        data: { agent: null, released: true },
+      }),
+    ).toBe(false)
   })
 
   it('herdrAgentPresent is true only for a live detected agent', () => {
-    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(true)
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
+      true,
+    )
     expect(herdrAgentPresent({ event: 'pane_agent_detected', data: { agent: 'grok' } })).toBe(true)
     expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: null } })).toBe(false)
-    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
-      false,
-    )
+    expect(
+      herdrAgentPresent({
+        event: 'pane.agent_detected',
+        data: { agent: 'claude', released: true },
+      }),
+    ).toBe(false)
     expect(
       herdrAgentPresent({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } }),
     ).toBe(false)
@@ -254,6 +300,141 @@ describe('parseWorkspaceCreate / parsePaneSize', () => {
     expect(parsePaneSize('[{"cols":0,"rows":24}]')).toBeUndefined()
     expect(
       parsePaneSize(JSON.stringify({ result: { panes: [{ scroll: { viewport_rows: 39 } }] } })),
+    ).toBeUndefined()
+  })
+
+  it('parsePaneAgent reads PaneInfo agent/agent_status; garbage is unavailable', () => {
+    expect(
+      parsePaneAgent(
+        JSON.stringify({
+          result: {
+            panes: [
+              {
+                pane_id: 'w1:p1',
+                terminal_id: 't1',
+                workspace_id: 'w1',
+                tab_id: 'tab1',
+                focused: true,
+                agent: 'claude',
+                agent_status: 'idle',
+                revision: 1,
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ agent: 'claude', status: 'idle' })
+    expect(
+      parsePaneAgent(
+        JSON.stringify({
+          type: 'agent_list',
+          agents: [{ name: 'grok', agent: 'grok', agent_status: 'working', pane_id: 'w1:p1' }],
+        }),
+      ),
+    ).toEqual({ agent: 'grok', status: 'working' })
+    expect(parsePaneAgent(JSON.stringify({ result: { panes: [{ agent: null }] } }))).toEqual({
+      agent: null,
+    })
+    expect(parsePaneAgent(JSON.stringify({ result: { panes: [] } }))).toEqual({ agent: null })
+    expect(parsePaneAgent('not-json')).toBeUndefined()
+    expect(herdrPaneAgentLive({ agent: 'claude', status: 'idle' })).toBe(true)
+    expect(herdrPaneAgentLive({ agent: null, status: 'idle' })).toBe(false)
+    expect(herdrPaneAgentLive({ agent: null })).toBe(false)
+    expect(herdrPaneAgentLive({ agent: null, status: 'unknown' })).toBe(false)
+  })
+
+  it('parsePaneAgent is pane-scoped: a live agent in pane B does not make pane A live', () => {
+    const two = JSON.stringify({
+      result: {
+        panes: [
+          { pane_id: 'w1:p1', agent: null, agent_status: 'unknown' },
+          { pane_id: 'w1:p2', agent: 'claude', agent_status: 'idle' },
+        ],
+      },
+    })
+    expect(parsePaneAgent(two, 'w1:p1')).toEqual({ agent: null, status: 'unknown' })
+    expect(herdrPaneAgentLive(parsePaneAgent(two, 'w1:p1')!)).toBe(false)
+    expect(parsePaneAgent(two, 'w1:p2')).toEqual({ agent: 'claude', status: 'idle' })
+    expect(herdrPaneAgentLive(parsePaneAgent(two, 'w1:p2')!)).toBe(true)
+    expect(parsePaneAgent(two, 'w1:p9')).toBeUndefined()
+    expect(parsePaneAgent(two, '')).toBeUndefined()
+  })
+
+  it('parsePaneAgent: unknown row shape for this pane is unavailable, not positively no agent', () => {
+    const unknown = JSON.stringify({
+      result: {
+        panes: [{ pane_id: 'w1:p1', widget: 1, mystery: true }],
+      },
+    })
+    expect(parsePaneAgent(unknown, 'w1:p1')).toBeUndefined()
+    expect(
+      parsePaneAgent(
+        JSON.stringify({
+          result: { panes: [{ pane_id: 'w1:p1', agent: null, agent_status: 'idle' }] },
+        }),
+        'w1:p1',
+      ),
+    ).toEqual({ agent: null, status: 'idle' })
+    expect(
+      herdrPaneAgentLive(
+        parsePaneAgent(
+          JSON.stringify({
+            result: { panes: [{ pane_id: 'w1:p1', agent: null, agent_status: 'idle' }] },
+          }),
+          'w1:p1',
+        )!,
+      ),
+    ).toBe(false)
+  })
+
+  it('herdrEventPaneId / herdrEventNamedAgent read the wire fields', () => {
+    expect(
+      herdrEventPaneId({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p2', agent: 'claude' },
+      }),
+    ).toBe('w1:p2')
+    expect(
+      herdrEventPaneId({ event: 'pane.agent_detected', data: { agent: 'claude' } }),
+    ).toBeUndefined()
+    expect(
+      herdrEventNamedAgent({
+        event: 'pane.agent_status_changed',
+        data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+      }),
+    ).toBe('claude')
+    expect(
+      herdrEventNamedAgent({
+        event: 'pane.agent_status_changed',
+        data: { pane_id: 'w1:p1', agent_status: 'idle' },
+      }),
+    ).toBeUndefined()
+  })
+
+  it('resolveHerdrPaneId prefers list over meta and fails closed when both empty', () => {
+    expect(resolveHerdrPaneId('w1:p2', 'w1:p1')).toBe('w1:p2')
+    expect(resolveHerdrPaneId(undefined, 'w1:p1')).toBe('w1:p1')
+    expect(resolveHerdrPaneId('', 'w1:p1')).toBe('w1:p1')
+    expect(resolveHerdrPaneId(undefined, undefined)).toBeUndefined()
+    expect(resolveHerdrPaneId('', '')).toBeUndefined()
+  })
+
+  it('herdrEventTimestamp reads ts/timestamp off the envelope', () => {
+    expect(
+      herdrEventTimestamp({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', ts: 42 },
+      }),
+    ).toBe(42)
+    expect(
+      herdrEventTimestamp({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude' },
+        timestamp: 99,
+      }),
+    ).toBe(99)
+    expect(
+      herdrEventTimestamp({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1' } }),
     ).toBeUndefined()
   })
 })
@@ -572,9 +753,15 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     ;(sock as unknown as { destroy: () => void }).destroy = () => {
       destroyed = true
     }
+    const home = '/tmp/herdr-cfg'
+    mkdirSync(join(home, 'herdr', 'sessions', 'chat-f'), { recursive: true })
+    writeFileSync(
+      herdrMetaPath(home, 'chat-f'),
+      JSON.stringify({ command: '', user: '', paneId: 'w1:p1' }) + '\n',
+    )
     const ctl = createRealHerdrCtl(
       '/usr/bin/herdr',
-      '/tmp/herdr-cfg',
+      home,
       () => '',
       undefined,
       () => true,
@@ -608,6 +795,28 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     sock.emit('close')
     expect(closes).toBe(0)
     void orig
+  })
+
+  it('subscribeEvents without a pane id does not guess w1:p1', async () => {
+    const { PassThrough } = await import('node:stream')
+    const written: string[] = []
+    const sock = new PassThrough()
+    ;(sock as unknown as { write: (c: string) => boolean }).write = (c: string) => {
+      written.push(String(c))
+      return true
+    }
+    const ctl = createRealHerdrCtl(
+      '/usr/bin/herdr',
+      '/tmp/herdr-cfg-nopane',
+      () => '',
+      undefined,
+      () => true,
+      () => sock as never,
+    )
+    const unsub = ctl.subscribeEvents!('chat-f', () => undefined)
+    sock.emit('connect')
+    expect(written).toEqual([])
+    expect(unsub).toBeUndefined()
   })
 })
 

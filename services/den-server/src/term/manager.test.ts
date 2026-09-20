@@ -2361,6 +2361,11 @@ class FakeHerdrCtl implements HerdrCtl {
   unsubscribes = 0
   emit?: (evt: unknown) => void
   failWith?: Error
+  /** Meta-only pane id (listSessions omitted it). */
+  metaPaneId?: string
+  /** Force subscribeEvents to fail even when a pane id is known. */
+  subscribeFail = false
+  subscribedPaneId?: string
   hasSession(name: string): boolean {
     if (this.failWith) throw this.failWith
     return this.sessions.has(name)
@@ -2408,12 +2413,23 @@ class FakeHerdrCtl implements HerdrCtl {
     if (this.captureFail) throw new Error('capture failed')
     return this.captureText
   }
+  paneAgent?: HerdrCtl['paneAgent']
+  resolvePaneId(name: string): string | undefined {
+    const listed = this.sessions.get(name)?.paneId
+    if (typeof listed === 'string' && listed.length > 0) return listed
+    if (typeof this.metaPaneId === 'string' && this.metaPaneId.length > 0) return this.metaPaneId
+    return undefined
+  }
   subscribeEvents(
-    _name: string,
+    name: string,
     _onEvent: (evt: unknown) => void,
     _onClose?: () => void,
-  ): () => void {
+  ): (() => void) | undefined {
+    if (this.subscribeFail) return undefined
+    const paneId = this.resolvePaneId(name)
+    if (!paneId) return undefined
     this.subscribes += 1
+    this.subscribedPaneId = paneId
     this.emit = _onEvent
     return () => {
       this.unsubscribes += 1
@@ -2449,13 +2465,13 @@ describe('term manager (herdr mux)', () => {
     expect(statSync(path).mode & 0o777).toBe(0o600)
   })
 
-  it('plain shell create has no herdr kind and does not subscribe to agent status', () => {
+  it('plain shell create has no herdr kind; status subscribe still hits the agentPane guard', () => {
     const ctl = new FakeHerdrCtl()
     const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
     manager.spawn('shell', 80, 24, '', uuid)
     expect(ctl.creates).toHaveLength(1)
     expect(ctl.creates[0].kind).toBeUndefined()
-    expect(ctl.subscribes).toBe(0)
+    expect(ctl.subscribes).toBe(1)
   })
 
   it('reattach uses attach argv and does not create a second agent', () => {
@@ -2544,7 +2560,10 @@ describe('term manager (herdr mux)', () => {
       },
     )
     manager.spawn('claude', 80, 24, '', uuid)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     expect(frames).toEqual([{ denSession: uuid, status: 'working' }])
   })
 
@@ -2564,7 +2583,10 @@ describe('term manager (herdr mux)', () => {
     procs[0].emitData('draw-3')
     vi.advanceTimersByTime(300) // past a quiescence window — must still wait for idle
     expect(procs[0].writes).toEqual([])
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
   })
 
@@ -2598,7 +2620,10 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     const text = 'hello\nworld\nagain'
     expect(manager.inject(pty.id, text, true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     vi.advanceTimersByTime(5000)
     expect(procs[0].writes.filter((w) => w === pasteOf(text))).toHaveLength(1)
@@ -2612,7 +2637,10 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     const text = 'x'.repeat(600)
     expect(manager.inject(pty.id, text, true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     vi.advanceTimersByTime(5000)
     expect(procs[0].writes.filter((w) => w === pasteOf(text))).toHaveLength(1)
@@ -2625,9 +2653,15 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject()
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(3000)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     vi.advanceTimersByTime(3000)
     expect(procs[0].writes.filter((w) => w === pasteOf('hello'))).toHaveLength(1)
     expect(procs[0].writes.filter((w) => w === '\r')).toHaveLength(1)
@@ -2639,7 +2673,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl, logs } = herdrInject({ injectConfirmMs: 500 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     vi.advanceTimersByTime(80)
     expect(procs[0].writes).toEqual([pasteOf('hello'), '\r'])
     vi.advanceTimersByTime(500)
@@ -2649,7 +2686,10 @@ describe('term manager (herdr mux)', () => {
     expect(manager.inject(pty.id, 'next', true)).toBe(true)
     vi.advanceTimersByTime(200)
     expect(procs[0].writes.filter((w) => w === pasteOf('hello'))).toHaveLength(1)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     expect(manager.get(pty.id)?.injectUnconfirmed).toBeUndefined()
   })
 
@@ -2658,7 +2698,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject()
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'done' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('hello')])
     expect(manager.get(pty.id)?.injectUnconfirmed).toBeUndefined()
   })
@@ -2668,10 +2711,17 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject({ injectReadyMaxMs: 2000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: null } })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true },
+    })
     vi.advanceTimersByTime(500)
     expect(procs[0].writes).toEqual([])
     expect(manager.get(pty.id)?.injectUnconfirmed).toBeUndefined()
+    // Zero-window: inject refuses during grace; the pty is not reaped yet.
+    expect(manager.inject(pty.id, 'into the shell?', true)).toBe(false)
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBe(true)
   })
 
   it('ended then re-detected flushes on idle', () => {
@@ -2679,11 +2729,17 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject({ injectReadyMaxMs: 2000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: null } })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true },
+    })
     vi.advanceTimersByTime(200)
     expect(procs[0].writes).toEqual([])
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: 'claude' } })
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('hello')])
   })
 
@@ -2692,7 +2748,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl, logs } = herdrInject({ injectReadyMaxMs: 1000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_detected', data: { agent: null } })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true },
+    })
     vi.advanceTimersByTime(1000)
     expect(procs[0].writes).toEqual([])
     expect(manager.get(pty.id)?.injectUnconfirmed).toEqual({ ts: expect.any(Number), turn: 1 })
@@ -2704,7 +2763,10 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject({ injectConfirmMs: 5000 })
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes.filter((w) => w === pasteOf('hello'))).toHaveLength(1)
     expect(manager.kill(pty.id)).toBe(true)
     vi.advanceTimersByTime(8000)
@@ -2744,7 +2806,10 @@ describe('term manager (herdr mux)', () => {
     )
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'hello', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([])
     procs[0].emitData('burst1')
     vi.advanceTimersByTime(200)
@@ -2762,9 +2827,15 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('one')])
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     vi.advanceTimersByTime(400)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r', pasteOf('two'), '\r'])
   })
@@ -2774,10 +2845,16 @@ describe('term manager (herdr mux)', () => {
     const { manager, procs, ctl } = herdrInject()
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
     expect(procs[0].writes).toEqual([pasteOf('one')])
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
     vi.advanceTimersByTime(400)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r', pasteOf('two'), '\r'])
   })
@@ -2788,12 +2865,876 @@ describe('term manager (herdr mux)', () => {
     const pty = manager.spawn('claude', 80, 24, '', uuid)
     expect(manager.inject(pty.id, 'one', true)).toBe(true)
     expect(manager.inject(pty.id, 'two', true)).toBe(true)
-    ctl.emit?.({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
     expect(procs[0].writes).toEqual([pasteOf('one')])
     vi.advanceTimersByTime(500)
     vi.advanceTimersByTime(400)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r', pasteOf('two'), '\r'])
     expect(manager.get(pty.id)?.injectUnconfirmed).toMatchObject({ turn: 1 })
+  })
+
+  const goneEvt = {
+    event: 'pane.agent_detected',
+    data: {
+      pane_id: 'w1:p1',
+      agent: null as string | null,
+      released: true,
+      final_status: 'idle',
+    },
+  }
+
+  it('herdr agent end after work: inject refused during grace; after grace spawn mints a new id, session.end once, list drops it', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs, ingested } = makeManager(
+      { mux: 'herdr', injectSubmitDelayMs: 80, harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(manager.inject(pty.id, 'do not run as shell', true)).toBe(true)
+    expect(procs[0].writes).toEqual([])
+
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+    })
+    ctl.emit?.(goneEvt)
+
+    expect(procs[0].writes).toEqual([])
+    expect(manager.inject(pty.id, 'into the shell?', true)).toBe(false)
+    expect(manager.write(pty.id, 'x')).toBe(false)
+    expect(manager.ptyForSession(pty.denSession)).toBe(pty.id)
+    expect(ctl.kills).toEqual([])
+
+    vi.advanceTimersByTime(3000)
+    expect(procs[0].writes).toEqual([])
+    expect(manager.ptyForSession(pty.denSession)).toBeUndefined()
+    expect(manager.attach(pty.id, () => undefined)).toBeNull()
+    expect(ctl.kills).toEqual([herdrSessionName(uuid)])
+    expect(manager.list().filter((p) => p.denSession === uuid)).toEqual([])
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+
+    const again = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(again.id).not.toBe(pty.id)
+    expect(manager.ptyForSession(uuid)).toBe(again.id)
+
+    ctl.emit?.(goneEvt)
+    vi.advanceTimersByTime(3000)
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(2)
+    expect(() => manager.kill(pty.id)).not.toThrow()
+  })
+
+  it('herdr agent end before any status frame (declined-trust shape) reaps after grace', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs, ingested } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(manager.inject(pty.id, 'first turn', true)).toBe(true)
+    ctl.emit?.({
+      event: 'pane_agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true, final_status: 'unknown' },
+    })
+    expect(procs[0].writes).toEqual([])
+    expect(manager.inject(pty.id, 'after', true)).toBe(false)
+    vi.advanceTimersByTime(3000)
+    expect(manager.ptyForSession(uuid)).toBeUndefined()
+    const again = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(again.id).not.toBe(pty.id)
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+  })
+
+  it('transient unknown on a healthy harness does not end it; inject still works', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl },
+    )
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'unknown' },
+    })
+    expect(manager.ptyForSession(uuid)).toBe(pty.id)
+    expect(manager.inject(pty.id, 'still here', true)).toBe(true)
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(ctl.kills).toEqual([])
+    expect(procs[0].writes.length).toBeGreaterThan(0)
+  })
+
+  it('plain shell pane with the same agent-gone events is untouched', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager({ mux: 'herdr', harnessEndedGraceMs: 50 }, { herdrCtl: ctl })
+    const pty = manager.spawn('shell', 80, 24, '', uuid)
+    expect(ctl.subscribes).toBe(1)
+    expect(ctl.emit).toBeTypeOf('function')
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: null, released: true, final_status: 'idle' },
+    })
+    vi.advanceTimersByTime(200)
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBeUndefined()
+    expect(manager.ptyForSession(uuid)).toBe(pty.id)
+    expect(manager.inject(pty.id, 'ls', true)).toBe(true)
+    expect(ctl.kills).toEqual([])
+  })
+
+  it('re-detect during grace cancels the end; later idle still flushes', () => {
+    vi.useFakeTimers()
+    const { manager, procs, ctl } = herdrInject({
+      injectReadyMaxMs: 15_000,
+      harnessEndedGraceMs: 3000,
+    })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    ctl.emit?.(goneEvt)
+    expect(manager.inject(pty.id, 'nope', true)).toBe(false)
+    vi.advanceTimersByTime(200)
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    vi.advanceTimersByTime(5000)
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(ctl.kills).toEqual([])
+    expect(manager.inject(pty.id, 'after', true)).toBe(true)
+  })
+
+  it('confirm-window rest flush does not write into an ended pane', () => {
+    vi.useFakeTimers()
+    const { manager, procs, ctl } = herdrInject({
+      injectConfirmMs: 500,
+      harnessEndedGraceMs: 3000,
+    })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'one', true)).toBe(true)
+    expect(manager.inject(pty.id, 'two', true)).toBe(true)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual([pasteOf('one'), '\r'])
+    ctl.emit?.(goneEvt)
+    vi.advanceTimersByTime(500)
+    vi.advanceTimersByTime(400)
+    expect(procs[0].writes).toEqual([pasteOf('one'), '\r'])
+    expect(manager.inject(pty.id, 'retry me', true)).toBe(false)
+  })
+
+  it('idle reaper + double gone + concurrent spawn: no throw, no second session.end', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, ingested } = makeManager(
+      { mux: 'herdr', idleTtlMs: 50, harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    ctl.emit?.(goneEvt)
+    ctl.emit?.(goneEvt)
+    expect(manager.inject(pty.id, 'x', true)).toBe(false)
+    expect(() => vi.advanceTimersByTime(5_000)).not.toThrow()
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+    expect(() => manager.kill(pty.id)).not.toThrow()
+    const a = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    const b = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(b.id).toBe(a.id)
+    expect(a.id).not.toBe(pty.id)
+  })
+
+  it('adopt dead harness: probe ends it; not injectable; next spawn is a new id', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => ({ agent: null })
+    const { manager } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'into the leftover shell', true)).toBe(false)
+    expect(ctl.kills).toEqual([name])
+    expect(manager.ptyForSession(uuid)).toBeUndefined()
+    const again = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(again.id).not.toBe(pty.id)
+  })
+
+  it('adopt with probe unavailable: inject refused until a positive frame', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'no evidence yet', true)).toBe(false)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('adopt with a live agent: ready, inject works', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('create→retain window probe with no agent does not latch ended', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: null })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    // Fresh create: inject buffers (fail closed — nothing written), no latch.
+    expect(manager.inject(pty.id, 'into the shell?', true)).toBe(true)
+    expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(procs[0].writes).toEqual([])
+  })
+
+  it('spawn-or-get during the grace mints a new id immediately', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    ctl.emit?.(goneEvt)
+    expect(manager.get(pty.id)?.agentEnded).toBe(true)
+    expect(manager.inject(pty.id, 'x', true)).toBe(false)
+    const again = manager.spawn('claude', 120, 40, '127.0.0.1', uuid)
+    expect(again.id).not.toBe(pty.id)
+    expect(manager.ptyForSession(uuid)).toBe(again.id)
+    expect(ctl.kills).toContain(herdrSessionName(uuid))
+  })
+
+  it('in-flight staggered paste/submit pending at release writes nothing more', () => {
+    vi.useFakeTimers()
+    const { manager, procs, ctl } = herdrInject({
+      injectSubmitDelayMs: 80,
+      harnessEndedGraceMs: 3000,
+    })
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    ctl.emit?.(goneEvt)
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('close() during the grace does not throw or write leftover injects', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', injectSubmitDelayMs: 80, harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    ctl.emit?.(goneEvt)
+    expect(() => manager.close()).not.toThrow()
+    vi.advanceTimersByTime(8000)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('end clears ready, quiescence, ceiling, confirm, grace and inject timers', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs, ingested } = makeManager(
+      {
+        mux: 'herdr',
+        injectReadyMs: 300,
+        injectReadyMaxMs: 15_000,
+        injectSubmitDelayMs: 80,
+        injectConfirmMs: 5000,
+        harnessEndedGraceMs: 3000,
+      },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'one', true)).toBe(true)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'two', true)).toBe(true)
+    ctl.emit?.(goneEvt)
+    vi.advanceTimersByTime(3000)
+    expect(manager.get(pty.id)).toBeUndefined()
+    const writes = [...procs[0].writes]
+    const ends = ingested.filter((e) => e.type === 'session.end').length
+    vi.advanceTimersByTime(60_000)
+    expect(procs[0].writes).toEqual(writes)
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(ends)
+  })
+
+  it('bare agent:null is not an end when the probe still sees the agent', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager } = makeManager({ mux: 'herdr', harnessEndedGraceMs: 3000 }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: null } })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBeUndefined()
+    expect(ctl.kills).toEqual([])
+  })
+
+  it('slow boot: no agent at t=0, agent at t=6s is not killed and flushes once', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: null })
+    const { manager, procs } = makeManager(
+      {
+        mux: 'herdr',
+        injectReadyMaxMs: 15_000,
+        harnessEndedGraceMs: 3000,
+        injectSubmitDelayMs: 80,
+      },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'first', true)).toBe(true)
+    expect(procs[0].writes).toEqual([])
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
+    expect(ctl.kills).toEqual([])
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(procs[0].writes.filter((w) => w === pasteOf('first'))).toHaveLength(1)
+  })
+
+  it('failed start: no agent through injectReadyMaxMs ends once; next spawn is a new id', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: null })
+    const { manager, ingested } = makeManager(
+      { mux: 'herdr', injectReadyMaxMs: 1000, harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'first', true)).toBe(true)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(ctl.kills).toEqual([herdrSessionName(uuid)])
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+    expect(manager.ptyForSession(uuid)).toBeUndefined()
+    const again = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(again.id).not.toBe(pty.id)
+  })
+
+  it('adopt + transient probe failure then success on retry is injectable', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    let calls = 0
+    ctl.paneAgent = async () => {
+      calls += 1
+      if (calls === 1) return undefined
+      return { agent: 'claude', status: 'idle' }
+    }
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'no evidence yet', true)).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('refused inject triggers exactly one re-probe; rate limit honoured', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    let calls = 0
+    ctl.paneAgent = async () => {
+      calls += 1
+      return undefined
+    }
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(calls).toBe(1)
+    expect(manager.inject(pty.id, 'a', true)).toBe(false)
+    expect(calls).toBe(2)
+    expect(manager.inject(pty.id, 'b', true)).toBe(false)
+    expect(calls).toBe(2)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(calls).toBe(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(calls).toBe(3)
+  })
+
+  it('pane.agent_detected with an agent name unlocks a no-evidence pane', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => undefined
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'blocked', true)).toBe(false)
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    expect(manager.get(pty.id)?.noAgentEvidence).toBeUndefined()
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('probe is pane-scoped: live agent in pane B does not make pane A live', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    const seen: Array<string | undefined> = []
+    ctl.paneAgent = async (_n, paneId) => {
+      seen.push(paneId)
+      // Pane B is live; pane A (the den pane) is dead.
+      if (paneId === 'w1:p2') return { agent: 'claude', status: 'idle' }
+      if (paneId === 'w1:p1') return { agent: null }
+      return { agent: 'claude', status: 'idle' }
+    }
+    const { manager } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(seen).toContain('w1:p1')
+    expect(manager.inject(pty.id, 'into leftover shell', true)).toBe(false)
+    expect(ctl.kills).toEqual([name])
+    expect(
+      manager.get(pty.id)?.state === 'exited' || manager.ptyForSession(uuid) === undefined,
+    ).toBe(true)
+  })
+
+  it('final_status without released + live probe is not an end', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager } = makeManager({ mux: 'herdr', harnessEndedGraceMs: 3000 }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBeUndefined()
+    expect(ctl.kills).toEqual([])
+  })
+
+  it('detection event for pane B does not unlock pane A', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => undefined
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'blocked', true)).toBe(false)
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p2', agent: 'claude' } })
+    expect(manager.inject(pty.id, 'still blocked', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    ctl.emit?.({ event: 'pane.agent_detected', data: { pane_id: 'w1:p1', agent: 'claude' } })
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+  })
+
+  it('status frame for pane B neither unlocks nor ends pane A', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p2', agent: 'claude', agent_status: 'idle' },
+    })
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p2', agent: null, released: true },
+    })
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
+    expect(manager.inject(pty.id, 'still', true)).toBe(true)
+    expect(ctl.kills).toEqual([])
+  })
+
+  it('adopt row agent:null agent_status idle is not live: ended, nothing written', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => ({ agent: null, status: 'idle' })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'into the leftover shell', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    expect(ctl.kills).toEqual([name])
+    expect(manager.ptyForSession(uuid)).toBeUndefined()
+  })
+
+  it('unknown row shape for this pane is unavailable: not killed, not injectable', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.paneAgent = async () => undefined
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'nope', true)).toBe(false)
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent_status: 'idle' },
+    })
+    expect(manager.inject(pty.id, 'status-only still nope', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    expect(ctl.kills).toEqual([])
+    expect(manager.get(pty.id)?.state).toBe('running')
+  })
+
+  it('adopted backoff settles to a 30s floor', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    let calls = 0
+    ctl.paneAgent = async () => {
+      calls += 1
+      return undefined
+    }
+    const { manager } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(calls).toBe(1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(calls).toBe(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(calls).toBe(3)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(calls).toBe(4)
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(calls).toBe(4)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(calls).toBe(5)
+    expect(manager.inject(pty.id, 'still closed', true)).toBe(false)
+  })
+
+  it('final_status + unavailable probe refuses inject; later alive unlocks; later dead ends once', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    let mode: 'live' | 'unavail' | 'dead' = 'live'
+    ctl.paneAgent = async () => {
+      if (mode === 'live') return { agent: 'claude', status: 'idle' }
+      if (mode === 'dead') return { agent: null }
+      return undefined
+    }
+    const { manager, ingested } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    mode = 'unavail'
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.inject(pty.id, 'while unconfirmed', true)).toBe(false)
+    expect(manager.get(pty.id)?.agentEnded).toBeFalsy()
+    expect(ctl.kills).toEqual([])
+    mode = 'live'
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(manager.inject(pty.id, 'after alive', true)).toBe(true)
+    mode = 'dead'
+    ctl.emit?.({
+      event: 'pane.agent_detected',
+      data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(manager.inject(pty.id, 'after dead', true)).toBe(false)
+    expect(manager.get(pty.id)?.agentEnded).toBe(true)
+    vi.advanceTimersByTime(3000)
+    expect(ctl.kills).toEqual([herdrSessionName(uuid)])
+    expect(ingested.filter((e) => e.type === 'session.end')).toHaveLength(1)
+  })
+
+  it('meta-only pane id: probe writes id, subscribes, then evidence; later release ends (no write)', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+    })
+    ctl.metaPaneId = 'w1:p1'
+    const seen: Array<string | undefined> = []
+    ctl.paneAgent = async (_n, paneId) => {
+      seen.push(paneId)
+      return { agent: 'claude', status: 'idle' }
+    }
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(seen).toEqual(['w1:p1'])
+    expect(ctl.subscribedPaneId).toBe('w1:p1')
+    expect(ctl.subscribes).toBeGreaterThanOrEqual(1)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    ctl.emit?.(goneEvt)
+    expect(manager.inject(pty.id, 'after release', true)).toBe(false)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
+    expect(manager.get(pty.id)?.agentEnded).toBe(true)
+  })
+
+  it('probe live but subscription cannot be established: stays fail-closed', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    ctl.subscribeFail = true
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl },
+    )
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'nope', true)).toBe(false)
+    expect(procs[0].writes).toEqual([])
+    expect(ctl.kills).toEqual([])
+    expect(manager.get(pty.id)?.state).toBe('running')
+    expect(manager.get(pty.id)?.noAgentEvidence).toBe(true)
+  })
+
+  it('probe started before a release and resolving after it does not clear the latch', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    let resolveFirst!: (v: { agent: string | null; status?: string }) => void
+    let calls = 0
+    ctl.paneAgent = () => {
+      calls += 1
+      if (calls === 1) {
+        return new Promise((resolve) => {
+          resolveFirst = resolve
+        })
+      }
+      return Promise.resolve({ agent: null })
+    }
+    const { manager } = makeManager(
+      { mux: 'herdr', harnessEndedGraceMs: 3000 },
+      { herdrCtl: ctl, roomOpen: () => true },
+    )
+    const pending = manager.spawn('claude', 80, 24, '', uuid)
+    const id = manager.ptyForSession(uuid)
+    expect(id).toBeDefined()
+    ctl.emit?.(goneEvt)
+    resolveFirst({ agent: 'claude', status: 'idle' })
+    await pending
+    expect(manager.get(id!)?.agentEnded).toBe(true)
+    expect(manager.inject(id!, 'stale probe', true)).toBe(false)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(ctl.kills).toEqual([name])
+  })
+
+  it('pane id resolving late on an adopted healthy session subscribes and unlocks', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(uuid)
+    ctl.sessions.set(name, {
+      name,
+      denKey: uuid,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+    })
+    ctl.paneAgent = async () => ({ agent: 'claude', status: 'idle' })
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', uuid)
+    expect(pty.reattached).toBe(true)
+    expect(manager.inject(pty.id, 'blocked', true)).toBe(false)
+    expect(ctl.subscribes).toBe(0)
+    expect(procs[0].writes).toEqual([])
+    ctl.metaPaneId = 'w1:p1'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(ctl.subscribes).toBe(1)
+    expect(ctl.subscribedPaneId).toBe('w1:p1')
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual([pasteOf('hello')])
   })
 })
 
