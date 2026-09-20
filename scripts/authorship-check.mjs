@@ -11,6 +11,7 @@
 //   - Rivet Philbot <rivetphilbot@gmail.com>
 //   - Philip <philbert440@gmail.com>
 //   - Philip <philbert440@users.noreply.github.com>
+//   - xreed88 <xreed88@gmail.com> (outside contributor, allowed by the maintainer)
 //
 // Blocked: Cursor, Cursor Agent, cursoragent@cursor.com, Claude, Anthropic,
 //          Dependabot, or any other product name / third-party account.
@@ -30,6 +31,8 @@ const HOUSE = [
   { name: 'Philip', email: 'philbert440@users.noreply.github.com' },
   { name: 'philbert440', email: 'philbert440@gmail.com' },
   { name: 'philbert440', email: 'philbert440@users.noreply.github.com' },
+  // Outside contributor allowed by the maintainer (2026-09-20).
+  { name: 'xreed88', email: 'xreed88@gmail.com' },
 ]
 
 // GitHub web-flow committer (allowed as committer when author is house)
@@ -287,6 +290,7 @@ function main() {
       '\n  - Rivet Philbot <rivetphilbot@gmail.com>' +
       '\n  - Philip <philbert440@gmail.com>' +
       '\n  - Philip <philbert440@users.noreply.github.com>' +
+      '\n  - xreed88 <xreed88@gmail.com>' +
       '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, and any Co-authored-by trailers.' +
       '\n\nException: GitHub <noreply@github.com> as committer when the author is a house identity (GitHub merge/squash).\n',
   )
