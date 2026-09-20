@@ -204,7 +204,8 @@ Sample `~/.rivetos/den-term.json`:
 `room: true` marks den-aware harnesses (they get a synthetic `session.end` if
 the process exits without one, and they are the only sessions `POST /term/inject`
 writes into); `room: false` is for plain processes (inject answers 409; type
-through the terminal websocket). See the
+through the terminal websocket). Custom harness entries must set `room: true`
+to receive chat; terminal-only entries are typed through the terminal. See the
 [den-server README](../services/den-server/README.md) for the full roster
 shape (per-entry `cwd`/`env`) and the PTY knobs.
 

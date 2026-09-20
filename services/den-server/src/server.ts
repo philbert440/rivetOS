@@ -579,6 +579,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // load + manager, and a failed node-pty import stays failed (503) for the
   // life of the process — it logs once inside loadRealPtySpawn
   let termManagerPromise: Promise<TermManager | null> | null = null
+  /** One log line per session when inject 409s because the roster entry is
+   *  not `room: true` — not per request, and never the turn text. */
+  const injectNotHarnessLogged = new Set<string>()
   const ensureManager = (): Promise<TermManager | null> =>
     (termManagerPromise ??= (async () => {
       const spawnBackend = opts.ptySpawn !== undefined ? opts.ptySpawn : await loadRealPtySpawn()
@@ -1611,11 +1614,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
           // Chat inject is only for agent-harness roster entries (`room: true`).
           // A terminal-only session (`room: false`, e.g. shell) is typed through
-          // the terminal websocket. Distinct 409 so the web client's respawn-
-          // and-retry does not treat this as a dead harness. Checked before
+          // the terminal websocket. The web client does not inspect this error
+          // string; any 409 triggers respawn-and-retry once. That retry is
+          // spawn-or-get of the same running record, then a second 409 and a
+          // failed bubble — no loop, no second PTY, no kill. Checked before
           // inject so nothing reaches the PTY.
-          if (!manager.isAgentHarness(ptyId))
+          if (!manager.isAgentHarness(ptyId)) {
+            if (!injectNotHarnessLogged.has(injectKey)) {
+              injectNotHarnessLogged.add(injectKey)
+              const command = manager.get(ptyId)?.command ?? ''
+              console.error(
+                `[den-server] POST /term/inject refused for session ${injectKey} (command ${command}): roster entry is not marked room: true`,
+              )
+            }
             return json(res, 409, { error: 'session is not an agent harness' })
+          }
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
           if (!manager.inject(ptyId, p.text, submit, interrupt)) {

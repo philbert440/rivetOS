@@ -360,10 +360,12 @@ export interface TermManager {
   get(id: string): PtyInfo | undefined
   /** PTY id linked to a den session, while its record exists. */
   ptyForSession(denSession: string): string | undefined
-  /** Roster `room: true` at spawn/adopt — the session is an agent harness.
+  /** True when the live record's roster entry has `room: true`.
    *  `POST /term/inject` uses this; a shell (`room: false`) is typed through
-   *  the terminal websocket instead. Survives den restart because adopt
-   *  re-reads the roster entry for the tagged command. */
+   *  the terminal websocket instead. On adopt/reattach of a tagged session,
+   *  `command`/`room` come from the roster entry named by `@rivet_command`
+   *  when that key still exists; otherwise from the request (untagged
+   *  pre-fix adopt, or a tag whose entry was renamed or removed). */
   isAgentHarness(id: string): boolean
   /** SIGHUP → SIGKILL(3s); exited records are reaped immediately. Under tmux
    *  the SESSION is killed (the harness), then the client. Also resolves
@@ -1889,6 +1891,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // auto mode falls back to a direct PTY for this call (one log line).
       let tmuxName: string | undefined
       let persisted = false
+      /** `@rivet_command` on the taken-over session, captured before adopt
+       *  stamps a missing tag with the request key. */
+      let persistedTag = ''
       const takeExisting = (s: TmuxSessionInfo): void => {
         const d = herdr
           ? classifyExistingHerdrSession(s, routedUser)
@@ -1903,6 +1908,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             'user-mismatch',
             `tmux session for ${denSession} is owned by another user`,
           )
+        // Capture before adopt stamps a missing tag — FakeTmuxCtl mutates
+        // `s.command` on setOption, and a pre-fix untagged session must
+        // keep today's behaviour (request key).
+        persistedTag = s.command
         if (d === 'adopt' && muxCtl) {
           // Classify already refuses non-owner adopt; keep the guard here so
           // a stub/mis-classified row cannot stamp a routed identity.
@@ -2285,14 +2294,23 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         } finally {
           spawnInflight.delete(denSession)
         }
+        // Harness-ness of a taken-over session comes from what is running
+        // (`@rivet_command`), not from the request's roster key. Tag present
+        // but no longer in the roster (entry renamed/removed): keep the
+        // request's entry — do not invent a refusal. No tag (pre-fix
+        // untagged adopt): today's behaviour (request key is written as the
+        // tag). cwd/env/identity/LRU/argv stay on the request.
+        const taggedEntry = persisted && persistedTag ? roster.commands[persistedTag] : undefined
+        const recordKey = taggedEntry ? persistedTag : key
+        const recordEntry = taggedEntry ?? entry
         if (muxCtl && tmuxName) {
           // den's own picture of the session: end-notification and GC work off
           // this, never off the mux activity clock.
           const firstSeen = !knownTmux.has(tmuxName)
           knownTmux.set(tmuxName, {
             denSession,
-            command: key,
-            room: entry.room,
+            command: recordKey,
+            room: recordEntry.room,
             routedUser,
             firstSeenTs: now(),
             endSent: false,
@@ -2318,8 +2336,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         const r: PtyRecord = {
           id,
           denSession,
-          command: key,
-          room: entry.room,
+          command: recordKey,
+          room: recordEntry.room,
           argv,
           cwd,
           remote,
@@ -2385,12 +2403,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // fire on the first prompt, and the viewer can't offer a terminal to
         // type that prompt into until a session window exists. The harness's
         // own events land in the same room via RIVET_DEN_SESSION and take over.
-        if (entry.room)
+        // On reattach this follows the tagged entry, not the request.
+        if (recordEntry.room)
           deps.ingest({
             v: 1,
             session: denSession,
             type: 'session.start',
-            title: entry.label,
+            title: recordEntry.label,
             name: env.RIVET_DEN_NAME,
             harness: 'rivetos',
             ts: now(),

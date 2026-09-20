@@ -81,7 +81,9 @@ Roster file shape:
 sent `session.end`, the server ingests a synthetic one so the room closes.
 `POST /term/inject` is accepted only for those entries; `room: false` answers
 409 `session is not an agent harness` (type into a shell over the terminal
-websocket). `room: false` entries never produce synthetic events. Spawned PTYs
+websocket). Custom harness entries must set `room: true` to receive chat;
+terminal-only entries are typed through the terminal. `room: false` entries
+never produce synthetic events. Spawned PTYs
 get `RIVET_DEN_SESSION` / `RIVET_DEN_URL` / `RIVET_DEN_TOKEN` / `RIVET_DEN_NAME`
 in their env so harness hook adapters report into the right room.
 

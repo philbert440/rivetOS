@@ -1610,6 +1610,52 @@ describe('term manager (tmux mux)', () => {
     expect(logs.filter((l) => l.includes('adopted untagged'))).toHaveLength(1)
   })
 
+  it('reattach: harness-ness follows the persisted tag, not the request key', () => {
+    const paste = (text: string) => `\x1b[200~${text}\x1b[201~`
+    // tagged shell, request claude → still a shell
+    const ctlShell = new FakeTmuxCtl()
+    const shellName = encodeTmuxName('chat-tag-shell')
+    ctlShell.serverCreated(shellName, 'shell', 'owner')
+    const shell = makeManager({ mux: 'tmux' }, { tmuxCtl: ctlShell })
+    const shellPty = shell.manager.spawn('claude', 80, 24, '', 'chat-tag-shell')
+    expect(shellPty.reattached).toBe(true)
+    expect(shellPty.command).toBe('shell')
+    expect(shell.manager.isAgentHarness(shellPty.id)).toBe(false)
+    expect(shell.procs[0].writes).toEqual([])
+
+    // tagged claude, request shell → still a harness; inject accepted
+    const ctlHarness = new FakeTmuxCtl()
+    const harnessName = encodeTmuxName('chat-tag-claude')
+    ctlHarness.serverCreated(harnessName, 'claude', 'owner')
+    const harness = makeManager({ mux: 'tmux' }, { tmuxCtl: ctlHarness })
+    const harnessPty = harness.manager.spawn('shell', 80, 24, '', 'chat-tag-claude')
+    expect(harnessPty.reattached).toBe(true)
+    expect(harnessPty.command).toBe('claude')
+    expect(harness.manager.isAgentHarness(harnessPty.id)).toBe(true)
+    expect(harness.manager.inject(harnessPty.id, 'hello', true)).toBe(true)
+    expect(harness.procs[0].writes).toEqual([paste('hello')])
+
+    // tag no longer in the roster → request's entry
+    const ctlGone = new FakeTmuxCtl()
+    const goneName = encodeTmuxName('chat-tag-gone')
+    ctlGone.serverCreated(goneName, 'vanished', 'owner')
+    const gone = makeManager({ mux: 'tmux' }, { tmuxCtl: ctlGone })
+    const gonePty = gone.manager.spawn('claude', 80, 24, '', 'chat-tag-gone')
+    expect(gonePty.reattached).toBe(true)
+    expect(gonePty.command).toBe('claude')
+    expect(gone.manager.isAgentHarness(gonePty.id)).toBe(true)
+
+    // untagged pre-fix adopt still takes the request key
+    const ctlUntagged = new FakeTmuxCtl()
+    const untaggedName = encodeTmuxName('chat-tag-untagged')
+    ctlUntagged.serverCreated(untaggedName, '', '')
+    const untagged = makeManager({ mux: 'tmux' }, { tmuxCtl: ctlUntagged })
+    const untaggedPty = untagged.manager.spawn('claude', 80, 24, '', 'chat-tag-untagged')
+    expect(untaggedPty.reattached).toBe(true)
+    expect(untaggedPty.command).toBe('claude')
+    expect(untagged.manager.isAgentHarness(untaggedPty.id)).toBe(true)
+  })
+
   it('refuses to adopt an untagged session for a routed non-owner', () => {
     const ctl = new FakeTmuxCtl()
     const name = encodeTmuxName('chat-f')
@@ -2499,6 +2545,49 @@ describe('term manager (herdr mux)', () => {
     expect(pty.reattached).toBe(true)
     expect(ctl.creates).toHaveLength(0)
     expect(spawns[0].argv).toEqual(['herdr', '--session', name])
+  })
+
+  it('reattach: harness-ness follows the persisted tag, not the request key', () => {
+    const paste = (text: string) => `\x1b[200~${text}\x1b[201~`
+    const seed = (ctl: FakeHerdrCtl, session: string, command: string) => {
+      const name = herdrSessionName(session)
+      ctl.sessions.set(name, {
+        name,
+        denKey: session,
+        activity: 1,
+        created: 1,
+        command,
+        user: 'owner',
+        paneId: 'w1:p1',
+      })
+    }
+
+    const ctlShell = new FakeHerdrCtl()
+    seed(ctlShell, 'chat-tag-shell', 'shell')
+    const shell = makeManager({ mux: 'herdr' }, { herdrCtl: ctlShell })
+    const shellPty = shell.manager.spawn('claude', 80, 24, '', 'chat-tag-shell')
+    expect(shellPty.reattached).toBe(true)
+    expect(shellPty.command).toBe('shell')
+    expect(shell.manager.isAgentHarness(shellPty.id)).toBe(false)
+
+    const ctlHarness = new FakeHerdrCtl()
+    seed(ctlHarness, 'chat-tag-claude', 'claude')
+    const harness = makeManager({ mux: 'herdr' }, { herdrCtl: ctlHarness })
+    const harnessPty = harness.manager.spawn('shell', 80, 24, '', 'chat-tag-claude')
+    expect(harnessPty.reattached).toBe(true)
+    expect(harnessPty.command).toBe('claude')
+    expect(harness.manager.isAgentHarness(harnessPty.id)).toBe(true)
+    // request is room:false so this is not an agent pane; attach is ready
+    expect(harness.manager.inject(harnessPty.id, 'hello', true)).toBe(true)
+    expect(harness.procs[0].writes).toEqual([paste('hello')])
+
+    const ctlGone = new FakeHerdrCtl()
+    seed(ctlGone, 'chat-tag-gone', 'vanished')
+    const gone = makeManager({ mux: 'herdr' }, { herdrCtl: ctlGone })
+    const gonePty = gone.manager.spawn('claude', 80, 24, '', 'chat-tag-gone')
+    expect(gonePty.reattached).toBe(true)
+    expect(gonePty.command).toBe('claude')
+    expect(gone.manager.isAgentHarness(gonePty.id)).toBe(true)
   })
 
   it('kill releases the status subscribe (no leak) and killSession', () => {

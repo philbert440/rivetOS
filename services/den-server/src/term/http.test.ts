@@ -941,4 +941,152 @@ describe('term endpoints', () => {
     expect(await inj.json()).toEqual({ error: 'session is not an agent harness' })
     expect(procs[0].writes).toEqual(before)
   })
+
+  it('herdr adopt: harness-ness follows the persisted tag, not the request key', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const seed = (session: string, command: string) => {
+      const name = herdrSessionName(session)
+      sessions.set(name, {
+        name,
+        denKey: session,
+        activity: 1,
+        created: 1,
+        command,
+        user: 'owner',
+        paneId: 'w1:p1',
+      })
+    }
+    seed('chat-810-sh-as-claude', 'shell')
+    seed('chat-810-claude-as-sh', 'claude')
+    seed('chat-810-unknown-tag', 'vanished')
+    const ctl: HerdrCtl = {
+      hasSession(n) {
+        return sessions.has(n)
+      },
+      killSession(n) {
+        sessions.delete(n)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(n) {
+        return ['herdr', '--session', n]
+      },
+      paneAgent: async () => undefined,
+    }
+    const { base, procs } = await start({}, { mux: 'herdr' }, { herdrCtl: ctl })
+
+    const spawnShell = await post(base, '/term', {
+      command: 'claude',
+      session: 'chat-810-sh-as-claude',
+    })
+    expect(spawnShell.status).toBe(201)
+    expect(((await spawnShell.json()) as SpawnedPty).command).toBe('shell')
+    const before = procs[0].writes.slice()
+    const injShell = await post(base, '/term/inject', {
+      session: 'chat-810-sh-as-claude',
+      text: 'whoami',
+    })
+    expect(injShell.status).toBe(409)
+    expect(await injShell.json()).toEqual({ error: 'session is not an agent harness' })
+    expect(procs[0].writes).toEqual(before)
+
+    const spawnHarness = await post(base, '/term', {
+      command: 'shell',
+      session: 'chat-810-claude-as-sh',
+    })
+    expect(spawnHarness.status).toBe(201)
+    expect(((await spawnHarness.json()) as SpawnedPty).command).toBe('claude')
+    const injHarness = await post(base, '/term/inject', {
+      session: 'chat-810-claude-as-sh',
+      text: 'hello',
+    })
+    expect(injHarness.status).toBe(202)
+    expect(procs[1].writes.some((w) => w.includes('hello'))).toBe(true)
+
+    const spawnGone = await post(base, '/term', {
+      command: 'claude',
+      session: 'chat-810-unknown-tag',
+    })
+    expect(spawnGone.status).toBe(201)
+    expect(((await spawnGone.json()) as SpawnedPty).command).toBe('claude')
+  })
+
+  it('tmux adopt: harness-ness follows the persisted tag, not the request key', async () => {
+    const ctl: TmuxCtl & { sessions: Map<string, TmuxSessionInfo>; kills: string[] } = {
+      sessions: new Map(),
+      kills: [],
+      hasSession(name) {
+        return this.sessions.has(name)
+      },
+      killSession(name) {
+        this.kills.push(name)
+        this.sessions.delete(name)
+      },
+      listSessions() {
+        return [...this.sessions.values()]
+      },
+    }
+    const seed = (session: string, command: string) => {
+      const name = encodeTmuxName(session)
+      ctl.sessions.set(name, {
+        name,
+        activity: 1_800_000_000,
+        created: 1_799_999_000,
+        pid: 4321,
+        command,
+        user: 'owner',
+      })
+    }
+    seed('chat-810-sh-as-claude', 'shell')
+    seed('chat-810-claude-as-sh', 'claude')
+    seed('chat-810-unknown-tag', 'vanished')
+    const { base, procs } = await start({}, { mux: 'tmux' }, { tmuxCtl: ctl })
+
+    const spawnShell = await post(base, '/term', {
+      command: 'claude',
+      session: 'chat-810-sh-as-claude',
+    })
+    expect(spawnShell.status).toBe(201)
+    expect(((await spawnShell.json()) as SpawnedPty).command).toBe('shell')
+    const before = procs[0].writes.slice()
+    const injShell = await post(base, '/term/inject', {
+      session: 'chat-810-sh-as-claude',
+      text: 'whoami',
+    })
+    expect(injShell.status).toBe(409)
+    expect(await injShell.json()).toEqual({ error: 'session is not an agent harness' })
+    expect(procs[0].writes).toEqual(before)
+
+    const spawnHarness = await post(base, '/term', {
+      command: 'shell',
+      session: 'chat-810-claude-as-sh',
+    })
+    expect(spawnHarness.status).toBe(201)
+    expect(((await spawnHarness.json()) as SpawnedPty).command).toBe('claude')
+    const injHarness = await post(base, '/term/inject', {
+      session: 'chat-810-claude-as-sh',
+      text: 'hello',
+    })
+    expect(injHarness.status).toBe(202)
+    expect(procs[1].writes.some((w) => w.includes('hello'))).toBe(true)
+
+    const spawnGone = await post(base, '/term', {
+      command: 'claude',
+      session: 'chat-810-unknown-tag',
+    })
+    expect(spawnGone.status).toBe(201)
+    expect(((await spawnGone.json()) as SpawnedPty).command).toBe('claude')
+  })
 })
