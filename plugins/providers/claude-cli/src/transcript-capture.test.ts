@@ -5,12 +5,17 @@
  * The DB-bound ingest paths are exercised against scratch Postgres elsewhere.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import {
+  applyCaptureGuards,
+  closeAllCapturePools,
+  createCapturePool,
+  IDLE_IN_TRANSACTION_TIMEOUT_MS,
   isTaskId,
   resolveConversationKey,
   resolveTaskContext,
   sessionKeyFromId,
+  STATEMENT_TIMEOUT_MS,
 } from './transcript-capture.js'
 
 const TASK_UUID = '3f1b5f6a-9c1e-4a2b-8d7e-0123456789ab'
@@ -40,9 +45,9 @@ describe('resolveConversationKey', () => {
   })
 
   it('falls back to the transcript session id, then the path key', () => {
-    expect(
-      resolveConversationKey({ transcriptSessionId: 'sess-2', fallbackKey }),
-    ).toBe(sessionKeyFromId('sess-2'))
+    expect(resolveConversationKey({ transcriptSessionId: 'sess-2', fallbackKey })).toBe(
+      sessionKeyFromId('sess-2'),
+    )
     expect(resolveConversationKey({ transcriptSessionId: null, fallbackKey })).toBe(fallbackKey)
   })
 
@@ -116,5 +121,28 @@ describe('isTaskId', () => {
     for (const bad of [undefined, '', 'task-env-check', `task:${TASK_UUID}`, `${TASK_UUID} `]) {
       expect(isTaskId(bad)).toBe(false)
     }
+  })
+})
+
+describe('capture pool connect guards', () => {
+  afterEach(async () => {
+    await closeAllCapturePools()
+  })
+
+  it('sets idle_in_transaction_session_timeout and statement_timeout at connect', async () => {
+    const pool = createCapturePool('postgres://example.invalid:1/db')
+    expect(pool.options.idle_in_transaction_session_timeout).toBe(IDLE_IN_TRANSACTION_TIMEOUT_MS)
+    expect(pool.options.statement_timeout).toBe(STATEMENT_TIMEOUT_MS)
+
+    const sqls: string[] = []
+    const client = {
+      query: async (sql: string) => {
+        sqls.push(sql)
+        return { rows: [] }
+      },
+    }
+    await applyCaptureGuards(client as never)
+    expect(sqls.some((s) => /idle_in_transaction_session_timeout/.test(s))).toBe(true)
+    expect(sqls.some((s) => /statement_timeout/.test(s))).toBe(true)
   })
 })

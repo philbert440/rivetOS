@@ -401,9 +401,10 @@ async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
     messages: Number(msg.rows[0]?.n ?? 0),
     toolCalls: Number(tools.rows[0]?.n ?? 0),
     summaries: Number(sums.rows[0]?.n ?? 0),
-    embedQueueDepth: Number(queue.rows[0]?.msg_queue ?? 0) + Number(queue.rows[0]?.sum_queue ?? 0),
+    embedQueueDepth:
+      Number(queue?.rows[0]?.msg_queue ?? 0) + Number(queue?.rows[0]?.sum_queue ?? 0),
     embeddedMessages: Number(embedded.rows[0]?.n ?? 0),
-    failedEmbeddings: Number(queue.rows[0]?.failed ?? 0),
+    failedEmbeddings: Number(queue?.rows[0]?.failed ?? 0),
     topTools: topTools.rows.map((r) => ({ tool: r.tool, count: Number(r.n) })),
     recentSessions: recent.rows.map((r) => ({
       sessionId: r.session_key,
@@ -428,9 +429,9 @@ async function handleHealth(
     cachedCompactionHealth(pool),
     owner ? cachedQueueHealth(pool) : Promise.resolve(null),
   ])
-  const row = counts.rows[0]
+  const row = counts?.rows[0]
   const b = compaction.rows[0]
-  const failedEmbeddings = Number(row.failed)
+  const failedEmbeddings = Number(row?.failed ?? 0)
   const queueRows = queues?.map((q) => ({
     task: q.task,
     pending: Number(q.pending),
@@ -441,8 +442,9 @@ async function handleHealth(
   }))
   const body: MemoryHealthResponse = {
     status:
+      counts !== null &&
       embedding.available &&
-      Number(row.recent_failed) === 0 &&
+      Number(row?.recent_failed ?? 0) === 0 &&
       !queues?.some((q) => Number(q.recent_dead) > 0)
         ? 'ok'
         : 'degraded',
@@ -455,9 +457,9 @@ async function handleHealth(
           error: embedding.reason,
           impact: 'Keyword matching still works; meaning-based ranking is offline.',
         },
-    embedQueueDepth: Number(row.msg_queue) + Number(row.sum_queue),
+    embedQueueDepth: Number(row?.msg_queue ?? 0) + Number(row?.sum_queue ?? 0),
     failedEmbeddings,
-    skippedEmbeddings: Number(row.unembeddable),
+    skippedEmbeddings: Number(row?.unembeddable ?? 0),
     queueStatus: !owner ? 'restricted' : queues === null ? 'unavailable' : 'available',
     ...(queueRows ? { queues: queueRows } : {}),
     compaction: {
