@@ -1609,6 +1609,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           }
           const ptyId = manager.ptyForSession(injectKey)
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
+          // Chat inject is only for agent-harness roster entries (`room: true`).
+          // A terminal-only session (`room: false`, e.g. shell) is typed through
+          // the terminal websocket. Distinct 409 so the web client's respawn-
+          // and-retry does not treat this as a dead harness. Checked before
+          // inject so nothing reaches the PTY.
+          if (!manager.isAgentHarness(ptyId))
+            return json(res, 409, { error: 'session is not an agent harness' })
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
           if (!manager.inject(ptyId, p.text, submit, interrupt)) {

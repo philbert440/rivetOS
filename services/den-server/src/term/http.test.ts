@@ -23,10 +23,13 @@ import {
 
 class FakeProc extends EventEmitter implements PtyProc {
   kills: (string | undefined)[] = []
+  writes: string[] = []
   constructor(public pid: number) {
     super()
   }
-  write(): void {}
+  write(data: string | Buffer): void {
+    this.writes.push(data.toString())
+  }
   resize(): void {}
   kill(signal?: string): void {
     this.kills.push(signal)
@@ -820,5 +823,122 @@ describe('term endpoints', () => {
     })
     expect(inj.status).toBe(409)
     expect(await inj.json()).toEqual({ error: 'no agent evidence yet' })
+  })
+
+  it('mux none: POST /term/inject into a harness session writes the turn', async () => {
+    const { base, procs } = await start()
+    const spawn = await post(base, '/term', { command: 'claude', session: 'chat-810-ok' })
+    expect(spawn.status).toBe(201)
+    procs[0].emit('data', Buffer.from('welcome'))
+    await new Promise((r) => setTimeout(r, 30))
+    const inj = await post(base, '/term/inject', { session: 'chat-810-ok', text: 'hello' })
+    expect(inj.status).toBe(202)
+    expect(procs[0].writes).toContain('\x1b[200~hello\x1b[201~')
+  })
+
+  it('mux none: POST /term/inject into a terminal-only session is 409 and never writes', async () => {
+    const { base, procs } = await start()
+    const spawn = await post(base, '/term', { command: 'shell', session: 'chat-810-sh' })
+    expect(spawn.status).toBe(201)
+    procs[0].emit('data', Buffer.from('prompt$'))
+    await new Promise((r) => setTimeout(r, 30))
+    const before = procs[0].writes.slice()
+    const inj = await post(base, '/term/inject', { session: 'chat-810-sh', text: 'rm -rf /' })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'session is not an agent harness' })
+    expect(procs[0].writes).toEqual(before)
+  })
+
+  it('herdr: POST /term/inject into a terminal-only session is 409 and never writes', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const ctl: HerdrCtl = {
+      hasSession(name) {
+        return sessions.has(name)
+      },
+      killSession(name) {
+        sessions.delete(name)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(name) {
+        return ['herdr', '--session', name]
+      },
+    }
+    const { base, procs } = await start({}, { mux: 'herdr' }, { herdrCtl: ctl })
+    const spawn = await post(base, '/term', { command: 'shell', session: 'chat-810-herdr-sh' })
+    expect(spawn.status).toBe(201)
+    procs[0].emit('data', Buffer.from('prompt$'))
+    await new Promise((r) => setTimeout(r, 30))
+    const before = procs[0].writes.slice()
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-810-herdr-sh',
+      text: 'rm -rf /',
+    })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'session is not an agent harness' })
+    expect(procs[0].writes).toEqual(before)
+  })
+
+  it('herdr adopt of a terminal-only session after restart still refuses inject', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const name = herdrSessionName('chat-810-adopt')
+    sessions.set(name, {
+      name,
+      denKey: 'chat-810-adopt',
+      activity: 1,
+      created: 1,
+      command: 'shell',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    const ctl: HerdrCtl = {
+      hasSession(n) {
+        return sessions.has(n)
+      },
+      killSession(n) {
+        sessions.delete(n)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(n) {
+        return ['herdr', '--session', n]
+      },
+      paneAgent: async () => undefined,
+    }
+    const { base, procs } = await start({}, { mux: 'herdr' }, { herdrCtl: ctl })
+    const spawn = await post(base, '/term', { command: 'shell', session: 'chat-810-adopt' })
+    expect(spawn.status).toBe(201)
+    const before = procs[0].writes.slice()
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-810-adopt',
+      text: 'whoami',
+    })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'session is not an agent harness' })
+    expect(procs[0].writes).toEqual(before)
   })
 })

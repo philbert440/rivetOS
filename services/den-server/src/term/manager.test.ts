@@ -946,6 +946,15 @@ describe('term manager', () => {
     expect(typeof ingested[1].ts).toBe('number')
   })
 
+  it('isAgentHarness follows roster room at spawn', () => {
+    const { manager } = makeManager()
+    const shell = manager.spawn('shell', 80, 24, '')
+    const claude = manager.spawn('claude', 80, 24, '')
+    expect(manager.isAgentHarness(shell.id)).toBe(false)
+    expect(manager.isAgentHarness(claude.id)).toBe(true)
+    expect(manager.isAgentHarness('missing')).toBe(false)
+  })
+
   it('never ingests synthetic events for room:false (shell) ptys', () => {
     const { manager, procs, ingested } = makeManager({}, { roomOpen: () => true })
     manager.spawn('shell', 80, 24, '')

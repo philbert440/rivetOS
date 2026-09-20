@@ -269,7 +269,6 @@ const COCO_EV = {
   title: 'coco',
 }
 
-
 /** Minimal control-plane driver: the harness routes surface (#565's untested
  *  sibling) needs a registered driver to exercise its tenancy fence e2e. */
 const CP_CAPS: HarnessCapabilities = {
@@ -295,7 +294,9 @@ class CpFakeDriver implements HarnessDriver {
     return summary
   }
   startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
-    return Promise.resolve(this.add(`${this.harnessId}:${opts.nativeSessionId ?? 'minted'}` as SessionId))
+    return Promise.resolve(
+      this.add(`${this.harnessId}:${opts.nativeSessionId ?? 'minted'}` as SessionId),
+    )
   }
   resumeSession(sessionId: SessionId): Promise<HarnessSessionSummary> {
     return Promise.resolve(this.sessions.get(sessionId) ?? this.add(sessionId))
@@ -392,7 +393,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       'POST',
       `${loopback}/term`,
       { ca: pki.ca },
-      { command: 'shell', session: 'phil-room' },
+      { command: 'claude', session: 'phil-room' },
     )
     expect(spawn1.status).toBe(201)
     philPtyId = (JSON.parse(spawn1.body) as { id: string }).id
@@ -556,11 +557,15 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     expect(outcome).not.toBe('TIMEOUT-NO-CLOSE')
   })
 
-
   it('control plane: listing hides sessions owned by the other user', async () => {
-    const philStart = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
-      ca: pki.ca,
-    }, { nativeSessionId: 'list-phil' })
+    const philStart = await call(
+      'POST',
+      `${loopback}/api/harnesses/claude-code/sessions`,
+      {
+        ca: pki.ca,
+      },
+      { nativeSessionId: 'list-phil' },
+    )
     expect(philStart.status).toBe(201)
     const cocoStart = await call('POST', `${remote}/api/harnesses/claude-code/sessions`, coco, {
       nativeSessionId: 'list-coco',
@@ -569,8 +574,9 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     cpDriver.add('claude-code:list-legacy' as SessionId)
 
     const cocoList = await call('GET', `${remote}/api/harnesses/claude-code/sessions`, coco)
-    const cocoIds = (JSON.parse(cocoList.body) as { sessions: { sessionId: string }[] }).sessions
-      .map((x) => x.sessionId)
+    const cocoIds = (
+      JSON.parse(cocoList.body) as { sessions: { sessionId: string }[] }
+    ).sessions.map((x) => x.sessionId)
     expect(cocoIds).toContain('claude-code:list-coco')
     expect(cocoIds).not.toContain('claude-code:list-phil')
     // unowned rows are invisible to a routed user…
@@ -579,8 +585,9 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     const philList = await call('GET', `${loopback}/api/harnesses/claude-code/sessions`, {
       ca: pki.ca,
     })
-    const philIds = (JSON.parse(philList.body) as { sessions: { sessionId: string }[] }).sessions
-      .map((x) => x.sessionId)
+    const philIds = (
+      JSON.parse(philList.body) as { sessions: { sessionId: string }[] }
+    ).sessions.map((x) => x.sessionId)
     expect(philIds).toContain('claude-code:list-phil')
     expect(philIds).not.toContain('claude-code:list-coco')
     // …and fall to the node owner
@@ -588,9 +595,14 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
   })
 
   it("control plane: get/transcript/turns/interrupt refuse another user's session", async () => {
-    const start = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
-      ca: pki.ca,
-    }, { nativeSessionId: 'fence-phil' })
+    const start = await call(
+      'POST',
+      `${loopback}/api/harnesses/claude-code/sessions`,
+      {
+        ca: pki.ca,
+      },
+      { nativeSessionId: 'fence-phil' },
+    )
     expect(start.status).toBe(201)
     const philEnc = encodeSessionIdSegment('claude-code:fence-phil')
     expect((await call('GET', `${remote}/api/harness-sessions/${philEnc}`, coco)).status).toBe(403)
@@ -598,9 +610,11 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       (await call('GET', `${remote}/api/harness-sessions/${philEnc}/transcript`, coco)).status,
     ).toBe(403)
     expect(
-      (await call('POST', `${remote}/api/harness-sessions/${philEnc}/turns`, coco, {
-        text: 'hi',
-      })).status,
+      (
+        await call('POST', `${remote}/api/harness-sessions/${philEnc}/turns`, coco, {
+          text: 'hi',
+        })
+      ).status,
     ).toBe(403)
     expect(
       (await call('POST', `${remote}/api/harness-sessions/${philEnc}/interrupt`, coco)).status,
@@ -608,9 +622,14 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
   })
 
   it('control plane: starting over an existing foreign native id is refused', async () => {
-    const first = await call('POST', `${loopback}/api/harnesses/claude-code/sessions`, {
-      ca: pki.ca,
-    }, { nativeSessionId: 'start-steal' })
+    const first = await call(
+      'POST',
+      `${loopback}/api/harnesses/claude-code/sessions`,
+      {
+        ca: pki.ca,
+      },
+      { nativeSessionId: 'start-steal' },
+    )
     expect(first.status).toBe(201)
     // The pin guard probes the live store BEFORE dispatch: starting over an
     // existing native id is a collision (takeover), whoever asks — the driver
@@ -632,15 +651,19 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     ).toBe(200)
     // now even the node owner is fenced off it
     expect(
-      (await call('GET', `${loopback}/api/harness-sessions/${legacyEnc}/transcript`, {
-        ca: pki.ca,
-      })).status,
+      (
+        await call('GET', `${loopback}/api/harness-sessions/${legacyEnc}/transcript`, {
+          ca: pki.ca,
+        })
+      ).status,
     ).toBe(403)
     // and a foreign resume is refused rather than re-claimed
     expect(
-      (await call('POST', `${loopback}/api/harness-sessions/${legacyEnc}/resume`, {
-        ca: pki.ca,
-      })).status,
+      (
+        await call('POST', `${loopback}/api/harness-sessions/${legacyEnc}/resume`, {
+          ca: pki.ca,
+        })
+      ).status,
     ).toBe(403)
   })
 

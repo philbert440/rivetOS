@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Den
 
+- `POST /term/inject` writes only into sessions whose roster entry is an agent harness (`room: true`). Terminal-only sessions (`room: false`) answer 409 `session is not an agent harness` and nothing is written to the PTY (#810). Typing into a shell remains the terminal websocket.
 - When a herdr-backed coding agent exits, den reaps the PTY and mux session after a short grace so chat inject 409s instead of writing into the leftover shell (#791). Adopted harness panes stay closed to inject until a pane-scoped `pane list`/`agent list` probe (or a working|idle|blocked frame, or `pane.agent_detected` with a live agent) proves a live agent; a fresh create stays not-ready and re-probes instead of killing a still-booting harness; `POST /term` during the grace mints a new pty immediately.
 - Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay). The first buffered inject on an agent pane is confirmed only by a herdr `working` frame; unconfirmed turns are recorded on the pty and never retried (#796).
 

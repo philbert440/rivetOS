@@ -360,6 +360,11 @@ export interface TermManager {
   get(id: string): PtyInfo | undefined
   /** PTY id linked to a den session, while its record exists. */
   ptyForSession(denSession: string): string | undefined
+  /** Roster `room: true` at spawn/adopt — the session is an agent harness.
+   *  `POST /term/inject` uses this; a shell (`room: false`) is typed through
+   *  the terminal websocket instead. Survives den restart because adopt
+   *  re-reads the roster entry for the tagged command. */
+  isAgentHarness(id: string): boolean
   /** SIGHUP → SIGKILL(3s); exited records are reaped immediately. Under tmux
    *  the SESSION is killed (the harness), then the client. Also resolves
    *  `tmux-<name>` ids (persisted client-less rows from list()) and den
@@ -2447,6 +2452,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       }
     },
     ptyForSession: (denSession) => bySession.get(denSession),
+    isAgentHarness: (id) => records.get(id)?.room === true,
 
     kill(id): boolean {
       const hit = resolveId(id)
