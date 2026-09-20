@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import {
-  conversationModelOptions,
+  conversationModelOptions as resolveOptions,
   type ConversationTurnPick,
 } from './conversation-model-options.js'
 import { spawnModelEffort } from './harness-options.js'
 import { mergeChatSettings, type ChatSettings } from '../stores/chat-settings.js'
+
+// Existing cases describe protocol-owned conversations.
+const conversationModelOptions = (
+  harnessId: Parameters<typeof resolveOptions>[0],
+  rows: Parameters<typeof resolveOptions>[1],
+  pick: Parameters<typeof resolveOptions>[2],
+  owned: boolean | undefined = true,
+  currentModel?: string,
+) => resolveOptions(harnessId, rows, pick, owned, currentModel)
 
 const registry = [
   { harnessId: 'claude-code' as const, capabilities: { models: [{ id: 'opus', label: 'Opus' }] } },
@@ -101,5 +110,98 @@ describe('per-conversation settings', () => {
     expect(mergeChatSettings(current, { harnessId: 'grok-build' }).turnPick).toBeUndefined()
     expect(mergeChatSettings(current, { agent: 'codex' }).turnPick).toEqual(pick)
     expect(mergeChatSettings(current, { effort: 'high' }).turnPick).toEqual(pick)
+  })
+})
+
+describe('per-turn ownership gate', () => {
+  it('offers options and attaches a pick only after protocol ownership is established', () => {
+    const unowned = conversationModelOptions('codex', registry, pick, false)
+    expect(unowned.models).toEqual([])
+    const owned = conversationModelOptions('codex', registry, pick, true)
+    expect(owned.models.map((row) => row.value)).toEqual(['a', 'b'])
+    expect({ text: 'hello', ...owned.effective }).toEqual({
+      text: 'hello',
+      model: 'a',
+      effort: 'high',
+    })
+  })
+  it('offers no picker and attaches nothing for a PTY row with the same sheet', () => {
+    const result = conversationModelOptions('codex', registry, pick, false)
+    expect(result.models).toEqual([])
+    expect(result.efforts).toEqual([])
+    expect({ text: 'hello', ...result.effective }).toEqual({ text: 'hello' })
+  })
+  it('offers options when a draft is adopted by the protocol', () => {
+    expect(conversationModelOptions('codex', registry, undefined, false).models).toEqual([])
+    expect(conversationModelOptions('codex', registry, undefined, true).models).toHaveLength(2)
+  })
+  it('ignores and clears a persisted pick when ownership is lost', () => {
+    expect(conversationModelOptions('codex', registry, pick, true).effective).toEqual({
+      model: 'a',
+      effort: 'high',
+    })
+    const result = conversationModelOptions('codex', registry, pick, false)
+    expect(result.effective).toEqual({})
+    expect(result.clearPick).toBe(true)
+    expect(result.retainedPick).toBeUndefined()
+  })
+})
+
+describe('model and effort validation', () => {
+  it('uses the session model for default effort choices without overriding its model', () => {
+    const result = conversationModelOptions(
+      'codex',
+      registry,
+      { harnessId: 'codex', effort: 'high' },
+      true,
+      'b',
+    )
+    expect(result.efforts).toEqual([])
+    expect(result.effective).toEqual({})
+    expect(result.defaultModelLabel).toBe('Session default (Model B)')
+    expect(result.clearPick).toBe(true)
+  })
+  it('preserves the valid model when clearing stale effort', () => {
+    const result = conversationModelOptions('codex', registry, { ...pick, effort: 'removed' })
+    expect(result.clearPick).toBe(true)
+    expect(result.retainedPick).toEqual({ harnessId: 'codex', model: 'a' })
+    const next = conversationModelOptions('codex', registry, result.retainedPick)
+    expect(next.effective).toEqual({ model: 'a' })
+    expect(next.clearPick).toBe(false)
+  })
+  it('keeps a supported effort across model changes and removes an unsupported one', () => {
+    const rows = [
+      {
+        harnessId: 'codex' as const,
+        capabilities: {
+          turnOptions: true,
+          models: [
+            { id: 'a', label: 'A', efforts: [{ id: 'high', label: 'High' }] },
+            { id: 'b', label: 'B', efforts: [{ id: 'high', label: 'High' }] },
+            { id: 'c', label: 'C', efforts: [{ id: 'low', label: 'Low' }] },
+          ],
+        },
+      },
+    ]
+    const previous = conversationModelOptions('codex', rows, pick)
+    const changed = { harnessId: 'codex' as const, ...previous.effective, model: 'b' }
+    expect(conversationModelOptions('codex', rows, changed).effective).toEqual({
+      model: 'b',
+      effort: 'high',
+    })
+    expect(
+      conversationModelOptions('codex', rows, { ...changed, model: 'c' }).retainedPick,
+    ).toEqual({ harnessId: 'codex', model: 'c' })
+  })
+  it('does not erase a persisted pick while ownership is unknown', () => {
+    const result = resolveOptions('codex', registry, pick, undefined)
+    expect(result.models).toEqual([])
+    expect(result.effective).toEqual({})
+    expect(result.clearPick).toBe(false)
+  })
+  it('does not borrow default-model efforts for an unknown session model', () => {
+    expect(
+      conversationModelOptions('codex', registry, undefined, true, 'unlisted').efforts,
+    ).toEqual([])
   })
 })

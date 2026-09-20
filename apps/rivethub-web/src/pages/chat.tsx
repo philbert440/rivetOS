@@ -1088,7 +1088,7 @@ function ActiveSession(props: {
   const gate = isRemote ? harnessGate(remoteItem, remoteRegistry.data?.harnesses) : props.gate
   const harnessCommand = isRemote ? remoteItem?.command : props.harnessCommand
 
-  /** Canonical `<harness-id>:<native>` when the control plane owns this row. */
+  /** Canonical `<harness-id>:<native>` for a harness row (including legacy PTY rows). */
   const canonicalId = gate.bound ? item?.sessionId : undefined
   const { mode, setMode } = useSessionView(
     storageKey(sessionBase, props.sessionId),
@@ -1149,11 +1149,36 @@ function ActiveSession(props: {
     nativeHarnessId,
     remoteRegistry.data?.harnesses,
     settings?.turnPick,
+    protocolSessionRef.current !== undefined &&
+      protocolSessionRef.current === (canonicalId ?? protocolSessionRef.current)
+      ? true
+      : item
+        ? !!canonicalId && item.transport === 'protocol'
+        : isDraft
+          ? false
+          : undefined,
+    item?.model,
   )
   const setSetting = useChatSettings((s) => s.set)
+  const retainedModel = turnOptions.retainedPick?.model
+  const retainedEffort = turnOptions.retainedPick?.effort
   useEffect(() => {
-    if (turnOptions.clearPick) setSetting(settingsKey, { turnPick: undefined })
-  }, [turnOptions.clearPick, settingsKey, setSetting])
+    if (turnOptions.clearPick) {
+      setSetting(settingsKey, {
+        turnPick:
+          nativeHarnessId && (retainedModel || retainedEffort)
+            ? { harnessId: nativeHarnessId, model: retainedModel, effort: retainedEffort }
+            : undefined,
+      })
+    }
+  }, [
+    turnOptions.clearPick,
+    nativeHarnessId,
+    retainedModel,
+    retainedEffort,
+    settingsKey,
+    setSetting,
+  ])
 
   // ---- Transcript binding ---------------------------------------------------
   //
@@ -1481,10 +1506,11 @@ function ActiveSession(props: {
       const capabilities =
         remoteRegistry.data?.harnesses.find((h) => h.harnessId === harnessId)?.capabilities ??
         (await gw.harnessCapabilities(harnessId)).capabilities
-      const protocolOwned =
+      const knownProtocolOwned =
         protocolSessionRef.current === sid ||
-        (canonicalId === sid && item?.transport === 'protocol') ||
-        (await gw.getHarnessSession(sid)).transport === 'protocol'
+        (canonicalId === sid && item?.transport === 'protocol')
+      const summary = knownProtocolOwned ? item : await gw.getHarnessSession(sid)
+      const protocolOwned = knownProtocolOwned || summary?.transport === 'protocol'
       const nativeAttachments =
         protocolOwned &&
         capabilities.imageAttachments &&
@@ -1492,10 +1518,13 @@ function ActiveSession(props: {
       await gw.sendHarnessTurn(sid, {
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
-        ...(protocolOwned
-          ? conversationModelOptions(harnessId, [{ harnessId, capabilities }], settings?.turnPick)
-              .effective
-          : {}),
+        ...conversationModelOptions(
+          harnessId,
+          [{ harnessId, capabilities }],
+          settings?.turnPick,
+          protocolOwned,
+          summary?.model,
+        ).effective,
         ...(prompt ? { systemPrompt: prompt } : {}),
       })
     }

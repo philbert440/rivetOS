@@ -459,10 +459,18 @@ export function Composer(props: {
           {!!props.turnOptions?.models.length && (
             <Select
               value={props.turnOptions.effective.model ?? ''}
-              options={[{ value: '', label: 'Harness default' }, ...props.turnOptions.models]}
-              onChange={(model) => props.onTurnPick?.({ model: model || undefined })}
+              options={[
+                { value: '', label: props.turnOptions.defaultModelLabel },
+                ...props.turnOptions.models,
+              ]}
+              onChange={(model) =>
+                props.onTurnPick?.({
+                  model: model || undefined,
+                  effort: props.turnOptions?.effective.effort,
+                })
+              }
               label="Model for next turn"
-              title={`Model: ${props.turnOptions.models.find((m) => m.value === props.turnOptions?.effective.model)?.label ?? 'Harness default'}`}
+              title={`Model: ${props.turnOptions.models.find((m) => m.value === props.turnOptions?.effective.model)?.label ?? props.turnOptions.defaultModelLabel}`}
               aria-label="Model for next turn"
               className="max-w-[12rem] min-w-0 rounded-full"
             />
@@ -477,6 +485,7 @@ export function Composer(props: {
                   effort: effort || undefined,
                 })
               }
+              title={`Effort: ${props.turnOptions.efforts.find((e) => e.value === props.turnOptions?.effective.effort)?.label ?? 'Default effort'}`}
               label="Effort for next turn"
               aria-label="Effort for next turn"
               className="max-w-[10rem] min-w-0 rounded-full"
