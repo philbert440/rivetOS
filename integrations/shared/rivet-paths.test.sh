@@ -406,6 +406,51 @@ assert_warns 'RIVETOS_ROOT=$(echo s3cret-cmd)' RIVETOS_ROOT 's3cret-cmd' 'comman
 assert_warns 'RIVETOS_ROOT="$(echo s3cret-dq)"' RIVETOS_ROOT 's3cret-dq' 'double-quoted command substitution'
 assert_warns 'RIVETOS_ROOT=`echo s3cret-tick`' RIVETOS_ROOT 's3cret-tick' 'backticks'
 
+# 21. Claude userConfig placeholder does not shadow .env
+with_envfile 'RIVETOS_PG_URL=postgres://from-env.example/db'
+export RIVETOS_PLUGIN_ENV=1
+export RIVETOS_PG_URL='${user_config.RIVETOS_PG_URL}'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://from-env.example/db' ]; then
+  pass 'user_config placeholder falls back to .env'
+else
+  fail 'user_config placeholder should count as unset'
+fi
+cleanup_env
+
+# 22. npm pin is a single constant and must be ≥ 0.5.0 (0.4.0-beta has no stdio)
+pin_line=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    RIVETOS_MCP_SIDECAR_VERSION=*) pin_line="$line" ;;
+  esac
+done <"$ROOT/rivet-paths.sh"
+if [ -z "$pin_line" ]; then
+  fail 'RIVETOS_MCP_SIDECAR_VERSION assignment missing'
+else
+  pass 'pin assignment present'
+fi
+pin="${RIVETOS_MCP_SIDECAR_VERSION:-}"
+if [ -z "$pin" ]; then
+  fail 'pin constant empty after source'
+else
+  maj="${pin%%.*}"
+  rest="${pin#*.}"
+  min="${rest%%.*}"
+  min="${min%%-*}"
+  if [ "$maj" -gt 0 ] 2>/dev/null || { [ "$maj" -eq 0 ] && [ "$min" -ge 5 ]; }; then
+    pass "pin $pin is >= 0.5.0"
+  else
+    fail "pin $pin is < 0.5.0 (0.4.0-beta has no stdio mode)"
+  fi
+fi
+if grep -q 'Requires a release ≥ 0.5.0' "$ROOT/rivet-paths.sh" \
+   || grep -q 'Requires a release >= 0.5.0' "$ROOT/rivet-paths.sh"; then
+  pass 'pin comment requires >= 0.5.0'
+else
+  fail 'pin comment must say it requires a release >= 0.5.0'
+fi
+
 if [ "$failed" -ne 0 ]; then
   echo "$failed rivet-paths test(s) failed" >&2
   exit 1

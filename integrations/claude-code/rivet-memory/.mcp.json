@@ -1,7 +1,16 @@
 {
   "mcpServers": {
     "rivetos": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh"
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh",
+      "env": {
+        "RIVETOS_PLUGIN_ENV": "1",
+        "RIVETOS_MODE": "${user_config.RIVETOS_MODE}",
+        "RIVETOS_DATAHUB_URL": "${user_config.RIVETOS_DATAHUB_URL}",
+        "RIVETOS_EMBED_URL": "${user_config.RIVETOS_EMBED_URL}",
+        "RIVETOS_CLOUD_URL": "${user_config.RIVETOS_CLOUD_URL}",
+        "RIVETOS_CLOUD_TOKEN": "${user_config.RIVETOS_CLOUD_TOKEN}",
+        "RIVETOS_MCP_ENABLE_MEMORY_WRITE": "${user_config.RIVETOS_MCP_ENABLE_MEMORY_WRITE}"
+      }
     }
   }
 }

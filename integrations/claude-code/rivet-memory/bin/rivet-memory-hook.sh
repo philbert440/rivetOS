@@ -4,7 +4,12 @@
 #
 # Capture is best-effort: this script ALWAYS exits 0 so that a capture failure
 # can never disrupt the Claude Code session. The handler itself only spools the
-# payload and detaches a worker, so this returns in single-digit milliseconds.
+# payload and detaches a worker, so this returns in single-digit milliseconds
+# when a built checkout is present.
+#
+# Uses checkout hooks.js at $RIVETOS_ROOT / /opt/rivetos when available.
+# Without a checkout, capture logs and skips.
+# When ingest cannot run: FAIL LOUD on stderr, then exit 0.
 
 # RivetOS install root — override with RIVETOS_ROOT if installed elsewhere.
 RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
@@ -19,19 +24,25 @@ if [ -f "$RIVETOS_ENV" ]; then
 fi
 
 HOOK="$RIVETOS_ROOT/plugins/providers/claude-cli/dist/hooks.js"
-[ -f "$HOOK" ] || exit 0
 
-# herdr pane identity: when this session runs inside a herdr pane, report the
-# harness session id + transcript path to the pane over the session socket
-# (the same env herdr's own integration hook keys on: HERDR_ENV=1,
-# HERDR_SOCKET_PATH, HERDR_PANE_ID). stdin is captured once and replayed to
-# both consumers ONLY in that case — off herdr the hook is byte-for-byte the
-# old `node "$HOOK"`. Never fails the hook.
-if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ]; then
-  PAYLOAD="$(cat)"
-  printf '%s' "$PAYLOAD" | node "$RIVETOS_ROOT/integrations/shared/herdr-report-session.mjs" claude || true
-  printf '%s' "$PAYLOAD" | node "$HOOK" || true
-else
-  node "$HOOK" || true
+_rivetos_hook_fail_loud() {
+  echo "rivet-memory-hook: capture ingest cannot run: $1" >&2
+}
+
+# House / built checkout: same node (+ optional herdr) path as origin/main.
+# Never call node when hooks.js is missing — that is a checkout-only binary.
+if [ -f "$HOOK" ]; then
+  if [ "${HERDR_ENV:-}" = "1" ] && [ -n "${HERDR_PANE_ID:-}" ] && [ -n "${HERDR_SOCKET_PATH:-}" ]; then
+    PAYLOAD="$(cat)"
+    printf '%s' "$PAYLOAD" | node "$RIVETOS_ROOT/integrations/shared/herdr-report-session.mjs" claude || true
+    printf '%s' "$PAYLOAD" | node "$HOOK" || true
+  else
+    node "$HOOK" || true
+  fi
+  exit 0
 fi
+
+# No standalone capture entry is shipped. Use only shell builtins here:
+# even an empty PATH and inherited errexit must not break the session.
+_rivetos_hook_fail_loud "checkout capture handler unavailable; capture skipped"
 exit 0
