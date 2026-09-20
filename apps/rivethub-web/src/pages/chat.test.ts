@@ -46,3 +46,18 @@ describe('narrow full-screen list is gone', () => {
     expect(sidebar).not.toContain('setActive(undefined)')
   })
 })
+
+describe('session view integration', () => {
+  it('threads registry status to the view hook and renders loading before either surface', () => {
+    expect(chat).toContain('const { mode, setMode } = useSessionView(')
+    expect(chat).toContain('remoteRegistry.status,')
+    expect(chat).toContain(
+      "{mode === undefined ? (\n        <ChatLaunchLoading />\n      ) : mode === 'chat' ? (",
+    )
+  })
+
+  it('does not mask native scan rows with command-less canonical placeholders', () => {
+    expect(chat).toContain('!findChatItem(listed, active)')
+    expect(chat).toContain('harnessId = parseSessionId(active).harnessId')
+  })
+})

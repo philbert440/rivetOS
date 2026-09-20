@@ -53,9 +53,8 @@ export function clearSessionMode(storageKey: string): void {
   save(Object.fromEntries(Object.entries(map).filter(([k]) => k !== storageKey)))
 }
 
-/** Whether the user ever chose a view for this thread — callers that want a
- *  smarter fallback (a TUI-only row landing in terminal) must not override a
- *  real choice. */
+/** Whether a view was chosen for this thread, automatically or manually.
+ *  Later registry/list updates must not replace a settled choice. */
 export function hasSessionMode(storageKey: string): boolean {
   const raw = load()[storageKey]
   return raw === 'terminal' || raw === 'chat'
