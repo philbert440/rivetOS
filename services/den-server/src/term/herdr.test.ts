@@ -158,7 +158,19 @@ describe('herdr argv builders', () => {
         event: 'pane.agent_detected',
         data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
       }),
+    ).toBe(false)
+    expect(
+      herdrAgentNull({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+      }),
     ).toBe(true)
+    expect(
+      herdrAgentPresent({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+      }),
+    ).toBe(false)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
       false,
     )
@@ -324,6 +336,23 @@ describe('parseWorkspaceCreate / parsePaneSize', () => {
     expect(herdrPaneAgentLive({ agent: null, status: 'idle' })).toBe(true)
     expect(herdrPaneAgentLive({ agent: null })).toBe(false)
     expect(herdrPaneAgentLive({ agent: null, status: 'unknown' })).toBe(false)
+  })
+
+  it('parsePaneAgent is pane-scoped: a live agent in pane B does not make pane A live', () => {
+    const two = JSON.stringify({
+      result: {
+        panes: [
+          { pane_id: 'w1:p1', agent: null, agent_status: 'unknown' },
+          { pane_id: 'w1:p2', agent: 'claude', agent_status: 'idle' },
+        ],
+      },
+    })
+    expect(parsePaneAgent(two, 'w1:p1')).toEqual({ agent: null, status: 'unknown' })
+    expect(herdrPaneAgentLive(parsePaneAgent(two, 'w1:p1')!)).toBe(false)
+    expect(parsePaneAgent(two, 'w1:p2')).toEqual({ agent: 'claude', status: 'idle' })
+    expect(herdrPaneAgentLive(parsePaneAgent(two, 'w1:p2')!)).toBe(true)
+    expect(parsePaneAgent(two, 'w1:p9')).toBeUndefined()
+    expect(parsePaneAgent(two, '')).toEqual({ agent: 'claude', status: 'idle' })
   })
 })
 

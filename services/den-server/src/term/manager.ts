@@ -213,6 +213,9 @@ export interface PtyInfo {
    *  the persist-grace. Surfaced on GET /term/list like injectUnconfirmed
    *  so a polling client can tell the row is ending. */
   agentEnded?: boolean
+  /** Agent pane with no successful probe or live frame yet. Distinct from
+   *  `agentEnded` so a 409 can tell "retry" from "harness ended". */
+  noAgentEvidence?: boolean
 }
 
 type DataSubscriber = (data: string | Buffer) => void
@@ -277,10 +280,19 @@ interface PtyRecord {
    *  pty and mux session are ended for real. */
   agentEnded?: boolean
   /** `now()` of the last positive live-agent evidence (probe or
-   *  working|idle|blocked frame). Unset until then: adopted harness panes
-   *  refuse inject, and laterWrite will not paste into a pane we have never
-   *  seen an agent in. */
+   *  working|idle|blocked frame, or pane.agent_detected with a live name).
+   *  Unset until then: adopted harness panes refuse inject, and laterWrite
+   *  will not paste into a pane we have never seen an agent in. */
   lastAgentSeenAt?: number
+  /** herdr pane this record writes to. Probe is scoped to it. */
+  paneId?: string
+  /** In-flight paneAgent call; at most one per record. */
+  probeInflight?: boolean
+  /** `now()` of the last paneAgent attempt (inject re-probe rate limit). */
+  lastProbeAt?: number
+  /** Next spawn-probe backoff delay (500 → 1000 → 2000 capped). */
+  probeBackoffMs?: number
+  probeBackoffTimer?: NodeJS.Timeout
   /** Fires after harnessEndedGraceMs while agentEnded stays set. */
   endedGraceTimer?: NodeJS.Timeout
   injectRest?: { text: string; submit: boolean }[]
@@ -399,6 +411,11 @@ const DEFAULT_INJECT_CONFIRM_MS = 5000
 /** After a release signal, wait this long for a re-detect before ending the
  *  pty and mux session for real. Inject already refuses. Default 3000. */
 const DEFAULT_HARNESS_ENDED_GRACE_MS = 3000
+/** Fresh-create / unavailable-probe backoff: 500ms → 1s → 2s capped. */
+const PROBE_BACKOFF_START_MS = 500
+const PROBE_BACKOFF_CAP_MS = 2000
+/** Inject-refuse re-probe: at most one per second per record. */
+const PROBE_INJECT_MIN_MS = 1000
 
 /** Interrupt-inject: a lone Esc cancels the harness's in-flight turn
  *  (Claude/grok TUIs), then the paste waits out the TUI's cancel/teardown
@@ -710,6 +727,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       'readyCeilingTimer',
       'confirmTimer',
       'endedGraceTimer',
+      'probeBackoffTimer',
     ] as const) {
       const t = r[key]
       if (t) clearTimeout(t)
@@ -986,9 +1004,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const noAgentEvidence = (r: PtyRecord): boolean =>
     Boolean(r.agentPane && r.lastAgentSeenAt === undefined)
 
+  const clearProbeBackoff = (r: PtyRecord): void => {
+    if (r.probeBackoffTimer) {
+      clearTimeout(r.probeBackoffTimer)
+      r.probeBackoffTimer = undefined
+    }
+  }
+
   const noteAgentSeen = (r: PtyRecord): void => {
     r.lastAgentSeenAt = now()
     clearAgentEnded(r)
+    clearProbeBackoff(r)
   }
 
   /** Assigned after onExit exists. Release-signal grace calls this to reap. */
@@ -1032,54 +1058,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.endedGraceTimer.unref()
   }
 
-  const applyAgentProbe = async (r: PtyRecord): Promise<void> => {
-    const ctl = herdr
-    const muxName = r.tmuxName
-    if (!r.agentPane || !muxName || !ctl?.paneAgent) return
-    let probed: { agent: string | null; status?: string } | undefined
-    try {
-      probed = await ctl.paneAgent(muxName)
-    } catch {
-      probed = undefined
-    }
-    if (r.state !== 'running') return
-    if (probed === undefined) return
-    if (herdrPaneAgentLive(probed)) {
-      if (probed.status === 'working' || probed.status === 'idle' || probed.status === 'blocked') {
-        r.lastAgentStatus = probed.status
-      }
-      noteAgentSeen(r)
-      if (r.persisted) r.ready = true
-      return
-    }
-    // Probe positively saw no agent. Adopt: nothing to wait for — end now
-    // so the caller can spawn fresh. Fresh create: same as a release event.
-    latchAgentEnded(r)
-    if (r.persisted) endHarnessPane(r)
-  }
-
-  const confirmNullAgent = (r: PtyRecord): void => {
-    if (!r.agentPane || r.state !== 'running') return
-    const ctl = herdr
-    const muxName = r.tmuxName
-    if (!ctl?.paneAgent || !muxName) return
-    const probe = ctl.paneAgent.bind(ctl)
-    void (async () => {
-      let probed: { agent: string | null; status?: string } | undefined
-      try {
-        probed = await probe(muxName)
-      } catch {
-        probed = undefined
-      }
-      if (r.state !== 'running') return
-      if (probed === undefined) return
-      if (herdrPaneAgentLive(probed)) {
-        noteAgentSeen(r)
-        return
-      }
-      latchAgentEnded(r)
-    })()
-  }
+  /** Assigned after markReadyAndFlush exists. Spawn awaits this. */
+  let applyAgentProbe: (r: PtyRecord) => Promise<void> = () => Promise.resolve()
+  let confirmNullAgent: (r: PtyRecord) => void = () => undefined
+  let scheduleInjectReprobe: (r: PtyRecord) => void = () => undefined
 
   const clearReadyTimers = (r: PtyRecord): void => {
     if (r.readyTimer) {
@@ -1213,6 +1195,22 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           recordUnconfirmed(r, turn, 'agent ended before inject — dropping buffered turns')
           dropBufferedInjects(r)
         }
+        // Fresh create: injectReadyMaxMs with no agent ever seen is a failed
+        // start. Adopted records only end on a positive no-agent probe or a
+        // real release — an unavailable probe must not kill them here.
+        if (
+          noAgentEvidence(r) &&
+          !agentGone(r) &&
+          !r.persisted &&
+          r.agentPane &&
+          r.state === 'running'
+        ) {
+          deps.log(
+            `[den-server] term: harness failed to start — no agent seen within injectReadyMaxMs (${injectReadyMaxMs}ms)`,
+          )
+          latchAgentEnded(r)
+          endHarnessPane(r)
+        }
         return
       }
       deps.log(
@@ -1233,6 +1231,121 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.readyTimer.unref()
   }
 
+  const failStartNoAgent = (r: PtyRecord): void => {
+    if (!r.agentPane || r.persisted || r.state !== 'running' || r.agentEnded) return
+    if (r.lastAgentSeenAt !== undefined) return
+    deps.log(
+      `[den-server] term: harness failed to start — no agent seen within injectReadyMaxMs (${injectReadyMaxMs}ms)`,
+    )
+    latchAgentEnded(r)
+    endHarnessPane(r)
+  }
+
+  const scheduleProbeRetry = (r: PtyRecord, delayMs: number): void => {
+    if (r.probeInflight || r.probeBackoffTimer) return
+    if (!r.agentPane || r.state !== 'running' || r.lastAgentSeenAt !== undefined) return
+    const elapsed = now() - r.createdAt
+    if (!r.persisted && elapsed >= injectReadyMaxMs) {
+      failStartNoAgent(r)
+      return
+    }
+    const wait = Math.max(0, delayMs)
+    r.probeBackoffTimer = setTimeout(() => {
+      r.probeBackoffTimer = undefined
+      void applyAgentProbe(r)
+    }, wait)
+    r.probeBackoffTimer.unref()
+  }
+
+  const scheduleSpawnBackoff = (r: PtyRecord): void => {
+    if (!r.agentPane || r.state !== 'running' || r.lastAgentSeenAt !== undefined) return
+    const elapsed = now() - r.createdAt
+    if (!r.persisted && elapsed >= injectReadyMaxMs) {
+      failStartNoAgent(r)
+      return
+    }
+    const delay = r.probeBackoffMs ?? PROBE_BACKOFF_START_MS
+    r.probeBackoffMs = Math.min(PROBE_BACKOFF_CAP_MS, delay * 2)
+    const remaining = r.persisted ? delay : Math.min(delay, Math.max(0, injectReadyMaxMs - elapsed))
+    scheduleProbeRetry(r, remaining)
+  }
+
+  applyAgentProbe = async (r: PtyRecord): Promise<void> => {
+    if (!r.agentPane || r.state !== 'running') return
+    const ctl = herdr
+    const muxName = r.tmuxName
+    if (!ctl || !muxName || !ctl.paneAgent) return
+    const probeFn = ctl.paneAgent.bind(ctl)
+    if (r.probeInflight) return
+    r.probeInflight = true
+    r.lastProbeAt = now()
+    const paneId = r.paneId
+    let probed: { agent: string | null; status?: string } | undefined
+    try {
+      probed = await probeFn(muxName, paneId)
+    } catch {
+      probed = undefined
+    }
+    r.probeInflight = false
+    if (r.state !== 'running') return
+    if (probed === undefined) {
+      scheduleSpawnBackoff(r)
+      return
+    }
+    if (herdrPaneAgentLive(probed)) {
+      if (probed.status === 'working' || probed.status === 'idle' || probed.status === 'blocked') {
+        r.lastAgentStatus = probed.status
+      }
+      noteAgentSeen(r)
+      if (r.persisted) r.ready = true
+      else if (probed.status === 'idle') markReadyAndFlush(r)
+      return
+    }
+    // Probe positively saw no agent.
+    // Adopted: harness should already exist — end now.
+    // Fresh create: "not yet"; stay not-ready and re-probe until the ceiling.
+    if (r.persisted) {
+      latchAgentEnded(r)
+      endHarnessPane(r)
+      return
+    }
+    scheduleSpawnBackoff(r)
+  }
+
+  const applyConfirmProbe = async (r: PtyRecord): Promise<void> => {
+    if (!r.agentPane || r.state !== 'running') return
+    const ctl = herdr
+    const muxName = r.tmuxName
+    if (!ctl || !muxName || !ctl.paneAgent) return
+    const probeFn = ctl.paneAgent.bind(ctl)
+    const paneId = r.paneId
+    let probed: { agent: string | null; status?: string } | undefined
+    try {
+      probed = await probeFn(muxName, paneId)
+    } catch {
+      probed = undefined
+    }
+    if (r.state !== 'running') return
+    if (probed === undefined) return
+    if (herdrPaneAgentLive(probed)) {
+      noteAgentSeen(r)
+      return
+    }
+    latchAgentEnded(r)
+  }
+
+  confirmNullAgent = (r: PtyRecord): void => {
+    void applyConfirmProbe(r)
+  }
+
+  scheduleInjectReprobe = (r: PtyRecord): void => {
+    if (!r.agentPane || r.state !== 'running' || r.lastAgentSeenAt !== undefined) return
+    if (r.probeInflight || r.probeBackoffTimer) return
+    const since = r.lastProbeAt !== undefined ? now() - r.lastProbeAt : PROBE_INJECT_MIN_MS
+    const wait = Math.max(0, PROBE_INJECT_MIN_MS - since)
+    scheduleProbeRetry(r, wait)
+  }
+
   if (herdr) {
     const ctl = herdr
     const recFor = (name: string): PtyRecord | undefined =>
@@ -1244,8 +1357,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         const rec = recFor(name)
         if (!rec) return
         if (herdrAgentReleased(evt)) latchAgentEnded(rec)
-        else if (herdrAgentPresent(evt)) clearAgentEnded(rec)
-        else if (herdrAgentNull(evt)) confirmNullAgent(rec)
+        else if (herdrAgentPresent(evt)) {
+          noteAgentSeen(rec)
+          if (rec.persisted) rec.ready = true
+        } else if (herdrAgentNull(evt)) confirmNullAgent(rec)
       },
       onFrame: (name, frame) => {
         if (process.env.RIVETOS_HERDR_DEBUG === '1')
@@ -1326,6 +1441,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     if (r.contextSource !== undefined) out.contextSource = r.contextSource
     if (r.injectUnconfirmed !== undefined) out.injectUnconfirmed = r.injectUnconfirmed
     if (r.agentEnded) out.agentEnded = true
+    if (r.agentPane && r.lastAgentSeenAt === undefined) out.noAgentEvidence = true
     return out
   }
 
@@ -2033,6 +2149,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           tmuxName,
           muxKind: tmuxName ? (herdr ? 'herdr' : tmux ? 'tmux' : undefined) : undefined,
           agentPane: Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? ''),
+          paneId:
+            herdr && tmuxName
+              ? herdr.listSessions().find((s) => s.name === tmuxName)?.paneId
+              : undefined,
           persisted,
           attached: new Set(),
           exitWatchers: new Set(),
@@ -2088,6 +2208,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             harness: 'rivetos',
             ts: now(),
           })
+        if (r.agentPane) armCeiling(r)
         if (r.agentPane && r.tmuxName && herdr?.paneAgent) {
           return applyAgentProbe(r).then(() => info(r))
         }
@@ -2258,7 +2379,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       if (agentGone(r)) return false
       // Adopted (or already-ready) harness pane with no probe/frame evidence:
       // fail closed. Fresh create still buffers until idle (ready is false).
-      if (noAgentEvidence(r) && (r.persisted || r.ready)) return false
+      // Re-probe so a later client retry can succeed after a transient miss.
+      if (noAgentEvidence(r) && (r.persisted || r.ready)) {
+        scheduleInjectReprobe(r)
+        return false
+      }
       // Chat activity protects this pty from LRU eviction (#316 review): a
       // conversation being chatted is unattached (inject doesn't attach) but
       // must not be evicted between the send and the harness's reply. Also

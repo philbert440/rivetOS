@@ -772,4 +772,53 @@ describe('term endpoints', () => {
     expect(row?.agentEnded).toBe(true)
     expect(kills).toEqual([])
   })
+
+  it('herdr adopt with no agent evidence: POST /term/inject is 409 no agent evidence yet', async () => {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    const name = herdrSessionName('chat-791-ev')
+    sessions.set(name, {
+      name,
+      denKey: 'chat-791-ev',
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+    })
+    const ctl: HerdrCtl = {
+      hasSession(n) {
+        return sessions.has(n)
+      },
+      killSession(n) {
+        sessions.delete(n)
+      },
+      listSessions() {
+        return [...sessions.values()]
+      },
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv(n) {
+        return ['herdr', '--session', n]
+      },
+      paneAgent: async () => undefined,
+    }
+    const { base } = await start({}, { mux: 'herdr' }, { herdrCtl: ctl })
+    const spawn = await post(base, '/term', { command: 'claude', session: 'chat-791-ev' })
+    expect(spawn.status).toBe(201)
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-791-ev',
+      text: 'hello',
+    })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'no agent evidence yet' })
+  })
 })
