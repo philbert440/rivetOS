@@ -21,11 +21,14 @@ Run the kit helper — do not invent ad-hoc `echo $RIVETOS_PG_URL` / `env` /
 integrations/claude-code/rivet-memory/bin/rivetos-status.sh
 ```
 
+Report plugin-form values as coming from the form only if the client exported them to the status script; otherwise the env file wins over inherited values.
+
 Report only what the script prints:
 
 - `mode` — `cloud` / `local` / unset (house `.env` fallback)
-- `cloud_token` / `datahub` / `pg_url` / `embed_url` / `memory_write` — **set** or **unset**, never values
+- `cloud_token` / `datahub` / `pg_url` / `embed_url` / `embed_model` / `memory_write` — **set** or **unset**, never values
 - `cloud_url` / `endpoint` — reachable or not, as `scheme host:port` (no userinfo)
+- `problem` — missing embedding model when Postgres memory is enabled
 - `tailscale` — BackendState / online, or n/a in cloud mode
 
 Optional prove: call `memory_stats` (or `rivetos__memory_stats`). That is

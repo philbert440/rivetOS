@@ -138,12 +138,13 @@ printf '%s\n' server-stdout
 exit 23
 SH
 chmod 755 "$DUMMY/bin/node"
-for scenario in pg datahub model no_database no_embed placeholder file_model; do
+for scenario in pg datahub pg_datahub model no_database no_embed placeholder file_model; do
   for prefix in RIVETOS_PLUGIN_OPT_ CLAUDE_PLUGIN_OPTION_; do
     pg='' hub='' embed=https://fixture:embed-secret@embed.example model='' expected_model=''
     : >"$DUMMY/launch.env"
     case "$scenario" in
       pg|no_embed|placeholder|file_model) pg=postgres://fixture:pg-secret@db.example/db ;;
+      pg_datahub) hub=postgresql://fixture:hub-secret@hub.example/db ;;
       datahub|model) hub=https://fixture:hub-secret@hub.example ;;
     esac
     [ "$scenario" != no_embed ] || embed=''
@@ -160,7 +161,7 @@ for scenario in pg datahub model no_database no_embed placeholder file_model; do
       "${prefix}RIVETOS_EMBED_URL=$embed" "${prefix}RIVETOS_EMBED_MODEL=$model" \
       bash "$LAUNCH" >"$DUMMY/out" 2>"$DUMMY/err" || rc=$?
     expected=0
-    case "$scenario" in pg|datahub|placeholder) expected=1 ;; esac
+    case "$scenario" in pg|pg_datahub|placeholder) expected=1 ;; esac
     if [ "$rc" -eq 23 ] && [ "$(cat "$DUMMY/out")" = server-stdout ] &&
        [ "$(wc -l <"$DUMMY/err")" -eq "$expected" ] &&
        [ "$(grep -c RIVETOS_EMBED_MODEL "$DUMMY/err" || true)" -eq "$expected" ] &&

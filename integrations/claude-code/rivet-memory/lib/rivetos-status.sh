@@ -30,6 +30,9 @@ fi
 unset _rivet_paths _rivet_candidate
 
 export RIVETOS_PLUGIN_ENV=1
+if [ "${_rivetos_status_plugin_options:-0}" = 1 ]; then
+  rivetos_collect_plugin_options
+fi
 rivetos_load_env
 
 _rivetos_status_flag() {
@@ -81,10 +84,8 @@ echo "embed_model: $(_rivetos_status_flag "${RIVETOS_EMBED_MODEL:-}")"
 echo "memory_write: $(_rivetos_status_flag "${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-}")"
 
 # Configuration problems are informational; preserve the reachability exit contract.
-if ! rivetos_is_effective_unset "${RIVETOS_EMBED_URL:-}" &&
-   { ! rivetos_is_effective_unset "${RIVETOS_PG_URL:-}" || ! rivetos_is_effective_unset "${RIVETOS_DATAHUB_URL:-}"; } &&
-   rivetos_is_effective_unset "${RIVETOS_EMBED_MODEL:-}"; then
-  echo "problem: RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL and a Postgres/DataHub URL are set"
+if rivetos_embed_model_missing; then
+  echo "problem: RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL and Postgres memory are enabled"
 fi
 
 if command -v tailscale >/dev/null 2>&1; then

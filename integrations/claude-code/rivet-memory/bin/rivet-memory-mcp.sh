@@ -38,25 +38,7 @@ unset SCRIPT_DIR # don't leak a global into the sourced namespace
 # Never print PG URLs or tokens.
 export RIVETOS_PLUGIN_ENV=1
 
-# Primary channel: RIVETOS_PLUGIN_OPT_* set by this kit's .mcp.json.
-# Secondary channel: CLAUDE_PLUGIN_OPTION_* honoured when the client provides it
-# (the documented export for userConfig, and the one that carries `sensitive`
-# values, which are not substituted into .mcp.json); it wins if both channels
-# supply a value. Inherited RIVETOS_* values are not plugin settings.
-RIVETOS_PLUGIN_KEYS=''
-for _k in RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_EMBED_URL RIVETOS_EMBED_MODEL \
-          RIVETOS_CLOUD_URL RIVETOS_CLOUD_TOKEN \
-          RIVETOS_MCP_ENABLE_MEMORY_WRITE; do
-  for _prefix in RIVETOS_PLUGIN_OPT_ CLAUDE_PLUGIN_OPTION_; do
-    _opt="${_prefix}${_k}"
-    if ! rivetos_is_effective_unset "${!_opt-}"; then
-      export "${_k}=${!_opt}"
-      RIVETOS_PLUGIN_KEYS="${RIVETOS_PLUGIN_KEYS} ${_k}"
-    fi
-    unset "$_opt"
-  done
-done
-unset _k _opt _prefix
+rivetos_collect_plugin_options
 
 rivetos_load_env
 unset RIVETOS_PLUGIN_KEYS
@@ -81,10 +63,8 @@ if [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${
   echo "rivet-memory-mcp: no DataHub/PG URL or cloud token — run rivetos-onboard or add ~/.rivetos/.env" >&2
 fi
 
-if ! rivetos_is_effective_unset "${RIVETOS_EMBED_URL:-}" &&
-   { ! rivetos_is_effective_unset "${RIVETOS_PG_URL:-}" || ! rivetos_is_effective_unset "${RIVETOS_DATAHUB_URL:-}"; } &&
-   rivetos_is_effective_unset "${RIVETOS_EMBED_MODEL:-}"; then
-  echo "rivet-memory-mcp: RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL and a Postgres/DataHub URL are set" >&2
+if rivetos_embed_model_missing; then
+  echo "rivet-memory-mcp: RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL and Postgres memory are enabled" >&2
 fi
 
 case "$kind" in

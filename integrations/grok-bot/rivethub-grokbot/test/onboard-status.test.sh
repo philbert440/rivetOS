@@ -442,6 +442,17 @@ else
   fail "sibling MCP launcher missing"
 fi
 
+# Grok status keeps legacy process-over-file precedence and ignores Claude channels.
+printf 'RIVETOS_MODE=cloud\n' >"$HOME_TMP/precedence.env"
+if env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$HOME_TMP/precedence.env" \
+    RIVETOS_MODE=local CLAUDE_PLUGIN_OPTION_RIVETOS_MODE=cloud \
+    "$STATUS" >"$HOME_TMP/precedence.out" &&
+   grep -qx 'mode: local' "$HOME_TMP/precedence.out"; then
+  pass "grok status retains inherited-over-file precedence"
+else
+  fail "grok status precedence changed"
+fi
+
 # Embed pair validation happens before writes, including when values come from disk.
 for scenario in new existing file_url placeholder; do
   pair_file="$HOME_TMP/pair.env"
@@ -456,7 +467,7 @@ for scenario in new existing file_url placeholder; do
   [ "$scenario" != file_url ] || embed=''
   rc=0
   env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$pair_file" \
-    RIVETOS_MODE=cloud RIVETOS_EMBED_URL="$embed" \
+    RIVETOS_MODE=cloud RIVETOS_PG_URL=postgres://db.example/db RIVETOS_EMBED_URL="$embed" \
     "$PERSIST" >"$HOME_TMP/pair.out" 2>&1 || rc=$?
   if [ "$rc" -eq 2 ] && grep -q RIVETOS_EMBED_MODEL "$HOME_TMP/pair.out" &&
      ! grep -q embed-secret "$HOME_TMP/pair.out" &&
@@ -487,11 +498,12 @@ for scenario in arguments file_model file_url; do
   fi
 done
 # Status reports problems without changing its successful exit contract or leaking values.
-for scenario in pg datahub model no_database no_embed placeholder; do
+for scenario in pg datahub https model no_database no_embed placeholder; do
   pg='' hub='' embed=https://fixture:embed-secret@embed.example model=''
   case "$scenario" in
     pg|no_embed|placeholder) pg='postgres://fixture:pg-secret@' ;;
-    datahub|model) hub='https://fixture:hub-secret@' ;;
+    datahub) hub='postgres://fixture:hub-secret@' ;;
+    https|model) hub='https://fixture:hub-secret@' ;;
   esac
   [ "$scenario" != model ] || model=text-embedding-3-small
   [ "$scenario" != no_embed ] || embed=''

@@ -17,4 +17,5 @@ if [ -z "$_impl" ]; then
   exit 1
 fi
 # shellcheck source=../../../shared/rivetos-status.sh
+_rivetos_status_plugin_options=1
 . "$_impl"

@@ -253,6 +253,50 @@ else
   fail "house env file must beat inherited PG URL and ROOT"
 fi
 
+# Status and launcher resolve the same house configuration, with redacted evidence.
+real_python="$(command -v python3)"
+cat >"$ISO/bin/python3" <<'SH'
+#!/usr/bin/env bash
+if [[ "${2-}" == *socket.create_connection* ]]; then
+  printf '%s:%s\n' "$3" "$4" >"$PROBE_RECORD"
+  exit 0
+fi
+exec "$REAL_PYTHON" "$@"
+SH
+chmod 755 "$ISO/bin/python3"
+for channel in none RIVETOS_PLUGIN_OPT_ CLAUDE_PLUGIN_OPTION_; do
+  options=()
+  expected_host=db.example
+  if [ "$channel" != none ]; then
+    options=("${channel}RIVETOS_DATAHUB_URL=postgres://fixture:plugin-secret@plugin.example/db")
+    expected_host=plugin.example
+  fi
+  # A stub validates the launcher's effective URL internally and emits host only.
+  cp "$HOUSE/services/mcp-sidecar/dist/cli.js" "$ISO/original-cli"
+  cat >"$HOUSE/services/mcp-sidecar/dist/cli.js" <<'JS'
+const host = new URL(process.env.RIVETOS_PG_URL).hostname;
+if (host !== process.env.EXPECT_HOST) process.exit(9);
+console.error(host);
+JS
+  if fixture_env RIVETOS_PG_URL=postgres://fixture:inherited-secret@inherited.example/db \
+      RIVETOS_PLUGIN_KEYS=RIVETOS_PG_URL EXPECT_HOST="$expected_host" "${options[@]}" \
+      "$LAUNCH" >"$ISO/resolve.stdout" 2>"$ISO/resolve.stderr" &&
+     fixture_env RIVETOS_PG_URL=postgres://fixture:inherited-secret@inherited.example/db \
+      RIVETOS_PLUGIN_KEYS=RIVETOS_PG_URL REAL_PYTHON="$real_python" PROBE_RECORD="$ISO/probe" \
+      "${options[@]}" "$STATUS" >"$ISO/status.out" 2>"$ISO/status.err" &&
+     [ ! -s "$ISO/resolve.stdout" ] && [ ! -s "$ISO/status.err" ] &&
+     grep -qx "$expected_host" "$ISO/resolve.stderr" &&
+     grep -qx "$expected_host:5432" "$ISO/probe" &&
+     grep -qx "endpoint: reachable (postgres $expected_host:5432)" "$ISO/status.out" &&
+     ! grep -Eq 'fixture-password|plugin-secret|inherited-secret|postgres://' "$ISO/status.out"; then
+    pass "status and launcher agree on resolved and probed host: $channel"
+  else
+    fail "status and launcher configuration mismatch: $channel"
+  fi
+  mv "$ISO/original-cli" "$HOUSE/services/mcp-sidecar/dist/cli.js"
+done
+rm "$ISO/bin/python3"
+
 # Both normal and pane capture paths must match main's argv, env names, and stdin.
 cat >"$HOUSE/plugins/providers/claude-cli/dist/hooks.js" <<'JS'
 console.log(JSON.stringify({argv: process.argv.slice(1),
@@ -426,7 +470,7 @@ for scenario in new existing file_url placeholder; do
   [ "$scenario" != file_url ] || embed=''
   rc=0
   env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$pair_file" \
-    RIVETOS_MODE=cloud RIVETOS_EMBED_URL="$embed" \
+    RIVETOS_MODE=cloud RIVETOS_PG_URL=postgres://db.example/db RIVETOS_EMBED_URL="$embed" \
     "$PERSIST" >"$HOME_TMP/pair.out" 2>&1 || rc=$?
   if [ "$rc" -eq 2 ] && grep -q RIVETOS_EMBED_MODEL "$HOME_TMP/pair.out" &&
      ! grep -q embed-secret "$HOME_TMP/pair.out" &&
@@ -435,6 +479,33 @@ for scenario in new existing file_url placeholder; do
     pass "embed URL without model refuses without writes: $scenario"
   else
     fail "embed pair refusal: $scenario"
+  fi
+done
+# Without Postgres, the same incomplete pair warns once and persists.
+for scenario in https cloud no_database file_pg file_pg_hub; do
+  pair_file="$HOME_TMP/nonfatal.env"
+  mode=cloud hub='' pg='' expected=0
+  printf 'RIVETOS_EMBED_URL=https://fixture:embed-secret@embed.example\n' >"$pair_file"
+  case "$scenario" in
+    https) mode=local hub=https://den.example ;;
+    cloud) hub=https://den.example ;;
+    file_pg) printf 'RIVETOS_PG_URL=postgres://db.example/db\n' >>"$pair_file"; expected=2 ;;
+    file_pg_hub) printf 'RIVETOS_DATAHUB_URL=postgresql://db.example/db\n' >>"$pair_file"; expected=2 ;;
+  esac
+  cp "$pair_file" "$HOME_TMP/nonfatal.before"
+  rc=0
+  env -i PATH="$PATH" HOME="$HOME_TMP" RIVETOS_ENV_FILE="$pair_file" \
+    RIVETOS_MODE="$mode" RIVETOS_DATAHUB_URL="$hub" \
+    "$PERSIST" >"$HOME_TMP/pair.stdout" 2>"$HOME_TMP/pair.stderr" || rc=$?
+  if [ "$rc" -eq "$expected" ] && [ "$(wc -l <"$HOME_TMP/pair.stderr")" -eq 1 ] &&
+     grep -q RIVETOS_EMBED_MODEL "$HOME_TMP/pair.stderr" &&
+     ! grep -q embed-secret "$HOME_TMP/pair.stderr" &&
+     { { [ "$expected" -eq 0 ] && grep -q 'warning:' "$HOME_TMP/pair.stderr" &&
+         grep -qx "RIVETOS_MODE=$mode" "$pair_file"; } ||
+       { [ "$expected" -eq 2 ] && cmp -s "$pair_file" "$HOME_TMP/nonfatal.before"; }; }; then
+    pass "persist embed guard matches memory enablement: $scenario"
+  else
+    fail "persist embed guard: $scenario"
   fi
 done
 for scenario in arguments file_model file_url; do
@@ -457,10 +528,11 @@ for scenario in arguments file_model file_url; do
   fi
 done
 # Status reports problems without changing its successful exit contract or leaking values.
-for scenario in pg datahub model no_database no_embed placeholder; do
+for scenario in pg datahub pg_datahub model no_database no_embed placeholder; do
   pg='' hub='' embed=https://fixture:embed-secret@embed.example model=''
   case "$scenario" in
     pg|no_embed|placeholder) pg='postgres://fixture:pg-secret@' ;;
+    pg_datahub) hub=postgres://fixture:hub-secret@ ;;
     datahub|model) hub='https://fixture:hub-secret@' ;;
   esac
   [ "$scenario" != model ] || model=text-embedding-3-small
@@ -471,7 +543,7 @@ for scenario in pg datahub model no_database no_embed placeholder; do
     RIVETOS_PG_URL="$pg" RIVETOS_DATAHUB_URL="$hub" RIVETOS_EMBED_URL="$embed" \
     RIVETOS_EMBED_MODEL="$model" bash -x "$STATUS" >"$HOME_TMP/pair.out" 2>&1 || rc=$?
   expected=0 flag=unset
-  case "$scenario" in pg|datahub|placeholder) expected=1 ;; model) flag=set ;; esac
+  case "$scenario" in pg|pg_datahub|placeholder) expected=1 ;; model) flag=set ;; esac
   if [ "$rc" -eq 0 ] && grep -qx "embed_model: $flag" "$HOME_TMP/pair.out" &&
      [ "$(grep -c '^problem:.*RIVETOS_EMBED_MODEL' "$HOME_TMP/pair.out" || true)" -eq "$expected" ] &&
      ! grep -Eq 'embed-secret|pg-secret|hub-secret|text-embedding-3-small' "$HOME_TMP/pair.out"; then

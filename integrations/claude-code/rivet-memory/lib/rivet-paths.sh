@@ -601,6 +601,40 @@ rivetos_unset_empty_rivetos_vars() {
   done
 }
 
+# Collect only declared plugin-form keys; an empty list means file-over-inherited.
+# CLAUDE_PLUGIN_OPTION_* wins over .mcp.json's RIVETOS_PLUGIN_OPT_* channel: it
+# is the client's documented export for userConfig and the one that carries
+# `sensitive` values, which are not substituted into .mcp.json.
+rivetos_collect_plugin_options() {
+  local xtrace_on=0 _k _prefix _opt
+  case "$-" in *x*) xtrace_on=1 ;; esac
+  set +x
+  RIVETOS_PLUGIN_KEYS=''
+  for _k in RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_EMBED_URL RIVETOS_EMBED_MODEL \
+            RIVETOS_CLOUD_URL RIVETOS_CLOUD_TOKEN \
+            RIVETOS_MCP_ENABLE_MEMORY_WRITE; do
+    for _prefix in RIVETOS_PLUGIN_OPT_ CLAUDE_PLUGIN_OPTION_; do
+      _opt="${_prefix}${_k}"
+      if ! rivetos_is_effective_unset "${!_opt-}"; then
+        export "${_k}=${!_opt}"
+        RIVETOS_PLUGIN_KEYS="${RIVETOS_PLUGIN_KEYS} ${_k}"
+      fi
+      unset "$_opt"
+    done
+  done
+  if [ "$xtrace_on" -eq 1 ]; then set -x; fi
+}
+
+# Match the sidecar boot guard: missing embed model is fatal only with memory.
+# Arguments permit persist to validate the resulting file before writing it.
+rivetos_embed_model_missing() {
+  local pg="${1-${RIVETOS_PG_URL:-}}" hub="${2-${RIVETOS_DATAHUB_URL:-}}"
+  local embed="${3-${RIVETOS_EMBED_URL:-}}" model="${4-${RIVETOS_EMBED_MODEL:-}}"
+  ! rivetos_is_effective_unset "$embed" &&
+    rivetos_is_effective_unset "$model" &&
+    { ! rivetos_is_effective_unset "$pg" || rivetos_is_postgres_url "$hub"; }
+}
+
 # Public name for the stranger DataHub field. v1 maps a postgres URL onto
 # RIVETOS_PG_URL (the sidecar still speaks Postgres). HTTPS den / MCP-bridge
 # endpoints stay on RIVETOS_DATAHUB_URL only — do not invent a conversion.

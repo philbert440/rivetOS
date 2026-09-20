@@ -165,11 +165,15 @@ if [ -n "${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-}" ]; then
   enc_memwrite="$(_encode_or_refuse RIVETOS_MCP_ENABLE_MEMORY_WRITE "$RIVETOS_MCP_ENABLE_MEMORY_WRITE")"
 fi
 
-# Validate the resulting pair before creating or changing any file.
+# Validate the resulting configuration before creating or changing any file.
 effective_embed="${RIVETOS_EMBED_URL:-$(rivetos_env_file_value "$ENV_FILE" RIVETOS_EMBED_URL)}"
 effective_model="${RIVETOS_EMBED_MODEL:-$(rivetos_env_file_value "$ENV_FILE" RIVETOS_EMBED_MODEL)}"
-if ! rivetos_is_effective_unset "$effective_embed" && rivetos_is_effective_unset "$effective_model"; then
-  _refuse "RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL is set (file not written)"
+effective_pg="${RIVETOS_PG_URL:-$(rivetos_env_file_value "$ENV_FILE" RIVETOS_PG_URL)}"
+effective_hub="${RIVETOS_DATAHUB_URL:-$(rivetos_env_file_value "$ENV_FILE" RIVETOS_DATAHUB_URL)}"
+if rivetos_embed_model_missing "$effective_pg" "$effective_hub" "$effective_embed" "$effective_model"; then
+  _refuse "RIVETOS_EMBED_MODEL is required when RIVETOS_EMBED_URL and Postgres memory are enabled (file not written)"
+elif ! rivetos_is_effective_unset "$effective_embed" && rivetos_is_effective_unset "$effective_model"; then
+  echo "rivetos-onboard-persist: warning: RIVETOS_EMBED_MODEL is unset; Postgres memory is disabled" >&2
 fi
 
 mkdir -p "$(dirname "$ENV_FILE")"
