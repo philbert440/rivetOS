@@ -6,11 +6,15 @@
 #
 # Does not clobber RIVETOS_MODE=workspace|production (boot/CLI local-dev).
 # Parses the existing file with the same rules as packages/cli (export
-# prefix, quotes, last-wins, BOM). Encodes so bash source, this parser,
-# and the CLI recover the same bytes. Writes through a symlink.
-# Unsubstituted ${VAR} and newline values refuse the write (rc 2).
+# prefix, quotes, last-wins, BOM). Encodes so bash source and this
+# parser recover the same bytes. CLI encodeEnvValue still omits $ /
+# backtick escaping — readers are at parity, not every writer.
+# Writes through a symlink. Unsubstituted ${VAR} and newline values
+# refuse the write (rc 2).
 set -euo pipefail
 
+# Disable xtrace on purpose: persist must never leak secrets in a
+# `bash -x` trace (placement matches rivetos-status.sh).
 case "$-" in
   *x*) set +x ;;
 esac
@@ -57,9 +61,9 @@ _encode_or_refuse() {
   local enc
   if ! enc="$(rivetos_encode_env_value "$val")"; then
     if rivetos_is_effective_unset "$val" && [ -n "$val" ]; then
-      _refuse "refusing unsubstituted placeholder for $key (file not written)"
+      _refuse "refusing $key: looks like an unsubstituted Cursor placeholder (file not written)"
     fi
-    _refuse "refusing value with newline or NUL for $key (file not written)"
+    _refuse "refusing value with newline for $key (file not written)"
   fi
   printf '%s' "$enc"
 }
@@ -111,14 +115,13 @@ upsert_encoded() {
 mode_ambiguous=0
 if [ -f "$ENV_FILE" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      *RIVETOS_MODE*)
-        if rivetos_has_non_ascii "$line"; then
-          mode_ambiguous=1
-          break
-        fi
-        ;;
-    esac
+    # Parsed assignment only — a comment like `# RIVETOS_MODE — note`
+    # must not strand persist on the old (or missing) mode.
+    if rivetos_parse_env_line "$line" && [ "$_rivetos_env_key" = RIVETOS_MODE ] \
+       && rivetos_has_non_ascii "$_rivetos_env_val"; then
+      mode_ambiguous=1
+      break
+    fi
   done <"$ENV_FILE"
 fi
 

@@ -139,10 +139,14 @@ fi
 : >"$RIVETOS_ENV_FILE"
 export RIVETOS_MODE=cloud
 export RIVETOS_CLOUD_URL='${RIVETOS_CLOUD_URL}'
-if "$PERSIST" >/dev/null 2>&1; then
-  fail "persist should refuse unsubstituted placeholders"
-else
+set +e
+ph_out="$("$PERSIST" 2>&1)"
+ph_rc=$?
+set -e
+if [ "$ph_rc" -ne 0 ] && [[ "$ph_out" == *"looks like an unsubstituted Cursor placeholder"* ]]; then
   pass "persist refuses unsubstituted placeholders"
+else
+  fail "persist should refuse unsubstituted placeholders"
 fi
 if [ ! -s "$RIVETOS_ENV_FILE" ]; then
   pass "placeholder refuse writes nothing"
@@ -307,7 +311,7 @@ else
   fail "BOM workspace clobber appended another MODE ($mode_n lines)"
 fi
 
-# NBSP on a MODE line is ambiguous — do not append local
+# NBSP on a MODE assignment is ambiguous — do not append local
 nbsp="$(printf '\302\240')"
 printf 'RIVETOS_MODE=%sproduction\n' "$nbsp" >"$RIVETOS_ENV_FILE"
 export RIVETOS_MODE=local
@@ -317,6 +321,31 @@ if grep -q 'RIVETOS_MODE=local' "$RIVETOS_ENV_FILE"; then
   fail "NBSP MODE line should not gain a local assignment"
 else
   pass "persist leaves NBSP MODE line alone"
+fi
+
+# Non-ASCII comment mentioning RIVETOS_MODE is not a MODE assignment
+emdash="$(printf '\342\200\224')"
+printf '# RIVETOS_MODE %s pick cloud or local\n' "$emdash" >"$RIVETOS_ENV_FILE"
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+"$PERSIST" >/dev/null
+got="$(rivetos_env_file_value "$RIVETOS_ENV_FILE" RIVETOS_MODE)"
+if [ "$got" = local ]; then
+  pass "persist writes mode despite non-ASCII MODE comment"
+else
+  fail "non-ASCII MODE comment should not strand persist (got ${got:-empty})"
+fi
+
+# Same comment next to a real assignment must still rewrite the mode
+printf '# RIVETOS_MODE %s note\nRIVETOS_MODE=cloud\n' "$emdash" >"$RIVETOS_ENV_FILE"
+export RIVETOS_MODE=local
+export RIVETOS_DATAHUB_URL='postgres://new.example/db'
+"$PERSIST" >/dev/null
+got="$(rivetos_env_file_value "$RIVETOS_ENV_FILE" RIVETOS_MODE)"
+if [ "$got" = local ]; then
+  pass "persist rewrites mode next to a non-ASCII MODE comment"
+else
+  fail "comment plus assignment should still write local (got ${got:-empty})"
 fi
 
 # bash -x must not leak cloud userinfo or query tokens

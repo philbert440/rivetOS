@@ -8,9 +8,10 @@
 #                              (export prefix, quotes, last-wins). Never
 #                              sources the file. Default (main): the env
 #                              file wins, matching historical harness
-#                              launchers. Unquoted / double-quoted $VAR
-#                              and ${VAR} expand (so $HOME/rivetos still
-#                              works); $( ) and backticks do not.
+#                              launchers. Unquoted $VAR and ${VAR} expand
+#                              (so $HOME/rivetos still works); a
+#                              double-quoted $VAR stays literal, unlike
+#                              source. $( ) and backticks do not expand.
 #                              When RIVETOS_PLUGIN_ENV=1, already-set
 #                              (non-empty, non-placeholder) process /
 #                              plugin vars win, and a plugin postgres

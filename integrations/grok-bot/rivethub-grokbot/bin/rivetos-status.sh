@@ -5,6 +5,12 @@
 # or full connection strings.
 set -euo pipefail
 
+# Disable xtrace on purpose: status must never leak secrets in a
+# `bash -x` trace (placement matches rivetos-onboard-persist.sh).
+case "$-" in
+  *x*) set +x ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _rivet_paths=""
 for _rivet_candidate in \
@@ -22,10 +28,6 @@ fi
 # shellcheck source=../../../shared/rivet-paths.sh
 . "$_rivet_paths"
 unset _rivet_paths _rivet_candidate
-
-case "$-" in
-  *x*) set +x ;;
-esac
 
 export RIVETOS_PLUGIN_ENV=1
 rivetos_load_env
