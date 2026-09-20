@@ -1,14 +1,17 @@
 {
   "name": "@rivetos/wiki-core",
   "version": "0.5.0",
-  "private": true,
+  "description": "Memory wiki page model — parse/apply/serialize, pure (no I/O)",
+  "license": "Apache-2.0",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ package.json",
     "test": "vitest run",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "yaml": "^2.9.0"
@@ -17,12 +20,34 @@
     "@types/node": "^26.1.2",
     "vitest": "^4.1.10"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "packages/wiki-core"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "nx": {
     "tags": [
       "scope:contract",
       "type:lib",
       "domain:shared"
     ]
-  },
-  "description": "Memory wiki page model \u2014 parse/apply/serialize, pure (no I/O)"
+  }
 }

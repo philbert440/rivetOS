@@ -196,11 +196,12 @@ describe('/api/memory', () => {
     now.mockReturnValue(170_000) // Still coalesces if the query outlives the TTL.
     const second = fetch(`${base}/api/memory/health`)
     const stats = fetch(`${base}/api/memory/stats`)
-    await vi.waitFor(() => expect(query).toHaveBeenCalledTimes(10))
+    await vi.waitFor(() => expect(query.mock.calls.length).toBeGreaterThanOrEqual(5))
     release()
     expect((await Promise.all([first, second, stats])).map((r) => r.status)).toEqual([
       200, 200, 200,
     ])
+    expect(query).toHaveBeenCalledTimes(10)
     const diagnostics = () =>
       query.mock.calls.filter(([sql]) =>
         /AS msg_queue|WITH per_conv|graphile_worker/.test(String(sql)),
@@ -405,6 +406,30 @@ describe('/api/memory', () => {
     }
     expect(health.status).toBe('degraded')
     expect(health.embeddings.status).toBe('unavailable')
+  })
+
+  it('stats keeps at most two pool queries in flight', async () => {
+    const pool = fakePool()
+    const original = pool.query.bind(pool)
+    let inFlight = 0
+    let maxInFlight = 0
+    vi.spyOn(pool, 'query').mockImplementation((async (sql: string, params?: unknown[]) => {
+      inFlight += 1
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      try {
+        await new Promise((r) => setTimeout(r, 20))
+        return original(sql, params)
+      } finally {
+        inFlight -= 1
+      }
+    }) as typeof pool.query)
+    const base = await serve({ pool, search: async () => [] })
+    const res = await fetch(`${base}/api/memory/stats`)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { conversations: number }
+    expect(body.conversations).toBe(3)
+    expect(maxInFlight).toBeGreaterThan(0)
+    expect(maxInFlight).toBeLessThanOrEqual(2)
   })
 
   it('missing tables return empty 200, not 500', async () => {

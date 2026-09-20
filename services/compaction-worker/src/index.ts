@@ -138,6 +138,7 @@ async function main(): Promise<void> {
   const runner = await run({
     connectionString: config.pgUrl,
     concurrency: config.compactConcurrency,
+    maxPoolSize: config.compactConcurrency + 2,
     noHandleSignals: false,
     pollInterval: 60_000,
     taskList,

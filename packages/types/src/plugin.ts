@@ -84,6 +84,14 @@ export interface RegistrationContext {
    * of registered objects taken at fire-time.
    */
   onRegistrationComplete(fn: (snapshot: RegistrationCompleteSnapshot) => Promise<void> | void): void
+
+  /**
+   * Host-owned Postgres pool for `connectionString`. Opaque here because the
+   * contract package takes no `pg` dependency — adapters narrow it themselves.
+   * An adapter may adopt it ONLY when its own resolved connection string is
+   * identical, and must never end() it: the host ends it at shutdown.
+   */
+  sharedPg?: { connectionString: string; pool: unknown }
 }
 
 /**

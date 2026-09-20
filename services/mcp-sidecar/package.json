@@ -1,7 +1,12 @@
 {
   "name": "@rivetos/mcp-sidecar",
   "version": "0.5.0",
+  "description": "Standalone RivetOS MCP server — stdio, TCP, or unix socket",
+  "license": "Apache-2.0",
   "type": "module",
+  "bin": {
+    "rivetos-mcp-sidecar": "dist/cli.js"
+  },
   "main": "dist/cli.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -29,14 +34,30 @@
     "@types/node": "^26.1.2",
     "vitest": "^4.1.10"
   },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./cli": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "services/mcp-sidecar"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "nx": {
     "tags": [
       "scope:app",
       "type:app"
     ]
-  },
-  "exports": {
-    ".": "./dist/cli.js",
-    "./cli": "./dist/cli.js"
   }
 }

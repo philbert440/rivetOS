@@ -115,7 +115,10 @@ only, no path/userinfo). `isValidGatewayUrl` rejects poisoned roster URLs.
 Hub supports seamless node switch: repoint the gateway client at another node's
 origin; local dist stays put (never navigate to a peer's served UI for code).
 
-- Sidebar **Node** switcher / composer node picker
+- Sidebar **Node** switcher / composer node picker. In a single-node setup,
+  these stay out of the way once discovery confirms there are no other peers.
+  They appear when a peer is discovered or a second node is saved; click a
+  discovered peer to save it. Adding a node by URL in **Settings** still works.
 - Android deep-link pattern: `http://127.0.0.1:5174/?node=<denUrl>` (loopback
   may skip client certs; `?token=` is not application auth)
 - Mesh dens: roster entries with `capabilities: ["den"]` and `metadata.denPort`

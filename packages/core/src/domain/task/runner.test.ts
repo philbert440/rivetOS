@@ -4,7 +4,9 @@
  * store tests; the handler is the interesting logic).
  */
 
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type pg from 'pg'
+import { run } from 'graphile-worker'
 import type {
   HarnessExecutor,
   HarnessExecutorCapabilities,
@@ -16,6 +18,10 @@ import type {
 import { InMemoryTaskStore, type NewTaskInput, type TaskStore } from './store.js'
 import { createExecutorRegistry, createTaskHandler, createTaskRunner } from './runner.js'
 import { createTaskCompletionWaiter } from './completion-waiter.js'
+
+vi.mock('graphile-worker', () => ({
+  run: vi.fn(async () => ({ stop: async () => undefined })),
+}))
 
 const caps: HarnessExecutorCapabilities = {
   steerable: true,
@@ -165,6 +171,26 @@ describe('createTaskHandler', () => {
     expect(fake.specs[0].session.agentId).toBe('opus')
   })
 
+  it('retries claim on 53300 then runs the task once', async () => {
+    const fake = makeFakeExecutor()
+    const store = new InMemoryTaskStore()
+    const task = await store.create(taskInput())
+    let claims = 0
+    const origClaim = store.claim.bind(store)
+    store.claim = async (id, node) => {
+      claims += 1
+      if (claims <= 2) {
+        throw Object.assign(new Error('sorry, too many clients already'), { code: '53300' })
+      }
+      return origClaim(id, node)
+    }
+    const { handler } = wire(fake, store)
+    await handler(task.id)
+    expect(claims).toBe(3)
+    expect(fake.specs).toHaveLength(1)
+    expect((await store.get(task.id))?.status).toBe('completed')
+  })
+
   it('is a no-op for a task that is already terminal (claim CAS loses)', async () => {
     const fake = makeFakeExecutor()
     const { store, handler } = wire(fake)
@@ -284,6 +310,70 @@ describe('createTaskHandler', () => {
 
     expect(heartbeats.length).toBeGreaterThanOrEqual(2)
     expect(heartbeats.every((id) => id === task.id)).toBe(true)
+  })
+})
+
+describe('createTaskRunner graphile pool wiring', () => {
+  const pgUrl = 'postgres://user:pass@localhost:5432/db'
+
+  beforeEach(() => {
+    vi.mocked(run).mockClear()
+  })
+
+  it('passes pgPool and omits connectionString when a pool is supplied', async () => {
+    const pgPool = { options: { max: 8 } } as unknown as pg.Pool
+    const runner = createTaskRunner({
+      pgUrl,
+      pgPool,
+      store: new InMemoryTaskStore(),
+      executors: createExecutorRegistry(),
+      nodeId: 'test-node',
+    })
+    await runner.start()
+    expect(run).toHaveBeenCalledTimes(1)
+    const opts = vi.mocked(run).mock.calls[0][0] as Record<string, unknown>
+    expect(opts.pgPool).toBe(pgPool)
+    expect(opts.connectionString).toBeUndefined()
+    await runner.stop()
+  })
+
+  it('passes connectionString and omits pgPool when no pool is supplied', async () => {
+    const runner = createTaskRunner({
+      pgUrl,
+      store: new InMemoryTaskStore(),
+      executors: createExecutorRegistry(),
+      nodeId: 'test-node',
+    })
+    await runner.start()
+    expect(run).toHaveBeenCalledTimes(1)
+    const opts = vi.mocked(run).mock.calls[0][0] as Record<string, unknown>
+    expect(opts.connectionString).toBe(pgUrl)
+    expect(opts.pgPool).toBeUndefined()
+    await runner.stop()
+  })
+
+  it('passes pgPool and noPreparedStatements when RIVETOS_PG_EMBEDDED=1', async () => {
+    const prev = process.env.RIVETOS_PG_EMBEDDED
+    process.env.RIVETOS_PG_EMBEDDED = '1'
+    try {
+      const pgPool = { options: { max: 8 } } as unknown as pg.Pool
+      const runner = createTaskRunner({
+        pgUrl,
+        pgPool,
+        store: new InMemoryTaskStore(),
+        executors: createExecutorRegistry(),
+        nodeId: 'test-node',
+      })
+      await runner.start()
+      expect(run).toHaveBeenCalledTimes(1)
+      const opts = vi.mocked(run).mock.calls[0][0] as Record<string, unknown>
+      expect(opts.pgPool).toBe(pgPool)
+      expect(opts.noPreparedStatements).toBe(true)
+      await runner.stop()
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_PG_EMBEDDED')
+      else process.env.RIVETOS_PG_EMBEDDED = prev
+    }
   })
 })
 

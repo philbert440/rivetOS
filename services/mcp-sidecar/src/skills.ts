@@ -3,9 +3,8 @@
  *
  * Wraps the in-process tools exported by `@rivetos/core` so external MCP
  * clients can list and manage skills the same way local agents can. Both
- * workspace AND system skill dirs are writable from this surface — Phil's
- * call: claude-cli through MCP gets the same skill-write surface in-process
- * Opus has, no second-class citizen.
+ * workspace AND system skill dirs are writable from this surface so MCP
+ * clients get the same skill-write surface as in-process agents.
  *
  * On any successful `skill_manage` write (create/edit/patch/delete/retire/
  * write_file) we rediscover the affected skill dir so a follow-up
