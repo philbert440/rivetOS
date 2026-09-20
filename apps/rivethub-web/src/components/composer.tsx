@@ -127,6 +127,20 @@ export function Composer(props: {
     }
   }, [handleRef])
 
+  // Autofocus the composer on landing in a conversation and when switching to
+  // another (the session subtree remounts per session, so a new/opened chat
+  // hits this too) — type immediately, no click first. The textarea is
+  // disabled while the socket reconnects, so wait for `connected`; fire once
+  // per session so a later reconnect can't steal focus mid-scroll. On mobile a
+  // programmatic focus without a user gesture won't pop the keyboard, so this
+  // stays desktop-friendly without being intrusive on touch.
+  const autoFocusedFor = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!connected || autoFocusedFor.current === props.sessionId) return
+    autoFocusedFor.current = props.sessionId
+    taRef.current?.focus()
+  }, [connected, props.sessionId])
+
   // Drop the mic on unmount (or a superseded start still resolving) — never
   // leave a tab holding the capture device.
   const micToken = useRef(0)
