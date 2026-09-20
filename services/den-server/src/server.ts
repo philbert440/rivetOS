@@ -1609,6 +1609,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           }
           const ptyId = manager.ptyForSession(injectKey)
           if (!ptyId) return json(res, 409, { error: 'no live harness for session' })
+          // inject is the chat-delivery primitive: chat text is only ever
+          // written where an agent harness reads it (#803). A terminal-only
+          // roster entry (`room: false`, e.g. a shell) is not that — with the
+          // multiplexer off there is no pane evidence to catch it, so refuse
+          // structurally, in every mux mode. Typing into a shell stays the
+          // terminal socket's job (#810).
+          if (manager.get(ptyId)?.room === false)
+            return json(res, 409, { error: 'not an agent harness; use the terminal to type here' })
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
           if (!manager.inject(ptyId, p.text, submit, interrupt)) {

@@ -169,6 +169,12 @@ export interface PtyInfo {
   id: string
   denSession: string
   command: string
+  /** The roster entry is an agent-harness "room" (`room: true`, e.g. claude)
+   *  vs a terminal-only entry (`room: false`, e.g. shell). Set from the roster
+   *  at spawn, so it is mux-independent. Absent on client-less persisted rows,
+   *  whose command is known but whose room membership is not tracked. Used by
+   *  POST /term/inject to keep chat text out of a plain shell (#810). */
+  room?: boolean
   /** Child pid. Absent on client-less persisted rows when tmux didn't
    *  report a pane pid — never a fake 0. */
   pid?: number
@@ -1593,6 +1599,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       id: r.id,
       denSession: r.denSession,
       command: r.command,
+      room: r.room,
       pid: r.pid,
       attached: r.attached.size,
       createdAt: r.createdAt,

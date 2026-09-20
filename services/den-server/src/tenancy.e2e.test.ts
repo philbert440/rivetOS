@@ -392,7 +392,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       'POST',
       `${loopback}/term`,
       { ca: pki.ca },
-      { command: 'shell', session: 'phil-room' },
+      { command: 'claude', session: 'phil-room' },
     )
     expect(spawn1.status).toBe(201)
     philPtyId = (JSON.parse(spawn1.body) as { id: string }).id
