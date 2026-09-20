@@ -216,6 +216,17 @@ else
 fi
 cleanup_env
 
+# 16b. double-quoted \$ is a literal $ (persist form; do not expand)
+with_envfile "RIVETOS_PG_URL=\"a'b\\\$c\""
+export HOME=/tmp/rivetos-home-probe
+rivetos_load_env
+if [ "${RIVETOS_PG_URL:-}" = "a'b\$c" ]; then
+  pass "double-quoted \\\$ is literal dollar"
+else
+  fail "loader must not expand \\\$ inside double quotes"
+fi
+cleanup_env
+
 # 16. unquoted $HOME expands (house files, same as source on main)
 _saved_home="$HOME"
 with_envfile 'RIVETOS_ROOT=$HOME/rivetos'

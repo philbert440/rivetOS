@@ -230,6 +230,64 @@ else
   fail "value with both single and double quotes should round-trip"
 fi
 
+# Persist ' + $ in one value. \$ must stay literal through all three readers.
+PARSE="$KIT/../rivet-memory/bin/env-parse.mjs"
+capture_read() {
+  local file="$1"
+  local key="$2"
+  FILE="$file" KEY="$key" PARSE="$PARSE" node --input-type=module -e '
+import { readFileSync } from "node:fs"
+import { pathToFileURL } from "node:url"
+const { parseRivetEnv } = await import(pathToFileURL(process.env.PARSE).href)
+const parsed = parseRivetEnv(readFileSync(process.env.FILE, "utf8"))
+process.stdout.write(parsed[process.env.KEY] ?? "")
+'
+}
+
+assert_dollar_roundtrip() {
+  local want="$1"
+  local label="$2"
+  unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_URL RIVETOS_CLOUD_TOKEN
+  : >"$RIVETOS_ENV_FILE"
+  export RIVETOS_MODE=local
+  export RIVETOS_DATAHUB_URL="$want"
+  "$PERSIST" >/dev/null
+  if grep -F '\$' "$RIVETOS_ENV_FILE" >/dev/null; then
+    pass "$label persist escapes \$ in double quotes"
+  else
+    fail "$label persist should write \\\$ for a value that contains both ' and \$"
+  fi
+
+  unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+  rivetos_load_env
+  if [ "${RIVETOS_DATAHUB_URL:-}" = "$want" ]; then
+    pass "$label rivet-paths loader"
+  else
+    fail "$label rivet-paths loader corrupted \$"
+  fi
+
+  unset RIVETOS_MODE RIVETOS_DATAHUB_URL RIVETOS_PG_URL
+  set -a
+  # shellcheck disable=SC1090
+  . "$RIVETOS_ENV_FILE"
+  set +a
+  if [ "${RIVETOS_DATAHUB_URL:-}" = "$want" ]; then
+    pass "$label bash source"
+  else
+    fail "$label bash source corrupted \$"
+  fi
+
+  cap="$(capture_read "$RIVETOS_ENV_FILE" RIVETOS_DATAHUB_URL)"
+  if [ "$cap" = "$want" ]; then
+    pass "$label capture parser"
+  else
+    fail "$label capture parser corrupted \$"
+  fi
+}
+
+assert_dollar_roundtrip "a'b\$c" "a'b\$c"
+assert_dollar_roundtrip "postgres://u:it's\"q \$HOME@db.example/m" "postgres it's\"q \$HOME"
+
 # BOM-prefixed workspace is kept (no second MODE line)
 bom="$(printf '\357\273\277')"
 printf '%sRIVETOS_MODE=workspace\n' "$bom" >"$RIVETOS_ENV_FILE"

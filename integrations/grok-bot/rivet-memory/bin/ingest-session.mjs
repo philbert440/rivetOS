@@ -6,10 +6,7 @@ import { homedir } from 'node:os'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
-
-function isUnsetVal(val) {
-  return val == null || val === '' || /^\$\{[A-Z0-9_]+\}$/.test(val)
-}
+import { isUnsetVal, parseRivetEnv } from './env-parse.mjs'
 
 function applyDatahubUrl() {
   if (!isUnsetVal(process.env.RIVETOS_PG_URL)) return
@@ -25,18 +22,9 @@ function loadEnv() {
   }
   const p = process.env.RIVETOS_ENV_FILE || resolve(homedir(), '.rivetos/.env')
   try {
-    for (const raw of readFileSync(p, 'utf8').split(/\r?\n/)) {
-      const line = raw.trim()
-      if (!line || line.startsWith('#')) continue
-      const rest = /^export\s+/.test(line) ? line.replace(/^export\s+/, '') : line
-      const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
-      if (m && isUnsetVal(process.env[m[1]])) {
-        let v = m[2]
-        if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
-          v = v.slice(1, -1)
-        }
-        process.env[m[1]] = v
-      }
+    const parsed = parseRivetEnv(readFileSync(p, 'utf8'))
+    for (const [key, value] of Object.entries(parsed)) {
+      if (isUnsetVal(process.env[key])) process.env[key] = value
     }
   } catch {
     /* optional */

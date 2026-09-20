@@ -279,7 +279,9 @@ rivetos_apply_env_file() {
   while IFS= read -r line || [ -n "$line" ]; do
     if rivetos_parse_env_line "$line"; then
       val="$_rivetos_env_val"
-      if [ "${_rivetos_env_quote:-none}" != "single" ]; then
+      # Unquoted $HOME/rivetos still expands (house files). Double-quoted
+      # persist form already decoded \$ to a literal $ — do not expand again.
+      if [ "${_rivetos_env_quote:-none}" = "none" ]; then
         val="$(rivetos_expand_params "$val")"
       fi
       export "${_rivetos_env_key}=${val}"
