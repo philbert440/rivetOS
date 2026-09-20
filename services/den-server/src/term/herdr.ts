@@ -386,6 +386,13 @@ export function herdrKindForCommand(command: string): string | undefined {
   return undefined
 }
 
+/** Same predicate `create()` uses for `agent.start`. Wrapper scripts and
+ *  PATH-less argv[0] (a slash in the path) run as a plain pane — no status
+ *  events — so the idle-signal ready-gate must not wait for them. */
+export function herdrUseAgent(kind: string | undefined, argv0: string): boolean {
+  return Boolean(kind) && !argv0.includes('/') && argv0 === kind
+}
+
 export function posixShellJoin(argv: string[]): string {
   return argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ')
 }
@@ -452,6 +459,32 @@ function eventSince(evt: Record<string, unknown>, fallback: number): number {
 }
 
 const STATUS_EVENTS = new Set(['pane.agent_status_changed', 'pane_agent_status_changed'])
+const DETECTED_EVENTS = new Set(['pane.agent_detected', 'pane_agent_detected'])
+
+/** True when a herdr event says the agent in this pane is gone: a `done`
+ *  status, or `pane.agent_detected` with a null agent / `released`. Used to
+ *  refuse inject writes into the fallback shell (#791). */
+export function herdrAgentReleased(evt: unknown): boolean {
+  let rec = asRecord(evt)
+  if (!rec && typeof evt === 'string') {
+    try {
+      rec = asRecord(JSON.parse(evt))
+    } catch {
+      return false
+    }
+  }
+  if (!rec) return false
+  const name = eventName(rec)
+  if (eventStatus(rec) === 'done') return true
+  if (!DETECTED_EVENTS.has(name)) return false
+  const data = asRecord(rec.data) ?? rec
+  if (data.released === true || rec.released === true) return true
+  if (data.status === 'released' || data.agent_status === 'released') return true
+  const hasAgent = 'agent' in data || 'agent_name' in data || 'agent' in rec
+  if (!hasAgent) return false
+  const agent = data.agent ?? data.agent_name ?? rec.agent
+  return agent == null || agent === '' || agent === 'released'
+}
 
 /** Map a herdr events-subscribe line (object or JSON string) onto the den
  *  harness-session WS frame. Unknown / `unknown` status → undefined. */
@@ -638,6 +671,9 @@ const HUB_STABLE_MS = 5_000
 export function createHerdrStatusHub(opts: {
   subscribe: (name: string, onEvent: (evt: unknown) => void, onClose: () => void) => () => void
   onFrame: (name: string, frame: HarnessStatusFrame) => void
+  /** Every subscribe event, including ones that do not map to a status frame
+   *  (`pane.agent_detected`, `done`). Optional — existing callers ignore it. */
+  onEvent?: (name: string, evt: unknown) => void
   now?: () => number
   backoffMs?: number[]
   setTimeout?: typeof setTimeout
@@ -684,6 +720,7 @@ export function createHerdrStatusHub(opts: {
     s.unsub = opts.subscribe(
       name,
       (evt) => {
+        opts.onEvent?.(name, evt)
         const frame = herdrStatusToFrame(evt, now)
         if (!frame) return
         s.gotEvent = true
@@ -1211,7 +1248,7 @@ export function createRealHerdrCtl(
         // build herdr would silently replace, so it runs verbatim in a plain
         // pane instead (no status detection — the honest trade).
         const argv0 = opts.argv[0] ?? ''
-        const useAgent = Boolean(opts.kind) && !argv0.includes('/') && argv0 === opts.kind
+        const useAgent = herdrUseAgent(opts.kind, argv0)
         if (useAgent) {
           const startReq = {
             id: 'den-agent-start',

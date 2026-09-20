@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Den
 
-- Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay) and verifies the first buffered inject, retrying on herdr when it did not land (#796).
+- Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay) and verifies the first buffered inject from the pane (CR-only vs re-paste; no retry when capture is unavailable) (#796).
 
 ### Harness integrations
 

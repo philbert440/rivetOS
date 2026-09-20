@@ -56,15 +56,19 @@ export interface DenTermConfig {
   /** Quiet period (ms) with no PTY output before a fresh harness is treated
    *  as ready to accept a buffered chat inject. Re-armed on every output
    *  chunk (quiescence), not "first byte + delay". Ignored on the herdr
-   *  agent-idle path (known harness kinds become ready on idle). */
+   *  agent-idle path (agent panes become ready on idle). */
   injectReadyMs: number
   /** Hard ceiling (ms) on the ready-gate. Buffered turns flush anyway and a
    *  warning is logged. Default 15000. */
   injectReadyMaxMs?: number
-  /** After flushing the first buffered submit, herdr may retry paste+CR this
-   *  many times if the turn is not confirmed (status stayed idle). Default 2.
-   *  Unverifiable muxes never retry. */
+  /** After flushing the first buffered submit, herdr may retry this many
+   *  times if a pane capture shows the turn did not land. Default 2.
+   *  Capture-unavailable / ambiguous never retry. Unverifiable muxes never retry. */
   injectRetryMax?: number
+  /** Window (ms) after flushing the first buffered submit to wait for a
+   *  herdr `working` frame or a pane capture that decides landed / retry.
+   *  Default 1500 — long enough for a slow harness to leave idle. */
+  injectVerifyMs?: number
   /** Delay between writing a chat inject's text and its submit CR. The two
    *  must be separate PTY writes: harness TUIs (claude/grok) run paste
    *  detection, and a CR fused onto multi-line/long text is absorbed as a
@@ -318,6 +322,7 @@ export function loadConfig(
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectReadyMaxMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MAX_MS', 15_000),
       injectRetryMax: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_RETRY_MAX', 2),
+      injectVerifyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_VERIFY_MS', 1500),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
       mux: ((): 'tmux' | 'herdr' | 'none' | undefined => {
         const raw = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()

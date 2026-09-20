@@ -91,9 +91,11 @@ import {
   herdrConfigContent,
   herdrConfigHome,
   herdrConfigPath,
+  herdrAgentReleased,
   herdrKindForCommand,
   herdrSessionName,
   herdrSupported,
+  herdrUseAgent,
   HerdrCommandError,
   HerdrUnavailableError,
   type HerdrCreateOpts,
@@ -198,9 +200,10 @@ export interface PtyInfo {
   compactAt?: number
   /** Provenance of contextWindow/compactAt. */
   contextSource?: ContextSource
-  /** Set when a buffered first-turn inject was flushed but never confirmed
-   *  after retries. Surfaced on GET /term/list — POST /term/inject stays 202
-   *  at accept time because confirmation is async. */
+  /** Last-turn inject status, not sticky: set when a buffered first-turn
+   *  inject was flushed but never confirmed, cleared on the next confirmed
+   *  or ready-path inject. Surfaced on GET /term/list — POST /term/inject
+   *  stays 202 at accept time because confirmation is async. */
   injectError?: string
 }
 
@@ -257,6 +260,11 @@ interface PtyRecord {
   readyCeilingTimer?: NodeJS.Timeout
   verifyTimer?: NodeJS.Timeout
   lastAgentStatus?: 'working' | 'blocked' | 'idle'
+  /** herdr `create()` actually called `agent.start` (argv[0] === kind, no
+   *  slash). Wrapper / absolute-path rosters are plain panes — no status. */
+  agentPane?: boolean
+  /** Last protocol signal said the agent is gone (`done` / null agent). */
+  agentEnded?: boolean
   injectRest?: { text: string; submit: boolean }[]
   verifyTurn?: { text: string; submit: boolean }
   verifyAttempts?: number
@@ -366,10 +374,10 @@ const SUBMIT_CR = '\r'
 const DEFAULT_INJECT_SUBMIT_DELAY_MS = 80
 const DEFAULT_INJECT_READY_MAX_MS = 15_000
 const DEFAULT_INJECT_RETRY_MAX = 2
-/** Short window after flushing the first buffered submit to wait for herdr
- *  idle→working (or a capture that no longer shows the turn in the composer).
- *  Also the gap between retries. */
-const INJECT_VERIFY_MS = 400
+/** Window after flushing the first buffered submit to wait for herdr
+ *  working or a pane capture. Also the gap between retries. Default ≥ 1500
+ *  so a slow harness can leave idle before we decide. */
+const DEFAULT_INJECT_VERIFY_MS = 1500
 
 /** Interrupt-inject: a lone Esc cancels the harness's in-flight turn
  *  (Claude/grok TUIs), then the paste waits out the TUI's cancel/teardown
@@ -683,6 +691,28 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.injectTimers = []
   }
 
+  /** Cancel ready-gate / verify / pending paste-CR without touching the
+   *  SIGHUP→SIGKILL backstop. kill/detach used to leave the verify timer
+   *  armed so a retry could write into a dying client. */
+  const cancelInjectAndReady = (r: PtyRecord): void => {
+    if (r.readyTimer) {
+      clearTimeout(r.readyTimer)
+      r.readyTimer = undefined
+    }
+    if (r.readyCeilingTimer) {
+      clearTimeout(r.readyCeilingTimer)
+      r.readyCeilingTimer = undefined
+    }
+    if (r.verifyTimer) {
+      clearTimeout(r.verifyTimer)
+      r.verifyTimer = undefined
+    }
+    r.verifyTurn = undefined
+    r.verifyAttempts = undefined
+    for (const t of r.injectTimers) clearTimeout(t)
+    r.injectTimers = []
+  }
+
   const reap = (r: PtyRecord): void => {
     clearTimers(r)
     records.delete(r.id)
@@ -695,6 +725,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const escalate = (r: PtyRecord): void => {
     if (r.state !== 'running') return
+    cancelInjectAndReady(r)
     r.proc.kill('SIGHUP')
     r.sigkillTimer = setTimeout(() => {
       r.sigkillTimer = undefined
@@ -710,6 +741,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
    *  only ever hits a STUCK client process — never the session. */
   const detachClient = (r: PtyRecord, reason: string): void => {
     if (r.state !== 'running') return
+    cancelInjectAndReady(r)
     audit('detach', r, { reason })
     r.proc.kill('SIGHUP')
     r.sigkillTimer = setTimeout(() => {
@@ -909,11 +941,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const injectReadyMaxMs = config.term.injectReadyMaxMs ?? DEFAULT_INJECT_READY_MAX_MS
   const injectRetryMax = config.term.injectRetryMax ?? DEFAULT_INJECT_RETRY_MAX
+  const injectVerifyMs = config.term.injectVerifyMs ?? DEFAULT_INJECT_VERIFY_MS
 
+  /** Idle-signal / verify only when herdr actually started an agent pane.
+   *  Roster key alone is not enough: wrappers and absolute-path argv run as
+   *  plain panes and never emit status. */
   const usesHerdrIdleSignal = (r: PtyRecord): boolean =>
-    r.muxKind === 'herdr' && Boolean(herdrKindForCommand(r.command))
+    r.muxKind === 'herdr' && Boolean(r.agentPane)
 
   const canVerifyInject = (r: PtyRecord): boolean => usesHerdrIdleSignal(r)
+
+  const agentGone = (r: PtyRecord): boolean => Boolean(r.agentPane && r.agentEnded)
 
   const clearReadyTimers = (r: PtyRecord): void => {
     if (r.readyTimer) {
@@ -936,21 +974,40 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
   }
 
-  const injectLanded = (r: PtyRecord, text: string): boolean | undefined => {
-    if (r.lastAgentStatus === 'working') return true
-    if (r.lastAgentStatus === 'blocked') return undefined
-    if (r.lastAgentStatus === 'idle') return false
-    const snap = captureSnapshot(r)
-    if (snap === undefined) return undefined
-    return !snap.includes(text)
+  const lastComposerLine = (snap: string): string => {
+    const lines = snap.split(/\r?\n/)
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (lines[i].trim()) return lines[i]
+    }
+    return ''
   }
+
+  type InjectVerdict = 'landed' | 'submit-only' | 'repaste' | 'ambiguous'
+
+  /** Decide from the pane, not from idle status alone. `working` at any
+   *  time during the window already wins via confirmInjectIfPending. */
+  const verdictFromPane = (r: PtyRecord, text: string): InjectVerdict => {
+    if (r.lastAgentStatus === 'working') return 'landed'
+    if (r.lastAgentStatus === 'blocked') return 'ambiguous'
+    const snap = captureSnapshot(r)
+    if (snap === undefined) return 'ambiguous'
+    const inComposer = lastComposerLine(snap).includes(text)
+    const anywhere = snap.includes(text)
+    if (!inComposer && anywhere) return 'landed'
+    if (inComposer) return 'submit-only'
+    if (!anywhere && r.lastAgentStatus === 'idle') return 'repaste'
+    return 'ambiguous'
+  }
+
+  const retryStartMs = (r: PtyRecord): number => Math.max(0, r.injectNextAtMs - now())
 
   const flushRest = (r: PtyRecord): void => {
     const rest = r.injectRest
     r.injectRest = undefined
     if (!rest || rest.length === 0) return
-    rest.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
-    r.injectNextAtMs = now() + rest.length * submitDelayMs * 2
+    const startMs = retryStartMs(r)
+    rest.forEach((d, i) => submitWrite(r, d.text, d.submit, startMs + i * submitDelayMs * 2))
+    r.injectNextAtMs = now() + startMs + rest.length * submitDelayMs * 2
   }
 
   const confirmInjectIfPending = (r: PtyRecord): void => {
@@ -961,7 +1018,21 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
     r.verifyTurn = undefined
     r.verifyAttempts = undefined
+    r.injectError = undefined
     flushRest(r)
+  }
+
+  const failInject = (r: PtyRecord, reason: string, dropRest: boolean): void => {
+    deps.log(`[den-server] term: ${reason}`)
+    r.injectError = reason
+    r.verifyTurn = undefined
+    r.verifyAttempts = undefined
+    if (dropRest) {
+      r.injectRest = undefined
+      r.injectBuffer = []
+    } else {
+      flushRest(r)
+    }
   }
 
   const scheduleVerify = (r: PtyRecord): void => {
@@ -973,27 +1044,35 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         r.verifyTurn = undefined
         return
       }
-      const landed = injectLanded(r, turn.text)
-      if (landed !== false) {
-        if (landed === undefined)
-          deps.log(`[den-server] term: first inject unverifiable — not retrying`)
+      if (agentGone(r)) {
+        failInject(r, 'agent ended before inject', true)
+        return
+      }
+      const verdict = verdictFromPane(r, turn.text)
+      if (verdict === 'landed') {
         confirmInjectIfPending(r)
         return
       }
-      const attempts = r.verifyAttempts ?? 0
-      if (attempts < injectRetryMax) {
-        r.verifyAttempts = attempts + 1
-        submitWrite(r, turn.text, turn.submit, 0)
-        r.injectNextAtMs = now() + (turn.submit ? submitDelayMs * 2 : submitDelayMs)
-        scheduleVerify(r)
+      if (verdict === 'ambiguous') {
+        failInject(r, 'first inject not confirmed', false)
         return
       }
-      deps.log(`[den-server] term: first inject not confirmed after ${injectRetryMax} retries`)
-      r.injectError = 'first inject not confirmed'
-      r.verifyTurn = undefined
-      r.verifyAttempts = undefined
-      flushRest(r)
-    }, INJECT_VERIFY_MS)
+      const attempts = r.verifyAttempts ?? 0
+      if (attempts >= injectRetryMax) {
+        failInject(r, 'first inject not confirmed', false)
+        return
+      }
+      r.verifyAttempts = attempts + 1
+      const startMs = retryStartMs(r)
+      if (verdict === 'submit-only') {
+        laterWrite(r, SUBMIT_CR, startMs)
+        r.injectNextAtMs = now() + startMs + submitDelayMs
+      } else {
+        submitWrite(r, turn.text, turn.submit, startMs)
+        r.injectNextAtMs = now() + startMs + (turn.submit ? submitDelayMs * 2 : submitDelayMs)
+      }
+      scheduleVerify(r)
+    }, injectVerifyMs)
     r.verifyTimer.unref()
   }
 
@@ -1002,6 +1081,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     clearReadyTimers(r)
     if (r.state !== 'running') {
       r.injectBuffer = []
+      return
+    }
+    if (agentGone(r)) {
+      failInject(r, 'agent ended before inject', true)
       return
     }
     r.ready = true
@@ -1051,20 +1134,31 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   if (herdr) {
     const ctl = herdr
+    const recFor = (name: string): PtyRecord | undefined =>
+      [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
     statusHub = createHerdrStatusHub({
       subscribe: (name, onEvent, onClose) =>
         ctl.subscribeEvents?.(name, onEvent, onClose) ?? ((): void => undefined),
+      onEvent: (name, evt) => {
+        const rec = recFor(name)
+        if (rec && herdrAgentReleased(evt)) rec.agentEnded = true
+      },
       onFrame: (name, frame) => {
         if (process.env.RIVETOS_HERDR_DEBUG === '1')
           console.error(`[herdr] frame session=${name} status=${frame.status}`)
-        const rec = [...records.values()].find((r) => r.tmuxName === name && r.state === 'running')
+        const rec = recFor(name)
         if (rec) {
           rec.lastAgentStatus = frame.status
           if (frame.status === 'working') {
             touchActivity(rec)
             confirmInjectIfPending(rec)
           }
-          if (!rec.ready && frame.status === 'idle' && usesHerdrIdleSignal(rec)) {
+          if (
+            !rec.ready &&
+            frame.status === 'idle' &&
+            usesHerdrIdleSignal(rec) &&
+            !agentGone(rec)
+          ) {
             markReadyAndFlush(rec)
           }
         }
@@ -1762,7 +1856,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           })
           if (
             herdr &&
-            herdrKindForCommand(key) &&
+            herdrUseAgent(herdrKindForCommand(key), argv[0] ?? '') &&
             (firstSeen || (statusHub?.refs(tmuxName) ?? 0) === 0)
           ) {
             statusHub?.retain(tmuxName, denSession)
@@ -1794,6 +1888,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           routedUser,
           tmuxName,
           muxKind: tmuxName ? (herdr ? 'herdr' : tmux ? 'tmux' : undefined) : undefined,
+          agentPane: Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? ''),
           persisted,
           attached: new Set(),
           exitWatchers: new Set(),
@@ -2015,6 +2110,14 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Ready-gate (5g): before the harness TUI is up, buffer instead of
       // writing into the void; quiescence / herdr idle / ceiling flushes it.
       if (r.ready) {
+        // A first-turn verify is still in flight: hold later turns so a retry
+        // of turn 1 cannot land after turn 2, and so paste/CR pairs stay ordered.
+        if (r.verifyTurn) {
+          r.injectRest = r.injectRest ?? []
+          if (r.injectRest.length >= INJECT_BUFFER_MAX) return false
+          r.injectRest.push({ text, submit })
+          return true
+        }
         // Serialize against any in-flight turn so paste/CR pairs never
         // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
         // one submit delay — parallel API clients or a UI without a send lock.
@@ -2029,6 +2132,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
         submitWrite(r, text, submit, startMs)
         r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
+        r.injectError = undefined
         return true
       }
       // Bounded buffer: a client can't grow memory by spamming inject before

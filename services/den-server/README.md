@@ -93,12 +93,19 @@ last detach; activity is stdout, chat inject, or terminal write; `0` disables),
 inspection),
 `RIVETOS_DEN_TERM_INJECT_READY_MS` (500 — quiet period with no PTY output
 before a fresh harness is treated as ready for a buffered chat inject;
-re-armed on every chunk. A herdr agent-idle event readies a known harness
-immediately, even while output is still trickling),
+re-armed on every chunk. A herdr agent-idle event readies the pane only when
+it was created as an agent pane — roster argv[0] is the herdr kind, not a
+wrapper or absolute path — even while output is still trickling; otherwise
+the quiet period applies),
 `RIVETOS_DEN_TERM_INJECT_READY_MAX_MS` (15000 — hard ceiling: flush buffered
 injects anyway and log a warning),
+`RIVETOS_DEN_TERM_INJECT_VERIFY_MS` (1500 — after the first buffered submit,
+wait this long for a herdr `working` frame or a pane capture before retrying;
+a `working` frame at any time during the window confirms),
 `RIVETOS_DEN_TERM_INJECT_RETRY_MAX` (2 — herdr retries of an unconfirmed first
-buffered inject; unverifiable muxes never retry). `node-pty` is an optional
+buffered inject, decided from the pane: CR-only when the paste is still in
+the composer, re-paste only when the text is gone; capture-unavailable never
+retries). `node-pty` is an optional
 dependency; when it failed to install, term endpoints answer 503 and
 everything else works.
 
