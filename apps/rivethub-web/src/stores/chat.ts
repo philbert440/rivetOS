@@ -46,6 +46,7 @@ import {
 import { questionsFromLiveTools, type AskQuestion } from '../lib/ask-user.js'
 import type { HarnessApprovalEvent } from '../lib/harness-fold.js'
 import { denRoomKey } from '../lib/harness-chat.js'
+import type { ThreadLifecycleEvent } from '../lib/outbound-pump.js'
 
 export type LiveSource = 'transcript' | 'hooks'
 
@@ -53,7 +54,8 @@ export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
-/** User turn waiting to be injected into the harness (or mid-inject). */
+/** User turn waiting to be injected into the harness (or mid-inject).
+ * Accepted: remove queue row, keep bubble. Failed: keep both. Cancel: remove both. */
 export type OutboundStatus = 'queued' | 'sending' | 'failed'
 
 export interface OutboundItem {
@@ -101,7 +103,8 @@ interface ChatState {
    *  when the turn ends (done / assistant commit), shown as the composer's
    *  ask card until the user answers or dismisses it */
   ask: Record<string, AskQuestion[] | undefined>
-  /** Successful record moves only; flattened and never persisted. */
+  /** Successful moves only; flattened, bounded, cycle-guarded and never persisted.
+   * Removing/clearing a thread must prune all its predecessors too. */
   sessionAliases: Record<string, string>
   resolveSessionKey: (sessionId: string) => string
   /** Queued turns live in the strip; sending/failed turns also have bubbles. */
@@ -452,6 +455,55 @@ function overlayTranscriptLive(
   }
 }
 
+// Lifecycle events keep pump ownership independent of alias retention/capping.
+const threadListeners = new Set<(event: ThreadLifecycleEvent) => void>()
+export function subscribeChatThreads(listener: (event: ThreadLifecycleEvent) => void): () => void {
+  threadListeners.add(listener)
+  return () => {
+    threadListeners.delete(listener)
+  }
+}
+function notifyThread(event: ThreadLifecycleEvent): void {
+  for (const listener of threadListeners) listener(event)
+}
+
+const MAX_SESSION_ALIASES = 256
+// Weak ownership avoids retaining old maps just to suppress repeated diagnostics.
+const warnedAliasMaps = new WeakSet<Record<string, string>>()
+function resolveAlias(aliases: Record<string, string>, id: string): string {
+  const visited = new Set<string>([id])
+  while (Object.hasOwn(aliases, id)) {
+    const next = aliases[id]
+    if (visited.has(next)) {
+      if (!warnedAliasMaps.has(aliases)) {
+        warnedAliasMaps.add(aliases)
+        console.warn('Chat session alias cycle detected')
+      }
+      return id
+    }
+    visited.add(next)
+    id = next
+  }
+  return id
+}
+
+/** Include every predecessor, even if an unexpected cycle reached the store. */
+function threadKeys(aliases: Record<string, string>, id: string): Set<string> {
+  const keys = new Set([id])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const [from, to] of Object.entries(aliases)) {
+      if (keys.has(from) || keys.has(to)) {
+        if (!keys.has(from) || !keys.has(to)) changed = true
+        keys.add(from)
+        keys.add(to)
+      }
+    }
+  }
+  return keys
+}
+
 export const useChat = create<ChatState>()(
   persist(
     (set, get) => ({
@@ -462,7 +514,7 @@ export const useChat = create<ChatState>()(
       liveTs: {},
       ask: {},
       sessionAliases: {},
-      resolveSessionKey: (id) => get().sessionAliases[id] ?? id,
+      resolveSessionKey: (id) => resolveAlias(get().sessionAliases, id),
       outbound: {},
       harnessBound: {},
       approvals: {},
@@ -488,7 +540,11 @@ export const useChat = create<ChatState>()(
           return { messages: { ...s.messages, [sessionId]: merged } }
         }),
 
-      replace: (sessionId, msgs, opts) =>
+      replace: (sessionId, msgs, opts) => {
+        sessionId = get().resolveSessionKey(sessionId)
+        const cleared = !opts?.preserveOutbound && msgs.length === 0
+        const keys = threadKeys(get().sessionAliases, sessionId)
+        if (cleared) notifyThread({ type: 'remove', keys })
         set((s) => {
           const preserve = opts?.preserveOutbound === true
           const outbound = s.outbound[sessionId] ?? []
@@ -505,6 +561,15 @@ export const useChat = create<ChatState>()(
             next = [...byId.values()].sort((a, b) => a.ts - b.ts)
           }
           return {
+            ...(cleared
+              ? {
+                  sessionAliases: Object.fromEntries(
+                    Object.entries(s.sessionAliases).filter(
+                      ([key, target]) => !keys.has(key) && !keys.has(target),
+                    ),
+                  ),
+                }
+              : {}),
             messages: { ...s.messages, [sessionId]: next },
             // messages and the turn cache must clear together, or the next
             // transcript frame reconciles fresh rows against stale turns
@@ -517,7 +582,8 @@ export const useChat = create<ChatState>()(
             // hard resync rebuilds from disk — a stale ask card must not survive it
             ask: preserve ? s.ask : { ...s.ask, [sessionId]: undefined },
           }
-        }),
+        })
+      },
 
       addDraft: (sessionId) =>
         set((s) => {
@@ -532,25 +598,32 @@ export const useChat = create<ChatState>()(
         }),
 
       removeDraft: (sessionId) => {
-        releaseWatch(sessionId)
+        const keys = threadKeys(get().sessionAliases, sessionId)
+        notifyThread({ type: 'remove', keys })
+        for (const key of keys) releaseWatch(key)
         set((s) => {
           const drop = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-            if (!(sessionId in m)) return m
-            const { [sessionId]: _gone, ...rest } = m
-            return rest
+            return Object.fromEntries(Object.entries(m).filter(([key]) => !keys.has(key)))
           }
           return {
-            drafts: s.drafts.filter((id) => id !== sessionId),
-            opened: s.opened.filter((id) => id !== sessionId),
-            active: s.active === sessionId ? undefined : s.active,
+            sessionAliases: Object.fromEntries(
+              Object.entries(s.sessionAliases).filter(
+                ([key, target]) => !keys.has(key) && !keys.has(target),
+              ),
+            ),
+            drafts: s.drafts.filter((id) => !keys.has(id)),
+            opened: s.opened.filter((id) => !keys.has(id)),
+            active: s.active !== undefined && keys.has(s.active) ? undefined : s.active,
             // A discarded draft must not be resumed on the next launch.
-            lastActive: s.lastActive?.sessionId === sessionId ? undefined : s.lastActive,
+            lastActive: s.lastActive && keys.has(s.lastActive.sessionId) ? undefined : s.lastActive,
             messages: drop(s.messages),
             transcripts: drop(s.transcripts),
             live: drop(s.live),
             liveTs: drop(s.liveTs),
             ask: drop(s.ask),
             outbound: drop(s.outbound),
+            harnessBound: drop(s.harnessBound),
+            approvals: drop(s.approvals),
             agentStatus: drop(s.agentStatus),
             prompts: drop(s.prompts),
             liveSource: drop(s.liveSource),
@@ -567,7 +640,14 @@ export const useChat = create<ChatState>()(
         // transcript with the one we were about to fold in — but still move the
         // selection, or the composer keeps queueing turns onto the retired key
         // (the effect that called us does not re-fire).
-        const moved = get().messages[to] === undefined && get().transcripts[to] === undefined
+        const destination = get()
+        const moved = !(
+          destination.messages[to]?.length ||
+          destination.transcripts[to]?.turns.length ||
+          destination.outbound[to]?.length ||
+          destination.live[to] ||
+          destination.liveIsBusy(to)
+        )
         // The retired key keeps no subscription either way — the selection has
         // left it, so its frames would be dropped client-side while the server
         // kept parsing the store for it. We do NOT auto-watch `to`: the view owns
@@ -593,20 +673,23 @@ export const useChat = create<ChatState>()(
           }
           if (!moved) return retarget
           const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-            if (!(from in m)) return m
-            const { [from]: value, ...rest } = m
-            return { ...rest, [to]: value }
+            // Empty destination leftovers are absent, including slices the source lacks.
+            const { [from]: value, [to]: _leftover, ...rest } = m
+            return value === undefined ? rest : { ...rest, [to]: value }
           }
           return {
             ...retarget,
-            sessionAliases: {
-              ...Object.fromEntries(
-                Object.entries(s.sessionAliases)
-                  .filter(([key]) => key !== to)
-                  .map(([key, target]) => [key, target === from ? to : target]),
-              ),
-              [from]: to,
-            },
+            sessionAliases: Object.fromEntries<string>(
+              [
+                ...Object.entries(s.sessionAliases)
+                  .filter(([key]) => key !== to && key !== from)
+                  .map(([key, target]) => {
+                    const resolved = resolveAlias(s.sessionAliases, target)
+                    return [key, resolved === from ? to : resolved] as const
+                  }),
+                [from, to] as const,
+              ].slice(-MAX_SESSION_ALIASES),
+            ),
             messages: move(s.messages),
             transcripts: move(s.transcripts),
             live: move(s.live),
@@ -621,6 +704,7 @@ export const useChat = create<ChatState>()(
             liveFloor: move(s.liveFloor),
           }
         })
+        if (moved) notifyThread({ type: 'move', from, to })
         return moved
       },
 
@@ -694,16 +778,16 @@ export const useChat = create<ChatState>()(
       },
 
       markOutboundSending: (sessionId, id) => {
+        sessionId = get().resolveSessionKey(sessionId)
         const item = get().outbound[sessionId]?.find((o) => o.id === id)
-        if (item) {
-          const text =
-            item.text ||
-            (item.attachments ?? [])
-              .filter((a) => a.mime.startsWith('image/'))
-              .map(() => '[Image]')
-              .join('\n')
-          get().addOptimisticUser(sessionId, text, id)
-        }
+        if (!item) return
+        const text =
+          item.text ||
+          (item.attachments ?? [])
+            .filter((a) => a.mime.startsWith('image/'))
+            .map(() => '[Image]')
+            .join('\n')
+        get().addOptimisticUser(sessionId, text, id)
         set((s) => ({
           outbound: {
             ...s.outbound,
@@ -715,45 +799,65 @@ export const useChat = create<ChatState>()(
       },
 
       requeueOutbound: (sessionId, id) =>
-        set((s) => ({
-          outbound: {
-            ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-              o.id === id ? { ...o, status: 'queued' as const } : o,
-            ),
-          },
-          // Queue is not history: a requeued turn waits in the strip, not as a bubble.
-          messages: {
-            ...s.messages,
-            [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
-          },
-        })),
+        set((s) => {
+          sessionId = s.resolveSessionKey(sessionId)
+          if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+                o.id === id ? { ...o, status: 'queued' as const } : o,
+              ),
+            },
+            // Refusal means not accepted: show only the queue strip until retry.
+            // Hard failure keeps its bubble to show the failure cue instead.
+            messages: {
+              ...s.messages,
+              [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
+            },
+          }
+        }),
 
       dequeueOutbound: (sessionId, id) =>
-        set((s) => ({
-          outbound: {
-            ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
-          },
-        })),
+        set((s) => {
+          sessionId = s.resolveSessionKey(sessionId)
+          if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
+            },
+          }
+        }),
 
+      // Failed turns do not block later queued turns. Manual retry deliberately
+      // injects after any later turns already sent, using the original item id.
       failOutbound: (sessionId, id) =>
-        set((s) => ({
-          outbound: {
-            ...s.outbound,
-            [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-              o.id === id ? { ...o, status: 'failed' as const } : o,
-            ),
-          },
-        })),
+        set((s) => {
+          sessionId = s.resolveSessionKey(sessionId)
+          if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
+                o.id === id ? { ...o, status: 'failed' as const } : o,
+              ),
+            },
+          }
+        }),
 
       cancelOutbound: (sessionId, id) => {
+        sessionId = get().resolveSessionKey(sessionId)
+        if (!get().outbound[sessionId]?.some((o) => o.id === id)) return
         get().dequeueOutbound(sessionId, id)
         set((s) => ({
-          messages: {
-            ...s.messages,
-            [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
-          },
+          messages:
+            s.messages[sessionId] === undefined
+              ? s.messages
+              : {
+                  ...s.messages,
+                  [sessionId]: s.messages[sessionId]!.filter((m) => m.id !== id),
+                },
         }))
       },
 
@@ -1011,6 +1115,7 @@ export const useChat = create<ChatState>()(
       connect: (endpointKey) => {
         subscription?.close()
         if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
+          notifyThread({ type: 'clear' })
           watchedSessions.clear() // session ids are only meaningful per gateway
           set({
             messages: {},

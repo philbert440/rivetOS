@@ -28,8 +28,6 @@ function fakeStore(): FakeStore {
     calls: [],
     queue: () => s.items,
     liveIsBusy: () => s.busy,
-    live: () => s.liveTurn,
-    liveTs: () => s.lastFrame,
     markSending: (_sid, id) => {
       s.calls.push(`mark:${id}`)
       const it = s.items.find((o) => o.id === id)
@@ -46,7 +44,8 @@ function fakeStore(): FakeStore {
     },
     fail: (_sid, id) => {
       s.calls.push(`fail:${id}`)
-      s.items = s.items.filter((o) => o.id !== id)
+      const item = s.items.find((o) => o.id === id)
+      if (item) item.status = 'failed'
     },
     beginLive: () => {
       s.calls.push('beginLive')
@@ -335,6 +334,7 @@ describe('pump registry rekey ownership', () => {
         reject(new Error('offline'))
         await failure
         expect(fail).toHaveBeenCalledWith(key, 'first')
+        expect(s.items.find((o) => o.id === 'first')?.status).toBe('failed')
       } else {
         reject(TURN_IN_FLIGHT)
         await pending
@@ -349,7 +349,16 @@ describe('pump registry rekey ownership', () => {
       expect(next.mock.calls.map((call) => call[0])).toEqual(
         outcome === 'turn_in_flight' ? ['first', 'second'] : ['second'],
       )
-      expect(s.items).toEqual([])
+      expect(s.items).toEqual(
+        outcome === 'failed' ? [{ ...queued('first'), status: 'failed' }] : [],
+      )
+      if (outcome === 'failed') {
+        const retried = adopted.pump.pump({ forceId: 'first' })
+        await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+        await retried
+        expect(next.mock.calls.map((call) => call[0])).toEqual(['second', 'first'])
+        expect(s.items).toEqual([])
+      }
     },
   )
 })

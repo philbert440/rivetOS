@@ -44,6 +44,10 @@ vi.mock('./connection.js', () => ({
 afterAll(() => vi.unstubAllGlobals())
 
 const { useChat, lastActiveFor } = await import('./chat.js')
+const { outboundPumpFor } = await import('../lib/chat-outbound.js')
+afterEach(() => {
+  for (const key of useChat.getState().opened) useChat.getState().removeDraft(key)
+})
 
 beforeEach(() => {
   useChat.setState({
@@ -160,8 +164,6 @@ describe('outbound sends across rekey', () => {
   const store: OutboundPumpStore = {
     resolveSessionKey: (sid) => state().resolveSessionKey(sid),
     queue: (sid) => state().outbound[sid],
-    live: (sid) => state().live[sid],
-    liveTs: (sid) => state().liveTs[sid],
     liveIsBusy: (sid) => state().liveIsBusy(sid),
     markSending: (sid, id) => state().markOutboundSending(sid, id),
     dequeue: (sid, id) => state().dequeueOutbound(sid, id),
@@ -172,7 +174,10 @@ describe('outbound sends across rekey', () => {
     awaitBusy: (_sid, ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   }
 
-  function setup(from = 'draft') {
+  function setup(
+    from = 'draft',
+    registry = createOutboundPumpRegistry(store, (err) => err === turnInFlight),
+  ) {
     state().addDraft(from)
     state().setActive(from)
     const id = state().enqueueOutbound(from, 'first')
@@ -185,12 +190,106 @@ describe('outbound sends across rekey', () => {
           reject = rej
         }),
     )
-    const registry = createOutboundPumpRegistry(store, (err) => err === turnInFlight)
     const entry = registry(from)
     entry.sink.current = inject
     const pending = entry.pump.pump()
     return { id, resolve, reject, inject, registry, entry, pending }
   }
+
+  it('uses the module registry across chained moves and destination remounts', async () => {
+    const t = setup('A', outboundPumpFor)
+    state().rekey('A', 'B')
+    state().rekey('B', 'C')
+    const destination = outboundPumpFor('C')
+    expect(destination).toBe(t.entry)
+    const next = vi.fn((_text: string) => Promise.resolve())
+    destination.sink.current = next
+    await destination.pump.pump()
+    expect(next).not.toHaveBeenCalled()
+    t.resolve()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await t.pending
+    expect(state().outbound.C).toEqual([])
+    expect(state().outbound.A).toBeUndefined()
+    expect(state().outbound.B).toBeUndefined()
+  })
+
+  it('keeps a running module pump routed after its oldest alias is capped', async () => {
+    const t = setup('key-0', outboundPumpFor)
+    for (let i = 0; i < 300; i++) state().rekey(`key-${i}`, `key-${i + 1}`)
+    expect(state().sessionAliases['key-0']).toBeUndefined()
+    expect(outboundPumpFor('key-300')).toBe(t.entry)
+    t.resolve()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await t.pending
+    expect(state().outbound['key-300']).toEqual([])
+    expect(state().live['key-300']).toBeUndefined()
+    expect(state().outbound['key-0']).toBeUndefined()
+  })
+
+  it.each(['resolve', 'reject'] as const)(
+    'discards a moved thread mid-send before %s',
+    async (outcome) => {
+      const t = setup('A', outboundPumpFor)
+      state().rekey('A', 'B')
+      state().removeDraft('B')
+      expect(state().sessionAliases).toEqual({})
+      if (outcome === 'resolve') t.resolve()
+      else t.reject(new Error('offline'))
+      await t.pending
+      expect(state().outbound).toEqual({})
+      expect(state().messages).toEqual({})
+      expect(state().live).toEqual({})
+      state().addDraft('B')
+      expect(outboundPumpFor('B')).not.toBe(t.entry)
+      state().removeDraft('B')
+      state().addDraft('A')
+      expect(outboundPumpFor('A')).not.toBe(t.entry)
+    },
+  )
+
+  it('clears aliases and the pending module pump when a thread is cleared', async () => {
+    const t = setup('A', outboundPumpFor)
+    state().rekey('A', 'B')
+    state().replace('B', [])
+    expect(state().sessionAliases).toEqual({})
+    expect(outboundPumpFor('B')).not.toBe(t.entry)
+    t.resolve()
+    await t.pending
+    expect(state().outbound.A).toBeUndefined()
+    expect(state().messages.A).toBeUndefined()
+  })
+
+  it('retries a retained failure after a later queued turn has drained', async () => {
+    const t = setup()
+    state().enqueueOutbound('draft', 'second')
+    state().rekey('draft', to)
+    const next = vi.fn((_text: string) => Promise.resolve())
+    t.registry(to).sink.current = next
+    const failed = expect(t.pending).rejects.toThrow('offline')
+    t.reject(new Error('offline'))
+    await failed
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined)
+    expect(state().outbound[to]).toEqual([{ id: t.id, text: 'first', status: 'failed' }])
+    const retry = t.registry(to).pump.pump({ forceId: t.id })
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await retry
+    expect(next.mock.calls.map((call) => call[0])).toEqual(['second', 'first'])
+  })
+
+  it('keeps a failing source send separate from a live destination collision', async () => {
+    const t = setup()
+    state().addOptimisticUser(to, 'existing', 'existing')
+    const destinationMessages = state().messages[to]
+    expect(state().rekey('draft', to)).toBe(false)
+    const failed = expect(t.pending).rejects.toThrow('offline')
+    t.reject(new Error('offline'))
+    await failed
+    expect(state().outbound.draft?.[0].status).toBe('failed')
+    expect(state().messages[to]).toBe(destinationMessages)
+    expect(state().outbound[to]).toBeUndefined()
+  })
 
   it.each(['draft', 'claude-code:previous-native'])(
     'settles a successful send after adoption/rotation from %s',
@@ -257,7 +356,7 @@ describe('outbound sends across rekey', () => {
     const t = setup()
     const second = state().enqueueOutbound('draft', 'second')
     state().adoptSessionKey(to)
-    const next = vi.fn(() => Promise.resolve())
+    const next = vi.fn((_text: string) => Promise.resolve())
     t.registry(to).sink.current = next
     await t.registry(to).pump.pump()
     expect(next).not.toHaveBeenCalled()
@@ -305,4 +404,122 @@ describe('outbound sends across rekey', () => {
     expect(state().messages[to]).toBe(destinationMessages)
     expect(state().outbound[to]?.map((o) => o.id)).toEqual([existing])
   })
+})
+
+describe('session alias lifetime', () => {
+  const state = () => useChat.getState()
+
+  it.each(['dequeueOutbound', 'requeueOutbound', 'failOutbound', 'cancelOutbound'] as const)(
+    '%s resolves a retired key, then the thread can move back',
+    (settle) => {
+      state().addDraft('A')
+      state().setActive('A')
+      const first = state().enqueueOutbound('A', 'first')
+      const second = state().enqueueOutbound('A', 'still in flight')
+      state().markOutboundSending('A', first)
+      state().rekey('A', 'B')
+      state()[settle]('A', first)
+      expect(Object.hasOwn(state().outbound, 'A')).toBe(false)
+      expect(Object.hasOwn(state().messages, 'A')).toBe(false)
+      state().markOutboundSending('B', second)
+      // Older reducers/resyncs may have left empty destination records.
+      useChat.setState({
+        messages: { ...state().messages, A: [] },
+        transcripts: { A: { rev: 0, turns: [], command: '', offset: 0 } },
+        outbound: { ...state().outbound, A: [] },
+      })
+      expect(state().rekey('B', 'A')).toBe(true)
+      expect(state().active).toBe('A')
+      expect(state().outbound.A?.find((o) => o.id === second)?.status).toBe('sending')
+      expect(state().sessionAliases).toEqual({ B: 'A' })
+      expect(Object.hasOwn(state().messages, 'B')).toBe(false)
+      expect(Object.hasOwn(state().outbound, 'B')).toBe(false)
+    },
+  )
+
+  it('settles on C through a chain and flattens every predecessor on a move', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'first')
+    state().markOutboundSending('A', id)
+    state().rekey('A', 'B')
+    state().rekey('B', 'C')
+    expect(state().sessionAliases).toEqual({ A: 'C', B: 'C' })
+    state().failOutbound('A', id)
+    expect(state().outbound.C?.[0].status).toBe('failed')
+    expect(state().outbound.A).toBeUndefined()
+    // Defensive resolver must handle a non-flattened map too.
+    useChat.setState({ sessionAliases: { A: 'B', B: 'C' } })
+    expect(state().resolveSessionKey('A')).toBe('C')
+    state().rekey('C', 'D')
+    expect(state().sessionAliases).toEqual({ A: 'D', B: 'D', C: 'D' })
+  })
+
+  it('stops at the last non-repeating key and logs a cycle only once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      useChat.setState({ sessionAliases: { A: 'B', B: 'A' } })
+      expect(state().resolveSessionKey('A')).toBe('B')
+      expect(state().resolveSessionKey('A')).toBe('B')
+      expect(state().resolveSessionKey('B')).toBe('A')
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it.each(['A', 'C'])('removes all aliases and records when discarded through %s', (key) => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'first')
+    state().rekey('A', 'B')
+    state().rekey('B', 'C')
+    state().removeDraft(key)
+    expect(state().sessionAliases).toEqual({})
+    for (const settle of [
+      'dequeueOutbound',
+      'requeueOutbound',
+      'failOutbound',
+      'cancelOutbound',
+      'markOutboundSending',
+    ] as const) {
+      state()[settle]('A', id)
+      state()[settle]('C', id)
+    }
+    expect(state().outbound).toEqual({})
+    expect(state().messages).toEqual({})
+  })
+
+  it('never persists aliases (including through partialize)', () => {
+    state().addDraft('A')
+    state().setActive('A')
+    state().rekey('A', 'B')
+    expect(state().sessionAliases).toEqual({ A: 'B' })
+    expect(useChat.persist.getOptions().partialize?.(state())).toEqual({
+      lastActive: state().lastActive,
+    })
+    const snapshot = JSON.parse(localStorage.getItem('rivethub.chat') ?? '')
+    expect(snapshot.state).not.toHaveProperty('sessionAliases')
+  })
+
+  it('caps aliases at 256, dropping the oldest first', () => {
+    for (let i = 0; i < 300; i++) state().rekey(`key-${i}`, `key-${i + 1}`)
+    expect(Object.keys(state().sessionAliases)).toHaveLength(256)
+    expect(state().sessionAliases['key-0']).toBeUndefined()
+    expect(state().sessionAliases['key-44']).toBe('key-300')
+    expect(state().sessionAliases['key-299']).toBe('key-300')
+  })
+
+  it.each(['outbound', 'live'] as const)(
+    'treats destination %s content as a collision',
+    (slice) => {
+      state().addDraft('A')
+      const id = state().enqueueOutbound('A', 'first')
+      state().markOutboundSending('A', id)
+      if (slice === 'outbound') state().enqueueOutbound('B', 'existing')
+      else state().beginLive('B')
+      expect(state().rekey('A', 'B')).toBe(false)
+      state().failOutbound('A', id)
+      expect(state().outbound.A?.[0].status).toBe('failed')
+      expect(state().sessionAliases).toEqual({})
+    },
+  )
 })

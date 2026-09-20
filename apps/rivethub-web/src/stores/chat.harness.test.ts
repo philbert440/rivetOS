@@ -79,6 +79,7 @@ beforeEach(() => {
     liveTs: {},
     ask: {},
     outbound: {},
+    sessionAliases: {},
     harnessBound: {},
     approvals: {},
     agentStatus: {},

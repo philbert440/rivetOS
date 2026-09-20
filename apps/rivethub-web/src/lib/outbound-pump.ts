@@ -24,7 +24,7 @@
  * the inject sink, so the ordering is unit-testable (see harness-attach.ts).
  */
 
-import type { LiveTurn, OutboundItem } from '../stores/chat.js'
+import type { OutboundItem } from '../stores/chat.js'
 
 /** How long the queue pump waits for an injected turn's first stream frame
  *  before deciding the harness isn't bridging and letting the queue flow. */
@@ -41,9 +41,6 @@ export interface OutboundPumpStore {
   resolveSessionKey?(sessionId: string): string
   queue(sessionId: string): OutboundItem[] | undefined
   liveIsBusy(sessionId: string): boolean
-  live(sessionId: string): LiveTurn | undefined
-  /** ms timestamp of the last stream frame. */
-  liveTs(sessionId: string): number | undefined
   markSending(sessionId: string, id: string): void
   dequeue(sessionId: string, id: string): void
   requeue(sessionId: string, id: string): void
@@ -59,6 +56,8 @@ export interface OutboundPumpStore {
 
 export interface OutboundPumpOptions {
   sessionId: string
+  /** Registry-owned identity survives defensive alias eviction. */
+  currentSessionKey?: () => string
   store: OutboundPumpStore
   /** Inject one user turn into the harness (control-plane or PTY path). */
   inject: (
@@ -97,7 +96,8 @@ export interface OutboundPump {
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   const { store } = opts
   // Resolve at every read/write, including after latch waits and chained rekeys.
-  const sessionId = (): string => store.resolveSessionKey?.(opts.sessionId) ?? opts.sessionId
+  const sessionId = (): string =>
+    opts.currentSessionKey?.() ?? store.resolveSessionKey?.(opts.sessionId) ?? opts.sessionId
   let pumping = false
   /** Id of the send between markSending and inject resolution — the only
    *  item `reset(id)` will free the latch for. Undefined during the latch
@@ -206,31 +206,70 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   }
 }
 
-/** Preserve the inject latch, retry budget and rebound sink across record moves. */
+export type ThreadLifecycleEvent =
+  | { type: 'move'; from: string; to: string }
+  | { type: 'remove'; keys: ReadonlySet<string> }
+  | { type: 'clear' }
+
+type PumpEntry = { pump: OutboundPump; sink: { current: OutboundPumpOptions['inject'] } }
+export type OutboundPumpRegistry = ((sessionId: string) => PumpEntry) & { dispose(): void }
+
+/** Preserve the latch across moves; release the pump and view sink on removal. */
 export function createOutboundPumpRegistry(
   store: OutboundPumpStore,
   isTurnInFlight: OutboundPumpOptions['isTurnInFlight'],
-): (sessionId: string) => { pump: OutboundPump; sink: { current: OutboundPumpOptions['inject'] } } {
-  const entries = new Map<
-    string,
-    {
-      pump: OutboundPump
-      sink: { current: OutboundPumpOptions['inject'] }
+  subscribe?: (listener: (event: ThreadLifecycleEvent) => void) => () => void,
+): OutboundPumpRegistry {
+  const entries = new Map<string, PumpEntry & { key: string }>()
+  const noView: OutboundPumpOptions['inject'] = () =>
+    Promise.reject(new Error('no mounted session view'))
+  const drop = (key: string): void => {
+    const entry = entries.get(key)
+    if (!entry) return
+    entry.pump.dispose()
+    entry.sink.current = noView
+    entries.delete(key)
+  }
+  const unsubscribe = subscribe?.((event) => {
+    if (event.type === 'move') {
+      const entry = entries.get(event.from)
+      // An empty destination can have a mounted but idle pump of its own.
+      drop(event.to)
+      if (entry) {
+        entries.delete(event.from)
+        entry.key = event.to
+        entries.set(event.to, entry)
+      }
+    } else if (event.type === 'remove') {
+      for (const key of event.keys) drop(key)
+    } else {
+      for (const key of entries.keys()) drop(key)
     }
-  >()
-  return (sessionId) => {
+  })
+  const registry = (sessionId: string): PumpEntry => {
     const key = store.resolveSessionKey?.(sessionId) ?? sessionId
-    for (const [original, entry] of entries) {
-      if ((store.resolveSessionKey?.(original) ?? original) === key) return entry
+    const existing = entries.get(key)
+    if (existing) return existing
+    // Framework-free callers can omit lifecycle events. Production moves are
+    // indexed eagerly, so view renders take the constant-time path above.
+    if (!subscribe) {
+      for (const [original, entry] of entries) {
+        if ((store.resolveSessionKey?.(original) ?? original) === key) {
+          entries.delete(original)
+          entry.key = key
+          entries.set(key, entry)
+          return entry
+        }
+      }
     }
-    const sink = {
-      current: (() =>
-        Promise.reject(new Error('no mounted session view'))) as OutboundPumpOptions['inject'],
-    }
-    const entry = {
+    const sink = { current: noView }
+    const entry: PumpEntry & { key: string } = {
+      key,
       sink,
       pump: createOutboundPump({
         sessionId: key,
+        currentSessionKey: () =>
+          subscribe ? entry.key : (store.resolveSessionKey?.(entry.key) ?? entry.key),
         store,
         inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
         isTurnInFlight,
@@ -239,4 +278,10 @@ export function createOutboundPumpRegistry(
     entries.set(key, entry)
     return entry
   }
+  return Object.assign(registry, {
+    dispose: () => {
+      unsubscribe?.()
+      for (const key of entries.keys()) drop(key)
+    },
+  })
 }

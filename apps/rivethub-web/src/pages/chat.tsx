@@ -81,7 +81,7 @@ import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
 import { agentStatusLine } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
-import { createOutboundPumpRegistry, type OutboundPumpStore } from '../lib/outbound-pump.js'
+import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
@@ -90,7 +90,6 @@ import {
   fetchHarnessPlaneSessions,
   findChatItem,
   harnessGate,
-  isTurnInFlight,
   nativeIdOf,
   rosterCommandFor,
   shortNativeId,
@@ -132,46 +131,6 @@ const EMPTY_TOOLS: LiveToolEntry[] = []
 
 /** Pause between a control-plane interrupt and the turn that displaced it. */
 const INTERRUPT_SETTLE_MS = 400
-
-/** Adapter handing the extracted pump (lib/outbound-pump.ts) the chat-store
- *  slice it drives — reads go through getState() so the pump always sees the
- *  latest queue/live state. */
-const pumpStore: OutboundPumpStore = {
-  resolveSessionKey: (sid) => useChat.getState().resolveSessionKey(sid),
-  queue: (sid) => useChat.getState().outbound[sid],
-  liveIsBusy: (sid) => useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid)),
-  live: (sid) => useChat.getState().live[sid],
-  liveTs: (sid) => useChat.getState().liveTs[sid],
-  markSending: (sid, id) => useChat.getState().markOutboundSending(sid, id),
-  dequeue: (sid, id) => useChat.getState().dequeueOutbound(sid, id),
-  requeue: (sid, id) => useChat.getState().requeueOutbound(sid, id),
-  fail: (sid, id) => useChat.getState().failOutbound(sid, id),
-  beginLive: (sid, activity) => useChat.getState().beginLive(sid, activity),
-  clearLive: (sid) => useChat.getState().clearLive(sid),
-  awaitBusy: (sid, ms) =>
-    new Promise((resolve) => {
-      if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid))) {
-        resolve()
-        return
-      }
-      let settled = false
-      const finish = (): void => {
-        if (settled) return
-        settled = true
-        unsub()
-        clearTimeout(timer)
-        resolve()
-      }
-      const unsub = useChat.subscribe(() => {
-        if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid))) finish()
-      })
-      const timer = setTimeout(finish, ms)
-    }),
-}
-
-// The registry follows successful store rekeys and keeps the old pump's latch.
-// ActiveSession remounts only rebind its sink to the new session view.
-const outboundPumpFor = createOutboundPumpRegistry(pumpStore, isTurnInFlight)
 
 // A draft id IS a UUID so it can become the harness's native session id
 // (claude --session-id requires a UUID). It stays bare until the control plane
@@ -1637,7 +1596,7 @@ function ActiveSession(props: {
   // a render closure — inject/cancel already are, and the two paths must not
   // age differently.
   useEffect(() => {
-    if (useChat.getState().liveIsBusy(props.sessionId)) return
+    if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(props.sessionId))) return
     void outboundPumpFor(props.sessionId)
       .pump.pump()
       .catch(() => undefined)
@@ -1658,8 +1617,11 @@ function ActiveSession(props: {
   const onInjectOutbound = useCallback(
     (id: string): void => {
       // Inject NOW means now: Esc the in-flight turn so the harness drops what
-      // it's doing and picks this message up (idle harness: the Esc is a no-op).
-      const interrupt = useChat.getState().liveIsBusy(props.sessionId)
+      // it's doing and picks this message up. A failed turn's retry does not interrupt.
+      const state = useChat.getState()
+      const key = state.resolveSessionKey(props.sessionId)
+      const failed = state.outbound[key]?.find((o) => o.id === id)?.status === 'failed'
+      const interrupt = !failed && state.liveIsBusy(key)
       void pumpEntry.pump.pump({ forceId: id, interrupt }).catch(() => undefined)
     },
     [props.sessionId, pumpEntry],
