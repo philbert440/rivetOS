@@ -79,8 +79,12 @@ Roster file shape:
 
 `room: true` marks a den-aware harness: if its process exits without having
 sent `session.end`, the server ingests a synthetic one so the room closes.
-`room: false` entries never produce synthetic events. Spawned PTYs get
-`RIVET_DEN_SESSION` / `RIVET_DEN_URL` / `RIVET_DEN_TOKEN` / `RIVET_DEN_NAME`
+`POST /term/inject` is accepted only for those entries; `room: false` answers
+409 `session is not an agent harness` (type into a shell over the terminal
+websocket). Custom harness entries must set `room: true` to receive chat;
+terminal-only entries are typed through the terminal. `room: false` entries
+never produce synthetic events. Spawned PTYs
+get `RIVET_DEN_SESSION` / `RIVET_DEN_URL` / `RIVET_DEN_TOKEN` / `RIVET_DEN_NAME`
 in their env so harness hook adapters report into the right room.
 
 Knobs: `RIVETOS_DEN_TERM_MAX` (4 concurrent PTYs),

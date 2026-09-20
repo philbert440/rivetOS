@@ -423,7 +423,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     fakeProcs.length = 0
     const { base } = await start('', 60_000, { term: true })
     // spawn the conversation's harness with the join key
-    const spawn = await post(base, '/term', { command: 'shell', session: 'chat-x' })
+    const spawn = await post(base, '/term', { command: 'claude', session: 'chat-x' })
     expect(spawn.status).toBe(201)
     // ready-gate (5g): the harness must emit output before injects flush
     fakeProcs[0].emit('data', Buffer.from('welcome'))
@@ -454,7 +454,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
 
   it('is reachable via the /api/terminal/inject alias', async () => {
     const { base } = await start('', 60_000, { term: true })
-    await post(base, '/term', { command: 'shell', session: 'chat-y' })
+    await post(base, '/term', { command: 'claude', session: 'chat-y' })
     expect(
       (await post(base, '/api/terminal/inject', { session: 'chat-y', text: 'hi' })).status,
     ).toBe(202)
@@ -548,7 +548,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     const uuid = 'a1b2c3d4-1111-4222-8333-444455556666'
     // spawn with the canonical id — the room, and so the store filename, is
     // still the bare native id
-    const spawn = await post(base, '/term', { command: 'shell', session: `claude-code:${uuid}` })
+    const spawn = await post(base, '/term', { command: 'claude', session: `claude-code:${uuid}` })
     expect(spawn.status).toBe(201)
     expect(((await spawn.json()) as { denSession: string }).denSession).toBe(uuid)
     fakeProcs[0].emit('data', Buffer.from('welcome'))
@@ -569,11 +569,25 @@ describe('POST /term/inject (seamless modes 5c)', () => {
   it('409s injecting into an exited-but-lingering harness', async () => {
     fakeProcs.length = 0
     const { base } = await start('', 60_000, { term: true })
-    await post(base, '/term', { command: 'shell', session: 'chat-z' })
+    await post(base, '/term', { command: 'claude', session: 'chat-z' })
     // exit the harness; its record lingers (exitLingerMs) and the session
     // alias still resolves, but write() refuses a non-running proc.
     fakeProcs[0].emit('exit', 0)
     expect((await post(base, '/term/inject', { session: 'chat-z', text: 'hi' })).status).toBe(409)
+  })
+
+  it('409s inject into a terminal-only session and never writes the PTY', async () => {
+    fakeProcs.length = 0
+    const { base } = await start('', 60_000, { term: true })
+    const spawn = await post(base, '/term', { command: 'shell', session: 'term-only' })
+    expect(spawn.status).toBe(201)
+    fakeProcs[0].emit('data', Buffer.from('prompt$'))
+    await new Promise((r) => setTimeout(r, 30))
+    const before = fakeProcs[0].writes.slice()
+    const inj = await post(base, '/term/inject', { session: 'term-only', text: 'ls -la' })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual({ error: 'session is not an agent harness' })
+    expect(fakeProcs[0].writes).toEqual(before)
   })
 })
 
