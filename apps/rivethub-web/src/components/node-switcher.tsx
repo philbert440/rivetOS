@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Server } from 'lucide-react'
 import { useConnection } from '../stores/connection.js'
 import { urlLabel, useNodeName } from '../lib/node-name.js'
 import { performNodeSwitch } from '../lib/switch-mode.js'
+import { useNodeDiscovery } from '../lib/use-node-discovery.js'
 import { Tooltip } from './ui/tooltip.js'
 
 /**
@@ -11,7 +12,7 @@ import { Tooltip } from './ui/tooltip.js'
  * CURRENT node seeds discovery (peers advertise denUrl = hub face).
  * Always re-points the gateway via switchTo — the local/bundled UI stays put.
  */
-export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
+export function NodeSwitcher(props: { compact?: boolean }): JSX.Element | null {
   const compact = props.compact ?? false
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()
   const queryClient = useQueryClient()
@@ -19,8 +20,8 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
   const [switchError, setSwitchError] = useState<string | undefined>()
   const rootRef = useRef<HTMLDivElement>(null)
 
-  // Close on Escape / click-outside so the dropdown (and its mesh polling)
-  // can't linger across navigation (#304 review).
+  // Close on Escape / click-outside so the dropdown cannot linger
+  // across navigation (#304 review). Discovery stays active while closed.
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent): void => {
@@ -48,20 +49,12 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
     setOpen(false)
   }
 
-  const mesh = useQuery({
-    queryKey: ['mesh', baseUrl],
-    queryFn: ({ signal }) => useConnection.getState().gateway.meshOverview(signal),
-    enabled: open,
-    staleTime: 30_000,
-    retry: 0,
-  })
+  const { mesh, discovered, hidden } = useNodeDiscovery()
 
-  const known = new Set(roster.map((n) => n.baseUrl))
-  const discovered = (mesh.data?.nodes ?? []).filter(
-    (n) => n.online && n.denUrl && !known.has(n.denUrl.replace(/\/+$/, '')),
-  )
   const current = roster.find((n) => n.baseUrl === baseUrl)
   const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
+
+  if (hidden) return null
 
   return (
     <div ref={rootRef} className="relative border-t border-line">
@@ -120,9 +113,6 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
               </button>
             </div>
           ))}
-          {roster.length === 0 && (
-            <div className="px-2 py-1 text-xs text-ink-dim">no saved nodes</div>
-          )}
 
           {discovered.length > 0 && (
             <>
