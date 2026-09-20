@@ -296,6 +296,28 @@ export function harnessGate(
   }
 }
 
+/** Query status is required: a failed registry is not a still-loading registry. */
+export type HarnessRegistryStatus = 'pending' | 'error' | 'success'
+
+/**
+ * Registration permits turns (harnessGate.bound); liveStream only selects the
+ * transcript transport, and listSessions only controls discovery. Neither is
+ * a composer capability. Pending/error retain main's legacy terminal fallback;
+ * the view hook re-evaluates that fallback when the registry settles/recovers.
+ * Legacy rows only expose roster labels: a custom entry reusing a registered
+ * label is indistinguishable here until the control plane claims the row.
+ */
+export function sessionOpensOnTerminal(
+  item: Pick<ChatItem, 'kind' | 'command' | 'harnessId'> | undefined,
+  descriptors: HarnessDescriptor[] | undefined,
+  status: HarnessRegistryStatus,
+): boolean {
+  if (item?.kind !== 'legacy') return false
+  if (status !== 'success') return true
+  const command = item.command ?? rosterCommandFor(item.harnessId)
+  return !command || !(descriptors ?? []).some((d) => rosterCommandFor(d.harnessId) === command)
+}
+
 /** Harnesses whose sessions the hub should ask for (`listSessions` gated). */
 export function listableHarnesses(descriptors: HarnessDescriptor[] | undefined): HarnessId[] {
   return (descriptors ?? []).filter((d) => d.capabilities.listSessions).map((d) => d.harnessId)
