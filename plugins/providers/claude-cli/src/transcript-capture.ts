@@ -33,9 +33,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import pg from 'pg'
-import type { PoolClient } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 
-const { Pool } = pg
+const { Pool: PgPool } = pg
 
 // ---------------------------------------------------------------------------
 // Constants — must match the one-shot migration so migrated + live rows unify
@@ -54,8 +54,64 @@ export const CAPTURE_AGENT = process.env.RIVETOS_CAPTURE_AGENT || 'rivet-claude'
 export const CAPTURE_CHANNEL = 'claude-code'
 /** Truncate giant tool outputs before they reach the embedder. */
 const MAX_CONTENT = 16000
-/** Hard cap on how long any single ingest may hold the DB. */
-const STATEMENT_TIMEOUT_MS = 15000
+/** Server-side guard: abort a wedged idle-in-transaction backend so it drops locks. */
+export const IDLE_IN_TRANSACTION_TIMEOUT = '30s'
+export const IDLE_IN_TRANSACTION_TIMEOUT_MS = 30_000
+/** Server-side guard: cap any single statement the worker issues. */
+export const STATEMENT_TIMEOUT = '60s'
+export const STATEMENT_TIMEOUT_MS = 60_000
+
+/** Live pools opened by this process — closed best-effort on worker deadline. */
+const livePools = new Set<Pool>()
+
+/**
+ * Single factory for every connection the capture worker opens. Timeouts are
+ * applied at connect (pg ClientConfig) so they cannot race a query.
+ */
+export function createCapturePool(connectionString: string): Pool {
+  const pool = new PgPool({
+    connectionString,
+    max: 1,
+    idle_in_transaction_session_timeout: IDLE_IN_TRANSACTION_TIMEOUT_MS,
+    statement_timeout: STATEMENT_TIMEOUT_MS,
+  })
+  livePools.add(pool)
+  return pool
+}
+
+/** Best-effort, bounded close of every capture pool this process still holds. */
+export async function closeAllCapturePools(): Promise<void> {
+  const pools = [...livePools]
+  livePools.clear()
+  await Promise.all(pools.map((pool) => pool.end().catch(() => undefined)))
+}
+
+export async function applyCaptureGuards(client: PoolClient): Promise<void> {
+  await client.query(`SET idle_in_transaction_session_timeout = '${IDLE_IN_TRANSACTION_TIMEOUT}'`)
+  await client.query(`SET statement_timeout = '${STATEMENT_TIMEOUT}'`)
+}
+
+/**
+ * Check out ONE client, apply server-side timeouts, run `fn` on that client
+ * only, then release. Ingest transactions must never await a different pooled
+ * connection while BEGIN is open — that is the idle-in-transaction deadlock
+ * against a blocked ALTER.
+ */
+export async function withCaptureClient<T>(
+  pgUrl: string,
+  fn: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const pool = createCapturePool(pgUrl)
+  const client = await pool.connect()
+  try {
+    await applyCaptureGuards(client)
+    return await fn(client)
+  } finally {
+    client.release()
+    livePools.delete(pool)
+    await pool.end().catch(() => undefined)
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -686,155 +742,152 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
     fallbackKey,
   })
 
-  const pool = new Pool({ connectionString: opts.pgUrl ?? resolvePgUrl(), max: 1 })
-  const client = await pool.connect()
-  try {
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+  return await withCaptureClient(opts.pgUrl ?? resolvePgUrl(), async (client) => {
     await client.query('BEGIN')
+    try {
+      // Serialise concurrent ingests of the same session (find-or-create +
+      // insert). The lock auto-releases on COMMIT/ROLLBACK. The whole unit
+      // runs on this one client — never pool.query() while BEGIN is open.
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
 
-    // Serialise concurrent ingests of the same session (find-or-create +
-    // insert). The lock auto-releases on COMMIT/ROLLBACK.
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
+      const firstTs = parsed.msgs.find((m) => m.ts)?.ts ?? null
+      const lastTs = [...parsed.msgs].reverse().find((m) => m.ts)?.ts ?? null
+      const settings = {
+        source: 'claude-code-hook',
+        file: transcriptPath,
+        session_id: opts.sessionId ?? parsed.sessionId,
+        pr_url: parsed.prUrl ?? null,
+        last_event: event ?? null,
+        last_ingest_at: new Date().toISOString(),
+      }
 
-    const firstTs = parsed.msgs.find((m) => m.ts)?.ts ?? null
-    const lastTs = [...parsed.msgs].reverse().find((m) => m.ts)?.ts ?? null
-    const settings = {
-      source: 'claude-code-hook',
-      file: transcriptPath,
-      session_id: opts.sessionId ?? parsed.sessionId,
-      pr_url: parsed.prUrl ?? null,
-      last_event: event ?? null,
-      last_ingest_at: new Date().toISOString(),
-    }
+      const conv = await findOrCreateConversation(client, sessionKey, {
+        title: fallbackTitle(parsed),
+        settings,
+        active: !markInactive,
+        firstTs,
+        lastTs,
+        taskId: opts.taskId,
+      })
 
-    const conv = await findOrCreateConversation(client, sessionKey, {
-      title: fallbackTitle(parsed),
-      settings,
-      active: !markInactive,
-      firstTs,
-      lastTs,
-      taskId: opts.taskId,
-    })
+      let inserted = 0
+      let alreadyStored = 0
 
-    let inserted = 0
-    let alreadyStored = 0
-
-    // --- assistant: dedup by transcript uuid (stable per entry) ---
-    const storedA = await client.query<{ uuid: string | null }>(
-      `SELECT metadata->>'uuid' AS uuid FROM ros_messages
+      // --- assistant: dedup by transcript uuid (stable per entry) ---
+      const storedA = await client.query<{ uuid: string | null }>(
+        `SELECT metadata->>'uuid' AS uuid FROM ros_messages
         WHERE conversation_id = $1 AND role = 'assistant' AND metadata ? 'uuid'`,
-      [conv.id],
-    )
-    const seenA = new Set(storedA.rows.map((r) => r.uuid).filter((u): u is string => u !== null))
-    alreadyStored += seenA.size
-    for (const m of assistantMsgs.filter((m) => !m.uuid || !seenA.has(m.uuid))) {
-      await insertMessage(client, conv.id, {
-        role: 'assistant',
-        content: m.content,
-        metadata: {
-          source: 'claude-code-hook',
-          uuid: m.uuid,
-          sidechain: m.sidechain,
-          ...herdrMeta(opts.herdr),
-        },
-        ts: m.ts,
-      })
-      inserted++
-    }
+        [conv.id],
+      )
+      const seenA = new Set(storedA.rows.map((r) => r.uuid).filter((u): u is string => u !== null))
+      alreadyStored += seenA.size
+      for (const m of assistantMsgs.filter((m) => !m.uuid || !seenA.has(m.uuid))) {
+        await insertMessage(client, conv.id, {
+          role: 'assistant',
+          content: m.content,
+          metadata: {
+            source: 'claude-code-hook',
+            uuid: m.uuid,
+            sidechain: m.sidechain,
+            ...herdrMeta(opts.herdr),
+          },
+          ts: m.ts,
+        })
+        inserted++
+      }
 
-    // --- tool: dedup by (tool_name + canonical args) multiset ---
-    const storedT = await client.query<{ tool_name: string | null; args: string | null }>(
-      `SELECT tool_name, tool_args::text AS args FROM ros_messages
+      // --- tool: dedup by (tool_name + canonical args) multiset ---
+      const storedT = await client.query<{ tool_name: string | null; args: string | null }>(
+        `SELECT tool_name, tool_args::text AS args FROM ros_messages
         WHERE conversation_id = $1 AND role = 'tool'`,
-      [conv.id],
-    )
-    const toolHave = new Map<string, number>()
-    for (const r of storedT.rows) {
-      const k = `${r.tool_name}${canonText(r.args)}`
-      toolHave.set(k, (toolHave.get(k) ?? 0) + 1)
-    }
-    alreadyStored += storedT.rows.length
-    for (const t of toolCalls) {
-      const k = `${t.name}${canon(t.input ?? null)}`
-      const have = toolHave.get(k) ?? 0
-      if (have > 0) {
-        toolHave.set(k, have - 1)
-        continue
+        [conv.id],
+      )
+      const toolHave = new Map<string, number>()
+      for (const r of storedT.rows) {
+        const k = `${r.tool_name}${canonText(r.args)}`
+        toolHave.set(k, (toolHave.get(k) ?? 0) + 1)
       }
-      await insertMessage(client, conv.id, {
-        role: 'tool',
-        content: `[tool call] ${t.name}`,
-        toolName: t.name,
-        toolArgs: t.input ?? null,
-        toolResult: trunc(t.result),
-        metadata: {
-          source: 'claude-code-hook',
-          uuid: t.uuid,
-          hook_event: 'PostToolUse',
-          recovered: true,
-          ...herdrMeta(opts.herdr),
-        },
-        ts: t.ts,
-      })
-      inserted++
-    }
-
-    // --- user: dedup by content multiset ---
-    const storedU = await client.query<{ content: string }>(
-      `SELECT content FROM ros_messages WHERE conversation_id = $1 AND role = 'user'`,
-      [conv.id],
-    )
-    const userHave = new Map<string, number>()
-    for (const r of storedU.rows) userHave.set(r.content, (userHave.get(r.content) ?? 0) + 1)
-    alreadyStored += storedU.rows.length
-    for (const m of userMsgs) {
-      const have = userHave.get(m.content) ?? 0
-      if (have > 0) {
-        userHave.set(m.content, have - 1)
-        continue
+      alreadyStored += storedT.rows.length
+      for (const t of toolCalls) {
+        const k = `${t.name}${canon(t.input ?? null)}`
+        const have = toolHave.get(k) ?? 0
+        if (have > 0) {
+          toolHave.set(k, have - 1)
+          continue
+        }
+        await insertMessage(client, conv.id, {
+          role: 'tool',
+          content: `[tool call] ${t.name}`,
+          toolName: t.name,
+          toolArgs: t.input ?? null,
+          toolResult: trunc(t.result),
+          metadata: {
+            source: 'claude-code-hook',
+            uuid: t.uuid,
+            hook_event: 'PostToolUse',
+            recovered: true,
+            ...herdrMeta(opts.herdr),
+          },
+          ts: t.ts,
+        })
+        inserted++
       }
-      await insertMessage(client, conv.id, {
-        role: 'user',
-        content: m.content,
-        metadata: {
-          source: 'claude-code-hook',
-          uuid: m.uuid,
-          recovered: true,
-          ...herdrMeta(opts.herdr),
-        },
-        ts: m.ts,
-      })
-      inserted++
-    }
 
-    // Refresh conversation metadata: bump updated_at, upgrade a fallback title
-    // once Claude Code has generated one, and flip active on end.
-    const nextTitle = parsed.aiTitle && parsed.aiTitle !== conv.title ? parsed.aiTitle : conv.title
-    await client.query(
-      `UPDATE ros_conversations
+      // --- user: dedup by content multiset ---
+      const storedU = await client.query<{ content: string }>(
+        `SELECT content FROM ros_messages WHERE conversation_id = $1 AND role = 'user'`,
+        [conv.id],
+      )
+      const userHave = new Map<string, number>()
+      for (const r of storedU.rows) userHave.set(r.content, (userHave.get(r.content) ?? 0) + 1)
+      alreadyStored += storedU.rows.length
+      for (const m of userMsgs) {
+        const have = userHave.get(m.content) ?? 0
+        if (have > 0) {
+          userHave.set(m.content, have - 1)
+          continue
+        }
+        await insertMessage(client, conv.id, {
+          role: 'user',
+          content: m.content,
+          metadata: {
+            source: 'claude-code-hook',
+            uuid: m.uuid,
+            recovered: true,
+            ...herdrMeta(opts.herdr),
+          },
+          ts: m.ts,
+        })
+        inserted++
+      }
+
+      // Refresh conversation metadata: bump updated_at, upgrade a fallback title
+      // once Claude Code has generated one, and flip active on end.
+      const nextTitle =
+        parsed.aiTitle && parsed.aiTitle !== conv.title ? parsed.aiTitle : conv.title
+      await client.query(
+        `UPDATE ros_conversations
          SET updated_at = COALESCE($2, now()),
              active = $3,
              title = COALESCE($4, title),
              settings = $5
        WHERE id = $1`,
-      [conv.id, lastTs, !markInactive, nextTitle, JSON.stringify(settings)],
-    )
+        [conv.id, lastTs, !markInactive, nextTitle, JSON.stringify(settings)],
+      )
 
-    await client.query('COMMIT')
-    return {
-      sessionKey,
-      conversationId: conv.id,
-      created: conv.created,
-      inserted,
-      alreadyStored,
+      await client.query('COMMIT')
+      return {
+        sessionKey,
+        conversationId: conv.id,
+        created: conv.created,
+        inserted,
+        alreadyStored,
+      }
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw err
     }
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined)
-    throw err
-  } finally {
-    client.release()
-    await pool.end()
-  }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -959,50 +1012,46 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
     }
   }
 
-  const pool = new Pool({ connectionString: opts.pgUrl ?? resolvePgUrl(), max: 1 })
-  const client = await pool.connect()
-  try {
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+  return await withCaptureClient(opts.pgUrl ?? resolvePgUrl(), async (client) => {
     await client.query('BEGIN')
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
+    try {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
 
-    const settings = {
-      source: 'claude-code-hook',
-      session_id: sessionId,
-      cwd: payload.cwd ?? null,
-      last_event: event,
-      last_ingest_at: new Date().toISOString(),
+      const settings = {
+        source: 'claude-code-hook',
+        session_id: sessionId,
+        cwd: payload.cwd ?? null,
+        last_event: event,
+        last_ingest_at: new Date().toISOString(),
+      }
+      const conv = await findOrCreateConversation(client, sessionKey, {
+        title,
+        settings,
+        active: true,
+        firstTs: null,
+        lastTs: null,
+        taskId: opts.taskId,
+      })
+
+      await insertMessage(client, conv.id, {
+        role: row.role,
+        content: row.content,
+        toolName: row.toolName,
+        toolArgs: row.toolArgs,
+        toolResult: row.toolResult,
+        metadata: { source: 'claude-code-hook', hook_event: event, ...herdrMeta(opts.herdr) },
+      })
+
+      await client.query(
+        `UPDATE ros_conversations SET updated_at = now(), settings = $2 WHERE id = $1`,
+        [conv.id, JSON.stringify(settings)],
+      )
+
+      await client.query('COMMIT')
+      return { sessionKey, conversationId: conv.id, created: conv.created, inserted: 1 }
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      throw err
     }
-    const conv = await findOrCreateConversation(client, sessionKey, {
-      title,
-      settings,
-      active: true,
-      firstTs: null,
-      lastTs: null,
-      taskId: opts.taskId,
-    })
-
-    await insertMessage(client, conv.id, {
-      role: row.role,
-      content: row.content,
-      toolName: row.toolName,
-      toolArgs: row.toolArgs,
-      toolResult: row.toolResult,
-      metadata: { source: 'claude-code-hook', hook_event: event, ...herdrMeta(opts.herdr) },
-    })
-
-    await client.query(
-      `UPDATE ros_conversations SET updated_at = now(), settings = $2 WHERE id = $1`,
-      [conv.id, JSON.stringify(settings)],
-    )
-
-    await client.query('COMMIT')
-    return { sessionKey, conversationId: conv.id, created: conv.created, inserted: 1 }
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined)
-    throw err
-  } finally {
-    client.release()
-    await pool.end()
-  }
+  })
 }

@@ -1,8 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
-import { listMigrations } from './migrate.js'
+import {
+  applyMigration,
+  applySessionGuards,
+  ensureMigrationsTable,
+  listMigrations,
+  MIGRATION_LOCK_TIMEOUT,
+  resetSessionGuards,
+} from './migrate.js'
 
 describe('listMigrations', () => {
   let dir: string
@@ -53,5 +60,82 @@ describe('baseline migration discovery', () => {
     expect(m).toBeDefined()
     expect(m?.sql).toContain("current_setting('rivet.defer_embed_enqueue', true) = 'on'")
     expect(m?.sql).toContain('RETURN NEW')
+  })
+})
+
+describe('startup DDL guards', () => {
+  function sqlText(sql: unknown): string {
+    return typeof sql === 'string' ? sql : String(sql)
+  }
+
+  it('applySessionGuards sets lock_timeout and resetSessionGuards clears it', async () => {
+    const sqls: string[] = []
+    const client = {
+      query: vi.fn(async (sql: unknown) => {
+        sqls.push(sqlText(sql))
+        return { rows: [] }
+      }),
+    }
+    await applySessionGuards(client as never)
+    await resetSessionGuards(client as never)
+    expect(sqls[0]).toContain(`SET lock_timeout = '${MIGRATION_LOCK_TIMEOUT}'`)
+    expect(sqls[1]).toMatch(/RESET lock_timeout/i)
+  })
+
+  it('ensureMigrationsTable skips CREATE when the table already exists', async () => {
+    const sqls: string[] = []
+    const client = {
+      query: vi.fn(async (sql: unknown) => {
+        const text = sqlText(sql)
+        sqls.push(text)
+        if (/to_regclass/.test(text)) return { rows: [{ t: '_rivetos_migrations' }] }
+        return { rows: [] }
+      }),
+    }
+    await ensureMigrationsTable(client as never)
+    expect(sqls.some((s) => /to_regclass/.test(s))).toBe(true)
+    expect(sqls.some((s) => /CREATE TABLE/.test(s))).toBe(false)
+  })
+
+  it('ensureMigrationsTable creates the table when missing', async () => {
+    const sqls: string[] = []
+    const client = {
+      query: vi.fn(async (sql: unknown) => {
+        const text = sqlText(sql)
+        sqls.push(text)
+        if (/to_regclass/.test(text)) return { rows: [{ t: null }] }
+        return { rows: [] }
+      }),
+    }
+    await ensureMigrationsTable(client as never)
+    expect(sqls.some((s) => /CREATE TABLE/.test(s))).toBe(true)
+  })
+
+  it('applyMigration retries 55P03 then succeeds', async () => {
+    let begins = 0
+    const sqls: string[] = []
+    const client = {
+      query: vi.fn(async (sql: unknown) => {
+        const text = sqlText(sql)
+        sqls.push(text)
+        if (text === 'BEGIN') {
+          begins++
+          return { rows: [] }
+        }
+        if (text === 'some ddl' && begins === 1) {
+          const err = new Error('lock timeout') as Error & { code: string }
+          err.code = '55P03'
+          throw err
+        }
+        return { rows: [] }
+      }),
+    }
+    await applyMigration(
+      client as never,
+      { name: '0001_x.sql', path: '/x', sql: 'some ddl' },
+      { sleep: async () => undefined, backoffMs: [0, 1] },
+    )
+    expect(begins).toBe(2)
+    expect(sqls.filter((s) => s === 'COMMIT').length).toBe(1)
   })
 })

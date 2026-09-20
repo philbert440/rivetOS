@@ -39,12 +39,51 @@ import {
   ingestHookEvent,
   resolveTaskContext,
   LEGACY_TASK_KEY_PREFIX,
+  closeAllCapturePools,
+  type HookEventResult,
+  type IngestResult,
 } from './transcript-capture.js'
 
 const SELF = fileURLToPath(import.meta.url)
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'claude-capture.log')
-const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-claude-hook')
 const SETTINGS_FILE = path.join(os.homedir(), '.claude', 'settings.json')
+
+/** Detached worker must not outlive this (env-overridable). */
+export const DEFAULT_WORKER_DEADLINE_MS = 120_000
+/** Poison payload is dropped after this many ingest attempts. */
+export const DEFAULT_SPOOL_MAX_ATTEMPTS = 5
+/** Cap how many stale spools one worker will retry. */
+export const MAX_SWEEP_FILES = 20
+
+export function getSpoolDir(): string {
+  return process.env.RIVETOS_CLAUDE_HOOK_SPOOL ?? path.join(os.tmpdir(), 'rivetos-claude-hook')
+}
+
+export function workerDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.RIVETOS_HOOK_WORKER_DEADLINE_MS
+  if (raw === undefined || raw === '') return DEFAULT_WORKER_DEADLINE_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_WORKER_DEADLINE_MS
+}
+
+export function spoolMaxAttempts(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.RIVETOS_HOOK_SPOOL_MAX_ATTEMPTS
+  if (raw === undefined || raw === '') return DEFAULT_SPOOL_MAX_ATTEMPTS
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SPOOL_MAX_ATTEMPTS
+}
+
+export function spoolAttempt(filePath: string): number {
+  const m = /\.a(\d+)\.json$/i.exec(path.basename(filePath))
+  return m ? Number(m[1]) : 1
+}
+
+export function withSpoolAttempt(filePath: string, attempt: number): string {
+  const dir = path.dirname(filePath)
+  const base = path.basename(filePath)
+  const stem = base.replace(/\.a\d+\.json$/i, '').replace(/\.json$/i, '')
+  return path.join(dir, `${stem}.a${attempt}.json`)
+}
 
 /**
  * Lifecycle events we capture on, in two families:
@@ -75,6 +114,88 @@ function log(msg: string): void {
     fs.appendFileSync(LOG_FILE, line)
   } catch {
     /* logging must never throw */
+  }
+}
+
+export interface WorkerDeadlineHandle {
+  cancel: () => void
+}
+
+/**
+ * Arm a watchdog at worker start. On expiry: log, close capture pools
+ * (best effort, bounded), then process.exit(1). A detached worker must
+ * never outlive its deadline.
+ */
+export function armWorkerDeadline(opts?: {
+  ms?: number
+  exit?: (code: number) => void
+  close?: () => Promise<void>
+  log?: (msg: string) => void
+  closeTimeoutMs?: number
+}): WorkerDeadlineHandle {
+  const ms = opts?.ms ?? workerDeadlineMs()
+  const exitFn = opts?.exit ?? ((code: number) => process.exit(code))
+  const closeFn = opts?.close ?? closeAllCapturePools
+  const logFn = opts?.log ?? log
+  const closeTimeoutMs = opts?.closeTimeoutMs ?? 1000
+  let fired = false
+  const timer = setTimeout(() => {
+    if (fired) return
+    fired = true
+    logFn(`worker: deadline exceeded (${String(ms)}ms) — closing clients and exiting`)
+    const close = Promise.resolve()
+      .then(() => closeFn())
+      .catch(() => undefined)
+    const bound = new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, closeTimeoutMs)
+      t.unref()
+    })
+    void Promise.race([close, bound]).then(() => {
+      exitFn(1)
+    })
+  }, ms)
+  return {
+    cancel: () => {
+      fired = true
+      clearTimeout(timer)
+    },
+  }
+}
+
+export interface WorkerDeps {
+  ingestTranscript?: (opts: Parameters<typeof ingestTranscript>[0]) => Promise<IngestResult>
+  ingestHookEvent?: (opts: Parameters<typeof ingestHookEvent>[0]) => Promise<HookEventResult>
+  spoolDir?: string
+  deadlineMs?: number
+  maxAttempts?: number
+  now?: () => number
+  skipFiles?: Set<string>
+  log?: (msg: string) => void
+}
+
+function removeSpool(spoolFile: string): void {
+  try {
+    fs.rmSync(spoolFile, { force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
+function failSpool(spoolFile: string, deps: WorkerDeps): void {
+  const logFn = deps.log ?? log
+  const max = deps.maxAttempts ?? spoolMaxAttempts()
+  const attempt = spoolAttempt(spoolFile)
+  if (attempt >= max) {
+    logFn(`worker: dropping poison spool ${spoolFile} after ${String(attempt)} attempts`)
+    removeSpool(spoolFile)
+    return
+  }
+  const next = withSpoolAttempt(spoolFile, attempt + 1)
+  try {
+    fs.renameSync(spoolFile, next)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    logFn(`worker: failed to retain spool ${spoolFile}: ${detail}`)
   }
 }
 
@@ -159,10 +280,11 @@ async function runHook(): Promise<void> {
   }
 
   try {
-    fs.mkdirSync(SPOOL_DIR, { recursive: true })
+    const spoolDir = getSpoolDir()
+    fs.mkdirSync(spoolDir, { recursive: true })
     const spoolFile = path.join(
-      SPOOL_DIR,
-      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`,
+      spoolDir,
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.a1.json`,
     )
     fs.writeFileSync(spoolFile, JSON.stringify(payload))
     const child = spawn(process.execPath, [SELF, '--worker', spoolFile], {
@@ -179,19 +301,11 @@ async function runHook(): Promise<void> {
 // Worker mode — ingest the spooled payload out of band
 // ---------------------------------------------------------------------------
 
-async function runWorker(spoolFile: string): Promise<void> {
-  let payload: HookPayload
-  try {
-    payload = JSON.parse(fs.readFileSync(spoolFile, 'utf8')) as HookPayload
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err)
-    log(`worker: unreadable spool ${spoolFile}: ${detail}`)
-    return
-  } finally {
-    fs.rm(spoolFile, { force: true }, () => undefined)
-  }
-
+async function dispatchIngest(payload: HookPayload, deps: WorkerDeps): Promise<void> {
+  const logFn = deps.log ?? log
   const event = payload.hook_event_name ?? 'unknown'
+  const ingestHook = deps.ingestHookEvent ?? ingestHookEvent
+  const ingestTx = deps.ingestTranscript ?? ingestTranscript
 
   // Deprecation window: a `task:<id>` write-key override means this spawn came
   // from an executor that predates the task-association migration (a task
@@ -199,7 +313,7 @@ async function runWorker(spoolFile: string): Promise<void> {
   // transcript mid-run is worse than one more row in the legacy namespace —
   // but say so, out of band, where it costs the session nothing.
   if (payload.rivetos_session_key?.startsWith(LEGACY_TASK_KEY_PREFIX)) {
-    log(
+    logFn(
       `DEPRECATED RIVETOS_SESSION_KEY=${payload.rivetos_session_key} — task spawns should set ` +
         `RIVETOS_TASK_ID and let capture write the canonical session key; honoring the ` +
         `override for this ingest`,
@@ -218,24 +332,19 @@ async function runWorker(spoolFile: string): Promise<void> {
   // Payload events (UserPromptSubmit / PostToolUse) — ingest straight from
   // the stdin payload; no transcript involved.
   if ((PAYLOAD_EVENTS as readonly string[]).includes(event)) {
-    try {
-      const res = await ingestHookEvent({
-        payload,
-        sessionKeyOverride: payload.rivetos_session_key,
-        taskId: payload.rivetos_task_id,
-        herdr,
-      })
-      if (res.skipped) {
-        log(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
-      } else {
-        log(
-          `${event} ${res.sessionKey}: ${res.created ? 'created' : 'updated'} conv ` +
-            `${res.conversationId} — +${res.inserted} msg`,
-        )
-      }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err)
-      log(`${event} ${payload.session_id ?? '?'}: INGEST FAILED — ${detail}`)
+    const res = await ingestHook({
+      payload,
+      sessionKeyOverride: payload.rivetos_session_key,
+      taskId: payload.rivetos_task_id,
+      herdr,
+    })
+    if (res.skipped) {
+      logFn(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
+    } else {
+      logFn(
+        `${event} ${res.sessionKey}: ${res.created ? 'created' : 'updated'} conv ` +
+          `${res.conversationId} — +${res.inserted} msg`,
+      )
     }
     return
   }
@@ -245,28 +354,88 @@ async function runWorker(spoolFile: string): Promise<void> {
   const transcript = payload.transcript_path
   if (!transcript) return
 
+  const res = await ingestTx({
+    transcriptPath: transcript,
+    sessionId: payload.session_id,
+    sessionKeyOverride: payload.rivetos_session_key,
+    taskId: payload.rivetos_task_id,
+    herdr,
+    event,
+    markInactive: event === 'SessionEnd',
+  })
+  if (res.skipped) {
+    logFn(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
+  } else {
+    logFn(
+      `${event} ${res.sessionKey}: ${res.created ? 'created' : 'updated'} conv ` +
+        `${res.conversationId} — +${res.inserted} msg (had ${res.alreadyStored})`,
+    )
+  }
+}
+
+/** Ingest one spool file. Delete only after success; retain/rename on failure. */
+export async function ingestSpoolFile(spoolFile: string, deps: WorkerDeps = {}): Promise<void> {
+  const logFn = deps.log ?? log
+  let payload: HookPayload
   try {
-    const res = await ingestTranscript({
-      transcriptPath: transcript,
-      sessionId: payload.session_id,
-      sessionKeyOverride: payload.rivetos_session_key,
-      taskId: payload.rivetos_task_id,
-      herdr,
-      event,
-      markInactive: event === 'SessionEnd',
-    })
-    if (res.skipped) {
-      log(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
-    } else {
-      log(
-        `${event} ${res.sessionKey}: ${res.created ? 'created' : 'updated'} conv ` +
-          `${res.conversationId} — +${res.inserted} msg (had ${res.alreadyStored})`,
-      )
-    }
+    payload = JSON.parse(fs.readFileSync(spoolFile, 'utf8')) as HookPayload
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
-    log(`${event} ${transcript}: INGEST FAILED — ${detail}`)
+    logFn(`worker: unreadable spool ${spoolFile}: ${detail}`)
+    failSpool(spoolFile, deps)
+    return
   }
+
+  try {
+    await dispatchIngest(payload, deps)
+    removeSpool(spoolFile)
+  } catch (err) {
+    const event = payload.hook_event_name ?? 'unknown'
+    const detail = err instanceof Error ? err.message : String(err)
+    logFn(
+      `${event} ${payload.session_id ?? payload.transcript_path ?? '?'}: INGEST FAILED — ${detail}`,
+    )
+    failSpool(spoolFile, deps)
+  }
+}
+
+/** Retry spool files older than the worker deadline; drop after N attempts. */
+export async function sweepStaleSpools(deps: WorkerDeps = {}): Promise<void> {
+  const dir = deps.spoolDir ?? getSpoolDir()
+  const logFn = deps.log ?? log
+  let names: string[]
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return
+  }
+  const now = deps.now?.() ?? Date.now()
+  const staleAfter = deps.deadlineMs ?? workerDeadlineMs()
+  const skip = deps.skipFiles ?? new Set<string>()
+  let n = 0
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const full = path.join(dir, name)
+    if (skip.has(full)) continue
+    let mtimeMs: number
+    try {
+      mtimeMs = fs.statSync(full).mtimeMs
+    } catch {
+      continue
+    }
+    if (now - mtimeMs < staleAfter) continue
+    logFn(`worker: retrying stale spool ${full}`)
+    await ingestSpoolFile(full, deps)
+    n++
+    if (n >= MAX_SWEEP_FILES) break
+  }
+}
+
+export async function runWorker(spoolFile: string, deps: WorkerDeps = {}): Promise<void> {
+  await ingestSpoolFile(spoolFile, deps)
+  const skip = new Set(deps.skipFiles ?? [])
+  skip.add(spoolFile)
+  await sweepStaleSpools({ ...deps, skipFiles: skip })
 }
 
 // ---------------------------------------------------------------------------
@@ -362,10 +531,15 @@ function runStatus(): void {
 // Entry
 // ---------------------------------------------------------------------------
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   if (argv[0] === '--worker') {
-    if (argv[1]) await runWorker(argv[1])
+    const watchdog = armWorkerDeadline()
+    try {
+      if (argv[1]) await runWorker(argv[1])
+    } finally {
+      watchdog.cancel()
+    }
     return
   }
   if (argv[0] === '--install') return runInstall()
@@ -374,10 +548,22 @@ async function main(): Promise<void> {
   await runHook()
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err: unknown) => {
-    // A hook must never surface a non-zero exit to the Claude Code session.
-    log(`fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`)
-    process.exit(0)
-  })
+function isDirectCli(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return path.resolve(entry) === SELF
+  } catch {
+    return false
+  }
+}
+
+if (isDirectCli()) {
+  main()
+    .then(() => process.exit(0))
+    .catch((err: unknown) => {
+      // A hook must never surface a non-zero exit to the Claude Code session.
+      log(`fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`)
+      process.exit(0)
+    })
+}
