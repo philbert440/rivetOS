@@ -8,6 +8,7 @@ const rivetPhilbot = { name: 'Rivet Philbot', email: 'rivetphilbot@gmail.com' }
 const rivetAlt = { name: 'Rivet', email: 'rivetphilbot@gmail.com' }
 const philip = { name: 'Philip', email: 'philbert440@gmail.com' }
 const philipNoreply = { name: 'Philip', email: 'philbert440@users.noreply.github.com' }
+const xreed88 = { name: 'xreed88', email: 'xreed88@gmail.com' }
 const githubWebFlow = { name: 'GitHub', email: 'noreply@github.com' }
 const cursorAgent = { name: 'Cursor Agent', email: 'cursoragent@cursor.com' }
 const claude = { name: 'Claude', email: 'assistant@anthropic.com' }
@@ -214,4 +215,30 @@ test('case-insensitive matching for house identities', () => {
   const rivetUpper = { name: 'RIVET PHILBOT', email: 'RIVETPHILBOT@GMAIL.COM' }
   const commit = makeCommit({ author: rivetUpper, committer: rivetUpper })
   assert.deepEqual(checkCommit(commit), [])
+})
+
+test('accepts the allowed outside contributor as author and committer', () => {
+  const issues = checkCommit({ sha: 'x1', author: xreed88, committer: xreed88, body: '' })
+  assert.deepEqual(issues, [])
+})
+
+test('accepts the allowed contributor as author with the GitHub web-flow committer (squash merge)', () => {
+  const issues = checkCommit({ sha: 'x2', author: xreed88, committer: githubWebFlow, body: '' })
+  assert.deepEqual(issues, [])
+})
+
+test('accepts a Co-authored-by trailer for the allowed contributor', () => {
+  const issues = checkCommit({
+    sha: 'x3',
+    author: rivetPhilbot,
+    committer: rivetPhilbot,
+    body: 'fix: something\n\nCo-authored-by: xreed88 <xreed88@gmail.com>',
+  })
+  assert.deepEqual(issues, [])
+})
+
+test('the allowed contributor must match name AND email (a look-alike is still blocked)', () => {
+  const lookalike = { name: 'xreed88', email: 'xreed88@example.com' }
+  const issues = checkCommit({ sha: 'x4', author: lookalike, committer: lookalike, body: '' })
+  assert.ok(issues.some((i) => i.field === 'author' && i.reason.includes('not a house identity')))
 })
