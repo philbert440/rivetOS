@@ -18,6 +18,7 @@ import {
   mergeSessionCreated,
   nativeIdOf,
   patchSessionUpdated,
+  sessionOpensOnTerminal,
   shortNativeId,
   chatItemFromSummary,
   ROSTER_COMMAND,
@@ -307,6 +308,56 @@ describe('harnessGate', () => {
       canApprove: false,
       canResume: false,
     })
+  })
+})
+
+describe('sessionOpensOnTerminal', () => {
+  it('keeps a newly scanned registered harness in chat before plane adoption', () => {
+    const [row] = chatItems({
+      drafts: [],
+      harnessSessions: [],
+      legacySessions: [legacy(UUID_A, 'claude', 1)],
+    })
+    expect(sessionOpensOnTerminal(row, [CLAUDE], 'success')).toBe(false)
+    expect(
+      sessionOpensOnTerminal(
+        { kind: 'legacy', command: 'shell', harnessId: 'claude-code' },
+        [CLAUDE],
+        'success',
+      ),
+    ).toBe(true)
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, [], 'success')).toBe(true)
+  })
+
+  it('resolves command-less placeholders and pins through their harness id', () => {
+    expect(
+      sessionOpensOnTerminal({ kind: 'legacy', harnessId: 'claude-code' }, [CLAUDE], 'success'),
+    ).toBe(false)
+    expect(sessionOpensOnTerminal({ kind: 'legacy' }, [CLAUDE], 'success')).toBe(true)
+    // Known roster harness, but no driver on this node.
+    expect(
+      sessionOpensOnTerminal({ kind: 'legacy', harnessId: 'hermes' }, [CLAUDE], 'success'),
+    ).toBe(true)
+  })
+
+  it('uses registration, even without live streaming or session discovery', () => {
+    const driver = {
+      ...CLAUDE,
+      capabilities: { ...CLAUDE.capabilities, liveStream: false, listSessions: false },
+    }
+    expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, [driver], 'success')).toBe(
+      false,
+    )
+  })
+
+  it('keeps the terminal fallback for pending and failed registries', () => {
+    for (const status of ['pending', 'error'] as const) {
+      expect(sessionOpensOnTerminal({ kind: 'legacy', command: 'claude' }, undefined, status)).toBe(
+        true,
+      )
+    }
+    expect(sessionOpensOnTerminal({ kind: 'harness' }, undefined, 'error')).toBe(false)
+    expect(sessionOpensOnTerminal({ kind: 'draft' }, undefined, 'pending')).toBe(false)
   })
 })
 

@@ -32,6 +32,7 @@ import { useSearch, useNavigate } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   prefixSystemPrompt,
+  parseSessionId,
   type ApprovalDecision,
   type HarnessId,
   type HarnessSessionSummary,
@@ -120,12 +121,7 @@ import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
-import {
-  getSessionMode,
-  hasSessionMode,
-  setSessionMode,
-  type SessionViewMode,
-} from '../lib/session-mode.js'
+import { useSessionView } from '../lib/use-session-view.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
  *  allocates a new [] every run when the key is missing, which zustand treats
@@ -438,8 +434,14 @@ export function ChatPage(): JSX.Element {
     // a claimed id, a rotation the registry stream delivered) must not drop
     // the row under the user's feet. The rekey effect moves the selection
     // onto the new key and this placeholder retires itself.
-    if (active !== undefined && !listed.some((it) => it.key === active)) {
-      listed.push({ key: active, kind: 'legacy', title: active, updatedAt: Date.now() })
+    if (active !== undefined && !findChatItem(listed, active)) {
+      let harnessId: HarnessId | undefined
+      try {
+        harnessId = parseSessionId(active).harnessId
+      } catch {
+        // Bare legacy keys carry no harness identity.
+      }
+      listed.push({ key: active, kind: 'legacy', harnessId, title: active, updatedAt: Date.now() })
     }
     return sortByRecency(listed)
   }, [baseItems, drafts, pinVersion, houseTick, active, queryClient])
@@ -1172,35 +1174,12 @@ function ActiveSession(props: {
 
   /** Canonical `<harness-id>:<native>` when the control plane owns this row. */
   const canonicalId = gate.bound ? item?.sessionId : undefined
-  // Chat is the starting place for anything the composer can drive; a
-  // legacy TUI-only row (no registered driver) falls back to terminal so it
-  // doesn't open on an empty pane. The last-used view is remembered per
-  // thread. Remounts per session, so the lazy initializer re-reads on every
-  // switch; the effect below re-reads if baseUrl shifts under the mount
-  // (node switch with the same thread selected).
-  const fallbackMode: SessionViewMode = item?.kind === 'legacy' ? 'terminal' : 'chat'
-  const [mode, setModeState] = useState<SessionViewMode>(() =>
-    getSessionMode(storageKey(sessionBase, props.sessionId), fallbackMode),
+  const { mode, setMode } = useSessionView(
+    storageKey(sessionBase, props.sessionId),
+    isDraft ? { kind: 'draft' } : (item ?? props.item),
+    remoteRegistry.data?.harnesses,
+    remoteRegistry.status,
   )
-  const modeBaseRef = useRef(sessionBase)
-  useEffect(() => {
-    if (modeBaseRef.current === sessionBase) return
-    modeBaseRef.current = sessionBase
-    setModeState(getSessionMode(storageKey(sessionBase, props.sessionId), fallbackMode))
-  }, [sessionBase, props.sessionId, fallbackMode])
-  const setMode = (m: SessionViewMode): void => {
-    setModeState(m)
-    setSessionMode(storageKey(sessionBase, props.sessionId), m)
-  }
-  // A cross-node row's kind arrives with the remote summary — after mount.
-  // A TUI-only (legacy) row must still land in terminal, unless the user
-  // ever chose a view for this thread.
-  const itemKind = item?.kind
-  useEffect(() => {
-    if (itemKind !== 'legacy') return
-    if (hasSessionMode(storageKey(sessionBase, props.sessionId))) return
-    setModeState('terminal')
-  }, [itemKind, sessionBase, props.sessionId])
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY

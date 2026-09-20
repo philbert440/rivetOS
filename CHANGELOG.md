@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
 - feat(harness): add qwen-code — Qwen Code CLI as the eighth first-class harness (driver, provider, executor, hooks-driven memory capture via a qwen extension, web + Android).
+- RivetHub client — new chats and registered harness sessions open in Chat; legacy sessions wait for registry resolution and fall back to Terminal on failure, with the settled view remembered across navigation.
 
 ### RivetHub client
 
