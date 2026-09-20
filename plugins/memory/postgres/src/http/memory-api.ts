@@ -355,15 +355,23 @@ async function handleBrowse(url: URL, res: ServerResponse, pool: pg.Pool): Promi
 }
 
 async function handleStats(res: ServerResponse, pool: pg.Pool): Promise<void> {
-  const [conv, msg, tools, sums, queue, embedded, topTools, recent] = await Promise.all([
+  // At most 2 pool checkouts in flight — a dashboard hit must not occupy
+  // every free slot of the process-wide pool.
+  const [conv, msg] = await Promise.all([
     pool.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ros_conversations`),
     pool.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ros_messages`),
+  ])
+  const [tools, sums] = await Promise.all([
     pool.query<{ n: string }>(
       `SELECT COUNT(*)::text AS n FROM ros_messages WHERE role = 'tool' OR tool_name IS NOT NULL`,
     ),
     pool.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ros_summaries`),
+  ])
+  const [queue, embedded] = await Promise.all([
     cachedEmbeddingHealth(pool),
     pool.query<{ n: string }>(`SELECT COUNT(embedding)::text AS n FROM ros_messages`),
+  ])
+  const [topTools, recent] = await Promise.all([
     pool.query<{ tool: string; n: string }>(`
       SELECT tool_name AS tool, COUNT(*)::text AS n
         FROM ros_messages

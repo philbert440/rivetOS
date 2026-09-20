@@ -61,6 +61,12 @@ function isTaskUuid(value: string): boolean {
 
 export interface PostgresMemoryConfig {
   connectionString: string
+  /**
+   * Host-owned pool. When set, this adapter uses it and must not end() it.
+   * Own `error`/`connect` handlers are skipped — the host already installed
+   * them; attaching again would double-log.
+   */
+  pool?: pg.Pool
   /** Maximum pool connections (default: 5) */
   maxConnections?: number
   /** Connection timeout in ms (default: 10000) */
@@ -85,11 +91,14 @@ export interface PostgresMemoryConfig {
 
 export class PostgresMemory implements Memory {
   private pool: pg.Pool
+  /** False when `config.pool` was injected — close() must not end() it. */
+  private ownsPool: boolean
   private searchEngine: SearchEngine
   private wikiIndex: WikiIndex
   /** Set false after the first missing-table error — 0005 not applied. */
   private wikiAvailable = true
   private expander: Expander
+  /** Borrowed pool: refreshed only by isHealthy()/append; no production reader. */
   private connected = false
   private lastHealthCheck = 0
   /**
@@ -104,22 +113,28 @@ export class PostgresMemory implements Memory {
   private conversationTaskId = false
 
   constructor(config: PostgresMemoryConfig) {
-    this.pool = new Pool({
-      connectionString: config.connectionString,
-      max: config.maxConnections ?? 5,
-      connectionTimeoutMillis: config.connectionTimeoutMs ?? 10_000,
-      idleTimeoutMillis: config.idleTimeoutMs ?? 30_000,
-    })
+    if (config.pool) {
+      this.pool = config.pool
+      this.ownsPool = false
+    } else {
+      this.pool = new Pool({
+        connectionString: config.connectionString,
+        max: config.maxConnections ?? 5,
+        connectionTimeoutMillis: config.connectionTimeoutMs ?? 10_000,
+        idleTimeoutMillis: config.idleTimeoutMs ?? 30_000,
+      })
+      this.ownsPool = true
+      // Track pool errors without crashing the process. Skipped for a borrowed
+      // pool: the host already installed error/connect listeners.
+      this.pool.on('error', (err) => {
+        this.connected = false
+        console.error('[PostgresMemory] Pool error:', err.message)
+      })
 
-    // Track pool errors without crashing the process
-    this.pool.on('error', (err) => {
-      this.connected = false
-      console.error('[PostgresMemory] Pool error:', err.message)
-    })
-
-    this.pool.on('connect', () => {
-      this.connected = true
-    })
+      this.pool.on('connect', () => {
+        this.connected = true
+      })
+    }
 
     // Build search engine config — pass embedding endpoint for hybrid search
     const searchConfig: SearchEngineConfig = {
@@ -545,7 +560,9 @@ export class PostgresMemory implements Memory {
   // -----------------------------------------------------------------------
 
   async close(): Promise<void> {
-    await this.pool.end()
+    if (this.ownsPool) {
+      await this.pool.end()
+    }
   }
 
   // -----------------------------------------------------------------------

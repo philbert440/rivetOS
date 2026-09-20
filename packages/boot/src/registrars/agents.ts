@@ -121,10 +121,12 @@ export async function registerAgentTools(
   // Durability — Postgres-backed if pgUrl is configured, in-memory otherwise.
   //
   // Substrate is the task engine: ros_tasks + the graphile-worker run-task
-  // queue + the completion waiter, all on one Postgres connection pool.
+  // queue + the completion waiter. Prefer the host-owned shared pool;
+  // fall back to a registrar-owned pool of 4 when boot did not inject one.
   // ------------------------------------------------------------------
   const pgUrl = runtime.getPgUrl()
   let pool: pg.Pool | undefined
+  let poolOwnedByRegistrar = false
 
   // Task engine substrate (g2a: the ONLY orchestration engine — the legacy
   // subagent store/worker and ros_delegation_runs recorder are deleted).
@@ -141,7 +143,13 @@ export async function registerAgentTools(
   let userPools: Map<string, pg.Pool | null> | undefined
 
   if (pgUrl) {
-    pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
+    const hostPool = runtime.getPgPool()
+    if (hostPool) {
+      pool = hostPool
+    } else {
+      pool = new pg.Pool({ connectionString: pgUrl, max: 4 })
+      poolOwnedByRegistrar = true
+    }
     // /api/memory answers with the den-stamped user's database, so build a
     // pool per users.json registry entry alongside the owner pool. An entry
     // with an unparseable URL (pg defers parsing to first connect) is
@@ -498,6 +506,7 @@ export async function registerAgentTools(
         : undefined
     const taskRunner = createTaskRunner({
       pgUrl,
+      pgPool: pool,
       store: taskEngineStore,
       executors,
       nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
@@ -531,10 +540,10 @@ export async function registerAgentTools(
     log.info('No pgUrl — task engine in-memory (subagent tools only)')
   }
 
-  // Pool teardown LAST: hooks run in registration order, and the task
-  // runner + waiter must stop before Postgres goes away (in-flight
-  // PgTaskStore calls would otherwise fail).
-  if (pool) {
+  // Pool teardown LAST, and only when this registrar created the pool.
+  // A host-owned shared pool is ended by boot after runtime.stop().
+  // Hooks run in registration order; the task runner + waiter must stop first.
+  if (poolOwnedByRegistrar && pool) {
     runtime.addShutdownHook(async () => {
       await pool?.end()
     })
