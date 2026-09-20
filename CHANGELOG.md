@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### RivetHub client
 
 - Chat: preserve in-flight sends, ordering, and visible failure/retry across draft adoption and native-id rotation (#795).
+- Chat: a committed user turn retires the optimistic bubble of the send it confirms — by item id when the echo carries one, otherwise the accepted/sending bubble before a failed twin of the same text — so repeating a message can no longer retire the wrong bubble or strand the committed send's own.
 
 ### Breaking
 
