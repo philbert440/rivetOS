@@ -83,6 +83,7 @@
     "bundle": "node scripts/bundle.mjs",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
+    "test:integration-helpers": "integrations/shared/rivet-paths.test.sh && integrations/grok-bot/rivethub-grokbot/test/onboard-status.test.sh",
     "typecheck": "nx run-many -t typecheck",
     "ci": "nx run-many -t lint typecheck build test --exclude container-rivetos",
     "ci:affected": "nx affected -t lint typecheck build test --exclude container-rivetos",

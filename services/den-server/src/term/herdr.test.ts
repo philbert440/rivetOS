@@ -20,7 +20,10 @@ import {
   herdrClientSocketPath,
   herdrConfigHome,
   herdrEventsSubscribeRequest,
+  herdrAgentPresent,
+  herdrAgentReleased,
   herdrKindForCommand,
+  herdrUseAgent,
   herdrRuntimeHash,
   herdrServerArgv,
   herdrSessionName,
@@ -76,14 +79,7 @@ describe('herdr argv builders', () => {
     expect(herdrServerArgv('chat-f')).toEqual(['herdr', '--session', 'chat-f', 'server'])
     expect(herdrAttachArgv('chat-f')).toEqual(['herdr', '--session', 'chat-f'])
     const ws = herdrWorkspaceCreateArgv('chat-f', { COLORTERM: 'truecolor' }, '/tmp/work')
-    expect(ws.slice(0, 6)).toEqual([
-      'herdr',
-      '--session',
-      'chat-f',
-      'workspace',
-      'create',
-      '--cwd',
-    ])
+    expect(ws.slice(0, 6)).toEqual(['herdr', '--session', 'chat-f', 'workspace', 'create', '--cwd'])
     expect(ws).toContain('--env')
     expect(ws).toContain('COLORTERM=truecolor')
     expect(ws.join(' ')).not.toMatch(/TOKEN|sekrit|PASSWORD/)
@@ -117,7 +113,7 @@ describe('herdr argv builders', () => {
     })
   })
 
-  it('kind mapping returns undefined for anything outside herdr\'s closed enum', () => {
+  it("kind mapping returns undefined for anything outside herdr's closed enum", () => {
     expect(herdrKindForCommand('claude')).toBe('claude')
     expect(herdrKindForCommand('grok')).toBe('grok')
     expect(herdrKindForCommand('kimi')).toBe('kimi')
@@ -126,6 +122,47 @@ describe('herdr argv builders', () => {
     expect(herdrKindForCommand('shell')).toBeUndefined()
     expect(herdrKindForCommand('bash')).toBeUndefined()
     expect(herdrKindForCommand('operator-key')).toBeUndefined()
+  })
+
+  it('herdrUseAgent matches create(): kind === argv0 and no slash', () => {
+    expect(herdrUseAgent('claude', 'claude')).toBe(true)
+    expect(herdrUseAgent('grok', 'grok')).toBe(true)
+    expect(herdrUseAgent('grok', '/opt/grok/bin/grok')).toBe(false)
+    expect(herdrUseAgent('claude', './claude')).toBe(false)
+    expect(herdrUseAgent('claude', 'wrapper')).toBe(false)
+    expect(herdrUseAgent(undefined, 'claude')).toBe(false)
+  })
+
+  it('herdrAgentReleased is true for null/released agent, not done', () => {
+    expect(
+      herdrAgentReleased({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } }),
+    ).toBe(false)
+    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
+    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
+      true,
+    )
+    expect(herdrAgentReleased({ event: 'pane_agent_detected', data: { released: true } })).toBe(true)
+    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
+      false,
+    )
+    expect(
+      herdrAgentReleased({
+        event: 'pane.agent_status_changed',
+        data: { agent_status: 'idle' },
+      }),
+    ).toBe(false)
+  })
+
+  it('herdrAgentPresent is true only for a live detected agent', () => {
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(true)
+    expect(herdrAgentPresent({ event: 'pane_agent_detected', data: { agent: 'grok' } })).toBe(true)
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: null } })).toBe(false)
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
+      false,
+    )
+    expect(
+      herdrAgentPresent({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } }),
+    ).toBe(false)
   })
 
   it('per-den config home is a short runtime path hashed from stateDir+port', () => {
@@ -243,12 +280,15 @@ describe('herdrStatusToFrame', () => {
         sessionId: 'claude:abc',
       }),
     ).toMatchObject({ type: 'status', status: 'idle', sessionId: 'claude:abc' })
-    expect(herdrStatusToFrame({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } }))
-      .toMatchObject({ status: 'idle' })
+    expect(
+      herdrStatusToFrame({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } }),
+    ).toMatchObject({ status: 'idle' })
     expect(
       herdrStatusToFrame({ event: 'pane.agent_status_changed', data: { agent_status: 'unknown' } }),
     ).toBeUndefined()
-    expect(herdrStatusToFrame({ event: 'pane.focused', data: { pane_id: 'w1:p1' } })).toBeUndefined()
+    expect(
+      herdrStatusToFrame({ event: 'pane.focused', data: { pane_id: 'w1:p1' } }),
+    ).toBeUndefined()
     expect(
       herdrStatusToFrame(
         JSON.stringify({ event: 'pane.agent_status_changed', data: { agent_status: 'working' } }),
@@ -542,9 +582,13 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
     )
     const events: unknown[] = []
     let closes = 0
-    const unsub = ctl.subscribeEvents!('chat-f', (e) => events.push(e), () => {
-      closes += 1
-    })
+    const unsub = ctl.subscribeEvents!(
+      'chat-f',
+      (e) => events.push(e),
+      () => {
+        closes += 1
+      },
+    )
     sock.emit('connect')
     expect(written[0]).toBe(herdrEventsSubscribeRequest('w1:p1'))
     expect(JSON.parse(written[0]!).params.subscriptions[0]).toEqual({
@@ -568,32 +612,71 @@ describe('createRealHerdrCtl subscribeEvents (socket transport)', () => {
 })
 
 describe('round-2 re-review fixes (B6 + orphan risks)', () => {
-  const mkCtl = (rpcs: Array<{ method: string; params?: Record<string, unknown> }>, rpcImpl?: (req: { method: string; params?: Record<string, unknown> }) => unknown) => {
+  const mkCtl = (
+    rpcs: Array<{ method: string; params?: Record<string, unknown> }>,
+    rpcImpl?: (req: { method: string; params?: Record<string, unknown> }) => unknown,
+  ) => {
     const rpc: HerdrRpc = async (_p, req) => {
       rpcs.push({ method: req.method, params: req.params })
       if (req.method === 'pane.get') return { pane: { terminal_title: 'user@host: ~' } }
       if (req.method === 'workspace.create') return { root_pane: { pane_id: 'w1:p1' } }
       return rpcImpl ? rpcImpl(req) : {}
     }
-    const spawnFake: HerdrSpawn = () => ({ kill: () => undefined, pid: 4242 }) as unknown as ReturnType<HerdrSpawn>
-    return createRealHerdrCtl('/usr/bin/herdr', '/tmp/herdr-cfg-r2', () => '', spawnFake, () => true, undefined as never, rpc)
+    const spawnFake: HerdrSpawn = () =>
+      ({ kill: () => undefined, pid: 4242 }) as unknown as ReturnType<HerdrSpawn>
+    return createRealHerdrCtl(
+      '/usr/bin/herdr',
+      '/tmp/herdr-cfg-r2',
+      () => '',
+      spawnFake,
+      () => true,
+      undefined as never,
+      rpc,
+    )
   }
   it('B6: agent.start gets argv WITHOUT argv[0] (herdr prepends the kind executable)', async () => {
     const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
-    await mkCtl(rpcs).create({ name: 'dr2b6', denKey: 'k', argv: ['grok', '--always-approve', '--no-plan'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' })
+    await mkCtl(rpcs).create({
+      name: 'dr2b6',
+      denKey: 'k',
+      argv: ['grok', '--always-approve', '--no-plan'],
+      env: {},
+      cwd: '/w',
+      kind: 'grok',
+      command: 'grok',
+      user: 'u',
+    })
     const start = rpcs.find((r) => r.method === 'agent.start')
     expect(start).toBeDefined()
     expect((start!.params as { args: string[] }).args).toEqual(['--always-approve', '--no-plan'])
   })
   it('B6: a roster whose argv[0] is not the kind executable runs verbatim in a plain pane', async () => {
     const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
-    await mkCtl(rpcs).create({ name: 'dr2b6b', denKey: 'k', argv: ['/opt/wrap/grok-wrapper.sh', '--x'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' })
+    await mkCtl(rpcs).create({
+      name: 'dr2b6b',
+      denKey: 'k',
+      argv: ['/opt/wrap/grok-wrapper.sh', '--x'],
+      env: {},
+      cwd: '/w',
+      kind: 'grok',
+      command: 'grok',
+      user: 'u',
+    })
     expect(rpcs.map((r) => r.method)).not.toContain('agent.start')
     expect(rpcs.map((r) => r.method)).toContain('pane.send_text')
   })
   it('B6: a PATH-less pinned binary (`/opt/…/grok`) is not routed through agent.start (herdr would swap the executable)', async () => {
     const rpcs: Array<{ method: string; params?: Record<string, unknown> }> = []
-    await mkCtl(rpcs).create({ name: 'dr2b6c', denKey: 'k', argv: ['/opt/grok-1.0.13/bin/grok', '--no-plan'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' })
+    await mkCtl(rpcs).create({
+      name: 'dr2b6c',
+      denKey: 'k',
+      argv: ['/opt/grok-1.0.13/bin/grok', '--no-plan'],
+      env: {},
+      cwd: '/w',
+      kind: 'grok',
+      command: 'grok',
+      user: 'u',
+    })
     expect(rpcs.map((r) => r.method)).not.toContain('agent.start')
     expect(rpcs.map((r) => r.method)).toContain('pane.send_text')
   })
@@ -602,7 +685,18 @@ describe('round-2 re-review fixes (B6 + orphan risks)', () => {
     const { readFileSync, rmSync } = await import('node:fs')
     rmSync('/tmp/herdr-cfg-r2/herdr/sessions/dr2meta', { recursive: true, force: true })
     await expect(
-      mkCtl(rpcs, (req) => { if (req.method === 'agent.start') throw new Error('boom') }).create({ name: 'dr2meta', denKey: 'key-x', argv: ['grok'], env: {}, cwd: '/w', kind: 'grok', command: 'grok', user: 'u' }),
+      mkCtl(rpcs, (req) => {
+        if (req.method === 'agent.start') throw new Error('boom')
+      }).create({
+        name: 'dr2meta',
+        denKey: 'key-x',
+        argv: ['grok'],
+        env: {},
+        cwd: '/w',
+        kind: 'grok',
+        command: 'grok',
+        user: 'u',
+      }),
     ).rejects.toThrow('boom')
     // the throw path tears the server down, but the early meta write must have happened before agent.start:
     // rivet.json (pid + denKey) exists even though agent.start blew up
