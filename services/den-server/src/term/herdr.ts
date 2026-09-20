@@ -136,6 +136,10 @@ export interface HerdrCtl {
   capture?(name: string, lines: number): string
   /** Same, without blocking the event loop (execFile). Prefer this. */
   captureAsync?(name: string, lines: number): Promise<string>
+  /** Cheap async liveness probe (`pane list` / `agent list`). `undefined`
+   *  means the probe is unavailable or failed — callers fail closed for
+   *  inject on adopted harness panes rather than assuming alive. */
+  paneAgent?(name: string): Promise<{ agent: string | null; status?: string } | undefined>
   /** One newline-JSON `events.subscribe` socket. Returns unsubscribe.
    *  `onClose` fires when the socket ends (hub reconnects). */
   subscribeEvents?(name: string, onEvent: (evt: unknown) => void, onClose?: () => void): () => void
@@ -478,10 +482,26 @@ function detectedAgent(rec: Record<string, unknown>): unknown {
   return data.agent ?? data.agent_name ?? rec.agent
 }
 
-/** True when a herdr event says the agent in this pane is gone:
- *  `pane.agent_detected` / `pane_agent_detected` with a null/empty agent or
- *  `released`. `done` is idle (see herdrStatusToFrame), not release. Used to
- *  refuse inject writes into the fallback shell (#791). */
+const AGENT_STATUSES = new Set(['idle', 'working', 'blocked', 'done', 'unknown'])
+const LIVE_AGENT_STATUSES = new Set(['working', 'idle', 'blocked'])
+
+function eventFinalStatus(rec: Record<string, unknown>): string | undefined {
+  const data = asRecord(rec.data) ?? rec
+  for (const v of [data.final_status, rec.final_status]) {
+    if (typeof v === 'string' && v.length > 0) return v
+  }
+  return undefined
+}
+
+function eventHasAgentField(rec: Record<string, unknown>): boolean {
+  const data = asRecord(rec.data) ?? rec
+  return 'agent' in data || 'agent_name' in data || 'agent' in rec
+}
+
+/** Primary end signal: `pane.agent_detected` / `pane_agent_detected` with
+ *  schema release fields `released === true` and/or a present `final_status`.
+ *  A bare `agent: null` is NOT an end — see `herdrAgentNull`. `done` is idle
+ *  (see herdrStatusToFrame), not release. */
 export function herdrAgentReleased(evt: unknown): boolean {
   const rec = asEventRecord(evt)
   if (!rec) return false
@@ -489,11 +509,20 @@ export function herdrAgentReleased(evt: unknown): boolean {
   if (!DETECTED_EVENTS.has(name)) return false
   const data = asRecord(rec.data) ?? rec
   if (data.released === true || rec.released === true) return true
-  if (data.status === 'released' || data.agent_status === 'released') return true
-  const hasAgent = 'agent' in data || 'agent_name' in data || 'agent' in rec
-  if (!hasAgent) return false
+  return eventFinalStatus(rec) !== undefined
+}
+
+/** Secondary signal: a detection event with `agent: null`/empty and no
+ *  primary release fields. Must be confirmed by `paneAgent` before ending
+ *  — a detection hiccup must not reap a healthy pane. */
+export function herdrAgentNull(evt: unknown): boolean {
+  const rec = asEventRecord(evt)
+  if (!rec) return false
+  if (!DETECTED_EVENTS.has(eventName(rec))) return false
+  if (herdrAgentReleased(rec)) return false
+  if (!eventHasAgentField(rec)) return false
   const agent = detectedAgent(rec)
-  return agent == null || agent === '' || agent === 'released'
+  return agent == null || agent === ''
 }
 
 /** True when `pane.agent_detected` reports a live agent (clears a prior
@@ -605,6 +634,67 @@ export function parsePaneSize(stdout: string): { cols: number; rows: number } | 
   // 0.8.2 pane list has viewport_rows and no cols — windowSize is undefined
   // (herdr is latest-client-wins; den does not invent a width).
   return undefined
+}
+
+export type PaneAgentInfo = { agent: string | null; status?: string }
+
+function pickAgentStatus(raw: unknown): string | undefined {
+  return typeof raw === 'string' && AGENT_STATUSES.has(raw) ? raw : undefined
+}
+
+function paneAgentFromRow(row: unknown): PaneAgentInfo | undefined {
+  const r = asRecord(row)
+  if (!r) return undefined
+  const inner = asRecord(r.pane) ?? r
+  const agentRaw = inner.agent ?? inner.agent_name ?? inner.name ?? r.agent
+  const agent = agentRaw === null ? null : typeof agentRaw === 'string' ? agentRaw : undefined
+  const status = pickAgentStatus(inner.agent_status ?? inner.status ?? r.agent_status)
+  if (agent === undefined && status === undefined) return undefined
+  return { agent: agent ?? null, ...(status ? { status } : {}) }
+}
+
+function collectPaneAgentRows(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw
+  const rec = asRecord(raw)
+  if (!rec) return []
+  const result = asRecord(rec.result) ?? rec
+  if (Array.isArray(result.panes)) return result.panes as unknown[]
+  if (Array.isArray(result.agents)) return result.agents as unknown[]
+  if (Array.isArray(rec.panes)) return rec.panes as unknown[]
+  if (Array.isArray(rec.agents)) return rec.agents as unknown[]
+  return [raw]
+}
+
+/** Defensive parse of `pane list` / `agent list` JSON against PaneInfo /
+ *  AgentInfo: `agent` is string|null, `agent_status` is the closed enum.
+ *  Unparseable output → undefined (probe unavailable). An empty but valid
+ *  list is `{ agent: null }` (positively no agent). */
+export function parsePaneAgent(stdout: string): PaneAgentInfo | undefined {
+  let raw: unknown
+  try {
+    raw = JSON.parse(stdout)
+  } catch {
+    return undefined
+  }
+  const rows = collectPaneAgentRows(raw)
+  if (rows.length === 0) return { agent: null }
+  for (const row of rows) {
+    const got = paneAgentFromRow(row)
+    if (!got) continue
+    if (typeof got.agent === 'string' && got.agent.length > 0) return got
+    if (got.status && LIVE_AGENT_STATUSES.has(got.status)) return got
+  }
+  for (const row of rows) {
+    const got = paneAgentFromRow(row)
+    if (got) return got
+  }
+  return { agent: null }
+}
+
+/** Probe said a live agent (non-empty name, or working|idle|blocked). */
+export function herdrPaneAgentLive(p: PaneAgentInfo): boolean {
+  if (typeof p.agent === 'string' && p.agent.length > 0) return true
+  return typeof p.status === 'string' && LIVE_AGENT_STATUSES.has(p.status)
 }
 
 /** Exact x.y.z only. `0.8.2-preview.N` must not match the pin. */
@@ -1365,6 +1455,26 @@ export function createRealHerdrCtl(
           ? agent
           : runAsync(herdrPaneReadArgv(name, meta.paneId ?? HERDR_DEFAULT_PANE, lines).slice(1)),
       )
+    },
+    async paneAgent(name) {
+      const runAsync = (args: string[]): Promise<string | null> =>
+        new Promise((resolve) => {
+          execFile(
+            binary,
+            args,
+            { encoding: 'utf8', timeout: 2000, env: envFor() },
+            (err, stdout) => resolve(err ? null : stdout),
+          )
+        })
+      try {
+        const paneOut = await runAsync(herdrPaneListArgv(name).slice(1))
+        const fromPane = paneOut ? parsePaneAgent(paneOut) : undefined
+        if (fromPane) return fromPane
+        const agentOut = await runAsync(herdrAgentListArgv(name).slice(1))
+        return agentOut ? parsePaneAgent(agentOut) : undefined
+      } catch {
+        return undefined
+      }
     },
     subscribeEvents(name, onEvent, onClose) {
       const paneId = readMeta(configHome, name).paneId ?? 'w1:p1'

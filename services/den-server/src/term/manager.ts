@@ -91,9 +91,11 @@ import {
   herdrConfigContent,
   herdrConfigHome,
   herdrConfigPath,
+  herdrAgentNull,
   herdrAgentPresent,
   herdrAgentReleased,
   herdrKindForCommand,
+  herdrPaneAgentLive,
   herdrSessionName,
   herdrSupported,
   herdrUseAgent,
@@ -207,6 +209,10 @@ export interface PtyInfo {
    *  never the text. Cleared on the next confirmed turn. Surfaced on
    *  GET /term/list — POST /term/inject stays 202 at accept time. */
   injectUnconfirmed?: { ts: number; turn: number }
+  /** Harness pane whose agent has released; still `state:'running'` during
+   *  the persist-grace. Surfaced on GET /term/list like injectUnconfirmed
+   *  so a polling client can tell the row is ending. */
+  agentEnded?: boolean
 }
 
 type DataSubscriber = (data: string | Buffer) => void
@@ -270,6 +276,11 @@ interface PtyRecord {
    *  Inject refuses while set. After harnessEndedGraceMs without a clear, the
    *  pty and mux session are ended for real. */
   agentEnded?: boolean
+  /** `now()` of the last positive live-agent evidence (probe or
+   *  working|idle|blocked frame). Unset until then: adopted harness panes
+   *  refuse inject, and laterWrite will not paste into a pane we have never
+   *  seen an agent in. */
+  lastAgentSeenAt?: number
   /** Fires after harnessEndedGraceMs while agentEnded stays set. */
   endedGraceTimer?: NodeJS.Timeout
   injectRest?: { text: string; submit: boolean }[]
@@ -624,7 +635,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const fire = (): void => {
       // Ended harness panes (including during grace) must not receive a
       // delayed paste/CR — herdr leaves a fallback shell in the pane.
-      if (r.state === 'running' && !(r.agentPane && r.agentEnded)) r.proc.write(data)
+      // No lastAgentSeenAt: never write into a pane we have not positively
+      // seen an agent in (adopt / create→retain window).
+      if (
+        r.state === 'running' &&
+        !(r.agentPane && (r.agentEnded || r.lastAgentSeenAt === undefined))
+      )
+        r.proc.write(data)
     }
     if (atMs <= 0) {
       fire()
@@ -965,6 +982,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const agentGone = (r: PtyRecord): boolean => Boolean(r.agentPane && r.agentEnded)
 
+  /** No working|idle|blocked frame and no successful probe since adopt/create. */
+  const noAgentEvidence = (r: PtyRecord): boolean =>
+    Boolean(r.agentPane && r.lastAgentSeenAt === undefined)
+
+  const noteAgentSeen = (r: PtyRecord): void => {
+    r.lastAgentSeenAt = now()
+    clearAgentEnded(r)
+  }
+
   /** Assigned after onExit exists. Release-signal grace calls this to reap. */
   let endHarnessPane: (r: PtyRecord) => void = () => undefined
 
@@ -1004,6 +1030,55 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       endHarnessPane(r)
     }, harnessEndedGraceMs)
     r.endedGraceTimer.unref()
+  }
+
+  const applyAgentProbe = async (r: PtyRecord): Promise<void> => {
+    const ctl = herdr
+    const muxName = r.tmuxName
+    if (!r.agentPane || !muxName || !ctl?.paneAgent) return
+    let probed: { agent: string | null; status?: string } | undefined
+    try {
+      probed = await ctl.paneAgent(muxName)
+    } catch {
+      probed = undefined
+    }
+    if (r.state !== 'running') return
+    if (probed === undefined) return
+    if (herdrPaneAgentLive(probed)) {
+      if (probed.status === 'working' || probed.status === 'idle' || probed.status === 'blocked') {
+        r.lastAgentStatus = probed.status
+      }
+      noteAgentSeen(r)
+      if (r.persisted) r.ready = true
+      return
+    }
+    // Probe positively saw no agent. Adopt: nothing to wait for — end now
+    // so the caller can spawn fresh. Fresh create: same as a release event.
+    latchAgentEnded(r)
+    if (r.persisted) endHarnessPane(r)
+  }
+
+  const confirmNullAgent = (r: PtyRecord): void => {
+    if (!r.agentPane || r.state !== 'running') return
+    const ctl = herdr
+    const muxName = r.tmuxName
+    if (!ctl?.paneAgent || !muxName) return
+    const probe = ctl.paneAgent.bind(ctl)
+    void (async () => {
+      let probed: { agent: string | null; status?: string } | undefined
+      try {
+        probed = await probe(muxName)
+      } catch {
+        probed = undefined
+      }
+      if (r.state !== 'running') return
+      if (probed === undefined) return
+      if (herdrPaneAgentLive(probed)) {
+        noteAgentSeen(r)
+        return
+      }
+      latchAgentEnded(r)
+    })()
   }
 
   const clearReadyTimers = (r: PtyRecord): void => {
@@ -1093,7 +1168,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       r.injectBuffer = []
       return
     }
-    if (agentGone(r)) {
+    if (agentGone(r) || noAgentEvidence(r)) {
       // Keep the buffer and the ceiling. A later re-detect / idle can still
       // flush; only the ceiling-while-ended path records failure.
       return
@@ -1104,7 +1179,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.injectBuffer = []
     if (pending.length === 0) return
     // Re-check immediately before any write — a release can race the idle frame.
-    if (agentGone(r)) {
+    if (agentGone(r) || noAgentEvidence(r)) {
       dropBufferedInjects(r)
       return
     }
@@ -1130,10 +1205,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.readyCeilingTimer = setTimeout(() => {
       r.readyCeilingTimer = undefined
       if (r.ready || r.state !== 'running') return
-      if (agentGone(r)) {
+      if (agentGone(r) || noAgentEvidence(r)) {
         const had =
           r.injectBuffer.length > 0 || (r.injectRest !== undefined && r.injectRest.length > 0)
-        if (had) {
+        if (had && agentGone(r)) {
           const turn = nextInjectTurn(r)
           recordUnconfirmed(r, turn, 'agent ended before inject — dropping buffered turns')
           dropBufferedInjects(r)
@@ -1170,6 +1245,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (!rec) return
         if (herdrAgentReleased(evt)) latchAgentEnded(rec)
         else if (herdrAgentPresent(evt)) clearAgentEnded(rec)
+        else if (herdrAgentNull(evt)) confirmNullAgent(rec)
       },
       onFrame: (name, frame) => {
         if (process.env.RIVETOS_HERDR_DEBUG === '1')
@@ -1179,7 +1255,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           rec.lastAgentStatus = frame.status
           // working|idle|blocked prove the agent is alive — clear a prior
           // release latch so it never sticks for the record's lifetime.
-          clearAgentEnded(rec)
+          noteAgentSeen(rec)
           if (frame.status === 'working') {
             touchActivity(rec)
             confirmInjectIfPending(rec)
@@ -1249,6 +1325,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     if (r.compactAt !== undefined) out.compactAt = r.compactAt
     if (r.contextSource !== undefined) out.contextSource = r.contextSource
     if (r.injectUnconfirmed !== undefined) out.injectUnconfirmed = r.injectUnconfirmed
+    if (r.agentEnded) out.agentEnded = true
     return out
   }
 
@@ -1425,7 +1502,14 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // running child carries the first spawner's memory env.
           if (existing.routedUser !== routedUser)
             throw new TermSpawnError('user-mismatch', `session ${session} is owned by another user`)
-          return info(existing)
+          // During the persist-grace the record is still running. A caller
+          // asking for a pty has said they want a live harness — skip the
+          // rest of the grace, end now, and spawn a new id.
+          if (existing.agentPane && existing.agentEnded) {
+            endHarnessPane(existing)
+          } else {
+            return info(existing)
+          }
         }
       }
       const roster = deps.roster()
@@ -1837,7 +1921,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
       }
 
-      const finishSpawn = (): PtyInfo => {
+      const finishSpawn = (): PtyInfo | Promise<PtyInfo> => {
         // assigned inside the try below; TS can't see through the try/finally
         let proc!: PtyProc
         // Env-file write + spawn share one try/finally so EACCES/ENOSPC cannot
@@ -1915,11 +1999,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             firstSeenTs: now(),
             endSent: false,
           })
-          if (
-            herdr &&
-            herdrUseAgent(herdrKindForCommand(key), argv[0] ?? '') &&
-            (firstSeen || (statusHub?.refs(tmuxName) ?? 0) === 0)
-          ) {
+          if (herdr && tmuxName && (firstSeen || (statusHub?.refs(tmuxName) ?? 0) === 0)) {
+            // Subscribe every herdr-backed pane (including shells) so a
+            // release event still reaches latchAgentEnded; the agentPane
+            // guard no-ops for non-harness records.
             statusHub?.retain(tmuxName, denSession)
           }
         }
@@ -1961,10 +2044,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           contextWindow: ctxStamp.contextWindow,
           compactAt: ctxStamp.compactAt,
           contextSource: ctxStamp.contextSource,
-          // An attach (session already existed) reattaches a RUNNING harness:
-          // the first output is tmux's attach redraw, which would fire the
-          // ready-gate settle too early — an attach is immediately ready.
-          ready: persisted,
+          // An attach of a plain pane is immediately ready. An adopted
+          // harness pane is NOT ready until paneAgent (or a status frame)
+          // proves an agent is present — otherwise chat injects the leftover
+          // shell (#791).
+          ready:
+            persisted &&
+            !(Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? '')),
           injectBuffer: [],
           injectTimers: [],
           injectNextAtMs: 0,
@@ -2002,6 +2088,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             harness: 'rivetos',
             ts: now(),
           })
+        if (r.agentPane && r.tmuxName && herdr?.paneAgent) {
+          return applyAgentProbe(r).then(() => info(r))
+        }
         return info(r)
       }
 
@@ -2154,6 +2243,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     write(id, data): boolean {
       const r = records.get(id)
       if (!r || r.state !== 'running' || agentGone(r)) return false
+      if (noAgentEvidence(r)) return false
       // Keystrokes count as activity for idle-TTL (and LRU).
       touchActivity(r)
       r.proc.write(data)
@@ -2166,6 +2256,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Zero-window: a harness pane whose agent has released is not writable,
       // including during the persist-grace. Prefer 409 over a shell write.
       if (agentGone(r)) return false
+      // Adopted (or already-ready) harness pane with no probe/frame evidence:
+      // fail closed. Fresh create still buffers until idle (ready is false).
+      if (noAgentEvidence(r) && (r.persisted || r.ready)) return false
       // Chat activity protects this pty from LRU eviction (#316 review): a
       // conversation being chatted is unattached (inject doesn't attach) but
       // must not be evicted between the send and the harness's reply. Also

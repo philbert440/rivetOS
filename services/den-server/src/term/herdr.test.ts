@@ -20,8 +20,11 @@ import {
   herdrClientSocketPath,
   herdrConfigHome,
   herdrEventsSubscribeRequest,
+  herdrAgentNull,
   herdrAgentPresent,
   herdrAgentReleased,
+  herdrPaneAgentLive,
+  parsePaneAgent,
   herdrKindForCommand,
   herdrUseAgent,
   herdrRuntimeHash,
@@ -133,15 +136,29 @@ describe('herdr argv builders', () => {
     expect(herdrUseAgent(undefined, 'claude')).toBe(false)
   })
 
-  it('herdrAgentReleased is true for null/released agent, not done', () => {
+  it('herdrAgentReleased keys on released/final_status, not a bare agent:null', () => {
     expect(
       herdrAgentReleased({ event: 'pane.agent_status_changed', data: { agent_status: 'done' } }),
     ).toBe(false)
-    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
+    expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: null } })).toBe(false)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
+      false,
+    )
+    expect(
+      herdrAgentReleased({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: null, released: true },
+      }),
+    ).toBe(true)
+    expect(herdrAgentReleased({ event: 'pane_agent_detected', data: { released: true } })).toBe(
       true,
     )
-    expect(herdrAgentReleased({ event: 'pane_agent_detected', data: { released: true } })).toBe(true)
+    expect(
+      herdrAgentReleased({
+        event: 'pane.agent_detected',
+        data: { pane_id: 'w1:p1', agent: 'claude', final_status: 'idle' },
+      }),
+    ).toBe(true)
     expect(herdrAgentReleased({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
       false,
     )
@@ -151,15 +168,27 @@ describe('herdr argv builders', () => {
         data: { agent_status: 'idle' },
       }),
     ).toBe(false)
+    expect(herdrAgentNull({ event: 'pane.agent_detected', data: { agent: null } })).toBe(true)
+    expect(
+      herdrAgentNull({
+        event: 'pane.agent_detected',
+        data: { agent: null, released: true },
+      }),
+    ).toBe(false)
   })
 
   it('herdrAgentPresent is true only for a live detected agent', () => {
-    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(true)
+    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'claude' } })).toBe(
+      true,
+    )
     expect(herdrAgentPresent({ event: 'pane_agent_detected', data: { agent: 'grok' } })).toBe(true)
     expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: null } })).toBe(false)
-    expect(herdrAgentPresent({ event: 'pane.agent_detected', data: { agent: 'released' } })).toBe(
-      false,
-    )
+    expect(
+      herdrAgentPresent({
+        event: 'pane.agent_detected',
+        data: { agent: 'claude', released: true },
+      }),
+    ).toBe(false)
     expect(
       herdrAgentPresent({ event: 'pane.agent_status_changed', data: { agent_status: 'idle' } }),
     ).toBe(false)
@@ -255,6 +284,46 @@ describe('parseWorkspaceCreate / parsePaneSize', () => {
     expect(
       parsePaneSize(JSON.stringify({ result: { panes: [{ scroll: { viewport_rows: 39 } }] } })),
     ).toBeUndefined()
+  })
+
+  it('parsePaneAgent reads PaneInfo agent/agent_status; garbage is unavailable', () => {
+    expect(
+      parsePaneAgent(
+        JSON.stringify({
+          result: {
+            panes: [
+              {
+                pane_id: 'w1:p1',
+                terminal_id: 't1',
+                workspace_id: 'w1',
+                tab_id: 'tab1',
+                focused: true,
+                agent: 'claude',
+                agent_status: 'idle',
+                revision: 1,
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ agent: 'claude', status: 'idle' })
+    expect(
+      parsePaneAgent(
+        JSON.stringify({
+          type: 'agent_list',
+          agents: [{ name: 'grok', agent: 'grok', agent_status: 'working', pane_id: 'w1:p1' }],
+        }),
+      ),
+    ).toEqual({ agent: 'grok', status: 'working' })
+    expect(parsePaneAgent(JSON.stringify({ result: { panes: [{ agent: null }] } }))).toEqual({
+      agent: null,
+    })
+    expect(parsePaneAgent(JSON.stringify({ result: { panes: [] } }))).toEqual({ agent: null })
+    expect(parsePaneAgent('not-json')).toBeUndefined()
+    expect(herdrPaneAgentLive({ agent: 'claude', status: 'idle' })).toBe(true)
+    expect(herdrPaneAgentLive({ agent: null, status: 'idle' })).toBe(true)
+    expect(herdrPaneAgentLive({ agent: null })).toBe(false)
+    expect(herdrPaneAgentLive({ agent: null, status: 'unknown' })).toBe(false)
   })
 })
 
