@@ -241,6 +241,143 @@ HOME="$_saved_home"
 unset _saved_home
 cleanup_env
 
+# 17. scheme-less credentialed endpoints: last @, drop path, never leak
+assert_redact() {
+  local raw="$1"
+  local expect="$2"
+  local secret="$3"
+  local label="$4"
+  local port="${5:-5432}"
+  local got xout
+  got="$(printf '%s' "$raw" | rivetos_redact_endpoint "$port" 2>&1)"
+  if [ "$got" = "$expect" ]; then
+    pass "$label"
+  else
+    fail "$label (redacted form did not match)"
+  fi
+  if printf '%s' "$got" | grep -qF "$secret"; then
+    fail "$label leaked secret on stdout/stderr"
+  else
+    pass "$label no leak on stdout/stderr"
+  fi
+  xout="$(printf '%s' "$raw" | { set -x; rivetos_redact_endpoint "$port"; } 2>&1)"
+  if printf '%s' "$xout" | grep -qF "$secret"; then
+    fail "$label leaked secret under bash -x"
+  else
+    pass "$label no leak under bash -x"
+  fi
+}
+
+assert_redact 'user:pass@host.example:5432/db' 'tcp host.example 5432' 'user:pass' 'bare user:pass@host:port/path'
+assert_redact 'user:pass@host.example' 'tcp host.example 5432' 'user:pass' 'bare user:pass@host'
+assert_redact 'user:pass@cloud.example' 'tcp cloud.example 443' 'user:pass' 'bare cloud_url userinfo' 443
+assert_redact 'user:p@ss:w0rd@host.example:5432/db' 'tcp host.example 5432' 'p@ss:w0rd' 'password with @ and :'
+assert_redact 'u:p@[::1]:5432' 'tcp ::1 5432' 'u:p@' 'IPv6 literal with userinfo'
+assert_redact 'user:pass@' 'unparseable' 'user:pass' 'empty host after @ is unparseable'
+
+# 18. supported shapes match bash source
+assert_matches_source() {
+  local body="$1"
+  local key="$2"
+  local label="$3"
+  local parser_val source_val err
+  _saved_home="$HOME"
+  export HOME=/tmp/rivetos-home-probe
+  with_envfile "$body"
+  unset EMPTY MISSING FOO "$key" 2>/dev/null || true
+  rivetos_load_env 2>"$ENV_DIR/load.err"
+  err="$(cat "$ENV_DIR/load.err")"
+  parser_val="${!key-}"
+  if printf '%s' "$err" | grep -q unsupported; then
+    fail "$label should not warn"
+  fi
+  unset "$key" || true
+  set -a
+  # shellcheck disable=SC1090
+  . "$RIVETOS_ENV_FILE"
+  set +a
+  source_val="${!key-}"
+  if [ "$parser_val" = "$source_val" ]; then
+    pass "$label matches source"
+  else
+    fail "$label parser/source mismatch"
+  fi
+  HOME="$_saved_home"
+  unset _saved_home
+  cleanup_env
+}
+
+assert_matches_source 'RIVETOS_ROOT=~' RIVETOS_ROOT 'unquoted ~'
+assert_matches_source 'RIVETOS_ROOT=~/rivetos' RIVETOS_ROOT 'unquoted ~/'
+assert_matches_source 'RIVETOS_ROOT=~/skills' RIVETOS_ROOT 'unquoted ~/skills'
+assert_matches_source 'RIVETOS_ROOT=a~b' RIVETOS_ROOT 'unquoted a~b stays literal'
+assert_matches_source 'RIVETOS_ROOT="~/rivetos"' RIVETOS_ROOT 'double-quoted ~/ stays literal'
+assert_matches_source 'RIVETOS_ROOT=${MISSING:-fallback}' RIVETOS_ROOT '${NAME:-default} unset'
+assert_matches_source $'EMPTY=\nRIVETOS_ROOT=${EMPTY:-fallback}' RIVETOS_ROOT '${NAME:-default} empty'
+assert_matches_source $'EMPTY=\nRIVETOS_ROOT=${EMPTY-fallback}' RIVETOS_ROOT '${NAME-default} empty stays empty'
+assert_matches_source 'RIVETOS_ROOT=${MISSING-fallback}' RIVETOS_ROOT '${NAME-default} unset'
+assert_matches_source 'RIVETOS_ROOT="a\nb"' RIVETOS_ROOT 'double-quoted \\n stays two chars'
+assert_matches_source 'RIVETOS_ROOT="a\tb"' RIVETOS_ROOT 'double-quoted \\t stays two chars'
+assert_matches_source 'RIVETOS_ROOT="a\pb"' RIVETOS_ROOT 'double-quoted \\p stays two chars'
+assert_matches_source 'RIVETOS_ROOT="$HOME/rivetos"' RIVETOS_ROOT 'double-quoted $HOME expands'
+assert_matches_source $'FOO=bar\nRIVETOS_ROOT="${FOO}/x"' RIVETOS_ROOT 'double-quoted ${NAME}'
+assert_matches_source 'RIVETOS_ROOT="${MISSING:-fallback}"' RIVETOS_ROOT 'double-quoted ${NAME:-default}'
+assert_matches_source 'RIVETOS_ROOT=#c0ffee' RIVETOS_ROOT 'unquoted #value is not a comment'
+assert_matches_source 'RIVETOS_ROOT=a#b' RIVETOS_ROOT 'unquoted mid-word hash'
+assert_matches_source 'RIVETOS_ROOT=a #b' RIVETOS_ROOT 'unquoted whitespace-hash is a comment'
+
+# 19. full-line # … is a comment (not an assignment)
+_saved_home="$HOME"
+with_envfile '# RIVETOS_ROOT=/commented-out
+RIVETOS_MODE=local'
+export HOME=/tmp/rivetos-home-probe
+rivetos_load_env 2>"$ENV_DIR/load.err"
+err="$(cat "$ENV_DIR/load.err")"
+if [ -z "${RIVETOS_ROOT:-}" ] && [ "${RIVETOS_MODE:-}" = local ]; then
+  pass 'full-line # comment is not an assignment'
+else
+  fail 'full-line # comment must not assign RIVETOS_ROOT'
+fi
+if printf '%s' "$err" | grep -q unsupported; then
+  fail 'full-line # comment should not warn'
+else
+  pass 'full-line # comment does not warn'
+fi
+HOME="$_saved_home"
+unset _saved_home
+cleanup_env
+
+# 20. unsupported shapes warn with the key, never the value
+assert_warns() {
+  local body="$1"
+  local key="$2"
+  local secret="$3"
+  local label="$4"
+  local err
+  with_envfile "$body"
+  rivetos_load_env 2>"$ENV_DIR/load.err"
+  err="$(cat "$ENV_DIR/load.err")"
+  if printf '%s' "$err" | grep -q "$key" && printf '%s' "$err" | grep -q unsupported; then
+    pass "$label warns with key"
+  else
+    fail "$label should warn naming $key"
+  fi
+  if [ -n "$secret" ] && printf '%s' "$err" | grep -qF "$secret"; then
+    fail "$label warning leaked value"
+  else
+    pass "$label warning does not print value"
+  fi
+  cleanup_env
+}
+
+assert_warns 'RIVETOS_PG_URL=${FOO:+s3cret-warn-value}' RIVETOS_PG_URL 's3cret-warn-value' '${+} operator'
+assert_warns 'RIVETOS_ROOT=${FOO#pat}' RIVETOS_ROOT '${FOO#pat}' '${#} operator'
+assert_warns "RIVETOS_ROOT='a'\\''b'" RIVETOS_ROOT "a'b" "concatenated quotes"
+assert_warns 'RIVETOS_ROOT=foo\' RIVETOS_ROOT 'foo\' 'trailing-backslash continuation'
+assert_warns 'RIVETOS_ROOT=$(echo s3cret-cmd)' RIVETOS_ROOT 's3cret-cmd' 'command substitution'
+assert_warns 'RIVETOS_ROOT="$(echo s3cret-dq)"' RIVETOS_ROOT 's3cret-dq' 'double-quoted command substitution'
+assert_warns 'RIVETOS_ROOT=`echo s3cret-tick`' RIVETOS_ROOT 's3cret-tick' 'backticks'
+
 if [ "$failed" -ne 0 ]; then
   echo "$failed rivet-paths test(s) failed" >&2
   exit 1

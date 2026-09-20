@@ -36,6 +36,10 @@ Declared so marketplace / Cursor can show a form (`Plugins → Configure`):
 
 When this kit launches MCP (`RIVETOS_PLUGIN_ENV=1`), plugin variables win over `~/.rivetos/.env`. Empty form placeholders and unsubstituted `${VAR}` tokens do not block the env-file fallback. Other harness launchers keep the historical behaviour: the env file wins. Unquoted `$HOME` in the env file still expands.
 
+### How `~/.rivetos/.env` is read
+
+Launchers **parse** `KEY=VALUE` lines (optional `export` prefix, quotes, last-wins). They never `source` or evaluate the file, so `$(…)` and backticks do not run. Unquoted `$VAR`, `${VAR}`, `${VAR:-default}`, `${VAR-default}`, and a leading `~` or `~/…` expand. The same `$VAR` / `${VAR}` / `${VAR:-default}` / `${VAR-default}` forms expand inside double quotes, matching bash — `RIVETOS_ROOT="$HOME/rivetos"` becomes `$HOME/rivetos`. A double-quoted `\$` is a literal `$` (what persist writes). Tilde does not expand inside quotes (`"~/x"` stays `~/x`); `a~b` stays literal. Unquoted `#` starts a comment only after whitespace or at line start (`KEY=#x` and `KEY=a#b` keep the hash; `KEY=a #b` is `a`). Double-quoted escapes match bash: only `\\`, `\"`, `\$`, and `` \` `` lose their backslash (`\n`, `\t`, `\p` stay two characters). Any other shell form the parser cannot reproduce (other `${…}` operators, `'a'\''b'`, a trailing-backslash continuation, unescaped `$(…)` / backticks) is kept literal and prints one warning to stderr that names the key, never the value.
+
 ### Power-user fallback
 
 Existing nodes keep working with only `~/.rivetos/.env` (`RIVETOS_PG_URL`). You do not need the onboard wizard. Editing `.env` by hand is **not** the primary stranger path.

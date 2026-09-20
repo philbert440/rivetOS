@@ -8,10 +8,23 @@
 #                              (export prefix, quotes, last-wins). Never
 #                              sources the file. Default (main): the env
 #                              file wins, matching historical harness
-#                              launchers. Unquoted $VAR and ${VAR} expand
-#                              (so $HOME/rivetos still works); a
-#                              double-quoted $VAR stays literal, unlike
-#                              source. $( ) and backticks do not expand.
+#                              launchers. Unquoted $VAR, ${VAR},
+#                              ${VAR:-default}, ${VAR-default}, and a
+#                              leading ~ or ~/… expand (so $HOME/rivetos
+#                              and ~/rivetos still work). The same $VAR
+#                              / ${VAR} / ${VAR:-default} / ${VAR-default}
+#                              forms expand inside double quotes (bash);
+#                              \$ is a literal dollar (persist). a~b and
+#                              "~/x" stay literal. Unquoted # is a comment
+#                              only after whitespace or at line start
+#                              (KEY=#x and KEY=a#b keep the hash).
+#                              Double-quoted escapes match bash: only
+#                              \\ \" \$ \` lose their backslash.
+#                              $( ) and backticks do not expand. Other
+#                              ${…} operators, concatenated quotes, and
+#                              a trailing-backslash continuation stay
+#                              literal and emit one stderr warning that
+#                              names the key (never the value).
 #                              When RIVETOS_PLUGIN_ENV=1, already-set
 #                              (non-empty, non-placeholder) process /
 #                              plugin vars win, and a plugin postgres
@@ -130,9 +143,11 @@ rivetos_trim() {
   printf '%s' "$s"
 }
 
-# Match packages/cli parseEnvLine / unquoteEnvValue (export prefix, quotes,
-# last-wins). Sets _rivetos_env_key and _rivetos_env_val. Returns 1 if the
-# line is a comment, blank, or malformed.
+# Match packages/cli parseEnvLine on export prefix, quotes, last-wins.
+# Double-quoted escapes match bash (not CLI's historical \n→newline).
+# Sets _rivetos_env_key, _rivetos_env_val, _rivetos_env_quote, and
+# optionally _rivetos_env_unsupported. Returns 1 if the line is a
+# comment, blank, or malformed.
 rivetos_has_non_ascii() {
   local LC_ALL=C LANG=C
   local s="$1" i=0 c
@@ -147,33 +162,111 @@ rivetos_has_non_ascii() {
   return 1
 }
 
-# $VAR / ${VAR} from the environment. No command substitution.
+# Consume one $ / ${…} construct at s[i] (s[i] is $). Writes
+# _rivetos_consume_out and _rivetos_consume_next_i. Never prints a value.
+# ${VAR:-default} / ${VAR-default} recurse through rivetos_expand_params
+# for the default. Unsupported operators / $( stay literal and set
+# _rivetos_expand_unsupported.
+rivetos_consume_dollar() {
+  local s="$1"
+  local i="$2"
+  local n name rest body default val j ch
+  _rivetos_consume_out='$'
+  _rivetos_consume_next_i=$((i + 1))
+  if [ "$((i + 1))" -ge "${#s}" ]; then
+    return 0
+  fi
+  n="${s:$((i + 1)):1}"
+  if [ "$n" = '(' ]; then
+    _rivetos_expand_unsupported="${_rivetos_expand_unsupported:-command substitution}"
+    return 0
+  fi
+  if [ "$n" = '{' ]; then
+    rest="${s:$((i + 2))}"
+    case "$rest" in
+      *'}'*) body="${rest%%\}*}" ;;
+      *) return 0 ;;
+    esac
+    if [[ "$body" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      _rivetos_consume_out="${!body-}"
+      _rivetos_consume_next_i=$((i + 3 + ${#body}))
+      return 0
+    fi
+    if [[ "$body" =~ ^[A-Za-z_][A-Za-z0-9_]*:- ]]; then
+      name="${body%%:-*}"
+      default="${body#*:-}"
+      rivetos_expand_params "$default"
+      default="$_rivetos_expand_out"
+      val="${!name-}"
+      if [ -n "$val" ]; then
+        _rivetos_consume_out="$val"
+      else
+        _rivetos_consume_out="$default"
+      fi
+      _rivetos_consume_next_i=$((i + 3 + ${#body}))
+      return 0
+    fi
+    if [[ "$body" =~ ^[A-Za-z_][A-Za-z0-9_]*- ]]; then
+      name="${body%%-*}"
+      default="${body#*-}"
+      rivetos_expand_params "$default"
+      default="$_rivetos_expand_out"
+      if declare -p "$name" >/dev/null 2>&1; then
+        _rivetos_consume_out="${!name}"
+      else
+        _rivetos_consume_out="$default"
+      fi
+      _rivetos_consume_next_i=$((i + 3 + ${#body}))
+      return 0
+    fi
+    _rivetos_expand_unsupported="${_rivetos_expand_unsupported:-parameter expansion operator}"
+    _rivetos_consume_out='${'
+    _rivetos_consume_out+="$body"
+    _rivetos_consume_out+='}'
+    _rivetos_consume_next_i=$((i + 3 + ${#body}))
+    return 0
+  fi
+  if [[ "$n" =~ [A-Za-z_] ]]; then
+    rest="${s:$((i + 1))}"
+    name=""
+    j=0
+    while [ "$j" -lt "${#rest}" ]; do
+      ch="${rest:j:1}"
+      case "$ch" in
+        [A-Za-z0-9_]) name+="$ch" ;;
+        *) break ;;
+      esac
+      j=$((j + 1))
+    done
+    _rivetos_consume_out="${!name-}"
+    _rivetos_consume_next_i=$((i + 1 + ${#name}))
+  fi
+}
+
+# $VAR / ${VAR} / ${VAR:-default} / ${VAR-default} from the environment.
+# No command substitution. Writes the result to _rivetos_expand_out (not
+# stdout) so the caller is not a subshell and can read
+# _rivetos_expand_unsupported. Never prints a value.
 rivetos_expand_params() {
-  local s="$1" out="" i=0 c n name rest
+  local s="$1" out="" i=0 c
   while [ "$i" -lt "${#s}" ]; do
     c="${s:i:1}"
-    if [ "$c" = '$' ] && [ "$((i + 1))" -lt "${#s}" ]; then
-      n="${s:$((i + 1)):1}"
-      if [ "$n" = '{' ]; then
-        rest="${s:$((i + 2))}"
-        name="${rest%%\}*}"
-        if [ "$name" != "$rest" ] && [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-          out+="${!name-}"
-          i=$((i + 3 + ${#name}))
-          continue
-        fi
-      elif [[ "$n" =~ [A-Za-z_] ]]; then
-        rest="${s:$((i + 1))}"
-        name="$(printf '%s' "$rest" | sed 's/[^A-Za-z0-9_].*//')"
-        out+="${!name-}"
-        i=$((i + 1 + ${#name}))
-        continue
-      fi
+    if [ "$c" = '`' ]; then
+      _rivetos_expand_unsupported="${_rivetos_expand_unsupported:-backticks}"
+      out+="$c"
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$c" = '$' ]; then
+      rivetos_consume_dollar "$s" "$i"
+      out+="$_rivetos_consume_out"
+      i="$_rivetos_consume_next_i"
+      continue
     fi
     out+="$c"
     i=$((i + 1))
   done
-  printf '%s' "$out"
+  _rivetos_expand_out="$out"
 }
 
 rivetos_parse_env_line() {
@@ -188,6 +281,7 @@ rivetos_parse_env_line() {
   [ -n "$line" ] || return 1
   [ "${line:0:1}" = "#" ] && return 1
   _rivetos_env_quote=none
+  _rivetos_env_unsupported=""
 
   if [ "${line#export}" != "$line" ]; then
     rest="${line#export}"
@@ -208,24 +302,39 @@ rivetos_parse_env_line() {
     \"*) _rivetos_env_quote=double ;;
     *) _rivetos_env_quote=none ;;
   esac
-  val="$(rivetos_unquote_env_value "$val")"
+  if [ "$_rivetos_env_quote" = none ]; then
+    case "$val" in
+      *\\) _rivetos_env_unsupported="trailing-backslash continuation" ;;
+    esac
+  fi
+  rivetos_unquote_env_value "$val"
+  val="$_rivetos_unquote_out"
   _rivetos_env_key="$key"
   _rivetos_env_val="$val"
   return 0
 }
 
 rivetos_unquote_env_value() {
-  local s i c n out
+  local s i c n out rest
   s="$(rivetos_trim "$1")"
-  if [ -z "$s" ] || [ "${s:0:1}" = "#" ]; then
-    printf ''
+  _rivetos_unquote_out=""
+  # bash: # starts a comment at line start or after whitespace, not at
+  # the first character of an unquoted value (KEY=#x stays #x).
+  if [ -z "$s" ]; then
     return 0
   fi
   if [ "${s:0:1}" = "'" ]; then
     s="${s:1}"
     case "$s" in
-      *"'"*) printf '%s' "${s%%\'*}" ;;
-      *) printf '%s' "$s" ;;
+      *"'"*)
+        _rivetos_unquote_out="${s%%\'*}"
+        rest="${s#*\'}"
+        rest="$(rivetos_trim "$rest")"
+        if [ -n "$rest" ] && [ "${rest:0:1}" != "#" ]; then
+          _rivetos_env_unsupported="${_rivetos_env_unsupported:-concatenated quotes}"
+        fi
+        ;;
+      *) _rivetos_unquote_out="$s" ;;
     esac
     return 0
   fi
@@ -236,26 +345,40 @@ rivetos_unquote_env_value() {
     while [ "$i" -lt "${#s}" ]; do
       c="${s:i:1}"
       if [ "$c" = '"' ]; then
+        rest="${s:$((i + 1))}"
+        rest="$(rivetos_trim "$rest")"
+        if [ -n "$rest" ] && [ "${rest:0:1}" != "#" ]; then
+          _rivetos_env_unsupported="${_rivetos_env_unsupported:-concatenated quotes}"
+        fi
         break
       fi
       if [ "$c" = '\' ] && [ "$((i + 1))" -lt "${#s}" ]; then
         n="${s:$((i + 1)):1}"
         case "$n" in
-          n) out+=$'\n' ;;
-          t) out+=$'\t' ;;
-          r) out+=$'\r' ;;
-          *) out+="$n" ;;
+          \\ | \" | \$ | \`) out+="$n" ;;
+          *) out+="\\$n" ;;
         esac
         i=$((i + 2))
         continue
       fi
+      # Unescaped $NAME / ${NAME} / ${NAME:-d} expand here so \$ (already
+      # handled above) stays a literal dollar — persist round-trips.
+      if [ "$c" = '$' ]; then
+        rivetos_consume_dollar "$s" "$i"
+        out+="$_rivetos_consume_out"
+        i="$_rivetos_consume_next_i"
+        continue
+      fi
+      if [ "$c" = '`' ]; then
+        _rivetos_env_unsupported="${_rivetos_env_unsupported:-backticks}"
+      fi
       out+="$c"
       i=$((i + 1))
     done
-    printf '%s' "$out"
+    _rivetos_unquote_out="$out"
     return 0
   fi
-  printf '%s' "$s" | sed 's/[[:space:]]\{1,\}#.*$//'
+  _rivetos_unquote_out="$(printf '%s' "$s" | sed 's/[[:space:]]\{1,\}#.*$//')"
 }
 
 # Last assignment of KEY wins (systemd / CLI semantics).
@@ -275,15 +398,36 @@ rivetos_env_file_value() {
 # Export every parsed assignment. Later lines overwrite earlier ones.
 rivetos_apply_env_file() {
   local file="$1"
-  local line val
+  local line val construct
   [ -f "$file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
+    _rivetos_env_unsupported=""
+    _rivetos_expand_unsupported=""
     if rivetos_parse_env_line "$line"; then
       val="$_rivetos_env_val"
-      # Unquoted $HOME/rivetos still expands (house files). Double-quoted
-      # persist form already decoded \$ to a literal $ — do not expand again.
+      construct="${_rivetos_env_unsupported:-}"
+      # Unquoted ~ / ~/… → $HOME (replace the leading ~, do not prepend
+      # onto it — ${val#~/} tilde-expands the pattern and leaves ~/ in
+      # place). Double-quoted $VAR is expanded during unquote so that
+      # \$ (persist) stays a literal dollar; do not expand again.
       if [ "${_rivetos_env_quote:-none}" = "none" ]; then
-        val="$(rivetos_expand_params "$val")"
+        case "$val" in
+          "~" | "~/"*) val="${HOME-}${val:1}" ;;
+          "~"*)
+            case "$val" in
+              *'$'* | *'`'*) ;;
+              *) construct="${construct:-unquoted ~user tilde expansion}" ;;
+            esac
+            ;;
+        esac
+        rivetos_expand_params "$val"
+        val="$_rivetos_expand_out"
+      fi
+      if [ -z "$construct" ] && [ -n "${_rivetos_expand_unsupported:-}" ]; then
+        construct="$_rivetos_expand_unsupported"
+      fi
+      if [ -n "$construct" ]; then
+        echo "rivet-paths: ${_rivetos_env_key} uses unsupported ${construct} (kept literal)" >&2
       fi
       export "${_rivetos_env_key}=${val}"
     fi
@@ -330,8 +474,10 @@ rivetos_encode_env_value() {
   esac
 }
 
-# URL on stdin. Prints "scheme host port" or nothing. Never echoes userinfo.
-# $1 is the default port for a bare host[:port] (no ://).
+# URL on stdin. Prints "scheme host port" or "unparseable". Never echoes
+# userinfo or the raw value. $1 is the default port for a bare host[:port]
+# (no ://). Bare values drop userinfo at the last @, then /path ?query
+# #fragment, then parse host[:port] / [v6]:port.
 rivetos_redact_endpoint() {
   local default_port="${1:-5432}"
   python3 -c '
@@ -343,48 +489,82 @@ default_port = int(sys.argv[1]) if len(sys.argv) > 1 else 5432
 if not raw:
     raise SystemExit(0)
 
-def emit(scheme, host, port):
-    if host:
-        print(f"{scheme} {host} {port}")
-
-if "://" in raw:
-    u = urlparse(raw)
-    host = u.hostname or ""
-    scheme = (u.scheme or "").lower() or "tcp"
-    if u.port:
-        port = u.port
-    elif scheme.startswith("postgres"):
-        port = 5432
-    elif scheme == "https":
-        port = 443
-    elif scheme == "http":
-        port = 80
-    else:
-        port = default_port
-    emit(scheme or "tcp", host, port)
+def unparseable():
+    print("unparseable")
     raise SystemExit(0)
 
-scheme = "tcp"
-host = ""
-port = default_port
-if raw.startswith("["):
-    end = raw.find("]")
-    if end == -1:
+def emit(scheme, host, port):
+    if not host:
+        unparseable()
+    print(f"{scheme} {host} {port}")
+
+def authority_only(s):
+    if "@" in s:
+        s = s.rsplit("@", 1)[-1]
+    out = []
+    in_br = False
+    for ch in s:
+        if ch == "[":
+            in_br = True
+            out.append(ch)
+        elif ch == "]":
+            in_br = False
+            out.append(ch)
+        elif (not in_br) and ch in "/?#":
+            break
+        else:
+            out.append(ch)
+    return "".join(out)
+
+try:
+    if "://" in raw:
+        u = urlparse(raw)
+        host = u.hostname or ""
+        scheme = (u.scheme or "").lower() or "tcp"
+        if u.port:
+            port = u.port
+        elif scheme.startswith("postgres"):
+            port = 5432
+        elif scheme == "https":
+            port = 443
+        elif scheme == "http":
+            port = 80
+        else:
+            port = default_port
+        emit(scheme or "tcp", host, port)
         raise SystemExit(0)
-    host = raw[1:end]
-    rest = raw[end + 1 :]
-    if rest.startswith(":") and rest[1:].isdigit():
-        port = int(rest[1:])
-elif raw.count(":") == 1:
-    left, right = raw.rsplit(":", 1)
-    if left and right.isdigit():
-        host = left
-        port = int(right)
+
+    raw = authority_only(raw)
+    if not raw:
+        unparseable()
+
+    scheme = "tcp"
+    host = ""
+    port = default_port
+    if raw.startswith("["):
+        end = raw.find("]")
+        if end == -1:
+            unparseable()
+        host = raw[1:end]
+        rest = raw[end + 1 :]
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+        elif rest:
+            unparseable()
+    elif raw.count(":") == 1:
+        left, right = raw.rsplit(":", 1)
+        if left and right.isdigit():
+            host = left
+            port = int(right)
+        else:
+            unparseable()
     else:
         host = raw
-else:
-    host = raw
-emit(scheme, host, port)
+    emit(scheme, host, port)
+except SystemExit:
+    raise
+except Exception:
+    unparseable()
 ' "$default_port"
 }
 

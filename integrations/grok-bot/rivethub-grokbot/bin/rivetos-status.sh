@@ -50,6 +50,10 @@ _rivetos_status_redact() {
     return 0
   fi
   probe="$(printf '%s' "$raw" | rivetos_redact_endpoint "$default_port" 2>/dev/null || true)"
+  if [ "$probe" = unparseable ]; then
+    echo unparseable
+    return 0
+  fi
   if [ -z "$probe" ]; then
     echo set
     return 0
@@ -109,6 +113,10 @@ esac
 
 probe="$(printf '%s' "$endpoint" | rivetos_redact_endpoint "$default_port" 2>/dev/null || true)"
 
+if [ "$probe" = unparseable ]; then
+  echo "endpoint: unparseable"
+  exit 0
+fi
 if [ -z "$probe" ]; then
   echo "endpoint: set (could not parse host — not probed)"
   exit 0

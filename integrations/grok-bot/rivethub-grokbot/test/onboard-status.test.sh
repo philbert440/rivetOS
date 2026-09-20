@@ -360,6 +360,42 @@ else
 fi
 unset RIVETOS_CLOUD_URL
 
+# Scheme-less credentialed endpoints must not print userinfo (stdout/stderr/xtrace)
+assert_status_no_secret() {
+  local url="$1"
+  local secret="$2"
+  local which="$3"
+  local label="$4"
+  local status_out xout
+  unset RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_URL
+  export RIVETOS_MODE=local
+  if [ "$which" = cloud ]; then
+    export RIVETOS_MODE=cloud
+    export RIVETOS_CLOUD_URL="$url"
+  else
+    export RIVETOS_DATAHUB_URL="$url"
+  fi
+  status_out="$("$STATUS" 2>&1)" || true
+  if printf '%s' "$status_out" | grep -qF "$secret"; then
+    fail "$label leaked secret on stdout/stderr"
+  else
+    pass "$label does not dump secrets"
+  fi
+  xout="$(bash -x "$STATUS" 2>&1)" || true
+  if printf '%s' "$xout" | grep -qF "$secret"; then
+    fail "$label leaked secret under bash -x"
+  else
+    pass "$label bash -x does not leak"
+  fi
+  unset RIVETOS_DATAHUB_URL RIVETOS_PG_URL RIVETOS_CLOUD_URL
+}
+
+assert_status_no_secret 'user:pass@host.example:5432/db' 'user:pass' datahub 'scheme-less user:pass@host:port/path'
+assert_status_no_secret 'user:pass@host.example' 'user:pass' datahub 'scheme-less user:pass@host'
+assert_status_no_secret 'user:pass@cloud.example' 'user:pass' cloud 'scheme-less cloud_url userinfo'
+assert_status_no_secret 'user:p@ss:w0rd@host.example:5432/db' 'p@ss:w0rd' datahub 'scheme-less password with @ and :'
+assert_status_no_secret 'u:p@[::1]:5432' 'u:p@' datahub 'scheme-less IPv6 with userinfo'
+
 # Isolated wrapper: missing sibling must reach the fallback message
 ISO="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-wrapper.XXXXXX")"
 cp "$WRAPPER" "$ISO/rivetos-memory-mcp.sh"
