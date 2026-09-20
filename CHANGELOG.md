@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Den
+
+- Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay). The first buffered inject on an agent pane is confirmed only by a herdr `working` frame; unconfirmed turns are recorded on the pty and never retried (#796).
+
 ### RivetHub client
 
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
