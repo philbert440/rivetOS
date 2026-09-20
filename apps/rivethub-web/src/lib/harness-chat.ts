@@ -303,7 +303,9 @@ export type HarnessRegistryStatus = 'pending' | 'error' | 'success'
  * Registration permits turns (harnessGate.bound); liveStream only selects the
  * transcript transport, and listSessions only controls discovery. Neither is
  * a composer capability. Pending/error retain main's legacy terminal fallback;
- * the view hook defers displaying that fallback until the registry settles.
+ * the view hook re-evaluates that fallback when the registry settles/recovers.
+ * Legacy rows only expose roster labels: a custom entry reusing a registered
+ * label is indistinguishable here until the control plane claims the row.
  */
 export function sessionOpensOnTerminal(
   item: Pick<ChatItem, 'kind' | 'command' | 'harnessId'> | undefined,

@@ -1791,12 +1791,12 @@ function ActiveSession(props: {
       <span className="shrink-0">
         <SegmentedControl
           ariaLabel="Session view"
-          value={mode ?? 'pending'}
+          value={mode}
           onChange={(v) => {
             // Terminal goes through enterTerminal: a parked ('failed')
             // spawn gate re-arms the spawn effect.
             if (v === 'terminal') enterTerminal()
-            else if (v === 'chat') setMode(v)
+            else setMode(v)
           }}
           options={[
             { value: 'terminal', label: 'Terminal' },
@@ -1857,9 +1857,7 @@ function ActiveSession(props: {
           {headerTail}
         </div>
       )}
-      {mode === undefined ? (
-        <ChatLaunchLoading />
-      ) : mode === 'chat' ? (
+      {mode === 'chat' ? (
         <>
           {/* Transcript owns its scroll container (stick-to-bottom lives there). */}
           <Transcript

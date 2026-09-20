@@ -48,12 +48,10 @@ describe('narrow full-screen list is gone', () => {
 })
 
 describe('session view integration', () => {
-  it('threads registry status to the view hook and renders loading before either surface', () => {
+  it('threads registry status to the view hook and renders the selected surface', () => {
     expect(chat).toContain('const { mode, setMode } = useSessionView(')
     expect(chat).toContain('remoteRegistry.status,')
-    expect(chat).toContain(
-      "{mode === undefined ? (\n        <ChatLaunchLoading />\n      ) : mode === 'chat' ? (",
-    )
+    expect(chat).toContain("{mode === 'chat' ? (")
   })
 
   it('does not mask native scan rows with command-less canonical placeholders', () => {
