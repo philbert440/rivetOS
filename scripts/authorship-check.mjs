@@ -1,29 +1,35 @@
 #!/usr/bin/env node
 // Commit authorship guard. Validates that all commits in a range are authored
-// and committed by house identities only — no third-party product names
-// (Cursor, Claude, Dependabot) or Co-authored-by trailers.
+// and committed by house identities or repository collaborators only — no
+// third-party product names (Cursor, Claude, Dependabot) or Co-authored-by
+// trailers.
 //
 // Usage:
 //   authorship-check.mjs <base>..<head>   # CI: check a PR's commit range
 //   authorship-check.mjs HEAD              # local hook: check the last commit
 //
-// Allowed identities (the "house"):
+// House identities (exact name + email):
 //   - Rivet Philbot <rivetphilbot@gmail.com>
+//   - Rivet <rivetphilbot@gmail.com>
 //   - Philip <philbert440@gmail.com>
 //   - Philip <philbert440@users.noreply.github.com>
-//   - xreed88 <xreed88@gmail.com> (outside contributor, allowed by the maintainer)
+//   - philbert440 <philbert440@gmail.com>
+//   - philbert440 <philbert440@users.noreply.github.com>
+//
+// Repository collaborators (matched by email): xreed88, tomthornton
+//   Add one by appending { login, emails } to COLLABORATORS below.
 //
 // Blocked: Cursor, Cursor Agent, cursoragent@cursor.com, Claude, Anthropic,
-//          Dependabot, or any other product name / third-party account.
+//          Dependabot, Renovate, or any other product name / third-party account.
 //
 // Exception: GitHub web-flow <noreply@github.com> as committer when the author
-//            is already a house identity (squash-merge or merge button). NOT
+//            is already an allowed identity (squash-merge or merge button). NOT
 //            allowed as author.
 
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-// House identities (only these)
+// House identities (exact name + email; only these)
 const HOUSE = [
   { name: 'Rivet Philbot', email: 'rivetphilbot@gmail.com' },
   { name: 'Rivet', email: 'rivetphilbot@gmail.com' },
@@ -31,11 +37,31 @@ const HOUSE = [
   { name: 'Philip', email: 'philbert440@users.noreply.github.com' },
   { name: 'philbert440', email: 'philbert440@gmail.com' },
   { name: 'philbert440', email: 'philbert440@users.noreply.github.com' },
-  // Outside contributor allowed by the maintainer (2026-09-20).
-  { name: 'xreed88', email: 'xreed88@gmail.com' },
 ]
 
-// GitHub web-flow committer (allowed as committer when author is house)
+// Repository collaborators, matched on email only (case-insensitive), under any
+// display name. A blocked pattern in the name or email still rejects them.
+// Add a collaborator by appending { login, emails } here.
+const COLLABORATORS = [
+  {
+    login: 'xreed88',
+    emails: [
+      'xreed88@gmail.com',
+      '779983+xreed88@users.noreply.github.com',
+      'xreed88@users.noreply.github.com',
+    ],
+  },
+  {
+    login: 'tomthornton',
+    emails: [
+      '40962668+tomthornton@users.noreply.github.com',
+      'tomthornton@users.noreply.github.com',
+      // TODO: add his commit email here when known.
+    ],
+  },
+]
+
+// GitHub web-flow committer (allowed as committer when author is allowed)
 const GITHUB_WEBFLOW = { name: 'GitHub', email: 'noreply@github.com' }
 
 // Blocked patterns (case-insensitive substrings in name or email)
@@ -63,6 +89,12 @@ function isHouseIdentity(identity) {
   })
 }
 
+/** Check if an identity matches a repository collaborator (email only) */
+function isCollaboratorIdentity(identity) {
+  const n = normalize(identity)
+  return COLLABORATORS.some((c) => c.emails.some((email) => email.toLowerCase() === n.email))
+}
+
 /** Check if an identity is the GitHub web-flow committer */
 function isGitHubWebFlow(identity) {
   const n = normalize(identity)
@@ -77,19 +109,9 @@ function hasBlockedPattern(identity) {
   return BLOCKED_PATTERNS.some((p) => combined.includes(p.toLowerCase()))
 }
 
-/** Parse commit details from git log output */
-export function parseCommit(sha, format) {
-  // Format: sha|author_name|author_email|committer_name|committer_email|parent_count|body
-  const parts = format.split('|')
-  if (parts.length < 7) return null
-
-  return {
-    sha: sha.trim(),
-    author: { name: parts[1], email: parts[2] },
-    committer: { name: parts[3], email: parts[4] },
-    parentCount: parseInt(parts[5], 10) || 0,
-    body: parts.slice(6).join('|'), // body might contain |
-  }
+/** Check if an identity is allowed: house, or a collaborator without a blocked pattern */
+function isAllowedIdentity(identity) {
+  return isHouseIdentity(identity) || (isCollaboratorIdentity(identity) && !hasBlockedPattern(identity))
 }
 
 /** Extract Co-authored-by trailers from commit body */
@@ -109,7 +131,7 @@ export function checkCommit(commit) {
   const issues = []
 
   // Check author
-  if (!isHouseIdentity(commit.author)) {
+  if (!isAllowedIdentity(commit.author)) {
     if (hasBlockedPattern(commit.author)) {
       issues.push({
         field: 'author',
@@ -120,18 +142,18 @@ export function checkCommit(commit) {
       issues.push({
         field: 'author',
         identity: commit.author,
-        reason: 'not a house identity',
+        reason: 'not an allowed identity',
       })
     }
   }
 
   // Check committer
-  const authorIsHouse = isHouseIdentity(commit.author)
+  const authorIsAllowed = isAllowedIdentity(commit.author)
 
-  if (!isHouseIdentity(commit.committer)) {
-    // Exception: GitHub web-flow as committer when author is already house
+  if (!isAllowedIdentity(commit.committer)) {
+    // Exception: GitHub web-flow as committer when author is already allowed
     // (squash-merge and merge-button both commit as GitHub, any parent count)
-    if (authorIsHouse && isGitHubWebFlow(commit.committer)) {
+    if (authorIsAllowed && isGitHubWebFlow(commit.committer)) {
       // Allowed
     } else if (hasBlockedPattern(commit.committer)) {
       issues.push({
@@ -143,7 +165,7 @@ export function checkCommit(commit) {
       issues.push({
         field: 'committer',
         identity: commit.committer,
-        reason: 'not a house identity',
+        reason: 'not an allowed identity',
       })
     }
   }
@@ -151,7 +173,7 @@ export function checkCommit(commit) {
   // Check Co-authored-by trailers
   const coAuthors = extractCoAuthors(commit.body)
   for (const coAuthor of coAuthors) {
-    if (!isHouseIdentity(coAuthor)) {
+    if (!isAllowedIdentity(coAuthor)) {
       if (hasBlockedPattern(coAuthor)) {
         issues.push({
           field: 'Co-authored-by',
@@ -162,7 +184,7 @@ export function checkCommit(commit) {
         issues.push({
           field: 'Co-authored-by',
           identity: coAuthor,
-          reason: 'not a house identity',
+          reason: 'not an allowed identity',
         })
       }
     }
@@ -286,13 +308,17 @@ function main() {
   }
 
   console.error(
-    '\nAllowed identities (house only):' +
+    '\nAllowed identities (house):' +
       '\n  - Rivet Philbot <rivetphilbot@gmail.com>' +
+      '\n  - Rivet <rivetphilbot@gmail.com>' +
       '\n  - Philip <philbert440@gmail.com>' +
       '\n  - Philip <philbert440@users.noreply.github.com>' +
-      '\n  - xreed88 <xreed88@gmail.com>' +
-      '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, and any Co-authored-by trailers.' +
-      '\n\nException: GitHub <noreply@github.com> as committer when the author is a house identity (GitHub merge/squash).\n',
+      '\n  - philbert440 <philbert440@gmail.com>' +
+      '\n  - philbert440 <philbert440@users.noreply.github.com>' +
+      '\n\nRepository collaborators (matched by email): xreed88, tomthornton' +
+      '\n  Add one by appending { login, emails } to COLLABORATORS in scripts/authorship-check.mjs.' +
+      '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, Renovate, and any Co-authored-by trailers.' +
+      '\n\nException: GitHub <noreply@github.com> as committer when the author is an allowed identity (GitHub merge/squash).\n',
   )
 
   process.exit(1)
