@@ -266,8 +266,12 @@ interface PtyRecord {
    *  slash). Wrapper / absolute-path rosters are plain panes — no status. */
   agentPane?: boolean
   /** Last protocol signal said the agent is gone (`pane.agent_detected`
-   *  with a null/released agent). Cleared on re-detect or working|idle|blocked. */
+   *  with a null/released agent). Cleared on re-detect or working|idle|blocked.
+   *  Inject refuses while set. After harnessEndedGraceMs without a clear, the
+   *  pty and mux session are ended for real. */
   agentEnded?: boolean
+  /** Fires after harnessEndedGraceMs while agentEnded stays set. */
+  endedGraceTimer?: NodeJS.Timeout
   injectRest?: { text: string; submit: boolean }[]
   /** Ordinal of the in-flight first-flush turn waiting for a `working` frame. */
   confirmTurn?: number
@@ -381,6 +385,9 @@ const DEFAULT_INJECT_READY_MAX_MS = 15_000
 /** Window after flushing the first buffered submit on an agent pane to wait
  *  for a herdr `working` frame. No pane scrape, no retry. Default 5000. */
 const DEFAULT_INJECT_CONFIRM_MS = 5000
+/** After a release signal, wait this long for a re-detect before ending the
+ *  pty and mux session for real. Inject already refuses. Default 3000. */
+const DEFAULT_HARNESS_ENDED_GRACE_MS = 3000
 
 /** Interrupt-inject: a lone Esc cancels the harness's in-flight turn
  *  (Claude/grok TUIs), then the paste waits out the TUI's cancel/teardown
@@ -615,7 +622,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const laterWrite = (r: PtyRecord, data: string, atMs: number): void => {
     const fire = (): void => {
-      if (r.state === 'running') r.proc.write(data)
+      // Ended harness panes (including during grace) must not receive a
+      // delayed paste/CR — herdr leaves a fallback shell in the pane.
+      if (r.state === 'running' && !(r.agentPane && r.agentEnded)) r.proc.write(data)
     }
     if (atMs <= 0) {
       fire()
@@ -683,6 +692,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       'readyTimer',
       'readyCeilingTimer',
       'confirmTimer',
+      'endedGraceTimer',
     ] as const) {
       const t = r[key]
       if (t) clearTimeout(t)
@@ -943,6 +953,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
   const injectReadyMaxMs = config.term.injectReadyMaxMs ?? DEFAULT_INJECT_READY_MAX_MS
   const injectConfirmMs = config.term.injectConfirmMs ?? DEFAULT_INJECT_CONFIRM_MS
+  const harnessEndedGraceMs = config.term.harnessEndedGraceMs ?? DEFAULT_HARNESS_ENDED_GRACE_MS
 
   /** Idle-signal / confirm only when herdr actually started an agent pane.
    *  Roster key alone is not enough: wrappers and absolute-path argv run as
@@ -953,6 +964,47 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const canConfirmInject = (r: PtyRecord): boolean => usesHerdrIdleSignal(r)
 
   const agentGone = (r: PtyRecord): boolean => Boolean(r.agentPane && r.agentEnded)
+
+  /** Assigned after onExit exists. Release-signal grace calls this to reap. */
+  let endHarnessPane: (r: PtyRecord) => void = () => undefined
+
+  const clearEndedGrace = (r: PtyRecord): void => {
+    if (r.endedGraceTimer) {
+      clearTimeout(r.endedGraceTimer)
+      r.endedGraceTimer = undefined
+    }
+  }
+
+  const cancelPendingWrites = (r: PtyRecord): void => {
+    for (const t of r.injectTimers) clearTimeout(t)
+    r.injectTimers = []
+  }
+
+  const clearAgentEnded = (r: PtyRecord): void => {
+    r.agentEnded = false
+    clearEndedGrace(r)
+  }
+
+  /** Latch the existing agentEnded flag and start the persist-grace. Inject
+   *  already refuses. A re-detect / live status frame cancels. */
+  const latchAgentEnded = (r: PtyRecord): void => {
+    if (!r.agentPane) return
+    r.agentEnded = true
+    // Drop in-flight paste/CR so they cannot land in the fallback shell.
+    // Keep injectBuffer: a re-detect during grace can still flush.
+    cancelPendingWrites(r)
+    if (r.endedGraceTimer) return
+    if (harnessEndedGraceMs <= 0) {
+      endHarnessPane(r)
+      return
+    }
+    r.endedGraceTimer = setTimeout(() => {
+      r.endedGraceTimer = undefined
+      if (r.state !== 'running' || !r.agentEnded) return
+      endHarnessPane(r)
+    }, harnessEndedGraceMs)
+    r.endedGraceTimer.unref()
+  }
 
   const clearReadyTimers = (r: PtyRecord): void => {
     if (r.readyTimer) {
@@ -972,7 +1024,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     return r.injectSeq
   }
 
+  const dropBufferedInjects = (r: PtyRecord): void => {
+    r.injectRest = undefined
+    r.injectBuffer = []
+    r.confirmTurn = undefined
+  }
+
   const flushRest = (r: PtyRecord): void => {
+    if (r.state !== 'running' || agentGone(r)) {
+      dropBufferedInjects(r)
+      return
+    }
     const rest = r.injectRest
     r.injectRest = undefined
     if (!rest || rest.length === 0) return
@@ -984,12 +1046,6 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const recordUnconfirmed = (r: PtyRecord, turn: number, reason: string): void => {
     r.injectUnconfirmed = { ts: now(), turn }
     deps.log(`[den-server] term: ${reason}`)
-  }
-
-  const dropBufferedInjects = (r: PtyRecord): void => {
-    r.injectRest = undefined
-    r.injectBuffer = []
-    r.confirmTurn = undefined
   }
 
   const confirmInjectIfPending = (r: PtyRecord): void => {
@@ -1047,6 +1103,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const pending = r.injectBuffer
     r.injectBuffer = []
     if (pending.length === 0) return
+    // Re-check immediately before any write — a release can race the idle frame.
+    if (agentGone(r)) {
+      dropBufferedInjects(r)
+      return
+    }
     if (!canConfirmInject(r)) {
       pending.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
       r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
@@ -1107,8 +1168,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       onEvent: (name, evt) => {
         const rec = recFor(name)
         if (!rec) return
-        if (herdrAgentReleased(evt)) rec.agentEnded = true
-        else if (herdrAgentPresent(evt)) rec.agentEnded = false
+        if (herdrAgentReleased(evt)) latchAgentEnded(rec)
+        else if (herdrAgentPresent(evt)) clearAgentEnded(rec)
       },
       onFrame: (name, frame) => {
         if (process.env.RIVETOS_HERDR_DEBUG === '1')
@@ -1118,7 +1179,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           rec.lastAgentStatus = frame.status
           // working|idle|blocked prove the agent is alive — clear a prior
           // release latch so it never sticks for the record's lifetime.
-          rec.agentEnded = false
+          clearAgentEnded(rec)
           if (frame.status === 'working') {
             touchActivity(rec)
             confirmInjectIfPending(rec)
@@ -1259,6 +1320,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // with its client) end the room now; if it still looks alive the
       // sweep re-checks — a session mid-teardown can read as alive here,
       // and the mux being unreachable must read as "unknown", never as "end".
+      // A client that exits while agentEnded (idle detach during grace)
+      // must still kill the leftover mux shell.
       let alive: boolean
       try {
         alive = muxCtl.hasSession(r.tmuxName)
@@ -1266,6 +1329,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         alive = true
       }
       if (!alive) maybeEndSession(r.tmuxName)
+      else if (r.agentEnded && r.agentPane) {
+        try {
+          muxCtl.killSession(r.tmuxName)
+        } catch {
+          // session may already be gone
+        }
+        statusHub?.release(r.tmuxName)
+        maybeEndSession(r.tmuxName)
+      }
       // notify after the final data fan-out (see below) — then reap now
       for (const w of [...r.exitWatchers]) w(exitCode)
       reap(r)
@@ -1292,6 +1364,30 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       reap(r)
     }, config.term.exitLingerMs)
     r.reapTimer.unref()
+  }
+
+  endHarnessPane = (r: PtyRecord): void => {
+    if (r.state !== 'running' || !r.agentPane) return
+    dropBufferedInjects(r)
+    cancelInjectAndReady(r)
+    clearEndedGrace(r)
+    if (bySession.get(r.denSession) === r.id) bySession.delete(r.denSession)
+    if (muxCtl && r.tmuxName) {
+      try {
+        muxCtl.killSession(r.tmuxName)
+      } catch {
+        // session may already be gone
+      }
+      statusHub?.release(r.tmuxName)
+      maybeEndSession(r.tmuxName)
+    }
+    audit('kill', r, { reason: 'harness-ended' })
+    try {
+      r.proc.kill('SIGHUP')
+    } catch {
+      // already gone
+    }
+    onExit(r, null)
   }
 
   return {
@@ -2057,7 +2153,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
     write(id, data): boolean {
       const r = records.get(id)
-      if (!r || r.state !== 'running') return false
+      if (!r || r.state !== 'running' || agentGone(r)) return false
       // Keystrokes count as activity for idle-TTL (and LRU).
       touchActivity(r)
       r.proc.write(data)
@@ -2067,6 +2163,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     inject(id, text, submit, interrupt = false): boolean {
       const r = records.get(id)
       if (!r || r.state !== 'running') return false
+      // Zero-window: a harness pane whose agent has released is not writable,
+      // including during the persist-grace. Prefer 409 over a shell write.
+      if (agentGone(r)) return false
       // Chat activity protects this pty from LRU eviction (#316 review): a
       // conversation being chatted is unattached (inject doesn't attach) but
       // must not be evicted between the send and the harness's reply. Also
@@ -2083,6 +2182,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           r.injectRest.push({ text, submit })
           return true
         }
+        // Re-check immediately before writing — a release can race a ready inject.
+        if (agentGone(r)) return false
         // Serialize against any in-flight turn so paste/CR pairs never
         // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
         // one submit delay — parallel API clients or a UI without a send lock.

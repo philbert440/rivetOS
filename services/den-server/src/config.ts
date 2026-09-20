@@ -65,6 +65,10 @@ export interface DenTermConfig {
    *  to wait for a herdr `working` frame. Confirmation is positive evidence
    *  only — no pane scrape, no retry. Default 5000. */
   injectConfirmMs?: number
+  /** Grace (ms) after a herdr release signal before the pty and mux session
+   *  are ended for real. A re-detect / working|idle|blocked frame cancels.
+   *  Inject already refuses during the grace. Default 3000. */
+  harnessEndedGraceMs?: number
   /** Delay between writing a chat inject's text and its submit CR. The two
    *  must be separate PTY writes: harness TUIs (claude/grok) run paste
    *  detection, and a CR fused onto multi-line/long text is absorbed as a
@@ -318,6 +322,7 @@ export function loadConfig(
       injectReadyMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MS', 500),
       injectReadyMaxMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_READY_MAX_MS', 15_000),
       injectConfirmMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_CONFIRM_MS', 5000),
+      harnessEndedGraceMs: intEnv(env, 'RIVETOS_DEN_TERM_HARNESS_ENDED_GRACE_MS', 3000),
       injectSubmitDelayMs: intEnv(env, 'RIVETOS_DEN_TERM_INJECT_SUBMIT_DELAY_MS', 80),
       mux: ((): 'tmux' | 'herdr' | 'none' | undefined => {
         const raw = env.RIVETOS_DEN_TERM_MUX?.trim().toLowerCase()
