@@ -41,10 +41,12 @@ export const QUEUE_HEALTH_SQL = `SELECT t.identifier AS task,
               ORDER BY COUNT(*) FILTER (WHERE j.attempts >= j.max_attempts) DESC,
                        COUNT(*) FILTER (WHERE j.attempts < j.max_attempts) DESC`
 
-export function isMissingRelationError(err: unknown): boolean {
-  return Boolean(
-    err && typeof err === 'object' && 'code' in err && (err as { code?: string }).code === '42P01',
-  )
+/** 42P01 = undefined_table, 42703 = undefined_column. Either means the
+ * diagnostic's schema is not (yet) in place, not that the query was wrong. */
+export function isMissingSchemaError(err: unknown): boolean {
+  if (!err || typeof err !== 'object' || !('code' in err)) return false
+  const code = (err as { code?: string }).code
+  return code === '42P01' || code === '42703'
 }
 
 /**
@@ -62,7 +64,7 @@ export async function queryQueueHealth(
         row.oldest_pending_age_min === null ? null : parseFloat(String(row.oldest_pending_age_min)),
     }))
   } catch (err) {
-    if (isMissingRelationError(err)) return null
+    if (isMissingSchemaError(err)) return null
     throw err
   }
 }
@@ -93,8 +95,22 @@ export const EMBEDDING_HEALTH_SQL = `
             (SELECT COUNT(*) FROM ros_summaries WHERE embedding IS NULL AND embed_status = 'failed'
               AND created_at > now() - interval '7 days') AS recent_failed
         `
-export function queryEmbeddingHealth(pool: pg.Pool) {
-  return pool.query<EmbedQueueRow & { failed: string; recent_failed: string }>(EMBEDDING_HEALTH_SQL)
+/**
+ * Run EMBEDDING_HEALTH_SQL. Returns null when the embed columns or relations
+ * are absent (42703/42P01) — e.g. ensureEmbedderSchema gave up under lock
+ * contention — so callers render a degraded counter instead of failing.
+ */
+export async function queryEmbeddingHealth(
+  pool: pg.Pool,
+): Promise<pg.QueryResult<EmbedQueueRow & { failed: string; recent_failed: string }> | null> {
+  try {
+    return await pool.query<EmbedQueueRow & { failed: string; recent_failed: string }>(
+      EMBEDDING_HEALTH_SQL,
+    )
+  } catch (err) {
+    if (isMissingSchemaError(err)) return null
+    throw err
+  }
 }
 export function queryCompactionHealth(pool: pg.Pool) {
   const notHeartbeat = sqlNotHeartbeatConversation('c')

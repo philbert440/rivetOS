@@ -230,28 +230,35 @@ export function createStatsTool(
         // payloads) are excluded from "pending" — they will never embed by
         // design and otherwise show up as a permanent false backlog.
         const embedQueue = await queryEmbeddingHealth(pool)
-        const eq = embedQueue.rows[0]
-        const msgQueue = Number(eq.msg_queue)
-        const sumQueue = Number(eq.sum_queue)
-        const unembeddable = Number(eq.unembeddable)
-        const queueTotal = msgQueue + sumQueue
-        const failedEmbeddings = Number(eq.failed)
-        const queueStatus =
-          failedEmbeddings > 0
-            ? `⚠️ ${String(failedEmbeddings)} failed; ${String(queueTotal)} pending`
-            : queueTotal === 0
-              ? '✅ caught up'
-              : queueTotal < 50
-                ? `⏳ ${String(queueTotal)} pending`
-                : `⚠️ ${String(queueTotal)} pending (backlog)`
+        let embeddingQueue: string
+        if (embedQueue === null) {
+          // Embed columns absent (ensureEmbedderSchema gave up); the rest of
+          // the census is still valid, so degrade just this counter.
+          embeddingQueue = '\n**Embedding queue:** ⚠️ unavailable (embedding schema incomplete)'
+        } else {
+          const eq = embedQueue.rows[0]
+          const msgQueue = Number(eq.msg_queue)
+          const sumQueue = Number(eq.sum_queue)
+          const unembeddable = Number(eq.unembeddable)
+          const queueTotal = msgQueue + sumQueue
+          const failedEmbeddings = Number(eq.failed)
+          const queueStatus =
+            failedEmbeddings > 0
+              ? `⚠️ ${String(failedEmbeddings)} failed; ${String(queueTotal)} pending`
+              : queueTotal === 0
+                ? '✅ caught up'
+                : queueTotal < 50
+                  ? `⏳ ${String(queueTotal)} pending`
+                  : `⚠️ ${String(queueTotal)} pending (backlog)`
 
-        const embeddingQueue =
-          `\n**Embedding queue:** ${queueStatus}` +
-          `\n  Messages awaiting embedding: ${msgQueue.toLocaleString()}` +
-          `\n  Summaries awaiting embedding: ${sumQueue.toLocaleString()}` +
-          (unembeddable > 0
-            ? `\n  Unembeddable (excluded by design): ${unembeddable.toLocaleString()}`
-            : '')
+          embeddingQueue =
+            `\n**Embedding queue:** ${queueStatus}` +
+            `\n  Messages awaiting embedding: ${msgQueue.toLocaleString()}` +
+            `\n  Summaries awaiting embedding: ${sumQueue.toLocaleString()}` +
+            (unembeddable > 0
+              ? `\n  Unembeddable (excluded by design): ${unembeddable.toLocaleString()}`
+              : '')
+        }
 
         // Embedding coverage
         const msgEmbed = await pool.query<EmbedCoverageRow>(
