@@ -1,15 +1,17 @@
 /**
  * Per-conversation model + effort, persisted (Claude-app style: pick once,
  * sticks for the thread). Keyed by `${baseUrl}::${sessionId}` so a session's
- * choice is per-node. Model is an agent id ('' = node default); effort is a
- * thinking level.
+ * choice is per-node. Launch settings and per-turn overrides are separate.
  */
 
+import type { ConversationTurnPick } from '../lib/conversation-model-options.js'
 import { create } from 'zustand'
 import { persist, type PersistStorage } from 'zustand/middleware'
 import type { HarnessId, ThinkingLevel } from '@rivetos/types'
 
 export interface ChatSettings {
+  /** Model/effort overrides for subsequent turns; never POST /term flags. */
+  turnPick?: ConversationTurnPick
   /** Catalog agent / roster command for the chat-loop picker; '' = node default. */
   agent: string
   /** Chat-loop thinking level. */
@@ -22,6 +24,18 @@ export interface ChatSettings {
   harnessEffort?: string
   /** Agent-preset system prompt for this thread; '' / omitted = none. */
   systemPrompt?: string
+}
+
+/** Agent/harness changes invalidate overrides even when supplied in the same patch. */
+export function mergeChatSettings(
+  current: ChatSettings | undefined,
+  patch: Partial<ChatSettings>,
+): ChatSettings {
+  const changed =
+    current !== undefined &&
+    (('agent' in patch && patch.agent !== current.agent) ||
+      ('harnessId' in patch && patch.harnessId !== current.harnessId))
+  return { ...DEFAULT, ...current, ...patch, ...(changed ? { turnPick: undefined } : {}) }
 }
 
 const KEY = 'rivethub.chatSettings'
@@ -82,7 +96,7 @@ export const useChatSettings = create<SettingsState>()(
       get: (key) => getState().byKey[key] ?? DEFAULT,
       set: (key, patch) =>
         set((s) => {
-          let next = { ...s.byKey, [key]: { ...(s.byKey[key] ?? DEFAULT), ...patch } }
+          let next = { ...s.byKey, [key]: mergeChatSettings(s.byKey[key], patch) }
           // Cap growth: keep the most-recently-touched N (the updated key is
           // re-inserted last, so slicing the tail keeps it) — #310 review.
           const MAX = 200

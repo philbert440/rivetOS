@@ -23,6 +23,7 @@ export function Select(props: {
   options: SelectOption[]
   onChange: (value: string) => void
   title?: string
+  'aria-label'?: string
   /** Trigger element id — lets a <label htmlFor> point at the control. */
   id?: string
   /** Optional label shown above the list inside the popover. */
@@ -69,6 +70,7 @@ export function Select(props: {
           id={props.id}
           disabled={props.disabled}
           title={props.title}
+          aria-label={props['aria-label']}
           className={cn(
             'h-8 min-w-[7rem] justify-between gap-2 font-mono text-xs font-normal',
             props.className,

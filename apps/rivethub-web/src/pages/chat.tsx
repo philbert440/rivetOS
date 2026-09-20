@@ -1,3 +1,4 @@
+import { conversationModelOptions } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
@@ -1144,23 +1145,15 @@ function ActiveSession(props: {
   const settingsKey = storageKey(sessionBase, props.sessionId)
   const settings = useChatSettings((s) => persisted(s.byKey, sessionBase, props.sessionId))
   const nativeHarnessId = item?.harnessId ?? settings?.harnessId
-  const nativeSheet = remoteRegistry.data?.harnesses.find(
-    (h) => h.harnessId === nativeHarnessId,
-  )?.capabilities
-  const nativeModels =
-    nativeSheet?.turnOptions && item?.transport === 'protocol' ? (nativeSheet.models ?? []) : []
-  const nativeModel =
-    nativeModels.find((m) => m.id === settings?.model) ??
-    nativeModels.find((m) => m.id === item?.model) ??
-    nativeModels.find((m) => m.default) ??
-    nativeModels[0]
-  const nativeEfforts = nativeModel?.efforts ?? []
-  const nativeEffort =
-    nativeEfforts.find((e) => e.id === settings?.harnessEffort) ??
-    nativeEfforts.find((e) => e.id === item?.effort) ??
-    nativeEfforts.find((e) => e.default) ??
-    nativeEfforts[0]
+  const turnOptions = conversationModelOptions(
+    nativeHarnessId,
+    remoteRegistry.data?.harnesses,
+    settings?.turnPick,
+  )
   const setSetting = useChatSettings((s) => s.set)
+  useEffect(() => {
+    if (turnOptions.clearPick) setSetting(settingsKey, { turnPick: undefined })
+  }, [turnOptions.clearPick, settingsKey, setSetting])
 
   // ---- Transcript binding ---------------------------------------------------
   //
@@ -1293,9 +1286,7 @@ function ActiveSession(props: {
   // is cleaned up by XtermAttach's detach (WS close → detached TTL) and the
   // manager's LRU pool at maxPtys, not by a kill-on-leave.
 
-  // Model change invalidates a running terminal (it's the wrong harness now):
-  // kill it so the next Terminal entry / chat send respawns with the chosen
-  // model.
+  // Agent changes invalidate the running terminal. Per-turn picks do not.
   const agentSel = settings?.agent ?? ''
   useEffect(() => {
     const id = termPtyRef.current
@@ -1501,11 +1492,9 @@ function ActiveSession(props: {
       await gw.sendHarnessTurn(sid, {
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
-        ...(capabilities.turnOptions && protocolOwned
-          ? {
-              ...(nativeModel ? { model: nativeModel.id } : {}),
-              ...(nativeEffort ? { effort: nativeEffort.id } : {}),
-            }
+        ...(protocolOwned
+          ? conversationModelOptions(harnessId, [{ harnessId, capabilities }], settings?.turnPick)
+              .effective
           : {}),
         ...(prompt ? { systemPrompt: prompt } : {}),
       })
@@ -1809,48 +1798,14 @@ function ActiveSession(props: {
               <HarnessApprovalCard pending={pendingApprovals} onDecide={onDecideApproval} />
             </div>
           )}
-          {nativeModels.length > 0 && (
-            <div className="flex gap-3 px-4 pt-2 text-xs text-ink-dim">
-              <label>
-                Model{' '}
-                <select
-                  aria-label="Codex model"
-                  value={nativeModel?.id ?? ''}
-                  className="rounded border border-line bg-panel px-2 py-1 text-ink"
-                  onChange={(event) =>
-                    setSetting(settingsKey, { model: event.target.value, harnessEffort: undefined })
-                  }
-                >
-                  {nativeModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {nativeEfforts.length > 0 && (
-                <label>
-                  Effort{' '}
-                  <select
-                    aria-label="Codex reasoning effort"
-                    value={nativeEffort?.id ?? ''}
-                    className="rounded border border-line bg-panel px-2 py-1 text-ink"
-                    onChange={(event) =>
-                      setSetting(settingsKey, { harnessEffort: event.target.value })
-                    }
-                  >
-                    {nativeEfforts.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-            </div>
-          )}
           <Composer
-            nativeControls={nativeModels.length > 0}
+            nativeControls={turnOptions.models.length > 0}
+            turnOptions={turnOptions}
+            onTurnPick={(pick) => {
+              if (nativeHarnessId) {
+                setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
+              }
+            }}
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}

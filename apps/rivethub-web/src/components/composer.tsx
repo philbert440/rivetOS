@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type JSX, type RefObject } from '
 import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Mic, Paperclip, Volume2, VolumeX, X } from 'lucide-react'
 import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
-import type { SelectOption } from './select.js'
+import { Select, type SelectOption } from './select.js'
+import type { conversationModelOptions } from '../lib/conversation-model-options.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion, AskScreen } from '../lib/ask-user.js'
@@ -63,6 +64,8 @@ function catalogAgentOptions(agents: CatalogAgent[]): SelectOption[] {
 export function Composer(props: {
   sessionId: string
   nativeControls?: boolean
+  turnOptions?: ReturnType<typeof conversationModelOptions>
+  onTurnPick?: (pick: { model?: string; effort?: string }) => void
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
@@ -452,6 +455,32 @@ export function Composer(props: {
           )}
           {!props.nativeControls && (
             <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          )}
+          {!!props.turnOptions?.models.length && (
+            <Select
+              value={props.turnOptions.effective.model ?? ''}
+              options={[{ value: '', label: 'Harness default' }, ...props.turnOptions.models]}
+              onChange={(model) => props.onTurnPick?.({ model: model || undefined })}
+              label="Model for next turn"
+              title={`Model: ${props.turnOptions.models.find((m) => m.value === props.turnOptions?.effective.model)?.label ?? 'Harness default'}`}
+              aria-label="Model for next turn"
+              className="max-w-[12rem] min-w-0 rounded-full"
+            />
+          )}
+          {!!props.turnOptions?.models.length && !!props.turnOptions.efforts.length && (
+            <Select
+              value={props.turnOptions.effective.effort ?? ''}
+              options={[{ value: '', label: 'Default effort' }, ...props.turnOptions.efforts]}
+              onChange={(effort) =>
+                props.onTurnPick?.({
+                  model: props.turnOptions?.effective.model,
+                  effort: effort || undefined,
+                })
+              }
+              label="Effort for next turn"
+              aria-label="Effort for next turn"
+              className="max-w-[10rem] min-w-0 rounded-full"
+            />
           )}
           <div className="flex-1" />
           <input
