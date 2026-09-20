@@ -62,6 +62,27 @@ export function isBareSlashCommand(text: string): boolean {
   return /^\/[A-Za-z][\w:-]*(?:[ \t][^\n]*)?$/.test(text)
 }
 
+/**
+ * The den injects a chat turn into the harness PTY as a bracketed paste (so
+ * multi-line text lands atomically), and Claude Code's TUI frames any
+ * bracketed-paste input as a `<pasted_content id="XXXX">…</pasted_content
+ * id="XXXX">` block — which it then stores verbatim in the session JSONL. Left
+ * as-is, that wrapper leaks into the transcript (raw tags in the user bubble)
+ * AND, because the web client retires an optimistic bubble by exact-text match
+ * with no id to fall back on, defeats de-duplication so the turn shows twice.
+ *
+ * Strip Claude Code's own paste markers (opening and the attribute-bearing
+ * closing tag it emits) back to the text the user actually sent. The id-bearing
+ * `</pasted_content id="…">` closing form is specific to this framing, so a real
+ * message is not going to carry it by accident. Whitespace the framing adds
+ * around the block is trimmed; a message with no such wrapper is returned as-is.
+ */
+export function stripPastedContentWrapper(text: string): string {
+  if (!text.includes('pasted_content')) return text
+  const stripped = text.replace(/<\/?pasted_content id="[^"]*">/g, '')
+  return stripped === text ? text : stripped.trim()
+}
+
 /** `system`/`compact_boundary` → a complete assistant marker turn carrying the post-compaction context size. */
 function compactMarker(meta: unknown): HarnessTurn {
   const m = (meta ?? {}) as { postTokens?: unknown; preTokens?: unknown }
@@ -181,7 +202,8 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
           }
         }
       }
-      const text = extractTurnText(content, 'user')
+      const raw = extractTurnText(content, 'user')
+      const text = raw === null ? null : stripPastedContentWrapper(raw)
       if (text && !isBareSlashCommand(text)) {
         finishAssistant()
         turns.push({ role: 'user', text })
